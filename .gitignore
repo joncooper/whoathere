@@ -1,0 +1,21 @@
+.DS_Store
+*.log
+*.jsonl
+*.tmp
+
+# Swift build and packaged app outputs.
+.build/
+dist/
+
+# Rust build output and local runtime state.
+target/
+whoathere/target/
+.whoathere/
+whoathere/.whoathere/
+
+# Editor and local environment files.
+.env
+.env.*
+!.env.example
+*.swp
+*.swo
