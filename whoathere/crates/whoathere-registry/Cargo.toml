@@ -1,0 +1,9 @@
+[package]
+name = "whoathere-registry"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+whoathere-admission = { path = "../whoathere-admission" }
+whoathere-vault-api = { path = "../whoathere-vault-api" }

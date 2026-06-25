@@ -1,0 +1,55 @@
+#!/bin/sh
+set -u
+
+printf 'probe.image_contract=whoathere-linux-active-probe.v1\n'
+printf 'probe.kernel=%s\n' "$(uname -s 2>/dev/null || printf unknown)"
+printf 'probe.uid=%s\n' "$(id -u 2>/dev/null || printf unknown)"
+printf 'probe.gid=%s\n' "$(id -g 2>/dev/null || printf unknown)"
+
+if test -r /proc/self/status; then
+  awk '/^NoNewPrivs:/{print "probe.no_new_privs="$2} /^Seccomp:/{print "probe.seccomp="$2}' /proc/self/status
+fi
+
+printf 'probe.userns=%s\n' "$(readlink /proc/self/ns/user 2>/dev/null || printf missing)"
+printf 'probe.netns=%s\n' "$(readlink /proc/self/ns/net 2>/dev/null || printf missing)"
+
+if test -r /proc/self/uid_map; then
+  awk 'NR==1{print "probe.uid_map="$1 ":" $2 ":" $3}' /proc/self/uid_map
+fi
+
+if test -r /proc/self/gid_map; then
+  awk 'NR==1{print "probe.gid_map="$1 ":" $2 ":" $3}' /proc/self/gid_map
+fi
+
+if command -v unshare >/dev/null 2>&1; then
+  if nested_output="$(unshare -Ur /bin/sh -c 'printf "probe.nested_userns=%s\n" "$(readlink /proc/self/ns/user 2>/dev/null || printf missing)"; if test -r /proc/self/uid_map; then awk '\''NR==1{print "probe.nested_uid_map="$1 ":" $2 ":" $3}'\'' /proc/self/uid_map; fi; if test -r /proc/self/gid_map; then awk '\''NR==1{print "probe.nested_gid_map="$1 ":" $2 ":" $3}'\'' /proc/self/gid_map; fi' 2>/dev/null)"; then
+    printf 'probe.userns_unshare=allowed\n'
+    printf '%s\n' "$nested_output"
+  else
+    printf 'probe.userns_unshare=denied\n'
+  fi
+else
+  printf 'probe.userns_unshare=missing\n'
+fi
+
+if test -r /sys/fs/cgroup/memory.max; then
+  printf 'probe.cgroup.memory_max=%s\n' "$(cat /sys/fs/cgroup/memory.max 2>/dev/null || printf missing)"
+fi
+
+if test -r /sys/fs/cgroup/pids.max; then
+  printf 'probe.cgroup.pids_max=%s\n' "$(cat /sys/fs/cgroup/pids.max 2>/dev/null || printf missing)"
+fi
+
+if test -r /sys/fs/cgroup/cpu.max; then
+  printf 'probe.cgroup.cpu_max=%s\n' "$(cat /sys/fs/cgroup/cpu.max 2>/dev/null || printf missing)"
+fi
+
+if test -n "${WHOATHERE_ACTIVE_PROBE_VAULT_HOST:-}"; then
+  vault_host="${WHOATHERE_ACTIVE_PROBE_VAULT_HOST%:*}"
+  vault_port="${WHOATHERE_ACTIVE_PROBE_VAULT_HOST##*:}"
+  if test -n "$vault_host" && test -n "$vault_port" && nc -z -w 2 "$vault_host" "$vault_port" >/dev/null 2>&1; then
+    printf 'probe.vault_connect=allowed\n'
+  else
+    printf 'probe.vault_connect=denied\n'
+  fi
+fi

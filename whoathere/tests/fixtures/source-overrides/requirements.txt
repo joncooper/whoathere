@@ -1,0 +1,2 @@
+--extra-index-url https://pypi.org/simple
+fixture @ git+https://github.com/example/fixture

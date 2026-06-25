@@ -1,0 +1,26 @@
+[workspace]
+members = [
+    "crates/whoathere-core",
+    "crates/whoathere-policy",
+    "crates/whoathere-audit",
+    "crates/whoathere-sandbox",
+    "crates/whoathere-cli",
+    "crates/whoathere-vault-api",
+    "crates/whoathere-cache",
+    "crates/whoathere-registry",
+    "crates/whoathere-admission",
+    "crates/whoathere-vault-dev",
+    "crates/whoathere-detector",
+    "crates/whoathere-evidence",
+    "crates/whoathere-hash",
+    "crates/whoathere-job-log",
+    "crates/whoathere-runner",
+    "crates/whoathere-source",
+    "crates/whoathere-launch",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "Apache-2.0"
+version = "0.1.0"

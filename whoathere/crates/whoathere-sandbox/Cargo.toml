@@ -1,0 +1,15 @@
+[package]
+name = "whoathere-sandbox"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+whoathere-core = { path = "../whoathere-core" }
+whoathere-hash = { path = "../whoathere-hash" }
+
+[features]
+test-support = []
+
+[lib]
+path = "src/lib.rs"

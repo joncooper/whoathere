@@ -1,0 +1,5 @@
+schema_version=0.1.0
+policy_version=package-identity-fixture
+fail_closed=true
+internal_namespace=@company/
+internal_namespace=company-

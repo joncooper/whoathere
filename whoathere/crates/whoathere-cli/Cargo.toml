@@ -1,0 +1,27 @@
+[package]
+name = "whoathere-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+whoathere-core = { path = "../whoathere-core" }
+whoathere-admission = { path = "../whoathere-admission" }
+whoathere-audit = { path = "../whoathere-audit" }
+whoathere-cache = { path = "../whoathere-cache" }
+whoathere-detector = { path = "../whoathere-detector" }
+whoathere-evidence = { path = "../whoathere-evidence" }
+whoathere-launch = { path = "../whoathere-launch" }
+whoathere-policy = { path = "../whoathere-policy" }
+whoathere-runner = { path = "../whoathere-runner" }
+whoathere-sandbox = { path = "../whoathere-sandbox" }
+whoathere-source = { path = "../whoathere-source" }
+whoathere-vault-api = { path = "../whoathere-vault-api" }
+whoathere-vault-dev = { path = "../whoathere-vault-dev" }
+
+[[bin]]
+name = "whoathere"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"

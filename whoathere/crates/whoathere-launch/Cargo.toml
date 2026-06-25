@@ -1,0 +1,14 @@
+[package]
+name = "whoathere-launch"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+whoathere-core = { path = "../whoathere-core" }
+whoathere-hash = { path = "../whoathere-hash" }
+whoathere-sandbox = { path = "../whoathere-sandbox" }
+whoathere-source = { path = "../whoathere-source" }
+
+[dev-dependencies]
+whoathere-sandbox = { path = "../whoathere-sandbox", features = ["test-support"] }

@@ -1,0 +1,12 @@
+[package]
+name = "whoathere-policy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+whoathere-core = { path = "../whoathere-core" }
+
+[lib]
+path = "src/lib.rs"
+

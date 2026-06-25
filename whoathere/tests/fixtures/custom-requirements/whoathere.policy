@@ -1,0 +1,4 @@
+schema_version=0.1.0
+policy_version=custom-requirements-fixture
+fail_closed=true
+internal_namespace=company-

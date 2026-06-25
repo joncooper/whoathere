@@ -1,0 +1,9 @@
+[package]
+name = "whoathere-detector"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+whoathere-evidence = { path = "../whoathere-evidence" }
+whoathere-hash = { path = "../whoathere-hash" }

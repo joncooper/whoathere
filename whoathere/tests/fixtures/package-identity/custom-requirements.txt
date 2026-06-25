@@ -1,0 +1,1 @@
+company-custom>=1.0

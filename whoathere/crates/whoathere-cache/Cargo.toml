@@ -1,0 +1,8 @@
+[package]
+name = "whoathere-cache"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+whoathere-vault-api = { path = "../whoathere-vault-api" }

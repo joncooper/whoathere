@@ -1,0 +1,9 @@
+[package]
+name = "whoathere-admission"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+whoathere-evidence = { path = "../whoathere-evidence" }
+whoathere-vault-api = { path = "../whoathere-vault-api" }

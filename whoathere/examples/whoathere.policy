@@ -1,0 +1,7 @@
+# Example local WhoaThere policy.
+# This dependency-free MVP parser uses key=value lines.
+schema_version=0.1.0
+policy_version=local-dev
+fail_closed=true
+internal_namespace=@company/
+deny_namespace=blocked-
