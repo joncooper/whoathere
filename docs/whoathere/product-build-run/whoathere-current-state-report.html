@@ -1271,6 +1271,9 @@
             machine identifier metadata, and real signature verification. The helper also has a
             local IPSW restore-image path that can create raw disk, auxiliary storage, hardware model,
             and machine identifier metadata when run as an entitled Apple Virtualization helper.
+            Helper status validates manifest schema, image id, macOS version, architecture, helper
+            version, digest fields, and signature status without rehashing large VM disks on every
+            status call.
             A persistent runtime scaffold can start the VM and write host-runtime health proof.
             Runtime stop now signals the long-running VM process, asks the guest to stop through
             Virtualization.framework, and records a shutdown proof before cleanup.

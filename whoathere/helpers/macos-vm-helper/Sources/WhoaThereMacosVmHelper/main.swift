@@ -45,6 +45,15 @@ private struct UncheckedSendableBox<Value>: @unchecked Sendable {
     var value: Value
 }
 
+private struct ManifestValidationResult {
+    var fields: [String: String]
+    var reasonCodes: [String]
+
+    var signatureStatus: String {
+        fields["signature_status"] ?? "missing"
+    }
+}
+
 private final class RuntimeReferences {
     let virtualMachine: VZVirtualMachine
     let socketListener: VZVirtioSocketListener
@@ -306,6 +315,7 @@ struct WhoaThereMacosVmHelper {
         let readyForLifecycle = reasonCodes.isEmpty
         let runtimePID = readRuntimePID(layout)
         let runtimeAlive = runtimePID.map(runtimeProcessIsAlive) ?? false
+        let manifestValidation = validateManifest(layout: layout, includeSignatureReason: true)
         emit(
             fields: baseFields(status: readyForLifecycle ? "ok" : "fail_closed").merging([
                 "state_dir": layout.stateDir.path,
@@ -315,6 +325,8 @@ struct WhoaThereMacosVmHelper {
                 "bundle_present": fileExists(layout.bundleDir),
                 "config_present": fileExists(layout.configPath),
                 "manifest_present": fileExists(layout.manifestPath),
+                "manifest_signature_status": manifestValidation.signatureStatus,
+                "manifest_validation_reason_codes": manifestValidation.reasonCodes,
                 "disk_present": fileExists(layout.diskPath),
                 "auxiliary_storage_present": fileExists(layout.auxiliaryStoragePath),
                 "hardware_model_present": fileExists(layout.hardwareModelPath),
@@ -907,6 +919,8 @@ struct WhoaThereMacosVmHelper {
         }
         if !fileExists(layout.manifestPath) {
             reasons.append("manifest_missing")
+        } else {
+            reasons.append(contentsOf: validateManifest(layout: layout, includeSignatureReason: false).reasonCodes)
         }
         if !fileExists(layout.diskPath) {
             reasons.append("disk_missing")
@@ -1368,6 +1382,8 @@ struct WhoaThereMacosVmHelper {
         }
         if !fileExists(layout.manifestPath) {
             reasons.append("manifest_missing")
+        } else {
+            reasons.append(contentsOf: validateManifest(layout: layout, includeSignatureReason: true).reasonCodes)
         }
         if !fileExists(layout.diskPath) {
             reasons.append("disk_missing")
@@ -1381,7 +1397,6 @@ struct WhoaThereMacosVmHelper {
         if !fileExists(layout.machineIdentifierPath) {
             reasons.append("machine_identifier_missing")
         }
-        reasons.append("signature_verification_not_implemented")
         return reasonArray(reasons)
     }
 
@@ -1608,16 +1623,86 @@ struct WhoaThereMacosVmHelper {
         return defaultValue
     }
 
-    private static func manifestSignatureStatus(layout: BundleLayout) -> String? {
-        guard let contents = try? String(contentsOf: layout.manifestPath, encoding: .utf8) else {
-            return nil
+    private static func validateManifest(layout: BundleLayout, includeSignatureReason: Bool) -> ManifestValidationResult {
+        guard fileExists(layout.manifestPath) else {
+            return ManifestValidationResult(fields: [:], reasonCodes: ["manifest_missing"])
         }
-        for line in contents.split(separator: "\n") {
-            if line.starts(with: "signature_status=") {
-                return String(line.dropFirst("signature_status=".count))
+        var fields: [String: String] = [:]
+        var reasons: [String] = []
+        guard let contents = try? String(contentsOf: layout.manifestPath, encoding: .utf8) else {
+            return ManifestValidationResult(fields: [:], reasonCodes: ["manifest_unreadable"])
+        }
+        for rawLine in contents.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            if line.isEmpty || line.hasPrefix("#") {
+                continue
+            }
+            guard let separator = line.firstIndex(of: "=") else {
+                reasons.append("manifest_line_invalid")
+                continue
+            }
+            let key = String(line[..<separator]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let value = String(line[line.index(after: separator)...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if key.isEmpty || value.isEmpty {
+                reasons.append("manifest_key_or_value_empty")
+                continue
+            }
+            if fields[key] != nil {
+                reasons.append("manifest_key_duplicate")
+                continue
+            }
+            fields[key] = value
+        }
+
+        if fields["schema_version"] != "whoathere.macos_vm_image.v1" {
+            reasons.append("manifest_schema_invalid")
+        }
+        if fields["image_id", default: ""].isEmpty {
+            reasons.append("manifest_image_id_missing")
+        }
+        if fields["macos_version", default: ""].isEmpty {
+            reasons.append("manifest_macos_version_missing")
+        }
+        let architecture = fields["architecture", default: ""]
+        if architecture != "arm64" && architecture != "aarch64" {
+            reasons.append("manifest_architecture_not_arm64")
+        }
+        if fields["helper_version"] != helperVersion {
+            reasons.append("manifest_helper_version_mismatch")
+        }
+
+        let imageDigest = fields["image_digest"]
+        let restoreDigest = fields["restore_image_digest"]
+        if imageDigest == nil && restoreDigest == nil {
+            reasons.append("manifest_digest_missing")
+        }
+        if let imageDigest, !validSha256Digest(imageDigest) {
+            reasons.append("manifest_image_digest_invalid")
+        }
+        if let restoreDigest, !validSha256Digest(restoreDigest) {
+            reasons.append("manifest_restore_image_digest_invalid")
+        }
+
+        let signatureStatus = fields["signature_status"]
+        if includeSignatureReason {
+            if signatureStatus == "signature_verification_not_implemented" {
+                reasons.append("signature_verification_not_implemented")
+            } else if signatureStatus != "verified" {
+                reasons.append("manifest_signature_not_verified")
             }
         }
-        return nil
+
+        return ManifestValidationResult(fields: fields, reasonCodes: reasonArray(reasons))
+    }
+
+    private static func validSha256Digest(_ digest: String) -> Bool {
+        guard digest.hasPrefix("sha256:") else {
+            return false
+        }
+        let hex = digest.dropFirst("sha256:".count)
+        return hex.count == 64 && hex.allSatisfy { character in
+            character.isNumber || ("a"..."f").contains(character) || ("A"..."F").contains(character)
+        }
     }
 
     private static func bundleHasInstalledState(_ layout: BundleLayout) -> Bool {

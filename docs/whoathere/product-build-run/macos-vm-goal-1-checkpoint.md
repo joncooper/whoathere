@@ -10,6 +10,7 @@ detonation, or sync-back execution.
 - Added `whoathere/helpers/macos-vm-helper`, a Swift Package Manager helper that imports Apple `Virtualization.framework`.
 - Helper commands: `version`, `status`, `init`, `start`, `suspend`, `reset`, `prune`, and `health`.
 - Helper JSON contract includes schema version, helper version, host support, Virtualization.framework linkage, bundle paths, reason codes, and exit code.
+- Helper status validates manifest schema, image id, macOS version, arm64/aarch64 architecture, helper version, digest fields, and signature status without rehashing large VM disks on every status call.
 - Helper `init --execute --image <path>` creates a managed disk-import bundle from an explicit local disk image, copies the disk to `bundle/disk.img`, writes `bundle/config.json`, and writes `bundle/image.manifest`.
 - Disk-import bundles remain non-bootable and non-ready until auxiliary storage, hardware model, machine identifier metadata, and real signature verification are present.
 - Helper `init --execute --restore-image <path>` now has a local IPSW install path using `VZMacOSRestoreImage`, `VZMacOSInstaller`, raw disk creation, `VZMacAuxiliaryStorage`, hardware-model persistence, and machine-identifier persistence.
@@ -62,7 +63,7 @@ overlays/
 ## Current Blockers
 
 - Restore-image installation is implemented as a local IPSW path, but still needs real-host validation with a signed, entitled helper and release fixture.
-- Full signature/notarization verification is not implemented yet.
+- Full signature/notarization verification is not implemented yet; status reports `signature_verification_not_implemented` as a fail-closed readiness reason.
 - Persistent VM process management and controlled stop are implemented, but need real-host validation; saved-state suspend/resume semantics remain deferred.
 - Guest readiness proof protocol and guest-agent source are implemented, but still need real-host validation inside a booted guest and a provisioning/copy path.
 - A real bootable bundle requires auxiliary storage, hardware model, and machine identifier metadata; a disk image alone is not enough.

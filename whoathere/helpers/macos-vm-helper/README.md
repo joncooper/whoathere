@@ -10,6 +10,8 @@ Current state:
 - Initializes a managed disk-import bundle from an explicit local disk image.
 - Initializes a local restore-image install path from an explicit local macOS IPSW when the helper has the required Apple virtualization entitlement and host support.
 - Writes bundle config, disk copy, and image manifest metadata.
+- Validates manifest schema, image id, macOS version, arm64/aarch64 architecture, helper version,
+  digest fields, and signature status during `status` and lifecycle gating.
 - Keeps disk-import bundles non-ready until auxiliary storage, hardware model, machine identifier metadata, and real signature verification exist.
 - Keeps high-risk package execution disabled.
 - Starts a persistent helper runtime only when disk, auxiliary storage, hardware model, and machine identifier metadata are present.
