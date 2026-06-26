@@ -22,6 +22,16 @@ Build and test:
 swift test
 ```
 
+Local signing for Virtualization.framework:
+
+```sh
+swift build
+./scripts/sign-local-helper.sh
+```
+
+Set `WHOATHERE_CODESIGN_IDENTITY` to a Developer ID or Apple Development signing identity for
+non-ad-hoc signing. The default identity is `-` for local ad-hoc development signing.
+
 Smoke commands:
 
 ```sh

@@ -16,6 +16,7 @@ detonation, or sync-back execution.
 - Restore-image bundles still remain non-ready until signature verification, persistent runtime supervision, and health proof are implemented.
 - Helper `start --execute` now has a persistent runtime-process scaffold that launches internal `run`, starts the VM through `VZVirtualMachine.start`, and writes host-runtime state plus health proof when start succeeds.
 - Helper `health` reports host-runtime health proof only; it does not prove guest readiness.
+- Added a helper entitlement plist and local signing script for `com.apple.security.virtualization`.
 - Helper `status` reports missing bundle/config/manifest/disk/auxiliary storage/hardware model/machine identifier/signature proof independently.
 - Helper `start` and `health` fail closed until the VM has real Virtualization metadata, signature verification, persistent runtime management, and guest readiness proof.
 - Rust CLI accepts `--helper <path>` or `WHOATHERE_MACOS_VM_HELPER` for VM and doctor commands.
@@ -53,7 +54,7 @@ overlays/
 
 ## Current Blockers
 
-- Restore-image installation is implemented as a local IPSW path, but still needs signed release packaging and real-host validation with an entitled helper.
+- Restore-image installation is implemented as a local IPSW path, but still needs real-host validation with a signed, entitled helper and release fixture.
 - Full signature/notarization verification is not implemented yet.
 - Persistent VM process management is scaffolded, but needs real-host validation, graceful guest stop, and saved-state suspend/resume semantics.
 - Guest readiness proof is not implemented yet; current health proof is host-runtime start only.

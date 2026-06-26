@@ -1292,6 +1292,7 @@
           <li><code>whoathere vm init --execute --helper &lt;path&gt; --restore-image &lt;path&gt;</code> uses Apple Virtualization.framework restore-image APIs to install from a local IPSW and persist required VM metadata, subject to entitlement and host support.</li>
           <li><code>whoathere vm init --execute</code> without a helper or image fails closed with exact required inputs rather than creating placeholder readiness.</li>
           <li><code>whoathere vm start</code>, <code>suspend</code>, <code>reset</code>, and <code>prune</code> delegate to the helper when configured; start requires bootable metadata and writes host-runtime health proof only.</li>
+          <li>The helper includes a <code>com.apple.security.virtualization</code> entitlement plist and local signing script for development validation.</li>
           <li>The Rust CLI invokes the helper with an absolute canonical path, cleared environment, minimal <code>PATH</code>, bounded output, and operation timeouts.</li>
           <li><code>whoathere vm release-plan</code> classifies artifact risk and returns model verdict exit codes, but explicitly does not authorize runtime execution or sync-back.</li>
           <li><code>whoathere vm canaries</code> lists fake credential classes for npm, PyPI, GitHub, SSH, cloud, Kubernetes, Vault, env files, and AI-tool auth.</li>
@@ -1321,7 +1322,7 @@
 
         <h3>Remaining build gates</h3>
         <ol>
-          <li>Validate restore-image installation on a signed, entitled helper with a real local IPSW and record the release fixture.</li>
+          <li>Validate restore-image installation on the signed helper with a real local IPSW and record the release fixture.</li>
           <li>Implement real signature/notarization verification for the helper and image manifest.</li>
           <li>Validate persistent VM process management on a signed, entitled helper and add graceful guest stop plus saved-state suspend/resume.</li>
           <li>Implement guest readiness proof over a guest-agent or equivalent provisioning channel.</li>
