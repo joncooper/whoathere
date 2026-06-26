@@ -10,11 +10,13 @@ detonation, or sync-back execution.
 - Added `whoathere/helpers/macos-vm-helper`, a Swift Package Manager helper that imports Apple `Virtualization.framework`.
 - Helper commands: `version`, `status`, `init`, `start`, `suspend`, `reset`, `prune`, and `health`.
 - Helper JSON contract includes schema version, helper version, host support, Virtualization.framework linkage, bundle paths, reason codes, and exit code.
-- Helper `init --execute --image <path>` creates a managed bundle from an explicit local installed disk image, copies the disk to `bundle/disk.img`, writes `bundle/config.json`, and writes `bundle/image.manifest`.
+- Helper `init --execute --image <path>` creates a managed disk-import bundle from an explicit local disk image, copies the disk to `bundle/disk.img`, writes `bundle/config.json`, and writes `bundle/image.manifest`.
+- Disk-import bundles remain non-bootable and non-ready until auxiliary storage, hardware model, machine identifier metadata, and real signature verification are present.
 - Helper `status` reports missing bundle/config/manifest/disk/auxiliary storage/hardware model/machine identifier/signature proof independently.
 - Helper `start` and `health` fail closed until the VM has real Virtualization metadata, signature verification, persistent runtime management, and guest readiness proof.
 - Rust CLI accepts `--helper <path>` or `WHOATHERE_MACOS_VM_HELPER` for VM and doctor commands.
 - Rust CLI delegates helper-backed `vm status`, `vm init --execute`, and lifecycle actions while preserving dry-run behavior.
+- Rust CLI helper execution now requires an absolute canonical helper path, clears the inherited environment, bounds stdout/stderr, and enforces operation timeouts.
 - `protect uv -- sync` and other high-risk workflows remain fail-closed.
 
 ## Bundle Layout
@@ -36,6 +38,8 @@ bundle/hardware-model.bin
 bundle/machine-identifier.bin
 bundle/runtime.json
 bundle/health.json
+bundle/runtime.pid
+bundle/saved-state.bin
 logs/
 runs/
 cache/
@@ -49,7 +53,7 @@ overlays/
 - Full signature/notarization verification is not implemented yet.
 - Persistent VM process management is not implemented yet.
 - Guest readiness proof is not implemented yet.
-- A real bootable bundle requires auxiliary storage, hardware model, and machine identifier metadata.
+- A real bootable bundle requires auxiliary storage, hardware model, and machine identifier metadata; a disk image alone is not enough.
 - No package-manager command is allowed to execute from this work.
 
 ## Local Smoke

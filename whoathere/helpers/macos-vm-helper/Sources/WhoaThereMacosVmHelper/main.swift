@@ -32,9 +32,11 @@ struct WhoaThereMacosVmHelper {
         case .`init`:
             initialize(options)
         case .start:
-            lifecycleBlocked(options, operation: "start")
+            start(options)
+        case .run:
+            runPersistentVm(options)
         case .suspend:
-            lifecycleBlocked(options, operation: "suspend")
+            suspend(options)
         case .reset:
             reset(options)
         case .prune:
@@ -58,6 +60,8 @@ struct WhoaThereMacosVmHelper {
         let layout = BundleLayout(stateDir: stateDirURL(from: options))
         let reasonCodes = statusReasons(layout: layout)
         let readyForLifecycle = reasonCodes.isEmpty
+        let runtimePID = readRuntimePID(layout)
+        let runtimeAlive = runtimePID.map(processIsAlive) ?? false
         emit(
             fields: baseFields(status: readyForLifecycle ? "ok" : "fail_closed").merging([
                 "state_dir": layout.stateDir.path,
@@ -73,6 +77,8 @@ struct WhoaThereMacosVmHelper {
                 "machine_identifier_present": fileExists(layout.machineIdentifierPath),
                 "runtime_state_present": fileExists(layout.runtimeStatePath),
                 "health_proof_present": fileExists(layout.healthProofPath),
+                "runtime_pid_present": fileExists(layout.runtimePidPath),
+                "runtime_pid_alive": runtimeAlive,
                 "ready_for_lifecycle": readyForLifecycle,
                 "high_risk_package_execution_enabled": false,
                 "reason_codes": reasonCodes,
@@ -112,7 +118,6 @@ struct WhoaThereMacosVmHelper {
         }
 
         if let restoreImagePath = options.restoreImagePath {
-            createManagedDirectories(layout)
             emit(
                 fields: failClosedFields(
                     layout: layout,
@@ -143,6 +148,13 @@ struct WhoaThereMacosVmHelper {
         }
 
         let imageURL = URL(fileURLWithPath: imagePath)
+        guard imageURL.path.hasPrefix("/") else {
+            emit(
+                fields: failClosedFields(layout: layout, reasons: ["image_path_not_absolute"], exitCode: 64)
+                    .merging(["image": imagePath]) { _, new in new },
+                exitCode: 64
+            )
+        }
         guard fileExists(imageURL) else {
             emit(
                 fields: failClosedFields(layout: layout, reasons: ["image_path_not_found"], exitCode: 64)
@@ -150,9 +162,22 @@ struct WhoaThereMacosVmHelper {
                 exitCode: 64
             )
         }
+        guard isRegularFile(imageURL) else {
+            emit(
+                fields: failClosedFields(layout: layout, reasons: ["image_path_not_regular_file"], exitCode: 64)
+                    .merging(["image": imagePath]) { _, new in new },
+                exitCode: 64
+            )
+        }
+        guard imageURL.standardizedFileURL.path != layout.diskPath.standardizedFileURL.path else {
+            emit(
+                fields: failClosedFields(layout: layout, reasons: ["image_source_matches_managed_destination"], exitCode: 64),
+                exitCode: 64
+            )
+        }
 
         do {
-            createManagedDirectories(layout)
+            try createManagedDirectories(layout)
             try replaceFile(source: imageURL, destination: layout.diskPath)
             let digest = try sha256Digest(path: layout.diskPath.path)
             try writeManifest(layout: layout, options: options, imageDigest: digest)
@@ -166,6 +191,7 @@ struct WhoaThereMacosVmHelper {
                     "image_digest": "sha256:\(digest)",
                     "ready_for_lifecycle": false,
                     "reason_codes": [
+                        "auxiliary_storage_or_virtualization_metadata_required",
                         "virtualization_metadata_missing",
                         "signature_verification_not_implemented"
                     ],
@@ -183,6 +209,30 @@ struct WhoaThereMacosVmHelper {
                 exitCode: 70
             )
         }
+    }
+
+    private static func start(_ options: HelperOptions) {
+        lifecycleBlocked(options, operation: "start")
+    }
+
+    private static func suspend(_ options: HelperOptions) {
+        lifecycleBlocked(options, operation: "suspend")
+    }
+
+    private static func runPersistentVm(_ options: HelperOptions) {
+        let layout = BundleLayout(stateDir: stateDirURL(from: options))
+        emit(
+            fields: failClosedFields(
+                layout: layout,
+                reasons: ["persistent_vm_runtime_not_implemented"],
+                exitCode: 20
+            ).merging([
+                "operation": "run",
+                "mutation": false,
+                "high_risk_package_execution_enabled": false
+            ]) { _, new in new },
+            exitCode: 20
+        )
     }
 
     private static func lifecycleBlocked(_ options: HelperOptions, operation: String) {
@@ -322,9 +372,7 @@ struct WhoaThereMacosVmHelper {
         if !fileExists(layout.machineIdentifierPath) {
             reasons.append("machine_identifier_missing")
         }
-        if manifestSignatureStatus(layout: layout) != "verified" {
-            reasons.append("signature_verification_not_implemented")
-        }
+        reasons.append("signature_verification_not_implemented")
         return reasonArray(reasons)
     }
 
@@ -346,9 +394,13 @@ struct WhoaThereMacosVmHelper {
         ]) { _, new in new }
     }
 
-    private static func createManagedDirectories(_ layout: BundleLayout) {
+    private static func createManagedDirectories(_ layout: BundleLayout) throws {
         for directory in layout.managedDirectories() {
-            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
         }
     }
 
@@ -415,6 +467,31 @@ struct WhoaThereMacosVmHelper {
 
     private static func fileExists(_ url: URL) -> Bool {
         FileManager.default.fileExists(atPath: url.path)
+    }
+
+    private static func isRegularFile(_ url: URL) -> Bool {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), !isDirectory.boolValue else {
+            return false
+        }
+        guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey]) else {
+            return false
+        }
+        return values.isRegularFile == true
+    }
+
+    private static func readRuntimePID(_ layout: BundleLayout) -> pid_t? {
+        guard let contents = try? String(contentsOf: layout.runtimePidPath, encoding: .utf8) else {
+            return nil
+        }
+        guard let pid = Int32(contents.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            return nil
+        }
+        return pid
+    }
+
+    private static func processIsAlive(_ pid: pid_t) -> Bool {
+        pid > 0 && kill(pid, 0) == 0
     }
 
     private static func removeIfPresent(_ url: URL) throws {

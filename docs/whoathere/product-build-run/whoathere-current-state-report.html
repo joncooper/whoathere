@@ -1266,7 +1266,9 @@
             a separate Swift helper that imports Apple Virtualization.framework, uv workflow
             classification, release-policy commands, canary inventory, sync-policy reporting,
             and doctor JSON readiness. The helper can report host/framework readiness and initialize
-            a managed bundle from an explicit local disk image. VM boot, guest health proof,
+            a managed disk-import bundle from an explicit local disk image. That disk import is
+            deliberately not lifecycle-ready without auxiliary storage, hardware model,
+            machine identifier metadata, and real signature verification. VM boot, guest health proof,
             detonation, egress recording, and sync-back remain deliberately blocked until the
             missing VM metadata, signature verification, and persistent runtime pieces are implemented.
           </p>
@@ -1283,9 +1285,10 @@
         <h3>Implemented command contract</h3>
         <ul>
           <li><code>whoathere vm status --helper &lt;path&gt;</code> reports Rust-side and Swift-helper VM readiness, including precise missing bundle and metadata reason codes.</li>
-          <li><code>whoathere vm init --execute --helper &lt;path&gt; --image &lt;path&gt;</code> imports an explicit local installed disk image into the managed bundle and writes config plus manifest metadata.</li>
+          <li><code>whoathere vm init --execute --helper &lt;path&gt; --image &lt;path&gt;</code> imports an explicit local disk image into the managed bundle and writes config plus manifest metadata, but does not make the bundle bootable or ready.</li>
           <li><code>whoathere vm init --execute</code> without a helper or image fails closed with exact required inputs rather than creating placeholder readiness.</li>
           <li><code>whoathere vm start</code>, <code>suspend</code>, <code>reset</code>, and <code>prune</code> delegate to the helper when configured; start and health fail closed until bootable metadata and persistent runtime support exist.</li>
+          <li>The Rust CLI invokes the helper with an absolute canonical path, cleared environment, minimal <code>PATH</code>, bounded output, and operation timeouts.</li>
           <li><code>whoathere vm release-plan</code> classifies artifact risk and returns model verdict exit codes, but explicitly does not authorize runtime execution or sync-back.</li>
           <li><code>whoathere vm canaries</code> lists fake credential classes for npm, PyPI, GitHub, SSH, cloud, Kubernetes, Vault, env files, and AI-tool auth.</li>
           <li><code>whoathere vm sync-policy</code> documents deny-by-default sync-back rules, evidence requirements, and external scanner adapters.</li>
@@ -1298,7 +1301,8 @@
           <code>bundle/image.manifest</code>, <code>bundle/disk.img</code>,
           <code>bundle/auxiliary-storage</code>, <code>bundle/hardware-model.bin</code>,
           <code>bundle/machine-identifier.bin</code>, <code>bundle/runtime.json</code>,
-          <code>bundle/health.json</code>, <code>logs/</code>, <code>runs/</code>,
+          <code>bundle/health.json</code>, <code>bundle/runtime.pid</code>,
+          <code>bundle/saved-state.bin</code>, <code>logs/</code>, <code>runs/</code>,
           <code>cache/</code>, <code>reports/</code>, and <code>overlays/</code>.
         </p>
 

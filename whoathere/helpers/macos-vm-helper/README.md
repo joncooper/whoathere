@@ -7,8 +7,9 @@ Current state:
 
 - Builds on Apple Silicon macOS with Swift Package Manager.
 - Reports helper and host readiness as JSON.
-- Initializes a managed VM bundle from an explicit local installed disk image.
+- Initializes a managed disk-import bundle from an explicit local disk image.
 - Writes bundle config, disk copy, and image manifest metadata.
+- Keeps disk-import bundles non-ready until auxiliary storage, hardware model, machine identifier metadata, and real signature verification exist.
 - Keeps high-risk package execution disabled.
 - Fails closed for start and health until Virtualization metadata, signature verification, and persistent VM runtime are implemented.
 
@@ -33,8 +34,10 @@ The `init --execute` command requires one of:
 --restore-image <macos-restore.ipsw>
 ```
 
-The current goal slice supports `--image` bundle import. Restore-image installation is a planned
-next step and currently returns `restore_image_install_path_not_implemented`.
+The current goal slice supports `--image` disk import only. A disk image alone is not a bootable
+macOS VM bundle. Restore-image installation is the planned path for producing the required
+auxiliary storage, hardware model, and machine identifier metadata; it currently returns
+`restore_image_install_path_not_implemented`.
 
 Rust CLI integration:
 
@@ -42,6 +45,9 @@ Rust CLI integration:
 export WHOATHERE_MACOS_VM_HELPER=/absolute/path/to/.build/debug/whoathere-macos-vm-helper
 cargo run --manifest-path whoathere/Cargo.toml -p whoathere-cli -- vm status --json
 ```
+
+The Rust CLI launches the helper with a cleared environment, a minimal `PATH`, bounded output,
+and operation timeouts. Helper status is diagnostic and never authorizes package execution.
 
 Security boundaries:
 

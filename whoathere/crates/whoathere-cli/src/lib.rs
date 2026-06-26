@@ -1,5 +1,8 @@
+use std::io::Read;
 use std::path::PathBuf;
-use std::process::Command as ProcessCommand;
+use std::process::{Command as ProcessCommand, Stdio};
+use std::thread::sleep;
+use std::time::{Duration, Instant};
 
 use whoathere_admission::AdmissionController;
 use whoathere_audit::{
@@ -1702,13 +1705,15 @@ struct MacosVmHelperOutput {
     exit_code: Option<i32>,
     stdout: String,
     stderr: String,
+    stdout_truncated: bool,
+    stderr_truncated: bool,
     reason_codes: Vec<String>,
 }
 
 impl MacosVmHelperOutput {
     fn render_text(&self) -> String {
         format!(
-            "helper_path={}\nhelper_available={}\nhelper_exit_code={}\nhelper_reason_codes={:?}\nhelper_stdout={}\nhelper_stderr={}",
+            "helper_path={}\nhelper_available={}\nhelper_exit_code={}\nhelper_reason_codes={:?}\nhelper_stdout_truncated={}\nhelper_stderr_truncated={}\nhelper_stdout={}\nhelper_stderr={}",
             self.configured_path
                 .as_deref()
                 .map(redacted_scalar)
@@ -1718,6 +1723,8 @@ impl MacosVmHelperOutput {
                 .map(|code| code.to_string())
                 .unwrap_or_else(|| "none".to_string()),
             self.reason_codes,
+            self.stdout_truncated,
+            self.stderr_truncated,
             single_line(&redacted_scalar(&self.stdout)),
             single_line(&redacted_scalar(&self.stderr))
         )
@@ -1737,47 +1744,165 @@ fn run_macos_vm_helper(
             exit_code: Some(ExitCode::Misuse.code()),
             stdout: String::new(),
             stderr: String::new(),
+            stdout_truncated: false,
+            stderr_truncated: false,
             reason_codes: vec!["macos_vm_helper_path_not_configured".to_string()],
         };
     };
-    if !path.is_file() {
+    if !path.is_absolute() {
         return MacosVmHelperOutput {
             configured_path: Some(path.display().to_string()),
             available: false,
             exit_code: Some(ExitCode::Misuse.code()),
             stdout: String::new(),
             stderr: String::new(),
+            stdout_truncated: false,
+            stderr_truncated: false,
+            reason_codes: vec!["macos_vm_helper_path_not_absolute".to_string()],
+        };
+    }
+    let Ok(canonical_path) = path.canonicalize() else {
+        return MacosVmHelperOutput {
+            configured_path: Some(path.display().to_string()),
+            available: false,
+            exit_code: Some(ExitCode::Misuse.code()),
+            stdout: String::new(),
+            stderr: String::new(),
+            stdout_truncated: false,
+            stderr_truncated: false,
             reason_codes: vec!["macos_vm_helper_not_found".to_string()],
+        };
+    };
+    if !canonical_path.is_file() {
+        return MacosVmHelperOutput {
+            configured_path: Some(canonical_path.display().to_string()),
+            available: false,
+            exit_code: Some(ExitCode::Misuse.code()),
+            stdout: String::new(),
+            stderr: String::new(),
+            stdout_truncated: false,
+            stderr_truncated: false,
+            reason_codes: vec!["macos_vm_helper_not_file".to_string()],
         };
     }
 
     let mut args = vec![operation.to_string()];
     args.extend(operation_args.iter().cloned());
-    match ProcessCommand::new(path).args(&args).output() {
-        Ok(output) => MacosVmHelperOutput {
-            configured_path: Some(path.display().to_string()),
-            available: true,
-            exit_code: output
-                .status
-                .code()
-                .or(Some(ExitCode::InternalError.code())),
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-            reason_codes: if output.status.success() {
-                Vec::new()
-            } else {
-                vec!["macos_vm_helper_command_failed".to_string()]
-            },
-        },
+    let mut command = ProcessCommand::new(&canonical_path);
+    command
+        .args(&args)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    match command.spawn() {
+        Ok(mut child) => {
+            let stdout_reader = spawn_limited_reader(child.stdout.take());
+            let stderr_reader = spawn_limited_reader(child.stderr.take());
+            let timeout = macos_vm_helper_timeout(operation);
+            let deadline = Instant::now() + timeout;
+            let mut timed_out = false;
+            let status = loop {
+                match child.try_wait() {
+                    Ok(Some(status)) => break Some(status),
+                    Ok(None) if Instant::now() >= deadline => {
+                        timed_out = true;
+                        let _ = child.kill();
+                        break child.wait().ok();
+                    }
+                    Ok(None) => sleep(Duration::from_millis(25)),
+                    Err(_) => break None,
+                }
+            };
+            let (stdout, stdout_truncated) = join_limited_reader(stdout_reader);
+            let (stderr, stderr_truncated) = join_limited_reader(stderr_reader);
+            let mut reason_codes = Vec::new();
+            if timed_out {
+                reason_codes.push("macos_vm_helper_timeout".to_string());
+            } else if !status.map(|status| status.success()).unwrap_or(false) {
+                reason_codes.push("macos_vm_helper_command_failed".to_string());
+            }
+            if stdout_truncated {
+                reason_codes.push("macos_vm_helper_stdout_truncated".to_string());
+            }
+            if stderr_truncated {
+                reason_codes.push("macos_vm_helper_stderr_truncated".to_string());
+            }
+            MacosVmHelperOutput {
+                configured_path: Some(canonical_path.display().to_string()),
+                available: true,
+                exit_code: status
+                    .and_then(|status| status.code())
+                    .or(Some(ExitCode::InternalError.code())),
+                stdout,
+                stderr,
+                stdout_truncated,
+                stderr_truncated,
+                reason_codes,
+            }
+        }
         Err(error) => MacosVmHelperOutput {
-            configured_path: Some(path.display().to_string()),
+            configured_path: Some(canonical_path.display().to_string()),
             available: true,
             exit_code: Some(ExitCode::InternalError.code()),
             stdout: String::new(),
             stderr: error.to_string(),
+            stdout_truncated: false,
+            stderr_truncated: false,
             reason_codes: vec!["macos_vm_helper_spawn_failed".to_string()],
         },
     }
+}
+
+fn macos_vm_helper_timeout(operation: &str) -> Duration {
+    match operation {
+        "init" => Duration::from_secs(4 * 60 * 60),
+        "start" | "suspend" | "reset" | "prune" => Duration::from_secs(60),
+        _ => Duration::from_secs(15),
+    }
+}
+
+const MACOS_VM_HELPER_OUTPUT_LIMIT: usize = 64 * 1024;
+
+fn spawn_limited_reader<T: Read + Send + 'static>(
+    pipe: Option<T>,
+) -> Option<std::thread::JoinHandle<(String, bool)>> {
+    pipe.map(|pipe| std::thread::spawn(move || read_limited_utf8(Some(pipe))))
+}
+
+fn join_limited_reader(reader: Option<std::thread::JoinHandle<(String, bool)>>) -> (String, bool) {
+    reader
+        .and_then(|reader| reader.join().ok())
+        .unwrap_or_else(|| (String::new(), false))
+}
+
+fn read_limited_utf8<T: Read>(pipe: Option<T>) -> (String, bool) {
+    let Some(mut pipe) = pipe else {
+        return (String::new(), false);
+    };
+    let mut output = Vec::new();
+    let mut buffer = [0_u8; 4096];
+    let mut truncated = false;
+    loop {
+        match pipe.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(count) => {
+                let remaining = MACOS_VM_HELPER_OUTPUT_LIMIT.saturating_sub(output.len());
+                if remaining == 0 {
+                    truncated = true;
+                    break;
+                }
+                let keep = remaining.min(count);
+                output.extend_from_slice(&buffer[..keep]);
+                if keep < count {
+                    truncated = true;
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    (String::from_utf8_lossy(&output).into_owned(), truncated)
 }
 
 fn configured_macos_vm_helper_path(helper_path: Option<&str>) -> Option<PathBuf> {
@@ -1806,7 +1931,7 @@ fn render_vm_status_json(
     helper: &MacosVmHelperOutput,
 ) -> String {
     format!(
-        "{{\n  \"command\": \"whoathere vm status\",\n  \"schema_version\": {},\n  \"release_target\": {},\n  \"target_arch\": {},\n  \"vm_boundary\": {},\n  \"network_model\": {},\n  \"sync_policy\": {},\n  \"state_dir\": {},\n  \"host_os\": {},\n  \"host_arch\": {},\n  \"memory_mib\": {},\n  \"disk_gib\": {},\n  \"auto_suspend_minutes\": {},\n  \"state_dir_exists\": {},\n  \"manifest_path\": {},\n  \"manifest_present\": {},\n  \"manifest_valid\": {},\n  \"helper_ready_marker_present\": {},\n  \"image_ready_marker_present\": {},\n  \"ready\": {},\n  \"reason_codes\": [{}],\n  \"manifest_load_reason\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {}\n}}",
+        "{{\n  \"command\": \"whoathere vm status\",\n  \"schema_version\": {},\n  \"release_target\": {},\n  \"target_arch\": {},\n  \"vm_boundary\": {},\n  \"network_model\": {},\n  \"sync_policy\": {},\n  \"state_dir\": {},\n  \"host_os\": {},\n  \"host_arch\": {},\n  \"memory_mib\": {},\n  \"disk_gib\": {},\n  \"auto_suspend_minutes\": {},\n  \"state_dir_exists\": {},\n  \"manifest_path\": {},\n  \"manifest_present\": {},\n  \"manifest_valid\": {},\n  \"helper_ready_marker_present\": {},\n  \"image_ready_marker_present\": {},\n  \"ready\": {},\n  \"reason_codes\": [{}],\n  \"manifest_load_reason\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout_truncated\": {},\n  \"helper_stderr_truncated\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {}\n}}",
         json_string(status.schema_version),
         json_string(status.release_target),
         json_string(status.target_arch),
@@ -1846,6 +1971,8 @@ fn render_vm_status_json(
             .map(|code| code.to_string())
             .unwrap_or_else(|| "null".to_string()),
         json_string_array(&helper.reason_codes),
+        helper.stdout_truncated,
+        helper.stderr_truncated,
         json_string(&single_line(&redacted_scalar(&helper.stdout))),
         json_string(&single_line(&redacted_scalar(&helper.stderr)))
     )
@@ -1899,7 +2026,7 @@ fn render_doctor(json: bool, helper_path: Option<&str>) -> String {
             .collect::<Vec<_>>()
             .join(", ");
         return format!(
-            "{{\n  \"command\": \"whoathere doctor\",\n  \"status\": \"ok\",\n  \"release_target\": {},\n  \"release_claim\": {},\n  \"sandbox_label\": {},\n  \"high_risk_allowed\": {},\n  \"vm_ready\": {},\n  \"vm_reason_codes\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {},\n  \"scanner_available_count\": {},\n  \"scanner_required_count\": {},\n  \"scanners\": [{}]\n}}",
+            "{{\n  \"command\": \"whoathere doctor\",\n  \"status\": \"ok\",\n  \"release_target\": {},\n  \"release_claim\": {},\n  \"sandbox_label\": {},\n  \"high_risk_allowed\": {},\n  \"vm_ready\": {},\n  \"vm_reason_codes\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout_truncated\": {},\n  \"helper_stderr_truncated\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {},\n  \"scanner_available_count\": {},\n  \"scanner_required_count\": {},\n  \"scanners\": [{}]\n}}",
             json_string(RELEASE_TARGET),
             json_string(RELEASE_CLAIM),
             json_string(plan.label),
@@ -1917,6 +2044,8 @@ fn render_doctor(json: bool, helper_path: Option<&str>) -> String {
                 .map(|code| code.to_string())
                 .unwrap_or_else(|| "null".to_string()),
             json_string_array(&helper.reason_codes),
+            helper.stdout_truncated,
+            helper.stderr_truncated,
             json_string(&single_line(&redacted_scalar(&helper.stdout))),
             json_string(&single_line(&redacted_scalar(&helper.stderr))),
             scanner_available,
@@ -6378,6 +6507,46 @@ mod tests {
         assert!(result.output.contains("helper_exit_code=20"));
         assert!(result.output.contains("fixture_bundle_missing"));
         assert!(result.output.contains("ready=false"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vm_helper_invocation_rejects_relative_path() {
+        let result = evaluate_command(Command::VmStatus {
+            state_dir: Some("/tmp/whoathere-vm-relative-helper".to_string()),
+            manifest_path: None,
+            helper_path: Some("relative-helper".to_string()),
+            json: false,
+        });
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result.output.contains("macos_vm_helper_path_not_absolute"));
+        assert!(result.output.contains("helper_available=false"));
+    }
+
+    #[test]
+    fn vm_helper_invocation_clears_host_environment() {
+        let root = temp_root("whoathere-cli-vm-helper-env");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("temp root");
+        let helper = root.join("helper.sh");
+        write_new_file(&helper, b"#!/bin/sh\n/usr/bin/env\nexit 0\n").expect("helper script");
+        set_executable(&helper).expect("executable helper");
+
+        let result = evaluate_command(Command::VmStatus {
+            state_dir: Some(root.join("state").display().to_string()),
+            manifest_path: None,
+            helper_path: Some(helper.display().to_string()),
+            json: false,
+        });
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result.output.contains("helper_available=true"));
+        assert!(result.output.contains("PATH="));
+        assert!(!result.output.contains("HOME="));
+        assert!(!result.output.contains("SSH_AUTH_SOCK="));
+        assert!(!result.output.contains("AWS_SECRET_ACCESS_KEY="));
 
         let _ = std::fs::remove_dir_all(&root);
     }
