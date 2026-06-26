@@ -52,12 +52,13 @@ it into the WhoaThere state cache before installation:
 ```
 
 This performs build, test, sign, restore-image install, creation of a read-only guest tools DMG,
-and status. If `bundle/guest-provisioning.json` is missing, it stops fail-closed with the exact
+and status. On rerun, it reuses a complete existing VM bundle instead of reinstalling macOS. If
+`bundle/guest-provisioning.json` is missing, it stops fail-closed with the exact
 `sudo ./scripts/provision-guest-readiness.sh ...` command to run while the VM is stopped. After
 that provisioning receipt exists, rerunning the validation continues through start, health, suspend,
 and final status. It creates a large local VM disk under `~/.whoathere/macos-vm-validation` unless
 a second state-directory argument is supplied. The `--fetch-latest-restore-image` mode also
-downloads a large IPSW into that state directory's cache.
+downloads a large IPSW into that state directory's cache when no complete bundle already exists.
 
 For local resource tuning, set `WHOATHERE_VM_DISK_GIB` or `WHOATHERE_VM_MEMORY_MIB` before running
 the validation script. Restore-backed macOS bundles currently use a 64 GiB disk by default, and the

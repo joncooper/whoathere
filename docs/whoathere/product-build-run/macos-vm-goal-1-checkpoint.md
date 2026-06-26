@@ -28,7 +28,7 @@ detonation, or sync-back execution.
 - Added `scripts/provision-guest-readiness.sh`, an admin-required offline provisioning path that compiles the guest agent, mounts the stopped VM disk with ownership enabled, installs a root-owned LaunchDaemon, writes `bundle/guest-provisioning.json`, and avoids host home, secrets, workspaces, package-manager state, and sync-back.
 - Non-root-owned offline LaunchDaemon provisioning was tested and did not produce a guest proof; root-owned provisioning requires a local `sudo` run outside this Codex session.
 - Added a helper entitlement plist and local signing script for `com.apple.security.virtualization`.
-- Added a local IPSW validation script that runs build, test, sign, restore-image install, guest-tools packaging, status, and then stops fail-closed with the exact provisioning command when `bundle/guest-provisioning.json` is missing.
+- Added a local IPSW validation script that runs build, test, sign, restore-image install or existing-bundle reuse, guest-tools packaging, status, and then stops fail-closed with the exact provisioning command when `bundle/guest-provisioning.json` is missing.
 - Helper `status` reports missing bundle/config/manifest/disk/auxiliary storage/hardware model/machine identifier/signature proof and guest provisioning receipt independently.
 - Helper `start` and `health` fail closed until the VM has real Virtualization metadata, signature verification, persistent runtime management, and guest readiness proof.
 - Rust CLI accepts `--helper <path>` or `WHOATHERE_MACOS_VM_HELPER` for VM and doctor commands.
