@@ -79,6 +79,31 @@ import Testing
     #expect(options.execute)
 }
 
+@Test func parsesDetonationArguments() throws {
+    let options = try parseArguments([
+        "detonate",
+        "--state-dir", "/tmp/whoathere-vm",
+        "--tool=npm",
+        "--command-class", "npm_install_detonation",
+        "--fixture", "clean_npm_lifecycle",
+        "--timeout-seconds=45",
+        "--execute",
+        "--json",
+        "--",
+        "ci"
+    ])
+
+    #expect(options.command == .detonate)
+    #expect(options.stateDir == "/tmp/whoathere-vm")
+    #expect(options.detonationTool == "npm")
+    #expect(options.detonationCommandClass == "npm_install_detonation")
+    #expect(options.detonationFixture == "clean_npm_lifecycle")
+    #expect(options.detonationTimeoutSeconds == 45)
+    #expect(options.detonationArgs == ["ci"])
+    #expect(options.execute)
+    #expect(options.json)
+}
+
 @Test func guestHealthProofAcceptsMatchingRuntimeHostAndGuestEvidence() {
     let runtime = runtimeState()
     let host = hostProof()

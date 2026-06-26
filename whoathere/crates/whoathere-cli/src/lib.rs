@@ -1,5 +1,5 @@
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Stdio};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
@@ -115,6 +115,17 @@ pub enum Command {
         state_dir: Option<String>,
         helper_path: Option<String>,
         execute: bool,
+    },
+    VmDetonate {
+        tool: String,
+        args: Vec<String>,
+        execute: bool,
+        state_dir: Option<String>,
+        helper_path: Option<String>,
+        workspace: Option<String>,
+        fixture: Option<String>,
+        timeout_seconds: Option<u64>,
+        json: bool,
     },
     VmReleasePlan {
         artifact_class: Option<String>,
@@ -589,6 +600,7 @@ pub fn parse_command(args: &[String]) -> Command {
                 execute: rest.iter().any(|arg| arg == "--execute"),
             }
         }
+        [cmd, sub, rest @ ..] if cmd == "vm" && sub == "detonate" => parse_vm_detonate(rest),
         [cmd, sub, rest @ ..] if cmd == "vm" && sub == "release-plan" => Command::VmReleasePlan {
             artifact_class: parse_flag_value(rest, "--class"),
             ecosystem: parse_flag_value(rest, "--ecosystem"),
@@ -726,6 +738,27 @@ fn render_command_text(command: Command) -> String {
             helper_path.as_deref(),
             execute,
         ),
+        Command::VmDetonate {
+            tool,
+            args,
+            execute,
+            state_dir,
+            helper_path,
+            workspace,
+            fixture,
+            timeout_seconds,
+            json,
+        } => render_vm_detonate(VmDetonateRenderArgs {
+            tool: &tool,
+            args: &args,
+            execute,
+            state_dir: state_dir.as_deref(),
+            helper_path: helper_path.as_deref(),
+            workspace: workspace.as_deref(),
+            fixture: fixture.as_deref(),
+            timeout_seconds,
+            json,
+        }),
         Command::VmReleasePlan {
             artifact_class,
             ecosystem,
@@ -1102,6 +1135,7 @@ fn command_help() -> String {
         "|vm init [--state-dir <dir>] [--manifest <path>] [--helper <path>] [--image <path>|--restore-image <path>|--fetch-latest-restore-image] [--memory-mib <n>] [--disk-gib <n>] [--execute]",
         "|vm start|suspend|reset|prune [--state-dir <dir>] [--helper <path>] [--execute]",
         "|vm health [--state-dir <dir>] [--helper <path>]",
+        "|vm detonate [--workspace <path>] [--state-dir <dir>] [--helper <path>] [--fixture <name>] [--timeout-seconds <n>] [--execute] [--json] npm|pip|uv -- <args>",
         "|vm release-plan [--class <class>|--ecosystem <name> --source <kind> --filename <name>] [--vm-ready --static-clean --dynamic-clean --egress-clean --no-canary-access --scanner-clean --diff-clean --freshness-allowed] [--json]",
         "|vm canaries [--json]",
         "|vm sync-policy [--json]",
@@ -1259,6 +1293,96 @@ fn parse_launch_plan(args: &[String]) -> Command {
         runtime_dir,
         containment_available,
         egress_enforced,
+    }
+}
+
+fn parse_vm_detonate(args: &[String]) -> Command {
+    let mut execute = false;
+    let mut json = false;
+    let mut state_dir = None;
+    let mut helper_path = None;
+    let mut workspace = None;
+    let mut fixture = None;
+    let mut timeout_seconds = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--execute" => {
+                execute = true;
+                index += 1;
+            }
+            "--json" => {
+                json = true;
+                index += 1;
+            }
+            "--state-dir" => {
+                state_dir = args.get(index + 1).cloned();
+                index += 2;
+            }
+            value if value.starts_with("--state-dir=") => {
+                state_dir = Some(value.trim_start_matches("--state-dir=").to_string());
+                index += 1;
+            }
+            "--helper" => {
+                helper_path = args.get(index + 1).cloned();
+                index += 2;
+            }
+            value if value.starts_with("--helper=") => {
+                helper_path = Some(value.trim_start_matches("--helper=").to_string());
+                index += 1;
+            }
+            "--workspace" => {
+                workspace = args.get(index + 1).cloned();
+                index += 2;
+            }
+            value if value.starts_with("--workspace=") => {
+                workspace = Some(value.trim_start_matches("--workspace=").to_string());
+                index += 1;
+            }
+            "--fixture" => {
+                fixture = args.get(index + 1).cloned();
+                index += 2;
+            }
+            value if value.starts_with("--fixture=") => {
+                fixture = Some(value.trim_start_matches("--fixture=").to_string());
+                index += 1;
+            }
+            "--timeout-seconds" => {
+                timeout_seconds = args.get(index + 1).and_then(|value| value.parse().ok());
+                index += 2;
+            }
+            value if value.starts_with("--timeout-seconds=") => {
+                timeout_seconds = value.trim_start_matches("--timeout-seconds=").parse().ok();
+                index += 1;
+            }
+            value if value.starts_with("--") => return Command::Help,
+            _ => break,
+        }
+    }
+
+    let Some(tool) = args.get(index).cloned() else {
+        return Command::Help;
+    };
+    if !matches!(tool.as_str(), "npm" | "pip" | "uv") {
+        return Command::Help;
+    }
+    let remaining = &args[index + 1..];
+    let command_args = if matches!(remaining.first(), Some(separator) if separator == "--") {
+        remaining[1..].to_vec()
+    } else {
+        remaining.to_vec()
+    };
+
+    Command::VmDetonate {
+        tool,
+        args: command_args,
+        execute,
+        state_dir,
+        helper_path,
+        workspace,
+        fixture,
+        timeout_seconds,
+        json,
     }
 }
 
@@ -1708,6 +1832,438 @@ fn render_vm_action(
         config.state_dir.display(),
         execute,
         ExitCode::Allow.code()
+    )
+}
+
+struct VmDetonateRenderArgs<'a> {
+    tool: &'a str,
+    args: &'a [String],
+    execute: bool,
+    state_dir: Option<&'a str>,
+    helper_path: Option<&'a str>,
+    workspace: Option<&'a str>,
+    fixture: Option<&'a str>,
+    timeout_seconds: Option<u64>,
+    json: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DetonationMirrorPlan {
+    workspace_configured: bool,
+    workspace_path: Option<String>,
+    allowed_file_count: usize,
+    secret_exclusion_count: usize,
+    symlink_escape_count: usize,
+    total_allowed_bytes: u64,
+    file_classes: Vec<String>,
+    reason_codes: Vec<String>,
+}
+
+impl DetonationMirrorPlan {
+    fn unconfigured() -> Self {
+        Self {
+            workspace_configured: false,
+            workspace_path: None,
+            allowed_file_count: 0,
+            secret_exclusion_count: 0,
+            symlink_escape_count: 0,
+            total_allowed_bytes: 0,
+            file_classes: Vec::new(),
+            reason_codes: vec!["detonation_workspace_not_configured".to_string()],
+        }
+    }
+}
+
+fn render_vm_detonate(args: VmDetonateRenderArgs<'_>) -> String {
+    let config = macos_vm_config(args.state_dir, None, None);
+    let timeout_seconds = args.timeout_seconds.unwrap_or(120);
+    let command_class = detonation_command_class(args.tool, args.args);
+    let mirror_plan = args
+        .workspace
+        .map(build_detonation_mirror_plan)
+        .unwrap_or_else(DetonationMirrorPlan::unconfigured);
+    let canary_categories = default_canaries()
+        .iter()
+        .map(|canary| canary.category.to_string())
+        .collect::<Vec<_>>();
+    let mut reason_codes = mirror_plan.reason_codes.clone();
+    reason_codes.push("detonation_sync_back_disabled_goal_2".to_string());
+    reason_codes.push("detonation_host_package_execution_disabled".to_string());
+    if !args.execute {
+        reason_codes.push("detonation_execute_required_for_vm_run".to_string());
+    }
+    if command_class == "unsupported_detonation" {
+        reason_codes.push("detonation_workflow_unsupported".to_string());
+    }
+    reason_codes.sort();
+    reason_codes.dedup();
+
+    let helper = if args.execute {
+        let mut helper_args = vec![
+            "--state-dir".to_string(),
+            config.state_dir.display().to_string(),
+            "--tool".to_string(),
+            args.tool.to_string(),
+            "--command-class".to_string(),
+            command_class.to_string(),
+            "--timeout-seconds".to_string(),
+            timeout_seconds.to_string(),
+            "--execute".to_string(),
+            "--json".to_string(),
+        ];
+        if let Some(fixture) = args.fixture {
+            helper_args.push("--fixture".to_string());
+            helper_args.push(fixture.to_string());
+        }
+        if !args.args.is_empty() {
+            helper_args.push("--".to_string());
+            helper_args.extend(args.args.iter().cloned());
+        }
+        Some(run_macos_vm_helper(
+            args.helper_path,
+            "detonate",
+            &helper_args,
+        ))
+    } else {
+        None
+    };
+    let helper_exit_code = helper
+        .as_ref()
+        .and_then(|helper| helper.exit_code)
+        .unwrap_or_else(|| ExitCode::Allow.code());
+    let final_exit_code = if args.execute {
+        helper_exit_code
+    } else {
+        ExitCode::Allow.code()
+    };
+    let verdict = if !args.execute {
+        "dry_run_execute_required"
+    } else if final_exit_code == ExitCode::Allow.code() {
+        "helper_observed_clean"
+    } else if final_exit_code == ExitCode::Deny.code()
+        || final_exit_code == ExitCode::ManualReview.code()
+    {
+        "helper_security_outcome"
+    } else {
+        "helper_error_fail_closed"
+    };
+
+    if args.json {
+        let helper_json = helper
+            .as_ref()
+            .map(render_vm_helper_json)
+            .unwrap_or_else(|| "null".to_string());
+        return format!(
+            "{{\n  \"command\": \"whoathere vm detonate\",\n  \"schema_version\": \"whoathere.macos_vm.detonation.v1\",\n  \"release_target\": {},\n  \"vm_boundary\": {},\n  \"network_model\": {},\n  \"sync_back_enabled\": false,\n  \"host_package_execution_enabled\": false,\n  \"high_risk_package_execution_enabled\": false,\n  \"mutation_requested\": {},\n  \"state_dir\": {},\n  \"tool\": {},\n  \"command_class\": {},\n  \"argv\": {},\n  \"fixture\": {},\n  \"timeout_seconds\": {},\n  \"workspace\": {},\n  \"mirror_plan\": {},\n  \"canary_categories\": {},\n  \"verdict\": {},\n  \"reason_codes\": {},\n  \"helper\": {},\n  \"exit_code\": {}\n}}",
+            json_string(RELEASE_TARGET),
+            json_string(VM_BOUNDARY),
+            json_string(NETWORK_MODEL),
+            args.execute,
+            json_string(&config.state_dir.display().to_string()),
+            json_string(args.tool),
+            json_string(command_class),
+            json_string_array(
+                &args
+                    .args
+                    .iter()
+                    .map(|arg| redacted_scalar(arg))
+                    .collect::<Vec<_>>()
+            ),
+            args.fixture
+                .map(json_string)
+                .unwrap_or_else(|| "null".to_string()),
+            timeout_seconds,
+            args.workspace
+                .map(redacted_scalar)
+                .map(|value| json_string(&value))
+                .unwrap_or_else(|| "null".to_string()),
+            render_detonation_mirror_plan_json(&mirror_plan),
+            json_string_array(&canary_categories),
+            json_string(verdict),
+            json_string_array(&reason_codes),
+            helper_json,
+            final_exit_code
+        );
+    }
+
+    let helper_text = helper
+        .as_ref()
+        .map(|helper| helper.render_text())
+        .unwrap_or_else(|| "helper_invoked=false".to_string());
+    format!(
+        "whoathere vm detonate\nschema_version=whoathere.macos_vm.detonation.v1\nrelease_target={}\nvm_boundary={}\nnetwork_model={}\nsync_back_enabled=false\nhost_package_execution_enabled=false\nhigh_risk_package_execution_enabled=false\nmutation_requested={}\nstate_dir={}\ntool={}\ncommand_class={}\nargv={:?}\nfixture={}\ntimeout_seconds={}\nworkspace={}\nmirror_workspace_configured={}\nmirror_allowed_file_count={}\nmirror_secret_exclusion_count={}\nmirror_symlink_escape_count={}\nmirror_total_allowed_bytes={}\nmirror_file_classes={:?}\nmirror_reason_codes={:?}\ncanary_categories={:?}\nverdict={}\nreason_codes={:?}\n{}\nexit_code={}",
+        RELEASE_TARGET,
+        VM_BOUNDARY,
+        NETWORK_MODEL,
+        args.execute,
+        config.state_dir.display(),
+        args.tool,
+        command_class,
+        args.args
+            .iter()
+            .map(|arg| redacted_scalar(arg))
+            .collect::<Vec<_>>(),
+        args.fixture.unwrap_or("none"),
+        timeout_seconds,
+        args.workspace.map(redacted_scalar).unwrap_or_else(|| "none".to_string()),
+        mirror_plan.workspace_configured,
+        mirror_plan.allowed_file_count,
+        mirror_plan.secret_exclusion_count,
+        mirror_plan.symlink_escape_count,
+        mirror_plan.total_allowed_bytes,
+        mirror_plan.file_classes,
+        mirror_plan.reason_codes,
+        canary_categories,
+        verdict,
+        reason_codes,
+        helper_text,
+        final_exit_code
+    )
+}
+
+fn detonation_command_class(tool: &str, args: &[String]) -> &'static str {
+    match tool {
+        "npm" if args.iter().any(|arg| arg == "install" || arg == "ci") => "npm_install_detonation",
+        "npm" if args.iter().any(|arg| arg == "exec") => "npm_exec_detonation",
+        "npm" if args.iter().any(|arg| arg == "npx") => "npm_exec_detonation",
+        "pip" if args.iter().any(|arg| arg == "install") => "pip_install_detonation",
+        "uv" if args.iter().any(|arg| arg == "sync") => "uv_sync_detonation",
+        "uv" if args
+            .windows(2)
+            .any(|pair| pair[0] == "pip" && pair[1] == "install") =>
+        {
+            "uv_sync_detonation"
+        }
+        _ => "unsupported_detonation",
+    }
+}
+
+fn build_detonation_mirror_plan(workspace: &str) -> DetonationMirrorPlan {
+    let path = Path::new(workspace);
+    let canonical = match path.canonicalize() {
+        Ok(canonical) => canonical,
+        Err(_) => {
+            return DetonationMirrorPlan {
+                workspace_configured: true,
+                workspace_path: Some(redacted_scalar(workspace)),
+                allowed_file_count: 0,
+                secret_exclusion_count: 0,
+                symlink_escape_count: 0,
+                total_allowed_bytes: 0,
+                file_classes: Vec::new(),
+                reason_codes: vec!["detonation_workspace_not_found".to_string()],
+            };
+        }
+    };
+    if !canonical.is_dir() {
+        return DetonationMirrorPlan {
+            workspace_configured: true,
+            workspace_path: Some(redacted_scalar(workspace)),
+            allowed_file_count: 0,
+            secret_exclusion_count: 0,
+            symlink_escape_count: 0,
+            total_allowed_bytes: 0,
+            file_classes: Vec::new(),
+            reason_codes: vec!["detonation_workspace_not_directory".to_string()],
+        };
+    }
+
+    let mut plan = DetonationMirrorPlan {
+        workspace_configured: true,
+        workspace_path: Some(redacted_scalar(workspace)),
+        allowed_file_count: 0,
+        secret_exclusion_count: 0,
+        symlink_escape_count: 0,
+        total_allowed_bytes: 0,
+        file_classes: Vec::new(),
+        reason_codes: Vec::new(),
+    };
+    let mut stack = vec![canonical.clone()];
+    let mut visited = 0_usize;
+    while let Some(directory) = stack.pop() {
+        visited += 1;
+        if visited > 2048 {
+            push_unique(
+                &mut plan.reason_codes,
+                "detonation_workspace_scan_limit_reached",
+            );
+            break;
+        }
+        let Ok(entries) = std::fs::read_dir(&directory) else {
+            push_unique(
+                &mut plan.reason_codes,
+                "detonation_workspace_read_dir_failed",
+            );
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(metadata) = entry.metadata() else {
+                push_unique(
+                    &mut plan.reason_codes,
+                    "detonation_workspace_metadata_failed",
+                );
+                continue;
+            };
+            if is_secret_or_credential_path(&path) {
+                plan.secret_exclusion_count += 1;
+                continue;
+            }
+            let Ok(file_type) = entry.file_type() else {
+                push_unique(
+                    &mut plan.reason_codes,
+                    "detonation_workspace_file_type_failed",
+                );
+                continue;
+            };
+            if file_type.is_symlink() {
+                match std::fs::canonicalize(&path) {
+                    Ok(target) if target.starts_with(&canonical) => {}
+                    _ => {
+                        plan.symlink_escape_count += 1;
+                        push_unique(
+                            &mut plan.reason_codes,
+                            "detonation_workspace_symlink_escape_blocked",
+                        );
+                        continue;
+                    }
+                }
+            }
+            if metadata.is_dir() {
+                if should_skip_mirror_directory(&path) {
+                    continue;
+                }
+                stack.push(path);
+                continue;
+            }
+            if !metadata.is_file() {
+                continue;
+            }
+            if let Some(class) = allowed_mirror_input_class(&path) {
+                plan.allowed_file_count += 1;
+                plan.total_allowed_bytes = plan.total_allowed_bytes.saturating_add(metadata.len());
+                push_unique(&mut plan.file_classes, class);
+            }
+        }
+    }
+    if plan.allowed_file_count == 0 {
+        push_unique(
+            &mut plan.reason_codes,
+            "detonation_workspace_no_allowed_inputs",
+        );
+    }
+    plan.file_classes.sort();
+    plan.reason_codes.sort();
+    plan
+}
+
+fn allowed_mirror_input_class(path: &Path) -> Option<&'static str> {
+    let file_name = path.file_name()?.to_string_lossy().to_ascii_lowercase();
+    match file_name.as_str() {
+        "package.json" => Some("npm_manifest"),
+        "package-lock.json" | "npm-shrinkwrap.json" | "yarn.lock" | "pnpm-lock.yaml" => {
+            Some("npm_lockfile")
+        }
+        "pyproject.toml" | "setup.py" | "setup.cfg" => Some("python_build_config"),
+        "uv.lock" | "poetry.lock" => Some("python_lockfile"),
+        _ if file_name.starts_with("requirements") && file_name.ends_with(".txt") => {
+            Some("python_requirements")
+        }
+        _ if file_name.starts_with("constraints") && file_name.ends_with(".txt") => {
+            Some("python_constraints")
+        }
+        _ => None,
+    }
+}
+
+fn should_skip_mirror_directory(path: &Path) -> bool {
+    path.file_name()
+        .map(|name| {
+            matches!(
+                name.to_string_lossy().to_ascii_lowercase().as_str(),
+                ".git"
+                    | "node_modules"
+                    | ".venv"
+                    | "venv"
+                    | "__pycache__"
+                    | ".mypy_cache"
+                    | ".pytest_cache"
+                    | "target"
+                    | ".tox"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn is_secret_or_credential_path(path: &Path) -> bool {
+    path.components().any(|component| {
+        let value = component.as_os_str().to_string_lossy().to_ascii_lowercase();
+        matches!(
+            value.as_str(),
+            ".env"
+                | ".env.local"
+                | ".envrc"
+                | ".npmrc"
+                | ".pypirc"
+                | "pip.conf"
+                | "pip.ini"
+                | ".netrc"
+                | ".aws"
+                | ".azure"
+                | ".config"
+                | ".kube"
+                | ".ssh"
+                | "id_rsa"
+                | "id_ed25519"
+                | "known_hosts"
+                | ".git-credentials"
+                | ".gitconfig"
+                | ".docker"
+        )
+    })
+}
+
+fn push_unique(values: &mut Vec<String>, value: &str) {
+    if !values.iter().any(|existing| existing == value) {
+        values.push(value.to_string());
+    }
+}
+
+fn render_detonation_mirror_plan_json(plan: &DetonationMirrorPlan) -> String {
+    format!(
+        "{{\"workspace_configured\": {}, \"workspace_path\": {}, \"allowed_file_count\": {}, \"secret_exclusion_count\": {}, \"symlink_escape_count\": {}, \"total_allowed_bytes\": {}, \"file_classes\": {}, \"reason_codes\": {}}}",
+        plan.workspace_configured,
+        plan.workspace_path
+            .as_deref()
+            .map(json_string)
+            .unwrap_or_else(|| "null".to_string()),
+        plan.allowed_file_count,
+        plan.secret_exclusion_count,
+        plan.symlink_escape_count,
+        plan.total_allowed_bytes,
+        json_string_array(&plan.file_classes),
+        json_string_array(&plan.reason_codes)
+    )
+}
+
+fn render_vm_helper_json(helper: &MacosVmHelperOutput) -> String {
+    format!(
+        "{{\"path\": {}, \"available\": {}, \"exit_code\": {}, \"reason_codes\": {}, \"stdout_truncated\": {}, \"stderr_truncated\": {}, \"stdout\": {}, \"stderr\": {}}}",
+        helper
+            .configured_path
+            .as_deref()
+            .map(json_string)
+            .unwrap_or_else(|| "null".to_string()),
+        helper.available,
+        helper
+            .exit_code
+            .map(|code| code.to_string())
+            .unwrap_or_else(|| "null".to_string()),
+        json_string_array(&helper.reason_codes),
+        helper.stdout_truncated,
+        helper.stderr_truncated,
+        json_string(&single_line(&redacted_scalar(&helper.stdout))),
+        json_string(&single_line(&redacted_scalar(&helper.stderr)))
     )
 }
 
@@ -6687,6 +7243,141 @@ mod tests {
         assert!(!result.output.contains("<--execute>"));
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn parses_vm_detonate_command() {
+        let args = vec![
+            "vm".to_string(),
+            "detonate".to_string(),
+            "--workspace".to_string(),
+            "/work".to_string(),
+            "--state-dir=/tmp/whoathere-vm".to_string(),
+            "--helper".to_string(),
+            "/tmp/helper".to_string(),
+            "--fixture=clean_npm_lifecycle".to_string(),
+            "--timeout-seconds".to_string(),
+            "45".to_string(),
+            "--execute".to_string(),
+            "--json".to_string(),
+            "npm".to_string(),
+            "--".to_string(),
+            "ci".to_string(),
+        ];
+        assert_eq!(
+            parse_command(&args),
+            Command::VmDetonate {
+                tool: "npm".to_string(),
+                args: vec!["ci".to_string()],
+                execute: true,
+                state_dir: Some("/tmp/whoathere-vm".to_string()),
+                helper_path: Some("/tmp/helper".to_string()),
+                workspace: Some("/work".to_string()),
+                fixture: Some("clean_npm_lifecycle".to_string()),
+                timeout_seconds: Some(45),
+                json: true,
+            }
+        );
+    }
+
+    #[test]
+    fn vm_detonate_dry_run_never_invokes_helper_or_syncs() {
+        let root = temp_root("whoathere-cli-vm-detonate-dry-run");
+        std::fs::write(root.join("package.json"), r#"{"name":"clean"}"#).expect("package json");
+        std::fs::write(root.join(".env"), "TOKEN=real-secret").expect("env");
+        let result = evaluate_command(Command::VmDetonate {
+            tool: "npm".to_string(),
+            args: vec!["ci".to_string()],
+            execute: false,
+            state_dir: Some(root.join("state").display().to_string()),
+            helper_path: Some("/tmp/nonexistent-helper".to_string()),
+            workspace: Some(root.display().to_string()),
+            fixture: Some("clean_npm_lifecycle".to_string()),
+            timeout_seconds: Some(30),
+            json: false,
+        });
+        assert_eq!(result.exit_code, 0);
+        assert!(result.output.contains("sync_back_enabled=false"));
+        assert!(result
+            .output
+            .contains("host_package_execution_enabled=false"));
+        assert!(result
+            .output
+            .contains("high_risk_package_execution_enabled=false"));
+        assert!(result
+            .output
+            .contains("command_class=npm_install_detonation"));
+        assert!(result.output.contains("mirror_allowed_file_count=1"));
+        assert!(result.output.contains("mirror_secret_exclusion_count=1"));
+        assert!(result.output.contains("verdict=dry_run_execute_required"));
+        assert!(result.output.contains("helper_invoked=false"));
+        assert!(!result.output.contains("real-secret"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vm_detonate_execute_forwards_bounded_job_to_helper() {
+        let root = temp_root("whoathere-cli-vm-detonate-helper");
+        let helper = root.join("helper.sh");
+        write_new_file(
+            &helper,
+            b"#!/bin/sh\nprintf 'args='\nfor arg in \"$@\"; do printf '<%s>' \"$arg\"; done\nprintf '\\n'\nexit 20\n",
+        )
+        .expect("helper script");
+        set_executable(&helper).expect("executable helper");
+        let state_dir = root.join("state");
+        let result = evaluate_command(Command::VmDetonate {
+            tool: "pip".to_string(),
+            args: vec![
+                "install".to_string(),
+                "-r".to_string(),
+                "requirements.txt".to_string(),
+            ],
+            execute: true,
+            state_dir: Some(state_dir.display().to_string()),
+            helper_path: Some(helper.display().to_string()),
+            workspace: None,
+            fixture: Some("pypi_pep517_canary".to_string()),
+            timeout_seconds: Some(75),
+            json: false,
+        });
+        assert_eq!(result.exit_code, 20);
+        assert!(result.output.contains("mutation_requested=true"));
+        assert!(result
+            .output
+            .contains("command_class=pip_install_detonation"));
+        assert!(result.output.contains(&format!(
+            "<detonate><--state-dir><{}><--tool><pip><--command-class><pip_install_detonation><--timeout-seconds><75><--execute><--json><--fixture><pypi_pep517_canary><--><install><-r><requirements.txt>",
+            state_dir.display()
+        )));
+        assert!(result.output.contains("verdict=helper_security_outcome"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vm_detonation_mirror_blocks_symlink_escape() {
+        let root = temp_root("whoathere-cli-vm-detonate-symlink");
+        std::fs::write(root.join("package.json"), r#"{"name":"clean"}"#).expect("package json");
+        let outside = root.with_extension("outside");
+        let _ = std::fs::remove_dir_all(&outside);
+        std::fs::create_dir_all(&outside).expect("outside");
+        std::fs::write(outside.join("requirements.txt"), "private==1.0").expect("outside req");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(outside.join("requirements.txt"), root.join("escape.txt"))
+            .expect("symlink");
+
+        let plan = build_detonation_mirror_plan(&root.display().to_string());
+        assert_eq!(plan.allowed_file_count, 1);
+        #[cfg(unix)]
+        {
+            assert_eq!(plan.symlink_escape_count, 1);
+            assert!(plan
+                .reason_codes
+                .contains(&"detonation_workspace_symlink_escape_blocked".to_string()));
+        }
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&outside);
     }
 
     #[test]

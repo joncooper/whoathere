@@ -299,6 +299,8 @@ struct WhoaThereMacosVmHelper {
             prune(options)
         case .health:
             health(options)
+        case .detonate:
+            detonate(options)
         }
     }
 
@@ -1575,6 +1577,146 @@ struct WhoaThereMacosVmHelper {
                 "exit_code": 0
             ]) { _, new in new },
             exitCode: 0
+        )
+    }
+
+    private static func detonate(_ options: HelperOptions) {
+        let layout = BundleLayout(stateDir: stateDirURL(from: options))
+        if !options.execute {
+            emit(
+                fields: baseFields(status: "dry_run").merging([
+                    "operation": "detonate",
+                    "mutation": false,
+                    "sync_back_enabled": false,
+                    "host_package_execution_enabled": false,
+                    "high_risk_package_execution_enabled": false,
+                    "state_dir": layout.stateDir.path,
+                    "tool": options.detonationTool ?? "missing",
+                    "command_class": options.detonationCommandClass ?? "missing",
+                    "fixture": options.detonationFixture ?? "missing",
+                    "timeout_seconds": options.detonationTimeoutSeconds,
+                    "argv_count": options.detonationArgs.count,
+                    "reason_codes": ["execute_required_for_vm_detonation"],
+                    "exit_code": 0
+                ]) { _, new in new },
+                exitCode: 0
+            )
+        }
+        guard let tool = options.detonationTool, ["npm", "pip", "uv"].contains(tool) else {
+            emit(
+                fields: failClosedFields(
+                    layout: layout,
+                    reasons: ["detonation_tool_required_or_unsupported"],
+                    exitCode: 64
+                ).merging([
+                    "operation": "detonate",
+                    "sync_back_enabled": false,
+                    "host_package_execution_enabled": false,
+                    "high_risk_package_execution_enabled": false
+                ]) { _, new in new },
+                exitCode: 64
+            )
+        }
+        let commandClass = options.detonationCommandClass ?? "unsupported_detonation"
+        guard commandClass != "unsupported_detonation" else {
+            emit(
+                fields: failClosedFields(
+                    layout: layout,
+                    reasons: ["detonation_workflow_unsupported"],
+                    exitCode: 20
+                ).merging([
+                    "operation": "detonate",
+                    "tool": tool,
+                    "command_class": commandClass,
+                    "sync_back_enabled": false,
+                    "host_package_execution_enabled": false,
+                    "high_risk_package_execution_enabled": false,
+                    "verdict": "fail_closed_unsupported_workflow"
+                ]) { _, new in new },
+                exitCode: 20
+            )
+        }
+        guard let pid = readRuntimePID(layout), runtimeProcessIsAlive(pid) else {
+            emit(
+                fields: failClosedFields(
+                    layout: layout,
+                    reasons: ["runtime_process_not_running"],
+                    exitCode: 20
+                ).merging([
+                    "operation": "detonate",
+                    "tool": tool,
+                    "command_class": commandClass,
+                    "sync_back_enabled": false,
+                    "host_package_execution_enabled": false,
+                    "high_risk_package_execution_enabled": false,
+                    "verdict": "infrastructure_error_fail_closed"
+                ]) { _, new in new },
+                exitCode: 20
+            )
+        }
+        let healthReasons = runtimeHealthReasonCodes(layout: layout, pid: pid)
+        guard healthReasons.isEmpty else {
+            emit(
+                fields: failClosedFields(
+                    layout: layout,
+                    reasons: healthReasons,
+                    exitCode: 20
+                ).merging([
+                    "operation": "detonate",
+                    "tool": tool,
+                    "command_class": commandClass,
+                    "runtime_pid": Int(pid),
+                    "runtime_pid_alive": true,
+                    "sync_back_enabled": false,
+                    "host_package_execution_enabled": false,
+                    "high_risk_package_execution_enabled": false,
+                    "verdict": "infrastructure_error_fail_closed"
+                ]) { _, new in new },
+                exitCode: 20
+            )
+        }
+        emit(
+            fields: failClosedFields(
+                layout: layout,
+                reasons: ["guest_detonation_runner_not_implemented"],
+                exitCode: 20
+            ).merging([
+                "operation": "detonate",
+                "tool": tool,
+                "command_class": commandClass,
+                "fixture": options.detonationFixture ?? "missing",
+                "timeout_seconds": options.detonationTimeoutSeconds,
+                "argv_count": options.detonationArgs.count,
+                "sync_back_enabled": false,
+                "host_package_execution_enabled": false,
+                "high_risk_package_execution_enabled": false,
+                "verdict": "infrastructure_error_fail_closed"
+            ]) { _, new in new },
+            exitCode: 20
+        )
+    }
+
+    private static func runtimeHealthReasonCodes(layout: BundleLayout, pid: pid_t) -> [String] {
+        guard fileExists(layout.healthProofPath),
+              let runtimeState = readJSONObject(layout.runtimeStatePath),
+              let hostProof = readJSONObject(layout.healthProofPath),
+              intField(runtimeState, "runtime_pid") == Int(pid),
+              intField(hostProof, "runtime_pid") == Int(pid),
+              let sessionID = runtimeState["vm_session_id"] as? String,
+              hostProof["vm_session_id"] as? String == sessionID else {
+            return ["host_runtime_health_proof_missing_or_mismatched"]
+        }
+        guard let guestProof = readJSONObject(layout.guestHealthProofPath) else {
+            return ["guest_health_proof_missing_or_mismatched"]
+        }
+        return validateGuestHealthProof(
+            runtimeState: runtimeState,
+            hostProof: hostProof,
+            guestProof: guestProof,
+            runtimePID: Int(pid),
+            expectedHelperVersion: helperVersion,
+            expectedProtocol: guestReadinessProtocol,
+            expectedPort: Int(guestReadinessPort)
         )
     }
 

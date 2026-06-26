@@ -15,6 +15,7 @@ public enum HelperCommand: String, Sendable {
     case reset
     case prune
     case health
+    case detonate
 }
 
 public struct HelperOptions: Equatable, Sendable {
@@ -27,6 +28,11 @@ public struct HelperOptions: Equatable, Sendable {
     public var fetchLatestRestoreImage: Bool
     public var memoryMiB: UInt64
     public var diskGiB: UInt64
+    public var detonationTool: String?
+    public var detonationCommandClass: String?
+    public var detonationFixture: String?
+    public var detonationTimeoutSeconds: UInt64
+    public var detonationArgs: [String]
 
     public init(
         command: HelperCommand,
@@ -37,7 +43,12 @@ public struct HelperOptions: Equatable, Sendable {
         restoreImagePath: String? = nil,
         fetchLatestRestoreImage: Bool = false,
         memoryMiB: UInt64 = 6144,
-        diskGiB: UInt64 = defaultDiskGiB
+        diskGiB: UInt64 = defaultDiskGiB,
+        detonationTool: String? = nil,
+        detonationCommandClass: String? = nil,
+        detonationFixture: String? = nil,
+        detonationTimeoutSeconds: UInt64 = 120,
+        detonationArgs: [String] = []
     ) {
         self.command = command
         self.stateDir = stateDir
@@ -48,6 +59,11 @@ public struct HelperOptions: Equatable, Sendable {
         self.fetchLatestRestoreImage = fetchLatestRestoreImage
         self.memoryMiB = memoryMiB
         self.diskGiB = diskGiB
+        self.detonationTool = detonationTool
+        self.detonationCommandClass = detonationCommandClass
+        self.detonationFixture = detonationFixture
+        self.detonationTimeoutSeconds = detonationTimeoutSeconds
+        self.detonationArgs = detonationArgs
     }
 }
 
@@ -106,6 +122,17 @@ public func parseArguments(_ arguments: [String]) throws -> HelperOptions {
             options.memoryMiB = try integerValue(after: token, in: arguments, at: &index)
         case "--disk-gib":
             options.diskGiB = try integerValue(after: token, in: arguments, at: &index)
+        case "--tool":
+            options.detonationTool = try value(after: token, in: arguments, at: &index)
+        case "--command-class":
+            options.detonationCommandClass = try value(after: token, in: arguments, at: &index)
+        case "--fixture":
+            options.detonationFixture = try value(after: token, in: arguments, at: &index)
+        case "--timeout-seconds":
+            options.detonationTimeoutSeconds = try integerValue(after: token, in: arguments, at: &index)
+        case "--":
+            options.detonationArgs = Array(arguments[arguments.index(after: index)..<arguments.endIndex])
+            index = arguments.endIndex
         default:
             if let split = token.firstIndex(of: "="), token.starts(with: "--") {
                 let flag = String(token[..<split])
@@ -132,6 +159,17 @@ public func parseArguments(_ arguments: [String]) throws -> HelperOptions {
                         throw ArgumentError.invalidInteger(flag)
                     }
                     options.diskGiB = parsed
+                case "--tool":
+                    options.detonationTool = rawValue
+                case "--command-class":
+                    options.detonationCommandClass = rawValue
+                case "--fixture":
+                    options.detonationFixture = rawValue
+                case "--timeout-seconds":
+                    guard let parsed = UInt64(rawValue) else {
+                        throw ArgumentError.invalidInteger(flag)
+                    }
+                    options.detonationTimeoutSeconds = parsed
                 default:
                     throw ArgumentError.unknownFlag(flag)
                 }
