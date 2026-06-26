@@ -1271,9 +1271,12 @@
             machine identifier metadata, and real signature verification. The helper also has a
             local IPSW restore-image path that can create raw disk, auxiliary storage, hardware model,
             and machine identifier metadata when run as an entitled Apple Virtualization helper.
-            A persistent runtime scaffold can start the VM and write host-runtime health proof, but
-            guest health proof, detonation, egress recording, and sync-back remain deliberately
-            blocked until guest provisioning, signature verification, and runtime control pieces are implemented.
+            A persistent runtime scaffold can start the VM and write host-runtime health proof.
+            The helper now also exposes a vsock guest-readiness challenge and a tiny guest-agent
+            source artifact; <code>vm health</code> still fails closed until that guest proof is
+            produced for the current runtime session. Detonation, egress recording, and sync-back
+            remain deliberately blocked until guest provisioning, signature verification, and
+            runtime control pieces are implemented.
           </p>
         </div>
 
@@ -1291,7 +1294,8 @@
           <li><code>whoathere vm init --execute --helper &lt;path&gt; --image &lt;path&gt;</code> imports an explicit local disk image into the managed bundle and writes config plus manifest metadata, but does not make the bundle bootable or ready.</li>
           <li><code>whoathere vm init --execute --helper &lt;path&gt; --restore-image &lt;path&gt;</code> uses Apple Virtualization.framework restore-image APIs to install from a local IPSW and persist required VM metadata, subject to entitlement and host support.</li>
           <li><code>whoathere vm init --execute</code> without a helper or image fails closed with exact required inputs rather than creating placeholder readiness.</li>
-          <li><code>whoathere vm start</code>, <code>suspend</code>, <code>reset</code>, and <code>prune</code> delegate to the helper when configured; start requires bootable metadata and writes host-runtime health proof only.</li>
+          <li><code>whoathere vm start</code>, <code>suspend</code>, <code>reset</code>, and <code>prune</code> delegate to the helper when configured; start requires bootable metadata and writes host-runtime health proof, while <code>vm health</code> requires a matching guest vsock proof.</li>
+          <li>The helper includes a <code>whoathere.guest_ready.v1</code> vsock protocol and guest-agent source under <code>guest-agent/</code>; the agent must be built and run inside the guest before guest health is proven.</li>
           <li>The helper includes a <code>com.apple.security.virtualization</code> entitlement plist and local signing script for development validation.</li>
           <li>The Rust CLI invokes the helper with an absolute canonical path, cleared environment, minimal <code>PATH</code>, bounded output, and operation timeouts.</li>
           <li><code>whoathere vm release-plan</code> classifies artifact risk and returns model verdict exit codes, but explicitly does not authorize runtime execution or sync-back.</li>
@@ -1306,7 +1310,8 @@
           <code>bundle/image.manifest</code>, <code>bundle/disk.img</code>,
           <code>bundle/auxiliary-storage</code>, <code>bundle/hardware-model.bin</code>,
           <code>bundle/machine-identifier.bin</code>, <code>bundle/runtime.json</code>,
-          <code>bundle/health.json</code>, <code>bundle/runtime.pid</code>,
+          <code>bundle/health.json</code>, <code>bundle/guest-health.json</code>,
+          <code>bundle/runtime.pid</code>,
           <code>bundle/saved-state.bin</code>, <code>logs/</code>, <code>runs/</code>,
           <code>cache/</code>, <code>reports/</code>, and <code>overlays/</code>.
         </p>
@@ -1325,7 +1330,7 @@
           <li>Validate restore-image installation on the signed helper with a real local IPSW and record the release fixture.</li>
           <li>Implement real signature/notarization verification for the helper and image manifest.</li>
           <li>Validate persistent VM process management on a signed, entitled helper and add graceful guest stop plus saved-state suspend/resume.</li>
-          <li>Implement guest readiness proof over a guest-agent or equivalent provisioning channel.</li>
+          <li>Validate the guest-readiness vsock protocol in a booted guest and add a provisioning/copy path for the guest agent.</li>
           <li>Implement sanitized project mirror creation that excludes host secrets, user home data, SSH keys, npm/PyPI tokens, cloud creds, and local env files.</li>
           <li>Run package-manager commands and import/CLI probes inside the guest with canaries and bounded resources.</li>
           <li>Record process, filesystem, DNS, HTTPS, direct IP, Git, metadata-IP, and package-manager behavior as sanitized evidence.</li>

@@ -1585,7 +1585,19 @@ fn render_vm_init(args: VmInitRenderArgs<'_>) -> String {
         }
         run_macos_vm_helper(args.helper_path, "init", &helper_args)
     } else {
-        run_macos_vm_helper(args.helper_path, "init", &["--json".to_string()])
+        run_macos_vm_helper(
+            args.helper_path,
+            "init",
+            &[
+                "--state-dir".to_string(),
+                config.state_dir.display().to_string(),
+                "--memory-mib".to_string(),
+                config.memory_mib.to_string(),
+                "--disk-gib".to_string(),
+                config.disk_gib.to_string(),
+                "--json".to_string(),
+            ],
+        )
     };
     let final_exit_code = if args.execute {
         helper.exit_code.unwrap_or_else(|| ExitCode::Misuse.code())
@@ -6441,7 +6453,7 @@ mod tests {
         assert!(result.output.contains("network_model=recorded_egress"));
         assert!(result.output.contains("sync_policy=pure_safe_only"));
         assert!(result.output.contains("ready=false"));
-        assert!(result.output.contains("macos_vm_runtime_not_implemented"));
+        assert!(result.output.contains("macos_vm_runtime_not_verified"));
     }
 
     #[test]
@@ -6507,6 +6519,41 @@ mod tests {
         assert!(result.output.contains("helper_exit_code=20"));
         assert!(result.output.contains("fixture_bundle_missing"));
         assert!(result.output.contains("ready=false"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vm_init_dry_run_forwards_state_dir_to_helper() {
+        let root = temp_root("whoathere-cli-vm-init-helper");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("temp root");
+        let helper = root.join("helper.sh");
+        write_new_file(
+            &helper,
+            b"#!/bin/sh\nprintf 'args='\nfor arg in \"$@\"; do printf '<%s>' \"$arg\"; done\nprintf '\\n'\nexit 0\n",
+        )
+        .expect("helper script");
+        set_executable(&helper).expect("executable helper");
+
+        let state_dir = root.join("state");
+        let result = evaluate_command(Command::VmInit {
+            state_dir: Some(state_dir.display().to_string()),
+            manifest_path: None,
+            helper_path: Some(helper.display().to_string()),
+            image_path: None,
+            restore_image_path: None,
+            memory_mib: Some(4096),
+            disk_gib: Some(25),
+            execute: false,
+        });
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result.output.contains("helper_available=true"));
+        assert!(result.output.contains(&format!(
+            "<init><--state-dir><{}><--memory-mib><4096><--disk-gib><25><--json>",
+            state_dir.display()
+        )));
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -6663,7 +6710,7 @@ mod tests {
             .contains("\"release_target\": \"macos_apple_silicon_local_vm\""));
         assert!(result.output.contains("\"vm_ready\": false"));
         assert!(result.output.contains("\"helper_available\": false"));
-        assert!(result.output.contains("macos_vm_runtime_not_implemented"));
+        assert!(result.output.contains("macos_vm_runtime_not_verified"));
         assert!(result.output.contains("\"high_risk_allowed\": false"));
     }
 

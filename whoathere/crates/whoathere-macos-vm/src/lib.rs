@@ -160,7 +160,7 @@ pub fn status_from_config(
         reason_codes.push("macos_vm_image_not_ready".to_string());
     }
 
-    reason_codes.push("macos_vm_runtime_not_implemented".to_string());
+    reason_codes.push("macos_vm_runtime_not_verified".to_string());
     reason_codes.sort();
     reason_codes.dedup();
 
@@ -732,7 +732,7 @@ mod tests {
         assert!(!status.ready);
         assert!(status
             .reason_codes
-            .contains(&"macos_vm_runtime_not_implemented".to_string()));
+            .contains(&"macos_vm_runtime_not_verified".to_string()));
         assert!(!status
             .reason_codes
             .contains(&"macos_vm_host_not_apple_silicon".to_string()));

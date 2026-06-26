@@ -6,6 +6,7 @@
 # Swift build and packaged app outputs.
 .build/
 dist/
+whoathere/helpers/macos-vm-helper/guest-agent/whoathere-guest-ready
 
 # Rust build output and local runtime state.
 target/

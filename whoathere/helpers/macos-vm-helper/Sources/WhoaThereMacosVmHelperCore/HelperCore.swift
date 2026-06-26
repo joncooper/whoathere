@@ -142,6 +142,7 @@ public struct BundleLayout: Equatable, Sendable {
     public var machineIdentifierPath: URL { bundleDir.appendingPathComponent("machine-identifier.bin") }
     public var runtimeStatePath: URL { bundleDir.appendingPathComponent("runtime.json") }
     public var healthProofPath: URL { bundleDir.appendingPathComponent("health.json") }
+    public var guestHealthProofPath: URL { bundleDir.appendingPathComponent("guest-health.json") }
     public var runtimePidPath: URL { bundleDir.appendingPathComponent("runtime.pid") }
     public var savedStatePath: URL { bundleDir.appendingPathComponent("saved-state.bin") }
     public var logsDir: URL { stateDir.appendingPathComponent("logs", isDirectory: true) }

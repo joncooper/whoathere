@@ -1,8 +1,12 @@
 import Darwin
 import CryptoKit
 import Foundation
+import Security
 @preconcurrency import Virtualization
 import WhoaThereMacosVmHelperCore
+
+private let guestReadinessPort: UInt32 = 47078
+private let guestReadinessProtocol = "whoathere.guest_ready.v1"
 
 private final class LockedResultBox<Value>: @unchecked Sendable {
     private let lock = NSLock()
@@ -24,6 +28,201 @@ private final class LockedResultBox<Value>: @unchecked Sendable {
 
 private struct UncheckedSendableBox<Value>: @unchecked Sendable {
     var value: Value
+}
+
+private final class RuntimeReferences {
+    let virtualMachine: VZVirtualMachine
+    let socketListener: VZVirtioSocketListener
+    let delegate: GuestReadinessListener
+
+    init(virtualMachine: VZVirtualMachine, socketListener: VZVirtioSocketListener, delegate: GuestReadinessListener) {
+        self.virtualMachine = virtualMachine
+        self.socketListener = socketListener
+        self.delegate = delegate
+    }
+}
+
+private final class GuestReadinessListener: NSObject, VZVirtioSocketListenerDelegate {
+    private let layout: BundleLayout
+    private let sessionID: String
+    private let challenge: String
+
+    init(layout: BundleLayout, sessionID: String, challenge: String) {
+        self.layout = layout
+        self.sessionID = sessionID
+        self.challenge = challenge
+    }
+
+    func listener(
+        _ listener: VZVirtioSocketListener,
+        shouldAcceptNewConnection connection: VZVirtioSocketConnection,
+        from socketDevice: VZVirtioSocketDevice
+    ) -> Bool {
+        let listenerBox = UncheckedSendableBox(value: self)
+        let connectionBox = UncheckedSendableBox(value: connection)
+        DispatchQueue.global(qos: .utility).async {
+            listenerBox.value.handle(connectionBox.value)
+        }
+        return true
+    }
+
+    private func handle(_ connection: VZVirtioSocketConnection) {
+        defer {
+            connection.close()
+        }
+        let challengeBody: [String: Any] = [
+            "protocol": guestReadinessProtocol,
+            "challenge": challenge,
+            "helper_version": helperVersion,
+            "port": Int(guestReadinessPort)
+        ]
+        guard writeJSONLine(challengeBody, to: connection.fileDescriptor) else {
+            return
+        }
+        guard let responseData = readFileDescriptor(connection.fileDescriptor, timeoutSeconds: 10, maxBytes: 4096),
+              let response = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
+              response["protocol"] as? String == guestReadinessProtocol,
+              response["challenge"] as? String == challenge,
+              response["status"] as? String == "ready" else {
+            return
+        }
+        let proof: [String: Any] = [
+            "schema_version": bundleSchemaVersion,
+            "helper_version": helperVersion,
+            "runtime_pid": Int(getpid()),
+            "vm_session_id": sessionID,
+            "image_digest": imageDigestForProof(layout),
+            "health_proof_type": "guest_vsock_readiness",
+            "host_vm_started": true,
+            "guest_health_proven": true,
+            "guest_response": response,
+            "source_port": Int(connection.sourcePort),
+            "destination_port": Int(connection.destinationPort),
+            "created_at": ISO8601DateFormatter().string(from: Date()),
+            "high_risk_package_execution_enabled": false
+        ]
+        try? JSONSerialization.data(withJSONObject: proof, options: [.prettyPrinted, .sortedKeys])
+            .write(to: layout.guestHealthProofPath, options: [.atomic])
+    }
+}
+
+private func randomHex(byteCount: Int) throws -> String {
+    var bytes = [UInt8](repeating: 0, count: byteCount)
+    let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+    guard status == errSecSuccess else {
+        throw NSError(domain: "whoathere.helper", code: Int(status), userInfo: [
+            NSLocalizedDescriptionKey: "secure_random_failed"
+        ])
+    }
+    return bytes.map { String(format: "%02x", $0) }.joined()
+}
+
+private func writeJSONLine(_ fields: [String: Any], to fd: Int32) -> Bool {
+    guard JSONSerialization.isValidJSONObject(fields),
+          var data = try? JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys]) else {
+        return false
+    }
+    data.append(Data("\n".utf8))
+    return data.withUnsafeBytes { buffer in
+        guard let baseAddress = buffer.baseAddress else {
+            return false
+        }
+        var written = 0
+        while written < data.count {
+            let result = Darwin.write(fd, baseAddress.advanced(by: written), data.count - written)
+            if result < 0 {
+                if errno == EINTR {
+                    continue
+                }
+                return false
+            }
+            if result == 0 {
+                return false
+            }
+            written += result
+        }
+        return true
+    }
+}
+
+private func readFileDescriptor(_ fd: Int32, timeoutSeconds: Int32, maxBytes: Int) -> Data? {
+    let deadline = Date().addingTimeInterval(TimeInterval(timeoutSeconds))
+    var output = Data()
+    while Date() < deadline && output.count < maxBytes {
+        let remainingMilliseconds = max(1, min(250, Int(deadline.timeIntervalSinceNow * 1000)))
+        var pollDescriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+        let pollResult = Darwin.poll(&pollDescriptor, 1, Int32(remainingMilliseconds))
+        if pollResult < 0 {
+            if errno == EINTR {
+                continue
+            }
+            return nil
+        }
+        if pollResult == 0 {
+            continue
+        }
+        if pollDescriptor.revents & Int16(POLLIN) == 0 {
+            return nil
+        }
+        var buffer = [UInt8](repeating: 0, count: min(1024, maxBytes - output.count))
+        let count = Darwin.read(fd, &buffer, buffer.count)
+        if count < 0 {
+            if errno == EINTR {
+                continue
+            }
+            return nil
+        }
+        if count == 0 {
+            break
+        }
+        output.append(contentsOf: buffer.prefix(count))
+        if output.last == UInt8(ascii: "\n") {
+            break
+        }
+    }
+    guard !output.isEmpty, output.count <= maxBytes else {
+        return nil
+    }
+    if output.last == UInt8(ascii: "\n") {
+        output.removeLast()
+    }
+    return output
+}
+
+private func imageDigestForProof(_ layout: BundleLayout) -> String {
+    guard let config = readJSONObject(layout.configPath) else {
+        return "unknown"
+    }
+    if let digest = config["image_digest"] as? String {
+        return digest
+    }
+    if let digest = config["restore_image_digest"] as? String {
+        return digest
+    }
+    return "unknown"
+}
+
+private func sha256Hex(_ string: String) -> String {
+    SHA256.hash(data: Data(string.utf8)).map { String(format: "%02x", $0) }.joined()
+}
+
+private func readJSONObject(_ url: URL) -> [String: Any]? {
+    guard let data = try? Data(contentsOf: url),
+          let object = try? JSONSerialization.jsonObject(with: data),
+          let fields = object as? [String: Any] else {
+        return nil
+    }
+    return fields
+}
+
+private func intField(_ fields: [String: Any], _ key: String) -> Int? {
+    if let value = fields[key] as? Int {
+        return value
+    }
+    if let value = fields[key] as? NSNumber {
+        return value.intValue
+    }
+    return nil
 }
 
 @main
@@ -84,7 +283,7 @@ struct WhoaThereMacosVmHelper {
         let reasonCodes = statusReasons(layout: layout)
         let readyForLifecycle = reasonCodes.isEmpty
         let runtimePID = readRuntimePID(layout)
-        let runtimeAlive = runtimePID.map(processIsAlive) ?? false
+        let runtimeAlive = runtimePID.map(runtimeProcessIsAlive) ?? false
         emit(
             fields: baseFields(status: readyForLifecycle ? "ok" : "fail_closed").merging([
                 "state_dir": layout.stateDir.path,
@@ -100,6 +299,7 @@ struct WhoaThereMacosVmHelper {
                 "machine_identifier_present": fileExists(layout.machineIdentifierPath),
                 "runtime_state_present": fileExists(layout.runtimeStatePath),
                 "health_proof_present": fileExists(layout.healthProofPath),
+                "guest_health_proof_present": fileExists(layout.guestHealthProofPath),
                 "runtime_pid_present": fileExists(layout.runtimePidPath),
                 "runtime_pid_alive": runtimeAlive,
                 "ready_for_lifecycle": readyForLifecycle,
@@ -292,8 +492,7 @@ struct WhoaThereMacosVmHelper {
                     "ready_for_lifecycle": false,
                     "reason_codes": [
                         "signature_verification_not_implemented",
-                        "persistent_vm_runtime_not_implemented",
-                        "guest_health_proof_not_implemented"
+                        "guest_readiness_agent_not_provisioned"
                     ],
                     "exit_code": 0
                 ]) { _, new in new },
@@ -327,7 +526,7 @@ struct WhoaThereMacosVmHelper {
                 exitCode: 0
             )
         }
-        if let pid = readRuntimePID(layout), processIsAlive(pid) {
+        if let pid = readRuntimePID(layout), runtimeProcessIsAlive(pid) {
             emit(
                 fields: baseFields(status: "ok").merging([
                     "operation": "start",
@@ -357,6 +556,7 @@ struct WhoaThereMacosVmHelper {
             try createManagedDirectories(layout)
             try removeIfPresent(layout.runtimeStatePath)
             try removeIfPresent(layout.healthProofPath)
+            try removeIfPresent(layout.guestHealthProofPath)
             try removeIfPresent(layout.runtimePidPath)
             let process = try spawnRuntimeProcess(layout: layout)
             try "\(process.processIdentifier)\n".write(to: layout.runtimePidPath, atomically: true, encoding: .utf8)
@@ -367,8 +567,10 @@ struct WhoaThereMacosVmHelper {
                     "mutation": true,
                     "state_dir": layout.stateDir.path,
                     "runtime_pid": Int(process.processIdentifier),
-                    "runtime_pid_alive": processIsAlive(process.processIdentifier),
+                    "runtime_pid_alive": runtimeProcessIsAlive(process.processIdentifier),
                     "health_proof_present": fileExists(layout.healthProofPath),
+                    "guest_health_proof_present": fileExists(layout.guestHealthProofPath),
+                    "guest_health_proven": false,
                     "high_risk_package_execution_enabled": false,
                     "reason_codes": status.reasonCodes,
                     "exit_code": status.exitCode
@@ -397,7 +599,7 @@ struct WhoaThereMacosVmHelper {
                 exitCode: 0
             )
         }
-        guard let pid = readRuntimePID(layout), processIsAlive(pid) else {
+        guard let pid = readRuntimePID(layout), runtimeProcessIsAlive(pid) else {
             emit(
                 fields: failClosedFields(layout: layout, reasons: ["runtime_process_not_running"], exitCode: 20)
                     .merging([
@@ -412,6 +614,7 @@ struct WhoaThereMacosVmHelper {
             try removeIfPresent(layout.runtimePidPath)
             try removeIfPresent(layout.runtimeStatePath)
             try removeIfPresent(layout.healthProofPath)
+            try removeIfPresent(layout.guestHealthProofPath)
             try removeIfPresent(layout.runtimePidPath)
             try removeIfPresent(layout.savedStatePath)
             emit(
@@ -565,6 +768,7 @@ struct WhoaThereMacosVmHelper {
         configuration.storageDevices = [storage]
         configuration.networkDevices = [network]
         configuration.graphicsDevices = [graphics]
+        configuration.socketDevices = [VZVirtioSocketDeviceConfiguration()]
         configuration.keyboards = [VZUSBKeyboardConfiguration()]
         configuration.pointingDevices = [VZUSBScreenCoordinatePointingDeviceConfiguration()]
         try configuration.validate()
@@ -738,10 +942,24 @@ struct WhoaThereMacosVmHelper {
         let queue = DispatchQueue(label: "whoathere.macos.vm.runtime")
         let semaphore = DispatchSemaphore(value: 0)
         let resultBox = LockedResultBox<Void>()
-        let configurationBox = UncheckedSendableBox(value: configuration)
+        let sessionID = try randomHex(byteCount: 16)
+        let challenge = try randomHex(byteCount: 32)
+        let virtualMachine = VZVirtualMachine(configuration: configuration, queue: queue)
+        guard let socketDevice = virtualMachine.socketDevices.first as? VZVirtioSocketDevice else {
+            throw helperError("guest_readiness_socket_device_missing")
+        }
+        let readinessDelegate = GuestReadinessListener(layout: layout, sessionID: sessionID, challenge: challenge)
+        let socketListener = VZVirtioSocketListener()
+        socketListener.delegate = readinessDelegate
+        socketDevice.setSocketListener(socketListener, forPort: guestReadinessPort)
+        let runtimeReferences = RuntimeReferences(
+            virtualMachine: virtualMachine,
+            socketListener: socketListener,
+            delegate: readinessDelegate
+        )
+        let virtualMachineBox = UncheckedSendableBox(value: virtualMachine)
         queue.async {
-            let virtualMachine = VZVirtualMachine(configuration: configurationBox.value, queue: queue)
-            virtualMachine.start { result in
+            virtualMachineBox.value.start { result in
                 resultBox.store(result.mapError { $0 })
                 semaphore.signal()
             }
@@ -751,17 +969,22 @@ struct WhoaThereMacosVmHelper {
             throw helperError("runtime_start_returned_no_result")
         }
         try result.get()
-        try writeRuntimeProof(layout: layout, pid: getpid())
+        try writeRuntimeProof(layout: layout, pid: getpid(), sessionID: sessionID, challenge: challenge)
         writeJSONFields(baseFields(status: "ok").merging([
             "operation": "run",
             "state_dir": layout.stateDir.path,
             "runtime_pid": Int(getpid()),
+            "vm_session_id": sessionID,
+            "guest_readiness_port": Int(guestReadinessPort),
             "health_proof_type": "host_vm_start_only",
+            "host_runtime_health_proven": true,
             "guest_health_proven": false,
             "high_risk_package_execution_enabled": false,
             "exit_code": 0
         ]) { _, new in new })
-        RunLoop.current.run()
+        withExtendedLifetime(runtimeReferences) {
+            RunLoop.current.run()
+        }
         exit(0)
     }
 
@@ -811,6 +1034,8 @@ struct WhoaThereMacosVmHelper {
         do {
             try removeIfPresent(layout.runtimeStatePath)
             try removeIfPresent(layout.healthProofPath)
+            try removeIfPresent(layout.guestHealthProofPath)
+            try removeIfPresent(layout.runtimePidPath)
             emit(
                 fields: baseFields(status: "ok").merging([
                     "operation": "reset",
@@ -841,7 +1066,7 @@ struct WhoaThereMacosVmHelper {
                 exitCode: 0
             )
         }
-        if let pid = readRuntimePID(layout), processIsAlive(pid) {
+        if let pid = readRuntimePID(layout), runtimeProcessIsAlive(pid) {
             emit(
                 fields: failClosedFields(layout: layout, reasons: ["runtime_process_running"], exitCode: 20)
                     .merging([
@@ -871,15 +1096,65 @@ struct WhoaThereMacosVmHelper {
 
     private static func health(_ options: HelperOptions) {
         let layout = BundleLayout(stateDir: stateDirURL(from: options))
-        guard let pid = readRuntimePID(layout), processIsAlive(pid), fileExists(layout.healthProofPath) else {
+        guard let pid = readRuntimePID(layout), runtimeProcessIsAlive(pid) else {
             emit(
                 fields: failClosedFields(
                     layout: layout,
-                    reasons: ["host_runtime_health_proof_missing"],
+                    reasons: ["runtime_process_not_running"],
                     exitCode: 20
                 ).merging([
+                    "host_runtime_health_proven": false,
                     "health_proven": false,
                     "guest_health_proven": false,
+                    "high_risk_package_execution_enabled": false
+                ]) { _, new in new },
+                exitCode: 20
+            )
+        }
+        guard fileExists(layout.healthProofPath),
+              let runtimeState = readJSONObject(layout.runtimeStatePath),
+              let hostProof = readJSONObject(layout.healthProofPath),
+              intField(runtimeState, "runtime_pid") == Int(pid),
+              intField(hostProof, "runtime_pid") == Int(pid),
+              let sessionID = runtimeState["vm_session_id"] as? String,
+              hostProof["vm_session_id"] as? String == sessionID else {
+            emit(
+                fields: failClosedFields(
+                    layout: layout,
+                    reasons: ["host_runtime_health_proof_missing_or_mismatched"],
+                    exitCode: 20
+                ).merging([
+                    "runtime_pid": Int(pid),
+                    "runtime_pid_alive": true,
+                    "host_runtime_health_proven": false,
+                    "health_proven": false,
+                    "guest_health_proven": false,
+                    "guest_health_proof_present": fileExists(layout.guestHealthProofPath),
+                    "high_risk_package_execution_enabled": false
+                ]) { _, new in new },
+                exitCode: 20
+            )
+        }
+        guard let guestProof = readJSONObject(layout.guestHealthProofPath),
+              intField(guestProof, "runtime_pid") == Int(pid),
+              guestProof["vm_session_id"] as? String == sessionID,
+              guestProof["helper_version"] as? String == helperVersion,
+              guestProof["health_proof_type"] as? String == "guest_vsock_readiness",
+              guestProof["guest_health_proven"] as? Bool == true else {
+            emit(
+                fields: failClosedFields(
+                    layout: layout,
+                    reasons: ["guest_health_proof_missing_or_mismatched"],
+                    exitCode: 20
+                ).merging([
+                    "runtime_pid": Int(pid),
+                    "runtime_pid_alive": true,
+                    "vm_session_id": sessionID,
+                    "host_runtime_health_proven": true,
+                    "health_proof_type": "host_vm_start_only",
+                    "health_proven": false,
+                    "guest_health_proven": false,
+                    "guest_health_proof_present": fileExists(layout.guestHealthProofPath),
                     "high_risk_package_execution_enabled": false
                 ]) { _, new in new },
                 exitCode: 20
@@ -891,9 +1166,13 @@ struct WhoaThereMacosVmHelper {
                 "bundle_dir": layout.bundleDir.path,
                 "runtime_pid": Int(pid),
                 "runtime_pid_alive": true,
+                "vm_session_id": sessionID,
+                "host_runtime_health_proven": true,
                 "health_proven": true,
-                "health_proof_type": "host_vm_start_only",
-                "guest_health_proven": false,
+                "health_proof_type": "guest_vsock_readiness",
+                "guest_health_proven": true,
+                "guest_health_proof_present": true,
+                "image_digest": guestProof["image_digest"] as? String ?? "unknown",
                 "high_risk_package_execution_enabled": false,
                 "exit_code": 0
             ]) { _, new in new },
@@ -1058,23 +1337,34 @@ struct WhoaThereMacosVmHelper {
         try data.write(to: layout.configPath, options: [.atomic])
     }
 
-    private static func writeRuntimeProof(layout: BundleLayout, pid: pid_t) throws {
+    private static func writeRuntimeProof(layout: BundleLayout, pid: pid_t, sessionID: String, challenge: String) throws {
         let timestamp = ISO8601DateFormatter().string(from: Date())
         let runtimeState: [String: Any] = [
             "schema_version": bundleSchemaVersion,
             "helper_version": helperVersion,
             "runtime_pid": Int(pid),
+            "vm_session_id": sessionID,
             "state": "running",
             "started_at": timestamp,
+            "image_digest": imageDigestForProof(layout),
+            "guest_readiness_protocol": guestReadinessProtocol,
+            "guest_readiness_port": Int(guestReadinessPort),
+            "guest_readiness_challenge_sha256": sha256Hex(challenge),
             "high_risk_package_execution_enabled": false
         ]
         let healthProof: [String: Any] = [
             "schema_version": bundleSchemaVersion,
             "helper_version": helperVersion,
             "runtime_pid": Int(pid),
+            "vm_session_id": sessionID,
+            "image_digest": imageDigestForProof(layout),
             "health_proof_type": "host_vm_start_only",
             "host_vm_started": true,
+            "host_runtime_health_proven": true,
             "guest_health_proven": false,
+            "guest_readiness_protocol": guestReadinessProtocol,
+            "guest_readiness_port": Int(guestReadinessPort),
+            "guest_readiness_challenge_sha256": sha256Hex(challenge),
             "created_at": timestamp,
             "high_risk_package_execution_enabled": false
         ]
@@ -1190,6 +1480,49 @@ struct WhoaThereMacosVmHelper {
 
     private static func processIsAlive(_ pid: pid_t) -> Bool {
         pid > 0 && kill(pid, 0) == 0
+    }
+
+    private static func runtimeProcessIsAlive(_ pid: pid_t) -> Bool {
+        guard processIsAlive(pid),
+              let processPath = executablePath(for: pid) else {
+            return false
+        }
+        return canonicalPath(processPath) == canonicalPath(absoluteExecutablePath(CommandLine.arguments[0]))
+    }
+
+    private static func executablePath(for pid: pid_t) -> String? {
+        var buffer = [CChar](repeating: 0, count: 4096)
+        let capacity = buffer.count
+        let length = buffer.withUnsafeMutableBufferPointer { pointer -> Int32 in
+            guard let baseAddress = pointer.baseAddress else {
+                return 0
+            }
+            return proc_pidpath(pid, baseAddress, UInt32(capacity))
+        }
+        guard length > 0 else {
+            return nil
+        }
+        let bytes = buffer
+            .prefix(Int(length))
+            .prefix { $0 != 0 }
+            .map { UInt8(bitPattern: $0) }
+        return String(decoding: bytes, as: UTF8.self)
+    }
+
+    private static func absoluteExecutablePath(_ path: String) -> String {
+        if path.hasPrefix("/") {
+            return path
+        }
+        return URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent(path)
+            .path
+    }
+
+    private static func canonicalPath(_ path: String) -> String {
+        URL(fileURLWithPath: path)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+            .path
     }
 
     private static func removeIfPresent(_ url: URL) throws {

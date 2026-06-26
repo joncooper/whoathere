@@ -36,6 +36,8 @@ import Testing
     #expect(layout.bundleDir.path == "/tmp/whoathere-vm/bundle")
     #expect(layout.diskPath.path == "/tmp/whoathere-vm/bundle/disk.img")
     #expect(layout.runtimePidPath.path == "/tmp/whoathere-vm/bundle/runtime.pid")
+    #expect(layout.healthProofPath.path == "/tmp/whoathere-vm/bundle/health.json")
+    #expect(layout.guestHealthProofPath.path == "/tmp/whoathere-vm/bundle/guest-health.json")
     #expect(layout.savedStatePath.path == "/tmp/whoathere-vm/bundle/saved-state.bin")
     #expect(layout.logsDir.path == "/tmp/whoathere-vm/logs")
     #expect(layout.runsDir.path == "/tmp/whoathere-vm/runs")

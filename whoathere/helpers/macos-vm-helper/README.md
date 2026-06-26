@@ -14,7 +14,9 @@ Current state:
 - Keeps high-risk package execution disabled.
 - Starts a persistent helper runtime only when disk, auxiliary storage, hardware model, and machine identifier metadata are present.
 - Writes host-runtime state and health proof after `VZVirtualMachine.start` succeeds.
-- Keeps guest readiness, package execution, sync-back, and real signature verification blocked.
+- Adds a `VZVirtioSocketDevice` guest-readiness listener on port `47078`.
+- Includes a tiny guest-side readiness agent source under `guest-agent/`.
+- Keeps package execution, sync-back, and real signature verification blocked.
 
 Build and test:
 
@@ -38,9 +40,10 @@ Real local VM validation with a local IPSW:
 ./scripts/validate-local-vm.sh /absolute/path/to/macos-restore.ipsw
 ```
 
-This performs build, test, sign, restore-image install, status, start, host-runtime health, suspend,
-and final status. It creates a large local VM disk under `~/.whoathere/macos-vm-validation` unless a
-second state-directory argument is supplied.
+This performs build, test, sign, restore-image install, status, start, health, suspend, and final
+status. It creates a large local VM disk under `~/.whoathere/macos-vm-validation` unless a second
+state-directory argument is supplied. Until the guest readiness agent is copied into and run inside
+the guest, `health` is expected to fail closed with `guest_health_proof_missing_or_mismatched`.
 
 Smoke commands:
 
@@ -60,8 +63,22 @@ The `init --execute` command requires one of:
 The current goal slice supports `--image` disk import and a first `--restore-image` local IPSW
 install path. A disk image alone is not a bootable macOS VM bundle. Restore-image installation is
 the path that produces the required auxiliary storage, hardware model, and machine identifier
-metadata. Runtime health proof is host-only: it means `VZVirtualMachine.start` returned success,
-not that the guest OS is provisioned, reachable, or safe for package execution.
+metadata.
+
+Runtime start writes a host-only proof when `VZVirtualMachine.start` returns success. `vm health`
+does not treat that as guest readiness. It succeeds only after the guest responds over the
+`whoathere.guest_ready.v1` vsock challenge protocol for the current runtime session.
+
+Guest readiness agent:
+
+```sh
+cd guest-agent
+cc -O2 -Wall -Wextra -o whoathere-guest-ready whoathere-guest-ready.c
+```
+
+Build and run that agent inside the macOS guest after the host helper has started the VM. The agent
+uses `AF_VSOCK` only; it does not run package managers, import project code, mount host secrets, or
+sync files back to the host.
 
 Rust CLI integration:
 

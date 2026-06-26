@@ -37,6 +37,22 @@ swift test
 
 "$HELPER_PATH" status --state-dir "$STATE_DIR" --json
 "$HELPER_PATH" start --state-dir "$STATE_DIR" --execute --json
+set +e
 "$HELPER_PATH" health --state-dir "$STATE_DIR" --json
+HEALTH_EXIT=$?
+set -e
+case "$HEALTH_EXIT" in
+  0)
+    echo "guest_health_proven=true"
+    ;;
+  20)
+    echo "guest_health_pending=true"
+    echo "copy, build, and run guest-agent/whoathere-guest-ready inside the guest to produce guest health"
+    ;;
+  *)
+    echo "unexpected_health_exit=$HEALTH_EXIT" >&2
+    exit "$HEALTH_EXIT"
+    ;;
+esac
 "$HELPER_PATH" suspend --state-dir "$STATE_DIR" --execute --json
 "$HELPER_PATH" status --state-dir "$STATE_DIR" --json
