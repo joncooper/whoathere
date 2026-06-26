@@ -47,6 +47,7 @@ current_agent_digest() {
   cc -O2 -Wall -Wextra -target arm64-apple-macos13 \
     -o "$agent_binary" \
     "$HELPER_ROOT/guest-agent/whoathere-guest-ready.c"
+  /usr/bin/codesign --force --sign - "$agent_binary" >/dev/null 2>&1 || true
   digest=$(shasum -a 256 "$agent_binary" | awk '{print $1}')
   printf 'sha256:%s\n' "$digest"
 }

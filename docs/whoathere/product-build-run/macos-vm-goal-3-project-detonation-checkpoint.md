@@ -53,42 +53,47 @@ This goal does not claim public PyPI resolution, binary wheel safety, native ext
 
 ## Validation State
 
-Passed locally:
+Passed locally on 2026-06-26:
 
 ```sh
 cargo fmt --manifest-path whoathere/Cargo.toml --all -- --check
-cargo test --manifest-path whoathere/Cargo.toml -p whoathere-cli --lib vm_detonate -- --nocapture
-cargo test --manifest-path whoathere/Cargo.toml -p whoathere-cli --lib project_payload -- --nocapture
+cargo test --manifest-path whoathere/Cargo.toml
+cargo clippy --manifest-path whoathere/Cargo.toml --all-targets -- -D warnings
 swift test
 cc -O2 -Wall -Wextra -target arm64-apple-macos13 -fsyntax-only whoathere/helpers/macos-vm-helper/guest-agent/whoathere-guest-ready.c
+sh -n whoathere/helpers/macos-vm-helper/scripts/validate-project-detonation.sh
+sh -n whoathere/helpers/macos-vm-helper/scripts/validate-guest-agent-project-payload.sh
+sh -n whoathere/helpers/macos-vm-helper/scripts/validate-detonation-fixtures.sh
+sh -n whoathere/helpers/macos-vm-helper/scripts/validate-guest-agent-timeout.sh
 whoathere/helpers/macos-vm-helper/scripts/validate-guest-agent-timeout.sh
 whoathere/helpers/macos-vm-helper/scripts/validate-guest-agent-project-payload.sh
-sh -n whoathere/helpers/macos-vm-helper/scripts/validate-project-detonation.sh
 ```
 
-Current live VM state:
+The ASCII scan returned no matches across README, product-build docs, scripts, Rust workspace files, examples, tests, probe images, and the macOS VM helper tree.
+
+Passed live against the validation VM on 2026-06-26:
+
+```sh
+whoathere/target/debug/whoathere vm start --state-dir "$HOME/.whoathere/macos-vm-validation" --helper /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/.build/arm64-apple-macosx/debug/whoathere-macos-vm-helper --execute
+WHOATHERE_VM_STATE_DIR="$HOME/.whoathere/macos-vm-validation" whoathere/helpers/macos-vm-helper/scripts/validate-detonation-fixtures.sh
+WHOATHERE_VM_STATE_DIR="$HOME/.whoathere/macos-vm-validation" whoathere/helpers/macos-vm-helper/scripts/validate-project-detonation.sh
+whoathere/target/debug/whoathere vm suspend --state-dir "$HOME/.whoathere/macos-vm-validation" --helper /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/.build/arm64-apple-macosx/debug/whoathere-macos-vm-helper --execute
+whoathere/target/debug/whoathere vm status --state-dir "$HOME/.whoathere/macos-vm-validation" --helper /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/.build/arm64-apple-macosx/debug/whoathere-macos-vm-helper --json
+```
+
+Live evidence summary:
 
 - Validation VM state dir: `/Users/jdc/.whoathere/macos-vm-validation`.
-- VM runtime is currently stopped.
-- Existing guest provisioning receipt is present and records offline Python/pip tooling.
-- Existing provisioned guest-agent digest is `sha256:3230daf4d0ecec6cb7b50af7dfd7c0c3f214b5b2aafe74f7501f58aa1d6c35a1`.
-- Current Goal 3 guest-agent build digest is `sha256:3dc223bf4cd5da38f33afa8ced23c9127901abd5196531c1db37f6bcd7a59940`.
-- Therefore live Goal 3 project validation requires one guest-agent reprovisioning pass while the VM is stopped.
-- `validate-project-detonation.sh` currently exits `64` before live cases with `guest_agent_digest_mismatch=true`, proving it will not accidentally validate Goal 3 against the older guest agent.
-
-Required one-time reprovision command:
-
-```sh
-sudo /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/scripts/provision-guest-readiness.sh "$HOME/.whoathere/macos-vm-validation"
-```
-
-After reprovisioning, run:
-
-```sh
-/Users/jdc/src/whoathere/whoathere/target/debug/whoathere vm start --state-dir "$HOME/.whoathere/macos-vm-validation" --helper /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/.build/arm64-apple-macosx/debug/whoathere-macos-vm-helper --execute
-WHOATHERE_VM_STATE_DIR="$HOME/.whoathere/macos-vm-validation" /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/scripts/validate-project-detonation.sh
-/Users/jdc/src/whoathere/whoathere/target/debug/whoathere vm suspend --state-dir "$HOME/.whoathere/macos-vm-validation" --helper /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/.build/arm64-apple-macosx/debug/whoathere-macos-vm-helper --execute
-```
+- Provisioned signed guest-agent digest: `sha256:550b952aabd9366ab294f2ddc0df8d2a02dbff8d6b0ec3f8b816efd0e63b41df`.
+- The validation script now computes the same ad-hoc-signed guest-agent digest before comparing against the provisioning receipt, so it does not falsely reject a correctly provisioned guest.
+- Guest health proof was present and verified: `guest_health_proven=true`, `host_runtime_health_proven=true`, `runtime_pid_alive=true`, `vm_session_id=46b1f1981aafa1b838459f86595bc74e`.
+- Guest toolchain proof matched the scoped release target: `python3=true`, `pip=true`, `npm=false`, `uv=false`.
+- `validate-detonation-fixtures.sh` exited `0` with `detonation_fixture_validation=ok`.
+- Fixture sweep proved pip clean allow, pip setup/PEP 517/import/`.pth` canary deny, risky native/direct classes manual review, npm/uv fail-closed where guest tooling is absent, `sync_back_enabled=false`, `host_package_execution_enabled=false`, and `raw_canary_values_captured=false`.
+- `validate-project-detonation.sh` exited `0` with `project_detonation_validation=ok`.
+- Project validation proved clean local project and local `requirements.txt` install return `allow_observed_clean`; setup, PEP 517, import-time, and `.pth` canary cases return deny/fail-closed; public, VCS, editable, and traversal requirements fail before helper invocation; secret files are excluded from the mirror; symlink escapes and large files are recorded without host sync-back.
+- VM cleanup succeeded with `runtime_stop_observed=true`.
+- Final status confirmed `runtime_pid_alive=false`, `runtime_pid_present=false`, and readiness is fail-closed while stopped.
 
 ## Test Coverage Added
 
@@ -103,7 +108,6 @@ WHOATHERE_VM_STATE_DIR="$HOME/.whoathere/macos-vm-validation" /Users/jdc/src/who
 
 ## Known Limitations
 
-- Live Goal 3 project detonation is implemented in code but still needs the validation VM reprovisioned with the new guest agent before it can be proven end to end.
 - Requirements support is intentionally narrow: local-only safe inputs are supported; public resolver behavior is deferred.
 - The project mirror allowlist is conservative and may exclude legitimate package data until a safe package-data policy is added.
 - Native extensions, binary wheels, direct URLs, VCS, editable installs, and unknown classes remain blocked or manual-review by default.
