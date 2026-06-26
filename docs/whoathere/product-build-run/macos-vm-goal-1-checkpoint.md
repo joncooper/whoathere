@@ -25,6 +25,8 @@ detonation, or sync-back execution.
 - Helper `health` now fails closed on host-runtime proof alone and only succeeds when a matching guest proof exists for the live runtime session, challenge hash, image digest, protocol, port, and helper version.
 - Guest health proof stores sanitized response metadata and challenge hash, not the raw readiness challenge.
 - The local validation script can package `bundle/guest-tools.dmg` from the guest-agent source only using the `hdiutil` UFBI whole-device format, but helper auto-attach is disabled by default because real-host validation showed the tested tools-media attachments prevented boot.
+- Added `scripts/provision-guest-readiness.sh`, an admin-required offline provisioning path that compiles the guest agent, mounts the stopped VM disk with ownership enabled, installs a root-owned LaunchDaemon, writes `bundle/guest-provisioning.json`, and avoids host home, secrets, workspaces, package-manager state, and sync-back.
+- Non-root-owned offline LaunchDaemon provisioning was tested and did not produce a guest proof; root-owned provisioning requires a local `sudo` run outside this Codex session.
 - Added a helper entitlement plist and local signing script for `com.apple.security.virtualization`.
 - Added a local IPSW validation script that runs build, test, sign, restore-image install, status, start, fail-closed-or-proven health, suspend, and final status.
 - Helper `status` reports missing bundle/config/manifest/disk/auxiliary storage/hardware model/machine identifier/signature proof independently.
@@ -71,7 +73,7 @@ overlays/
 - Restore-image installation has been validated locally with a signed, entitled helper and Apple's latest supported restore image; repeatable release fixture validation remains.
 - Full signature/notarization verification is not implemented yet; status reports `signature_verification_not_implemented` as a fail-closed readiness reason.
 - Persistent VM process management and controlled force-stop fallback have been validated locally; saved-state suspend/resume semantics remain deferred.
-- Guest readiness proof protocol, proof binding, and guest-agent source are implemented, but still need real-host validation inside a booted guest and a proven provisioning/copy path.
+- Guest readiness proof protocol, proof binding, guest-agent source, and root-owned offline provisioning script are implemented, but the final guest proof still needs a local admin run of `scripts/provision-guest-readiness.sh` followed by VM boot/health validation.
 - A real bootable bundle requires auxiliary storage, hardware model, and machine identifier metadata; a disk image alone is not enough.
 - No package-manager command is allowed to execute from this work.
 
@@ -109,7 +111,12 @@ cd /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper
 ./scripts/validate-local-vm.sh --fetch-latest-restore-image
 ```
 
-After the VM is running, copy `guest-agent/whoathere-guest-ready.c` into the guest, build it there,
-and run it to produce `bundle/guest-health.json`. Until that guest response is present and bound to
-the current runtime session, challenge hash, image digest, protocol, port, and helper version,
-`vm health` is expected to fail closed.
+Provision the guest readiness daemon while the VM is stopped:
+
+```sh
+sudo /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/scripts/provision-guest-readiness.sh /Users/jdc/.whoathere/macos-vm-validation
+```
+
+After provisioning, start the VM and run `vm health`. Until the guest daemon response is present
+and bound to the current runtime session, challenge hash, image digest, protocol, port, and helper
+version, `vm health` is expected to fail closed.

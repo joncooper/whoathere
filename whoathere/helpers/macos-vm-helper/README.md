@@ -111,6 +111,19 @@ whole-device format. The helper does not auto-attach this image unless
 keeps it disabled because Virtualization.framework rejected the tested tools-media attachments.
 This shares only the guest-agent source, not the host home directory or project workspace.
 
+Offline guest readiness provisioning:
+
+```sh
+sudo ./scripts/provision-guest-readiness.sh /absolute/path/to/vm-state-dir
+```
+
+The provisioning script is intentionally admin-only because macOS launchd requires a root-owned
+`/Library/LaunchDaemons` plist and root-owned program on the guest Data volume. It attaches the
+stopped VM disk with ownership enabled, installs only the `whoathere-guest-ready` binary and
+`com.whoathere.guest-ready.plist`, writes `bundle/guest-provisioning.json`, and detaches the disk.
+It does not mount host home, SSH keys, project workspaces, real credentials, or package-manager
+state. A non-root-owned daemon was tested and did not produce a guest proof.
+
 Rust CLI integration:
 
 ```sh
