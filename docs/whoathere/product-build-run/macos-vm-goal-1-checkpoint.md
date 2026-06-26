@@ -17,6 +17,7 @@ detonation, or sync-back execution.
 - Helper `start --execute` now has a persistent runtime-process scaffold that launches internal `run`, starts the VM through `VZVirtualMachine.start`, and writes host-runtime state plus health proof when start succeeds.
 - Helper `health` reports host-runtime health proof only; it does not prove guest readiness.
 - Added a helper entitlement plist and local signing script for `com.apple.security.virtualization`.
+- Added a local IPSW validation script that runs build, test, sign, restore-image install, status, start, host-runtime health, suspend, and final status.
 - Helper `status` reports missing bundle/config/manifest/disk/auxiliary storage/hardware model/machine identifier/signature proof independently.
 - Helper `start` and `health` fail closed until the VM has real Virtualization metadata, signature verification, persistent runtime management, and guest readiness proof.
 - Rust CLI accepts `--helper <path>` or `WHOATHERE_MACOS_VM_HELPER` for VM and doctor commands.
@@ -79,3 +80,10 @@ cargo run --manifest-path /Users/jdc/src/whoathere/whoathere/Cargo.toml -p whoat
 
 Expected today: helper is available, high-risk execution is disabled, and lifecycle readiness
 fails closed with precise missing-bundle or missing-metadata reason codes.
+
+Real local VM validation requires a local macOS restore IPSW:
+
+```sh
+cd /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper
+./scripts/validate-local-vm.sh /absolute/path/to/macos-restore.ipsw
+```

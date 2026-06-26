@@ -32,6 +32,16 @@ swift build
 Set `WHOATHERE_CODESIGN_IDENTITY` to a Developer ID or Apple Development signing identity for
 non-ad-hoc signing. The default identity is `-` for local ad-hoc development signing.
 
+Real local VM validation with a local IPSW:
+
+```sh
+./scripts/validate-local-vm.sh /absolute/path/to/macos-restore.ipsw
+```
+
+This performs build, test, sign, restore-image install, status, start, host-runtime health, suspend,
+and final status. It creates a large local VM disk under `~/.whoathere/macos-vm-validation` unless a
+second state-directory argument is supplied.
+
 Smoke commands:
 
 ```sh
