@@ -16,6 +16,7 @@
 
 #define WHOATHERE_GUEST_READY_PORT 47078U
 #define WHOATHERE_MAX_LINE 4096
+#define WHOATHERE_MAX_JSON_LINE (2U * 1024U * 1024U + 16384U)
 #define WHOATHERE_MAX_CHALLENGE 128
 #define WHOATHERE_MAX_FIELD 256
 #define WHOATHERE_WORK_ROOT "/private/var/tmp/whoathere-detonation"
@@ -88,6 +89,55 @@ static int extract_json_string(const char *json, const char *key, char *output, 
     return used > 0 ? 0 : -1;
 }
 
+static char *extract_json_string_alloc(const char *json, const char *key, size_t max_length) {
+    char pattern[64];
+    if (snprintf(pattern, sizeof(pattern), "\"%s\"", key) < 0) {
+        return NULL;
+    }
+    const char *cursor = strstr(json, pattern);
+    if (cursor == NULL) {
+        return NULL;
+    }
+    cursor += strlen(pattern);
+    while (*cursor == ' ' || *cursor == '\t' || *cursor == '\r' || *cursor == '\n') {
+        cursor++;
+    }
+    if (*cursor != ':') {
+        return NULL;
+    }
+    cursor++;
+    while (*cursor == ' ' || *cursor == '\t' || *cursor == '\r' || *cursor == '\n') {
+        cursor++;
+    }
+    if (*cursor != '"') {
+        return NULL;
+    }
+    cursor++;
+
+    size_t used = 0;
+    const char *start = cursor;
+    while (*cursor != '\0' && *cursor != '"') {
+        if (*cursor == '\\') {
+            return NULL;
+        }
+        if (used >= max_length) {
+            return NULL;
+        }
+        used++;
+        cursor++;
+    }
+    if (*cursor != '"') {
+        return NULL;
+    }
+    char *output = calloc(used + 1, 1);
+    if (output == NULL) {
+        return NULL;
+    }
+    memcpy(output, start, used);
+    output[used] = '\0';
+    return output;
+}
+
 static int write_all(int fd, const char *buffer, size_t length) {
     size_t written = 0;
     while (written < length) {
@@ -153,9 +203,196 @@ static int write_file(const char *path, const char *body) {
     return result;
 }
 
+static int write_binary_file(const char *path, const unsigned char *body, size_t length) {
+    FILE *file = fopen(path, "wb");
+    if (file == NULL) {
+        return -1;
+    }
+    int result = fwrite(body, 1, length, file) == length ? 0 : -1;
+    if (fclose(file) != 0) {
+        result = -1;
+    }
+    return result;
+}
+
 static int path_exists(const char *path) {
     struct stat st;
     return stat(path, &st) == 0;
+}
+
+static int safe_relative_path(const char *path) {
+    if (path == NULL || path[0] == '\0' || path[0] == '/') {
+        return 0;
+    }
+    if (strstr(path, "..") != NULL) {
+        return 0;
+    }
+    if (strstr(path, "//") != NULL) {
+        return 0;
+    }
+    for (const char *cursor = path; *cursor != '\0'; cursor++) {
+        char value = *cursor;
+        if ((value >= 'a' && value <= 'z')
+            || (value >= 'A' && value <= 'Z')
+            || (value >= '0' && value <= '9')
+            || value == '/'
+            || value == '.'
+            || value == '_'
+            || value == '-'
+            || value == '+') {
+            continue;
+        }
+        return 0;
+    }
+    return 1;
+}
+
+static int safe_python_module(const char *module) {
+    if (module == NULL || module[0] == '\0' || strstr(module, "..") != NULL) {
+        return 0;
+    }
+    for (const char *cursor = module; *cursor != '\0'; cursor++) {
+        char value = *cursor;
+        if ((value >= 'a' && value <= 'z')
+            || (value >= 'A' && value <= 'Z')
+            || (value >= '0' && value <= '9')
+            || value == '_'
+            || value == '.') {
+            continue;
+        }
+        return 0;
+    }
+    return 1;
+}
+
+static int make_parent_dirs(char *path) {
+    for (char *cursor = path + 1; *cursor != '\0'; cursor++) {
+        if (*cursor != '/') {
+            continue;
+        }
+        *cursor = '\0';
+        if (mkdir_if_missing(path, 0700) != 0) {
+            *cursor = '/';
+            return -1;
+        }
+        *cursor = '/';
+    }
+    return 0;
+}
+
+static int hex_value(char value) {
+    if (value >= '0' && value <= '9') {
+        return value - '0';
+    }
+    if (value >= 'a' && value <= 'f') {
+        return 10 + value - 'a';
+    }
+    if (value >= 'A' && value <= 'F') {
+        return 10 + value - 'A';
+    }
+    return -1;
+}
+
+static unsigned short read_le16(const unsigned char *bytes) {
+    return (unsigned short)bytes[0] | ((unsigned short)bytes[1] << 8);
+}
+
+static unsigned int read_le32(const unsigned char *bytes) {
+    return (unsigned int)bytes[0]
+        | ((unsigned int)bytes[1] << 8)
+        | ((unsigned int)bytes[2] << 16)
+        | ((unsigned int)bytes[3] << 24);
+}
+
+static int decode_hex_payload(const char *hex, unsigned char **out_bytes, size_t *out_length) {
+    size_t hex_length = strlen(hex);
+    if (hex_length == 0 || hex_length % 2 != 0 || hex_length > (size_t)(2U * 1024U * 1024U)) {
+        return -1;
+    }
+    size_t byte_length = hex_length / 2;
+    unsigned char *bytes = malloc(byte_length);
+    if (bytes == NULL) {
+        return -1;
+    }
+    for (size_t index = 0; index < byte_length; index++) {
+        int high = hex_value(hex[index * 2]);
+        int low = hex_value(hex[index * 2 + 1]);
+        if (high < 0 || low < 0) {
+            free(bytes);
+            return -1;
+        }
+        bytes[index] = (unsigned char)((high << 4) | low);
+    }
+    *out_bytes = bytes;
+    *out_length = byte_length;
+    return 0;
+}
+
+static int materialize_project_payload(const char *workspace, const char *payload_hex) {
+    unsigned char *payload = NULL;
+    size_t payload_length = 0;
+    if (decode_hex_payload(payload_hex, &payload, &payload_length) != 0) {
+        return -1;
+    }
+    if (payload_length < 8 || memcmp(payload, "WTP1", 4) != 0) {
+        free(payload);
+        return -1;
+    }
+    size_t offset = 4;
+    unsigned int file_count = read_le32(payload + offset);
+    offset += 4;
+    if (file_count > 128U) {
+        free(payload);
+        return -1;
+    }
+    for (unsigned int index = 0; index < file_count; index++) {
+        if (offset + 6 > payload_length) {
+            free(payload);
+            return -1;
+        }
+        unsigned short path_length = read_le16(payload + offset);
+        offset += 2;
+        unsigned int content_length = read_le32(payload + offset);
+        offset += 4;
+        if (path_length == 0 || content_length > 128U * 1024U || offset + path_length + content_length > payload_length) {
+            free(payload);
+            return -1;
+        }
+        char relative_path[512];
+        if ((size_t)path_length >= sizeof(relative_path)) {
+            free(payload);
+            return -1;
+        }
+        memcpy(relative_path, payload + offset, path_length);
+        relative_path[path_length] = '\0';
+        offset += path_length;
+        if (!safe_relative_path(relative_path)) {
+            free(payload);
+            return -1;
+        }
+        char destination[1024];
+        int length = snprintf(destination, sizeof(destination), "%s/%s", workspace, relative_path);
+        if (length < 0 || (size_t)length >= sizeof(destination)) {
+            free(payload);
+            return -1;
+        }
+        char parent_path[1024];
+        if (snprintf(parent_path, sizeof(parent_path), "%s", destination) < 0) {
+            free(payload);
+            return -1;
+        }
+        if (make_parent_dirs(parent_path) != 0) {
+            free(payload);
+            return -1;
+        }
+        if (write_binary_file(destination, payload + offset, content_length) != 0) {
+            free(payload);
+            return -1;
+        }
+        offset += content_length;
+    }
+    free(payload);
+    return offset == payload_length ? 0 : -1;
 }
 
 static int command_exists(const char *command) {
@@ -489,6 +726,29 @@ static int run_detonation_job(int fd, const char *line) {
     if (timeout_seconds > 900) {
         timeout_seconds = 900;
     }
+    int project_mode = strcmp(fixture, "project_mirror") == 0;
+    char project_workflow[WHOATHERE_MAX_FIELD] = "";
+    char project_import_module[WHOATHERE_MAX_FIELD] = "";
+    char project_requirements_path[WHOATHERE_MAX_FIELD] = "";
+    char *project_payload_hex = NULL;
+    if (project_mode) {
+        project_payload_hex = extract_json_string_alloc(line, "project_payload_hex", (size_t)(2U * 1024U * 1024U));
+        if (project_payload_hex == NULL
+            || extract_json_string(line, "project_workflow", project_workflow, sizeof(project_workflow)) != 0) {
+            free(project_payload_hex);
+            return write_detonation_response(fd, job_id, tool, command_class, fixture, "fail_closed", "fail_closed_runner_error", "\"project_payload_or_workflow_missing\"", 70, 70, 0, 0, 0, 0, 0);
+        }
+        (void)extract_json_string(line, "project_import_module", project_import_module, sizeof(project_import_module));
+        (void)extract_json_string(line, "project_requirements_path", project_requirements_path, sizeof(project_requirements_path));
+        if (project_import_module[0] != '\0' && !safe_python_module(project_import_module)) {
+            free(project_payload_hex);
+            return write_detonation_response(fd, job_id, tool, command_class, fixture, "fail_closed", "fail_closed_runner_error", "\"project_import_module_rejected\"", 70, 70, 0, 0, 0, 0, 0);
+        }
+        if (project_requirements_path[0] != '\0' && !safe_relative_path(project_requirements_path)) {
+            free(project_payload_hex);
+            return write_detonation_response(fd, job_id, tool, command_class, fixture, "fail_closed", "fail_closed_runner_error", "\"project_requirements_path_rejected\"", 70, 70, 0, 0, 0, 0, 0);
+        }
+    }
 
     if (classification_only_fixture(fixture)) {
         return write_detonation_response(
@@ -533,6 +793,7 @@ static int run_detonation_job(int fd, const char *line) {
 
     const char *tool_command = NULL;
     const char *shell_command = NULL;
+    char shell_command_buffer[4096];
     if (strcmp(tool, "npm") == 0) {
         tool_command = "npm";
         if (write_npm_fixture(workspace, fixture) != 0) {
@@ -547,10 +808,62 @@ static int run_detonation_job(int fd, const char *line) {
         }
     } else if (strcmp(tool, "pip") == 0) {
         tool_command = "python3";
-        if (write_python_fixture(workspace, fixture) != 0) {
+        if (project_mode) {
+            if (materialize_project_payload(workspace, project_payload_hex) != 0) {
+                free(project_payload_hex);
+                return write_detonation_response(fd, job_id, tool, command_class, fixture, "fail_closed", "fail_closed_runner_error", "\"project_payload_materialize_failed\"", 70, 70, 0, 0, 0, 0, 0);
+            }
+            free(project_payload_hex);
+            project_payload_hex = NULL;
+            const char *import_probe = "";
+            char import_probe_buffer[512];
+            if (project_import_module[0] != '\0') {
+                int import_length = snprintf(
+                    import_probe_buffer,
+                    sizeof(import_probe_buffer),
+                    " && PYTHONPATH=target $WHOATHERE_PYTHON -c 'import %s'",
+                    project_import_module
+                );
+                if (import_length < 0 || (size_t)import_length >= sizeof(import_probe_buffer)) {
+                    return write_detonation_response(fd, job_id, tool, command_class, fixture, "fail_closed", "fail_closed_runner_error", "\"project_import_probe_too_long\"", 70, 70, 0, 0, 0, 0, 0);
+                }
+                import_probe = import_probe_buffer;
+            }
+            const char *pth_probe = " && if ls *.pth >/dev/null 2>&1; then cp *.pth target/; fi && PYTHONPATH=target $WHOATHERE_PYTHON -c 'import site; site.addsitedir(\"target\")'";
+            if (strcmp(project_workflow, "pip_project_install") == 0) {
+                int command_length = snprintf(
+                    shell_command_buffer,
+                    sizeof(shell_command_buffer),
+                    WHOATHERE_PIP_PREFIX "mkdir -p target && $WHOATHERE_PYTHON -m pip install --no-index --no-build-isolation . --target target%s%s",
+                    pth_probe,
+                    import_probe
+                );
+                if (command_length < 0 || (size_t)command_length >= sizeof(shell_command_buffer)) {
+                    return write_detonation_response(fd, job_id, tool, command_class, fixture, "fail_closed", "fail_closed_runner_error", "\"project_command_too_long\"", 70, 70, 0, 0, 0, 0, 0);
+                }
+                shell_command = shell_command_buffer;
+            } else if (strcmp(project_workflow, "pip_requirements_install") == 0) {
+                if (project_requirements_path[0] == '\0') {
+                    return write_detonation_response(fd, job_id, tool, command_class, fixture, "fail_closed", "fail_closed_runner_error", "\"project_requirements_path_missing\"", 70, 70, 0, 0, 0, 0, 0);
+                }
+                int command_length = snprintf(
+                    shell_command_buffer,
+                    sizeof(shell_command_buffer),
+                    WHOATHERE_PIP_PREFIX "mkdir -p target && $WHOATHERE_PYTHON -m pip install --no-index --no-build-isolation -r %s --target target%s%s",
+                    project_requirements_path,
+                    pth_probe,
+                    import_probe
+                );
+                if (command_length < 0 || (size_t)command_length >= sizeof(shell_command_buffer)) {
+                    return write_detonation_response(fd, job_id, tool, command_class, fixture, "fail_closed", "fail_closed_runner_error", "\"project_command_too_long\"", 70, 70, 0, 0, 0, 0, 0);
+                }
+                shell_command = shell_command_buffer;
+            } else {
+                return write_detonation_response(fd, job_id, tool, command_class, fixture, "fail_closed", "fail_closed_unsupported_workflow", "\"project_workflow_unsupported\"", 20, 20, 0, 0, 0, 0, 0);
+            }
+        } else if (write_python_fixture(workspace, fixture) != 0) {
             return write_detonation_response(fd, job_id, tool, command_class, fixture, "fail_closed", "fail_closed_runner_error", "\"guest_fixture_prepare_failed\"", 70, 70, 0, 0, 0, 0, 0);
-        }
-        if (strcmp(fixture, "python_pth_startup_hook") == 0) {
+        } else if (strcmp(fixture, "python_pth_startup_hook") == 0) {
             shell_command = WHOATHERE_PIP_PREFIX "mkdir -p target && cp whoathere_hook.pth target/ && $WHOATHERE_PYTHON -c 'import site; site.addsitedir(\"target\")'";
         } else if (strcmp(fixture, "api_compatible_canary_theft") == 0) {
             shell_command = WHOATHERE_PIP_PREFIX "$WHOATHERE_PYTHON -m pip install --no-index --no-build-isolation . --target target && PYTHONPATH=target $WHOATHERE_PYTHON -c 'import whoathere_fixture; whoathere_fixture.run()'";
@@ -627,15 +940,20 @@ static int run_detonation_job(int fd, const char *line) {
 }
 
 static int serve_detonation_loop(int fd) {
-    char line[WHOATHERE_MAX_LINE];
-    while (read_line(fd, line, sizeof(line)) == 0) {
+    char *line = calloc(WHOATHERE_MAX_JSON_LINE, 1);
+    if (line == NULL) {
+        return -1;
+    }
+    while (read_line(fd, line, WHOATHERE_MAX_JSON_LINE) == 0) {
         if (strstr(line, "whoathere.guest_detonation.v1") == NULL) {
             continue;
         }
         if (run_detonation_job(fd, line) != 0) {
+            free(line);
             return -1;
         }
     }
+    free(line);
     return 0;
 }
 

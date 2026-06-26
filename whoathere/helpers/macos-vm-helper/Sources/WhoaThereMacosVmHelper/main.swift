@@ -8,6 +8,7 @@ import WhoaThereMacosVmHelperCore
 private let guestReadinessPort: UInt32 = 47078
 private let guestReadinessProtocol = "whoathere.guest_ready.v1"
 private let guestDetonationProtocol = "whoathere.guest_detonation.v1"
+private let maxProjectPayloadHexBytes = 2 * 1024 * 1024
 
 private final class LockedResultBox<Value>: @unchecked Sendable {
     private let lock = NSLock()
@@ -1738,6 +1739,7 @@ struct WhoaThereMacosVmHelper {
 
     private static func detonate(_ options: HelperOptions) {
         let layout = BundleLayout(stateDir: stateDirURL(from: options))
+        let projectMode = options.detonationProjectPayloadPath != nil || options.detonationProjectWorkflow != nil
         if !options.execute {
             emit(
                 fields: baseFields(status: "dry_run").merging([
@@ -1750,6 +1752,8 @@ struct WhoaThereMacosVmHelper {
                     "tool": options.detonationTool ?? "missing",
                     "command_class": options.detonationCommandClass ?? "missing",
                     "fixture": options.detonationFixture ?? "missing",
+                    "project_mode": projectMode,
+                    "project_workflow": options.detonationProjectWorkflow ?? "missing",
                     "timeout_seconds": options.detonationTimeoutSeconds,
                     "argv_count": options.detonationArgs.count,
                     "reason_codes": ["execute_required_for_vm_detonation"],
@@ -1831,7 +1835,27 @@ struct WhoaThereMacosVmHelper {
                 exitCode: 20
             )
         }
-        guard let fixture = options.detonationFixture, !fixture.isEmpty else {
+        guard !projectMode || tool == "pip" else {
+            emit(
+                fields: failClosedFields(
+                    layout: layout,
+                    reasons: ["project_detonation_pip_only_goal_3"],
+                    exitCode: 20
+                ).merging([
+                    "operation": "detonate",
+                    "tool": tool,
+                    "command_class": commandClass,
+                    "project_mode": projectMode,
+                    "sync_back_enabled": false,
+                    "host_package_execution_enabled": false,
+                    "high_risk_package_execution_enabled": false,
+                    "verdict": "fail_closed_unsupported_workflow"
+                ]) { _, new in new },
+                exitCode: 20
+            )
+        }
+        let fixture = options.detonationFixture ?? (projectMode ? "project_mirror" : "")
+        guard !fixture.isEmpty else {
             emit(
                 fields: failClosedFields(
                     layout: layout,
@@ -1849,6 +1873,52 @@ struct WhoaThereMacosVmHelper {
                 exitCode: 20
             )
         }
+        let projectPayloadHex: String?
+        do {
+            projectPayloadHex = try validatedProjectPayloadHex(options: options, layout: layout, projectMode: projectMode)
+        } catch {
+            emit(
+                fields: failClosedFields(
+                    layout: layout,
+                    reasons: ["project_payload_rejected", sanitizedReason(error)],
+                    exitCode: 20
+                ).merging([
+                    "operation": "detonate",
+                    "tool": tool,
+                    "command_class": commandClass,
+                    "fixture": fixture,
+                    "project_mode": projectMode,
+                    "sync_back_enabled": false,
+                    "host_package_execution_enabled": false,
+                    "high_risk_package_execution_enabled": false,
+                    "verdict": "fail_closed_project_payload_rejected"
+                ]) { _, new in new },
+                exitCode: 20
+            )
+        }
+        if projectMode {
+            guard let workflow = options.detonationProjectWorkflow,
+                  ["pip_project_install", "pip_requirements_install"].contains(workflow) else {
+                emit(
+                    fields: failClosedFields(
+                        layout: layout,
+                        reasons: ["project_workflow_required_or_unsupported"],
+                        exitCode: 20
+                    ).merging([
+                        "operation": "detonate",
+                        "tool": tool,
+                        "command_class": commandClass,
+                        "fixture": fixture,
+                        "project_mode": projectMode,
+                        "sync_back_enabled": false,
+                        "host_package_execution_enabled": false,
+                        "high_risk_package_execution_enabled": false,
+                        "verdict": "fail_closed_project_workflow_rejected"
+                    ]) { _, new in new },
+                    exitCode: 20
+                )
+            }
+        }
 
         do {
             try FileManager.default.createDirectory(
@@ -1859,7 +1929,7 @@ struct WhoaThereMacosVmHelper {
             let jobID = try randomHex(byteCount: 16)
             let requestURL = detonationJobsDir(layout).appendingPathComponent("\(jobID).request.json")
             let resultURL = detonationJobsDir(layout).appendingPathComponent("\(jobID).result.json")
-            let request: [String: Any] = [
+            var request: [String: Any] = [
                 "schema_version": bundleSchemaVersion,
                 "protocol": guestDetonationProtocol,
                 "job_id": jobID,
@@ -1872,6 +1942,17 @@ struct WhoaThereMacosVmHelper {
                 "host_package_execution_enabled": false,
                 "high_risk_package_execution_enabled": false
             ]
+            if projectMode {
+                request["project_mode"] = true
+                request["project_payload_hex"] = projectPayloadHex ?? ""
+                request["project_workflow"] = options.detonationProjectWorkflow ?? ""
+                if let importModule = options.detonationProjectImportModule {
+                    request["project_import_module"] = importModule
+                }
+                if let requirementsPath = options.detonationProjectRequirementsPath {
+                    request["project_requirements_path"] = requirementsPath
+                }
+            }
             let requestData = try JSONSerialization.data(withJSONObject: request, options: [.prettyPrinted, .sortedKeys])
             try requestData.write(to: requestURL, options: [.atomic])
             guard let result = waitForDetonationResult(
@@ -1908,6 +1989,10 @@ struct WhoaThereMacosVmHelper {
             fields["tool"] = tool
             fields["command_class"] = commandClass
             fields["fixture"] = fixture
+            fields["project_mode"] = projectMode
+            fields["project_workflow"] = options.detonationProjectWorkflow ?? "none"
+            fields["project_import_module"] = options.detonationProjectImportModule ?? "none"
+            fields["project_requirements_path"] = options.detonationProjectRequirementsPath ?? "none"
             fields["sync_back_enabled"] = false
             fields["host_package_execution_enabled"] = false
             fields["high_risk_package_execution_enabled"] = false
@@ -1923,7 +2008,8 @@ struct WhoaThereMacosVmHelper {
                     "operation": "detonate",
                     "tool": tool,
                     "command_class": commandClass,
-                    "fixture": options.detonationFixture ?? "missing",
+                    "fixture": fixture,
+                    "project_mode": projectMode,
                     "sync_back_enabled": false,
                     "host_package_execution_enabled": false,
                     "high_risk_package_execution_enabled": false,
@@ -1956,6 +2042,52 @@ struct WhoaThereMacosVmHelper {
             expectedProtocol: guestReadinessProtocol,
             expectedPort: Int(guestReadinessPort)
         )
+    }
+
+    private static func validatedProjectPayloadHex(
+        options: HelperOptions,
+        layout: BundleLayout,
+        projectMode: Bool
+    ) throws -> String? {
+        guard projectMode else {
+            return nil
+        }
+        guard let payloadPath = options.detonationProjectPayloadPath, !payloadPath.isEmpty else {
+            throw helperError("project_payload_path_required")
+        }
+        guard payloadPath.hasPrefix("/") else {
+            throw helperError("project_payload_path_not_absolute")
+        }
+        let payloadURL = URL(fileURLWithPath: payloadPath).standardizedFileURL
+        let statePath = layout.stateDir.standardizedFileURL.path
+        guard payloadURL.path == statePath || payloadURL.path.hasPrefix("\(statePath)/") else {
+            throw helperError("project_payload_path_outside_state_dir")
+        }
+        guard fileExists(payloadURL), isRegularFile(payloadURL) else {
+            throw helperError("project_payload_file_missing")
+        }
+        let attributes = try FileManager.default.attributesOfItem(atPath: payloadURL.path)
+        let fileSize = (attributes[.size] as? NSNumber)?.intValue ?? 0
+        guard fileSize > 0 else {
+            throw helperError("project_payload_empty")
+        }
+        guard fileSize <= maxProjectPayloadHexBytes else {
+            throw helperError("project_payload_too_large")
+        }
+        let payloadHex = try String(contentsOf: payloadURL, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !payloadHex.isEmpty, payloadHex.count % 2 == 0 else {
+            throw helperError("project_payload_hex_invalid")
+        }
+        guard payloadHex.utf8.count <= maxProjectPayloadHexBytes else {
+            throw helperError("project_payload_too_large")
+        }
+        guard payloadHex.allSatisfy({ character in
+            character.isNumber || ("a"..."f").contains(character) || ("A"..."F").contains(character)
+        }) else {
+            throw helperError("project_payload_hex_invalid")
+        }
+        return payloadHex
     }
 
     private static func waitForDetonationResult(resultURL: URL, timeoutSeconds: TimeInterval) -> [String: Any]? {

@@ -32,6 +32,10 @@ public struct HelperOptions: Equatable, Sendable {
     public var detonationCommandClass: String?
     public var detonationFixture: String?
     public var detonationTimeoutSeconds: UInt64
+    public var detonationProjectPayloadPath: String?
+    public var detonationProjectWorkflow: String?
+    public var detonationProjectImportModule: String?
+    public var detonationProjectRequirementsPath: String?
     public var detonationArgs: [String]
 
     public init(
@@ -48,6 +52,10 @@ public struct HelperOptions: Equatable, Sendable {
         detonationCommandClass: String? = nil,
         detonationFixture: String? = nil,
         detonationTimeoutSeconds: UInt64 = 120,
+        detonationProjectPayloadPath: String? = nil,
+        detonationProjectWorkflow: String? = nil,
+        detonationProjectImportModule: String? = nil,
+        detonationProjectRequirementsPath: String? = nil,
         detonationArgs: [String] = []
     ) {
         self.command = command
@@ -63,6 +71,10 @@ public struct HelperOptions: Equatable, Sendable {
         self.detonationCommandClass = detonationCommandClass
         self.detonationFixture = detonationFixture
         self.detonationTimeoutSeconds = detonationTimeoutSeconds
+        self.detonationProjectPayloadPath = detonationProjectPayloadPath
+        self.detonationProjectWorkflow = detonationProjectWorkflow
+        self.detonationProjectImportModule = detonationProjectImportModule
+        self.detonationProjectRequirementsPath = detonationProjectRequirementsPath
         self.detonationArgs = detonationArgs
     }
 }
@@ -130,6 +142,14 @@ public func parseArguments(_ arguments: [String]) throws -> HelperOptions {
             options.detonationFixture = try value(after: token, in: arguments, at: &index)
         case "--timeout-seconds":
             options.detonationTimeoutSeconds = try integerValue(after: token, in: arguments, at: &index)
+        case "--project-payload-path":
+            options.detonationProjectPayloadPath = try value(after: token, in: arguments, at: &index)
+        case "--project-workflow":
+            options.detonationProjectWorkflow = try value(after: token, in: arguments, at: &index)
+        case "--project-import-module":
+            options.detonationProjectImportModule = try value(after: token, in: arguments, at: &index)
+        case "--project-requirements-path":
+            options.detonationProjectRequirementsPath = try value(after: token, in: arguments, at: &index)
         case "--":
             options.detonationArgs = Array(arguments[arguments.index(after: index)..<arguments.endIndex])
             index = arguments.endIndex
@@ -170,6 +190,14 @@ public func parseArguments(_ arguments: [String]) throws -> HelperOptions {
                         throw ArgumentError.invalidInteger(flag)
                     }
                     options.detonationTimeoutSeconds = parsed
+                case "--project-payload-path":
+                    options.detonationProjectPayloadPath = rawValue
+                case "--project-workflow":
+                    options.detonationProjectWorkflow = rawValue
+                case "--project-import-module":
+                    options.detonationProjectImportModule = rawValue
+                case "--project-requirements-path":
+                    options.detonationProjectRequirementsPath = rawValue
                 default:
                     throw ArgumentError.unknownFlag(flag)
                 }

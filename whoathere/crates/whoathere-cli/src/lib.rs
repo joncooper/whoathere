@@ -1,8 +1,8 @@
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Stdio};
 use std::thread::sleep;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use whoathere_admission::AdmissionController;
 use whoathere_audit::{
@@ -1851,12 +1851,24 @@ struct VmDetonateRenderArgs<'a> {
 struct DetonationMirrorPlan {
     workspace_configured: bool,
     workspace_path: Option<String>,
+    workspace_root: Option<PathBuf>,
     allowed_file_count: usize,
     secret_exclusion_count: usize,
     symlink_escape_count: usize,
+    large_file_exclusion_count: usize,
     total_allowed_bytes: u64,
     file_classes: Vec<String>,
+    included_paths: Vec<String>,
+    files: Vec<DetonationMirrorFile>,
     reason_codes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DetonationMirrorFile {
+    absolute_path: PathBuf,
+    relative_path: String,
+    class: String,
+    size_bytes: u64,
 }
 
 impl DetonationMirrorPlan {
@@ -1864,15 +1876,40 @@ impl DetonationMirrorPlan {
         Self {
             workspace_configured: false,
             workspace_path: None,
+            workspace_root: None,
             allowed_file_count: 0,
             secret_exclusion_count: 0,
             symlink_escape_count: 0,
+            large_file_exclusion_count: 0,
             total_allowed_bytes: 0,
             file_classes: Vec::new(),
+            included_paths: Vec::new(),
+            files: Vec::new(),
             reason_codes: vec!["detonation_workspace_not_configured".to_string()],
         }
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProjectDetonationPlan {
+    project_mode: bool,
+    workflow: Option<String>,
+    import_module: Option<String>,
+    requirements_path: Option<String>,
+    safe_to_execute: bool,
+    reason_codes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProjectPayloadPreparation {
+    payload_path: String,
+    payload_bytes: usize,
+    payload_hex_bytes: usize,
+}
+
+const MAX_DETONATION_PROJECT_FILES: usize = 128;
+const MAX_DETONATION_PROJECT_FILE_BYTES: u64 = 128 * 1024;
+const MAX_DETONATION_PROJECT_TOTAL_BYTES: u64 = 512 * 1024;
 
 fn render_vm_detonate(args: VmDetonateRenderArgs<'_>) -> String {
     let config = macos_vm_config(args.state_dir, None, None);
@@ -1882,11 +1919,14 @@ fn render_vm_detonate(args: VmDetonateRenderArgs<'_>) -> String {
         .workspace
         .map(build_detonation_mirror_plan)
         .unwrap_or_else(DetonationMirrorPlan::unconfigured);
+    let project_plan =
+        build_project_detonation_plan(args.tool, args.args, &mirror_plan, args.fixture);
     let canary_categories = default_canaries()
         .iter()
         .map(|canary| canary.category.to_string())
         .collect::<Vec<_>>();
     let mut reason_codes = mirror_plan.reason_codes.clone();
+    reason_codes.extend(project_plan.reason_codes.iter().cloned());
     reason_codes.push("detonation_sync_back_disabled_goal_2".to_string());
     reason_codes.push("detonation_host_package_execution_disabled".to_string());
     if !args.execute {
@@ -1895,10 +1935,29 @@ fn render_vm_detonate(args: VmDetonateRenderArgs<'_>) -> String {
     if command_class == "unsupported_detonation" {
         reason_codes.push("detonation_workflow_unsupported".to_string());
     }
+    if args.execute && args.fixture.is_none() && !project_plan.project_mode {
+        reason_codes.push("detonation_fixture_or_project_required".to_string());
+    }
+    let mut payload_preparation: Option<ProjectPayloadPreparation> = None;
+    let mut payload_prepare_error: Option<String> = None;
+    if args.execute && project_plan.project_mode && project_plan.safe_to_execute {
+        match prepare_project_payload(&config.state_dir, &mirror_plan) {
+            Ok(preparation) => payload_preparation = Some(preparation),
+            Err(reason) => {
+                payload_prepare_error = Some(reason.clone());
+                reason_codes.push(reason);
+            }
+        }
+    }
     reason_codes.sort();
     reason_codes.dedup();
 
-    let helper = if args.execute {
+    let helper_invocation_allowed = args.execute
+        && command_class != "unsupported_detonation"
+        && payload_prepare_error.is_none()
+        && (args.fixture.is_some() || project_plan.project_mode)
+        && (!project_plan.project_mode || project_plan.safe_to_execute);
+    let helper = if helper_invocation_allowed {
         let mut helper_args = vec![
             "--state-dir".to_string(),
             config.state_dir.display().to_string(),
@@ -1914,6 +1973,25 @@ fn render_vm_detonate(args: VmDetonateRenderArgs<'_>) -> String {
         if let Some(fixture) = args.fixture {
             helper_args.push("--fixture".to_string());
             helper_args.push(fixture.to_string());
+        } else if project_plan.project_mode {
+            helper_args.push("--fixture".to_string());
+            helper_args.push("project_mirror".to_string());
+        }
+        if let Some(preparation) = &payload_preparation {
+            helper_args.push("--project-payload-path".to_string());
+            helper_args.push(preparation.payload_path.clone());
+        }
+        if let Some(workflow) = &project_plan.workflow {
+            helper_args.push("--project-workflow".to_string());
+            helper_args.push(workflow.clone());
+        }
+        if let Some(import_module) = &project_plan.import_module {
+            helper_args.push("--project-import-module".to_string());
+            helper_args.push(import_module.clone());
+        }
+        if let Some(requirements_path) = &project_plan.requirements_path {
+            helper_args.push("--project-requirements-path".to_string());
+            helper_args.push(requirements_path.clone());
         }
         if !args.args.is_empty() {
             helper_args.push("--".to_string());
@@ -1931,8 +2009,17 @@ fn render_vm_detonate(args: VmDetonateRenderArgs<'_>) -> String {
         .as_ref()
         .and_then(|helper| helper.exit_code)
         .unwrap_or_else(|| ExitCode::Allow.code());
+    let fail_closed_before_helper = command_class == "unsupported_detonation"
+        || (args.fixture.is_none() && !project_plan.project_mode)
+        || (project_plan.project_mode && !project_plan.safe_to_execute);
     let final_exit_code = if args.execute {
-        helper_exit_code
+        if payload_prepare_error.is_some() {
+            ExitCode::InternalError.code()
+        } else if fail_closed_before_helper {
+            ExitCode::Deny.code()
+        } else {
+            helper_exit_code
+        }
     } else {
         ExitCode::Allow.code()
     };
@@ -1954,7 +2041,7 @@ fn render_vm_detonate(args: VmDetonateRenderArgs<'_>) -> String {
             .map(render_vm_helper_json)
             .unwrap_or_else(|| "null".to_string());
         return format!(
-            "{{\n  \"command\": \"whoathere vm detonate\",\n  \"schema_version\": \"whoathere.macos_vm.detonation.v1\",\n  \"release_target\": {},\n  \"vm_boundary\": {},\n  \"network_model\": {},\n  \"sync_back_enabled\": false,\n  \"host_package_execution_enabled\": false,\n  \"high_risk_package_execution_enabled\": false,\n  \"mutation_requested\": {},\n  \"state_dir\": {},\n  \"tool\": {},\n  \"command_class\": {},\n  \"argv\": {},\n  \"fixture\": {},\n  \"timeout_seconds\": {},\n  \"workspace\": {},\n  \"mirror_plan\": {},\n  \"canary_categories\": {},\n  \"verdict\": {},\n  \"reason_codes\": {},\n  \"helper\": {},\n  \"exit_code\": {}\n}}",
+            "{{\n  \"command\": \"whoathere vm detonate\",\n  \"schema_version\": \"whoathere.macos_vm.detonation.v1\",\n  \"release_target\": {},\n  \"vm_boundary\": {},\n  \"network_model\": {},\n  \"sync_back_enabled\": false,\n  \"host_package_execution_enabled\": false,\n  \"high_risk_package_execution_enabled\": false,\n  \"mutation_requested\": {},\n  \"state_dir\": {},\n  \"tool\": {},\n  \"command_class\": {},\n  \"argv\": {},\n  \"fixture\": {},\n  \"timeout_seconds\": {},\n  \"workspace\": {},\n  \"mirror_plan\": {},\n  \"project_plan\": {},\n  \"project_payload\": {},\n  \"canary_categories\": {},\n  \"verdict\": {},\n  \"reason_codes\": {},\n  \"helper\": {},\n  \"exit_code\": {}\n}}",
             json_string(RELEASE_TARGET),
             json_string(VM_BOUNDARY),
             json_string(NETWORK_MODEL),
@@ -1978,6 +2065,8 @@ fn render_vm_detonate(args: VmDetonateRenderArgs<'_>) -> String {
                 .map(|value| json_string(&value))
                 .unwrap_or_else(|| "null".to_string()),
             render_detonation_mirror_plan_json(&mirror_plan),
+            render_project_detonation_plan_json(&project_plan),
+            render_project_payload_preparation_json(payload_preparation.as_ref()),
             json_string_array(&canary_categories),
             json_string(verdict),
             json_string_array(&reason_codes),
@@ -1991,7 +2080,7 @@ fn render_vm_detonate(args: VmDetonateRenderArgs<'_>) -> String {
         .map(|helper| helper.render_text())
         .unwrap_or_else(|| "helper_invoked=false".to_string());
     format!(
-        "whoathere vm detonate\nschema_version=whoathere.macos_vm.detonation.v1\nrelease_target={}\nvm_boundary={}\nnetwork_model={}\nsync_back_enabled=false\nhost_package_execution_enabled=false\nhigh_risk_package_execution_enabled=false\nmutation_requested={}\nstate_dir={}\ntool={}\ncommand_class={}\nargv={:?}\nfixture={}\ntimeout_seconds={}\nworkspace={}\nmirror_workspace_configured={}\nmirror_allowed_file_count={}\nmirror_secret_exclusion_count={}\nmirror_symlink_escape_count={}\nmirror_total_allowed_bytes={}\nmirror_file_classes={:?}\nmirror_reason_codes={:?}\ncanary_categories={:?}\nverdict={}\nreason_codes={:?}\n{}\nexit_code={}",
+        "whoathere vm detonate\nschema_version=whoathere.macos_vm.detonation.v1\nrelease_target={}\nvm_boundary={}\nnetwork_model={}\nsync_back_enabled=false\nhost_package_execution_enabled=false\nhigh_risk_package_execution_enabled=false\nmutation_requested={}\nstate_dir={}\ntool={}\ncommand_class={}\nargv={:?}\nfixture={}\ntimeout_seconds={}\nworkspace={}\nmirror_workspace_configured={}\nmirror_allowed_file_count={}\nmirror_secret_exclusion_count={}\nmirror_symlink_escape_count={}\nmirror_large_file_exclusion_count={}\nmirror_total_allowed_bytes={}\nmirror_file_classes={:?}\nmirror_included_paths={:?}\nmirror_reason_codes={:?}\nproject_mode={}\nproject_workflow={}\nproject_import_module={}\nproject_requirements_path={}\nproject_safe_to_execute={}\nproject_payload_path={}\ncanary_categories={:?}\nverdict={}\nreason_codes={:?}\n{}\nexit_code={}",
         RELEASE_TARGET,
         VM_BOUNDARY,
         NETWORK_MODEL,
@@ -2010,9 +2099,20 @@ fn render_vm_detonate(args: VmDetonateRenderArgs<'_>) -> String {
         mirror_plan.allowed_file_count,
         mirror_plan.secret_exclusion_count,
         mirror_plan.symlink_escape_count,
+        mirror_plan.large_file_exclusion_count,
         mirror_plan.total_allowed_bytes,
         mirror_plan.file_classes,
+        mirror_plan.included_paths,
         mirror_plan.reason_codes,
+        project_plan.project_mode,
+        project_plan.workflow.as_deref().unwrap_or("none"),
+        project_plan.import_module.as_deref().unwrap_or("none"),
+        project_plan.requirements_path.as_deref().unwrap_or("none"),
+        project_plan.safe_to_execute,
+        payload_preparation
+            .as_ref()
+            .map(|payload| redacted_scalar(&payload.payload_path))
+            .unwrap_or_else(|| "none".to_string()),
         canary_categories,
         verdict,
         reason_codes,
@@ -2046,11 +2146,15 @@ fn build_detonation_mirror_plan(workspace: &str) -> DetonationMirrorPlan {
             return DetonationMirrorPlan {
                 workspace_configured: true,
                 workspace_path: Some(redacted_scalar(workspace)),
+                workspace_root: None,
                 allowed_file_count: 0,
                 secret_exclusion_count: 0,
                 symlink_escape_count: 0,
+                large_file_exclusion_count: 0,
                 total_allowed_bytes: 0,
                 file_classes: Vec::new(),
+                included_paths: Vec::new(),
+                files: Vec::new(),
                 reason_codes: vec!["detonation_workspace_not_found".to_string()],
             };
         }
@@ -2059,11 +2163,15 @@ fn build_detonation_mirror_plan(workspace: &str) -> DetonationMirrorPlan {
         return DetonationMirrorPlan {
             workspace_configured: true,
             workspace_path: Some(redacted_scalar(workspace)),
+            workspace_root: None,
             allowed_file_count: 0,
             secret_exclusion_count: 0,
             symlink_escape_count: 0,
+            large_file_exclusion_count: 0,
             total_allowed_bytes: 0,
             file_classes: Vec::new(),
+            included_paths: Vec::new(),
+            files: Vec::new(),
             reason_codes: vec!["detonation_workspace_not_directory".to_string()],
         };
     }
@@ -2071,11 +2179,15 @@ fn build_detonation_mirror_plan(workspace: &str) -> DetonationMirrorPlan {
     let mut plan = DetonationMirrorPlan {
         workspace_configured: true,
         workspace_path: Some(redacted_scalar(workspace)),
+        workspace_root: Some(canonical.clone()),
         allowed_file_count: 0,
         secret_exclusion_count: 0,
         symlink_escape_count: 0,
+        large_file_exclusion_count: 0,
         total_allowed_bytes: 0,
         file_classes: Vec::new(),
+        included_paths: Vec::new(),
+        files: Vec::new(),
         reason_codes: Vec::new(),
     };
     let mut stack = vec![canonical.clone()];
@@ -2140,9 +2252,69 @@ fn build_detonation_mirror_plan(workspace: &str) -> DetonationMirrorPlan {
                 continue;
             }
             if let Some(class) = allowed_mirror_input_class(&path) {
+                if metadata.len() > MAX_DETONATION_PROJECT_FILE_BYTES {
+                    plan.large_file_exclusion_count += 1;
+                    push_unique(
+                        &mut plan.reason_codes,
+                        "detonation_workspace_large_file_excluded",
+                    );
+                    continue;
+                }
+                if plan.files.len() >= MAX_DETONATION_PROJECT_FILES {
+                    push_unique(
+                        &mut plan.reason_codes,
+                        "detonation_workspace_file_count_limit_reached",
+                    );
+                    continue;
+                }
+                let next_total = plan.total_allowed_bytes.saturating_add(metadata.len());
+                if next_total > MAX_DETONATION_PROJECT_TOTAL_BYTES {
+                    plan.large_file_exclusion_count += 1;
+                    push_unique(
+                        &mut plan.reason_codes,
+                        "detonation_workspace_total_size_limit_reached",
+                    );
+                    continue;
+                }
+                let Ok(relative_path) = path.strip_prefix(&canonical) else {
+                    push_unique(
+                        &mut plan.reason_codes,
+                        "detonation_workspace_relative_path_failed",
+                    );
+                    continue;
+                };
+                let Some(relative_path) = safe_project_relative_path(relative_path) else {
+                    push_unique(
+                        &mut plan.reason_codes,
+                        "detonation_workspace_unsafe_relative_path_blocked",
+                    );
+                    continue;
+                };
+                let Ok(canonical_file) = std::fs::canonicalize(&path) else {
+                    push_unique(
+                        &mut plan.reason_codes,
+                        "detonation_workspace_file_canonicalize_failed",
+                    );
+                    continue;
+                };
+                if !canonical_file.starts_with(&canonical) {
+                    plan.symlink_escape_count += 1;
+                    push_unique(
+                        &mut plan.reason_codes,
+                        "detonation_workspace_symlink_escape_blocked",
+                    );
+                    continue;
+                }
                 plan.allowed_file_count += 1;
-                plan.total_allowed_bytes = plan.total_allowed_bytes.saturating_add(metadata.len());
+                plan.total_allowed_bytes = next_total;
                 push_unique(&mut plan.file_classes, class);
+                plan.included_paths.push(relative_path.clone());
+                plan.files.push(DetonationMirrorFile {
+                    absolute_path: path,
+                    relative_path,
+                    class: class.to_string(),
+                    size_bytes: metadata.len(),
+                });
             }
         }
     }
@@ -2153,12 +2325,16 @@ fn build_detonation_mirror_plan(workspace: &str) -> DetonationMirrorPlan {
         );
     }
     plan.file_classes.sort();
+    plan.included_paths.sort();
     plan.reason_codes.sort();
     plan
 }
 
 fn allowed_mirror_input_class(path: &Path) -> Option<&'static str> {
     let file_name = path.file_name()?.to_string_lossy().to_ascii_lowercase();
+    let extension = path
+        .extension()
+        .map(|extension| extension.to_string_lossy().to_ascii_lowercase());
     match file_name.as_str() {
         "package.json" => Some("npm_manifest"),
         "package-lock.json" | "npm-shrinkwrap.json" | "yarn.lock" | "pnpm-lock.yaml" => {
@@ -2172,6 +2348,9 @@ fn allowed_mirror_input_class(path: &Path) -> Option<&'static str> {
         _ if file_name.starts_with("constraints") && file_name.ends_with(".txt") => {
             Some("python_constraints")
         }
+        "__init__.py" => Some("python_package_init"),
+        _ if extension.as_deref() == Some("py") => Some("python_source"),
+        _ if extension.as_deref() == Some("pth") => Some("python_startup_hook"),
         _ => None,
     }
 }
@@ -2231,7 +2410,7 @@ fn push_unique(values: &mut Vec<String>, value: &str) {
 
 fn render_detonation_mirror_plan_json(plan: &DetonationMirrorPlan) -> String {
     format!(
-        "{{\"workspace_configured\": {}, \"workspace_path\": {}, \"allowed_file_count\": {}, \"secret_exclusion_count\": {}, \"symlink_escape_count\": {}, \"total_allowed_bytes\": {}, \"file_classes\": {}, \"reason_codes\": {}}}",
+        "{{\"workspace_configured\": {}, \"workspace_path\": {}, \"allowed_file_count\": {}, \"secret_exclusion_count\": {}, \"symlink_escape_count\": {}, \"large_file_exclusion_count\": {}, \"total_allowed_bytes\": {}, \"file_classes\": {}, \"included_paths\": {}, \"reason_codes\": {}}}",
         plan.workspace_configured,
         plan.workspace_path
             .as_deref()
@@ -2240,10 +2419,401 @@ fn render_detonation_mirror_plan_json(plan: &DetonationMirrorPlan) -> String {
         plan.allowed_file_count,
         plan.secret_exclusion_count,
         plan.symlink_escape_count,
+        plan.large_file_exclusion_count,
         plan.total_allowed_bytes,
         json_string_array(&plan.file_classes),
+        json_string_array(&plan.included_paths),
         json_string_array(&plan.reason_codes)
     )
+}
+
+fn build_project_detonation_plan(
+    tool: &str,
+    args: &[String],
+    mirror_plan: &DetonationMirrorPlan,
+    fixture: Option<&str>,
+) -> ProjectDetonationPlan {
+    if fixture.is_some() {
+        return ProjectDetonationPlan {
+            project_mode: false,
+            workflow: None,
+            import_module: None,
+            requirements_path: None,
+            safe_to_execute: false,
+            reason_codes: Vec::new(),
+        };
+    }
+    if tool != "pip" {
+        return ProjectDetonationPlan {
+            project_mode: false,
+            workflow: None,
+            import_module: None,
+            requirements_path: None,
+            safe_to_execute: false,
+            reason_codes: vec!["project_detonation_pip_only_goal_3".to_string()],
+        };
+    }
+    if !mirror_plan.workspace_configured || mirror_plan.workspace_root.is_none() {
+        return ProjectDetonationPlan {
+            project_mode: false,
+            workflow: None,
+            import_module: None,
+            requirements_path: None,
+            safe_to_execute: false,
+            reason_codes: vec!["project_detonation_workspace_required".to_string()],
+        };
+    }
+
+    let mut reason_codes = Vec::new();
+    let install_index = args.iter().position(|arg| arg == "install");
+    let Some(install_index) = install_index else {
+        return ProjectDetonationPlan {
+            project_mode: true,
+            workflow: None,
+            import_module: None,
+            requirements_path: None,
+            safe_to_execute: false,
+            reason_codes: vec!["project_detonation_pip_install_required".to_string()],
+        };
+    };
+    let install_args = &args[install_index + 1..];
+    let import_module = infer_project_import_module(mirror_plan);
+
+    if install_args
+        .iter()
+        .any(|arg| arg == "-e" || arg == "--editable" || arg.starts_with("-e"))
+    {
+        reason_codes.push("project_editable_dependency_denied".to_string());
+    }
+    if install_args
+        .iter()
+        .any(|arg| is_direct_or_vcs_reference(arg))
+    {
+        reason_codes.push("project_direct_or_vcs_dependency_denied".to_string());
+    }
+    if install_args
+        .iter()
+        .any(|arg| arg == "--only-binary" || arg == "--prefer-binary")
+    {
+        reason_codes.push("project_binary_preference_requires_manual_review".to_string());
+    }
+
+    let has_local_project_install = install_args.iter().any(|arg| arg == "." || arg == "./");
+    let requirements_path = parse_pip_requirements_path(install_args);
+    if has_local_project_install && requirements_path.is_none() {
+        if !project_has_python_build_input(mirror_plan) {
+            reason_codes.push("project_python_build_input_missing".to_string());
+        }
+        if mirror_plan.symlink_escape_count > 0 {
+            reason_codes.push("project_symlink_escape_blocked".to_string());
+        }
+        reason_codes.sort();
+        reason_codes.dedup();
+        return ProjectDetonationPlan {
+            project_mode: true,
+            workflow: Some("pip_project_install".to_string()),
+            import_module,
+            requirements_path: None,
+            safe_to_execute: reason_codes.is_empty(),
+            reason_codes,
+        };
+    }
+
+    if let Some(requirements_path) = requirements_path {
+        match validate_project_requirements(&requirements_path, mirror_plan) {
+            Ok(mut requirements_reasons) => reason_codes.append(&mut requirements_reasons),
+            Err(reason) => reason_codes.push(reason),
+        }
+        if mirror_plan.symlink_escape_count > 0 {
+            reason_codes.push("project_symlink_escape_blocked".to_string());
+        }
+        reason_codes.sort();
+        reason_codes.dedup();
+        return ProjectDetonationPlan {
+            project_mode: true,
+            workflow: Some("pip_requirements_install".to_string()),
+            import_module,
+            requirements_path: Some(requirements_path),
+            safe_to_execute: reason_codes.is_empty(),
+            reason_codes,
+        };
+    }
+
+    reason_codes.push("project_install_target_requires_manual_review".to_string());
+    reason_codes.sort();
+    reason_codes.dedup();
+    ProjectDetonationPlan {
+        project_mode: true,
+        workflow: None,
+        import_module,
+        requirements_path: None,
+        safe_to_execute: false,
+        reason_codes,
+    }
+}
+
+fn project_has_python_build_input(mirror_plan: &DetonationMirrorPlan) -> bool {
+    mirror_plan
+        .included_paths
+        .iter()
+        .any(|path| matches!(path.as_str(), "pyproject.toml" | "setup.py" | "setup.cfg"))
+}
+
+fn parse_pip_requirements_path(args: &[String]) -> Option<String> {
+    for (index, arg) in args.iter().enumerate() {
+        if arg == "-r" || arg == "--requirement" {
+            return args.get(index + 1).cloned();
+        }
+        if let Some(value) = arg.strip_prefix("-r") {
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+        if let Some(value) = arg.strip_prefix("--requirement=") {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+fn validate_project_requirements(
+    requirements_path: &str,
+    mirror_plan: &DetonationMirrorPlan,
+) -> Result<Vec<String>, String> {
+    let normalized = normalize_relative_project_path(requirements_path)
+        .ok_or_else(|| "project_requirements_path_escape_blocked".to_string())?;
+    let mut reasons = Vec::new();
+    let mut visited = Vec::new();
+    validate_project_requirements_file(&normalized, mirror_plan, &mut visited, &mut reasons)?;
+    reasons.sort();
+    reasons.dedup();
+    Ok(reasons)
+}
+
+fn validate_project_requirements_file(
+    requirements_path: &str,
+    mirror_plan: &DetonationMirrorPlan,
+    visited: &mut Vec<String>,
+    reasons: &mut Vec<String>,
+) -> Result<(), String> {
+    if visited.iter().any(|visited| visited == requirements_path) {
+        return Ok(());
+    }
+    visited.push(requirements_path.to_string());
+    let Some(file) = mirror_plan
+        .files
+        .iter()
+        .find(|file| file.relative_path == requirements_path)
+    else {
+        return Err("project_requirements_file_not_in_mirror".to_string());
+    };
+    let contents = std::fs::read_to_string(&file.absolute_path)
+        .map_err(|_| "project_requirements_read_failed".to_string())?;
+    for raw_line in contents.lines() {
+        let line = raw_line.split('#').next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(include_path) = line
+            .strip_prefix("-r ")
+            .or_else(|| line.strip_prefix("--requirement "))
+            .or_else(|| line.strip_prefix("-c "))
+            .or_else(|| line.strip_prefix("--constraint "))
+        {
+            let include_path = normalize_relative_project_path(include_path.trim())
+                .ok_or_else(|| "project_requirements_path_escape_blocked".to_string())?;
+            validate_project_requirements_file(&include_path, mirror_plan, visited, reasons)?;
+            continue;
+        }
+        if let Some(include_path) = line.strip_prefix("--requirement=") {
+            let include_path = normalize_relative_project_path(include_path.trim())
+                .ok_or_else(|| "project_requirements_path_escape_blocked".to_string())?;
+            validate_project_requirements_file(&include_path, mirror_plan, visited, reasons)?;
+            continue;
+        }
+        if let Some(include_path) = line.strip_prefix("--constraint=") {
+            let include_path = normalize_relative_project_path(include_path.trim())
+                .ok_or_else(|| "project_requirements_path_escape_blocked".to_string())?;
+            validate_project_requirements_file(&include_path, mirror_plan, visited, reasons)?;
+            continue;
+        }
+        if line == "." || line.starts_with("./") {
+            continue;
+        }
+        if line.starts_with("-e") || line.starts_with("--editable") {
+            reasons.push("project_requirements_editable_denied".to_string());
+            continue;
+        }
+        if is_direct_or_vcs_reference(line) {
+            reasons.push("project_requirements_direct_or_vcs_denied".to_string());
+            continue;
+        }
+        reasons.push("project_requirements_public_resolution_deferred".to_string());
+    }
+    Ok(())
+}
+
+fn is_direct_or_vcs_reference(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    lower.contains("://")
+        || lower.starts_with("git+")
+        || lower.starts_with("hg+")
+        || lower.starts_with("svn+")
+        || lower.starts_with("bzr+")
+        || lower.contains(" @ ")
+        || lower.ends_with(".whl")
+        || lower.ends_with(".tar.gz")
+        || lower.ends_with(".zip")
+}
+
+fn infer_project_import_module(mirror_plan: &DetonationMirrorPlan) -> Option<String> {
+    mirror_plan
+        .included_paths
+        .iter()
+        .filter_map(|path| path.strip_suffix("/__init__.py"))
+        .find(|path| safe_python_module_name(path))
+        .map(|path| path.replace('/', "."))
+        .or_else(|| {
+            mirror_plan.included_paths.iter().find_map(|path| {
+                let module = path.strip_suffix(".py")?;
+                if matches!(module, "setup" | "whoathere_backend") || module.contains('/') {
+                    return None;
+                }
+                safe_python_module_name(module).then(|| module.to_string())
+            })
+        })
+}
+
+fn safe_python_module_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.chars().all(|character| {
+            character.is_ascii_alphanumeric()
+                || character == '_'
+                || character == '/'
+                || character == '.'
+        })
+        && !value.contains("..")
+        && !value.starts_with('/')
+}
+
+fn safe_project_relative_path(path: &Path) -> Option<String> {
+    let value = path.to_string_lossy().replace('\\', "/");
+    normalize_relative_project_path(&value)
+}
+
+fn normalize_relative_project_path(value: &str) -> Option<String> {
+    let value = value.trim().replace('\\', "/");
+    if value.is_empty() || value.starts_with('/') || value.contains('\0') {
+        return None;
+    }
+    let mut components = Vec::new();
+    for component in value.split('/') {
+        match component {
+            "" | "." => {}
+            ".." => return None,
+            component => components.push(component),
+        }
+    }
+    if components.is_empty() {
+        return None;
+    }
+    Some(components.join("/"))
+}
+
+fn prepare_project_payload(
+    state_dir: &Path,
+    mirror_plan: &DetonationMirrorPlan,
+) -> Result<ProjectPayloadPreparation, String> {
+    let payload = encode_project_payload(&mirror_plan.files)?;
+    let payload_hex = hex_encode(&payload);
+    let created_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "project_payload_clock_error".to_string())?
+        .as_millis();
+    let payload_dir = state_dir.join("runs").join("project-payloads");
+    std::fs::create_dir_all(&payload_dir)
+        .map_err(|_| "project_payload_directory_create_failed".to_string())?;
+    let payload_path = payload_dir.join(format!("{created_at}.payload.hex"));
+    let mut file = std::fs::File::create(&payload_path)
+        .map_err(|_| "project_payload_write_failed".to_string())?;
+    file.write_all(payload_hex.as_bytes())
+        .map_err(|_| "project_payload_write_failed".to_string())?;
+    Ok(ProjectPayloadPreparation {
+        payload_path: payload_path.display().to_string(),
+        payload_bytes: payload.len(),
+        payload_hex_bytes: payload_hex.len(),
+    })
+}
+
+fn encode_project_payload(files: &[DetonationMirrorFile]) -> Result<Vec<u8>, String> {
+    if files.len() > MAX_DETONATION_PROJECT_FILES {
+        return Err("project_payload_file_count_limit_exceeded".to_string());
+    }
+    let mut payload = Vec::new();
+    payload.extend_from_slice(b"WTP1");
+    let file_count = u32::try_from(files.len())
+        .map_err(|_| "project_payload_file_count_limit_exceeded".to_string())?;
+    payload.extend_from_slice(&file_count.to_le_bytes());
+    let mut total_bytes = 0_u64;
+    for file in files {
+        let contents = std::fs::read(&file.absolute_path)
+            .map_err(|_| "project_payload_file_read_failed".to_string())?;
+        if contents.len() as u64 != file.size_bytes {
+            return Err("project_payload_file_changed_during_read".to_string());
+        }
+        if file.size_bytes > MAX_DETONATION_PROJECT_FILE_BYTES {
+            return Err("project_payload_file_size_limit_exceeded".to_string());
+        }
+        total_bytes = total_bytes.saturating_add(file.size_bytes);
+        if total_bytes > MAX_DETONATION_PROJECT_TOTAL_BYTES {
+            return Err("project_payload_total_size_limit_exceeded".to_string());
+        }
+        let path_bytes = file.relative_path.as_bytes();
+        let path_len = u16::try_from(path_bytes.len())
+            .map_err(|_| "project_payload_path_too_long".to_string())?;
+        let content_len = u32::try_from(contents.len())
+            .map_err(|_| "project_payload_file_size_limit_exceeded".to_string())?;
+        payload.extend_from_slice(&path_len.to_le_bytes());
+        payload.extend_from_slice(&content_len.to_le_bytes());
+        payload.extend_from_slice(path_bytes);
+        payload.extend_from_slice(&contents);
+    }
+    Ok(payload)
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(HEX[(byte >> 4) as usize] as char);
+        output.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    output
+}
+
+fn render_project_detonation_plan_json(plan: &ProjectDetonationPlan) -> String {
+    format!(
+        "{{\"project_mode\": {}, \"workflow\": {}, \"import_module\": {}, \"requirements_path\": {}, \"safe_to_execute\": {}, \"reason_codes\": {}}}",
+        plan.project_mode,
+        json_option_string(plan.workflow.as_deref()),
+        json_option_string(plan.import_module.as_deref()),
+        json_option_string(plan.requirements_path.as_deref()),
+        plan.safe_to_execute,
+        json_string_array(&plan.reason_codes)
+    )
+}
+
+fn render_project_payload_preparation_json(payload: Option<&ProjectPayloadPreparation>) -> String {
+    payload
+        .map(|payload| {
+            format!(
+                "{{\"payload_path\": {}, \"payload_bytes\": {}, \"payload_hex_bytes\": {}}}",
+                json_string(&redacted_scalar(&payload.payload_path)),
+                payload.payload_bytes,
+                payload.payload_hex_bytes
+            )
+        })
+        .unwrap_or_else(|| "null".to_string())
 }
 
 fn render_vm_helper_json(helper: &MacosVmHelperOutput) -> String {
@@ -2464,6 +3034,7 @@ fn macos_vm_helper_timeout(operation: &str) -> Duration {
     match operation {
         "init" => Duration::from_secs(4 * 60 * 60),
         "start" | "suspend" | "reset" | "prune" => Duration::from_secs(60),
+        "detonate" => Duration::from_secs(20 * 60),
         _ => Duration::from_secs(15),
     }
 }
@@ -7351,6 +7922,165 @@ mod tests {
             state_dir.display()
         )));
         assert!(result.output.contains("verdict=helper_security_outcome"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vm_detonate_project_dry_run_plans_safe_pip_project() {
+        let root = temp_root("whoathere-cli-vm-project-dry-run");
+        std::fs::write(
+            root.join("setup.py"),
+            "from setuptools import setup\nsetup(name='whoathere-clean', version='0.0.1', py_modules=['whoathere_clean'])\n",
+        )
+        .expect("setup py");
+        std::fs::write(root.join("whoathere_clean.py"), "VALUE = 'clean'\n").expect("module");
+        std::fs::write(root.join(".env"), "TOKEN=real-secret").expect("env");
+
+        let result = evaluate_command(Command::VmDetonate {
+            tool: "pip".to_string(),
+            args: vec!["install".to_string(), ".".to_string()],
+            execute: false,
+            state_dir: Some(root.join("state").display().to_string()),
+            helper_path: Some("/tmp/nonexistent-helper".to_string()),
+            workspace: Some(root.display().to_string()),
+            fixture: None,
+            timeout_seconds: Some(30),
+            json: false,
+        });
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result.output.contains("project_mode=true"));
+        assert!(result
+            .output
+            .contains("project_workflow=pip_project_install"));
+        assert!(result
+            .output
+            .contains("project_import_module=whoathere_clean"));
+        assert!(result.output.contains("project_safe_to_execute=true"));
+        assert!(result.output.contains("mirror_secret_exclusion_count=1"));
+        assert!(!result.output.contains("real-secret"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vm_detonate_project_execute_forwards_payload_to_helper() {
+        let root = temp_root("whoathere-cli-vm-project-helper");
+        std::fs::write(
+            root.join("setup.py"),
+            "from setuptools import setup\nsetup(name='whoathere-clean', version='0.0.1', py_modules=['whoathere_clean'])\n",
+        )
+        .expect("setup py");
+        std::fs::write(root.join("whoathere_clean.py"), "VALUE = 'clean'\n").expect("module");
+        let helper = root.join("helper.sh");
+        write_new_file(
+            &helper,
+            b"#!/bin/sh\nprintf 'args='\nfor arg in \"$@\"; do printf '<%s>' \"$arg\"; done\nprintf '\\n'\nexit 0\n",
+        )
+        .expect("helper script");
+        set_executable(&helper).expect("executable helper");
+        let state_dir = root.join("state");
+
+        let result = evaluate_command(Command::VmDetonate {
+            tool: "pip".to_string(),
+            args: vec!["install".to_string(), ".".to_string()],
+            execute: true,
+            state_dir: Some(state_dir.display().to_string()),
+            helper_path: Some(helper.display().to_string()),
+            workspace: Some(root.display().to_string()),
+            fixture: None,
+            timeout_seconds: Some(75),
+            json: false,
+        });
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result.output.contains("<--fixture><project_mirror>"));
+        assert!(result.output.contains("<--project-payload-path>"));
+        assert!(result
+            .output
+            .contains("<--project-workflow><pip_project_install>"));
+        assert!(result
+            .output
+            .contains("<--project-import-module><whoathere_clean>"));
+        assert!(result.output.contains("project_payload_path="));
+        let payload_dir = state_dir.join("runs").join("project-payloads");
+        let payload_count = std::fs::read_dir(payload_dir)
+            .expect("payload dir")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".payload.hex")
+            })
+            .count();
+        assert_eq!(payload_count, 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vm_detonate_project_requirements_public_resolution_fails_before_helper() {
+        let root = temp_root("whoathere-cli-vm-project-unsafe-requirements");
+        std::fs::write(
+            root.join("setup.py"),
+            "from setuptools import setup\nsetup(name='whoathere-clean', version='0.0.1', py_modules=['whoathere_clean'])\n",
+        )
+        .expect("setup py");
+        std::fs::write(root.join("whoathere_clean.py"), "VALUE = 'clean'\n").expect("module");
+        std::fs::write(root.join("requirements.txt"), "requests\n").expect("requirements");
+        let helper = root.join("helper.sh");
+        write_new_file(
+            &helper,
+            b"#!/bin/sh\nprintf 'helper should not run\\n'\nexit 0\n",
+        )
+        .expect("helper script");
+        set_executable(&helper).expect("executable helper");
+
+        let result = evaluate_command(Command::VmDetonate {
+            tool: "pip".to_string(),
+            args: vec![
+                "install".to_string(),
+                "-r".to_string(),
+                "requirements.txt".to_string(),
+            ],
+            execute: true,
+            state_dir: Some(root.join("state").display().to_string()),
+            helper_path: Some(helper.display().to_string()),
+            workspace: Some(root.display().to_string()),
+            fixture: None,
+            timeout_seconds: Some(75),
+            json: false,
+        });
+
+        assert_eq!(result.exit_code, ExitCode::Deny.code());
+        assert!(result.output.contains("project_mode=true"));
+        assert!(result.output.contains("project_safe_to_execute=false"));
+        assert!(result
+            .output
+            .contains("project_requirements_public_resolution_deferred"));
+        assert!(result.output.contains("helper_invoked=false"));
+        assert!(!result.output.contains("helper should not run"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn project_payload_excludes_secret_files() {
+        let root = temp_root("whoathere-cli-vm-project-payload-secrets");
+        std::fs::write(
+            root.join("setup.py"),
+            "from setuptools import setup\nsetup(name='whoathere-clean', version='0.0.1', py_modules=['whoathere_clean'])\n",
+        )
+        .expect("setup py");
+        std::fs::write(root.join("whoathere_clean.py"), "VALUE = 'clean'\n").expect("module");
+        std::fs::write(root.join(".pypirc"), "password=real-secret").expect("pypirc");
+
+        let plan = build_detonation_mirror_plan(&root.display().to_string());
+        assert_eq!(plan.secret_exclusion_count, 1);
+        let payload = encode_project_payload(&plan.files).expect("payload");
+        let payload_text = String::from_utf8_lossy(&payload);
+        assert!(payload_text.contains("setup.py"));
+        assert!(payload_text.contains("whoathere_clean.py"));
+        assert!(!payload_text.contains(".pypirc"));
+        assert!(!payload_text.contains("real-secret"));
         let _ = std::fs::remove_dir_all(&root);
     }
 

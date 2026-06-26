@@ -104,6 +104,36 @@ import Testing
     #expect(options.json)
 }
 
+@Test func parsesProjectDetonationArguments() throws {
+    let options = try parseArguments([
+        "detonate",
+        "--state-dir", "/tmp/whoathere-vm",
+        "--tool", "pip",
+        "--command-class=pip_install_detonation",
+        "--fixture", "project_mirror",
+        "--project-payload-path", "/tmp/whoathere-vm/runs/project-payloads/1.payload.hex",
+        "--project-workflow=pip_project_install",
+        "--project-import-module", "whoathere_clean",
+        "--project-requirements-path=requirements.txt",
+        "--execute",
+        "--",
+        "install",
+        "."
+    ])
+
+    #expect(options.command == .detonate)
+    #expect(options.stateDir == "/tmp/whoathere-vm")
+    #expect(options.detonationTool == "pip")
+    #expect(options.detonationCommandClass == "pip_install_detonation")
+    #expect(options.detonationFixture == "project_mirror")
+    #expect(options.detonationProjectPayloadPath == "/tmp/whoathere-vm/runs/project-payloads/1.payload.hex")
+    #expect(options.detonationProjectWorkflow == "pip_project_install")
+    #expect(options.detonationProjectImportModule == "whoathere_clean")
+    #expect(options.detonationProjectRequirementsPath == "requirements.txt")
+    #expect(options.detonationArgs == ["install", "."])
+    #expect(options.execute)
+}
+
 @Test func guestHealthProofAcceptsMatchingRuntimeHostAndGuestEvidence() {
     let runtime = runtimeState()
     let host = hostProof()
