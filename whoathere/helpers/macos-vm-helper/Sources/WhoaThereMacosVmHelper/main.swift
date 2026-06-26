@@ -126,7 +126,10 @@ private final class GuestReadinessListener: NSObject, VZVirtioSocketListenerDele
             "health_proof_type": "guest_vsock_readiness",
             "host_vm_started": true,
             "guest_health_proven": true,
-            "guest_response": response,
+            "guest_agent_version": response["agent_version"] as? String ?? "unknown",
+            "guest_readiness_protocol": guestReadinessProtocol,
+            "guest_readiness_port": Int(guestReadinessPort),
+            "guest_readiness_challenge_sha256": sha256Hex(challenge),
             "source_port": Int(connection.sourcePort),
             "destination_port": Int(connection.destinationPort),
             "created_at": ISO8601DateFormatter().string(from: Date()),
@@ -1321,12 +1324,7 @@ struct WhoaThereMacosVmHelper {
                 exitCode: 20
             )
         }
-        guard let guestProof = readJSONObject(layout.guestHealthProofPath),
-              intField(guestProof, "runtime_pid") == Int(pid),
-              guestProof["vm_session_id"] as? String == sessionID,
-              guestProof["helper_version"] as? String == helperVersion,
-              guestProof["health_proof_type"] as? String == "guest_vsock_readiness",
-              guestProof["guest_health_proven"] as? Bool == true else {
+        guard let guestProof = readJSONObject(layout.guestHealthProofPath) else {
             emit(
                 fields: failClosedFields(
                     layout: layout,
@@ -1346,6 +1344,35 @@ struct WhoaThereMacosVmHelper {
                 exitCode: 20
             )
         }
+        let guestProofReasons = validateGuestHealthProof(
+            runtimeState: runtimeState,
+            hostProof: hostProof,
+            guestProof: guestProof,
+            runtimePID: Int(pid),
+            expectedHelperVersion: helperVersion,
+            expectedProtocol: guestReadinessProtocol,
+            expectedPort: Int(guestReadinessPort)
+        )
+        guard guestProofReasons.isEmpty else {
+            emit(
+                fields: failClosedFields(
+                    layout: layout,
+                    reasons: guestProofReasons,
+                    exitCode: 20
+                ).merging([
+                    "runtime_pid": Int(pid),
+                    "runtime_pid_alive": true,
+                    "vm_session_id": sessionID,
+                    "host_runtime_health_proven": true,
+                    "health_proof_type": "host_vm_start_only",
+                    "health_proven": false,
+                    "guest_health_proven": false,
+                    "guest_health_proof_present": true,
+                    "high_risk_package_execution_enabled": false
+                ]) { _, new in new },
+                exitCode: 20
+            )
+        }
         emit(
             fields: baseFields(status: "ok").merging([
                 "state_dir": layout.stateDir.path,
@@ -1358,6 +1385,8 @@ struct WhoaThereMacosVmHelper {
                 "health_proof_type": "guest_vsock_readiness",
                 "guest_health_proven": true,
                 "guest_health_proof_present": true,
+                "guest_readiness_protocol": guestReadinessProtocol,
+                "guest_readiness_port": Int(guestReadinessPort),
                 "image_digest": guestProof["image_digest"] as? String ?? "unknown",
                 "high_risk_package_execution_enabled": false,
                 "exit_code": 0

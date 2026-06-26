@@ -182,6 +182,108 @@ public func reasonArray(_ values: [String]) -> [String] {
     Array(Set(values)).sorted()
 }
 
+public func validateGuestHealthProof(
+    runtimeState: [String: Any],
+    hostProof: [String: Any],
+    guestProof: [String: Any],
+    runtimePID: Int,
+    expectedHelperVersion: String,
+    expectedProtocol: String,
+    expectedPort: Int
+) -> [String] {
+    var reasons: [String] = []
+
+    let runtimeSessionID = stringField(runtimeState, "vm_session_id")
+    let runtimeChallengeHash = stringField(runtimeState, "guest_readiness_challenge_sha256")
+    let runtimeImageDigest = stringField(runtimeState, "image_digest")
+
+    if intField(runtimeState, "runtime_pid") != runtimePID {
+        reasons.append("runtime_state_pid_mismatch")
+    }
+    if stringField(runtimeState, "schema_version") != bundleSchemaVersion {
+        reasons.append("runtime_state_schema_mismatch")
+    }
+    if stringField(runtimeState, "helper_version") != expectedHelperVersion {
+        reasons.append("runtime_state_helper_version_mismatch")
+    }
+    if boolField(runtimeState, "high_risk_package_execution_enabled") != false {
+        reasons.append("runtime_state_high_risk_execution_not_disabled")
+    }
+    if runtimeSessionID == nil {
+        reasons.append("runtime_state_session_missing")
+    }
+    if runtimeChallengeHash == nil {
+        reasons.append("runtime_state_challenge_hash_missing")
+    }
+    if runtimeImageDigest == nil {
+        reasons.append("runtime_state_image_digest_missing")
+    }
+
+    if intField(hostProof, "runtime_pid") != runtimePID {
+        reasons.append("host_proof_pid_mismatch")
+    }
+    if stringField(hostProof, "schema_version") != bundleSchemaVersion {
+        reasons.append("host_proof_schema_mismatch")
+    }
+    if stringField(hostProof, "helper_version") != expectedHelperVersion {
+        reasons.append("host_proof_helper_version_mismatch")
+    }
+    if boolField(hostProof, "high_risk_package_execution_enabled") != false {
+        reasons.append("host_proof_high_risk_execution_not_disabled")
+    }
+    if let runtimeSessionID, stringField(hostProof, "vm_session_id") != runtimeSessionID {
+        reasons.append("host_proof_session_mismatch")
+    }
+    if let runtimeChallengeHash, stringField(hostProof, "guest_readiness_challenge_sha256") != runtimeChallengeHash {
+        reasons.append("host_proof_challenge_hash_mismatch")
+    }
+    if let runtimeImageDigest, stringField(hostProof, "image_digest") != runtimeImageDigest {
+        reasons.append("host_proof_image_digest_mismatch")
+    }
+    if stringField(hostProof, "health_proof_type") != "host_vm_start_only" {
+        reasons.append("host_proof_type_mismatch")
+    }
+    if boolField(hostProof, "host_runtime_health_proven") != true {
+        reasons.append("host_runtime_health_not_proven")
+    }
+
+    if intField(guestProof, "runtime_pid") != runtimePID {
+        reasons.append("guest_proof_pid_mismatch")
+    }
+    if stringField(guestProof, "schema_version") != bundleSchemaVersion {
+        reasons.append("guest_proof_schema_mismatch")
+    }
+    if stringField(guestProof, "helper_version") != expectedHelperVersion {
+        reasons.append("guest_proof_helper_version_mismatch")
+    }
+    if boolField(guestProof, "high_risk_package_execution_enabled") != false {
+        reasons.append("guest_proof_high_risk_execution_not_disabled")
+    }
+    if let runtimeSessionID, stringField(guestProof, "vm_session_id") != runtimeSessionID {
+        reasons.append("guest_proof_session_mismatch")
+    }
+    if let runtimeChallengeHash, stringField(guestProof, "guest_readiness_challenge_sha256") != runtimeChallengeHash {
+        reasons.append("guest_proof_challenge_hash_mismatch")
+    }
+    if let runtimeImageDigest, stringField(guestProof, "image_digest") != runtimeImageDigest {
+        reasons.append("guest_proof_image_digest_mismatch")
+    }
+    if stringField(guestProof, "health_proof_type") != "guest_vsock_readiness" {
+        reasons.append("guest_proof_type_mismatch")
+    }
+    if boolField(guestProof, "guest_health_proven") != true {
+        reasons.append("guest_health_not_proven")
+    }
+    if stringField(guestProof, "guest_readiness_protocol") != expectedProtocol {
+        reasons.append("guest_proof_protocol_mismatch")
+    }
+    if intField(guestProof, "guest_readiness_port") != expectedPort {
+        reasons.append("guest_proof_port_mismatch")
+    }
+
+    return reasonArray(reasons)
+}
+
 private func value(after flag: String, in arguments: [String], at index: inout Int) throws -> String {
     let valueIndex = arguments.index(after: index)
     guard valueIndex < arguments.endIndex else {
@@ -197,4 +299,28 @@ private func integerValue(after flag: String, in arguments: [String], at index: 
         throw ArgumentError.invalidInteger(flag)
     }
     return parsed
+}
+
+private func stringField(_ fields: [String: Any], _ key: String) -> String? {
+    fields[key] as? String
+}
+
+private func boolField(_ fields: [String: Any], _ key: String) -> Bool? {
+    if let value = fields[key] as? Bool {
+        return value
+    }
+    if let value = fields[key] as? NSNumber {
+        return value.boolValue
+    }
+    return nil
+}
+
+private func intField(_ fields: [String: Any], _ key: String) -> Int? {
+    if let value = fields[key] as? Int {
+        return value
+    }
+    if let value = fields[key] as? NSNumber {
+        return value.intValue
+    }
+    return nil
 }

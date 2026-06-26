@@ -56,3 +56,151 @@ import Testing
     #expect(options.restoreImagePath == "/tmp/macos.ipsw")
     #expect(options.execute)
 }
+
+@Test func guestHealthProofAcceptsMatchingRuntimeHostAndGuestEvidence() {
+    let runtime = runtimeState()
+    let host = hostProof()
+    let guest = guestProof()
+
+    let reasons = validateGuestHealthProof(
+        runtimeState: runtime,
+        hostProof: host,
+        guestProof: guest,
+        runtimePID: 1234,
+        expectedHelperVersion: helperVersion,
+        expectedProtocol: "whoathere.guest_ready.v1",
+        expectedPort: 47078
+    )
+
+    #expect(reasons.isEmpty)
+}
+
+@Test func guestHealthProofRejectsWrongSessionChallengeAndImageDigest() {
+    let runtime = runtimeState()
+    let host = hostProof()
+    var guest = guestProof()
+    guest["vm_session_id"] = "wrong-session"
+    guest["guest_readiness_challenge_sha256"] = "wrong-challenge-hash"
+    guest["image_digest"] = "sha256:wrong"
+
+    let reasons = validateGuestHealthProof(
+        runtimeState: runtime,
+        hostProof: host,
+        guestProof: guest,
+        runtimePID: 1234,
+        expectedHelperVersion: helperVersion,
+        expectedProtocol: "whoathere.guest_ready.v1",
+        expectedPort: 47078
+    )
+
+    #expect(reasons.contains("guest_proof_session_mismatch"))
+    #expect(reasons.contains("guest_proof_challenge_hash_mismatch"))
+    #expect(reasons.contains("guest_proof_image_digest_mismatch"))
+}
+
+@Test func guestHealthProofRejectsHostProofMismatch() {
+    let runtime = runtimeState()
+    var host = hostProof()
+    let guest = guestProof()
+    host["guest_readiness_challenge_sha256"] = "wrong-challenge-hash"
+    host["host_runtime_health_proven"] = false
+
+    let reasons = validateGuestHealthProof(
+        runtimeState: runtime,
+        hostProof: host,
+        guestProof: guest,
+        runtimePID: 1234,
+        expectedHelperVersion: helperVersion,
+        expectedProtocol: "whoathere.guest_ready.v1",
+        expectedPort: 47078
+    )
+
+    #expect(reasons.contains("host_proof_challenge_hash_mismatch"))
+    #expect(reasons.contains("host_runtime_health_not_proven"))
+}
+
+@Test func guestHealthProofRejectsProtocolAndPortMismatch() {
+    let runtime = runtimeState()
+    let host = hostProof()
+    var guest = guestProof()
+    guest["guest_readiness_protocol"] = "unexpected"
+    guest["guest_readiness_port"] = 1
+
+    let reasons = validateGuestHealthProof(
+        runtimeState: runtime,
+        hostProof: host,
+        guestProof: guest,
+        runtimePID: 1234,
+        expectedHelperVersion: helperVersion,
+        expectedProtocol: "whoathere.guest_ready.v1",
+        expectedPort: 47078
+    )
+
+    #expect(reasons.contains("guest_proof_protocol_mismatch"))
+    #expect(reasons.contains("guest_proof_port_mismatch"))
+}
+
+@Test func guestHealthProofRejectsHighRiskExecutionEnabledMarkers() {
+    var runtime = runtimeState()
+    var host = hostProof()
+    var guest = guestProof()
+    runtime["high_risk_package_execution_enabled"] = true
+    host["high_risk_package_execution_enabled"] = true
+    guest["high_risk_package_execution_enabled"] = true
+
+    let reasons = validateGuestHealthProof(
+        runtimeState: runtime,
+        hostProof: host,
+        guestProof: guest,
+        runtimePID: 1234,
+        expectedHelperVersion: helperVersion,
+        expectedProtocol: "whoathere.guest_ready.v1",
+        expectedPort: 47078
+    )
+
+    #expect(reasons.contains("runtime_state_high_risk_execution_not_disabled"))
+    #expect(reasons.contains("host_proof_high_risk_execution_not_disabled"))
+    #expect(reasons.contains("guest_proof_high_risk_execution_not_disabled"))
+}
+
+private func runtimeState() -> [String: Any] {
+    [
+        "schema_version": bundleSchemaVersion,
+        "helper_version": helperVersion,
+        "runtime_pid": 1234,
+        "vm_session_id": "session-1",
+        "image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "guest_readiness_challenge_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "high_risk_package_execution_enabled": false
+    ]
+}
+
+private func hostProof() -> [String: Any] {
+    [
+        "schema_version": bundleSchemaVersion,
+        "helper_version": helperVersion,
+        "runtime_pid": 1234,
+        "vm_session_id": "session-1",
+        "image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "health_proof_type": "host_vm_start_only",
+        "host_runtime_health_proven": true,
+        "guest_readiness_challenge_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "high_risk_package_execution_enabled": false
+    ]
+}
+
+private func guestProof() -> [String: Any] {
+    [
+        "schema_version": bundleSchemaVersion,
+        "helper_version": helperVersion,
+        "runtime_pid": 1234,
+        "vm_session_id": "session-1",
+        "image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "health_proof_type": "guest_vsock_readiness",
+        "guest_health_proven": true,
+        "guest_readiness_protocol": "whoathere.guest_ready.v1",
+        "guest_readiness_port": 47078,
+        "guest_readiness_challenge_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "high_risk_package_execution_enabled": false
+    ]
+}

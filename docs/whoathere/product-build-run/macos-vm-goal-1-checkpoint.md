@@ -19,7 +19,8 @@ detonation, or sync-back execution.
 - Helper `suspend --execute` now signals the runtime process, which requests a guest stop through Virtualization.framework, writes `bundle/shutdown.json`, and fails closed if shutdown proof is missing.
 - Runtime configuration now includes a `VZVirtioSocketDevice` listener on port `47078` for guest readiness.
 - Added `guest-agent/whoathere-guest-ready.c`, a tiny guest-side agent that answers a one-time `whoathere.guest_ready.v1` challenge over `AF_VSOCK`.
-- Helper `health` now fails closed on host-runtime proof alone and only succeeds when a matching guest proof exists for the live runtime session.
+- Helper `health` now fails closed on host-runtime proof alone and only succeeds when a matching guest proof exists for the live runtime session, challenge hash, image digest, protocol, port, and helper version.
+- Guest health proof stores sanitized response metadata and challenge hash, not the raw readiness challenge.
 - Added a helper entitlement plist and local signing script for `com.apple.security.virtualization`.
 - Added a local IPSW validation script that runs build, test, sign, restore-image install, status, start, fail-closed-or-proven health, suspend, and final status.
 - Helper `status` reports missing bundle/config/manifest/disk/auxiliary storage/hardware model/machine identifier/signature proof independently.
@@ -65,7 +66,7 @@ overlays/
 - Restore-image installation is implemented as a local IPSW path, but still needs real-host validation with a signed, entitled helper and release fixture.
 - Full signature/notarization verification is not implemented yet; status reports `signature_verification_not_implemented` as a fail-closed readiness reason.
 - Persistent VM process management and controlled stop are implemented, but need real-host validation; saved-state suspend/resume semantics remain deferred.
-- Guest readiness proof protocol and guest-agent source are implemented, but still need real-host validation inside a booted guest and a provisioning/copy path.
+- Guest readiness proof protocol, proof binding, and guest-agent source are implemented, but still need real-host validation inside a booted guest and a provisioning/copy path.
 - A real bootable bundle requires auxiliary storage, hardware model, and machine identifier metadata; a disk image alone is not enough.
 - No package-manager command is allowed to execute from this work.
 
@@ -104,5 +105,5 @@ cd /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper
 
 After the VM is running, copy `guest-agent/whoathere-guest-ready.c` into the guest, build it there,
 and run it to produce `bundle/guest-health.json`. Until that guest response is present and bound to
-the current runtime session, `vm health` is expected to fail closed with
-`guest_health_proof_missing_or_mismatched`.
+the current runtime session, challenge hash, image digest, protocol, port, and helper version,
+`vm health` is expected to fail closed.

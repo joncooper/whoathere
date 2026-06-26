@@ -1279,18 +1279,23 @@
             Virtualization.framework, and records a shutdown proof before cleanup.
             The helper now also exposes a vsock guest-readiness challenge and a tiny guest-agent
             source artifact; <code>vm health</code> still fails closed until that guest proof is
-            produced for the current runtime session. Detonation, egress recording, and sync-back
-            remain deliberately blocked until guest provisioning, signature verification, and
-            runtime control pieces are implemented.
+            produced for the current runtime session, challenge hash, image digest, protocol, port,
+            and helper version. The raw readiness challenge is not persisted. Detonation, egress
+            recording, and sync-back remain deliberately blocked until guest provisioning, signature
+            verification, and runtime control pieces are implemented.
           </p>
         </div>
 
         <h3>Release claim</h3>
         <p>
-          WhoaThere runs supported npm, pip, and uv installs inside a macOS guest VM, injects only
-          fake canary secrets, records filesystem/process/package-manager/network behavior, and syncs
-          back only approved project outputs. The release does not claim universal malware detection,
-          safe arbitrary native execution, runtime application protection, or enterprise package admission.
+          The current Goal 1 implementation provides the macOS VM lifecycle foundation only:
+          helper-backed status, initialization paths, start/controlled-stop scaffolding, manifest
+          checks, and guest-health proof plumbing. The next macOS release target is to run supported
+          npm, pip, and uv installs inside that guest VM, inject only fake canary secrets, record
+          filesystem/process/package-manager/network behavior, and sync back only approved project
+          outputs. The current implementation does not claim detonation, sync-back, universal malware
+          detection, safe arbitrary native execution, runtime application protection, or enterprise
+          package admission.
         </p>
 
         <h3>Implemented command contract</h3>

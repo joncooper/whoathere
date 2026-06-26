@@ -88,6 +88,8 @@ cc -O2 -Wall -Wextra -o whoathere-guest-ready whoathere-guest-ready.c
 Build and run that agent inside the macOS guest after the host helper has started the VM. The agent
 uses `AF_VSOCK` only; it does not run package managers, import project code, mount host secrets, or
 sync files back to the host.
+The host stores only sanitized readiness evidence: session id, image digest, helper version,
+protocol, port, and challenge hash. It does not persist the raw readiness challenge.
 
 Rust CLI integration:
 
@@ -99,7 +101,8 @@ cargo run --manifest-path whoathere/Cargo.toml -p whoathere-cli -- vm health
 
 The Rust CLI launches the helper with a cleared environment, a minimal `PATH`, bounded output,
 and operation timeouts. `vm health` is read-only and returns the helper's fail-closed exit code
-until the guest vsock proof is present. Helper status and health are diagnostic and never authorize
+until the guest vsock proof matches the current live runtime session, challenge hash, image digest,
+protocol, port, and helper version. Helper status and health are diagnostic and never authorize
 package execution.
 
 Security boundaries:
