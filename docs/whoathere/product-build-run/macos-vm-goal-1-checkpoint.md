@@ -15,6 +15,7 @@ detonation, or sync-back execution.
 - Helper `init --execute --restore-image <path>` now has a local IPSW install path using `VZMacOSRestoreImage`, `VZMacOSInstaller`, raw disk creation, `VZMacAuxiliaryStorage`, hardware-model persistence, and machine-identifier persistence.
 - Restore-image bundles still remain non-ready for package execution until signature verification, runtime validation, and guest health proof are complete.
 - Helper `start --execute` now has a persistent runtime-process scaffold that launches internal `run`, starts the VM through `VZVirtualMachine.start`, and writes host-runtime state plus health proof when start succeeds.
+- Helper `suspend --execute` now signals the runtime process, which requests a guest stop through Virtualization.framework, writes `bundle/shutdown.json`, and fails closed if shutdown proof is missing.
 - Runtime configuration now includes a `VZVirtioSocketDevice` listener on port `47078` for guest readiness.
 - Added `guest-agent/whoathere-guest-ready.c`, a tiny guest-side agent that answers a one-time `whoathere.guest_ready.v1` challenge over `AF_VSOCK`.
 - Helper `health` now fails closed on host-runtime proof alone and only succeeds when a matching guest proof exists for the live runtime session.
@@ -48,6 +49,7 @@ bundle/machine-identifier.bin
 bundle/runtime.json
 bundle/health.json
 bundle/guest-health.json
+bundle/shutdown.json
 bundle/runtime.pid
 bundle/saved-state.bin
 logs/
@@ -61,7 +63,7 @@ overlays/
 
 - Restore-image installation is implemented as a local IPSW path, but still needs real-host validation with a signed, entitled helper and release fixture.
 - Full signature/notarization verification is not implemented yet.
-- Persistent VM process management is scaffolded, but needs real-host validation, graceful guest stop, and saved-state suspend/resume semantics.
+- Persistent VM process management and controlled stop are implemented, but need real-host validation; saved-state suspend/resume semantics remain deferred.
 - Guest readiness proof protocol and guest-agent source are implemented, but still need real-host validation inside a booted guest and a provisioning/copy path.
 - A real bootable bundle requires auxiliary storage, hardware model, and machine identifier metadata; a disk image alone is not enough.
 - No package-manager command is allowed to execute from this work.

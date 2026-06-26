@@ -14,6 +14,8 @@ Current state:
 - Keeps high-risk package execution disabled.
 - Starts a persistent helper runtime only when disk, auxiliary storage, hardware model, and machine identifier metadata are present.
 - Writes host-runtime state and health proof after `VZVirtualMachine.start` succeeds.
+- Handles runtime `SIGTERM` by requesting a guest stop through Virtualization.framework, falling
+  back to VM stop only on timeout or unavailable guest stop, and writing `shutdown.json`.
 - Adds a `VZVirtioSocketDevice` guest-readiness listener on port `47078`.
 - Includes a tiny guest-side readiness agent source under `guest-agent/`.
 - Keeps package execution, sync-back, and real signature verification blocked.
@@ -68,6 +70,11 @@ metadata.
 Runtime start writes a host-only proof when `VZVirtualMachine.start` returns success. `vm health`
 does not treat that as guest readiness. It succeeds only after the guest responds over the
 `whoathere.guest_ready.v1` vsock challenge protocol for the current runtime session.
+
+`suspend --execute` currently means controlled stop, not saved-state suspend. It signals the
+long-running runtime process, which first calls `requestStop()` on the VM. If the guest does not
+stop in time, the runtime attempts `stop()` and reports the forced fallback. Saved-state
+suspend/resume remains deferred.
 
 Guest readiness agent:
 

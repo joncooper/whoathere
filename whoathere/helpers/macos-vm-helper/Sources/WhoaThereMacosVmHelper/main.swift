@@ -26,6 +26,21 @@ private final class LockedResultBox<Value>: @unchecked Sendable {
     }
 }
 
+private final class RuntimeStopState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stopRequested = false
+
+    func claimStop() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if stopRequested {
+            return false
+        }
+        stopRequested = true
+        return true
+    }
+}
+
 private struct UncheckedSendableBox<Value>: @unchecked Sendable {
     var value: Value
 }
@@ -34,11 +49,18 @@ private final class RuntimeReferences {
     let virtualMachine: VZVirtualMachine
     let socketListener: VZVirtioSocketListener
     let delegate: GuestReadinessListener
+    let signalSource: DispatchSourceSignal
 
-    init(virtualMachine: VZVirtualMachine, socketListener: VZVirtioSocketListener, delegate: GuestReadinessListener) {
+    init(
+        virtualMachine: VZVirtualMachine,
+        socketListener: VZVirtioSocketListener,
+        delegate: GuestReadinessListener,
+        signalSource: DispatchSourceSignal
+    ) {
         self.virtualMachine = virtualMachine
         self.socketListener = socketListener
         self.delegate = delegate
+        self.signalSource = signalSource
     }
 }
 
@@ -300,6 +322,7 @@ struct WhoaThereMacosVmHelper {
                 "runtime_state_present": fileExists(layout.runtimeStatePath),
                 "health_proof_present": fileExists(layout.healthProofPath),
                 "guest_health_proof_present": fileExists(layout.guestHealthProofPath),
+                "runtime_shutdown_present": fileExists(layout.runtimeShutdownPath),
                 "runtime_pid_present": fileExists(layout.runtimePidPath),
                 "runtime_pid_alive": runtimeAlive,
                 "ready_for_lifecycle": readyForLifecycle,
@@ -557,6 +580,7 @@ struct WhoaThereMacosVmHelper {
             try removeIfPresent(layout.runtimeStatePath)
             try removeIfPresent(layout.healthProofPath)
             try removeIfPresent(layout.guestHealthProofPath)
+            try removeIfPresent(layout.runtimeShutdownPath)
             try removeIfPresent(layout.runtimePidPath)
             let process = try spawnRuntimeProcess(layout: layout)
             try "\(process.processIdentifier)\n".write(to: layout.runtimePidPath, atomically: true, encoding: .utf8)
@@ -609,21 +633,62 @@ struct WhoaThereMacosVmHelper {
                 exitCode: 20
             )
         }
-        _ = kill(pid, SIGTERM)
         do {
-            try removeIfPresent(layout.runtimePidPath)
-            try removeIfPresent(layout.runtimeStatePath)
-            try removeIfPresent(layout.healthProofPath)
-            try removeIfPresent(layout.guestHealthProofPath)
-            try removeIfPresent(layout.runtimePidPath)
-            try removeIfPresent(layout.savedStatePath)
+            try removeIfPresent(layout.runtimeShutdownPath)
+            _ = kill(pid, SIGTERM)
+            let stopped = waitForRuntimeProcessExit(pid, timeoutSeconds: 30)
+            if !stopped {
+                _ = kill(pid, SIGKILL)
+                _ = waitForRuntimeProcessExit(pid, timeoutSeconds: 5)
+                try removeRuntimeProofFiles(layout)
+                emit(
+                    fields: failClosedFields(
+                        layout: layout,
+                        reasons: ["runtime_stop_timeout_forced_kill"],
+                        exitCode: 70
+                    ).merging([
+                        "operation": "suspend",
+                        "mutation": true,
+                        "runtime_pid": Int(pid),
+                        "suspend_semantics": "signal_runtime_guest_stop_request",
+                        "runtime_stop_observed": false,
+                        "high_risk_package_execution_enabled": false
+                    ]) { _, new in new },
+                    exitCode: 70
+                )
+            }
+            let shutdown = readJSONObject(layout.runtimeShutdownPath)
+            let shutdownStatus = shutdown?["status"] as? String
+            guard shutdownStatus == "ok" else {
+                try removeRuntimeProofFiles(layout)
+                emit(
+                    fields: failClosedFields(
+                        layout: layout,
+                        reasons: ["runtime_shutdown_proof_missing_or_failed"],
+                        exitCode: 70
+                    ).merging([
+                        "operation": "suspend",
+                        "mutation": true,
+                        "runtime_pid": Int(pid),
+                        "suspend_semantics": "signal_runtime_guest_stop_request",
+                        "runtime_stop_observed": true,
+                        "runtime_shutdown_present": shutdown != nil,
+                        "runtime_shutdown_status": shutdownStatus ?? "missing",
+                        "high_risk_package_execution_enabled": false
+                    ]) { _, new in new },
+                    exitCode: 70
+                )
+            }
+            try removeRuntimeProofFiles(layout)
             emit(
                 fields: baseFields(status: "ok").merging([
                     "operation": "suspend",
                     "mutation": true,
                     "state_dir": layout.stateDir.path,
                     "runtime_pid": Int(pid),
-                    "suspend_semantics": "terminate_runtime_process",
+                    "suspend_semantics": shutdown?["stop_method"] as? String ?? "signal_runtime_guest_stop_request",
+                    "runtime_stop_observed": true,
+                    "runtime_shutdown_present": true,
                     "high_risk_package_execution_enabled": false,
                     "exit_code": 0
                 ]) { _, new in new },
@@ -952,10 +1017,28 @@ struct WhoaThereMacosVmHelper {
         let socketListener = VZVirtioSocketListener()
         socketListener.delegate = readinessDelegate
         socketDevice.setSocketListener(socketListener, forPort: guestReadinessPort)
+        let stopState = RuntimeStopState()
+        let signalSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: queue)
+        signal(SIGTERM, SIG_IGN)
+        let runtimeLayoutBox = UncheckedSendableBox(value: layout)
+        let runtimeVirtualMachineBox = UncheckedSendableBox(value: virtualMachine)
+        signalSource.setEventHandler {
+            guard stopState.claimStop() else {
+                return
+            }
+            requestRuntimeShutdown(
+                virtualMachine: runtimeVirtualMachineBox.value,
+                layout: runtimeLayoutBox.value,
+                queue: queue,
+                reason: "sigterm"
+            )
+        }
+        signalSource.resume()
         let runtimeReferences = RuntimeReferences(
             virtualMachine: virtualMachine,
             socketListener: socketListener,
-            delegate: readinessDelegate
+            delegate: readinessDelegate,
+            signalSource: signalSource
         )
         let virtualMachineBox = UncheckedSendableBox(value: virtualMachine)
         queue.async {
@@ -986,6 +1069,95 @@ struct WhoaThereMacosVmHelper {
             RunLoop.current.run()
         }
         exit(0)
+    }
+
+    private static func requestRuntimeShutdown(
+        virtualMachine: VZVirtualMachine,
+        layout: BundleLayout,
+        queue: DispatchQueue,
+        reason: String
+    ) {
+        let virtualMachineBox = UncheckedSendableBox(value: virtualMachine)
+        let layoutBox = UncheckedSendableBox(value: layout)
+
+        @Sendable func finish(status: String, stopMethod: String, reasonCodes: [String], exitCode: Int32) {
+            try? writeRuntimeShutdownProof(
+                layout: layoutBox.value,
+                pid: getpid(),
+                status: status,
+                stopMethod: stopMethod,
+                reasonCodes: reasonCodes
+            )
+            try? removeRuntimeProofFiles(layoutBox.value)
+            writeJSONFields(baseFields(status: status).merging([
+                "operation": "run_shutdown",
+                "runtime_pid": Int(getpid()),
+                "stop_method": stopMethod,
+                "reason_codes": reasonArray(reasonCodes),
+                "high_risk_package_execution_enabled": false,
+                "exit_code": Int(exitCode)
+            ]) { _, new in new })
+            exit(exitCode)
+        }
+
+        @Sendable func forceStop(reasonCode: String) {
+            guard virtualMachineBox.value.canStop else {
+                finish(
+                    status: "error",
+                    stopMethod: "stop_unavailable",
+                    reasonCodes: [reasonCode, "vm_cannot_stop"],
+                    exitCode: 70
+                )
+                return
+            }
+            virtualMachineBox.value.stop { error in
+                if let error {
+                    finish(
+                        status: "error",
+                        stopMethod: "force_stop",
+                        reasonCodes: [reasonCode, "vm_force_stop_failed", sanitizedReason(error)],
+                        exitCode: 70
+                    )
+                } else {
+                    finish(
+                        status: "ok",
+                        stopMethod: "force_stop",
+                        reasonCodes: [reasonCode],
+                        exitCode: 0
+                    )
+                }
+            }
+        }
+
+        @Sendable func observeGuestStop(deadline: Date) {
+            if virtualMachineBox.value.state == .stopped {
+                finish(
+                    status: "ok",
+                    stopMethod: "guest_requested_stop",
+                    reasonCodes: [reason],
+                    exitCode: 0
+                )
+                return
+            }
+            guard Date() < deadline else {
+                forceStop(reasonCode: "guest_stop_timeout")
+                return
+            }
+            queue.asyncAfter(deadline: .now() + .milliseconds(250)) {
+                observeGuestStop(deadline: deadline)
+            }
+        }
+
+        if virtualMachineBox.value.canRequestStop {
+            do {
+                try virtualMachineBox.value.requestStop()
+                observeGuestStop(deadline: Date().addingTimeInterval(20))
+            } catch {
+                forceStop(reasonCode: "guest_stop_request_failed_\(sanitizedReason(error))")
+            }
+        } else {
+            forceStop(reasonCode: "guest_stop_unavailable")
+        }
     }
 
     private static func lifecycleBlocked(_ options: HelperOptions, operation: String) {
@@ -1375,6 +1547,35 @@ struct WhoaThereMacosVmHelper {
         try "\(pid)\n".write(to: layout.runtimePidPath, atomically: true, encoding: .utf8)
     }
 
+    private static func writeRuntimeShutdownProof(
+        layout: BundleLayout,
+        pid: pid_t,
+        status: String,
+        stopMethod: String,
+        reasonCodes: [String]
+    ) throws {
+        let shutdown: [String: Any] = [
+            "schema_version": bundleSchemaVersion,
+            "helper_version": helperVersion,
+            "runtime_pid": Int(pid),
+            "status": status,
+            "stop_method": stopMethod,
+            "reason_codes": reasonArray(reasonCodes),
+            "created_at": ISO8601DateFormatter().string(from: Date()),
+            "high_risk_package_execution_enabled": false
+        ]
+        try JSONSerialization.data(withJSONObject: shutdown, options: [.prettyPrinted, .sortedKeys])
+            .write(to: layout.runtimeShutdownPath, options: [.atomic])
+    }
+
+    private static func removeRuntimeProofFiles(_ layout: BundleLayout) throws {
+        try removeIfPresent(layout.runtimePidPath)
+        try removeIfPresent(layout.runtimeStatePath)
+        try removeIfPresent(layout.healthProofPath)
+        try removeIfPresent(layout.guestHealthProofPath)
+        try removeIfPresent(layout.savedStatePath)
+    }
+
     private static func readBundleConfig(_ layout: BundleLayout) -> [String: Any] {
         guard let data = try? Data(contentsOf: layout.configPath),
               let object = try? JSONSerialization.jsonObject(with: data),
@@ -1488,6 +1689,17 @@ struct WhoaThereMacosVmHelper {
             return false
         }
         return canonicalPath(processPath) == canonicalPath(absoluteExecutablePath(CommandLine.arguments[0]))
+    }
+
+    private static func waitForRuntimeProcessExit(_ pid: pid_t, timeoutSeconds: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        while Date() < deadline {
+            if !runtimeProcessIsAlive(pid) {
+                return true
+            }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+        return !runtimeProcessIsAlive(pid)
     }
 
     private static func executablePath(for pid: pid_t) -> String? {

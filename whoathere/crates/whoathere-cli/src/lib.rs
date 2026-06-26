@@ -1683,8 +1683,9 @@ fn render_vm_action(
             ],
         );
         let exit_code = helper.exit_code.unwrap_or_else(|| ExitCode::Misuse.code());
+        let mutation = exit_code == ExitCode::Allow.code();
         return format!(
-            "whoathere vm {action_name}\nrelease_target={}\nstate_dir={}\nmutation=true\nready=false\n{}\nexit_code={exit_code}",
+            "whoathere vm {action_name}\nrelease_target={}\nstate_dir={}\nmutation_requested=true\nmutation={mutation}\nready=false\n{}\nexit_code={exit_code}",
             RELEASE_TARGET,
             config.state_dir.display(),
             helper.render_text()
@@ -6540,6 +6541,8 @@ mod tests {
         assert!(result
             .output
             .contains("macos_vm_helper_path_not_configured"));
+        assert!(result.output.contains("mutation_requested=true"));
+        assert!(result.output.contains("mutation=false"));
     }
 
     #[test]
