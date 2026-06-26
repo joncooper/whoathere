@@ -337,6 +337,7 @@ struct WhoaThereMacosVmHelper {
                 "runtime_state_present": fileExists(layout.runtimeStatePath),
                 "health_proof_present": fileExists(layout.healthProofPath),
                 "guest_health_proof_present": fileExists(layout.guestHealthProofPath),
+                "guest_provisioning_receipt_present": fileExists(layout.guestProvisioningReceiptPath),
                 "guest_tools_image_present": fileExists(layout.guestToolsImagePath),
                 "runtime_shutdown_present": fileExists(layout.runtimeShutdownPath),
                 "runtime_pid_present": fileExists(layout.runtimePidPath),
@@ -1113,6 +1114,9 @@ struct WhoaThereMacosVmHelper {
         if !fileExists(layout.machineIdentifierPath) {
             reasons.append("machine_identifier_missing")
         }
+        if !fileExists(layout.guestProvisioningReceiptPath) {
+            reasons.append("guest_readiness_agent_not_provisioned")
+        }
         return reasonArray(reasons)
     }
 
@@ -1604,6 +1608,9 @@ struct WhoaThereMacosVmHelper {
         }
         if !fileExists(layout.machineIdentifierPath) {
             reasons.append("machine_identifier_missing")
+        }
+        if !fileExists(layout.guestProvisioningReceiptPath) {
+            reasons.append("guest_readiness_agent_not_provisioned")
         }
         return reasonArray(reasons)
     }

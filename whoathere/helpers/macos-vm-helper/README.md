@@ -14,7 +14,7 @@ Current state:
   digest fields, and signature status during `status` and lifecycle gating.
 - Keeps disk-import bundles non-ready until auxiliary storage, hardware model, machine identifier metadata, and real signature verification exist.
 - Keeps high-risk package execution disabled.
-- Starts a persistent helper runtime only when disk, auxiliary storage, hardware model, and machine identifier metadata are present.
+- Starts a persistent helper runtime only when disk, auxiliary storage, hardware model, machine identifier metadata, and the guest provisioning receipt are present.
 - Writes host-runtime state and health proof after `VZVirtualMachine.start` succeeds.
 - Handles runtime `SIGTERM` by requesting a guest stop through Virtualization.framework, falling
   back to VM stop only on timeout or unavailable guest stop, and writing `shutdown.json`.
@@ -52,11 +52,12 @@ it into the WhoaThere state cache before installation:
 ```
 
 This performs build, test, sign, restore-image install, creation of a read-only guest tools DMG,
-status, start, health, suspend, and final status. It creates a large local VM disk under
-`~/.whoathere/macos-vm-validation` unless a second state-directory argument is supplied. The
-`--fetch-latest-restore-image` mode also downloads a large IPSW into that state directory's cache.
-Until the guest readiness agent is built and run inside the guest, `health` is expected to fail
-closed.
+and status. If `bundle/guest-provisioning.json` is missing, it stops fail-closed with the exact
+`sudo ./scripts/provision-guest-readiness.sh ...` command to run while the VM is stopped. After
+that provisioning receipt exists, rerunning the validation continues through start, health, suspend,
+and final status. It creates a large local VM disk under `~/.whoathere/macos-vm-validation` unless
+a second state-directory argument is supplied. The `--fetch-latest-restore-image` mode also
+downloads a large IPSW into that state directory's cache.
 
 For local resource tuning, set `WHOATHERE_VM_DISK_GIB` or `WHOATHERE_VM_MEMORY_MIB` before running
 the validation script. Restore-backed macOS bundles currently use a 64 GiB disk by default, and the
@@ -93,16 +94,15 @@ long-running runtime process, which first calls `requestStop()` on the VM. If th
 stop in time, the runtime attempts `stop()` and reports the forced fallback. Saved-state
 suspend/resume remains deferred.
 
-Guest readiness agent:
+Guest readiness agent source:
 
 ```sh
 cd guest-agent
 cc -O2 -Wall -Wextra -o whoathere-guest-ready whoathere-guest-ready.c
 ```
 
-Build and run that agent inside the macOS guest after the host helper has started the VM. The agent
-uses `AF_VSOCK` only; it does not run package managers, import project code, mount host secrets, or
-sync files back to the host.
+The agent uses `AF_VSOCK` only; it does not run package managers, import project code, mount host
+secrets, or sync files back to the host.
 The host stores only sanitized readiness evidence: session id, image digest, helper version,
 protocol, port, and challenge hash. It does not persist the raw readiness challenge.
 The validation script packages this source into `bundle/guest-tools.dmg` using the `hdiutil` UFBI

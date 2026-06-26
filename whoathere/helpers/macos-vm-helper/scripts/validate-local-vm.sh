@@ -8,6 +8,7 @@ STATE_DIR=${2:-"$HOME/.whoathere/macos-vm-validation"}
 HELPER_PATH="$HELPER_ROOT/.build/arm64-apple-macosx/debug/whoathere-macos-vm-helper"
 GUEST_TOOLS_IMAGE_BASE="$STATE_DIR/bundle/guest-tools"
 GUEST_TOOLS_IMAGE="$GUEST_TOOLS_IMAGE_BASE.dmg"
+GUEST_PROVISIONING_RECEIPT="$STATE_DIR/bundle/guest-provisioning.json"
 MEMORY_MIB=${WHOATHERE_VM_MEMORY_MIB:-6144}
 DISK_GIB=${WHOATHERE_VM_DISK_GIB:-64}
 
@@ -34,6 +35,17 @@ run_status_smoke() {
       exit "$STATUS_EXIT"
       ;;
   esac
+}
+
+require_guest_provisioning() {
+  if [ -f "$GUEST_PROVISIONING_RECEIPT" ]; then
+    return
+  fi
+
+  echo "guest_readiness_agent_not_provisioned=true" >&2
+  echo "provision_guest_first=sudo $HELPER_ROOT/scripts/provision-guest-readiness.sh $STATE_DIR" >&2
+  echo "rerun_validation_after_provisioning=$0 $RESTORE_IMAGE $STATE_DIR" >&2
+  exit 20
 }
 
 if [ -z "$RESTORE_IMAGE" ]; then
@@ -94,6 +106,7 @@ test -s "$GUEST_TOOLS_IMAGE"
 echo "guest_tools_image=$GUEST_TOOLS_IMAGE"
 
 run_status_smoke
+require_guest_provisioning
 "$HELPER_PATH" start --state-dir "$STATE_DIR" --execute --json
 set +e
 "$HELPER_PATH" health --state-dir "$STATE_DIR" --json
@@ -105,7 +118,7 @@ case "$HEALTH_EXIT" in
     ;;
   20)
     echo "guest_health_pending=true"
-    echo "copy, build, and run guest-agent/whoathere-guest-ready inside the guest to produce guest health"
+    echo "verify guest provisioning receipt and guest readiness daemon logs"
     ;;
   *)
     echo "unexpected_health_exit=$HEALTH_EXIT" >&2
