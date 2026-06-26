@@ -105,6 +105,7 @@ pub enum Command {
         helper_path: Option<String>,
         image_path: Option<String>,
         restore_image_path: Option<String>,
+        fetch_latest_restore_image: bool,
         memory_mib: Option<u64>,
         disk_gib: Option<u64>,
         execute: bool,
@@ -560,6 +561,9 @@ pub fn parse_command(args: &[String]) -> Command {
             helper_path: parse_helper_path(rest),
             image_path: parse_flag_value(rest, "--image"),
             restore_image_path: parse_flag_value(rest, "--restore-image"),
+            fetch_latest_restore_image: rest
+                .iter()
+                .any(|arg| arg == "--fetch-latest-restore-image"),
             memory_mib: parse_u64_flag(rest, "--memory-mib"),
             disk_gib: parse_u64_flag(rest, "--disk-gib"),
             execute: rest.iter().any(|arg| arg == "--execute"),
@@ -696,6 +700,7 @@ fn render_command_text(command: Command) -> String {
             helper_path,
             image_path,
             restore_image_path,
+            fetch_latest_restore_image,
             memory_mib,
             disk_gib,
             execute,
@@ -705,6 +710,7 @@ fn render_command_text(command: Command) -> String {
             helper_path: helper_path.as_deref(),
             image_path: image_path.as_deref(),
             restore_image_path: restore_image_path.as_deref(),
+            fetch_latest_restore_image,
             memory_mib,
             disk_gib,
             execute,
@@ -1093,7 +1099,7 @@ fn command_help() -> String {
         "|shim install --dest <sandbox-dir> [--include-python]",
         "|endpoint setup --shim-dir <dir> --workspace <path> --vault-origin <url> [--policy <path>] [--audit-path <path>] [--replay-store <path>] [--include-python]",
         "|vm status [--state-dir <dir>] [--manifest <path>] [--helper <path>] [--json]",
-        "|vm init [--state-dir <dir>] [--manifest <path>] [--helper <path>] [--image <path>|--restore-image <path>] [--memory-mib <n>] [--disk-gib <n>] [--execute]",
+        "|vm init [--state-dir <dir>] [--manifest <path>] [--helper <path>] [--image <path>|--restore-image <path>|--fetch-latest-restore-image] [--memory-mib <n>] [--disk-gib <n>] [--execute]",
         "|vm start|suspend|reset|prune [--state-dir <dir>] [--helper <path>] [--execute]",
         "|vm health [--state-dir <dir>] [--helper <path>]",
         "|vm release-plan [--class <class>|--ecosystem <name> --source <kind> --filename <name>] [--vm-ready --static-clean --dynamic-clean --egress-clean --no-canary-access --scanner-clean --diff-clean --freshness-allowed] [--json]",
@@ -1555,6 +1561,7 @@ struct VmInitRenderArgs<'a> {
     helper_path: Option<&'a str>,
     image_path: Option<&'a str>,
     restore_image_path: Option<&'a str>,
+    fetch_latest_restore_image: bool,
     memory_mib: Option<u64>,
     disk_gib: Option<u64>,
     execute: bool,
@@ -1590,6 +1597,9 @@ fn render_vm_init(args: VmInitRenderArgs<'_>) -> String {
             helper_args.push("--restore-image".to_string());
             helper_args.push(restore_image_path.to_string());
         }
+        if args.fetch_latest_restore_image {
+            helper_args.push("--fetch-latest-restore-image".to_string());
+        }
         run_macos_vm_helper(args.helper_path, "init", &helper_args)
     } else {
         run_macos_vm_helper(
@@ -1613,7 +1623,7 @@ fn render_vm_init(args: VmInitRenderArgs<'_>) -> String {
     };
 
     let mut output = format!(
-        "whoathere vm init\nschema_version={}\nrelease_target={}\ntarget_arch={}\nvm_boundary={}\nnetwork_model={}\nsync_policy={}\nmutation={}\ndirect_cli_state_mutation=false\nstate_dir={}\nmanifest_path={}\nhelper_required_for_execute={}\nimage_path={}\nrestore_image_path={}\nmemory_mib={}\ndisk_gib={}\nnative_memory_mib={}\nready=false\nreason_codes={:?}\n{}",
+        "whoathere vm init\nschema_version={}\nrelease_target={}\ntarget_arch={}\nvm_boundary={}\nnetwork_model={}\nsync_policy={}\nmutation={}\ndirect_cli_state_mutation=false\nstate_dir={}\nmanifest_path={}\nhelper_required_for_execute={}\nimage_path={}\nrestore_image_path={}\nfetch_latest_restore_image={}\nmemory_mib={}\ndisk_gib={}\nnative_memory_mib={}\nready=false\nreason_codes={:?}\n{}",
         whoathere_macos_vm::STATUS_SCHEMA_VERSION,
         RELEASE_TARGET,
         TARGET_ARCH,
@@ -1626,6 +1636,7 @@ fn render_vm_init(args: VmInitRenderArgs<'_>) -> String {
         args.execute,
         redacted_option_scalar(args.image_path),
         redacted_option_scalar(args.restore_image_path),
+        args.fetch_latest_restore_image,
         config.memory_mib,
         config.disk_gib,
         DEFAULT_NATIVE_MEMORY_MIB,
@@ -6514,6 +6525,7 @@ mod tests {
             helper_path: None,
             image_path: None,
             restore_image_path: None,
+            fetch_latest_restore_image: false,
             memory_mib: Some(6144),
             disk_gib: Some(40),
             execute: true,
@@ -6593,6 +6605,7 @@ mod tests {
             helper_path: Some(helper.display().to_string()),
             image_path: None,
             restore_image_path: None,
+            fetch_latest_restore_image: false,
             memory_mib: Some(4096),
             disk_gib: Some(25),
             execute: false,
@@ -6602,6 +6615,42 @@ mod tests {
         assert!(result.output.contains("helper_available=true"));
         assert!(result.output.contains(&format!(
             "<init><--state-dir><{}><--memory-mib><4096><--disk-gib><25><--json>",
+            state_dir.display()
+        )));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vm_init_execute_forwards_latest_restore_image_fetch_flag() {
+        let root = temp_root("whoathere-cli-vm-init-latest-helper");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("temp root");
+        let helper = root.join("helper.sh");
+        write_new_file(
+            &helper,
+            b"#!/bin/sh\nprintf 'args='\nfor arg in \"$@\"; do printf '<%s>' \"$arg\"; done\nprintf '\\n'\nexit 20\n",
+        )
+        .expect("helper script");
+        set_executable(&helper).expect("executable helper");
+
+        let state_dir = root.join("state");
+        let result = evaluate_command(Command::VmInit {
+            state_dir: Some(state_dir.display().to_string()),
+            manifest_path: None,
+            helper_path: Some(helper.display().to_string()),
+            image_path: None,
+            restore_image_path: None,
+            fetch_latest_restore_image: true,
+            memory_mib: Some(4096),
+            disk_gib: Some(25),
+            execute: true,
+        });
+
+        assert_eq!(result.exit_code, 20);
+        assert!(result.output.contains("fetch_latest_restore_image=true"));
+        assert!(result.output.contains(&format!(
+            "<init><--state-dir><{}><--memory-mib><4096><--disk-gib><25><--execute><--json><--fetch-latest-restore-image>",
             state_dir.display()
         )));
 

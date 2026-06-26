@@ -358,7 +358,11 @@ struct WhoaThereMacosVmHelper {
                     "mutation": false,
                     "state_dir": layout.stateDir.path,
                     "bundle_dir": layout.bundleDir.path,
-                    "required_inputs": ["--image <installed-macos-disk.img>", "--restore-image <macos-restore.ipsw>"],
+                    "required_inputs": [
+                        "--image <installed-macos-disk.img>",
+                        "--restore-image <macos-restore.ipsw>",
+                        "--fetch-latest-restore-image"
+                    ],
                     "reason_codes": ["execute_required_for_mutation"],
                     "exit_code": 0
                 ]) { _, new in new },
@@ -379,8 +383,30 @@ struct WhoaThereMacosVmHelper {
             )
         }
 
+        let sourceCount = [
+            options.imagePath != nil,
+            options.restoreImagePath != nil,
+            options.fetchLatestRestoreImage
+        ].filter { $0 }.count
+        guard sourceCount <= 1 else {
+            emit(
+                fields: failClosedFields(layout: layout, reasons: ["multiple_image_sources_configured"], exitCode: 64)
+                    .merging([
+                        "required_inputs": [
+                            "--image <installed-macos-disk.img>",
+                            "--restore-image <macos-restore.ipsw>",
+                            "--fetch-latest-restore-image"
+                        ]
+                    ]) { _, new in new },
+                exitCode: 64
+            )
+        }
+
         if let restoreImagePath = options.restoreImagePath {
             initializeFromRestoreImage(path: restoreImagePath, layout: layout, options: options)
+        }
+        if options.fetchLatestRestoreImage {
+            initializeFromLatestSupportedRestoreImage(layout: layout, options: options)
         }
 
         guard let imagePath = options.imagePath else {
@@ -390,7 +416,11 @@ struct WhoaThereMacosVmHelper {
                     reasons: ["image_or_restore_image_required"],
                     exitCode: 64
                 ).merging([
-                    "required_inputs": ["--image <installed-macos-disk.img>", "--restore-image <macos-restore.ipsw>"]
+                    "required_inputs": [
+                        "--image <installed-macos-disk.img>",
+                        "--restore-image <macos-restore.ipsw>",
+                        "--fetch-latest-restore-image"
+                    ]
                 ]) { _, new in new },
                 exitCode: 64
             )
@@ -546,6 +576,84 @@ struct WhoaThereMacosVmHelper {
                 ).merging([
                     "restore_image": path
                 ]) { _, new in new },
+                exitCode: 70
+            )
+        }
+    }
+
+    private static func initializeFromLatestSupportedRestoreImage(layout: BundleLayout, options: HelperOptions) -> Never {
+        guard !bundleHasInstalledState(layout) else {
+            emit(
+                fields: failClosedFields(layout: layout, reasons: ["bundle_already_initialized"], exitCode: 20),
+                exitCode: 20
+            )
+        }
+
+        do {
+            try createManagedDirectories(layout)
+            let fetchedRestoreImage = try fetchLatestSupportedRestoreImage()
+            guard fetchedRestoreImage.url.scheme == "https" else {
+                emit(
+                    fields: failClosedFields(layout: layout, reasons: ["latest_restore_image_url_not_https"], exitCode: 20),
+                    exitCode: 20
+                )
+            }
+            let cachedURL = layout.cacheDir.appendingPathComponent("latest-supported-restore.ipsw")
+            try downloadRestoreImage(from: fetchedRestoreImage.url, to: cachedURL)
+            let restoreDigest = try sha256Digest(path: cachedURL.path)
+            let restoreImage = try loadRestoreImage(cachedURL)
+            guard restoreImage.isSupported else {
+                emit(
+                    fields: failClosedFields(layout: layout, reasons: ["restore_image_not_supported_on_host"], exitCode: 20),
+                    exitCode: 20
+                )
+            }
+            guard let requirements = restoreImage.mostFeaturefulSupportedConfiguration else {
+                emit(
+                    fields: failClosedFields(layout: layout, reasons: ["restore_image_no_supported_configuration"], exitCode: 20),
+                    exitCode: 20
+                )
+            }
+
+            let installSummary = try installMacOSFromRestoreImage(
+                restoreImage: restoreImage,
+                requirements: requirements,
+                restoreURL: cachedURL,
+                restoreDigest: restoreDigest,
+                layout: layout,
+                options: options
+            )
+            emit(
+                fields: baseFields(status: "ok").merging([
+                    "mutation": true,
+                    "state_dir": layout.stateDir.path,
+                    "bundle_dir": layout.bundleDir.path,
+                    "disk_path": layout.diskPath.path,
+                    "restore_image_source": "latest_supported_network",
+                    "restore_image_cache_path": cachedURL.path,
+                    "restore_image_url": fetchedRestoreImage.url.absoluteString,
+                    "restore_image_digest": "sha256:\(restoreDigest)",
+                    "macos_build_version": restoreImage.buildVersion,
+                    "macos_version": operatingSystemVersionString(restoreImage.operatingSystemVersion),
+                    "cpu_count": installSummary.cpuCount,
+                    "memory_mib": installSummary.memoryMiB,
+                    "disk_gib": options.diskGiB,
+                    "ready_for_lifecycle": false,
+                    "reason_codes": [
+                        "signature_verification_not_implemented",
+                        "guest_readiness_agent_not_provisioned"
+                    ],
+                    "exit_code": 0
+                ]) { _, new in new },
+                exitCode: 0
+            )
+        } catch {
+            emit(
+                fields: failClosedFields(
+                    layout: layout,
+                    reasons: ["latest_restore_image_install_failed", sanitizedReason(error)],
+                    exitCode: 70
+                ),
                 exitCode: 70
             )
         }
@@ -812,6 +920,69 @@ struct WhoaThereMacosVmHelper {
             throw helperError("restore_image_load_returned_no_result")
         }
         return try result.get()
+    }
+
+    private static func fetchLatestSupportedRestoreImage() throws -> VZMacOSRestoreImage {
+        let semaphore = DispatchSemaphore(value: 0)
+        let resultBox = LockedResultBox<VZMacOSRestoreImage>()
+        VZMacOSRestoreImage.fetchLatestSupported { result in
+            resultBox.store(result.mapError { $0 })
+            semaphore.signal()
+        }
+        semaphore.wait()
+        guard let result = resultBox.load() else {
+            throw helperError("latest_restore_image_fetch_returned_no_result")
+        }
+        return try result.get()
+    }
+
+    private static func downloadRestoreImage(from sourceURL: URL, to destinationURL: URL) throws {
+        let semaphore = DispatchSemaphore(value: 0)
+        let resultBox = LockedResultBox<Void>()
+        let destinationBox = UncheckedSendableBox(value: destinationURL)
+        let task = URLSession.shared.downloadTask(with: sourceURL) { temporaryURL, response, error in
+            if let error {
+                resultBox.store(.failure(error))
+                semaphore.signal()
+                return
+            }
+            if let httpResponse = response as? HTTPURLResponse,
+               !(200..<300).contains(httpResponse.statusCode) {
+                resultBox.store(.failure(helperError("latest_restore_image_download_http_\(httpResponse.statusCode)")))
+                semaphore.signal()
+                return
+            }
+            guard let temporaryURL else {
+                resultBox.store(.failure(helperError("latest_restore_image_download_missing_file")))
+                semaphore.signal()
+                return
+            }
+            do {
+                let destination = destinationBox.value
+                try FileManager.default.createDirectory(
+                    at: destination.deletingLastPathComponent(),
+                    withIntermediateDirectories: true,
+                    attributes: [.posixPermissions: 0o700]
+                )
+                try removeIfPresent(destination)
+                try FileManager.default.moveItem(at: temporaryURL, to: destination)
+                let attributes = try FileManager.default.attributesOfItem(atPath: destination.path)
+                let size = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
+                guard size > 0 else {
+                    throw helperError("latest_restore_image_download_empty")
+                }
+                resultBox.store(.success(()))
+            } catch {
+                resultBox.store(.failure(error))
+            }
+            semaphore.signal()
+        }
+        task.resume()
+        semaphore.wait()
+        guard let result = resultBox.load() else {
+            throw helperError("latest_restore_image_download_returned_no_result")
+        }
+        try result.get()
     }
 
     private static func buildMacOSConfiguration(

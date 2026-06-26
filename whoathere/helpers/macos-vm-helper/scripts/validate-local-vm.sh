@@ -11,31 +11,45 @@ GUEST_TOOLS_IMAGE="$GUEST_TOOLS_IMAGE_BASE.dmg"
 
 if [ -z "$RESTORE_IMAGE" ]; then
   echo "usage: $0 /absolute/path/to/macos-restore.ipsw [state-dir]" >&2
+  echo "   or: $0 --fetch-latest-restore-image [state-dir]" >&2
   exit 64
 fi
 
-case "$RESTORE_IMAGE" in
-  /*) ;;
-  *)
-    echo "restore_image_must_be_absolute=$RESTORE_IMAGE" >&2
-    exit 64
-    ;;
-esac
+FETCH_LATEST=false
+if [ "$RESTORE_IMAGE" = "--fetch-latest-restore-image" ]; then
+  FETCH_LATEST=true
+else
+  case "$RESTORE_IMAGE" in
+    /*) ;;
+    *)
+      echo "restore_image_must_be_absolute=$RESTORE_IMAGE" >&2
+      exit 64
+      ;;
+  esac
 
-if [ ! -f "$RESTORE_IMAGE" ]; then
-  echo "restore_image_not_found=$RESTORE_IMAGE" >&2
-  exit 64
+  if [ ! -f "$RESTORE_IMAGE" ]; then
+    echo "restore_image_not_found=$RESTORE_IMAGE" >&2
+    exit 64
+  fi
 fi
 
 cd "$HELPER_ROOT"
 swift test
 ./scripts/sign-local-helper.sh "$HELPER_PATH"
 
-"$HELPER_PATH" init \
-  --state-dir "$STATE_DIR" \
-  --restore-image "$RESTORE_IMAGE" \
-  --execute \
-  --json
+if [ "$FETCH_LATEST" = true ]; then
+  "$HELPER_PATH" init \
+    --state-dir "$STATE_DIR" \
+    --fetch-latest-restore-image \
+    --execute \
+    --json
+else
+  "$HELPER_PATH" init \
+    --state-dir "$STATE_DIR" \
+    --restore-image "$RESTORE_IMAGE" \
+    --execute \
+    --json
+fi
 
 mkdir -p "$(dirname -- "$GUEST_TOOLS_IMAGE")"
 rm -f "$GUEST_TOOLS_IMAGE"

@@ -14,6 +14,7 @@ detonation, or sync-back execution.
 - Helper `init --execute --image <path>` creates a managed disk-import bundle from an explicit local disk image, copies the disk to `bundle/disk.img`, writes `bundle/config.json`, and writes `bundle/image.manifest`.
 - Disk-import bundles remain non-bootable and non-ready until auxiliary storage, hardware model, machine identifier metadata, and real signature verification are present.
 - Helper `init --execute --restore-image <path>` now has a local IPSW install path using `VZMacOSRestoreImage`, `VZMacOSInstaller`, raw disk creation, `VZMacAuxiliaryStorage`, hardware-model persistence, and machine-identifier persistence.
+- Helper `init --execute --fetch-latest-restore-image` explicitly asks Apple Virtualization.framework for the latest supported restore image, downloads it into the WhoaThere state cache, hashes it locally, and then uses the same restore-image install path.
 - Restore-image bundles still remain non-ready for package execution until signature verification, runtime validation, and guest health proof are complete.
 - Helper `start --execute` now has a persistent runtime-process scaffold that launches internal `run`, starts the VM through `VZVirtualMachine.start`, and writes host-runtime state plus health proof when start succeeds.
 - Helper `suspend --execute` now signals the runtime process, which requests a guest stop through Virtualization.framework, writes `bundle/shutdown.json`, and fails closed if shutdown proof is missing.
@@ -98,11 +99,12 @@ Compile the guest readiness agent source:
 cc -Wall -Wextra -c /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/guest-agent/whoathere-guest-ready.c -o /tmp/whoathere-guest-ready.o
 ```
 
-Real local VM validation requires a local macOS restore IPSW:
+Real local VM validation requires either a local macOS restore IPSW or an explicit latest-image fetch:
 
 ```sh
 cd /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper
 ./scripts/validate-local-vm.sh /absolute/path/to/macos-restore.ipsw
+./scripts/validate-local-vm.sh --fetch-latest-restore-image
 ```
 
 After the VM is running, copy `guest-agent/whoathere-guest-ready.c` into the guest, build it there,

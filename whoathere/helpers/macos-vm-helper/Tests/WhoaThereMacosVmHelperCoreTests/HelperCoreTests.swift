@@ -58,6 +58,19 @@ import Testing
     #expect(options.execute)
 }
 
+@Test func parsesFetchLatestRestoreImageArgument() throws {
+    let options = try parseArguments([
+        "init",
+        "--state-dir", "/tmp/whoathere-vm",
+        "--fetch-latest-restore-image",
+        "--execute"
+    ])
+
+    #expect(options.command == .`init`)
+    #expect(options.fetchLatestRestoreImage)
+    #expect(options.execute)
+}
+
 @Test func guestHealthProofAcceptsMatchingRuntimeHostAndGuestEvidence() {
     let runtime = runtimeState()
     let host = hostProof()

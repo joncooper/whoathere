@@ -22,6 +22,7 @@ public struct HelperOptions: Equatable, Sendable {
     public var json: Bool
     public var imagePath: String?
     public var restoreImagePath: String?
+    public var fetchLatestRestoreImage: Bool
     public var memoryMiB: UInt64
     public var diskGiB: UInt64
 
@@ -32,6 +33,7 @@ public struct HelperOptions: Equatable, Sendable {
         json: Bool = false,
         imagePath: String? = nil,
         restoreImagePath: String? = nil,
+        fetchLatestRestoreImage: Bool = false,
         memoryMiB: UInt64 = 6144,
         diskGiB: UInt64 = 40
     ) {
@@ -41,6 +43,7 @@ public struct HelperOptions: Equatable, Sendable {
         self.json = json
         self.imagePath = imagePath
         self.restoreImagePath = restoreImagePath
+        self.fetchLatestRestoreImage = fetchLatestRestoreImage
         self.memoryMiB = memoryMiB
         self.diskGiB = diskGiB
     }
@@ -94,6 +97,9 @@ public func parseArguments(_ arguments: [String]) throws -> HelperOptions {
             options.imagePath = try value(after: token, in: arguments, at: &index)
         case "--restore-image":
             options.restoreImagePath = try value(after: token, in: arguments, at: &index)
+        case "--fetch-latest-restore-image":
+            options.fetchLatestRestoreImage = true
+            index += 1
         case "--memory-mib":
             options.memoryMiB = try integerValue(after: token, in: arguments, at: &index)
         case "--disk-gib":
@@ -109,6 +115,11 @@ public func parseArguments(_ arguments: [String]) throws -> HelperOptions {
                     options.imagePath = rawValue
                 case "--restore-image":
                     options.restoreImagePath = rawValue
+                case "--fetch-latest-restore-image":
+                    guard rawValue == "true" else {
+                        throw ArgumentError.unknownFlag(token)
+                    }
+                    options.fetchLatestRestoreImage = true
                 case "--memory-mib":
                     guard let parsed = UInt64(rawValue) else {
                         throw ArgumentError.invalidInteger(flag)

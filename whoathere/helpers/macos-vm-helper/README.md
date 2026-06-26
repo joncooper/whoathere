@@ -8,7 +8,7 @@ Current state:
 - Builds on Apple Silicon macOS with Swift Package Manager.
 - Reports helper and host readiness as JSON.
 - Initializes a managed disk-import bundle from an explicit local disk image.
-- Initializes a local restore-image install path from an explicit local macOS IPSW when the helper has the required Apple virtualization entitlement and host support.
+- Initializes a local restore-image install path from an explicit local macOS IPSW or an explicit latest-supported restore-image fetch when the helper has the required Apple virtualization entitlement and host support.
 - Writes bundle config, disk copy, and image manifest metadata.
 - Validates manifest schema, image id, macOS version, arm64/aarch64 architecture, helper version,
   digest fields, and signature status during `status` and lifecycle gating.
@@ -44,10 +44,19 @@ Real local VM validation with a local IPSW:
 ./scripts/validate-local-vm.sh /absolute/path/to/macos-restore.ipsw
 ```
 
+Or explicitly ask Apple Virtualization.framework for the latest supported restore image and download
+it into the WhoaThere state cache before installation:
+
+```sh
+./scripts/validate-local-vm.sh --fetch-latest-restore-image
+```
+
 This performs build, test, sign, restore-image install, creation of a read-only guest tools DMG,
 status, start, health, suspend, and final status. It creates a large local VM disk under
-`~/.whoathere/macos-vm-validation` unless a second state-directory argument is supplied. Until the
-guest readiness agent is built and run inside the guest, `health` is expected to fail closed.
+`~/.whoathere/macos-vm-validation` unless a second state-directory argument is supplied. The
+`--fetch-latest-restore-image` mode also downloads a large IPSW into that state directory's cache.
+Until the guest readiness agent is built and run inside the guest, `health` is expected to fail
+closed.
 
 Smoke commands:
 
@@ -62,12 +71,14 @@ The `init --execute` command requires one of:
 ```sh
 --image <installed-macos-disk.img>
 --restore-image <macos-restore.ipsw>
+--fetch-latest-restore-image
 ```
 
 The current goal slice supports `--image` disk import and a first `--restore-image` local IPSW
-install path. A disk image alone is not a bootable macOS VM bundle. Restore-image installation is
-the path that produces the required auxiliary storage, hardware model, and machine identifier
-metadata.
+install path. It can also explicitly fetch Apple's latest supported restore image, cache it locally,
+hash it, and then use the same restore-image install path. A disk image alone is not a bootable
+macOS VM bundle. Restore-image installation is the path that produces the required auxiliary
+storage, hardware model, and machine identifier metadata.
 
 Runtime start writes a host-only proof when `VZVirtualMachine.start` returns success. `vm health`
 does not treat that as guest readiness. It succeeds only after the guest responds over the

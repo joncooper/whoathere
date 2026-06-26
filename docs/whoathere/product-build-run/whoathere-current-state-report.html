@@ -1271,6 +1271,10 @@
             machine identifier metadata, and real signature verification. The helper also has a
             local IPSW restore-image path that can create raw disk, auxiliary storage, hardware model,
             and machine identifier metadata when run as an entitled Apple Virtualization helper.
+            An explicit <code>--fetch-latest-restore-image</code> mode asks Apple
+            Virtualization.framework for the latest supported restore image, downloads it into the
+            WhoaThere state cache, hashes it locally, and then uses the same restore-image install
+            path.
             Helper status validates manifest schema, image id, macOS version, architecture, helper
             version, digest fields, and signature status without rehashing large VM disks on every
             status call.
@@ -1305,7 +1309,8 @@
           <li><code>whoathere vm status --helper &lt;path&gt;</code> reports Rust-side and Swift-helper VM readiness, including precise missing bundle and metadata reason codes.</li>
           <li><code>whoathere vm init --execute --helper &lt;path&gt; --image &lt;path&gt;</code> imports an explicit local disk image into the managed bundle and writes config plus manifest metadata, but does not make the bundle bootable or ready.</li>
           <li><code>whoathere vm init --execute --helper &lt;path&gt; --restore-image &lt;path&gt;</code> uses Apple Virtualization.framework restore-image APIs to install from a local IPSW and persist required VM metadata, subject to entitlement and host support.</li>
-          <li><code>whoathere vm init --execute</code> without a helper or image fails closed with exact required inputs rather than creating placeholder readiness.</li>
+          <li><code>whoathere vm init --execute --helper &lt;path&gt; --fetch-latest-restore-image</code> explicitly fetches Apple's latest supported restore image, caches and hashes it locally, and then uses the same restore-image install path.</li>
+          <li><code>whoathere vm init --execute</code> without a helper or image source fails closed with exact required inputs rather than creating placeholder readiness.</li>
           <li><code>whoathere vm start</code>, <code>suspend</code>, <code>reset</code>, and <code>prune</code> delegate to the helper when configured; start requires bootable metadata and writes host-runtime health proof, suspend performs a controlled stop with shutdown proof, and <code>vm health</code> requires a matching guest vsock proof.</li>
           <li><code>whoathere vm health --helper &lt;path&gt;</code> is read-only, delegates to helper <code>health</code>, and preserves fail-closed exit code <code>20</code> until guest proof is present.</li>
           <li>The helper includes a <code>whoathere.guest_ready.v1</code> vsock protocol and guest-agent source under <code>guest-agent/</code>; the agent must be built and run inside the guest before guest health is proven.</li>
@@ -1340,7 +1345,7 @@
 
         <h3>Remaining build gates</h3>
         <ol>
-          <li>Validate restore-image installation on the signed helper with a real local IPSW and record the release fixture.</li>
+          <li>Validate restore-image installation on the signed helper with a real local or explicitly fetched IPSW and record the release fixture.</li>
           <li>Implement real signature/notarization verification for the helper and image manifest.</li>
           <li>Validate persistent VM process management and controlled guest stop on a signed, entitled helper; saved-state suspend/resume remains deferred.</li>
           <li>Validate the guest-readiness vsock protocol in a booted guest and add a provisioning/copy path for the guest agent.</li>
