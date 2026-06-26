@@ -1,7 +1,7 @@
 # macOS VM Goal 1 Checkpoint
 
-Status: in progress. Host VM install/start/health-fail-closed/stop lifecycle has been validated on
-Apple Silicon macOS; guest readiness proof inside the VM is not yet validated.
+Status: validated for Goal 1. Host VM install/start/guest-health/stop lifecycle has been validated
+on Apple Silicon macOS after admin provisioning of the guest readiness LaunchDaemon.
 
 Goal 1 is the Apple Silicon macOS VM lifecycle foundation. It does not enable npm, pip, uv,
 detonation, or sync-back execution.
@@ -28,7 +28,7 @@ detonation, or sync-back execution.
 - Added `scripts/provision-guest-readiness.sh`, an admin-required offline provisioning path that compiles the guest agent, mounts the stopped VM disk with ownership enabled, installs a root-owned LaunchDaemon, writes `bundle/guest-provisioning.json`, and avoids host home, secrets, workspaces, package-manager state, and sync-back.
 - Non-root-owned offline LaunchDaemon provisioning was tested and did not produce a guest proof; root-owned provisioning requires a local `sudo` run outside this Codex session.
 - Added a helper entitlement plist and local signing script for `com.apple.security.virtualization`.
-- Added a local IPSW validation script that runs build, test, sign, restore-image install or existing-bundle reuse, guest-tools packaging, status, and then stops fail-closed with the exact provisioning command when `bundle/guest-provisioning.json` is missing.
+- Added a local IPSW validation script that runs build, test, sign, restore-image install or existing-bundle reuse, guest-tools packaging, status, and then stops fail-closed with the exact provisioning command when `bundle/guest-provisioning.json` is missing. After provisioning, it starts the VM, polls guest health, stops the VM, and reports final status.
 - Helper `status` reports missing bundle/config/manifest/disk/auxiliary storage/hardware model/machine identifier/signature proof and guest provisioning receipt independently.
 - Helper `start` and `health` fail closed until the VM has real Virtualization metadata, signature verification, persistent runtime management, and guest readiness proof.
 - Rust CLI accepts `--helper <path>` or `WHOATHERE_MACOS_VM_HELPER` for VM and doctor commands.
@@ -74,7 +74,7 @@ overlays/
 - Restore-image installation has been validated locally with a signed, entitled helper and Apple's latest supported restore image; repeatable release fixture validation remains.
 - Full signature/notarization verification is not implemented yet; status reports `signature_verification_not_implemented` as a fail-closed readiness reason.
 - Persistent VM process management and controlled force-stop fallback have been validated locally; saved-state suspend/resume semantics remain deferred.
-- Guest readiness proof protocol, proof binding, guest-agent source, and root-owned offline provisioning script are implemented, but the final guest proof still needs a local admin run of `scripts/provision-guest-readiness.sh` followed by VM boot/health validation.
+- Guest readiness proof protocol, proof binding, guest-agent source, root-owned offline provisioning script, and VM boot/health validation have been proven locally.
 - A real bootable bundle requires auxiliary storage, hardware model, and machine identifier metadata; a disk image alone is not enough.
 - No package-manager command is allowed to execute from this work.
 

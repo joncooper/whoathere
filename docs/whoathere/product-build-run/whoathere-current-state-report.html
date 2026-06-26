@@ -1170,7 +1170,7 @@
             <tr>
               <td>Real macOS VM helper</td>
               <td>Highest user priority for endpoint containment and package-manager compatibility.</td>
-              <td>Planned; diagnostics and beta labeling exist, helper does not.</td>
+              <td>Goal 1 lifecycle foundation exists and has been locally validated on Apple Silicon; package detonation and sync-back are not built.</td>
             </tr>
             <tr>
               <td>Real Linux namespace/seccomp/cgroup/Landlock runner</td>
@@ -1265,13 +1265,13 @@
             Current implementation progress: the CLI now has macOS VM lifecycle/status surfaces,
             a separate Swift helper that imports Apple Virtualization.framework, uv workflow
             classification, release-policy commands, canary inventory, sync-policy reporting,
-            and doctor JSON readiness. The helper can report host/framework readiness and initialize
-            a managed disk-import bundle from an explicit local disk image. That disk import is
-            deliberately not lifecycle-ready without auxiliary storage, hardware model,
-            machine identifier metadata, and real signature verification. The helper also has a
-            local IPSW restore-image path that can create raw disk, auxiliary storage, hardware model,
-            and machine identifier metadata when run as an entitled Apple Virtualization helper.
-            An explicit <code>--fetch-latest-restore-image</code> mode asks Apple
+            and doctor JSON readiness. The helper can report host/framework readiness, initialize
+            a managed disk-import bundle from an explicit local disk image, and initialize a
+            bootable local VM bundle from a macOS restore image. Disk import remains deliberately
+            non-bootable without auxiliary storage, hardware model, machine identifier metadata,
+            and real signature verification. The restore-image path creates raw disk, auxiliary
+            storage, hardware model, and machine identifier metadata when run as an entitled Apple
+            Virtualization helper. An explicit <code>--fetch-latest-restore-image</code> mode asks Apple
             Virtualization.framework for the latest supported restore image, downloads it into the
             WhoaThere state cache, hashes it locally, and then uses the same restore-image install
             path.
@@ -1279,24 +1279,25 @@
             version, digest fields, and signature status without rehashing large VM disks on every
             status call.
             A persistent runtime scaffold can start the VM and write host-runtime health proof.
-            Runtime stop now signals the long-running VM process, asks the guest to stop through
+            Runtime stop signals the long-running VM process, asks the guest to stop through
             Virtualization.framework, and records a shutdown proof before cleanup.
-            The helper now also exposes a vsock guest-readiness challenge and a tiny guest-agent
-            source artifact; <code>vm health</code> still fails closed until that guest proof is
-            produced for the current runtime session, challenge hash, image digest, protocol, port,
-            and helper version. The raw readiness challenge is not persisted. The local validation
-            script now packages the guest-agent source into an optional read-only
-            <code>bundle/guest-tools.dmg</code> that the helper attaches when present. Detonation,
-            egress recording, and sync-back remain deliberately blocked until guest provisioning,
-            signature verification, and runtime control pieces are implemented.
+            The helper exposes a vsock guest-readiness challenge and a tiny guest-agent source
+            artifact. A root-owned offline provisioning script installs that agent as a guest
+            LaunchDaemon and writes <code>bundle/guest-provisioning.json</code>. Local validation has
+            proven <code>vm health</code> with a guest response bound to the current runtime session,
+            challenge hash, image digest, protocol, port, and helper version. The raw readiness
+            challenge is not persisted. Detonation, egress recording, and sync-back remain
+            deliberately blocked until package-manager execution controls and signature verification
+            are implemented.
           </p>
         </div>
 
         <h3>Release claim</h3>
         <p>
           The current Goal 1 implementation provides the macOS VM lifecycle foundation only:
-          helper-backed status, initialization paths, start/controlled-stop scaffolding, manifest
-          checks, and guest-health proof plumbing. The next macOS release target is to run supported
+          helper-backed status, initialization paths, start/controlled-stop, manifest checks,
+          root-owned guest readiness provisioning, and proven guest-health proof. The next macOS
+          release target is to run supported
           npm, pip, and uv installs inside that guest VM, inject only fake canary secrets, record
           filesystem/process/package-manager/network behavior, and sync back only approved project
           outputs. The current implementation does not claim detonation, sync-back, universal malware
@@ -1312,8 +1313,8 @@
           <li><code>whoathere vm init --execute --helper &lt;path&gt; --fetch-latest-restore-image</code> explicitly fetches Apple's latest supported restore image, caches and hashes it locally, and then uses the same restore-image install path.</li>
           <li><code>whoathere vm init --execute</code> without a helper or image source fails closed with exact required inputs rather than creating placeholder readiness.</li>
           <li><code>whoathere vm start</code>, <code>suspend</code>, <code>reset</code>, and <code>prune</code> delegate to the helper when configured; start requires bootable metadata and writes host-runtime health proof, suspend performs a controlled stop with shutdown proof, and <code>vm health</code> requires a matching guest vsock proof.</li>
-          <li><code>whoathere vm health --helper &lt;path&gt;</code> is read-only, delegates to helper <code>health</code>, and preserves fail-closed exit code <code>20</code> until guest proof is present.</li>
-          <li>The helper includes a <code>whoathere.guest_ready.v1</code> vsock protocol and guest-agent source under <code>guest-agent/</code>; the agent must be built and run inside the guest before guest health is proven.</li>
+          <li><code>whoathere vm health --helper &lt;path&gt;</code> is read-only, delegates to helper <code>health</code>, succeeds only for a matching live guest vsock proof, and preserves fail-closed exit code <code>20</code> otherwise.</li>
+          <li>The helper includes a <code>whoathere.guest_ready.v1</code> vsock protocol, guest-agent source under <code>guest-agent/</code>, and an admin-only offline provisioning script that installs a root-owned guest LaunchDaemon.</li>
           <li>The helper includes a <code>com.apple.security.virtualization</code> entitlement plist and local signing script for development validation.</li>
           <li>The Rust CLI invokes the helper with an absolute canonical path, cleared environment, minimal <code>PATH</code>, bounded output, and operation timeouts.</li>
           <li><code>whoathere vm release-plan</code> classifies artifact risk and returns model verdict exit codes, but explicitly does not authorize runtime execution or sync-back.</li>
@@ -1329,6 +1330,7 @@
           <code>bundle/auxiliary-storage</code>, <code>bundle/hardware-model.bin</code>,
           <code>bundle/machine-identifier.bin</code>, <code>bundle/runtime.json</code>,
           <code>bundle/health.json</code>, <code>bundle/guest-health.json</code>,
+          <code>bundle/guest-provisioning.json</code>, <code>bundle/guest-tools.dmg</code>,
           <code>bundle/shutdown.json</code>, <code>bundle/runtime.pid</code>,
           <code>bundle/saved-state.bin</code>, <code>logs/</code>, <code>runs/</code>,
           <code>cache/</code>, <code>reports/</code>, and <code>overlays/</code>.

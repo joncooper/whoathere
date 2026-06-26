@@ -56,9 +56,11 @@ and status. On rerun, it reuses a complete existing VM bundle instead of reinsta
 `bundle/guest-provisioning.json` is missing, it stops fail-closed with the exact
 `sudo ./scripts/provision-guest-readiness.sh ...` command to run while the VM is stopped. After
 that provisioning receipt exists, rerunning the validation continues through start, health, suspend,
-and final status. It creates a large local VM disk under `~/.whoathere/macos-vm-validation` unless
-a second state-directory argument is supplied. The `--fetch-latest-restore-image` mode also
-downloads a large IPSW into that state directory's cache when no complete bundle already exists.
+and final status. Health polling defaults to 30 attempts at 10 second intervals and can be adjusted
+with `WHOATHERE_VM_HEALTH_ATTEMPTS` and `WHOATHERE_VM_HEALTH_INTERVAL_SECONDS`. It creates a large
+local VM disk under `~/.whoathere/macos-vm-validation` unless a second state-directory argument is
+supplied. The `--fetch-latest-restore-image` mode also downloads a large IPSW into that state
+directory's cache when no complete bundle already exists.
 
 For local resource tuning, set `WHOATHERE_VM_DISK_GIB` or `WHOATHERE_VM_MEMORY_MIB` before running
 the validation script. Restore-backed macOS bundles currently use a 64 GiB disk by default, and the

@@ -18,6 +18,8 @@ GUEST_TOOLS_IMAGE="$GUEST_TOOLS_IMAGE_BASE.dmg"
 GUEST_PROVISIONING_RECEIPT="$BUNDLE_DIR/guest-provisioning.json"
 MEMORY_MIB=${WHOATHERE_VM_MEMORY_MIB:-6144}
 DISK_GIB=${WHOATHERE_VM_DISK_GIB:-64}
+HEALTH_ATTEMPTS=${WHOATHERE_VM_HEALTH_ATTEMPTS:-30}
+HEALTH_INTERVAL_SECONDS=${WHOATHERE_VM_HEALTH_INTERVAL_SECONDS:-10}
 
 installed_bundle_complete() {
   for path in \
@@ -73,6 +75,30 @@ require_guest_provisioning() {
   echo "provision_guest_first=sudo $HELPER_ROOT/scripts/provision-guest-readiness.sh $STATE_DIR" >&2
   echo "rerun_validation_after_provisioning=$0 $RESTORE_IMAGE $STATE_DIR" >&2
   exit 20
+}
+
+poll_guest_health() {
+  ATTEMPT=1
+  while [ "$ATTEMPT" -le "$HEALTH_ATTEMPTS" ]; do
+    set +e
+    HEALTH_OUTPUT=$("$HELPER_PATH" health --state-dir "$STATE_DIR" --json)
+    HEALTH_EXIT=$?
+    set -e
+    printf 'health_attempt=%s exit=%s\n%s\n' "$ATTEMPT" "$HEALTH_EXIT" "$HEALTH_OUTPUT"
+    case "$HEALTH_EXIT" in
+      0)
+        return 0
+        ;;
+      20)
+        ;;
+      *)
+        return "$HEALTH_EXIT"
+        ;;
+    esac
+    ATTEMPT=$((ATTEMPT + 1))
+    sleep "$HEALTH_INTERVAL_SECONDS"
+  done
+  return 20
 }
 
 if [ -z "$RESTORE_IMAGE" ]; then
@@ -144,9 +170,10 @@ run_status_smoke
 require_guest_provisioning
 "$HELPER_PATH" start --state-dir "$STATE_DIR" --execute --json
 set +e
-"$HELPER_PATH" health --state-dir "$STATE_DIR" --json
+poll_guest_health
 HEALTH_EXIT=$?
 set -e
+"$HELPER_PATH" suspend --state-dir "$STATE_DIR" --execute --json
 case "$HEALTH_EXIT" in
   0)
     echo "guest_health_proven=true"
@@ -160,5 +187,4 @@ case "$HEALTH_EXIT" in
     exit "$HEALTH_EXIT"
     ;;
 esac
-"$HELPER_PATH" suspend --state-dir "$STATE_DIR" --execute --json
 run_status_smoke
