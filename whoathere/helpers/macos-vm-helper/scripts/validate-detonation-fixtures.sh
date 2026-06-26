@@ -33,6 +33,34 @@ run_case() {
   echo "fixture_result=ok fixture=$name actual_exit=$status"
 }
 
+run_case_one_of() {
+  name=$1
+  expected_list=$2
+  tool=$3
+  shift 3
+
+  echo "fixture=$name expected_exit_one_of=$expected_list tool=$tool"
+  set +e
+  "$WHOATHERE_BIN" vm detonate \
+    --state-dir "$STATE_DIR" \
+    --helper "$HELPER" \
+    --fixture "$name" \
+    --timeout-seconds 120 \
+    --execute \
+    "$tool" -- "$@"
+  status=$?
+  set -e
+  case ",$expected_list," in
+    *,"$status",*)
+      echo "fixture_result=ok fixture=$name actual_exit=$status"
+      ;;
+    *)
+      echo "fixture_result=failed fixture=$name actual_exit=$status expected_exit_one_of=$expected_list" >&2
+      exit 1
+      ;;
+  esac
+}
+
 if [ ! -x "$WHOATHERE_BIN" ]; then
   echo "whoathere_binary_not_executable=$WHOATHERE_BIN" >&2
   exit 64
@@ -48,11 +76,20 @@ fi
 run_case clean_npm_lifecycle 0 npm ci
 run_case npm_postinstall_canary_exfil 20 npm ci
 run_case npm_prepare_remote_fetch 20 npm ci
+run_case npm_bin_token_theft 20 npm exec whoathere-fixture
 run_case delayed_ci_canary 20 npm ci
+run_case api_compatible_canary_theft 20 npm ci
 run_case native_extension_canary 20 npm ci
+run_case npm_transitive_malicious_dependency 20 npm ci
 run_case clean_pip_package 0 pip install .
 run_case pypi_setup_py_canary 20 pip install .
 run_case pypi_import_time_canary 20 pip install .
+run_case python_pth_startup_hook 20 pip install .
+run_case api_compatible_canary_theft 20 pip install .
 run_case direct_git_tarball_canary 20 npm ci
+run_case direct_url_vcs_editable 20 pip install .
+run_case binary_wheel_native_marker 20 pip install .
+run_case_one_of clean_pip_package 0,20 uv pip install .
+run_case_one_of uv_unpinned_dependency 20 uv sync
 
 echo "detonation_fixture_validation=ok"

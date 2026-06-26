@@ -17,7 +17,7 @@ This goal does not claim universal malware detection, safe arbitrary native exec
 - Runtime job-file to vsock bridge. The helper writes a bounded job request into WhoaThere-managed state; the live runtime forwards it over the existing guest vsock session; the guest agent returns a sanitized one-line JSON result.
 - Guest agent v0.2.0 keeps the readiness connection open after health proof and accepts allowlisted fixture jobs only.
 - Guest-side fake canaries for npm, PyPI, GitHub, cloud, Kubernetes, Vault, `.env`-style, and AI-tool credentials.
-- Guest-side fixture runner for fixed npm and Python recipes. It detects canary access, mock network/exfil markers, timeouts, command failure, manual-review classes, and missing toolchains without returning raw canary values.
+- Guest-side fixture runner for fixed npm, Python, and uv local-package recipes. It detects canary access, mock network/exfil markers, timeouts, command failure, manual-review classes, and missing toolchains without returning raw canary values.
 - Guest readiness proof now reports toolchain availability for npm, python3, pip, and uv.
 
 ## Current Live Validation State
@@ -64,7 +64,7 @@ Then run:
 | Fixture | Current support | Expected verdict |
 | --- | --- | --- |
 | `clean_npm_lifecycle` | Guest recipe, requires npm in guest | `allow_observed_clean` if command succeeds |
-| `clean_pip_package` | Guest recipe, requires python3 and pip in guest | `allow_observed_clean` if command succeeds |
+| `clean_pip_package` | Guest recipe, requires python3 and pip in guest; uv path also supported if uv is already present | `allow_observed_clean` if command succeeds |
 | `npm_postinstall_canary_exfil` | Guest recipe | `deny_malicious_behavior` |
 | `npm_prepare_remote_fetch` | Guest recipe | `deny_malicious_behavior` |
 | `npm_darwin_only_payload` | Guest recipe | `deny_malicious_behavior` |
@@ -79,10 +79,10 @@ Then run:
 | `direct_git_tarball_canary` | Classification-only | `manual_review_risky_class` or deny |
 | `direct_url_vcs_editable` | Classification-only | `manual_review_risky_class` or deny |
 | `uv_unpinned_dependency` | Classification-only | manual review / last-known-good handling deferred |
-| `npm_bin_token_theft` | Classification-only | manual review |
+| `npm_bin_token_theft` | Guest npm exec/bin recipe | `deny_malicious_behavior` |
 | `npm_transitive_malicious_dependency` | Classification-only | manual review |
-| `python_pth_startup_hook` | Classification-only | manual review |
-| `api_compatible_canary_theft` | Classification-only | manual review |
+| `python_pth_startup_hook` | Guest `.pth` recipe | `deny_malicious_behavior` |
+| `api_compatible_canary_theft` | Guest npm and Python API-call recipes | `deny_malicious_behavior` |
 
 ## Validation Results
 
@@ -114,7 +114,7 @@ Pending:
 
 - Project mirror transfer into the guest is not implemented yet. Goal 2 currently supports fixture/local recipes first, not arbitrary project dependency resolution.
 - Network evidence is marker-based inside controlled fixtures. Full DNS/HTTPS observation without TLS MITM is deferred.
-- uv execution is not implemented in the guest runner; uv fixtures fail closed or manual-review until a guest uv toolchain and recipe are available.
+- uv local-package execution is implemented only when uv is already present in the guest. The runner fails closed when uv is absent and does not install uv automatically.
 - Native/binary/direct/VCS/editable classes are not executed; they remain manual-review or deny by default.
 - The guest runner uses fixed internal fixture recipes and does not expose arbitrary shell execution over the host protocol.
 
@@ -127,4 +127,3 @@ Pending:
 - Dynamic-analysis research gap: https://arxiv.org/abs/2505.13804
 - PyPI detection research: https://arxiv.org/abs/2606.19063
 - Slopsquatting / package hallucination attack-surface research: https://arxiv.org/abs/2605.17062
-

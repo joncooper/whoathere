@@ -165,6 +165,10 @@ static int command_exists(const char *command) {
     return status == 0;
 }
 
+static int pip_available(void) {
+    return system("python3 -m pip --version >/dev/null 2>&1") == 0;
+}
+
 struct command_result {
     int exit_code;
     int timed_out;
@@ -257,33 +261,46 @@ static int prepare_workspace(const char *job_id, char *workspace, size_t workspa
 
 static int write_npm_fixture(const char *workspace, const char *fixture) {
     char package_json[512];
+    char module_js[512];
     if (snprintf(package_json, sizeof(package_json), "%s/package.json", workspace) < 0) {
         return -1;
     }
+    if (snprintf(module_js, sizeof(module_js), "%s/index.js", workspace) < 0) {
+        return -1;
+    }
     if (strcmp(fixture, "clean_npm_lifecycle") == 0) {
-        return write_file(
+        int package_result = write_file(
             package_json,
-            "{\"name\":\"whoathere-clean-fixture\",\"version\":\"0.0.1\",\"scripts\":{\"postinstall\":\"node -e \\\"require('fs').writeFileSync('clean.marker','ok')\\\"\"}}\n"
+            "{\"name\":\"whoathere-clean-fixture\",\"version\":\"0.0.1\",\"main\":\"index.js\",\"scripts\":{\"postinstall\":\"node -e \\\"require('fs').writeFileSync('clean.marker','ok')\\\"\"}}\n"
         );
+        return package_result || write_file(module_js, "module.exports = { value: 'clean' };\n");
     }
     if (strcmp(fixture, "npm_postinstall_canary_exfil") == 0
         || strcmp(fixture, "npm_prepare_remote_fetch") == 0
         || strcmp(fixture, "npm_darwin_only_payload") == 0
         || strcmp(fixture, "delayed_ci_canary") == 0
         || strcmp(fixture, "dns_tunneling_canary") == 0
-        || strcmp(fixture, "https_exfil_canary") == 0) {
+        || strcmp(fixture, "https_exfil_canary") == 0
+        || strcmp(fixture, "npm_bin_token_theft") == 0
+        || strcmp(fixture, "api_compatible_canary_theft") == 0) {
         const char *script_name = strcmp(fixture, "npm_prepare_remote_fetch") == 0 ? "prepare" : "postinstall";
         char body[2048];
         int length = snprintf(
             body,
             sizeof(body),
-            "{\"name\":\"whoathere-malicious-fixture\",\"version\":\"0.0.1\",\"scripts\":{\"%s\":\"node -e \\\"const fs=require('fs'); if(process.env.NPM_TOKEN||process.env.GITHUB_TOKEN) fs.writeFileSync('canary-read.marker','1'); fs.writeFileSync('network-attempt.marker','mock-egress'); if(process.env.CI==='true') fs.writeFileSync('ci-activated.marker','1');\\\"\"}}\n",
+            "{\"name\":\"whoathere-malicious-fixture\",\"version\":\"0.0.1\",\"main\":\"index.js\",\"bin\":{\"whoathere-fixture\":\"index.js\"},\"scripts\":{\"%s\":\"node -e \\\"const fs=require('fs'); if(process.env.NPM_TOKEN||process.env.GITHUB_TOKEN) fs.writeFileSync('canary-read.marker','1'); fs.writeFileSync('network-attempt.marker','mock-egress'); if(process.env.CI==='true') fs.writeFileSync('ci-activated.marker','1');\\\"\"}}\n",
             script_name
         );
         if (length < 0 || (size_t)length >= sizeof(body)) {
             return -1;
         }
-        return write_file(package_json, body);
+        int package_result = write_file(package_json, body);
+        int module_result = write_file(
+            module_js,
+            "#!/usr/bin/env node\nconst fs = require('fs');\nexports.run = function() { if (process.env.NPM_TOKEN || process.env.GITHUB_TOKEN) fs.writeFileSync('api-canary-read.marker', '1'); };\nif (require.main === module) exports.run();\n"
+        );
+        chmod(module_js, 0755);
+        return package_result || module_result;
     }
     return -1;
 }
@@ -306,15 +323,27 @@ static int write_python_fixture(const char *workspace, const char *fixture) {
     if (strcmp(fixture, "pypi_pep517_canary") == 0
         || strcmp(fixture, "pypi_setup_py_canary") == 0
         || strcmp(fixture, "pypi_import_time_canary") == 0
-        || strcmp(fixture, "python_import_time_canary") == 0) {
+        || strcmp(fixture, "python_import_time_canary") == 0
+        || strcmp(fixture, "python_pth_startup_hook") == 0
+        || strcmp(fixture, "api_compatible_canary_theft") == 0) {
         int setup_result = write_file(
             setup_py,
             "from setuptools import setup\nimport os, pathlib\nif os.environ.get('PYPI_TOKEN'):\n    pathlib.Path('canary-read.marker').write_text('1')\nsetup(name='whoathere-fixture', version='0.0.1', py_modules=['whoathere_fixture'])\n"
         );
-        int module_result = write_file(
-            module_py,
-            "import os, pathlib\nif os.environ.get('PYPI_TOKEN'):\n    pathlib.Path('import-canary-read.marker').write_text('1')\nVALUE = 'loaded'\n"
-        );
+        const char *module_body = strcmp(fixture, "api_compatible_canary_theft") == 0
+            ? "import os, pathlib\nVALUE = 'compatible'\ndef run():\n    if os.environ.get('PYPI_TOKEN'):\n        pathlib.Path('api-canary-read.marker').write_text('1')\n    return VALUE\n"
+            : "import os, pathlib\nif os.environ.get('PYPI_TOKEN'):\n    pathlib.Path('import-canary-read.marker').write_text('1')\nVALUE = 'loaded'\n";
+        int module_result = write_file(module_py, module_body);
+        if (strcmp(fixture, "python_pth_startup_hook") == 0) {
+            char pth[512];
+            if (snprintf(pth, sizeof(pth), "%s/whoathere_hook.pth", workspace) < 0) {
+                return -1;
+            }
+            return setup_result || module_result || write_file(
+                pth,
+                "import os,pathlib; pathlib.Path('pth-canary-read.marker').write_text('1') if os.environ.get('PYPI_TOKEN') else None\n"
+            );
+        }
         return setup_result || module_result;
     }
     return -1;
@@ -326,10 +355,7 @@ static int classification_only_fixture(const char *fixture) {
         || strcmp(fixture, "direct_git_tarball_canary") == 0
         || strcmp(fixture, "direct_url_vcs_editable") == 0
         || strcmp(fixture, "uv_unpinned_dependency") == 0
-        || strcmp(fixture, "npm_bin_token_theft") == 0
-        || strcmp(fixture, "npm_transitive_malicious_dependency") == 0
-        || strcmp(fixture, "python_pth_startup_hook") == 0
-        || strcmp(fixture, "api_compatible_canary_theft") == 0;
+        || strcmp(fixture, "npm_transitive_malicious_dependency") == 0;
 }
 
 static const char *classification_reason(const char *fixture) {
@@ -471,40 +497,42 @@ static int run_detonation_job(int fd, const char *line) {
         if (write_npm_fixture(workspace, fixture) != 0) {
             return write_detonation_response(fd, job_id, tool, command_class, fixture, "fail_closed", "fail_closed_runner_error", "\"guest_fixture_prepare_failed\"", 70, 70, 0, 0, 0, 0, 0);
         }
-        shell_command = "npm install --foreground-scripts --ignore-scripts=false --no-audit --no-fund";
+        if (strcmp(command_class, "npm_exec_detonation") == 0 || strcmp(fixture, "npm_bin_token_theft") == 0) {
+            shell_command = "npm install --foreground-scripts --ignore-scripts=false --no-audit --no-fund && node index.js";
+        } else if (strcmp(fixture, "api_compatible_canary_theft") == 0) {
+            shell_command = "npm install --foreground-scripts --ignore-scripts=false --no-audit --no-fund && node -e \"require('./index').run()\"";
+        } else {
+            shell_command = "npm install --foreground-scripts --ignore-scripts=false --no-audit --no-fund";
+        }
     } else if (strcmp(tool, "pip") == 0) {
         tool_command = "python3";
         if (write_python_fixture(workspace, fixture) != 0) {
             return write_detonation_response(fd, job_id, tool, command_class, fixture, "fail_closed", "fail_closed_runner_error", "\"guest_fixture_prepare_failed\"", 70, 70, 0, 0, 0, 0, 0);
         }
-        if (strcmp(fixture, "pypi_import_time_canary") == 0 || strcmp(fixture, "python_import_time_canary") == 0) {
+        if (strcmp(fixture, "python_pth_startup_hook") == 0) {
+            shell_command = "mkdir -p target && cp whoathere_hook.pth target/ && python3 -c 'import site; site.addsitedir(\"target\")'";
+        } else if (strcmp(fixture, "api_compatible_canary_theft") == 0) {
+            shell_command = "python3 -m pip install --no-index --no-build-isolation . --target target && PYTHONPATH=target python3 -c 'import whoathere_fixture; whoathere_fixture.run()'";
+        } else if (strcmp(fixture, "pypi_import_time_canary") == 0 || strcmp(fixture, "python_import_time_canary") == 0) {
             shell_command = "python3 -m pip install --no-index --no-build-isolation . --target target && PYTHONPATH=target python3 -c 'import whoathere_fixture'";
         } else {
             shell_command = "python3 -m pip install --no-index --no-build-isolation . --target target";
         }
     } else if (strcmp(tool, "uv") == 0) {
-        return write_detonation_response(
-            fd,
-            job_id,
-            tool,
-            command_class,
-            fixture,
-            "fail_closed",
-            "fail_closed_tooling_missing",
-            "\"uv_guest_runner_not_implemented\"",
-            20,
-            20,
-            0,
-            0,
-            0,
-            0,
-            command_exists("uv")
-        );
+        tool_command = "uv";
+        if (write_python_fixture(workspace, fixture) != 0) {
+            return write_detonation_response(fd, job_id, tool, command_class, fixture, "fail_closed", "fail_closed_runner_error", "\"guest_fixture_prepare_failed\"", 70, 70, 0, 0, 0, 0, 0);
+        }
+        if (strcmp(fixture, "api_compatible_canary_theft") == 0) {
+            shell_command = "uv pip install --no-index . --target target && PYTHONPATH=target python3 -c 'import whoathere_fixture; whoathere_fixture.run()'";
+        } else {
+            shell_command = "uv pip install --no-index . --target target";
+        }
     } else {
         return write_detonation_response(fd, job_id, tool, command_class, fixture, "fail_closed", "fail_closed_unsupported_workflow", "\"unsupported_tool\"", 20, 20, 0, 0, 0, 0, 0);
     }
 
-    int available = command_exists(tool_command);
+    int available = strcmp(tool, "pip") == 0 ? pip_available() : command_exists(tool_command);
     if (!available || shell_command == NULL) {
         return write_detonation_response(
             fd,
@@ -533,6 +561,10 @@ static int run_detonation_job(int fd, const char *line) {
     snprintf(marker, sizeof(marker), "%s/canary-read.marker", workspace);
     canary_access = canary_access || path_exists(marker);
     snprintf(marker, sizeof(marker), "%s/import-canary-read.marker", workspace);
+    canary_access = canary_access || path_exists(marker);
+    snprintf(marker, sizeof(marker), "%s/api-canary-read.marker", workspace);
+    canary_access = canary_access || path_exists(marker);
+    snprintf(marker, sizeof(marker), "%s/pth-canary-read.marker", workspace);
     canary_access = canary_access || path_exists(marker);
     snprintf(marker, sizeof(marker), "%s/network-attempt.marker", workspace);
     network_attempt = network_attempt || path_exists(marker);
@@ -607,7 +639,7 @@ int main(void) {
         challenge,
         command_exists("npm") ? "true" : "false",
         command_exists("python3") ? "true" : "false",
-        system("python3 -m pip --version >/dev/null 2>&1") == 0 ? "true" : "false",
+        pip_available() ? "true" : "false",
         command_exists("uv") ? "true" : "false"
     );
     if (length < 0 || (size_t)length >= sizeof(response)) {
