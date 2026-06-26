@@ -7,6 +7,7 @@ import WhoaThereMacosVmHelperCore
 
 private let guestReadinessPort: UInt32 = 47078
 private let guestReadinessProtocol = "whoathere.guest_ready.v1"
+private let guestDetonationProtocol = "whoathere.guest_detonation.v1"
 
 private final class LockedResultBox<Value>: @unchecked Sendable {
     private let lock = NSLock()
@@ -127,6 +128,10 @@ private final class GuestReadinessListener: NSObject, VZVirtioSocketListenerDele
             "host_vm_started": true,
             "guest_health_proven": true,
             "guest_agent_version": response["agent_version"] as? String ?? "unknown",
+            "guest_toolchain_npm_available": response["npm_available"] as? Bool ?? false,
+            "guest_toolchain_python3_available": response["python3_available"] as? Bool ?? false,
+            "guest_toolchain_pip_available": response["pip_available"] as? Bool ?? false,
+            "guest_toolchain_uv_available": response["uv_available"] as? Bool ?? false,
             "guest_readiness_protocol": guestReadinessProtocol,
             "guest_readiness_port": Int(guestReadinessPort),
             "guest_readiness_challenge_sha256": sha256Hex(challenge),
@@ -137,7 +142,154 @@ private final class GuestReadinessListener: NSObject, VZVirtioSocketListenerDele
         ]
         try? JSONSerialization.data(withJSONObject: proof, options: [.prettyPrinted, .sortedKeys])
             .write(to: layout.guestHealthProofPath, options: [.atomic])
+        serveDetonationJobs(connection)
     }
+
+    private func serveDetonationJobs(_ connection: VZVirtioSocketConnection) {
+        let jobsDir = detonationJobsDir(layout)
+        try? FileManager.default.createDirectory(
+            at: jobsDir,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        while true {
+            guard let request = nextDetonationRequest(in: jobsDir) else {
+                Thread.sleep(forTimeInterval: 0.25)
+                continue
+            }
+            let jobID = request.jobID
+            let activeURL = jobsDir.appendingPathComponent("\(jobID).active.json")
+            let resultURL = jobsDir.appendingPathComponent("\(jobID).result.json")
+            do {
+                try? FileManager.default.removeItem(at: activeURL)
+                try FileManager.default.moveItem(at: request.url, to: activeURL)
+                guard var requestFields = readJSONObject(activeURL) else {
+                    writeDetonationResult(
+                        to: resultURL,
+                        fields: detonationFailureResult(
+                            jobID: jobID,
+                            reasons: ["detonation_request_unreadable"],
+                            exitCode: 70
+                        )
+                    )
+                    try? FileManager.default.removeItem(at: activeURL)
+                    continue
+                }
+                requestFields["protocol"] = guestDetonationProtocol
+                requestFields["vm_session_id"] = sessionID
+                requestFields["helper_version"] = helperVersion
+                requestFields["sync_back_enabled"] = false
+                requestFields["host_package_execution_enabled"] = false
+                requestFields["high_risk_package_execution_enabled"] = false
+                guard writeJSONLine(requestFields, to: connection.fileDescriptor) else {
+                    writeDetonationResult(
+                        to: resultURL,
+                        fields: detonationFailureResult(
+                            jobID: jobID,
+                            reasons: ["guest_detonation_request_send_failed"],
+                            exitCode: 70
+                        )
+                    )
+                    try? FileManager.default.removeItem(at: activeURL)
+                    return
+                }
+                let timeout = min(900, max(5, intField(requestFields, "timeout_seconds") ?? 120) + 15)
+                guard let responseData = readFileDescriptor(
+                    connection.fileDescriptor,
+                    timeoutSeconds: Int32(timeout),
+                    maxBytes: 128 * 1024
+                ),
+                      var response = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
+                      response["protocol"] as? String == guestDetonationProtocol else {
+                    writeDetonationResult(
+                        to: resultURL,
+                        fields: detonationFailureResult(
+                            jobID: jobID,
+                            reasons: ["guest_detonation_result_missing_or_invalid"],
+                            exitCode: 20
+                        )
+                    )
+                    try? FileManager.default.removeItem(at: activeURL)
+                    continue
+                }
+                response["job_id"] = response["job_id"] as? String ?? jobID
+                response["vm_session_id"] = sessionID
+                response["sync_back_enabled"] = false
+                response["host_package_execution_enabled"] = false
+                response["high_risk_package_execution_enabled"] = false
+                writeDetonationResult(to: resultURL, fields: response)
+                try? FileManager.default.removeItem(at: activeURL)
+            } catch {
+                writeDetonationResult(
+                    to: resultURL,
+                        fields: detonationFailureResult(
+                            jobID: jobID,
+                            reasons: ["guest_detonation_runtime_loop_failed", sanitizedTopLevelReason(error)],
+                            exitCode: 70
+                        )
+                    )
+                try? FileManager.default.removeItem(at: activeURL)
+            }
+        }
+    }
+}
+
+private struct DetonationRequestFile {
+    var jobID: String
+    var url: URL
+}
+
+private func detonationJobsDir(_ layout: BundleLayout) -> URL {
+    layout.runsDir.appendingPathComponent("detonation-jobs", isDirectory: true)
+}
+
+private func nextDetonationRequest(in directory: URL) -> DetonationRequestFile? {
+    guard let entries = try? FileManager.default.contentsOfDirectory(
+        at: directory,
+        includingPropertiesForKeys: nil
+    ) else {
+        return nil
+    }
+    return entries
+        .filter { $0.lastPathComponent.hasSuffix(".request.json") }
+        .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        .first
+        .map { url in
+            let name = url.lastPathComponent
+            let suffix = ".request.json"
+            let jobID = String(name.dropLast(suffix.count))
+            return DetonationRequestFile(jobID: jobID, url: url)
+        }
+}
+
+private func detonationFailureResult(jobID: String, reasons: [String], exitCode: Int) -> [String: Any] {
+    [
+        "schema_version": bundleSchemaVersion,
+        "protocol": guestDetonationProtocol,
+        "job_id": jobID,
+        "status": "fail_closed",
+        "verdict": exitCode == 70 ? "fail_closed_runner_error" : "infrastructure_error_fail_closed",
+        "reason_codes": reasonArray(reasons),
+        "sync_back_enabled": false,
+        "host_package_execution_enabled": false,
+        "high_risk_package_execution_enabled": false,
+        "exit_code": exitCode
+    ]
+}
+
+private func writeDetonationResult(to url: URL, fields: [String: Any]) {
+    guard JSONSerialization.isValidJSONObject(fields),
+          let data = try? JSONSerialization.data(withJSONObject: fields, options: [.prettyPrinted, .sortedKeys]) else {
+        return
+    }
+    try? data.write(to: url, options: [.atomic])
+}
+
+private func sanitizedTopLevelReason(_ error: Error) -> String {
+    String(describing: error)
+        .replacingOccurrences(of: "\n", with: "_")
+        .replacingOccurrences(of: "\r", with: "_")
+        .replacingOccurrences(of: " ", with: "_")
 }
 
 private func randomHex(byteCount: Int) throws -> String {
@@ -1573,6 +1725,10 @@ struct WhoaThereMacosVmHelper {
                 "guest_readiness_protocol": guestReadinessProtocol,
                 "guest_readiness_port": Int(guestReadinessPort),
                 "image_digest": guestProof["image_digest"] as? String ?? "unknown",
+                "guest_toolchain_npm_available": guestProof["guest_toolchain_npm_available"] as? Bool ?? false,
+                "guest_toolchain_python3_available": guestProof["guest_toolchain_python3_available"] as? Bool ?? false,
+                "guest_toolchain_pip_available": guestProof["guest_toolchain_pip_available"] as? Bool ?? false,
+                "guest_toolchain_uv_available": guestProof["guest_toolchain_uv_available"] as? Bool ?? false,
                 "high_risk_package_execution_enabled": false,
                 "exit_code": 0
             ]) { _, new in new },
@@ -1675,25 +1831,107 @@ struct WhoaThereMacosVmHelper {
                 exitCode: 20
             )
         }
-        emit(
-            fields: failClosedFields(
-                layout: layout,
-                reasons: ["guest_detonation_runner_not_implemented"],
+        guard let fixture = options.detonationFixture, !fixture.isEmpty else {
+            emit(
+                fields: failClosedFields(
+                    layout: layout,
+                    reasons: ["detonation_fixture_required_until_project_mirror_transfer_implemented"],
+                    exitCode: 20
+                ).merging([
+                    "operation": "detonate",
+                    "tool": tool,
+                    "command_class": commandClass,
+                    "sync_back_enabled": false,
+                    "host_package_execution_enabled": false,
+                    "high_risk_package_execution_enabled": false,
+                    "verdict": "fail_closed_unsupported_workflow"
+                ]) { _, new in new },
                 exitCode: 20
-            ).merging([
-                "operation": "detonate",
+            )
+        }
+
+        do {
+            try FileManager.default.createDirectory(
+                at: detonationJobsDir(layout),
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+            let jobID = try randomHex(byteCount: 16)
+            let requestURL = detonationJobsDir(layout).appendingPathComponent("\(jobID).request.json")
+            let resultURL = detonationJobsDir(layout).appendingPathComponent("\(jobID).result.json")
+            let request: [String: Any] = [
+                "schema_version": bundleSchemaVersion,
+                "protocol": guestDetonationProtocol,
+                "job_id": jobID,
                 "tool": tool,
                 "command_class": commandClass,
-                "fixture": options.detonationFixture ?? "missing",
-                "timeout_seconds": options.detonationTimeoutSeconds,
+                "fixture": fixture,
+                "timeout_seconds": min(900, max(5, options.detonationTimeoutSeconds)),
                 "argv_count": options.detonationArgs.count,
                 "sync_back_enabled": false,
                 "host_package_execution_enabled": false,
-                "high_risk_package_execution_enabled": false,
-                "verdict": "infrastructure_error_fail_closed"
-            ]) { _, new in new },
-            exitCode: 20
-        )
+                "high_risk_package_execution_enabled": false
+            ]
+            let requestData = try JSONSerialization.data(withJSONObject: request, options: [.prettyPrinted, .sortedKeys])
+            try requestData.write(to: requestURL, options: [.atomic])
+            guard let result = waitForDetonationResult(
+                resultURL: resultURL,
+                timeoutSeconds: TimeInterval(min(930, max(20, options.detonationTimeoutSeconds + 20)))
+            ) else {
+                emit(
+                    fields: failClosedFields(
+                        layout: layout,
+                        reasons: ["guest_detonation_result_timeout"],
+                        exitCode: 20
+                    ).merging([
+                        "operation": "detonate",
+                        "tool": tool,
+                        "command_class": commandClass,
+                        "fixture": fixture,
+                        "job_id": jobID,
+                        "sync_back_enabled": false,
+                        "host_package_execution_enabled": false,
+                        "high_risk_package_execution_enabled": false,
+                        "verdict": "timeout_fail_closed"
+                    ]) { _, new in new },
+                    exitCode: 20
+                )
+            }
+            let resultExit = intField(result, "exit_code") ?? 20
+            var fields = baseFields(status: result["status"] as? String ?? "fail_closed")
+                .merging(result) { _, new in new }
+            fields["operation"] = "detonate"
+            fields["state_dir"] = layout.stateDir.path
+            fields["bundle_dir"] = layout.bundleDir.path
+            fields["runtime_pid"] = Int(pid)
+            fields["runtime_pid_alive"] = true
+            fields["tool"] = tool
+            fields["command_class"] = commandClass
+            fields["fixture"] = fixture
+            fields["sync_back_enabled"] = false
+            fields["host_package_execution_enabled"] = false
+            fields["high_risk_package_execution_enabled"] = false
+            fields["exit_code"] = resultExit
+            emit(fields: fields, exitCode: Int32(resultExit))
+        } catch {
+            emit(
+                fields: failClosedFields(
+                    layout: layout,
+                    reasons: ["detonation_job_submit_failed", sanitizedReason(error)],
+                    exitCode: 70
+                ).merging([
+                    "operation": "detonate",
+                    "tool": tool,
+                    "command_class": commandClass,
+                    "fixture": options.detonationFixture ?? "missing",
+                    "sync_back_enabled": false,
+                    "host_package_execution_enabled": false,
+                    "high_risk_package_execution_enabled": false,
+                    "verdict": "fail_closed_runner_error"
+                ]) { _, new in new },
+                exitCode: 70
+            )
+        }
     }
 
     private static func runtimeHealthReasonCodes(layout: BundleLayout, pid: pid_t) -> [String] {
@@ -1718,6 +1956,17 @@ struct WhoaThereMacosVmHelper {
             expectedProtocol: guestReadinessProtocol,
             expectedPort: Int(guestReadinessPort)
         )
+    }
+
+    private static func waitForDetonationResult(resultURL: URL, timeoutSeconds: TimeInterval) -> [String: Any]? {
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        while Date() < deadline {
+            if let result = readJSONObject(resultURL) {
+                return result
+            }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+        return nil
     }
 
     private static func statusReasons(layout: BundleLayout) -> [String] {
