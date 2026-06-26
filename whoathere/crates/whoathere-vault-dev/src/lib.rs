@@ -143,6 +143,134 @@ pub enum BindValidationError {
     NotLoopback,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VaultServeMode {
+    LocalDev,
+    Enterprise,
+}
+
+impl VaultServeMode {
+    fn label(self) -> &'static str {
+        match self {
+            Self::LocalDev => "local_dev",
+            Self::Enterprise => "enterprise",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnterpriseAuthConfig {
+    pub bearer_token_sha256: String,
+}
+
+impl EnterpriseAuthConfig {
+    pub fn from_bearer_token(token: &str) -> Self {
+        Self {
+            bearer_token_sha256: sha256_digest(token.as_bytes()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VaultReadinessState {
+    pub protected_traffic_ready: bool,
+    pub reason_codes: Vec<String>,
+}
+
+impl VaultReadinessState {
+    pub fn not_ready(reason_code: impl Into<String>) -> Self {
+        Self {
+            protected_traffic_ready: false,
+            reason_codes: vec![reason_code.into()],
+        }
+    }
+
+    pub fn ready() -> Self {
+        Self {
+            protected_traffic_ready: true,
+            reason_codes: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VaultHttpOptions {
+    pub mode: VaultServeMode,
+    pub readiness: VaultReadinessState,
+    pub enterprise_auth: Option<EnterpriseAuthConfig>,
+}
+
+impl VaultHttpOptions {
+    pub fn local_dev() -> Self {
+        Self {
+            mode: VaultServeMode::LocalDev,
+            readiness: VaultReadinessState::not_ready("vault_dependencies_not_verified"),
+            enterprise_auth: None,
+        }
+    }
+
+    pub fn enterprise(
+        enterprise_auth: EnterpriseAuthConfig,
+        readiness: VaultReadinessState,
+    ) -> Self {
+        Self {
+            mode: VaultServeMode::Enterprise,
+            readiness,
+            enterprise_auth: Some(enterprise_auth),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VaultServeConfig {
+    pub bind_addr: String,
+    pub mode: VaultServeMode,
+    pub enterprise_auth: Option<EnterpriseAuthConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VaultServeConfigError {
+    NotSocketAddress,
+    LocalDevBindNotLoopback,
+    EnterpriseAuthRequired,
+    EnterpriseAuthDigestInvalid,
+}
+
+impl VaultServeConfigError {
+    pub fn reason_code(&self) -> &'static str {
+        match self {
+            Self::NotSocketAddress => "vault_bind_not_socket_address",
+            Self::LocalDevBindNotLoopback => "vault_local_dev_bind_not_loopback",
+            Self::EnterpriseAuthRequired => "vault_enterprise_auth_required",
+            Self::EnterpriseAuthDigestInvalid => "vault_enterprise_auth_digest_invalid",
+        }
+    }
+}
+
+pub fn validate_vault_serve_config(
+    config: &VaultServeConfig,
+) -> Result<SocketAddr, VaultServeConfigError> {
+    let parsed = config
+        .bind_addr
+        .parse::<SocketAddr>()
+        .map_err(|_| VaultServeConfigError::NotSocketAddress)?;
+    match config.mode {
+        VaultServeMode::LocalDev if !parsed.ip().is_loopback() => {
+            Err(VaultServeConfigError::LocalDevBindNotLoopback)
+        }
+        VaultServeMode::LocalDev => Ok(parsed),
+        VaultServeMode::Enterprise => {
+            let Some(auth) = config.enterprise_auth.as_ref() else {
+                return Err(VaultServeConfigError::EnterpriseAuthRequired);
+            };
+            if !valid_sha256_digest(&auth.bearer_token_sha256) {
+                return Err(VaultServeConfigError::EnterpriseAuthDigestInvalid);
+            }
+            Ok(parsed)
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DevServerSummary {
     pub bind_addr: SocketAddr,
@@ -286,13 +414,21 @@ pub fn serve_loopback_listener(
 }
 
 pub fn handle_http_request(request: &str) -> HttpResponse {
+    handle_http_request_with_options(request, &VaultHttpOptions::local_dev())
+}
+
+pub fn handle_http_request_with_options(request: &str, options: &VaultHttpOptions) -> HttpResponse {
     let (method, target) = parse_request_line(request);
+    if method == "GET" && target == "/healthz" {
+        return render_healthz(options.mode);
+    }
+    if method == "GET" && target == "/readyz" {
+        return render_readyz(options);
+    }
+    if let Err(response) = authorize_enterprise_request(request, target, options) {
+        return response;
+    }
     match (method, target) {
-        ("GET", "/healthz") => json_response(200, r#"{"status":"ok","mode":"local_dev"}"#),
-        ("GET", "/readyz") => json_response(
-            200,
-            r#"{"status":"ready","dependencies":"in_memory_only","mode":"local_dev"}"#,
-        ),
         ("GET", "/v1/evidence-profiles") => render_profiles_response(),
         ("POST", "/v1/admission-simulations") => render_admission_simulation(request),
         ("POST", "/v1/cache-simulations") => render_cache_simulation(request),
@@ -346,6 +482,82 @@ pub fn handle_http_request(request: &str) -> HttpResponse {
     }
 }
 
+fn render_healthz(mode: VaultServeMode) -> HttpResponse {
+    json_response(
+        200,
+        &format!("{{\"status\":\"ok\",\"mode\":\"{}\"}}", mode.label()),
+    )
+}
+
+fn render_readyz(options: &VaultHttpOptions) -> HttpResponse {
+    let status = if options.readiness.protected_traffic_ready {
+        "ready"
+    } else {
+        "not_ready"
+    };
+    json_response(
+        if options.readiness.protected_traffic_ready {
+            200
+        } else {
+            503
+        },
+        &format!(
+            "{{\"status\":\"{}\",\"mode\":\"{}\",\"protected_traffic_ready\":{},\"dependencies\":\"in_memory_only\",\"reason_codes\":{}}}",
+            status,
+            options.mode.label(),
+            options.readiness.protected_traffic_ready,
+            json_string_list(&options.readiness.reason_codes)
+        ),
+    )
+}
+
+fn authorize_enterprise_request(
+    request: &str,
+    target: &str,
+    options: &VaultHttpOptions,
+) -> Result<(), HttpResponse> {
+    if options.mode != VaultServeMode::Enterprise || target == "/healthz" {
+        return Ok(());
+    }
+    let Some(auth) = options.enterprise_auth.as_ref() else {
+        return Err(json_response(
+            503,
+            r#"{"status":"fail_closed","mode":"enterprise","reason_code":"vault_auth_not_configured"}"#,
+        ));
+    };
+    let Some(header) = request_header_value(request, "Authorization") else {
+        return Err(unauthorized_response("vault_auth_required"));
+    };
+    let Some(token) = bearer_token(header) else {
+        return Err(unauthorized_response("vault_auth_invalid"));
+    };
+    let actual = sha256_digest(token.as_bytes());
+    if constant_time_eq(actual.as_bytes(), auth.bearer_token_sha256.as_bytes()) {
+        Ok(())
+    } else {
+        Err(unauthorized_response("vault_auth_invalid"))
+    }
+}
+
+fn bearer_token(header: &str) -> Option<&str> {
+    let (scheme, token) = header.split_once(' ')?;
+    if !scheme.eq_ignore_ascii_case("Bearer") || token.trim().is_empty() {
+        return None;
+    }
+    Some(token.trim())
+}
+
+fn unauthorized_response(reason_code: &str) -> HttpResponse {
+    json_response(
+        401,
+        &format!(
+            "{{\"status\":\"fail_closed\",\"mode\":\"enterprise\",\"reason_code\":\"{}\"}}",
+            escape_json(reason_code)
+        ),
+    )
+    .with_header("WWW-Authenticate", "Bearer")
+}
+
 pub fn to_http_wire(response: &HttpResponse) -> String {
     String::from_utf8_lossy(&to_http_wire_bytes(response)).to_string()
 }
@@ -355,6 +567,8 @@ pub fn to_http_wire_bytes(response: &HttpResponse) -> Vec<u8> {
         200 => "OK",
         206 => "Partial Content",
         304 => "Not Modified",
+        401 => "Unauthorized",
+        403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
         409 => "Conflict",
@@ -411,6 +625,21 @@ fn request_header_value<'a>(request: &'a str, name: &str) -> Option<&'a str> {
         }
     }
     None
+}
+
+fn valid_sha256_digest(digest: &str) -> bool {
+    cache_object_key_for_digest(digest).is_ok()
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (left, right) in left.iter().zip(right) {
+        diff |= left ^ right;
+    }
+    diff == 0
 }
 
 fn compat_base_url_for_request(request: &str) -> Result<String, &'static str> {
@@ -794,6 +1023,9 @@ fn render_cache_simulation(request: &str) -> HttpResponse {
 fn render_npm_registry_simulation(target: &str) -> HttpResponse {
     let promoted = target_contains_query_flag(target, "promoted=true");
     let generation = local_dev_servable_generation("npm", "fixture", "1.0.0");
+    if !target_tenant_authorized(target, &generation) {
+        return tenant_not_authorized_response(&generation);
+    }
     if !promoted {
         return plain_response(503, &deny_unpromoted(&generation.artifact));
     }
@@ -819,6 +1051,9 @@ fn render_npm_registry_compat(target: &str, request: &str) -> HttpResponse {
         );
     };
     let generation = local_dev_compat_servable_generation("npm", name, "1.0.0");
+    if !target_tenant_authorized(target, &generation) {
+        return tenant_not_authorized_response(&generation);
+    }
     if generation.artifact.name != "fixture" {
         return plain_response(503, &deny_unpromoted(&generation.artifact));
     }
@@ -837,6 +1072,9 @@ fn render_npm_tarball_simulation(target: &str, request: &str) -> HttpResponse {
         return plain_response(503, "status=503\nreason_code=artifact_not_promoted");
     };
     let mut generation = local_dev_servable_generation("npm", name, version);
+    if !target_tenant_authorized(target, &generation) {
+        return tenant_not_authorized_response(&generation);
+    }
     if generation.artifact.name != "fixture" || generation.artifact.version != "1.0.0" {
         return plain_response(503, &deny_unpromoted(&generation.artifact));
     }
@@ -858,6 +1096,9 @@ fn render_npm_tarball_compat(target: &str, request: &str) -> HttpResponse {
         return plain_response(503, "status=503\nreason_code=artifact_not_promoted");
     };
     let generation = local_dev_compat_servable_generation("npm", name, version);
+    if !target_tenant_authorized(target, &generation) {
+        return tenant_not_authorized_response(&generation);
+    }
     if generation.artifact.name != "fixture" || generation.artifact.version != "1.0.0" {
         return plain_response(503, &deny_unpromoted(&generation.artifact));
     }
@@ -867,6 +1108,9 @@ fn render_npm_tarball_compat(target: &str, request: &str) -> HttpResponse {
 fn render_pypi_registry_simulation(target: &str) -> HttpResponse {
     let promoted = target_contains_query_flag(target, "promoted=true");
     let generation = local_dev_servable_generation("pypi", "fixture", "1.0.0");
+    if !target_tenant_authorized(target, &generation) {
+        return tenant_not_authorized_response(&generation);
+    }
     if !promoted {
         return plain_response(503, &deny_unpromoted(&generation.artifact));
     }
@@ -893,6 +1137,9 @@ fn render_pypi_simple_compat(target: &str, request: &str) -> HttpResponse {
         );
     };
     let generation = local_dev_compat_servable_generation("pypi", name, "1.0.0");
+    if !target_tenant_authorized(target, &generation) {
+        return tenant_not_authorized_response(&generation);
+    }
     if generation.artifact.name != "fixture" {
         return plain_response(503, &deny_unpromoted(&generation.artifact));
     }
@@ -911,6 +1158,9 @@ fn render_pypi_file_simulation(target: &str, request: &str) -> HttpResponse {
         return plain_response(503, "status=503\nreason_code=artifact_not_promoted");
     };
     let mut generation = local_dev_servable_generation("pypi", name, version);
+    if !target_tenant_authorized(target, &generation) {
+        return tenant_not_authorized_response(&generation);
+    }
     if generation.artifact.name != "fixture" || generation.artifact.version != "1.0.0" {
         return plain_response(503, &deny_unpromoted(&generation.artifact));
     }
@@ -932,6 +1182,9 @@ fn render_pypi_file_compat(target: &str, request: &str) -> HttpResponse {
         return plain_response(503, "status=503\nreason_code=artifact_not_promoted");
     };
     let generation = local_dev_compat_servable_generation("pypi", name, version);
+    if !target_tenant_authorized(target, &generation) {
+        return tenant_not_authorized_response(&generation);
+    }
     if generation.artifact.name != "fixture" || generation.artifact.version != "1.0.0" {
         return plain_response(503, &deny_unpromoted(&generation.artifact));
     }
@@ -1042,7 +1295,11 @@ fn promoted_byte_response(
     .with_header("Accept-Ranges", "bytes")
     .with_header("Cache-Control", "private, max-age=31536000, immutable")
     .with_header("ETag", etag_for_generation(generation))
-    .with_header("X-Content-Type-Options", "nosniff");
+    .with_header("X-Content-Type-Options", "nosniff")
+    .with_header(
+        "X-WhoaThere-Audit-Event-Id",
+        format!("audit-serve-{}", generation.generation_id),
+    );
     if let Some(range) = range {
         response = response.with_header(
             "Content-Range",
@@ -1063,6 +1320,10 @@ fn not_modified_response(generation: &ServableGeneration) -> HttpResponse {
     .with_header("Cache-Control", "private, max-age=31536000, immutable")
     .with_header("ETag", etag_for_generation(generation))
     .with_header("X-Content-Type-Options", "nosniff")
+    .with_header(
+        "X-WhoaThere-Audit-Event-Id",
+        format!("audit-serve-not-modified-{}", generation.generation_id),
+    )
 }
 
 fn etag_for_generation(generation: &ServableGeneration) -> String {
@@ -1338,6 +1599,39 @@ fn target_contains_query_flag(target: &str, flag: &str) -> bool {
         .split_once('?')
         .map(|(_, query)| query.split('&').any(|pair| pair == flag))
         .unwrap_or(false)
+}
+
+fn target_query_value(target: &str, key: &str) -> Option<String> {
+    let (_, query) = target.split_once('?')?;
+    query.split('&').find_map(|pair| {
+        let (candidate_key, value) = pair.split_once('=')?;
+        if candidate_key == key {
+            percent_decode_component(value)
+        } else {
+            None
+        }
+    })
+}
+
+fn target_tenant_authorized(target: &str, generation: &ServableGeneration) -> bool {
+    target_query_value(target, "tenant_id")
+        .as_deref()
+        .unwrap_or("tenant-local-dev")
+        == generation.tenant_id
+}
+
+fn tenant_not_authorized_response(generation: &ServableGeneration) -> HttpResponse {
+    plain_response(
+        403,
+        &format!(
+            "status=403\nreason_code=tenant_not_authorized\necosystem={}\nname={}\nversion={}",
+            generation.artifact.ecosystem, generation.artifact.name, generation.artifact.version
+        ),
+    )
+    .with_header(
+        "X-WhoaThere-Audit-Event-Id",
+        format!("audit-deny-tenant-{}", generation.generation_id),
+    )
 }
 
 fn local_dev_servable_generation(
@@ -2546,6 +2840,51 @@ mod tests {
     }
 
     #[test]
+    fn vault_serve_config_requires_enterprise_auth_for_non_loopback() {
+        let local_non_loopback = VaultServeConfig {
+            bind_addr: "0.0.0.0:8080".to_string(),
+            mode: VaultServeMode::LocalDev,
+            enterprise_auth: None,
+        };
+        assert_eq!(
+            validate_vault_serve_config(&local_non_loopback).unwrap_err(),
+            VaultServeConfigError::LocalDevBindNotLoopback
+        );
+
+        let enterprise_without_auth = VaultServeConfig {
+            bind_addr: "0.0.0.0:8080".to_string(),
+            mode: VaultServeMode::Enterprise,
+            enterprise_auth: None,
+        };
+        assert_eq!(
+            validate_vault_serve_config(&enterprise_without_auth).unwrap_err(),
+            VaultServeConfigError::EnterpriseAuthRequired
+        );
+
+        let enterprise_bad_digest = VaultServeConfig {
+            bind_addr: "0.0.0.0:8080".to_string(),
+            mode: VaultServeMode::Enterprise,
+            enterprise_auth: Some(EnterpriseAuthConfig {
+                bearer_token_sha256: "sha256:../secret".to_string(),
+            }),
+        };
+        assert_eq!(
+            validate_vault_serve_config(&enterprise_bad_digest).unwrap_err(),
+            VaultServeConfigError::EnterpriseAuthDigestInvalid
+        );
+
+        let enterprise = VaultServeConfig {
+            bind_addr: "0.0.0.0:8080".to_string(),
+            mode: VaultServeMode::Enterprise,
+            enterprise_auth: Some(EnterpriseAuthConfig::from_bearer_token("phase3-token")),
+        };
+        assert_eq!(
+            validate_vault_serve_config(&enterprise).unwrap(),
+            "0.0.0.0:8080".parse::<SocketAddr>().unwrap()
+        );
+    }
+
+    #[test]
     fn loopback_dev_server_serves_one_request_then_exits() {
         let Some(listener) = bind_loopback_test_listener() else {
             return;
@@ -2656,6 +2995,59 @@ mod tests {
         let response = handle_http_request("GET /healthz HTTP/1.1\r\n\r\n");
         assert_eq!(response.status_code, 200);
         assert!(response.body.contains("\"mode\":\"local_dev\""));
+    }
+
+    #[test]
+    fn readyz_fails_closed_until_protected_dependencies_are_verified() {
+        let health = handle_http_request("GET /healthz HTTP/1.1\r\n\r\n");
+        assert_eq!(health.status_code, 200);
+
+        let readiness = handle_http_request("GET /readyz HTTP/1.1\r\n\r\n");
+        assert_eq!(readiness.status_code, 503);
+        assert!(readiness.body.contains("\"status\":\"not_ready\""));
+        assert!(readiness.body.contains("\"protected_traffic_ready\":false"));
+        assert!(readiness.body.contains("vault_dependencies_not_verified"));
+    }
+
+    #[test]
+    fn enterprise_http_requires_bearer_token_for_protected_routes() {
+        let options = VaultHttpOptions::enterprise(
+            EnterpriseAuthConfig::from_bearer_token("phase3-token"),
+            VaultReadinessState::ready(),
+        );
+        let health = handle_http_request_with_options("GET /healthz HTTP/1.1\r\n\r\n", &options);
+        assert_eq!(health.status_code, 200);
+        assert!(health.body.contains("\"mode\":\"enterprise\""));
+
+        let missing = handle_http_request_with_options(
+            "GET /v1/registry-compat/npm/fixture HTTP/1.1\r\n\r\n",
+            &options,
+        );
+        assert_eq!(missing.status_code, 401);
+        assert!(missing.body.contains("vault_auth_required"));
+        assert!(!missing.body.contains("phase3-token"));
+
+        let wrong = handle_http_request_with_options(
+            "GET /v1/registry-compat/npm/fixture HTTP/1.1\r\nAuthorization: Bearer wrong-token\r\n\r\n",
+            &options,
+        );
+        assert_eq!(wrong.status_code, 401);
+        assert!(wrong.body.contains("vault_auth_invalid"));
+        assert!(!wrong.body.contains("wrong-token"));
+
+        let ok = handle_http_request_with_options(
+            "GET /v1/registry-compat/npm/fixture HTTP/1.1\r\nAuthorization: Bearer phase3-token\r\n\r\n",
+            &options,
+        );
+        assert_eq!(ok.status_code, 200);
+        assert!(ok.body.contains("\"name\":\"fixture\""));
+
+        let log_entry = sanitized_request_log_entry(
+            "GET /v1/registry-compat/npm/fixture HTTP/1.1\r\nAuthorization: Bearer phase3-token\r\n\r\n",
+            &ok,
+        );
+        assert!(!log_entry.request_body_logged);
+        assert!(!log_entry.response_body_logged);
     }
 
     #[test]
@@ -2860,6 +3252,27 @@ mod tests {
     }
 
     #[test]
+    fn registry_compat_rejects_wrong_tenant_before_serving_metadata_or_bytes() {
+        let metadata = handle_http_request(
+            "GET /v1/registry-compat/npm/fixture?tenant_id=tenant-other HTTP/1.1\r\n\r\n",
+        );
+        assert_eq!(metadata.status_code, 403);
+        assert!(metadata.body.contains("tenant_not_authorized"));
+        assert!(!metadata.body.contains("\"dist-tags\""));
+
+        let bytes = handle_http_request(
+            "GET /v1/registry-compat/npm/tarballs/fixture/1.0.0/fixture-1.0.0.tgz?tenant_id=tenant-other HTTP/1.1\r\n\r\n",
+        );
+        assert_eq!(bytes.status_code, 403);
+        assert!(bytes.body.contains("tenant_not_authorized"));
+        assert!(!bytes.body.as_bytes().starts_with(&[0x1f, 0x8b]));
+        assert_eq!(
+            header_value(&bytes, "X-WhoaThere-Audit-Event-Id"),
+            Some("audit-deny-tenant-1")
+        );
+    }
+
+    #[test]
     fn registry_compat_npm_tarball_serves_valid_safe_archive_bytes() {
         let response = handle_http_request(
             "GET /v1/registry-compat/npm/tarballs/fixture/1.0.0/fixture-1.0.0.tgz HTTP/1.1\r\n\r\n",
@@ -2883,6 +3296,10 @@ mod tests {
                 ))
                 .as_str()
             )
+        );
+        assert_eq!(
+            header_value(&response, "X-WhoaThere-Audit-Event-Id"),
+            Some("audit-serve-1")
         );
     }
 

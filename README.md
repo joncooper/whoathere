@@ -9,7 +9,7 @@ Start with `docs/whoathere/README.md`; it contains the generated goal packs for 
 
 ## WhoaThere Supply Chain Prototype
 
-The current Rust prototype lives in `whoathere/`. It is still local-dev only: protected install/build/import execution, public registry fetches, OS sandbox enforcement, and production Vault deployment remain gated.
+The current Rust prototype lives in `whoathere/`. It is still local-dev only for endpoint execution: protected install/build/import execution, public registry fetches, OS sandbox enforcement, durable Vault storage, and full production Vault deployment remain gated. Phase 3 adds a bounded Vault data-plane prototype and AWS-first deployment skeleton, not a complete production service.
 
 Useful local checks:
 
@@ -42,6 +42,7 @@ scripts/whoathere-endpoint-smoke.sh
 ```
 
 The local-dev Vault compatibility paths serve only deterministic safe fixture archives after exact promoted-cache lookup. They are not a production package registry.
+Vault `/healthz` is liveness only. Vault `/readyz` is fail-closed for protected traffic until real production dependencies are verified.
 `evidence providers --json --require-ready` is intentionally fail-closed until real OS containment and Vault-only egress providers can actively verify enforcement; its current posture fields are diagnostics only.
 Linux provider diagnostics now include a `provider_active_probe` receipt contract. Current read-only evidence reports the receipt as missing/unsatisfied; future Linux providers must satisfy that challenge-bound receipt before proof verification can be enabled.
 `evidence linux-active-probe-fixture` validates deterministic complete/incomplete/overpermissive receipt profiles for the Linux active-probe contract, but always reports `authorization=false`, `proof_minted=false`, and `execution_allowed=false`.
