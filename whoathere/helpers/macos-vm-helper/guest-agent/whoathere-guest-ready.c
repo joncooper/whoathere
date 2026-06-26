@@ -19,6 +19,9 @@
 #define WHOATHERE_MAX_CHALLENGE 128
 #define WHOATHERE_MAX_FIELD 256
 #define WHOATHERE_WORK_ROOT "/private/var/tmp/whoathere-detonation"
+#define WHOATHERE_GUEST_PYTHON "/usr/local/whoathere/python/bin/python3"
+#define WHOATHERE_PIP_WHEEL_DIR "/usr/local/whoathere/python-wheels"
+#define WHOATHERE_PIP_PREFIX "WHOATHERE_PYTHON=" WHOATHERE_GUEST_PYTHON "; if [ ! -x \"$WHOATHERE_PYTHON\" ]; then WHOATHERE_PYTHON=python3; fi; PIP_WHEEL=$(ls " WHOATHERE_PIP_WHEEL_DIR "/pip-*.whl 2>/dev/null | head -n 1); SETUPTOOLS_WHEEL=$(ls " WHOATHERE_PIP_WHEEL_DIR "/setuptools-*.whl 2>/dev/null | head -n 1); WHEEL_WHEEL=$(ls " WHOATHERE_PIP_WHEEL_DIR "/wheel-*.whl 2>/dev/null | head -n 1); if [ -n \"$PIP_WHEEL\" ] && [ -n \"$SETUPTOOLS_WHEEL\" ] && [ -n \"$WHEEL_WHEEL\" ]; then export PYTHONPATH=\"$PIP_WHEEL:$SETUPTOOLS_WHEEL:$WHEEL_WHEEL\"; elif [ -n \"$PIP_WHEEL\" ] && [ -n \"$SETUPTOOLS_WHEEL\" ]; then export PYTHONPATH=\"$PIP_WHEEL:$SETUPTOOLS_WHEEL\"; fi; "
 
 static int read_line(int fd, char *buffer, size_t capacity) {
     size_t used = 0;
@@ -166,7 +169,11 @@ static int command_exists(const char *command) {
 }
 
 static int pip_available(void) {
-    return system("python3 -m pip --version >/dev/null 2>&1") == 0;
+    return system(WHOATHERE_PIP_PREFIX "$WHOATHERE_PYTHON -m pip --version >/dev/null 2>&1") == 0;
+}
+
+static int python_available(void) {
+    return system(WHOATHERE_PIP_PREFIX "$WHOATHERE_PYTHON -c 'import sys' >/dev/null 2>&1") == 0;
 }
 
 struct command_result {
@@ -308,10 +315,18 @@ static int write_npm_fixture(const char *workspace, const char *fixture) {
 static int write_python_fixture(const char *workspace, const char *fixture) {
     char setup_py[512];
     char module_py[512];
+    char pyproject_toml[512];
+    char backend_py[512];
     if (snprintf(setup_py, sizeof(setup_py), "%s/setup.py", workspace) < 0) {
         return -1;
     }
     if (snprintf(module_py, sizeof(module_py), "%s/whoathere_fixture.py", workspace) < 0) {
+        return -1;
+    }
+    if (snprintf(pyproject_toml, sizeof(pyproject_toml), "%s/pyproject.toml", workspace) < 0) {
+        return -1;
+    }
+    if (snprintf(backend_py, sizeof(backend_py), "%s/whoathere_backend.py", workspace) < 0) {
         return -1;
     }
     if (strcmp(fixture, "clean_pip_package") == 0) {
@@ -320,8 +335,34 @@ static int write_python_fixture(const char *workspace, const char *fixture) {
             "from setuptools import setup\nsetup(name='whoathere-fixture', version='0.0.1', py_modules=['whoathere_fixture'])\n"
         ) || write_file(module_py, "VALUE = 'clean'\n");
     }
-    if (strcmp(fixture, "pypi_pep517_canary") == 0
-        || strcmp(fixture, "pypi_setup_py_canary") == 0
+    if (strcmp(fixture, "pypi_pep517_canary") == 0) {
+        int pyproject_result = write_file(
+            pyproject_toml,
+            "[build-system]\nrequires = []\nbuild-backend = \"whoathere_backend\"\nbackend-path = [\".\"]\n"
+        );
+        int backend_result = write_file(
+            backend_py,
+            "import os, pathlib, zipfile\n"
+            "DIST = 'whoathere_fixture-0.0.1.dist-info'\n"
+            "METADATA = 'Metadata-Version: 2.1\\nName: whoathere-fixture\\nVersion: 0.0.1\\n'\n"
+            "WHEEL = 'Wheel-Version: 1.0\\nGenerator: whoathere\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n'\n"
+            "def _mark():\n"
+            "    if os.environ.get('PYPI_TOKEN'):\n"
+            "        pathlib.Path('canary-read.marker').write_text('1')\n"
+            "def get_requires_for_build_wheel(config_settings=None):\n"
+            "    _mark(); return []\n"
+            "def prepare_metadata_for_build_wheel(metadata_directory, config_settings=None):\n"
+            "    _mark(); p = pathlib.Path(metadata_directory) / DIST; p.mkdir(parents=True, exist_ok=True); (p / 'METADATA').write_text(METADATA); (p / 'WHEEL').write_text(WHEEL); return DIST\n"
+            "def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):\n"
+            "    _mark(); wheel_name = 'whoathere_fixture-0.0.1-py3-none-any.whl'; path = pathlib.Path(wheel_directory) / wheel_name\n"
+            "    with zipfile.ZipFile(path, 'w') as z:\n"
+            "        z.writestr('whoathere_fixture.py', \"VALUE = 'pep517'\\n\"); z.writestr(DIST + '/METADATA', METADATA); z.writestr(DIST + '/WHEEL', WHEEL); z.writestr(DIST + '/RECORD', '')\n"
+            "    return wheel_name\n"
+        );
+        int module_result = write_file(module_py, "VALUE = 'pep517'\n");
+        return pyproject_result || backend_result || module_result;
+    }
+    if (strcmp(fixture, "pypi_setup_py_canary") == 0
         || strcmp(fixture, "pypi_import_time_canary") == 0
         || strcmp(fixture, "python_import_time_canary") == 0
         || strcmp(fixture, "python_pth_startup_hook") == 0
@@ -510,13 +551,13 @@ static int run_detonation_job(int fd, const char *line) {
             return write_detonation_response(fd, job_id, tool, command_class, fixture, "fail_closed", "fail_closed_runner_error", "\"guest_fixture_prepare_failed\"", 70, 70, 0, 0, 0, 0, 0);
         }
         if (strcmp(fixture, "python_pth_startup_hook") == 0) {
-            shell_command = "mkdir -p target && cp whoathere_hook.pth target/ && python3 -c 'import site; site.addsitedir(\"target\")'";
+            shell_command = WHOATHERE_PIP_PREFIX "mkdir -p target && cp whoathere_hook.pth target/ && $WHOATHERE_PYTHON -c 'import site; site.addsitedir(\"target\")'";
         } else if (strcmp(fixture, "api_compatible_canary_theft") == 0) {
-            shell_command = "python3 -m pip install --no-index --no-build-isolation . --target target && PYTHONPATH=target python3 -c 'import whoathere_fixture; whoathere_fixture.run()'";
+            shell_command = WHOATHERE_PIP_PREFIX "$WHOATHERE_PYTHON -m pip install --no-index --no-build-isolation . --target target && PYTHONPATH=target $WHOATHERE_PYTHON -c 'import whoathere_fixture; whoathere_fixture.run()'";
         } else if (strcmp(fixture, "pypi_import_time_canary") == 0 || strcmp(fixture, "python_import_time_canary") == 0) {
-            shell_command = "python3 -m pip install --no-index --no-build-isolation . --target target && PYTHONPATH=target python3 -c 'import whoathere_fixture'";
+            shell_command = WHOATHERE_PIP_PREFIX "$WHOATHERE_PYTHON -m pip install --no-index --no-build-isolation . --target target && PYTHONPATH=target $WHOATHERE_PYTHON -c 'import whoathere_fixture'";
         } else {
-            shell_command = "python3 -m pip install --no-index --no-build-isolation . --target target";
+            shell_command = WHOATHERE_PIP_PREFIX "$WHOATHERE_PYTHON -m pip install --no-index --no-build-isolation . --target target";
         }
     } else if (strcmp(tool, "uv") == 0) {
         tool_command = "uv";
@@ -638,7 +679,7 @@ int main(void) {
         "{\"agent_version\":\"0.2.0\",\"challenge\":\"%s\",\"npm_available\":%s,\"python3_available\":%s,\"pip_available\":%s,\"protocol\":\"whoathere.guest_ready.v1\",\"status\":\"ready\",\"uv_available\":%s}\n",
         challenge,
         command_exists("npm") ? "true" : "false",
-        command_exists("python3") ? "true" : "false",
+        python_available() ? "true" : "false",
         pip_available() ? "true" : "false",
         command_exists("uv") ? "true" : "false"
     );

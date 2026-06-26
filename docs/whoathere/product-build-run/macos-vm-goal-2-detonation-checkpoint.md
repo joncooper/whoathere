@@ -19,26 +19,30 @@ This goal does not claim universal malware detection, safe arbitrary native exec
 - Guest-side fake canaries for npm, PyPI, GitHub, cloud, Kubernetes, Vault, `.env`-style, and AI-tool credentials.
 - Guest-side fixture runner for fixed npm, Python, and uv local-package recipes. It detects canary access, mock network/exfil markers, timeouts, command failure, manual-review classes, and missing toolchains without returning raw canary values.
 - Guest readiness proof now reports toolchain availability for npm, python3, pip, and uv.
+- Offline Python guest tooling provisioning for validation VMs. The provisioning receipt records the copied Python runtime, pip, setuptools, and wheel package names plus SHA-256 values. This lets pip fixtures execute without public network bootstrap or host secret mounts.
+- Repeatable timeout validation harness for the guest agent's bounded command runner.
 
 ## Current Live Validation State
 
-Local compile/unit validation passes, and dry-run plus fail-closed helper behavior is validated.
+Local compile/unit validation passes, dry-run plus fail-closed helper behavior is validated, and live VM detonation has been exercised against the validation VM.
 
-Live VM detonation is not yet proven because the validation VM still needs the updated guest agent re-provisioned into the disk image. Non-interactive sudo failed with `sudo: a password is required`.
+Live VM health proof:
 
-Run this before live detonation validation:
+- Guest agent protocol: `whoathere.guest_ready.v1`.
+- Guest agent version: `0.2.0`.
+- VM session binding is present and helper/guest health proofs match.
+- Guest toolchains: `python3=true`, `pip=true`, `npm=false`, `uv=false`.
+- High-risk host execution remains disabled.
 
-```sh
-sudo /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/scripts/provision-guest-readiness.sh /Users/jdc/.whoathere/macos-vm-validation
-```
+Guest provisioning receipt for the validation VM records:
 
-Then run:
+- Offline Python runtime: `cpython-3.11.11-macos-aarch64-none`.
+- Python runtime SHA-256: `b29a10dd3b06fd22a2803131f35b6df93b782367aa1f658ccd5e425225c4b0d5`.
+- pip wheel: `pip-24.0-py3-none-any.whl`.
+- setuptools wheel: `setuptools-65.5.0-py3-none-any.whl`.
+- wheel package: `wheel-0.45.1-py3-none-any.whl`.
 
-```sh
-/Users/jdc/src/whoathere/whoathere/target/debug/whoathere vm start --state-dir /Users/jdc/.whoathere/macos-vm-validation --helper /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/.build/arm64-apple-macosx/debug/whoathere-macos-vm-helper --execute
-/Users/jdc/src/whoathere/whoathere/target/debug/whoathere vm health --state-dir /Users/jdc/.whoathere/macos-vm-validation --helper /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/.build/arm64-apple-macosx/debug/whoathere-macos-vm-helper
-/Users/jdc/src/whoathere/whoathere/target/debug/whoathere vm detonate --state-dir /Users/jdc/.whoathere/macos-vm-validation --helper /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/.build/arm64-apple-macosx/debug/whoathere-macos-vm-helper --fixture clean_npm_lifecycle --timeout-seconds 120 --execute npm -- ci
-```
+The live fixture sweep now requires at least one clean npm-or-pip fixture to return exit `0`. In the current validation VM, npm and uv are absent and fail closed, while the clean pip fixture executes inside the VM and returns `allow_observed_clean`.
 
 ## Attack-Pattern Matrix
 
@@ -49,7 +53,7 @@ Then run:
 | Self-propagating credential theft across npm/GitHub/CI | Shai-Hulud and Mini Shai-Hulud campaigns | Deny if canary access or mock egress is observed; no real secrets available to guest | fake npm/GitHub/cloud canaries, `npm_postinstall_canary_exfil`, `delayed_ci_canary` |
 | PyPI import-time payload | mistralai PyPI 2.4.6 import-time downloader reports | Detect during `python_import_probe` fixture when pip/python available | `pypi_import_time_canary` / `python_import_time_canary` |
 | Python setup.py / PEP 517 build abuse | Ongoing PyPI malicious build/install patterns | Deny on canary access; fail closed on tooling failure | `pypi_setup_py_canary`, `pypi_pep517_canary` |
-| `.pth` startup hook | Durable PyPI persistence/evasion class | Manual-review in current guest runner; full startup-hook execution deferred | `python_pth_startup_hook` classification fixture |
+| `.pth` startup hook | Durable PyPI persistence/evasion class | Deny when canary access is observed in the guest startup-hook probe | `python_pth_startup_hook` |
 | Typosquatting / slopsquatting | 2026 LLM hallucinated package-name research | Not solved by VM alone; source identity and policy should deny/manual-review | dependency-confusion/source-policy remains Phase 1/2; Goal 2 records unsupported package class |
 | Dependency confusion | Durable npm/PyPI attack class | Block before detonation through source/package identity gates | existing Phase 1 package identity tests |
 | Native extensions and binary wheels | Durable Python/npm native payload class | Manual-review or deny by default | `native_extension_canary`, `binary_wheel_native_marker` |
@@ -63,15 +67,15 @@ Then run:
 
 | Fixture | Current support | Expected verdict |
 | --- | --- | --- |
-| `clean_npm_lifecycle` | Guest recipe, requires npm in guest | `allow_observed_clean` if command succeeds |
-| `clean_pip_package` | Guest recipe, requires python3 and pip in guest; uv path also supported if uv is already present | `allow_observed_clean` if command succeeds |
-| `npm_postinstall_canary_exfil` | Guest recipe | `deny_malicious_behavior` |
-| `npm_prepare_remote_fetch` | Guest recipe | `deny_malicious_behavior` |
-| `npm_darwin_only_payload` | Guest recipe | `deny_malicious_behavior` |
-| `delayed_ci_canary` | Guest recipe | `deny_malicious_behavior` |
-| `dns_tunneling_canary` | Guest recipe with mock marker | `deny_malicious_behavior` |
-| `https_exfil_canary` | Guest recipe with mock marker | `deny_malicious_behavior` |
-| `pypi_pep517_canary` | Guest recipe, approximates build-time abuse | `deny_malicious_behavior` |
+| `clean_npm_lifecycle` | Guest recipe, requires npm in guest; current validation VM lacks npm | `fail_closed_tooling_missing` in current validation VM |
+| `clean_pip_package` | Guest recipe, uses offline Python/pip tooling in current validation VM | `allow_observed_clean` |
+| `npm_postinstall_canary_exfil` | Guest recipe, requires npm in guest; current validation VM lacks npm | `fail_closed_tooling_missing` in current validation VM |
+| `npm_prepare_remote_fetch` | Guest recipe, requires npm in guest; current validation VM lacks npm | `fail_closed_tooling_missing` in current validation VM |
+| `npm_darwin_only_payload` | Guest recipe, requires npm in guest; current validation VM lacks npm | `fail_closed_tooling_missing` in current validation VM |
+| `delayed_ci_canary` | Guest recipe, requires npm in guest; current validation VM lacks npm | `fail_closed_tooling_missing` in current validation VM |
+| `dns_tunneling_canary` | Guest recipe with mock marker, requires npm in guest; current validation VM lacks npm | `fail_closed_tooling_missing` in current validation VM |
+| `https_exfil_canary` | Guest recipe with mock marker, requires npm in guest; current validation VM lacks npm | `fail_closed_tooling_missing` in current validation VM |
+| `pypi_pep517_canary` | Guest recipe with a real local PEP 517 backend | `deny_malicious_behavior` |
 | `pypi_setup_py_canary` | Guest recipe | `deny_malicious_behavior` |
 | `pypi_import_time_canary` | Guest recipe | `deny_malicious_behavior` |
 | `native_extension_canary` | Classification-only | `manual_review_risky_class` |
@@ -101,20 +105,15 @@ Focused checks performed:
 - `whoathere vm detonate ... npm -- ci` dry-run reports no sync-back, no host package execution, fake canary categories, command class, and sanitized mirror counts.
 - `whoathere vm detonate --execute ...` against a stopped validation VM fails closed with `runtime_process_not_running`.
 - `sudo -n provision-guest-readiness.sh ...` correctly did not proceed without cached sudo credentials.
-
-Pending:
-
-- Re-provision updated guest agent into validation VM.
-- Start VM and prove guest readiness with v0.2.0 agent and toolchain readiness.
-- Run clean npm or pip fixture inside VM and receive `allow_observed_clean`.
-- Run malicious npm and Python fixtures inside VM and receive deny/manual-review/fail-closed verdicts based on guest evidence.
-- Verify no lingering VM runtime or mounted disk remains after live validation.
+- `whoathere vm health ...` against the live validation VM proves guest readiness, session binding, and `pip=true`.
+- `validate-detonation-fixtures.sh` passes against the live validation VM. It proves clean pip execution returns `allow_observed_clean`, malicious Python build/import/API fixtures deny on redacted canary evidence, native/binary/direct/VCS classes require manual review, npm and uv execution fail closed when toolchains are absent, and no sync-back is enabled.
+- `validate-guest-agent-timeout.sh` proves the guest agent's bounded command runner kills a long-running command and returns timeout status/exit `124`.
 
 ## Known Limitations
 
 - Project mirror transfer into the guest is not implemented yet. Goal 2 currently supports fixture/local recipes first, not arbitrary project dependency resolution.
 - Network evidence is marker-based inside controlled fixtures. Full DNS/HTTPS observation without TLS MITM is deferred.
-- uv local-package execution is implemented only when uv is already present in the guest. The runner fails closed when uv is absent and does not install uv automatically.
+- npm and uv local-package execution are implemented only when those tools are already present in the guest. The runner fails closed when they are absent and does not install them automatically.
 - Native/binary/direct/VCS/editable classes are not executed; they remain manual-review or deny by default.
 - The guest runner uses fixed internal fixture recipes and does not expose arbitrary shell execution over the host protocol.
 
