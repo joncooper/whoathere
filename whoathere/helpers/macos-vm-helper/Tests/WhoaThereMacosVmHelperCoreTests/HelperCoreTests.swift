@@ -2,6 +2,13 @@ import Foundation
 import Testing
 @testable import WhoaThereMacosVmHelperCore
 
+@Test func defaultsUseRestoreSafeDiskSize() {
+    let options = HelperOptions(command: .status)
+    #expect(defaultDiskGiB == 64)
+    #expect(minimumRestoreDiskGiB == 64)
+    #expect(options.diskGiB == minimumRestoreDiskGiB)
+}
+
 @Test func parsesInitArguments() throws {
     let options = try parseArguments([
         "init",

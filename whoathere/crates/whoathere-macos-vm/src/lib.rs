@@ -10,8 +10,8 @@ pub const SYNC_POLICY: &str = "pure_safe_only";
 pub const RELEASE_CLAIM: &str = "vm_detone_then_sync_safe_outputs";
 pub const DEFAULT_MEMORY_MIB: u64 = 6144;
 pub const DEFAULT_NATIVE_MEMORY_MIB: u64 = 8192;
-pub const DEFAULT_DISK_GIB: u64 = 40;
-pub const MIN_DISK_GIB: u64 = 25;
+pub const DEFAULT_DISK_GIB: u64 = 64;
+pub const MIN_DISK_GIB: u64 = 64;
 pub const DEFAULT_AUTO_SUSPEND_MINUTES: u64 = 15;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -736,6 +736,30 @@ mod tests {
         assert!(!status
             .reason_codes
             .contains(&"macos_vm_host_not_apple_silicon".to_string()));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn status_rejects_restore_disk_below_minimum() {
+        let root = std::env::temp_dir().join(format!(
+            "whoathere-macos-vm-small-disk-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        create_state_dirs(&root).expect("state dirs");
+        let mut config = MacosVmConfig::new(root.clone());
+        config.disk_gib = MIN_DISK_GIB - 1;
+        let status = status_from_config(
+            &config,
+            HostPlatform {
+                os: "macos".to_string(),
+                arch: "aarch64".to_string(),
+            },
+            None,
+        );
+        assert!(status
+            .reason_codes
+            .contains(&"macos_vm_disk_below_minimum".to_string()));
         let _ = std::fs::remove_dir_all(&root);
     }
 

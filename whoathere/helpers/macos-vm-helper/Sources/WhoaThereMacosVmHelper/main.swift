@@ -868,6 +868,9 @@ struct WhoaThereMacosVmHelper {
         guard hardwareModel.isSupported else {
             throw helperError("hardware_model_not_supported")
         }
+        guard options.diskGiB >= minimumRestoreDiskGiB else {
+            throw helperError("restore_disk_below_minimum_\(minimumRestoreDiskGiB)_gib")
+        }
 
         let machineIdentifier = VZMacMachineIdentifier()
         try createRawDiskImage(at: layout.diskPath, diskGiB: options.diskGiB)
@@ -991,28 +994,19 @@ struct WhoaThereMacosVmHelper {
         machineIdentifier: VZMacMachineIdentifier,
         auxiliaryStorage: VZMacAuxiliaryStorage,
         cpuCount: Int,
-        memoryBytes: UInt64
+        memoryBytes: UInt64,
+        attachGuestTools: Bool = false
     ) throws -> VZVirtualMachineConfiguration {
         let platform = VZMacPlatformConfiguration()
         platform.hardwareModel = hardwareModel
         platform.machineIdentifier = machineIdentifier
         platform.auxiliaryStorage = auxiliaryStorage
 
-        let diskAttachment = try VZDiskImageStorageDeviceAttachment(
-            url: layout.diskPath,
-            readOnly: false,
-            cachingMode: .automatic,
-            synchronizationMode: .fsync
-        )
+        let diskAttachment = try VZDiskImageStorageDeviceAttachment(url: layout.diskPath, readOnly: false)
         let storage = VZVirtioBlockDeviceConfiguration(attachment: diskAttachment)
         var storageDevices: [VZStorageDeviceConfiguration] = [storage]
-        if fileExists(layout.guestToolsImagePath) {
-            let toolsAttachment = try VZDiskImageStorageDeviceAttachment(
-                url: layout.guestToolsImagePath,
-                readOnly: true,
-                cachingMode: .automatic,
-                synchronizationMode: .fsync
-            )
+        if attachGuestTools && fileExists(layout.guestToolsImagePath) {
+            let toolsAttachment = try VZDiskImageStorageDeviceAttachment(url: layout.guestToolsImagePath, readOnly: true)
             storageDevices.append(VZUSBMassStorageDeviceConfiguration(attachment: toolsAttachment))
         }
         let network = VZVirtioNetworkDeviceConfiguration()
@@ -1188,6 +1182,7 @@ struct WhoaThereMacosVmHelper {
         let config = readBundleConfig(layout)
         let cpuCount = intConfig(config, key: "cpu_count", defaultValue: 2)
         let memoryMiB = uint64Config(config, key: "memory_mib", defaultValue: 6144)
+        let attachGuestTools = boolConfig(config, key: "guest_tools_attach_enabled", defaultValue: false)
         let (memoryBytes, overflow) = memoryMiB.multipliedReportingOverflow(by: 1_048_576)
         guard !overflow else {
             throw helperError("configured_memory_overflow")
@@ -1198,7 +1193,8 @@ struct WhoaThereMacosVmHelper {
             machineIdentifier: machineIdentifier,
             auxiliaryStorage: auxiliaryStorage,
             cpuCount: cpuCount,
-            memoryBytes: memoryBytes
+            memoryBytes: memoryBytes,
+            attachGuestTools: attachGuestTools
         )
     }
 
@@ -1215,7 +1211,9 @@ struct WhoaThereMacosVmHelper {
         let readinessDelegate = GuestReadinessListener(layout: layout, sessionID: sessionID, challenge: challenge)
         let socketListener = VZVirtioSocketListener()
         socketListener.delegate = readinessDelegate
-        socketDevice.setSocketListener(socketListener, forPort: guestReadinessPort)
+        queue.sync {
+            socketDevice.setSocketListener(socketListener, forPort: guestReadinessPort)
+        }
         let stopState = RuntimeStopState()
         let signalSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: queue)
         signal(SIGTERM, SIG_IGN)
@@ -1265,9 +1263,8 @@ struct WhoaThereMacosVmHelper {
             "exit_code": 0
         ]) { _, new in new })
         withExtendedLifetime(runtimeReferences) {
-            RunLoop.current.run()
+            dispatchMain()
         }
-        exit(0)
     }
 
     private static func requestRuntimeShutdown(
@@ -1682,6 +1679,7 @@ struct WhoaThereMacosVmHelper {
             "disk_gib": options.diskGiB,
             "disk_path": layout.diskPath.path,
             "image_digest": "sha256:\(imageDigest)",
+            "guest_tools_attach_enabled": false,
             "high_risk_package_execution_enabled": false
         ]
         let data = try JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys])
@@ -1729,6 +1727,7 @@ struct WhoaThereMacosVmHelper {
             "hardware_model_path": layout.hardwareModelPath.path,
             "machine_identifier_path": layout.machineIdentifierPath.path,
             "restore_image_digest": "sha256:\(restoreDigest)",
+            "guest_tools_attach_enabled": false,
             "high_risk_package_execution_enabled": false
         ]
         let data = try JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys])
@@ -1748,7 +1747,7 @@ struct WhoaThereMacosVmHelper {
             "guest_readiness_protocol": guestReadinessProtocol,
             "guest_readiness_port": Int(guestReadinessPort),
             "guest_readiness_challenge_sha256": sha256Hex(challenge),
-            "guest_tools_image_attached": fileExists(layout.guestToolsImagePath),
+            "guest_tools_image_attached": guestToolsAttachEnabled(layout),
             "high_risk_package_execution_enabled": false
         ]
         let healthProof: [String: Any] = [
@@ -1764,7 +1763,7 @@ struct WhoaThereMacosVmHelper {
             "guest_readiness_protocol": guestReadinessProtocol,
             "guest_readiness_port": Int(guestReadinessPort),
             "guest_readiness_challenge_sha256": sha256Hex(challenge),
-            "guest_tools_image_attached": fileExists(layout.guestToolsImagePath),
+            "guest_tools_image_attached": guestToolsAttachEnabled(layout),
             "created_at": timestamp,
             "high_risk_package_execution_enabled": false
         ]
@@ -1834,6 +1833,21 @@ struct WhoaThereMacosVmHelper {
             return value.uint64Value
         }
         return defaultValue
+    }
+
+    private static func boolConfig(_ config: [String: Any], key: String, defaultValue: Bool) -> Bool {
+        if let value = config[key] as? Bool {
+            return value
+        }
+        if let value = config[key] as? NSNumber {
+            return value.boolValue
+        }
+        return defaultValue
+    }
+
+    private static func guestToolsAttachEnabled(_ layout: BundleLayout) -> Bool {
+        boolConfig(readBundleConfig(layout), key: "guest_tools_attach_enabled", defaultValue: false)
+            && fileExists(layout.guestToolsImagePath)
     }
 
     private static func validateManifest(layout: BundleLayout, includeSignatureReason: Bool) -> ManifestValidationResult {

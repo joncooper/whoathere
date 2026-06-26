@@ -59,7 +59,8 @@ Until the guest readiness agent is built and run inside the guest, `health` is e
 closed.
 
 For local resource tuning, set `WHOATHERE_VM_DISK_GIB` or `WHOATHERE_VM_MEMORY_MIB` before running
-the validation script.
+the validation script. Restore-backed macOS bundles currently use a 64 GiB disk by default, and the
+helper rejects smaller restore disks before starting Apple's installer.
 
 Smoke commands:
 
@@ -104,9 +105,11 @@ uses `AF_VSOCK` only; it does not run package managers, import project code, mou
 sync files back to the host.
 The host stores only sanitized readiness evidence: session id, image digest, helper version,
 protocol, port, and challenge hash. It does not persist the raw readiness challenge.
-The validation script packages this source into `bundle/guest-tools.dmg`, which the helper attaches
-as a read-only USB mass-storage device when present. This shares only the guest-agent source, not
-the host home directory or project workspace.
+The validation script packages this source into `bundle/guest-tools.dmg` using the `hdiutil` UFBI
+whole-device format. The helper does not auto-attach this image unless
+`guest_tools_attach_enabled=true` is set in `bundle/config.json`; the current validated boot path
+keeps it disabled because Virtualization.framework rejected the tested tools-media attachments.
+This shares only the guest-agent source, not the host home directory or project workspace.
 
 Rust CLI integration:
 

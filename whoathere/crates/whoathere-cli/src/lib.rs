@@ -6527,7 +6527,7 @@ mod tests {
             restore_image_path: None,
             fetch_latest_restore_image: false,
             memory_mib: Some(6144),
-            disk_gib: Some(40),
+            disk_gib: Some(64),
             execute: true,
         });
         assert_eq!(result.exit_code, 64);
@@ -6607,14 +6607,14 @@ mod tests {
             restore_image_path: None,
             fetch_latest_restore_image: false,
             memory_mib: Some(4096),
-            disk_gib: Some(25),
+            disk_gib: Some(64),
             execute: false,
         });
 
         assert_eq!(result.exit_code, 0);
         assert!(result.output.contains("helper_available=true"));
         assert!(result.output.contains(&format!(
-            "<init><--state-dir><{}><--memory-mib><4096><--disk-gib><25><--json>",
+            "<init><--state-dir><{}><--memory-mib><4096><--disk-gib><64><--json>",
             state_dir.display()
         )));
 
@@ -6643,14 +6643,14 @@ mod tests {
             restore_image_path: None,
             fetch_latest_restore_image: true,
             memory_mib: Some(4096),
-            disk_gib: Some(25),
+            disk_gib: Some(64),
             execute: true,
         });
 
         assert_eq!(result.exit_code, 20);
         assert!(result.output.contains("fetch_latest_restore_image=true"));
         assert!(result.output.contains(&format!(
-            "<init><--state-dir><{}><--memory-mib><4096><--disk-gib><25><--execute><--json><--fetch-latest-restore-image>",
+            "<init><--state-dir><{}><--memory-mib><4096><--disk-gib><64><--execute><--json><--fetch-latest-restore-image>",
             state_dir.display()
         )));
 

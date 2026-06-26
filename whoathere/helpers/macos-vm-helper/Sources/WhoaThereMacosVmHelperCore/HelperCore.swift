@@ -2,6 +2,8 @@ import Foundation
 
 public let helperVersion = "0.1.0"
 public let bundleSchemaVersion = "whoathere.macos_vm.bundle.v1"
+public let defaultDiskGiB: UInt64 = 64
+public let minimumRestoreDiskGiB: UInt64 = 64
 
 public enum HelperCommand: String, Sendable {
     case version
@@ -35,7 +37,7 @@ public struct HelperOptions: Equatable, Sendable {
         restoreImagePath: String? = nil,
         fetchLatestRestoreImage: Bool = false,
         memoryMiB: UInt64 = 6144,
-        diskGiB: UInt64 = 40
+        diskGiB: UInt64 = defaultDiskGiB
     ) {
         self.command = command
         self.stateDir = stateDir

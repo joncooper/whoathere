@@ -9,7 +9,32 @@ HELPER_PATH="$HELPER_ROOT/.build/arm64-apple-macosx/debug/whoathere-macos-vm-hel
 GUEST_TOOLS_IMAGE_BASE="$STATE_DIR/bundle/guest-tools"
 GUEST_TOOLS_IMAGE="$GUEST_TOOLS_IMAGE_BASE.dmg"
 MEMORY_MIB=${WHOATHERE_VM_MEMORY_MIB:-6144}
-DISK_GIB=${WHOATHERE_VM_DISK_GIB:-40}
+DISK_GIB=${WHOATHERE_VM_DISK_GIB:-64}
+
+run_status_smoke() {
+  set +e
+  STATUS_OUTPUT=$("$HELPER_PATH" status --state-dir "$STATE_DIR" --json)
+  STATUS_EXIT=$?
+  set -e
+  printf '%s\n' "$STATUS_OUTPUT"
+  case "$STATUS_EXIT" in
+    0)
+      ;;
+    20)
+      case "$STATUS_OUTPUT" in
+        *signature_verification_not_implemented*)
+          echo "status_signature_verification_pending=true"
+          ;;
+        *)
+          exit "$STATUS_EXIT"
+          ;;
+      esac
+      ;;
+    *)
+      exit "$STATUS_EXIT"
+      ;;
+  esac
+}
 
 if [ -z "$RESTORE_IMAGE" ]; then
   echo "usage: $0 /absolute/path/to/macos-restore.ipsw [state-dir]" >&2
@@ -61,15 +86,14 @@ mkdir -p "$(dirname -- "$GUEST_TOOLS_IMAGE")"
 rm -f "$GUEST_TOOLS_IMAGE"
 hdiutil create \
   -quiet \
-  -fs HFS+ \
   -srcfolder "$HELPER_ROOT/guest-agent" \
-  -format UDRO \
+  -format UFBI \
   -volname WhoaThereGuestTools \
   "$GUEST_TOOLS_IMAGE_BASE"
 test -s "$GUEST_TOOLS_IMAGE"
 echo "guest_tools_image=$GUEST_TOOLS_IMAGE"
 
-"$HELPER_PATH" status --state-dir "$STATE_DIR" --json
+run_status_smoke
 "$HELPER_PATH" start --state-dir "$STATE_DIR" --execute --json
 set +e
 "$HELPER_PATH" health --state-dir "$STATE_DIR" --json
@@ -89,4 +113,4 @@ case "$HEALTH_EXIT" in
     ;;
 esac
 "$HELPER_PATH" suspend --state-dir "$STATE_DIR" --execute --json
-"$HELPER_PATH" status --state-dir "$STATE_DIR" --json
+run_status_smoke

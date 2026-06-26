@@ -1,6 +1,7 @@
 # macOS VM Goal 1 Checkpoint
 
-Status: in progress.
+Status: in progress. Host VM install/start/health-fail-closed/stop lifecycle has been validated on
+Apple Silicon macOS; guest readiness proof inside the VM is not yet validated.
 
 Goal 1 is the Apple Silicon macOS VM lifecycle foundation. It does not enable npm, pip, uv,
 detonation, or sync-back execution.
@@ -15,6 +16,7 @@ detonation, or sync-back execution.
 - Disk-import bundles remain non-bootable and non-ready until auxiliary storage, hardware model, machine identifier metadata, and real signature verification are present.
 - Helper `init --execute --restore-image <path>` now has a local IPSW install path using `VZMacOSRestoreImage`, `VZMacOSInstaller`, raw disk creation, `VZMacAuxiliaryStorage`, hardware-model persistence, and machine-identifier persistence.
 - Helper `init --execute --fetch-latest-restore-image` explicitly asks Apple Virtualization.framework for the latest supported restore image, downloads it into the WhoaThere state cache, hashes it locally, and then uses the same restore-image install path.
+- Restore-image installation now requires a 64 GiB VM disk and fails before invoking Apple's installer if a smaller disk is requested.
 - Restore-image bundles still remain non-ready for package execution until signature verification, runtime validation, and guest health proof are complete.
 - Helper `start --execute` now has a persistent runtime-process scaffold that launches internal `run`, starts the VM through `VZVirtualMachine.start`, and writes host-runtime state plus health proof when start succeeds.
 - Helper `suspend --execute` now signals the runtime process, which requests a guest stop through Virtualization.framework, writes `bundle/shutdown.json`, and fails closed if shutdown proof is missing.
@@ -22,7 +24,7 @@ detonation, or sync-back execution.
 - Added `guest-agent/whoathere-guest-ready.c`, a tiny guest-side agent that answers a one-time `whoathere.guest_ready.v1` challenge over `AF_VSOCK`.
 - Helper `health` now fails closed on host-runtime proof alone and only succeeds when a matching guest proof exists for the live runtime session, challenge hash, image digest, protocol, port, and helper version.
 - Guest health proof stores sanitized response metadata and challenge hash, not the raw readiness challenge.
-- Helper startup attaches `bundle/guest-tools.dmg` as an optional read-only USB mass-storage device when present; the local validation script creates that image from the guest-agent source only.
+- The local validation script can package `bundle/guest-tools.dmg` from the guest-agent source only using the `hdiutil` UFBI whole-device format, but helper auto-attach is disabled by default because real-host validation showed the tested tools-media attachments prevented boot.
 - Added a helper entitlement plist and local signing script for `com.apple.security.virtualization`.
 - Added a local IPSW validation script that runs build, test, sign, restore-image install, status, start, fail-closed-or-proven health, suspend, and final status.
 - Helper `status` reports missing bundle/config/manifest/disk/auxiliary storage/hardware model/machine identifier/signature proof independently.
@@ -66,10 +68,10 @@ overlays/
 
 ## Current Blockers
 
-- Restore-image installation is implemented as a local IPSW path, but still needs real-host validation with a signed, entitled helper and release fixture.
+- Restore-image installation has been validated locally with a signed, entitled helper and Apple's latest supported restore image; repeatable release fixture validation remains.
 - Full signature/notarization verification is not implemented yet; status reports `signature_verification_not_implemented` as a fail-closed readiness reason.
-- Persistent VM process management and controlled stop are implemented, but need real-host validation; saved-state suspend/resume semantics remain deferred.
-- Guest readiness proof protocol, proof binding, and guest-agent source are implemented, but still need real-host validation inside a booted guest and a provisioning/copy path.
+- Persistent VM process management and controlled force-stop fallback have been validated locally; saved-state suspend/resume semantics remain deferred.
+- Guest readiness proof protocol, proof binding, and guest-agent source are implemented, but still need real-host validation inside a booted guest and a proven provisioning/copy path.
 - A real bootable bundle requires auxiliary storage, hardware model, and machine identifier metadata; a disk image alone is not enough.
 - No package-manager command is allowed to execute from this work.
 
