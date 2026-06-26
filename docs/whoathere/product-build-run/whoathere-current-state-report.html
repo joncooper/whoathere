@@ -1268,9 +1268,11 @@
             and doctor JSON readiness. The helper can report host/framework readiness and initialize
             a managed disk-import bundle from an explicit local disk image. That disk import is
             deliberately not lifecycle-ready without auxiliary storage, hardware model,
-            machine identifier metadata, and real signature verification. VM boot, guest health proof,
-            detonation, egress recording, and sync-back remain deliberately blocked until the
-            missing VM metadata, signature verification, and persistent runtime pieces are implemented.
+            machine identifier metadata, and real signature verification. The helper also has a
+            local IPSW restore-image path that can create raw disk, auxiliary storage, hardware model,
+            and machine identifier metadata when run as an entitled Apple Virtualization helper.
+            VM boot, guest health proof, detonation, egress recording, and sync-back remain
+            deliberately blocked until signature verification and persistent runtime pieces are implemented.
           </p>
         </div>
 
@@ -1286,6 +1288,7 @@
         <ul>
           <li><code>whoathere vm status --helper &lt;path&gt;</code> reports Rust-side and Swift-helper VM readiness, including precise missing bundle and metadata reason codes.</li>
           <li><code>whoathere vm init --execute --helper &lt;path&gt; --image &lt;path&gt;</code> imports an explicit local disk image into the managed bundle and writes config plus manifest metadata, but does not make the bundle bootable or ready.</li>
+          <li><code>whoathere vm init --execute --helper &lt;path&gt; --restore-image &lt;path&gt;</code> uses Apple Virtualization.framework restore-image APIs to install from a local IPSW and persist required VM metadata, subject to entitlement and host support.</li>
           <li><code>whoathere vm init --execute</code> without a helper or image fails closed with exact required inputs rather than creating placeholder readiness.</li>
           <li><code>whoathere vm start</code>, <code>suspend</code>, <code>reset</code>, and <code>prune</code> delegate to the helper when configured; start and health fail closed until bootable metadata and persistent runtime support exist.</li>
           <li>The Rust CLI invokes the helper with an absolute canonical path, cleared environment, minimal <code>PATH</code>, bounded output, and operation timeouts.</li>
@@ -1317,7 +1320,7 @@
 
         <h3>Remaining build gates</h3>
         <ol>
-          <li>Implement restore-image installation and Virtualization metadata capture for auxiliary storage, hardware model, and machine identifier.</li>
+          <li>Validate restore-image installation on a signed, entitled helper with a real local IPSW and record the release fixture.</li>
           <li>Implement real signature/notarization verification for the helper and image manifest.</li>
           <li>Implement persistent VM process management for start, suspend, reset, prune, and guest health proof.</li>
           <li>Implement sanitized project mirror creation that excludes host secrets, user home data, SSH keys, npm/PyPI tokens, cloud creds, and local env files.</li>

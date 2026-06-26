@@ -35,6 +35,21 @@ import Testing
     let layout = BundleLayout(stateDir: URL(fileURLWithPath: "/tmp/whoathere-vm", isDirectory: true))
     #expect(layout.bundleDir.path == "/tmp/whoathere-vm/bundle")
     #expect(layout.diskPath.path == "/tmp/whoathere-vm/bundle/disk.img")
+    #expect(layout.runtimePidPath.path == "/tmp/whoathere-vm/bundle/runtime.pid")
+    #expect(layout.savedStatePath.path == "/tmp/whoathere-vm/bundle/saved-state.bin")
     #expect(layout.logsDir.path == "/tmp/whoathere-vm/logs")
     #expect(layout.runsDir.path == "/tmp/whoathere-vm/runs")
+}
+
+@Test func parsesRestoreImageArguments() throws {
+    let options = try parseArguments([
+        "init",
+        "--state-dir", "/tmp/whoathere-vm",
+        "--restore-image", "/tmp/macos.ipsw",
+        "--execute"
+    ])
+
+    #expect(options.command == .`init`)
+    #expect(options.restoreImagePath == "/tmp/macos.ipsw")
+    #expect(options.execute)
 }

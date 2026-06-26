@@ -1,7 +1,30 @@
 import Darwin
+import CryptoKit
 import Foundation
-import Virtualization
+@preconcurrency import Virtualization
 import WhoaThereMacosVmHelperCore
+
+private final class LockedResultBox<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var result: Result<Value, Error>?
+
+    func store(_ result: Result<Value, Error>) {
+        lock.lock()
+        self.result = result
+        lock.unlock()
+    }
+
+    func load() -> Result<Value, Error>? {
+        lock.lock()
+        let current = result
+        lock.unlock()
+        return current
+    }
+}
+
+private struct UncheckedSendableBox<Value>: @unchecked Sendable {
+    var value: Value
+}
 
 @main
 struct WhoaThereMacosVmHelper {
@@ -118,20 +141,7 @@ struct WhoaThereMacosVmHelper {
         }
 
         if let restoreImagePath = options.restoreImagePath {
-            emit(
-                fields: failClosedFields(
-                    layout: layout,
-                    reasons: [
-                        "restore_image_install_path_not_implemented",
-                        "use_explicit_installed_disk_image_for_current_goal_slice"
-                    ],
-                    exitCode: 20
-                ).merging([
-                    "mutation": true,
-                    "restore_image": restoreImagePath
-                ]) { _, new in new },
-                exitCode: 20
-            )
+            initializeFromRestoreImage(path: restoreImagePath, layout: layout, options: options)
         }
 
         guard let imagePath = options.imagePath else {
@@ -147,14 +157,14 @@ struct WhoaThereMacosVmHelper {
             )
         }
 
-        let imageURL = URL(fileURLWithPath: imagePath)
-        guard imageURL.path.hasPrefix("/") else {
+        guard imagePath.hasPrefix("/") else {
             emit(
                 fields: failClosedFields(layout: layout, reasons: ["image_path_not_absolute"], exitCode: 64)
                     .merging(["image": imagePath]) { _, new in new },
                 exitCode: 64
             )
         }
+        let imageURL = URL(fileURLWithPath: imagePath)
         guard fileExists(imageURL) else {
             emit(
                 fields: failClosedFields(layout: layout, reasons: ["image_path_not_found"], exitCode: 64)
@@ -211,6 +221,98 @@ struct WhoaThereMacosVmHelper {
         }
     }
 
+    private static func initializeFromRestoreImage(path: String, layout: BundleLayout, options: HelperOptions) -> Never {
+        guard path.hasPrefix("/") else {
+            emit(
+                fields: failClosedFields(layout: layout, reasons: ["restore_image_path_not_absolute"], exitCode: 64)
+                    .merging(["restore_image": path]) { _, new in new },
+                exitCode: 64
+            )
+        }
+        let restoreURL = URL(fileURLWithPath: path)
+        guard fileExists(restoreURL) else {
+            emit(
+                fields: failClosedFields(layout: layout, reasons: ["restore_image_path_not_found"], exitCode: 64)
+                    .merging(["restore_image": path]) { _, new in new },
+                exitCode: 64
+            )
+        }
+        guard isRegularFile(restoreURL) else {
+            emit(
+                fields: failClosedFields(layout: layout, reasons: ["restore_image_path_not_regular_file"], exitCode: 64)
+                    .merging(["restore_image": path]) { _, new in new },
+                exitCode: 64
+            )
+        }
+        guard !bundleHasInstalledState(layout) else {
+            emit(
+                fields: failClosedFields(layout: layout, reasons: ["bundle_already_initialized"], exitCode: 20),
+                exitCode: 20
+            )
+        }
+
+        do {
+            let restoreDigest = try sha256Digest(path: restoreURL.path)
+            let restoreImage = try loadRestoreImage(restoreURL)
+            guard restoreImage.isSupported else {
+                emit(
+                    fields: failClosedFields(layout: layout, reasons: ["restore_image_not_supported_on_host"], exitCode: 20),
+                    exitCode: 20
+                )
+            }
+            guard let requirements = restoreImage.mostFeaturefulSupportedConfiguration else {
+                emit(
+                    fields: failClosedFields(layout: layout, reasons: ["restore_image_no_supported_configuration"], exitCode: 20),
+                    exitCode: 20
+                )
+            }
+
+            try createManagedDirectories(layout)
+            let installSummary = try installMacOSFromRestoreImage(
+                restoreImage: restoreImage,
+                requirements: requirements,
+                restoreURL: restoreURL,
+                restoreDigest: restoreDigest,
+                layout: layout,
+                options: options
+            )
+            emit(
+                fields: baseFields(status: "ok").merging([
+                    "mutation": true,
+                    "state_dir": layout.stateDir.path,
+                    "bundle_dir": layout.bundleDir.path,
+                    "disk_path": layout.diskPath.path,
+                    "restore_image": path,
+                    "restore_image_digest": "sha256:\(restoreDigest)",
+                    "macos_build_version": restoreImage.buildVersion,
+                    "macos_version": operatingSystemVersionString(restoreImage.operatingSystemVersion),
+                    "cpu_count": installSummary.cpuCount,
+                    "memory_mib": installSummary.memoryMiB,
+                    "disk_gib": options.diskGiB,
+                    "ready_for_lifecycle": false,
+                    "reason_codes": [
+                        "signature_verification_not_implemented",
+                        "persistent_vm_runtime_not_implemented",
+                        "guest_health_proof_not_implemented"
+                    ],
+                    "exit_code": 0
+                ]) { _, new in new },
+                exitCode: 0
+            )
+        } catch {
+            emit(
+                fields: failClosedFields(
+                    layout: layout,
+                    reasons: ["restore_image_install_failed", sanitizedReason(error)],
+                    exitCode: 70
+                ).merging([
+                    "restore_image": path
+                ]) { _, new in new },
+                exitCode: 70
+            )
+        }
+    }
+
     private static func start(_ options: HelperOptions) {
         lifecycleBlocked(options, operation: "start")
     }
@@ -233,6 +335,163 @@ struct WhoaThereMacosVmHelper {
             ]) { _, new in new },
             exitCode: 20
         )
+    }
+
+    private struct RestoreInstallSummary {
+        var cpuCount: Int
+        var memoryMiB: UInt64
+    }
+
+    private static func installMacOSFromRestoreImage(
+        restoreImage: VZMacOSRestoreImage,
+        requirements: VZMacOSConfigurationRequirements,
+        restoreURL: URL,
+        restoreDigest: String,
+        layout: BundleLayout,
+        options: HelperOptions
+    ) throws -> RestoreInstallSummary {
+        let hardwareModel = requirements.hardwareModel
+        guard hardwareModel.isSupported else {
+            throw helperError("hardware_model_not_supported")
+        }
+
+        let machineIdentifier = VZMacMachineIdentifier()
+        try createRawDiskImage(at: layout.diskPath, diskGiB: options.diskGiB)
+        let auxiliaryStorage = try VZMacAuxiliaryStorage(
+            creatingStorageAt: layout.auxiliaryStoragePath,
+            hardwareModel: hardwareModel,
+            options: []
+        )
+        try hardwareModel.dataRepresentation.write(to: layout.hardwareModelPath, options: [.atomic])
+        try machineIdentifier.dataRepresentation.write(to: layout.machineIdentifierPath, options: [.atomic])
+
+        let memoryBytes = try requestedMemoryBytes(options: options, requirements: requirements)
+        let cpuCount = try requestedCPUCount(requirements: requirements)
+        let configuration = try buildMacOSConfiguration(
+            layout: layout,
+            hardwareModel: hardwareModel,
+            machineIdentifier: machineIdentifier,
+            auxiliaryStorage: auxiliaryStorage,
+            cpuCount: cpuCount,
+            memoryBytes: memoryBytes
+        )
+        try runMacOSInstaller(configuration: configuration, restoreURL: restoreURL)
+        try writeRestoreManifest(
+            layout: layout,
+            restoreImage: restoreImage,
+            restoreDigest: restoreDigest,
+            cpuCount: cpuCount,
+            memoryBytes: memoryBytes
+        )
+        try writeRestoreConfig(
+            layout: layout,
+            options: options,
+            restoreDigest: restoreDigest,
+            cpuCount: cpuCount,
+            memoryBytes: memoryBytes
+        )
+
+        return RestoreInstallSummary(cpuCount: cpuCount, memoryMiB: memoryBytes / 1_048_576)
+    }
+
+    private static func loadRestoreImage(_ url: URL) throws -> VZMacOSRestoreImage {
+        let semaphore = DispatchSemaphore(value: 0)
+        let resultBox = LockedResultBox<VZMacOSRestoreImage>()
+        VZMacOSRestoreImage.load(from: url) { result in
+            resultBox.store(result.mapError { $0 })
+            semaphore.signal()
+        }
+        semaphore.wait()
+        guard let result = resultBox.load() else {
+            throw helperError("restore_image_load_returned_no_result")
+        }
+        return try result.get()
+    }
+
+    private static func buildMacOSConfiguration(
+        layout: BundleLayout,
+        hardwareModel: VZMacHardwareModel,
+        machineIdentifier: VZMacMachineIdentifier,
+        auxiliaryStorage: VZMacAuxiliaryStorage,
+        cpuCount: Int,
+        memoryBytes: UInt64
+    ) throws -> VZVirtualMachineConfiguration {
+        let platform = VZMacPlatformConfiguration()
+        platform.hardwareModel = hardwareModel
+        platform.machineIdentifier = machineIdentifier
+        platform.auxiliaryStorage = auxiliaryStorage
+
+        let diskAttachment = try VZDiskImageStorageDeviceAttachment(
+            url: layout.diskPath,
+            readOnly: false,
+            cachingMode: .automatic,
+            synchronizationMode: .fsync
+        )
+        let storage = VZVirtioBlockDeviceConfiguration(attachment: diskAttachment)
+        let network = VZVirtioNetworkDeviceConfiguration()
+        network.attachment = VZNATNetworkDeviceAttachment()
+        let graphics = VZMacGraphicsDeviceConfiguration()
+        graphics.displays = [
+            VZMacGraphicsDisplayConfiguration(widthInPixels: 1024, heightInPixels: 768, pixelsPerInch: 80)
+        ]
+
+        let configuration = VZVirtualMachineConfiguration()
+        configuration.platform = platform
+        configuration.bootLoader = VZMacOSBootLoader()
+        configuration.cpuCount = cpuCount
+        configuration.memorySize = memoryBytes
+        configuration.storageDevices = [storage]
+        configuration.networkDevices = [network]
+        configuration.graphicsDevices = [graphics]
+        configuration.keyboards = [VZUSBKeyboardConfiguration()]
+        configuration.pointingDevices = [VZUSBScreenCoordinatePointingDeviceConfiguration()]
+        try configuration.validate()
+        return configuration
+    }
+
+    private static func runMacOSInstaller(configuration: VZVirtualMachineConfiguration, restoreURL: URL) throws {
+        let queue = DispatchQueue(label: "whoathere.macos.vm.install")
+        let semaphore = DispatchSemaphore(value: 0)
+        let resultBox = LockedResultBox<Void>()
+        let configurationBox = UncheckedSendableBox(value: configuration)
+        queue.async {
+            let virtualMachine = VZVirtualMachine(configuration: configurationBox.value, queue: queue)
+            let installer = VZMacOSInstaller(virtualMachine: virtualMachine, restoringFromImageAt: restoreURL)
+            installer.install { result in
+                resultBox.store(result.mapError { $0 })
+                semaphore.signal()
+            }
+        }
+        semaphore.wait()
+        guard let result = resultBox.load() else {
+            throw helperError("restore_image_install_returned_no_result")
+        }
+        try result.get()
+    }
+
+    private static func requestedMemoryBytes(
+        options: HelperOptions,
+        requirements: VZMacOSConfigurationRequirements
+    ) throws -> UInt64 {
+        let (requested, overflow) = options.memoryMiB.multipliedReportingOverflow(by: 1_048_576)
+        guard !overflow else {
+            throw helperError("requested_memory_overflow")
+        }
+        let minimum = max(VZVirtualMachineConfiguration.minimumAllowedMemorySize, requirements.minimumSupportedMemorySize)
+        let memory = max(requested, minimum)
+        guard memory <= VZVirtualMachineConfiguration.maximumAllowedMemorySize else {
+            throw helperError("requested_memory_exceeds_host_limit")
+        }
+        return memory
+    }
+
+    private static func requestedCPUCount(requirements: VZMacOSConfigurationRequirements) throws -> Int {
+        let minimum = max(VZVirtualMachineConfiguration.minimumAllowedCPUCount, requirements.minimumSupportedCPUCount)
+        let cpuCount = max(minimum, 2)
+        guard cpuCount <= VZVirtualMachineConfiguration.maximumAllowedCPUCount else {
+            throw helperError("requested_cpu_count_exceeds_host_limit")
+        }
+        return cpuCount
     }
 
     private static func lifecycleBlocked(_ options: HelperOptions, operation: String) {
@@ -409,6 +668,23 @@ struct WhoaThereMacosVmHelper {
         try FileManager.default.copyItem(at: source, to: destination)
     }
 
+    private static func createRawDiskImage(at url: URL, diskGiB: UInt64) throws {
+        let (diskBytes, overflow) = diskGiB.multipliedReportingOverflow(by: 1_073_741_824)
+        guard !overflow, diskBytes >= 1_073_741_824 else {
+            throw helperError("disk_size_invalid")
+        }
+        guard diskBytes % 512 == 0 else {
+            throw helperError("disk_size_not_block_aligned")
+        }
+        try removeIfPresent(url)
+        guard FileManager.default.createFile(atPath: url.path, contents: nil, attributes: [.posixPermissions: 0o600]) else {
+            throw helperError("disk_image_create_failed")
+        }
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.truncate(atOffset: diskBytes)
+        try handle.close()
+    }
+
     private static func writeManifest(layout: BundleLayout, options: HelperOptions, imageDigest: String) throws {
         let body = [
             "schema_version=whoathere.macos_vm_image.v1",
@@ -436,6 +712,53 @@ struct WhoaThereMacosVmHelper {
         try data.write(to: layout.configPath, options: [.atomic])
     }
 
+    private static func writeRestoreManifest(
+        layout: BundleLayout,
+        restoreImage: VZMacOSRestoreImage,
+        restoreDigest: String,
+        cpuCount: Int,
+        memoryBytes: UInt64
+    ) throws {
+        let body = [
+            "schema_version=whoathere.macos_vm_image.v1",
+            "image_id=local-restore-image-install",
+            "macos_version=\(operatingSystemVersionString(restoreImage.operatingSystemVersion))",
+            "macos_build_version=\(restoreImage.buildVersion)",
+            "architecture=arm64",
+            "restore_image_digest=sha256:\(restoreDigest)",
+            "cpu_count=\(cpuCount)",
+            "memory_mib=\(memoryBytes / 1_048_576)",
+            "signature_status=signature_verification_not_implemented",
+            "helper_version=\(helperVersion)"
+        ].joined(separator: "\n") + "\n"
+        try body.write(to: layout.manifestPath, atomically: true, encoding: .utf8)
+    }
+
+    private static func writeRestoreConfig(
+        layout: BundleLayout,
+        options: HelperOptions,
+        restoreDigest: String,
+        cpuCount: Int,
+        memoryBytes: UInt64
+    ) throws {
+        let config: [String: Any] = [
+            "schema_version": bundleSchemaVersion,
+            "helper_version": helperVersion,
+            "memory_mib": memoryBytes / 1_048_576,
+            "requested_memory_mib": options.memoryMiB,
+            "cpu_count": cpuCount,
+            "disk_gib": options.diskGiB,
+            "disk_path": layout.diskPath.path,
+            "auxiliary_storage_path": layout.auxiliaryStoragePath.path,
+            "hardware_model_path": layout.hardwareModelPath.path,
+            "machine_identifier_path": layout.machineIdentifierPath.path,
+            "restore_image_digest": "sha256:\(restoreDigest)",
+            "high_risk_package_execution_enabled": false
+        ]
+        let data = try JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys])
+        try data.write(to: layout.configPath, options: [.atomic])
+    }
+
     private static func manifestSignatureStatus(layout: BundleLayout) -> String? {
         guard let contents = try? String(contentsOf: layout.manifestPath, encoding: .utf8) else {
             return nil
@@ -446,6 +769,23 @@ struct WhoaThereMacosVmHelper {
             }
         }
         return nil
+    }
+
+    private static func bundleHasInstalledState(_ layout: BundleLayout) -> Bool {
+        fileExists(layout.diskPath)
+            || fileExists(layout.auxiliaryStoragePath)
+            || fileExists(layout.hardwareModelPath)
+            || fileExists(layout.machineIdentifierPath)
+    }
+
+    private static func operatingSystemVersionString(_ version: OperatingSystemVersion) -> String {
+        "\(version.majorVersion).\(version.minorVersion).\(version.patchVersion)"
+    }
+
+    private static func helperError(_ reason: String) -> NSError {
+        NSError(domain: "whoathere.helper", code: 1, userInfo: [
+            NSLocalizedDescriptionKey: reason
+        ])
     }
 
     private static func virtualizationFrameworkLinked() -> Bool {
@@ -501,27 +841,17 @@ struct WhoaThereMacosVmHelper {
     }
 
     private static func sha256Digest(path: String) throws -> String {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/shasum")
-        process.arguments = ["-a", "256", path]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = Pipe()
-        try process.run()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            throw NSError(domain: "whoathere.helper", code: Int(process.terminationStatus), userInfo: [
-                NSLocalizedDescriptionKey: "shasum_failed"
-            ])
+        let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: path))
+        var hasher = SHA256()
+        while true {
+            let chunk = try handle.read(upToCount: 1024 * 1024) ?? Data()
+            if chunk.isEmpty {
+                break
+            }
+            hasher.update(data: chunk)
         }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        let output = String(decoding: data, as: UTF8.self)
-        guard let digest = output.split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "\n" }).first else {
-            throw NSError(domain: "whoathere.helper", code: 1, userInfo: [
-                NSLocalizedDescriptionKey: "shasum_output_invalid"
-            ])
-        }
-        return String(digest)
+        try handle.close()
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     private static func sanitizedReason(_ error: Error) -> String {

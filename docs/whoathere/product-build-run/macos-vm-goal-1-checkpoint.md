@@ -12,6 +12,8 @@ detonation, or sync-back execution.
 - Helper JSON contract includes schema version, helper version, host support, Virtualization.framework linkage, bundle paths, reason codes, and exit code.
 - Helper `init --execute --image <path>` creates a managed disk-import bundle from an explicit local disk image, copies the disk to `bundle/disk.img`, writes `bundle/config.json`, and writes `bundle/image.manifest`.
 - Disk-import bundles remain non-bootable and non-ready until auxiliary storage, hardware model, machine identifier metadata, and real signature verification are present.
+- Helper `init --execute --restore-image <path>` now has a local IPSW install path using `VZMacOSRestoreImage`, `VZMacOSInstaller`, raw disk creation, `VZMacAuxiliaryStorage`, hardware-model persistence, and machine-identifier persistence.
+- Restore-image bundles still remain non-ready until signature verification, persistent runtime supervision, and health proof are implemented.
 - Helper `status` reports missing bundle/config/manifest/disk/auxiliary storage/hardware model/machine identifier/signature proof independently.
 - Helper `start` and `health` fail closed until the VM has real Virtualization metadata, signature verification, persistent runtime management, and guest readiness proof.
 - Rust CLI accepts `--helper <path>` or `WHOATHERE_MACOS_VM_HELPER` for VM and doctor commands.
@@ -49,7 +51,7 @@ overlays/
 
 ## Current Blockers
 
-- Restore-image installation is not implemented yet.
+- Restore-image installation is implemented as a local IPSW path, but still needs signed release packaging and real-host validation with an entitled helper.
 - Full signature/notarization verification is not implemented yet.
 - Persistent VM process management is not implemented yet.
 - Guest readiness proof is not implemented yet.
