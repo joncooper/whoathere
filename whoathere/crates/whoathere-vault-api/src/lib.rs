@@ -551,6 +551,607 @@ pub fn bind_evidence_job_result(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DynamicBehaviorSignalSummary {
+    pub trigger_kind: String,
+    pub process_intent_count: u16,
+    pub filesystem_write_count: u16,
+    pub network_attempt_count: u16,
+    pub dns_attempt_count: u16,
+    pub env_access_count: u16,
+    pub credential_access_count: u16,
+    pub delayed_execution_detected: bool,
+    pub native_extension_detected: bool,
+    pub platform_specific_detected: bool,
+    pub direct_source_detected: bool,
+}
+
+impl DynamicBehaviorSignalSummary {
+    pub fn clean() -> Self {
+        Self {
+            trigger_kind: "fixture_clean".to_string(),
+            process_intent_count: 0,
+            filesystem_write_count: 0,
+            network_attempt_count: 0,
+            dns_attempt_count: 0,
+            env_access_count: 0,
+            credential_access_count: 0,
+            delayed_execution_detected: false,
+            native_extension_detected: false,
+            platform_specific_detected: false,
+            direct_source_detected: false,
+        }
+    }
+
+    fn has_high_risk_signal(&self) -> bool {
+        self.network_attempt_count > 0
+            || self.dns_attempt_count > 0
+            || self.credential_access_count > 0
+            || self.delayed_execution_detected
+            || self.native_extension_detected
+            || self.platform_specific_detected
+            || self.direct_source_detected
+    }
+
+    fn metadata_is_safe(&self) -> bool {
+        signal_metadata_value_is_safe(&self.trigger_kind)
+    }
+
+    fn sanitized_for_binding(mut self) -> Self {
+        if !signal_metadata_value_is_safe(&self.trigger_kind) {
+            self.trigger_kind = "<invalid-signal-metadata>".to_string();
+        }
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DynamicBehaviorPlanState {
+    Planned,
+    Rejected,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DynamicBehaviorResultState {
+    Bound,
+    Rejected,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DynamicBehaviorJobRequest {
+    pub job_id: String,
+    pub tenant_id: String,
+    pub admission_request_id: String,
+    pub artifact: ArtifactRef,
+    pub profile_id: String,
+    pub profile_version: u16,
+    pub job_kind: EvidenceJobKind,
+    pub cache_object_key: String,
+    pub runner_id: String,
+    pub runner_session_id: String,
+    pub isolation_proof_id: String,
+    pub egress_proof_id: String,
+    pub configured_vault_host: String,
+    pub fixture_mode: bool,
+    pub issued_at_unix_seconds: u64,
+    pub timeout_seconds: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DynamicBehaviorJobPlan {
+    pub job_id: String,
+    pub tenant_id: String,
+    pub admission_request_id: String,
+    pub artifact: ArtifactRef,
+    pub profile_id: String,
+    pub profile_version: u16,
+    pub job_kind: EvidenceJobKind,
+    pub state: DynamicBehaviorPlanState,
+    pub execution_enabled: bool,
+    pub arbitrary_execution_enabled: bool,
+    pub fixture_mode: bool,
+    pub network_attempted: bool,
+    pub cache_object_key: Option<String>,
+    pub runner_id: String,
+    pub runner_session_id: String,
+    pub isolation_proof_id: String,
+    pub egress_proof_id: String,
+    pub configured_vault_host: String,
+    pub issued_at_unix_seconds: u64,
+    pub expires_at_unix_seconds: u64,
+    pub reason_codes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DynamicBehaviorJobResultRecord {
+    pub job_id: String,
+    pub tenant_id: String,
+    pub admission_request_id: String,
+    pub artifact: ArtifactRef,
+    pub profile_id: String,
+    pub profile_version: u16,
+    pub job_kind: EvidenceJobKind,
+    pub cache_object_key: String,
+    pub runner_id: String,
+    pub runner_session_id: String,
+    pub isolation_proof_id: String,
+    pub egress_proof_id: String,
+    pub configured_vault_host: String,
+    pub observed_at_unix_seconds: u64,
+    pub job_state: JobState,
+    pub behavior_schema: String,
+    pub behavior_log_digest: String,
+    pub signal_summary: DynamicBehaviorSignalSummary,
+    pub execution_enabled: bool,
+    pub arbitrary_execution_attempted: bool,
+    pub fixture_mode: bool,
+    pub network_attempted: bool,
+    pub isolation_verified: bool,
+    pub egress_vault_only_verified: bool,
+    pub raw_log_captured: bool,
+    pub raw_env_captured: bool,
+    pub raw_network_payload_captured: bool,
+    pub raw_package_bytes_captured: bool,
+    pub local_paths_captured: bool,
+    pub audit_event_id: String,
+    pub reason_codes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DynamicBehaviorResultBinding {
+    pub job_id: String,
+    pub tenant_id: String,
+    pub admission_request_id: String,
+    pub artifact: ArtifactRef,
+    pub profile_id: String,
+    pub profile_version: u16,
+    pub job_kind: EvidenceJobKind,
+    pub state: DynamicBehaviorResultState,
+    pub job_state: JobState,
+    pub admission_ready: bool,
+    pub cache_object_key: Option<String>,
+    pub behavior_log_digest: String,
+    pub runner_id: String,
+    pub runner_session_id: String,
+    pub isolation_proof_id: String,
+    pub egress_proof_id: String,
+    pub configured_vault_host: String,
+    pub audit_event_id: String,
+    pub signal_summary: DynamicBehaviorSignalSummary,
+    pub reason_codes: Vec<String>,
+}
+
+impl DynamicBehaviorResultBinding {
+    pub fn evidence_job_result(&self) -> whoathere_evidence::EvidenceJobResult {
+        whoathere_evidence::EvidenceJobResult {
+            job_id: self.job_id.clone(),
+            job_kind: self.job_kind,
+            state: self.job_state,
+            log_digest: self.behavior_log_digest.clone(),
+            reason_codes: self.reason_codes.clone(),
+        }
+    }
+
+    pub fn evidence_binding(&self) -> EvidenceJobBinding {
+        EvidenceJobBinding {
+            job_id: self.job_id.clone(),
+            job_kind: self.job_kind,
+            profile_id: self.profile_id.clone(),
+            profile_version: self.profile_version,
+            artifact_digest: self.artifact.digest.clone(),
+            cache_object_key: self.cache_object_key.clone().unwrap_or_default(),
+            log_digest: self.behavior_log_digest.clone(),
+            admission_ready: self.admission_ready,
+        }
+    }
+}
+
+pub fn plan_dynamic_behavior_job(
+    request: DynamicBehaviorJobRequest,
+    profile: &EvidenceProfile,
+) -> DynamicBehaviorJobPlan {
+    let mut reason_codes = vec!["dynamic_behavior_arbitrary_execution_disabled".to_string()];
+    if request.job_id.is_empty() {
+        reason_codes.push("dynamic_behavior_job_id_empty".to_string());
+    }
+    if request.profile_id != profile.id {
+        reason_codes.push("dynamic_behavior_profile_id_mismatch".to_string());
+    }
+    if request.profile_version != profile.version {
+        reason_codes.push("dynamic_behavior_profile_version_mismatch".to_string());
+    }
+    if !matches!(
+        request.job_kind,
+        EvidenceJobKind::LifecycleDetonation
+            | EvidenceJobKind::ImportSmoke
+            | EvidenceJobKind::NativeBuild
+    ) {
+        reason_codes.push("dynamic_behavior_job_kind_not_dynamic".to_string());
+    }
+    let requirement = profile
+        .requirements
+        .iter()
+        .find(|requirement| requirement.job_kind == request.job_kind);
+    if requirement.is_none() {
+        reason_codes.push("dynamic_behavior_job_kind_unexpected_for_profile".to_string());
+    }
+    if !request.fixture_mode {
+        reason_codes.push("dynamic_behavior_fixture_mode_required".to_string());
+    }
+    if request.timeout_seconds == 0 {
+        reason_codes.push("dynamic_behavior_timeout_zero".to_string());
+    }
+    for (value, reason) in [
+        (&request.runner_id, "dynamic_behavior_runner_id_empty"),
+        (
+            &request.runner_session_id,
+            "dynamic_behavior_runner_session_id_empty",
+        ),
+        (
+            &request.isolation_proof_id,
+            "dynamic_behavior_isolation_proof_id_empty",
+        ),
+        (
+            &request.egress_proof_id,
+            "dynamic_behavior_egress_proof_id_empty",
+        ),
+        (
+            &request.configured_vault_host,
+            "dynamic_behavior_configured_vault_host_empty",
+        ),
+    ] {
+        if value.is_empty() {
+            reason_codes.push(reason.to_string());
+        }
+    }
+    for value in [
+        request.job_id.as_str(),
+        request.tenant_id.as_str(),
+        request.admission_request_id.as_str(),
+        request.runner_id.as_str(),
+        request.runner_session_id.as_str(),
+        request.isolation_proof_id.as_str(),
+        request.egress_proof_id.as_str(),
+        request.configured_vault_host.as_str(),
+    ] {
+        if !metadata_value_is_safe(value) {
+            reason_codes.push("dynamic_behavior_metadata_control_character".to_string());
+            break;
+        }
+    }
+    let expected_cache_key = match request.artifact.cache_object_key() {
+        Ok(key) => Some(key),
+        Err(error) => {
+            reason_codes.push(error.reason_code().to_string());
+            None
+        }
+    };
+    if expected_cache_key.as_deref() != Some(request.cache_object_key.as_str()) {
+        reason_codes.push("dynamic_behavior_cache_key_mismatch".to_string());
+    }
+    let state = if reason_codes.len() == 1
+        && request.fixture_mode
+        && request.timeout_seconds > 0
+        && requirement.is_some()
+        && expected_cache_key.as_deref() == Some(request.cache_object_key.as_str())
+        && !request.job_id.is_empty()
+        && !request.runner_id.is_empty()
+        && !request.runner_session_id.is_empty()
+        && !request.isolation_proof_id.is_empty()
+        && !request.egress_proof_id.is_empty()
+        && !request.configured_vault_host.is_empty()
+    {
+        DynamicBehaviorPlanState::Planned
+    } else {
+        DynamicBehaviorPlanState::Rejected
+    };
+    DynamicBehaviorJobPlan {
+        job_id: request.job_id,
+        tenant_id: request.tenant_id,
+        admission_request_id: request.admission_request_id,
+        artifact: request.artifact,
+        profile_id: request.profile_id,
+        profile_version: request.profile_version,
+        job_kind: request.job_kind,
+        state,
+        execution_enabled: false,
+        arbitrary_execution_enabled: false,
+        fixture_mode: request.fixture_mode,
+        network_attempted: false,
+        cache_object_key: expected_cache_key,
+        runner_id: request.runner_id,
+        runner_session_id: request.runner_session_id,
+        isolation_proof_id: request.isolation_proof_id,
+        egress_proof_id: request.egress_proof_id,
+        configured_vault_host: request.configured_vault_host,
+        issued_at_unix_seconds: request.issued_at_unix_seconds,
+        expires_at_unix_seconds: request.issued_at_unix_seconds + request.timeout_seconds,
+        reason_codes,
+    }
+}
+
+pub fn bind_dynamic_behavior_result(
+    plan: &DynamicBehaviorJobPlan,
+    result: DynamicBehaviorJobResultRecord,
+) -> DynamicBehaviorResultBinding {
+    let mut reason_codes = Vec::new();
+    append_safe_reason_codes(
+        &mut reason_codes,
+        &result.reason_codes,
+        "dynamic_behavior_result_reason_code_invalid",
+    );
+    if plan.state != DynamicBehaviorPlanState::Planned {
+        reason_codes.push("dynamic_behavior_plan_not_planned".to_string());
+    }
+    if result.job_id != plan.job_id {
+        reason_codes.push("dynamic_behavior_result_job_mismatch".to_string());
+    }
+    if result.tenant_id != plan.tenant_id {
+        reason_codes.push("dynamic_behavior_result_tenant_mismatch".to_string());
+    }
+    if result.admission_request_id != plan.admission_request_id {
+        reason_codes.push("dynamic_behavior_result_admission_request_mismatch".to_string());
+    }
+    if result.artifact != plan.artifact {
+        reason_codes.push("dynamic_behavior_result_artifact_mismatch".to_string());
+    }
+    if result.profile_id != plan.profile_id {
+        reason_codes.push("dynamic_behavior_result_profile_id_mismatch".to_string());
+    }
+    if result.profile_version != plan.profile_version {
+        reason_codes.push("dynamic_behavior_result_profile_version_mismatch".to_string());
+    }
+    if result.job_kind != plan.job_kind {
+        reason_codes.push("dynamic_behavior_result_kind_mismatch".to_string());
+    }
+    if plan.cache_object_key.as_deref() != Some(result.cache_object_key.as_str()) {
+        reason_codes.push("dynamic_behavior_result_cache_key_mismatch".to_string());
+    }
+    if result.runner_id != plan.runner_id {
+        reason_codes.push("dynamic_behavior_result_runner_mismatch".to_string());
+    }
+    if result.runner_session_id != plan.runner_session_id {
+        reason_codes.push("dynamic_behavior_result_runner_session_mismatch".to_string());
+    }
+    if result.isolation_proof_id != plan.isolation_proof_id {
+        reason_codes.push("dynamic_behavior_result_isolation_proof_mismatch".to_string());
+    }
+    if result.egress_proof_id != plan.egress_proof_id {
+        reason_codes.push("dynamic_behavior_result_egress_proof_mismatch".to_string());
+    }
+    if result.configured_vault_host != plan.configured_vault_host {
+        reason_codes.push("dynamic_behavior_result_vault_host_mismatch".to_string());
+    }
+    if result.observed_at_unix_seconds < plan.issued_at_unix_seconds
+        || result.observed_at_unix_seconds > plan.expires_at_unix_seconds
+    {
+        reason_codes.push("dynamic_behavior_result_stale_or_not_yet_valid".to_string());
+    }
+    if result.execution_enabled != plan.execution_enabled {
+        reason_codes.push("dynamic_behavior_result_execution_enabled_mismatch".to_string());
+    }
+    if result.execution_enabled || result.arbitrary_execution_attempted {
+        reason_codes.push("dynamic_behavior_arbitrary_execution_attempted".to_string());
+    }
+    if result.fixture_mode != plan.fixture_mode {
+        reason_codes.push("dynamic_behavior_fixture_mode_mismatch".to_string());
+    }
+    if result.network_attempted {
+        reason_codes.push("dynamic_behavior_network_attempted".to_string());
+    }
+    if !result.isolation_verified {
+        reason_codes.push("dynamic_behavior_isolation_not_verified".to_string());
+    }
+    if !result.egress_vault_only_verified {
+        reason_codes.push("dynamic_behavior_egress_not_verified".to_string());
+    }
+    if result.raw_log_captured
+        || result.raw_env_captured
+        || result.raw_network_payload_captured
+        || result.raw_package_bytes_captured
+        || result.local_paths_captured
+    {
+        reason_codes.push("dynamic_behavior_raw_or_local_material_captured".to_string());
+    }
+    if result.behavior_schema != "whoathere.dynamic_behavior.v1" {
+        reason_codes.push("dynamic_behavior_schema_mismatch".to_string());
+    }
+    if !valid_sha256_digest(&result.behavior_log_digest) {
+        reason_codes.push("dynamic_behavior_log_digest_invalid".to_string());
+    }
+    if result.audit_event_id.is_empty() {
+        reason_codes.push("dynamic_behavior_audit_event_id_empty".to_string());
+    }
+    if result.job_state != JobState::Passed {
+        reason_codes.push("dynamic_behavior_result_not_passed".to_string());
+    }
+    if result.signal_summary.has_high_risk_signal() {
+        reason_codes.push("dynamic_behavior_high_risk_signal_detected".to_string());
+    }
+    let signal_metadata_is_safe = result.signal_summary.metadata_is_safe();
+    if !signal_metadata_is_safe {
+        reason_codes.push("dynamic_behavior_signal_metadata_control_character".to_string());
+    }
+    reason_codes.sort();
+    reason_codes.dedup();
+
+    let state = if reason_codes.is_empty() {
+        DynamicBehaviorResultState::Bound
+    } else {
+        DynamicBehaviorResultState::Rejected
+    };
+    DynamicBehaviorResultBinding {
+        job_id: result.job_id,
+        tenant_id: result.tenant_id,
+        admission_request_id: result.admission_request_id,
+        artifact: result.artifact,
+        profile_id: result.profile_id,
+        profile_version: result.profile_version,
+        job_kind: result.job_kind,
+        state,
+        job_state: result.job_state,
+        admission_ready: state == DynamicBehaviorResultState::Bound,
+        cache_object_key: plan.cache_object_key.clone(),
+        behavior_log_digest: result.behavior_log_digest,
+        runner_id: result.runner_id,
+        runner_session_id: result.runner_session_id,
+        isolation_proof_id: result.isolation_proof_id,
+        egress_proof_id: result.egress_proof_id,
+        configured_vault_host: result.configured_vault_host,
+        audit_event_id: result.audit_event_id,
+        signal_summary: result.signal_summary.sanitized_for_binding(),
+        reason_codes,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdminWorkflowAction {
+    ManualReview,
+    Quarantine,
+    Deny,
+    AllowAfterReview,
+    BreakGlass,
+    AuditSearch,
+    AuditExport,
+}
+
+impl AdminWorkflowAction {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ManualReview => "manual_review",
+            Self::Quarantine => "quarantine",
+            Self::Deny => "deny",
+            Self::AllowAfterReview => "allow_after_review",
+            Self::BreakGlass => "break_glass",
+            Self::AuditSearch => "audit_search",
+            Self::AuditExport => "audit_export",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdminWorkflowDecisionState {
+    Accepted,
+    Rejected,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdminWorkflowRequest {
+    pub request_id: String,
+    pub tenant_id: String,
+    pub artifact: ArtifactRef,
+    pub action: AdminWorkflowAction,
+    pub operator_id: String,
+    pub reason_code: String,
+    pub ticket_id: String,
+    pub break_glass: bool,
+    pub policy_version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdminWorkflowDecision {
+    pub request_id: String,
+    pub tenant_id: String,
+    pub artifact: ArtifactRef,
+    pub action: AdminWorkflowAction,
+    pub state: AdminWorkflowDecisionState,
+    pub audit_event_id: String,
+    pub decision: Verdict,
+    pub requires_second_approval: bool,
+    pub raw_reason_logged: bool,
+    pub raw_operator_token_logged: bool,
+    pub reason_codes: Vec<String>,
+}
+
+pub fn plan_admin_workflow_action(request: AdminWorkflowRequest) -> AdminWorkflowDecision {
+    let mut reason_codes = Vec::new();
+    if request.request_id.is_empty() {
+        reason_codes.push("admin_workflow_request_id_empty".to_string());
+    }
+    if request.tenant_id.is_empty() {
+        reason_codes.push("admin_workflow_tenant_id_empty".to_string());
+    }
+    if request.operator_id.is_empty() {
+        reason_codes.push("admin_workflow_operator_id_empty".to_string());
+    }
+    if request.ticket_id.is_empty() {
+        reason_codes.push("admin_workflow_ticket_id_empty".to_string());
+    }
+    if request.reason_code.is_empty() {
+        reason_codes.push("admin_workflow_reason_code_empty".to_string());
+    }
+    if request.policy_version.is_empty() {
+        reason_codes.push("admin_workflow_policy_version_empty".to_string());
+    }
+    if request.artifact.cache_object_key().is_err() {
+        reason_codes.push("admin_workflow_artifact_digest_invalid".to_string());
+    }
+    for value in [
+        request.request_id.as_str(),
+        request.tenant_id.as_str(),
+        request.operator_id.as_str(),
+        request.ticket_id.as_str(),
+        request.reason_code.as_str(),
+        request.policy_version.as_str(),
+    ] {
+        if !metadata_value_is_safe(value) {
+            reason_codes.push("admin_workflow_metadata_control_character".to_string());
+            break;
+        }
+    }
+    if request.action == AdminWorkflowAction::BreakGlass && !request.break_glass {
+        reason_codes.push("admin_workflow_break_glass_confirmation_required".to_string());
+    }
+    if request.action == AdminWorkflowAction::AllowAfterReview && request.break_glass {
+        reason_codes.push("admin_workflow_break_glass_not_allowed_for_review_allow".to_string());
+    }
+
+    let state = if reason_codes.is_empty() {
+        AdminWorkflowDecisionState::Accepted
+    } else {
+        AdminWorkflowDecisionState::Rejected
+    };
+    let decision = match (request.action, state) {
+        (_, AdminWorkflowDecisionState::Rejected) => Verdict::Deny,
+        (AdminWorkflowAction::ManualReview, _) => Verdict::ManualReview,
+        (AdminWorkflowAction::Quarantine, _) => Verdict::Quarantine,
+        (AdminWorkflowAction::Deny, _) => Verdict::Deny,
+        (AdminWorkflowAction::AllowAfterReview, _) => Verdict::Allow,
+        (AdminWorkflowAction::BreakGlass, _) => Verdict::Allow,
+        (AdminWorkflowAction::AuditSearch | AdminWorkflowAction::AuditExport, _) => {
+            Verdict::Pending
+        }
+    };
+    let audit_fragment = sha256_digest(
+        format!(
+            "{}:{}:{}:{}",
+            request.tenant_id,
+            request.request_id,
+            request.action.label(),
+            request.ticket_id
+        )
+        .as_bytes(),
+    )
+    .strip_prefix("sha256:")
+    .unwrap_or_default()
+    .chars()
+    .take(16)
+    .collect::<String>();
+    AdminWorkflowDecision {
+        request_id: request.request_id,
+        tenant_id: request.tenant_id,
+        artifact: request.artifact,
+        action: request.action,
+        state,
+        audit_event_id: format!("audit-admin-{audit_fragment}"),
+        decision,
+        requires_second_approval: request.action == AdminWorkflowAction::BreakGlass,
+        raw_reason_logged: false,
+        raw_operator_token_logged: false,
+        reason_codes,
+    }
+}
+
 fn valid_sha256_digest(value: &str) -> bool {
     let Some((algorithm, digest)) = value.split_once(':') else {
         return false;
@@ -560,6 +1161,44 @@ fn valid_sha256_digest(value: &str) -> bool {
         && digest
             .chars()
             .all(|character| character.is_ascii_digit() || matches!(character, 'a'..='f'))
+}
+
+fn metadata_value_is_safe(value: &str) -> bool {
+    value
+        .chars()
+        .all(|character| !character.is_control() && character != '\n' && character != '\r')
+}
+
+fn signal_metadata_value_is_safe(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value.chars().all(|character| {
+            character.is_ascii_lowercase()
+                || character.is_ascii_digit()
+                || matches!(character, '_' | '-' | '.')
+        })
+}
+
+fn append_safe_reason_codes(target: &mut Vec<String>, source: &[String], invalid_reason: &str) {
+    let mut saw_invalid = false;
+    for reason in source {
+        if reason_code_value_is_safe(reason) {
+            target.push(reason.clone());
+        } else {
+            saw_invalid = true;
+        }
+    }
+    if saw_invalid {
+        target.push(invalid_reason.to_string());
+    }
+}
+
+fn reason_code_value_is_safe(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 96
+        && value.chars().all(|character| {
+            character.is_ascii_lowercase() || character.is_ascii_digit() || character == '_'
+        })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1829,6 +2468,189 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_behavior_plan_requires_fixture_mode_without_enabling_arbitrary_execution() {
+        let profile = sample_profile();
+        let plan = plan_dynamic_behavior_job(sample_dynamic_behavior_request(&profile), &profile);
+        assert_eq!(plan.state, DynamicBehaviorPlanState::Planned);
+        assert!(!plan.execution_enabled);
+        assert!(!plan.arbitrary_execution_enabled);
+        assert!(plan.fixture_mode);
+        assert!(!plan.network_attempted);
+        assert_eq!(plan.cache_object_key, Some(ABC_OBJECT_KEY.to_string()));
+        assert_eq!(
+            plan.reason_codes,
+            vec!["dynamic_behavior_arbitrary_execution_disabled"]
+        );
+
+        let mut arbitrary = sample_dynamic_behavior_request(&profile);
+        arbitrary.fixture_mode = false;
+        let rejected = plan_dynamic_behavior_job(arbitrary, &profile);
+        assert_eq!(rejected.state, DynamicBehaviorPlanState::Rejected);
+        assert!(rejected
+            .reason_codes
+            .contains(&"dynamic_behavior_fixture_mode_required".to_string()));
+    }
+
+    #[test]
+    fn dynamic_behavior_binding_accepts_clean_fixture_result() {
+        let profile = sample_profile();
+        let plan = plan_dynamic_behavior_job(sample_dynamic_behavior_request(&profile), &profile);
+        let binding = bind_dynamic_behavior_result(&plan, sample_dynamic_behavior_result(&plan));
+        assert_eq!(binding.state, DynamicBehaviorResultState::Bound);
+        assert!(binding.admission_ready);
+        assert!(binding.reason_codes.is_empty());
+        assert_eq!(binding.job_kind, EvidenceJobKind::LifecycleDetonation);
+        assert_eq!(binding.cache_object_key, Some(ABC_OBJECT_KEY.to_string()));
+        assert_eq!(
+            binding.evidence_binding().cache_object_key,
+            ABC_OBJECT_KEY.to_string()
+        );
+        assert_eq!(binding.evidence_job_result().state, JobState::Passed);
+    }
+
+    #[test]
+    fn dynamic_behavior_binding_rejects_identity_proof_stale_and_runner_mismatches() {
+        let profile = sample_profile();
+        let plan = plan_dynamic_behavior_job(sample_dynamic_behavior_request(&profile), &profile);
+        let mut result = sample_dynamic_behavior_result(&plan);
+        result.tenant_id = "tenant-other".to_string();
+        result.artifact.digest = DEF_DIGEST.to_string();
+        result.cache_object_key = DEF_OBJECT_KEY.to_string();
+        result.runner_session_id = "runner-session-other".to_string();
+        result.isolation_proof_id = "isolation-proof-other".to_string();
+        result.egress_proof_id = "egress-proof-other".to_string();
+        result.configured_vault_host = "vault.other:4873".to_string();
+        result.observed_at_unix_seconds = plan.expires_at_unix_seconds + 1;
+        let binding = bind_dynamic_behavior_result(&plan, result);
+        assert_eq!(binding.state, DynamicBehaviorResultState::Rejected);
+        for reason in [
+            "dynamic_behavior_result_tenant_mismatch",
+            "dynamic_behavior_result_artifact_mismatch",
+            "dynamic_behavior_result_cache_key_mismatch",
+            "dynamic_behavior_result_runner_session_mismatch",
+            "dynamic_behavior_result_isolation_proof_mismatch",
+            "dynamic_behavior_result_egress_proof_mismatch",
+            "dynamic_behavior_result_vault_host_mismatch",
+            "dynamic_behavior_result_stale_or_not_yet_valid",
+        ] {
+            assert!(
+                binding.reason_codes.contains(&reason.to_string()),
+                "{reason}"
+            );
+        }
+        assert!(!binding.admission_ready);
+    }
+
+    #[test]
+    fn dynamic_behavior_binding_rejects_high_risk_or_overpermissive_results() {
+        let profile = sample_profile();
+        let plan = plan_dynamic_behavior_job(sample_dynamic_behavior_request(&profile), &profile);
+        let mut result = sample_dynamic_behavior_result(&plan);
+        result.job_state = JobState::Failed;
+        result.signal_summary.network_attempt_count = 1;
+        result.signal_summary.dns_attempt_count = 1;
+        result.signal_summary.credential_access_count = 1;
+        result.signal_summary.delayed_execution_detected = true;
+        result.signal_summary.native_extension_detected = true;
+        result.signal_summary.platform_specific_detected = true;
+        result.signal_summary.direct_source_detected = true;
+        result.network_attempted = true;
+        result.isolation_verified = false;
+        result.egress_vault_only_verified = false;
+        result.raw_log_captured = true;
+        result.raw_env_captured = true;
+        result.raw_network_payload_captured = true;
+        result.raw_package_bytes_captured = true;
+        result.local_paths_captured = true;
+        let binding = bind_dynamic_behavior_result(&plan, result);
+        assert_eq!(binding.state, DynamicBehaviorResultState::Rejected);
+        for reason in [
+            "dynamic_behavior_result_not_passed",
+            "dynamic_behavior_high_risk_signal_detected",
+            "dynamic_behavior_network_attempted",
+            "dynamic_behavior_isolation_not_verified",
+            "dynamic_behavior_egress_not_verified",
+            "dynamic_behavior_raw_or_local_material_captured",
+        ] {
+            assert!(
+                binding.reason_codes.contains(&reason.to_string()),
+                "{reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn dynamic_behavior_binding_sanitizes_untrusted_result_metadata() {
+        let profile = sample_profile();
+        let plan = plan_dynamic_behavior_job(sample_dynamic_behavior_request(&profile), &profile);
+        let mut result = sample_dynamic_behavior_result(&plan);
+        result.signal_summary.trigger_kind =
+            "/Users/jdc/.npmrc?token=WHOATHERE_CANARY_TOKEN".to_string();
+        result.reason_codes = vec![
+            "dynamic_behavior_fixture_notice".to_string(),
+            "secret=https://exfil.invalid/WHOATHERE_CANARY_TOKEN".to_string(),
+        ];
+
+        let binding = bind_dynamic_behavior_result(&plan, result);
+
+        assert_eq!(binding.state, DynamicBehaviorResultState::Rejected);
+        assert_eq!(
+            binding.signal_summary.trigger_kind,
+            "<invalid-signal-metadata>"
+        );
+        assert!(binding
+            .reason_codes
+            .contains(&"dynamic_behavior_fixture_notice".to_string()));
+        assert!(binding
+            .reason_codes
+            .contains(&"dynamic_behavior_result_reason_code_invalid".to_string()));
+        assert!(binding
+            .reason_codes
+            .contains(&"dynamic_behavior_signal_metadata_control_character".to_string()));
+        assert!(!binding
+            .reason_codes
+            .iter()
+            .any(|reason| reason.contains("WHOATHERE_CANARY_TOKEN")
+                || reason.contains("exfil.invalid")
+                || reason.contains("/Users/")));
+    }
+
+    #[test]
+    fn admin_workflow_contracts_are_typed_and_audit_safe() {
+        let allow = plan_admin_workflow_action(sample_admin_workflow_request(
+            AdminWorkflowAction::AllowAfterReview,
+            false,
+        ));
+        assert_eq!(allow.state, AdminWorkflowDecisionState::Accepted);
+        assert_eq!(allow.decision, Verdict::Allow);
+        assert!(allow.audit_event_id.starts_with("audit-admin-"));
+        assert!(!allow.raw_reason_logged);
+        assert!(!allow.raw_operator_token_logged);
+        assert!(!allow.requires_second_approval);
+
+        let break_glass = plan_admin_workflow_action(sample_admin_workflow_request(
+            AdminWorkflowAction::BreakGlass,
+            true,
+        ));
+        assert_eq!(break_glass.state, AdminWorkflowDecisionState::Accepted);
+        assert_eq!(break_glass.decision, Verdict::Allow);
+        assert!(break_glass.requires_second_approval);
+
+        let missing_confirmation = plan_admin_workflow_action(sample_admin_workflow_request(
+            AdminWorkflowAction::BreakGlass,
+            false,
+        ));
+        assert_eq!(
+            missing_confirmation.state,
+            AdminWorkflowDecisionState::Rejected
+        );
+        assert_eq!(missing_confirmation.decision, Verdict::Deny);
+        assert!(missing_confirmation
+            .reason_codes
+            .contains(&"admin_workflow_break_glass_confirmation_required".to_string()));
+    }
+
+    #[test]
     fn challenge_authority_accepts_first_consume_without_returning_nonce() {
         let decision =
             plan_challenge_authority(sample_challenge_authority_request(Default::default()));
@@ -2343,6 +3165,98 @@ mod tests {
             detonation_attempted: plan.detonation_attempted,
             network_attempted: plan.network_attempted,
             audit_event_id: "audit-evidence-job-1".to_string(),
+        }
+    }
+
+    fn sample_dynamic_behavior_request(
+        profile: &whoathere_evidence::EvidenceProfile,
+    ) -> DynamicBehaviorJobRequest {
+        DynamicBehaviorJobRequest {
+            job_id: "dynamic-behavior-job-1".to_string(),
+            tenant_id: "tenant-1".to_string(),
+            admission_request_id: "admission-1".to_string(),
+            artifact: ArtifactRef {
+                ecosystem: "npm".to_string(),
+                name: "fixture".to_string(),
+                version: "1.0.0".to_string(),
+                digest: ABC_DIGEST.to_string(),
+                source: "registry".to_string(),
+            },
+            profile_id: profile.id.to_string(),
+            profile_version: profile.version,
+            job_kind: EvidenceJobKind::LifecycleDetonation,
+            cache_object_key: ABC_OBJECT_KEY.to_string(),
+            runner_id: "fixture-runner-macos-linux".to_string(),
+            runner_session_id: "runner-session-1".to_string(),
+            isolation_proof_id: "isolation-proof-1".to_string(),
+            egress_proof_id: "egress-proof-1".to_string(),
+            configured_vault_host: "127.0.0.1:4873".to_string(),
+            fixture_mode: true,
+            issued_at_unix_seconds: 1_800_000_000,
+            timeout_seconds: 60,
+        }
+    }
+
+    fn sample_dynamic_behavior_result(
+        plan: &DynamicBehaviorJobPlan,
+    ) -> DynamicBehaviorJobResultRecord {
+        DynamicBehaviorJobResultRecord {
+            job_id: plan.job_id.clone(),
+            tenant_id: plan.tenant_id.clone(),
+            admission_request_id: plan.admission_request_id.clone(),
+            artifact: plan.artifact.clone(),
+            profile_id: plan.profile_id.clone(),
+            profile_version: plan.profile_version,
+            job_kind: plan.job_kind,
+            cache_object_key: plan.cache_object_key.clone().unwrap(),
+            runner_id: plan.runner_id.clone(),
+            runner_session_id: plan.runner_session_id.clone(),
+            isolation_proof_id: plan.isolation_proof_id.clone(),
+            egress_proof_id: plan.egress_proof_id.clone(),
+            configured_vault_host: plan.configured_vault_host.clone(),
+            observed_at_unix_seconds: plan.issued_at_unix_seconds + 1,
+            job_state: JobState::Passed,
+            behavior_schema: "whoathere.dynamic_behavior.v1".to_string(),
+            behavior_log_digest:
+                "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+                    .to_string(),
+            signal_summary: DynamicBehaviorSignalSummary::clean(),
+            execution_enabled: plan.execution_enabled,
+            arbitrary_execution_attempted: false,
+            fixture_mode: plan.fixture_mode,
+            network_attempted: false,
+            isolation_verified: true,
+            egress_vault_only_verified: true,
+            raw_log_captured: false,
+            raw_env_captured: false,
+            raw_network_payload_captured: false,
+            raw_package_bytes_captured: false,
+            local_paths_captured: false,
+            audit_event_id: "audit-dynamic-behavior-1".to_string(),
+            reason_codes: Vec::new(),
+        }
+    }
+
+    fn sample_admin_workflow_request(
+        action: AdminWorkflowAction,
+        break_glass: bool,
+    ) -> AdminWorkflowRequest {
+        AdminWorkflowRequest {
+            request_id: "admin-request-1".to_string(),
+            tenant_id: "tenant-1".to_string(),
+            artifact: ArtifactRef {
+                ecosystem: "npm".to_string(),
+                name: "fixture".to_string(),
+                version: "1.0.0".to_string(),
+                digest: ABC_DIGEST.to_string(),
+                source: "registry".to_string(),
+            },
+            action,
+            operator_id: "operator-1".to_string(),
+            reason_code: "manual_review_clean_fixture".to_string(),
+            ticket_id: "SEC-123".to_string(),
+            break_glass,
+            policy_version: "policy-1".to_string(),
         }
     }
 

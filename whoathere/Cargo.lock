@@ -6,6 +6,7 @@ version = 4
 name = "whoathere-admission"
 version = "0.1.0"
 dependencies = [
+ "whoathere-detonation",
  "whoathere-evidence",
  "whoathere-vault-api",
 ]
@@ -50,6 +51,15 @@ version = "0.1.0"
 dependencies = [
  "whoathere-evidence",
  "whoathere-hash",
+]
+
+[[package]]
+name = "whoathere-detonation"
+version = "0.1.0"
+dependencies = [
+ "whoathere-evidence",
+ "whoathere-hash",
+ "whoathere-vault-api",
 ]
 
 [[package]]
@@ -126,6 +136,7 @@ dependencies = [
  "whoathere-audit",
  "whoathere-cache",
  "whoathere-detector",
+ "whoathere-detonation",
  "whoathere-evidence",
  "whoathere-hash",
  "whoathere-job-log",

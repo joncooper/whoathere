@@ -11,6 +11,7 @@ members = [
     "crates/whoathere-admission",
     "crates/whoathere-vault-dev",
     "crates/whoathere-detector",
+    "crates/whoathere-detonation",
     "crates/whoathere-evidence",
     "crates/whoathere-hash",
     "crates/whoathere-job-log",

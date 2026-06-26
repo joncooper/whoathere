@@ -9,7 +9,7 @@ Start with `docs/whoathere/README.md`; it contains the generated goal packs for 
 
 ## WhoaThere Supply Chain Prototype
 
-The current Rust prototype lives in `whoathere/`. It is still local-dev only for endpoint execution: protected install/build/import execution, public registry fetches, OS sandbox enforcement, durable Vault storage, and full production Vault deployment remain gated. Phase 3 adds a bounded Vault data-plane prototype and AWS-first deployment skeleton, not a complete production service.
+The current Rust prototype lives in `whoathere/`. It is still local-dev only for endpoint execution: protected install/build/import execution, public registry fetches, OS sandbox enforcement, durable Vault storage, and full production Vault deployment remain gated. Phase 3 adds a bounded Vault data-plane prototype and AWS-first deployment skeleton, not a complete production service. Phase 4 adds typed, fixture-safe dynamic behavior evidence and admin workflow contracts, not arbitrary malware execution.
 
 Useful local checks:
 

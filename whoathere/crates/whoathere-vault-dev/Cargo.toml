@@ -9,6 +9,7 @@ whoathere-admission = { path = "../whoathere-admission" }
 whoathere-audit = { path = "../whoathere-audit" }
 whoathere-cache = { path = "../whoathere-cache" }
 whoathere-detector = { path = "../whoathere-detector" }
+whoathere-detonation = { path = "../whoathere-detonation" }
 whoathere-evidence = { path = "../whoathere-evidence" }
 whoathere-hash = { path = "../whoathere-hash" }
 whoathere-job-log = { path = "../whoathere-job-log" }

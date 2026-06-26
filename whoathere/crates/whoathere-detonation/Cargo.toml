@@ -1,12 +1,10 @@
 [package]
-name = "whoathere-admission"
+name = "whoathere-detonation"
 edition.workspace = true
 license.workspace = true
 version.workspace = true
 
 [dependencies]
 whoathere-evidence = { path = "../whoathere-evidence" }
+whoathere-hash = { path = "../whoathere-hash" }
 whoathere-vault-api = { path = "../whoathere-vault-api" }
-
-[dev-dependencies]
-whoathere-detonation = { path = "../whoathere-detonation" }

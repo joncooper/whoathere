@@ -8,6 +8,7 @@ use whoathere_admission::{AdmissionController, ServableGeneration};
 use whoathere_audit::{append_jsonl, AuditChallengeAuthoritySummary, AuditRecord};
 use whoathere_cache::InMemoryCacheStore;
 use whoathere_detector::{run_static_manifest_job, StaticManifestJobRequest, StaticManifestKind};
+use whoathere_detonation::{run_fixture_dynamic_behavior_job, DynamicFixture};
 use whoathere_evidence::{
     minimum_profiles, EvidenceBundle, EvidenceJobBinding, EvidenceJobResult, EvidenceProfile,
     JobState,
@@ -19,11 +20,13 @@ use whoathere_registry::{
 };
 use whoathere_vault_api::{
     bind_evidence_job_result, bind_fetch_job_result, cache_object_key_for_digest,
-    plan_challenge_authority, plan_evidence_job, plan_fetch_job, AdmissionRequest, ArtifactRef,
-    ChallengeAuthorityDecision, ChallengeAuthorityFileStore, ChallengeAuthorityRequest,
-    ChallengeAuthorityScenario, ChallengeConsumeDecision, ChallengeConsumeRequest,
-    ChallengeIssueDecision, ChallengeIssueRequest, EvidenceJobRequest, EvidenceJobResultRecord,
-    EvidenceJobResultState, FetchJobRequest, FetchJobResult, InMemoryChallengeAuthority,
+    plan_challenge_authority, plan_dynamic_behavior_job, plan_evidence_job, plan_fetch_job,
+    AdmissionRequest, ArtifactRef, ChallengeAuthorityDecision, ChallengeAuthorityFileStore,
+    ChallengeAuthorityRequest, ChallengeAuthorityScenario, ChallengeConsumeDecision,
+    ChallengeConsumeRequest, ChallengeIssueDecision, ChallengeIssueRequest,
+    DynamicBehaviorJobRequest, DynamicBehaviorResultState, EvidenceJobRequest,
+    EvidenceJobResultRecord, EvidenceJobResultState, FetchJobRequest, FetchJobResult,
+    InMemoryChallengeAuthority,
 };
 
 static JOB_LOG_STORE: OnceLock<Mutex<InMemoryJobLogStore>> = OnceLock::new();
@@ -434,6 +437,9 @@ pub fn handle_http_request_with_options(request: &str, options: &VaultHttpOption
         ("POST", "/v1/cache-simulations") => render_cache_simulation(request),
         ("POST", "/v1/fetch-job-simulations") => render_fetch_job_simulation(request),
         ("POST", "/v1/evidence-job-simulations") => render_evidence_job_simulation(request),
+        ("POST", "/v1/dynamic-behavior-job-simulations") => {
+            render_dynamic_behavior_job_simulation(request)
+        }
         ("POST", "/v1/challenge-authority-simulations") => {
             render_challenge_authority_simulation(request)
         }
@@ -2289,6 +2295,173 @@ fn render_evidence_job_simulation(request: &str) -> HttpResponse {
     )
 }
 
+fn render_dynamic_behavior_job_simulation(request: &str) -> HttpResponse {
+    let Some(fixture_selector) = form_value(request, "fixture") else {
+        return json_response(
+            409,
+            "{\"status\":\"fail_closed\",\"mode\":\"local_dev\",\"reason_codes\":[\"dynamic_fixture_selector_missing\"]}",
+        );
+    };
+    let Some(fixture) = DynamicFixture::parse(fixture_selector) else {
+        return json_response(
+            409,
+            "{\"status\":\"fail_closed\",\"mode\":\"local_dev\",\"reason_codes\":[\"dynamic_fixture_selector_invalid\"]}",
+        );
+    };
+    let (profile_id, ecosystem, job_kind) = dynamic_fixture_profile(fixture);
+    let profile = minimum_profiles()
+        .into_iter()
+        .find(|profile| profile.id == profile_id)
+        .expect("minimum evidence profile exists");
+    let artifact_digest = "sha256:b7c9f9f9e2f45cf57b4b52a720fd62bfde8c8f7d69dd9f99202a00cb0872599f";
+    let artifact = ArtifactRef {
+        ecosystem: ecosystem.to_string(),
+        name: "fixture".to_string(),
+        version: "1.0.0".to_string(),
+        digest: artifact_digest.to_string(),
+        source: "local-dev-dynamic-behavior-fixture".to_string(),
+    };
+    let cache_object_key = artifact.cache_object_key().unwrap_or_default();
+    let issued_at_unix_seconds = 1_800_000_000;
+    let plan = plan_dynamic_behavior_job(
+        DynamicBehaviorJobRequest {
+            job_id: format!("dynamic-behavior-dev-job-{fixture_selector}"),
+            tenant_id: "tenant-local-dev".to_string(),
+            admission_request_id: "dev-sim-1".to_string(),
+            artifact: artifact.clone(),
+            profile_id: profile.id.to_string(),
+            profile_version: profile.version,
+            job_kind,
+            cache_object_key: cache_object_key.clone(),
+            runner_id: "fixture-runner-macos-linux".to_string(),
+            runner_session_id: "runner-session-local-dev-1".to_string(),
+            isolation_proof_id: "isolation-proof-local-dev-1".to_string(),
+            egress_proof_id: "egress-proof-local-dev-1".to_string(),
+            configured_vault_host: "127.0.0.1:4873".to_string(),
+            fixture_mode: form_value(request, "fixture_mode") != Some("false"),
+            issued_at_unix_seconds,
+            timeout_seconds: 60,
+        },
+        &profile,
+    );
+    let output = run_fixture_dynamic_behavior_job(&plan, fixture);
+    let mut result = output.result;
+    if form_value(request, "wrong_tenant") == Some("true") {
+        result.tenant_id = "tenant-other".to_string();
+    }
+    if form_value(request, "wrong_context") == Some("runner_session") {
+        result.runner_session_id = "runner-session-other".to_string();
+    }
+    if form_value(request, "wrong_context") == Some("vault") {
+        result.configured_vault_host = "vault.other:4873".to_string();
+    }
+    if form_value(request, "wrong_context") == Some("isolation") {
+        result.isolation_proof_id = "isolation-proof-other".to_string();
+    }
+    if form_value(request, "wrong_context") == Some("egress") {
+        result.egress_proof_id = "egress-proof-other".to_string();
+    }
+    if form_value(request, "stale") == Some("true") {
+        result.observed_at_unix_seconds = issued_at_unix_seconds + 120;
+    }
+    if form_value(request, "overpermissive_runner") == Some("true") {
+        result.isolation_verified = false;
+        result.egress_vault_only_verified = false;
+    }
+    if form_value(request, "raw_material") == Some("true") {
+        result.raw_log_captured = true;
+        result.raw_env_captured = true;
+        result.raw_network_payload_captured = true;
+        result.raw_package_bytes_captured = true;
+        result.local_paths_captured = true;
+    }
+    let binding = whoathere_vault_api::bind_dynamic_behavior_result(&plan, result);
+    let mut reason_codes = plan.reason_codes.clone();
+    reason_codes.extend(binding.reason_codes.clone());
+    reason_codes.sort();
+    reason_codes.dedup();
+    let ok = binding.state == DynamicBehaviorResultState::Bound;
+    let isolation_verified = !binding
+        .reason_codes
+        .iter()
+        .any(|reason| reason == "dynamic_behavior_isolation_not_verified");
+    let egress_vault_only_verified = !binding
+        .reason_codes
+        .iter()
+        .any(|reason| reason == "dynamic_behavior_egress_not_verified");
+    let raw_material_captured = binding
+        .reason_codes
+        .iter()
+        .any(|reason| reason == "dynamic_behavior_raw_or_local_material_captured");
+    json_response(
+        if ok { 200 } else { 409 },
+        &format!(
+            "{{\"status\":\"{}\",\"mode\":\"local_dev\",\"fixture\":\"{}\",\"job_id\":\"{}\",\"profile_id\":\"{}\",\"job_kind\":\"{:?}\",\"job_state\":\"{:?}\",\"dynamic_behavior_binding_ready\":{},\"execution_enabled\":false,\"arbitrary_execution_attempted\":false,\"fixture_mode\":{},\"network_attempted\":false,\"isolation_verified\":{},\"egress_vault_only_verified\":{},\"raw_material_captured\":{},\"behavior_log_digest\":\"{}\",\"audit_event_id\":\"{}\",\"signal_summary\":{{\"trigger_kind\":\"{}\",\"process_intent_count\":{},\"filesystem_write_count\":{},\"network_attempt_count\":{},\"dns_attempt_count\":{},\"env_access_count\":{},\"credential_access_count\":{},\"delayed_execution_detected\":{},\"native_extension_detected\":{},\"platform_specific_detected\":{},\"direct_source_detected\":{}}},\"reason_codes\":{}}}",
+            if ok { "ok" } else { "fail_closed" },
+            fixture.selector(),
+            escape_json(&binding.job_id),
+            escape_json(&binding.profile_id),
+            binding.job_kind,
+            binding.job_state,
+            binding.admission_ready,
+            plan.fixture_mode,
+            isolation_verified,
+            egress_vault_only_verified,
+            raw_material_captured,
+            escape_json(&binding.behavior_log_digest),
+            escape_json(&binding.audit_event_id),
+            escape_json(&binding.signal_summary.trigger_kind),
+            binding.signal_summary.process_intent_count,
+            binding.signal_summary.filesystem_write_count,
+            binding.signal_summary.network_attempt_count,
+            binding.signal_summary.dns_attempt_count,
+            binding.signal_summary.env_access_count,
+            binding.signal_summary.credential_access_count,
+            binding.signal_summary.delayed_execution_detected,
+            binding.signal_summary.native_extension_detected,
+            binding.signal_summary.platform_specific_detected,
+            binding.signal_summary.direct_source_detected,
+            json_string_list(&reason_codes)
+        ),
+    )
+}
+
+fn dynamic_fixture_profile(
+    fixture: DynamicFixture,
+) -> (
+    &'static str,
+    &'static str,
+    whoathere_evidence::EvidenceJobKind,
+) {
+    match fixture {
+        DynamicFixture::PypiPep517Canary => (
+            "pypi.sdist_pep517.v1",
+            "pypi",
+            whoathere_evidence::EvidenceJobKind::LifecycleDetonation,
+        ),
+        DynamicFixture::PypiImportTimeCanary => (
+            "pypi.wheel.v1",
+            "pypi",
+            whoathere_evidence::EvidenceJobKind::ImportSmoke,
+        ),
+        DynamicFixture::NativeExtensionCanary => (
+            "npm.native_extension.v1",
+            "npm",
+            whoathere_evidence::EvidenceJobKind::NativeBuild,
+        ),
+        DynamicFixture::DirectGitTarballCanary => (
+            "npm.registry_tarball.v1",
+            "npm",
+            whoathere_evidence::EvidenceJobKind::LifecycleDetonation,
+        ),
+        _ => (
+            "npm.registry_tarball.v1",
+            "npm",
+            whoathere_evidence::EvidenceJobKind::LifecycleDetonation,
+        ),
+    }
+}
+
 fn render_static_manifest_job_simulation(request: &str) -> HttpResponse {
     let Some(manifest_selector) = form_value(request, "manifest") else {
         return json_response(
@@ -3773,6 +3946,174 @@ mod tests {
         );
         assert_eq!(mismatch.status_code, 409);
         assert!(mismatch.body.contains("evidence_job_result_job_mismatch"));
+    }
+
+    #[test]
+    fn dynamic_behavior_fixture_clean_path_binds_without_arbitrary_execution() {
+        let response = handle_http_request(
+            "POST /v1/dynamic-behavior-job-simulations HTTP/1.1\r\nContent-Length: 27\r\n\r\nfixture=clean_npm_lifecycle",
+        );
+        assert_eq!(response.status_code, 200);
+        assert!(response.body.contains("\"status\":\"ok\""));
+        assert!(response
+            .body
+            .contains("\"dynamic_behavior_binding_ready\":true"));
+        assert!(response.body.contains("\"execution_enabled\":false"));
+        assert!(response
+            .body
+            .contains("\"arbitrary_execution_attempted\":false"));
+        assert!(response.body.contains("\"fixture_mode\":true"));
+        assert!(response.body.contains("\"network_attempted\":false"));
+        assert!(response.body.contains("\"raw_material_captured\":false"));
+        assert!(response.body.contains("\"process_intent_count\":1"));
+        assert!(response
+            .body
+            .contains("dynamic_behavior_arbitrary_execution_disabled"));
+        assert!(!response.body.contains("WHOATHERE_CANARY_TOKEN"));
+        assert!(!response.body.contains("https://"));
+        assert!(!response.body.contains("/Users/"));
+    }
+
+    #[test]
+    fn dynamic_behavior_canary_fixtures_fail_closed_with_sanitized_signals() {
+        for (fixture, reason) in [
+            (
+                "npm_postinstall_canary_exfil",
+                "dynamic_behavior_canary_credential_access_observed",
+            ),
+            (
+                "pypi_pep517_canary",
+                "dynamic_behavior_canary_credential_access_observed",
+            ),
+            (
+                "pypi_import_time_canary",
+                "dynamic_behavior_environment_access_observed",
+            ),
+            (
+                "dns_tunneling_canary",
+                "dynamic_behavior_dns_tunnel_attempt_observed",
+            ),
+            (
+                "https_exfil_canary",
+                "dynamic_behavior_https_exfil_attempt_observed",
+            ),
+            (
+                "delayed_ci_canary",
+                "dynamic_behavior_delayed_execution_observed",
+            ),
+            (
+                "native_extension_canary",
+                "dynamic_behavior_native_extension_observed",
+            ),
+            (
+                "platform_specific_canary",
+                "dynamic_behavior_platform_specific_observed",
+            ),
+            (
+                "direct_git_tarball_canary",
+                "dynamic_behavior_direct_source_observed",
+            ),
+        ] {
+            let body = format!("fixture={fixture}");
+            let response = handle_http_request(&format!(
+                "POST /v1/dynamic-behavior-job-simulations HTTP/1.1\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            ));
+            assert_eq!(response.status_code, 409, "{fixture}");
+            assert!(
+                response.body.contains("\"status\":\"fail_closed\""),
+                "{fixture}"
+            );
+            assert!(response.body.contains(reason), "{fixture}");
+            assert!(
+                response
+                    .body
+                    .contains("dynamic_behavior_high_risk_signal_detected"),
+                "{fixture}"
+            );
+            assert!(
+                response
+                    .body
+                    .contains("\"dynamic_behavior_binding_ready\":false"),
+                "{fixture}"
+            );
+            assert!(
+                !response.body.contains("WHOATHERE_CANARY_TOKEN"),
+                "{fixture}"
+            );
+            assert!(!response.body.contains("proof-nonce-"), "{fixture}");
+            assert!(!response.body.contains("/Users/"), "{fixture}");
+        }
+    }
+
+    #[test]
+    fn dynamic_behavior_route_rejects_context_stale_overpermissive_and_raw_material() {
+        for (body, reason) in [
+            (
+                "fixture=clean_npm_lifecycle&wrong_tenant=true",
+                "dynamic_behavior_result_tenant_mismatch",
+            ),
+            (
+                "fixture=clean_npm_lifecycle&wrong_context=runner_session",
+                "dynamic_behavior_result_runner_session_mismatch",
+            ),
+            (
+                "fixture=clean_npm_lifecycle&wrong_context=vault",
+                "dynamic_behavior_result_vault_host_mismatch",
+            ),
+            (
+                "fixture=clean_npm_lifecycle&wrong_context=isolation",
+                "dynamic_behavior_result_isolation_proof_mismatch",
+            ),
+            (
+                "fixture=clean_npm_lifecycle&wrong_context=egress",
+                "dynamic_behavior_result_egress_proof_mismatch",
+            ),
+            (
+                "fixture=clean_npm_lifecycle&stale=true",
+                "dynamic_behavior_result_stale_or_not_yet_valid",
+            ),
+            (
+                "fixture=clean_npm_lifecycle&overpermissive_runner=true",
+                "dynamic_behavior_isolation_not_verified",
+            ),
+            (
+                "fixture=clean_npm_lifecycle&raw_material=true",
+                "dynamic_behavior_raw_or_local_material_captured",
+            ),
+            (
+                "fixture=clean_npm_lifecycle&fixture_mode=false",
+                "dynamic_behavior_fixture_mode_required",
+            ),
+        ] {
+            let response = handle_http_request(&format!(
+                "POST /v1/dynamic-behavior-job-simulations HTTP/1.1\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            ));
+            assert_eq!(response.status_code, 409, "{body}");
+            assert!(response.body.contains(reason), "{body}");
+            assert!(
+                response.body.contains("\"status\":\"fail_closed\""),
+                "{body}"
+            );
+            assert!(!response.body.contains("WHOATHERE_CANARY_TOKEN"), "{body}");
+        }
+    }
+
+    #[test]
+    fn dynamic_behavior_route_rejects_missing_or_unknown_fixture_selector() {
+        let missing =
+            handle_http_request("POST /v1/dynamic-behavior-job-simulations HTTP/1.1\r\n\r\n");
+        assert_eq!(missing.status_code, 409);
+        assert!(missing.body.contains("dynamic_fixture_selector_missing"));
+
+        let unknown = handle_http_request(
+            "POST /v1/dynamic-behavior-job-simulations HTTP/1.1\r\nContent-Length: 15\r\n\r\nfixture=unknown",
+        );
+        assert_eq!(unknown.status_code, 409);
+        assert!(unknown.body.contains("dynamic_fixture_selector_invalid"));
     }
 
     #[test]

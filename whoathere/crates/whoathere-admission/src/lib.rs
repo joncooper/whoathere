@@ -323,11 +323,14 @@ fn generation_key(tenant_id: &str, artifact: &ArtifactRef) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use whoathere_detonation::{run_fixture_dynamic_behavior_job, DynamicFixture};
     use whoathere_evidence::{
         minimum_profiles, EvidenceJobBinding, EvidenceJobKind, EvidenceJobResult, JobState,
     };
     use whoathere_vault_api::{
-        bind_fetch_job_result, plan_fetch_job, FetchJobRequest, FetchJobResult,
+        bind_dynamic_behavior_result, bind_fetch_job_result, plan_dynamic_behavior_job,
+        plan_fetch_job, DynamicBehaviorJobRequest, DynamicBehaviorResultState, FetchJobRequest,
+        FetchJobResult,
     };
 
     const ABC_DIGEST: &str =
@@ -394,6 +397,77 @@ mod tests {
             manifest.to_canonical_json(),
             "{\"schema_version\":1,\"generation_id\":1,\"tenant_id\":\"tenant-1\",\"request_id\":\"req-2\",\"artifact\":{\"ecosystem\":\"npm\",\"name\":\"fixture\",\"version\":\"1.0.0\",\"digest\":\"sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\",\"source\":\"registry\"},\"cache_object_key\":\"blobs/sha256/ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\",\"fetch_job_id\":\"fetch-req-2\",\"fetch_quarantine_id\":\"quarantine-fetch-req-2\",\"fetch_byte_len\":3,\"fetch_byte_limit\":1024,\"fetch_audit_event_id\":\"audit-fetch-req-2\",\"evidence_profile_id\":\"pypi.wheel.v1\",\"policy_version\":\"policy-1\",\"audit_event_id\":\"audit-req-2\"}"
         );
+    }
+
+    #[test]
+    fn bound_dynamic_behavior_evidence_can_promote_but_failed_fixture_cannot() {
+        let profile = minimum_profiles()
+            .into_iter()
+            .find(|profile| profile.id == "npm.registry_tarball.v1")
+            .unwrap();
+
+        let mut controller = AdmissionController::new();
+        let request = sample_request("req-dynamic-bound");
+        let artifact = request.artifact.clone();
+        controller.request(request.clone()).unwrap();
+        controller
+            .attach_fetch_result("req-dynamic-bound", verified_fetch_binding(&request))
+            .unwrap();
+
+        let clean_binding = dynamic_behavior_binding(
+            &profile,
+            &request,
+            "dynamic-clean-lifecycle",
+            EvidenceJobKind::LifecycleDetonation,
+            DynamicFixture::CleanNpmLifecycle,
+        );
+        assert_eq!(clean_binding.state, DynamicBehaviorResultState::Bound);
+
+        let evidence = evidence_with_dynamic_lifecycle(&profile, &request, &clean_binding);
+        let verdict = controller
+            .decide("req-dynamic-bound", &profile, evidence)
+            .unwrap();
+        assert_eq!(verdict, Verdict::Allow);
+        assert!(controller.servable("tenant-1", &artifact).is_some());
+
+        let mut rejected_controller = AdmissionController::new();
+        let malicious_request = sample_request("req-dynamic-malicious");
+        let malicious_artifact = malicious_request.artifact.clone();
+        rejected_controller
+            .request(malicious_request.clone())
+            .unwrap();
+        rejected_controller
+            .attach_fetch_result(
+                "req-dynamic-malicious",
+                verified_fetch_binding(&malicious_request),
+            )
+            .unwrap();
+
+        let malicious_binding = dynamic_behavior_binding(
+            &profile,
+            &malicious_request,
+            "dynamic-malicious-lifecycle",
+            EvidenceJobKind::LifecycleDetonation,
+            DynamicFixture::NpmPostinstallCanaryExfil,
+        );
+        assert_eq!(
+            malicious_binding.state,
+            DynamicBehaviorResultState::Rejected
+        );
+        assert!(!malicious_binding.admission_ready);
+
+        let evidence =
+            evidence_with_dynamic_lifecycle(&profile, &malicious_request, &malicious_binding);
+        let error = rejected_controller
+            .decide("req-dynamic-malicious", &profile, evidence)
+            .unwrap_err();
+        assert_eq!(
+            error.reason_code,
+            "evidence_job_binding_not_admission_ready"
+        );
+        assert!(rejected_controller
+            .servable("tenant-1", &malicious_artifact)
+            .is_none());
     }
 
     #[test]
@@ -794,5 +868,73 @@ mod tests {
                 audit_event_id: format!("audit-{}", plan.job_id),
             },
         )
+    }
+
+    fn dynamic_behavior_binding(
+        profile: &EvidenceProfile,
+        request: &AdmissionRequest,
+        job_id: &str,
+        job_kind: EvidenceJobKind,
+        fixture: DynamicFixture,
+    ) -> whoathere_vault_api::DynamicBehaviorResultBinding {
+        let plan = plan_dynamic_behavior_job(
+            DynamicBehaviorJobRequest {
+                job_id: job_id.to_string(),
+                tenant_id: request.tenant_id.clone(),
+                admission_request_id: request.request_id.clone(),
+                artifact: request.artifact.clone(),
+                profile_id: profile.id.to_string(),
+                profile_version: profile.version,
+                job_kind,
+                cache_object_key: request.artifact.cache_object_key().unwrap(),
+                runner_id: "fixture-runner-macos-linux".to_string(),
+                runner_session_id: format!("runner-session-{job_id}"),
+                isolation_proof_id: format!("isolation-proof-{job_id}"),
+                egress_proof_id: format!("egress-proof-{job_id}"),
+                configured_vault_host: "127.0.0.1:4873".to_string(),
+                fixture_mode: true,
+                issued_at_unix_seconds: 1_800_000_000,
+                timeout_seconds: 60,
+            },
+            profile,
+        );
+        let output = run_fixture_dynamic_behavior_job(&plan, fixture);
+        bind_dynamic_behavior_result(&plan, output.result)
+    }
+
+    fn evidence_with_dynamic_lifecycle(
+        profile: &EvidenceProfile,
+        request: &AdmissionRequest,
+        dynamic_binding: &whoathere_vault_api::DynamicBehaviorResultBinding,
+    ) -> EvidenceBundle {
+        let mut results = Vec::new();
+        let mut job_bindings = Vec::new();
+        for requirement in &profile.requirements {
+            if requirement.job_kind == EvidenceJobKind::LifecycleDetonation {
+                results.push(dynamic_binding.evidence_job_result());
+                job_bindings.push(dynamic_binding.evidence_binding());
+            } else {
+                let result = job_result(
+                    &format!("job-{}-{:?}", request.request_id, requirement.job_kind),
+                    requirement.job_kind,
+                    JobState::Passed,
+                );
+                job_bindings.push(job_binding(
+                    profile,
+                    request,
+                    &result,
+                    &request.artifact.cache_object_key().unwrap(),
+                ));
+                results.push(result);
+            }
+        }
+        EvidenceBundle {
+            profile_id: profile.id.to_string(),
+            profile_version: profile.version,
+            artifact_digest: request.artifact.digest.clone(),
+            cache_object_key: request.artifact.cache_object_key().unwrap(),
+            results,
+            job_bindings,
+        }
     }
 }
