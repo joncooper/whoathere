@@ -1,0 +1,917 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WhoaThere Threat Model Review</title>
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --ink: #17202a;
+      --muted: #526070;
+      --line: #d9e0e7;
+      --strong: #0f5d5e;
+      --strong-soft: #e4f4f2;
+      --warn: #9a5b00;
+      --warn-soft: #fff3d8;
+      --bad: #9c2f2f;
+      --bad-soft: #fde8e8;
+      --good: #2f6b3c;
+      --good-soft: #e8f5eb;
+      --code: #eef2f5;
+      --shadow: 0 10px 30px rgba(17, 24, 39, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--bg);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.55;
+    }
+
+    a {
+      color: #0b5cad;
+      text-decoration: none;
+    }
+
+    a:hover {
+      text-decoration: underline;
+    }
+
+    code {
+      padding: 0.12rem 0.3rem;
+      border-radius: 5px;
+      background: var(--code);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.92em;
+    }
+
+    .page {
+      display: grid;
+      grid-template-columns: 300px minmax(0, 1fr);
+      min-height: 100vh;
+    }
+
+    .sidebar {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      padding: 28px 22px;
+      border-right: 1px solid var(--line);
+      background: #111827;
+      color: #f9fafb;
+      overflow: auto;
+    }
+
+    .sidebar h1 {
+      margin: 0 0 10px;
+      font-size: 1.55rem;
+      line-height: 1.15;
+    }
+
+    .sidebar p {
+      margin: 0 0 22px;
+      color: #cbd5e1;
+      font-size: 0.94rem;
+    }
+
+    .eyebrow {
+      color: #8bd3cf;
+      font-size: 0.78rem;
+      font-weight: 800;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    .toc {
+      display: grid;
+      gap: 8px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .toc a {
+      display: block;
+      padding: 9px 11px;
+      border-radius: 7px;
+      color: #e5e7eb;
+      font-size: 0.94rem;
+    }
+
+    .toc a:hover {
+      background: rgba(255, 255, 255, 0.09);
+      text-decoration: none;
+    }
+
+    .main {
+      width: min(1180px, 100%);
+      padding: 30px;
+    }
+
+    .hero,
+    section {
+      margin-bottom: 20px;
+      padding: 28px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+
+    .hero h2 {
+      max-width: 980px;
+      margin: 0 0 14px;
+      font-size: clamp(2rem, 4vw, 3.4rem);
+      line-height: 1.02;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      margin: 0 0 12px;
+      font-size: 1.6rem;
+      line-height: 1.2;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 0 0 8px;
+      font-size: 1.03rem;
+      letter-spacing: 0;
+    }
+
+    p {
+      margin: 0 0 12px;
+    }
+
+    .lede {
+      max-width: 960px;
+      color: var(--muted);
+      font-size: 1.05rem;
+    }
+
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 18px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      padding: 5px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: #f8fafc;
+      color: var(--muted);
+      font-size: 0.82rem;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .pill.good {
+      border-color: #afd8b8;
+      background: var(--good-soft);
+      color: var(--good);
+    }
+
+    .pill.warn {
+      border-color: #ecc66e;
+      background: var(--warn-soft);
+      color: var(--warn);
+    }
+
+    .pill.bad {
+      border-color: #edb0b0;
+      background: var(--bad-soft);
+      color: var(--bad);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .card {
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcfd;
+    }
+
+    .callout {
+      margin: 16px 0;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #f8fafc;
+    }
+
+    .callout.good {
+      border-color: #afd8b8;
+      background: var(--good-soft);
+    }
+
+    .callout.warn {
+      border-color: #ecc66e;
+      background: var(--warn-soft);
+    }
+
+    .callout.bad {
+      border-color: #edb0b0;
+      background: var(--bad-soft);
+    }
+
+    .table-wrap {
+      margin-top: 14px;
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 900px;
+      background: #fff;
+    }
+
+    th,
+    td {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+      font-size: 0.93rem;
+    }
+
+    th {
+      background: #f1f5f9;
+      color: #334155;
+      font-size: 0.78rem;
+      font-weight: 800;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    ul,
+    ol {
+      margin-top: 8px;
+      margin-bottom: 0;
+      padding-left: 1.25rem;
+    }
+
+    li {
+      margin: 0 0 8px;
+    }
+
+    .two-col {
+      columns: 2;
+      column-gap: 28px;
+    }
+
+    .source-list {
+      columns: 2;
+      column-gap: 28px;
+    }
+
+    .score {
+      display: inline-flex;
+      align-items: center;
+      min-width: 86px;
+      justify-content: center;
+      padding: 4px 8px;
+      border-radius: 999px;
+      font-size: 0.78rem;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+    .score.yes {
+      background: var(--good-soft);
+      color: var(--good);
+    }
+
+    .score.partial {
+      background: var(--warn-soft);
+      color: var(--warn);
+    }
+
+    .score.no {
+      background: var(--bad-soft);
+      color: var(--bad);
+    }
+
+    .footer {
+      margin-top: 20px;
+      padding-top: 16px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    @media (max-width: 920px) {
+      .page {
+        display: block;
+      }
+
+      .sidebar {
+        position: static;
+        height: auto;
+      }
+
+      .main {
+        padding: 16px;
+      }
+
+      .grid {
+        grid-template-columns: 1fr;
+      }
+
+      .two-col,
+      .source-list {
+        columns: 1;
+      }
+    }
+
+    @media print {
+      .page {
+        display: block;
+      }
+
+      .sidebar {
+        display: none;
+      }
+
+      .main {
+        width: 100%;
+        padding: 0;
+      }
+
+      .hero,
+      section {
+        box-shadow: none;
+        break-inside: avoid;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <aside class="sidebar" aria-label="Report navigation">
+      <div class="brand">
+        <div class="eyebrow">WhoaThere</div>
+        <h1>Threat Model Review</h1>
+        <p>Recent npm and PyPI compromises reviewed against the current plan, framing, and build.</p>
+      </div>
+      <ul class="toc">
+        <li><a href="#summary">Summary</a></li>
+        <li><a href="#bottom-line">Bottom Line</a></li>
+        <li><a href="#incident-patterns">Incident Patterns</a></li>
+        <li><a href="#catchability">Would WhoaThere Catch It?</a></li>
+        <li><a href="#plan-review">Plan Review</a></li>
+        <li><a href="#build-review">Build Review</a></li>
+        <li><a href="#attacker-next">Where Attackers Go Next</a></li>
+        <li><a href="#recommendations">Recommendations</a></li>
+        <li><a href="#mvp-standard">MVP Standard Update</a></li>
+        <li><a href="#open-questions">Open Questions</a></li>
+        <li><a href="#sources">Sources</a></li>
+      </ul>
+    </aside>
+
+    <main class="main">
+      <header class="hero" id="summary">
+        <h2>The core WhoaThere direction is right, but the threat model must be framed wider than install scripts.</h2>
+        <p class="lede">
+          Recent npm and PyPI incidents show the same pattern repeating: trusted package identities are compromised,
+          release pipelines are abused, registry artifacts differ from source repos, and malicious behavior moves into
+          postinstall hooks, Python startup hooks, native build paths, binary wheels, CLI entrypoints, import-time code,
+          and normal-looking API calls. WhoaThere should be described as package artifact admission control, not just
+          an install-script sandbox.
+        </p>
+        <div class="meta">
+          <span class="pill good">Fail-closed remains the right default</span>
+          <span class="pill warn">Current catch is mostly prevention-by-denial</span>
+          <span class="pill bad">Allow verdicts are not yet production-proven</span>
+          <span class="pill warn">Binary and API-use behavior must be first-class</span>
+          <span class="pill good">AWS Vault framing still fits the threat</span>
+        </div>
+      </header>
+
+      <section id="bottom-line">
+        <h2>Bottom Line</h2>
+        <div class="grid">
+          <div class="card">
+            <h3>What the current build would stop</h3>
+            <p>
+              If developers and CI actually go through WhoaThere shims, the current MVP blocks high-risk
+              npm and pip installs before package-manager execution. That would have prevented many recent
+              compromises from running during install.
+            </p>
+          </div>
+          <div class="card">
+            <h3>What it would not yet prove</h3>
+            <p>
+              It would not yet prove that a specific package version is safe to admit. The production system still
+              needs real Vault fetch, full transitive archive scanning, native/binary analysis, isolated detonation,
+              provenance checks, release diffing, and digest-bound promotion.
+            </p>
+          </div>
+          <div class="card">
+            <h3>Threat-model correction</h3>
+            <p>
+              Malicious install scripts are one execution surface. The better model is: any package artifact may
+              execute during install, build, import, interpreter startup, CLI invocation, native loading, or ordinary
+              API use.
+            </p>
+          </div>
+          <div class="card">
+            <h3>Most important product constraint</h3>
+            <p>
+              Do not convert evidence into broad trust. Verdicts must bind to exact ecosystem, name, version, digest,
+              source metadata, dependency closure, platform, policy, and detonation profile.
+            </p>
+          </div>
+        </div>
+
+        <div class="callout warn">
+          <strong>Assessment:</strong> the plan is not overbuilt for the current threat. The main risk is the opposite:
+          shipping with a narrow "bad postinstall" story while attackers have already moved into trusted release
+          compromise, Python <code>.pth</code> startup hooks, native build files, binary wheels, and API-compatible
+          backdoors.
+        </div>
+      </section>
+
+      <section id="incident-patterns">
+        <h2>Incident Patterns</h2>
+        <p class="lede">
+          The recent campaigns are not isolated one-off tricks. They expose several durable root causes that should
+          drive the WhoaThere architecture.
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Pattern</th>
+                <th>What Happened Recently</th>
+                <th>Architectural Implication</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Trusted maintainer or publisher compromise</td>
+                <td>Axios, LiteLLM, Telnyx, Intercom, Mastra, and other incidents involved real package names or trusted publishers, not just obvious typosquats.</td>
+                <td>Name reputation is weak evidence. The Vault must verify the exact release artifact and apply cooldown, publisher-change, and release-pattern checks.</td>
+              </tr>
+              <tr>
+                <td>Registry artifact differs from source</td>
+                <td>Several attacks placed malicious code only in npm or PyPI artifacts while GitHub looked clean or lagged behind.</td>
+                <td>WhoaThere must inspect downloaded registry artifacts directly and compare them to source tags, commits, and expected release workflows.</td>
+              </tr>
+              <tr>
+                <td>Valid provenance can be malicious</td>
+                <td>Miasma-style cases abused real CI/OIDC paths, producing releases that looked properly published.</td>
+                <td>SLSA/OIDC/Sigstore should be evidence, not an allow decision. Behavior and release anomaly evidence must still pass.</td>
+              </tr>
+              <tr>
+                <td>Execution hides outside lifecycle scripts</td>
+                <td>Python <code>.pth</code> files, import-time payloads, npm <code>bin</code> entrypoints, <code>binding.gyp</code>, native extensions, and binary wheels all appeared or are natural attacker moves.</td>
+                <td>The detonation matrix must cover install, build, startup, import, CLI entrypoint, native load, and representative API-call paths.</td>
+              </tr>
+              <tr>
+                <td>Second-stage payloads and blob hiding</td>
+                <td>Incidents used Bun downloaders, disguised media files, generated payloads, encrypted JavaScript, and platform-specific binaries.</td>
+                <td>Archive scanning must classify executable blobs, suspicious media, WASM, <code>.node</code>, <code>.so</code>, <code>.dylib</code>, <code>.pyd</code>, <code>.pyz</code>, and bundled executables.</td>
+              </tr>
+              <tr>
+                <td>CI and cloud secrets are primary targets</td>
+                <td>Payloads repeatedly hunted GitHub, npm, PyPI, cloud, Kubernetes, Vault, SSH, JFrog, and AI-tool credentials.</td>
+                <td>Detonation environments need fake canaries for these secrets, denied network by default, and explicit evidence for file reads, metadata calls, DNS, and HTTPS egress.</td>
+              </tr>
+              <tr>
+                <td>Self-propagating package attacks</td>
+                <td>Several campaigns reused stolen npm or GitHub credentials to publish more malicious versions quickly.</td>
+                <td>Fast cache admission is not enough. Vault needs org-wide quarantine, revocation, retroactive denial, and dependency-closure re-evaluation.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="catchability">
+        <h2>Would WhoaThere Catch It?</h2>
+        <p class="lede">
+          "Catch" has two meanings. The current build would often prevent execution by blocking protected installs.
+          It would not yet produce production-grade allow or deny verdicts from real package detonation. The target
+          production design can catch much more, if the recommended gaps below become explicit requirements.
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Incident</th>
+                <th>Root Cause And Payload</th>
+                <th>Current Build</th>
+                <th>Target Design With Recommended Controls</th>
+                <th>Residual Risk</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><a href="https://www.stepsecurity.io/blog/axios-compromised-on-npm-malicious-versions-drop-remote-access-trojan">Axios npm compromise</a></td>
+                <td>Maintainer account compromise; poisoned npm-only releases; hidden dependency ran <code>postinstall</code> and fetched a cross-platform RAT.</td>
+                <td><span class="score yes">Prevents</span><br>Blocked if install flows through WhoaThere.</td>
+                <td><span class="score yes">Should catch</span><br>Release-diff, lifecycle detonation, egress denial, and credential canaries align well.</td>
+                <td>Payload can move to import/runtime or native paths.</td>
+              </tr>
+              <tr>
+                <td><a href="https://socket.dev/blog/sap-cap-npm-packages-supply-chain-attack">SAP CAP / Cloud MTA npm packages</a></td>
+                <td>Injected <code>preinstall</code>; platform-specific Bun download; broad secret harvesting and propagation.</td>
+                <td><span class="score yes">Prevents</span><br>Install denied before lifecycle execution.</td>
+                <td><span class="score yes">Should catch</span><br>Lifecycle execution, platform matrix, network evidence, and canaries should detect.</td>
+                <td>Cleaner release process or delayed CI-only behavior may need anomaly and CI-profile detonation.</td>
+              </tr>
+              <tr>
+                <td><a href="https://socket.dev/blog/tanstack-npm-packages-compromised-mini-shai-hulud-supply-chain-attack">TanStack / Mini Shai-Hulud</a></td>
+                <td>CI/OIDC trusted-publisher abuse; optional git dependency and prepare hook; cloud, Vault, CI, and AI-tool credential targeting.</td>
+                <td><span class="score yes">Prevents</span><br>Install denial works. Current live registry tarball inspection is not implemented.</td>
+                <td><span class="score partial">Likely</span><br>Requires git dependency detonation, provenance skepticism, and AI-tool canaries.</td>
+                <td>Valid provenance from a compromised workflow can defeat naive trust checks.</td>
+              </tr>
+              <tr>
+                <td><a href="https://socket.dev/blog/mastra-npm-packages-compromised">Mastra / easy-day-js</a></td>
+                <td>Trusted packages took a typosquatted transitive dependency that performed postinstall staging and persistence.</td>
+                <td><span class="score partial">Prevents only</span><br>Blocked at install, but first-party-only static review would miss the transitive payload.</td>
+                <td><span class="score yes">Should catch</span><br>Only if Vault resolves and scans the full transitive tarball closure before promotion.</td>
+                <td>Delayed malicious updates in deep optional dependencies remain hard without cooldown and re-evaluation.</td>
+              </tr>
+              <tr>
+                <td><a href="https://www.endorlabs.com/learn/teampcp-isnt-done">LiteLLM PyPI compromise</a></td>
+                <td>Malicious wheel code absent from GitHub; import-time payload; later <code>.pth</code> file triggered on Python startup.</td>
+                <td><span class="score partial">Prevents only</span><br>Protected pip install is blocked. It does not inspect already-installed wheels or normal runtime imports.</td>
+                <td><span class="score yes">Should catch</span><br>Wheel unpacking, <code>.pth</code> scanning, import/startup detonation, and egress denial should detect.</td>
+                <td>Payload can move to normal API calls or native modules.</td>
+              </tr>
+              <tr>
+                <td><a href="https://research.jfrog.com/post/team-pcp-strikes-again-telnyx-popular-library-hit/">Telnyx PyPI compromise</a></td>
+                <td>Poisoned PyPI versions fetched and decoded staged payloads hidden as benign-looking content.</td>
+                <td><span class="score yes">Prevents</span><br>Pip execution blocked if protected.</td>
+                <td><span class="score partial">Likely</span><br>Needs static blob classification plus install/import detonation with denied egress.</td>
+                <td>Second stage can be hosted on trusted infrastructure or embedded in native wheels.</td>
+              </tr>
+              <tr>
+                <td><a href="https://www.stepsecurity.io/blog/elementary-data-compromised-on-pypi-and-ghcr-forged-release-pushed-via-github-actions-script-injection">Elementary Data PyPI/GHCR</a></td>
+                <td>GitHub Actions script injection forged a release and published PyPI/container artifacts with startup-hook malware.</td>
+                <td><span class="score partial">Prevents only</span><br>Protected pip install blocked, but upstream CI compromise is outside current implementation.</td>
+                <td><span class="score partial">Likely</span><br>Needs release workflow diff, provenance validation, <code>.pth</code> scanning, and container-artifact tracking later.</td>
+                <td>Source and provenance may both appear consistent after a repo/workflow compromise.</td>
+              </tr>
+              <tr>
+                <td><a href="https://socket.dev/blog/shai-hulud-descends-to-hades-miasma-pypi-wave">Hades PyPI wheel wave</a></td>
+                <td>Malicious wheels, <code>*-setup.pth</code> startup hooks, Bun execution, obfuscated JavaScript, broad secret theft.</td>
+                <td><span class="score partial">Prevents only</span><br>Protected pip install blocked. Static behavior is fixture-safe, not real wheel analysis.</td>
+                <td><span class="score yes">Should catch</span><br>Wheel scanning, <code>.pth</code> detection, Bun/process monitoring, and canary reads are direct matches.</td>
+                <td>Native wheels and API-path triggers are the likely next bypass.</td>
+              </tr>
+              <tr>
+                <td><a href="https://cloudsmith.com/blog/miasma-worms-path-of-destruction">Miasma / Red Hat / Microsoft</a></td>
+                <td>Compromised developer accounts and legitimate OIDC flows produced valid-looking malicious releases and repo infections.</td>
+                <td><span class="score partial">Prevents only</span><br>Install/build denial helps. Current system cannot judge valid-but-malicious provenance.</td>
+                <td><span class="score partial">Partially</span><br>Requires provenance skepticism, cooldown, org blast-radius controls, repo/release diffing, and retroactive quarantine.</td>
+                <td>If source, CI, and release artifacts are all compromised coherently, behavior detonation becomes the main line of defense.</td>
+              </tr>
+              <tr>
+                <td><a href="https://socket.dev/blog/miasma-mini-shai-hulud-hits-leoplatform-npm-packages-go-ecosystem">LeoPlatform / binding.gyp path</a></td>
+                <td>Install-time execution through native build metadata rather than visible npm lifecycle scripts.</td>
+                <td><span class="score partial">Prevents only</span><br>High-risk install is blocked, but static lifecycle-script detectors may miss <code>binding.gyp</code>.</td>
+                <td><span class="score yes">Should catch</span><br>Only if native build files and node-gyp execution are explicitly modeled as high-risk execution.</td>
+                <td>Generated build files and native modules can hide intent from simple scanners.</td>
+              </tr>
+              <tr>
+                <td><a href="https://thehackernews.com/2026/06/openai-codex-authentication-tokens.html">codexui-android</a></td>
+                <td>Functional npm package, clean-looking source, npm-only malicious runtime code stealing AI-tool auth tokens when run.</td>
+                <td><span class="score partial">Prevents install</span><br>Install blocked, but execution outside npm/npx or after prior install may be missed.</td>
+                <td><span class="score partial">Needs expansion</span><br>Requires npm <code>bin</code>/CLI detonation and seeded canary files such as fake Codex auth.</td>
+                <td>API-compatible or CLI-compatible backdoors can remain dormant until real use.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="plan-review">
+        <h2>Plan Review</h2>
+        <div class="grid">
+          <div class="card">
+            <h3>What is strong</h3>
+            <ul>
+              <li>Fail-closed behavior is correct for unknown high-risk npm and pip execution.</li>
+              <li>Local shims plus Vault steering are the right ergonomic path for developers and CI.</li>
+              <li>AWS Vault remains the strongest deployment fit for isolated detonation, private networking, and content-addressed cache control.</li>
+              <li>The proof-binding model in Phase 2 is directionally right: provider, subject, context, freshness, Vault host, and replay resistance matter.</li>
+              <li>The Phase 4 schema work is valuable because it separates fixture evidence from real production evidence.</li>
+            </ul>
+          </div>
+          <div class="card">
+            <h3>What is underframed</h3>
+            <ul>
+              <li>The phrase "malicious install scripts" is too narrow for the product promise.</li>
+              <li>Binary wheels, native extensions, <code>binding.gyp</code>, Python <code>.pth</code>, interpreter startup, and API-use behavior need first-class status.</li>
+              <li>Transitive dependency closure is a core requirement, not an enhancement.</li>
+              <li>Valid provenance must be treated as a signal to verify, not as permission to run.</li>
+              <li>Developer-tool credentials and AI-tool persistence are now part of the practical blast radius.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="callout good">
+          <strong>Conclusion:</strong> do not restart the plan. The architecture is well positioned. Update the framing,
+          promote a few "later" concerns into the MVP security standard, and keep the current sequential phase structure.
+        </div>
+      </section>
+
+      <section id="build-review">
+        <h2>Build Review</h2>
+        <p class="lede">
+          Based on the current report and checkpoints, the implementation is a useful local security prototype.
+          It is not yet a production admission system.
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Area</th>
+                <th>Current State</th>
+                <th>Threat-Model Assessment</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Endpoint interception</td>
+                <td>Local CLI/shim behavior exists for supported npm and pip flows, with high-risk execution blocked.</td>
+                <td>Good MVP control, assuming developer and CI adoption are enforced. Not sufficient for already-installed packages or runtime execution.</td>
+              </tr>
+              <tr>
+                <td>Isolation proofs</td>
+                <td>Readiness levels and proof binding are modeled, but real macOS/Linux containment is not yet production-verified.</td>
+                <td>Correct to keep high-risk execution fail-closed. Do not allow installs based on beta providers or diagnostics.</td>
+              </tr>
+              <tr>
+                <td>Vault proxy</td>
+                <td>Local-dev data-plane and cache/admission routes exist. Real AWS fetch, storage, worker, and network isolation are not deployed.</td>
+                <td>The Vault is the right place to solve package admission. It must own transitive archive closure and digest-bound promotion.</td>
+              </tr>
+              <tr>
+                <td>Detection and detonation</td>
+                <td>Static scanning and dynamic behavior evidence are fixture-safe and deterministic.</td>
+                <td>Useful contract work, but not yet evidence that real malware families are caught. Red-team fixtures should now model recent campaigns.</td>
+              </tr>
+              <tr>
+                <td>Docs and claims</td>
+                <td>Docs already state local-dev limits and non-production status.</td>
+                <td>Keep that discipline. Add the broader artifact/admission framing so readers do not think scripts are the whole problem.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="attacker-next">
+        <h2>Where Attackers Go Next</h2>
+        <p class="lede">
+          The recent incidents point to predictable evasions. These are not reasons to abandon the design. They are
+          requirements for the next validation loop.
+        </p>
+        <ol>
+          <li>
+            <strong>No visible lifecycle scripts.</strong> Payloads move to <code>binding.gyp</code>, PEP 517 build backends,
+            <code>.pth</code>, <code>sitecustomize.py</code>, npm <code>bin</code> entrypoints, native extensions, or WASM.
+          </li>
+          <li>
+            <strong>Valid-looking provenance.</strong> Attackers compromise the actual workflow or publisher so SLSA/OIDC
+            metadata appears normal.
+          </li>
+          <li>
+            <strong>API-compatible malicious behavior.</strong> Packages preserve expected APIs and exfiltrate only on
+            real client construction, request signing, model invocation, upload, or cloud SDK calls.
+          </li>
+          <li>
+            <strong>Platform and environment gating.</strong> Code activates only on Linux CI, macOS developers, specific
+            CPU architecture, <code>CI=true</code>, GitHub Actions, AWS/GCP/Azure metadata reachability, or valuable files.
+          </li>
+          <li>
+            <strong>Second-stage trust laundering.</strong> Payloads download from GitHub Releases, Hugging Face, package
+            CDNs, cloud storage, or already-installed developer tools rather than obvious throwaway infrastructure.
+          </li>
+          <li>
+            <strong>Delayed updates.</strong> A benign package builds reputation, becomes transitive in popular projects,
+            and turns malicious days or weeks later.
+          </li>
+          <li>
+            <strong>Tooling compromise outside package managers.</strong> VS Code/OpenVSX extensions, AI coding tool config,
+            CI plugins, pre-commit hooks, and repo-local automation become package-equivalent execution surfaces.
+          </li>
+        </ol>
+      </section>
+
+      <section id="recommendations">
+        <h2>Recommendations</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Priority</th>
+                <th>Recommendation</th>
+                <th>Why It Matters</th>
+                <th>Where It Fits</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><span class="score no">P0</span></td>
+                <td>Reframe WhoaThere as package artifact admission control.</td>
+                <td>Install scripts are one surface. Recent attacks prove the unit of trust is the artifact plus behavior, not the script field.</td>
+                <td>Docs, product language, Phase 3/4 goals.</td>
+              </tr>
+              <tr>
+                <td><span class="score no">P0</span></td>
+                <td>Keep high-risk execution fail-closed until exact containment and Vault-only egress proofs exist.</td>
+                <td>The current MVP's strongest real security property is prevention before execution.</td>
+                <td>Phase 1/2 invariant.</td>
+              </tr>
+              <tr>
+                <td><span class="score partial">P1</span></td>
+                <td>Make full transitive archive closure a Vault admission requirement.</td>
+                <td>Mastra-style attacks hide in transitive packages while first-party code looks clean.</td>
+                <td>Phase 3 cache-miss pipeline.</td>
+              </tr>
+              <tr>
+                <td><span class="score partial">P1</span></td>
+                <td>Add archive classifiers for wheels, sdists, native modules, <code>.pth</code>, <code>binding.gyp</code>, WASM, blobs, executables, and second-stage indicators.</td>
+                <td>Attackers are moving into package shapes that do not look like npm lifecycle scripts.</td>
+                <td>Phase 4 static scanner.</td>
+              </tr>
+              <tr>
+                <td><span class="score partial">P1</span></td>
+                <td>Expand detonation to install, build, interpreter startup, import, CLI entrypoint, native load, and minimal API-call probes.</td>
+                <td>LiteLLM, Hades, codexui-style attacks may not fire during install alone.</td>
+                <td>Phase 4 detonator.</td>
+              </tr>
+              <tr>
+                <td><span class="score partial">P1</span></td>
+                <td>Seed canary credentials for GitHub, npm, PyPI, cloud providers, Kubernetes, Vault, SSH, CI, and AI-tool auth.</td>
+                <td>Recent malware repeatedly hunts these exact files and environment values.</td>
+                <td>Phase 4 behavior analysis.</td>
+              </tr>
+              <tr>
+                <td><span class="score partial">P1</span></td>
+                <td>Treat provenance as evidence, not approval.</td>
+                <td>Miasma-style compromise shows valid provenance can coexist with malicious payloads.</td>
+                <td>Phase 3 policy and Phase 4 admission verdicts.</td>
+              </tr>
+              <tr>
+                <td><span class="score partial">P1</span></td>
+                <td>Add release-diff and source-to-registry comparison.</td>
+                <td>Many poisoned releases had clean GitHub repos but malicious registry artifacts.</td>
+                <td>Vault fetch workers and scanner jobs.</td>
+              </tr>
+              <tr>
+                <td><span class="score partial">P1</span></td>
+                <td>Add cooldown/manual review triggers for new maintainers, dormant packages, changed workflows, new binary files, and high-centrality packages.</td>
+                <td>Fast-moving worm campaigns exploit the short window before humans notice.</td>
+                <td>Policy service and admin workflows.</td>
+              </tr>
+              <tr>
+                <td><span class="score yes">P2</span></td>
+                <td>Track developer-tool artifact classes after package-manager MVP.</td>
+                <td>AI coding tools, VS Code extensions, and repo-local automation are becoming part of the same blast radius.</td>
+                <td>Later expansion, not Phase 1/2.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="mvp-standard">
+        <h2>MVP Standard Update</h2>
+        <p class="lede">
+          The MVP does not need to perfectly detect every possible runtime backdoor. It does need to avoid overclaiming
+          and it must cover the most common high-impact execution surfaces seen in current npm and PyPI attacks.
+        </p>
+        <div class="callout bad">
+          <strong>Minimum secure MVP statement:</strong> WhoaThere MVP may claim it prevents unapproved high-risk package
+          execution through protected npm and pip workflows. It should not claim that a package is safe unless the exact
+          artifact digest and dependency closure have passed the configured static, provenance, source-diff, and detonation
+          requirements.
+        </div>
+        <div class="grid">
+          <div class="card">
+            <h3>Must be in or before production Phase 3/4</h3>
+            <ul>
+              <li>Digest-bound admission verdicts for npm tarballs, PyPI wheels, and sdists.</li>
+              <li>Full transitive dependency closure for npm and pip lock/index resolution.</li>
+              <li>Registry artifact scanning, not only source repo inspection.</li>
+              <li>Detection for lifecycle hooks, PEP 517 hooks, <code>.pth</code>, native build files, and CLI entrypoints.</li>
+              <li>Isolated behavior probes with denied network and seeded canary secrets.</li>
+              <li>Release-source-provenance diffing with provenance treated as a non-authoritative signal.</li>
+            </ul>
+          </div>
+          <div class="card">
+            <h3>Can remain later than MVP</h3>
+            <ul>
+              <li>General runtime application protection after a package has been admitted.</li>
+              <li>Full semantic API fuzzing for every library surface.</li>
+              <li>Windows endpoint isolation.</li>
+              <li>VS Code/OpenVSX/AI-tool extension admission, as long as package-manager scope is stated clearly.</li>
+              <li>Perfect detection of long-delay, low-probability, or customer-specific API triggers.</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section id="open-questions">
+        <h2>Open Questions</h2>
+        <ol>
+          <li>
+            <strong>Representative API probes:</strong> which packages get API-use detonation, and how do we generate safe,
+            meaningful calls without requiring customer source code?
+          </li>
+          <li>
+            <strong>Binary verdict confidence:</strong> what is the minimum acceptable evidence for native extensions and
+            binary wheels before an enterprise cache can promote them?
+          </li>
+          <li>
+            <strong>macOS-first endpoint versus Linux-first detonation:</strong> macOS matters most for local developers,
+            but Linux is the fastest path to strong, repeatable Vault detonation. The plan should keep both truths explicit.
+          </li>
+          <li>
+            <strong>Break-glass policy:</strong> what is the acceptable workflow when a critical build is blocked by
+            quarantine, especially for CI fail-closed customers?
+          </li>
+          <li>
+            <strong>Retroactive revocation:</strong> how quickly should Vault invalidate and re-scan cached packages when
+            new intelligence arrives?
+          </li>
+        </ol>
+      </section>
+
+      <section id="sources">
+        <h2>Sources</h2>
+        <p class="lede">
+          This review combines local WhoaThere checkpoints with recent public incident research. External links are
+          included so the claims can be traced back to current reports.
+        </p>
+        <h3>Local Project Sources</h3>
+        <ul class="source-list">
+          <li><a href="whoathere-current-state-report.html">WhoaThere current state report</a></li>
+          <li><a href="phase-1-mvp-checkpoint.md">Phase 1 MVP checkpoint</a></li>
+          <li><a href="phase-2-isolation-checkpoint.md">Phase 2 isolation checkpoint</a></li>
+          <li><a href="phase-3-enterprise-vault-checkpoint.md">Phase 3 Vault checkpoint</a></li>
+          <li><a href="phase-4-detonation-checkpoint.md">Phase 4 detonation checkpoint</a></li>
+          <li><a href="../outputs/GOAL-06/admission-pipeline.md">Admission pipeline plan</a></li>
+          <li><a href="../outputs/GOAL-06/detonation-matrix.md">Detonation matrix plan</a></li>
+          <li><a href="../../../whoathere/README.md">Implementation README</a></li>
+        </ul>
+        <h3>Incident Sources</h3>
+        <ul class="source-list">
+          <li><a href="https://www.stepsecurity.io/blog/axios-compromised-on-npm-malicious-versions-drop-remote-access-trojan">StepSecurity: axios compromised on npm</a></li>
+          <li><a href="https://socket.dev/blog/sap-cap-npm-packages-supply-chain-attack">Socket: SAP CAP npm supply chain attack</a></li>
+          <li><a href="https://socket.dev/blog/intercom-s-npm-package-compromised-in-supply-chain-attack">Socket: Intercom npm package compromise</a></li>
+          <li><a href="https://socket.dev/blog/tanstack-npm-packages-compromised-mini-shai-hulud-supply-chain-attack">Socket: TanStack npm package compromise</a></li>
+          <li><a href="https://openai.com/index/our-response-to-the-tanstack-npm-supply-chain-attack/">OpenAI: response to TanStack npm supply chain attack</a></li>
+          <li><a href="https://socket.dev/blog/antv-packages-compromised">Socket: @antv package compromise</a></li>
+          <li><a href="https://socket.dev/blog/mastra-npm-packages-compromised">Socket: Mastra npm package compromise</a></li>
+          <li><a href="https://www.endorlabs.com/learn/teampcp-isnt-done">Endor Labs: LiteLLM PyPI compromise</a></li>
+          <li><a href="https://research.jfrog.com/post/team-pcp-strikes-again-telnyx-popular-library-hit/">JFrog: Telnyx PyPI compromise</a></li>
+          <li><a href="https://www.elementary-data.com/post/security-incident-report-malicious-release-of-elementary-oss-python-cli-v0-23-3">Elementary: malicious release incident report</a></li>
+          <li><a href="https://www.stepsecurity.io/blog/elementary-data-compromised-on-pypi-and-ghcr-forged-release-pushed-via-github-actions-script-injection">StepSecurity: Elementary forged release analysis</a></li>
+          <li><a href="https://socket.dev/blog/shai-hulud-descends-to-hades-miasma-pypi-wave">Socket: Hades PyPI wheel wave</a></li>
+          <li><a href="https://cloudsmith.com/blog/miasma-worms-path-of-destruction">Cloudsmith: Miasma worm path of destruction</a></li>
+          <li><a href="https://socket.dev/blog/miasma-mini-shai-hulud-hits-leoplatform-npm-packages-go-ecosystem">Socket: Miasma and LeoPlatform npm packages</a></li>
+          <li><a href="https://www.ox.security/blog/malware-slop-new-malicious-npm-package-leaks-its-own-github-private-token/">OX Security: malicious npm package leaked its own token</a></li>
+          <li><a href="https://thehackernews.com/2026/06/openai-codex-authentication-tokens.html">The Hacker News: codexui-android token theft report</a></li>
+          <li><a href="https://osv.dev/vulnerability/MAL-2026-5318">OSV: MAL-2026-5318</a></li>
+        </ul>
+
+        <div class="footer">
+          Review prepared June 26, 2026. It reflects the current local WhoaThere state plus recent public incident
+          research and should be treated as an input to the next Phase 3/4 goal prompts.
+        </div>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

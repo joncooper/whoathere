@@ -1,0 +1,1175 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WhoaThere Current State Report</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --panel-2: #f0f4f7;
+      --ink: #17202a;
+      --muted: #5c6670;
+      --line: #d9e0e6;
+      --accent: #146c75;
+      --accent-2: #0e555d;
+      --good: #17623a;
+      --warn: #946200;
+      --bad: #9a2b2b;
+      --blue: #285f9e;
+      --shadow: 0 1px 2px rgba(23, 32, 42, 0.06), 0 8px 24px rgba(23, 32, 42, 0.06);
+      --radius: 8px;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: var(--sans);
+      font-size: 16px;
+      line-height: 1.55;
+    }
+
+    a {
+      color: var(--accent-2);
+      text-decoration-thickness: 1px;
+      text-underline-offset: 3px;
+    }
+
+    code {
+      font-family: var(--mono);
+      font-size: 0.92em;
+      background: #eef2f5;
+      border: 1px solid #d9e2e8;
+      border-radius: 5px;
+      padding: 0.08rem 0.28rem;
+    }
+
+    .page {
+      display: grid;
+      grid-template-columns: 270px minmax(0, 1fr);
+      min-height: 100vh;
+    }
+
+    .sidebar {
+      position: sticky;
+      top: 0;
+      align-self: start;
+      height: 100vh;
+      padding: 28px 20px;
+      border-right: 1px solid var(--line);
+      background: #ffffff;
+      overflow: auto;
+    }
+
+    .brand {
+      margin-bottom: 26px;
+    }
+
+    .brand .eyebrow {
+      color: var(--accent);
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+
+    .brand h1 {
+      margin: 4px 0 8px;
+      font-size: 1.25rem;
+      line-height: 1.2;
+    }
+
+    .brand p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    .toc {
+      display: grid;
+      gap: 4px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .toc a {
+      display: block;
+      padding: 7px 9px;
+      border-radius: 6px;
+      color: #32404d;
+      text-decoration: none;
+      font-size: 0.92rem;
+    }
+
+    .toc a:hover {
+      background: var(--panel-2);
+    }
+
+    .main {
+      min-width: 0;
+      padding: 34px clamp(20px, 4vw, 56px) 72px;
+    }
+
+    .hero {
+      padding: 34px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+
+    .hero h2 {
+      margin: 0 0 12px;
+      font-size: clamp(2rem, 4vw, 3.25rem);
+      line-height: 1.05;
+      letter-spacing: 0;
+    }
+
+    .hero p {
+      max-width: 920px;
+      margin: 0;
+      color: #34404b;
+      font-size: 1.05rem;
+    }
+
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 22px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 30px;
+      padding: 4px 9px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #f8fafb;
+      color: #303c47;
+      font-size: 0.86rem;
+      font-weight: 650;
+      white-space: nowrap;
+    }
+
+    .pill.good {
+      border-color: #b8d8c4;
+      background: #eef8f1;
+      color: var(--good);
+    }
+
+    .pill.warn {
+      border-color: #e4d3a8;
+      background: #fff8e8;
+      color: var(--warn);
+    }
+
+    .pill.bad {
+      border-color: #e3b6b6;
+      background: #fff0f0;
+      color: var(--bad);
+    }
+
+    .pill.info {
+      border-color: #bdd3ea;
+      background: #eef6ff;
+      color: var(--blue);
+    }
+
+    section {
+      margin-top: 26px;
+      padding: 28px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+
+    section h2 {
+      margin: 0 0 14px;
+      font-size: 1.55rem;
+      line-height: 1.2;
+      letter-spacing: 0;
+    }
+
+    section h3 {
+      margin: 24px 0 8px;
+      font-size: 1.05rem;
+      letter-spacing: 0;
+    }
+
+    section p {
+      margin: 0 0 14px;
+      color: #34404b;
+    }
+
+    .lede {
+      max-width: 980px;
+      color: #2b3742;
+      font-size: 1.02rem;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(12, 1fr);
+      gap: 14px;
+      margin-top: 18px;
+    }
+
+    .card {
+      grid-column: span 4;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #fbfcfd;
+    }
+
+    .card.wide {
+      grid-column: span 6;
+    }
+
+    .card.full {
+      grid-column: 1 / -1;
+    }
+
+    .card h3 {
+      margin-top: 0;
+    }
+
+    .card p:last-child,
+    .card ul:last-child,
+    .card ol:last-child {
+      margin-bottom: 0;
+    }
+
+    .callout {
+      padding: 16px;
+      border: 1px solid #c6d9de;
+      border-left: 5px solid var(--accent);
+      border-radius: var(--radius);
+      background: #eef8fa;
+    }
+
+    .callout.warning {
+      border-color: #e4d3a8;
+      border-left-color: var(--warn);
+      background: #fff9eb;
+    }
+
+    .callout.danger {
+      border-color: #e3b6b6;
+      border-left-color: var(--bad);
+      background: #fff3f3;
+    }
+
+    .callout p:last-child {
+      margin-bottom: 0;
+    }
+
+    .status-table,
+    .plain-table {
+      width: 100%;
+      margin-top: 16px;
+      border-collapse: collapse;
+      font-size: 0.95rem;
+    }
+
+    .status-table th,
+    .status-table td,
+    .plain-table th,
+    .plain-table td {
+      padding: 12px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    .status-table th,
+    .plain-table th {
+      color: #44515d;
+      font-size: 0.78rem;
+      letter-spacing: 0;
+      text-transform: uppercase;
+      background: #f5f7f9;
+    }
+
+    .status-table tr:last-child td,
+    .plain-table tr:last-child td {
+      border-bottom: 0;
+    }
+
+    ul, ol {
+      margin: 8px 0 16px;
+      padding-left: 1.2rem;
+      color: #34404b;
+    }
+
+    li {
+      margin: 6px 0;
+    }
+
+    .phase {
+      display: grid;
+      grid-template-columns: 120px minmax(0, 1fr);
+      gap: 16px;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #fbfcfd;
+    }
+
+    .phase + .phase {
+      margin-top: 12px;
+    }
+
+    .phase-label {
+      font-weight: 800;
+      color: var(--accent-2);
+    }
+
+    .phase h3 {
+      margin: 0 0 6px;
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px;
+      margin: 20px 0 8px;
+    }
+
+    .flow .step {
+      min-height: 112px;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #fbfcfd;
+    }
+
+    .flow .step strong {
+      display: block;
+      margin-bottom: 6px;
+      color: #1e2b36;
+    }
+
+    .flow .step span {
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 10px 0 4px;
+    }
+
+    .small {
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    .source-list {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      padding: 0;
+      list-style: none;
+    }
+
+    .source-list li {
+      margin: 0;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fbfcfd;
+    }
+
+    .footer {
+      margin-top: 28px;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    @media (max-width: 980px) {
+      .page {
+        grid-template-columns: 1fr;
+      }
+
+      .sidebar {
+        position: relative;
+        height: auto;
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .toc {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .card,
+      .card.wide {
+        grid-column: 1 / -1;
+      }
+
+      .flow {
+        grid-template-columns: 1fr;
+      }
+
+      .source-list {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 640px) {
+      .hero,
+      section {
+        padding: 20px;
+      }
+
+      .toc {
+        grid-template-columns: 1fr;
+      }
+
+      .phase {
+        grid-template-columns: 1fr;
+      }
+
+      .status-table,
+      .plain-table {
+        display: block;
+        overflow-x: auto;
+      }
+    }
+
+    @media print {
+      body {
+        background: #ffffff;
+      }
+
+      .page {
+        display: block;
+      }
+
+      .sidebar {
+        display: none;
+      }
+
+      .main {
+        padding: 0;
+      }
+
+      .hero,
+      section {
+        box-shadow: none;
+        break-inside: avoid;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <aside class="sidebar" aria-label="Report navigation">
+      <div class="brand">
+        <div class="eyebrow">WhoaThere</div>
+        <h1>Current State Report</h1>
+        <p>Generated from local plans, checkpoints, code, and validation evidence.</p>
+      </div>
+      <ul class="toc">
+        <li><a href="#summary">Summary</a></li>
+        <li><a href="whoathere-threat-model-review.html">Threat Model Review</a></li>
+        <li><a href="#mental-model">Mental Model</a></li>
+        <li><a href="#architecture">Architecture</a></li>
+        <li><a href="#phase-status">Phase Status</a></li>
+        <li><a href="#validated">Validated</a></li>
+        <li><a href="#marginal">Marginal Areas</a></li>
+        <li><a href="#not-built">Not Built Yet</a></li>
+        <li><a href="#release-readiness">Release Readiness</a></li>
+        <li><a href="#next-steps">Next Steps</a></li>
+        <li><a href="#best-in-class-plan">Best-In-Class Plan</a></li>
+        <li><a href="#sources">Sources</a></li>
+      </ul>
+    </aside>
+
+    <main class="main">
+      <header class="hero" id="summary">
+        <h2>WhoaThere is a strong local-dev security prototype, not yet a deployable 1.0 system.</h2>
+        <p>
+          The project now has a working Rust workspace with local CLI interception, policy/source checks,
+          fail-closed launch planning, provider diagnostics, a bounded local Vault data-plane simulator,
+          promoted-cache registry routes, static scanning, fixture-safe dynamic behavior evidence, and
+          audit-safe admin workflow contracts. The major security shape is right: unknown or unproven
+          package execution does not proceed. The missing work is the hard production boundary: real
+          macOS/Linux isolation that can run npm/pip safely, real AWS Vault persistence and fetch workers,
+          and real isolated detonation of untrusted packages.
+        </p>
+        <div class="meta">
+          <span class="pill good">Started from clean tree</span>
+          <span class="pill good">Workspace tests pass</span>
+          <span class="pill info">Latest commit: 25626f5</span>
+          <span class="pill warn">Local-dev only</span>
+          <span class="pill bad">Not production deployable</span>
+          <span class="pill warn">Windows out of scope</span>
+        </div>
+      </header>
+
+      <section>
+        <h2>Threat Model Update</h2>
+        <div class="callout warning">
+          <p>
+            A newer threat-model review expands this report's framing beyond malicious install scripts.
+            Recent npm and PyPI incidents make binary wheels, native extensions, Python startup hooks,
+            npm native build paths, transitive dependency poisoning, valid-but-malicious provenance,
+            and API-compatible runtime backdoors first-class planning concerns.
+            <a href="whoathere-threat-model-review.html">Read the threat-model review</a>.
+          </p>
+        </div>
+      </section>
+
+      <section>
+        <h2>Fast Take</h2>
+        <div class="grid">
+          <div class="card">
+            <h3>What works today</h3>
+            <p>
+              WhoaThere can wrap supported npm and pip entry points, inspect package sources and config,
+              deny high-risk installs before execution, produce redacted audit records, and exercise
+              Vault/cache/admission behavior locally.
+            </p>
+          </div>
+          <div class="card">
+            <h3>The threat is broader than scripts</h3>
+            <p>
+              The product must also handle binary wheels, native extensions, import-time payloads,
+              and packages that keep the expected API shape while adding malicious behavior when that
+              API is used.
+            </p>
+          </div>
+          <div class="card">
+            <h3>What is intentionally blocked</h3>
+            <p>
+              Real package installs, lifecycle scripts, Python build backends, imports, public registry
+              fetches, scanner workers, and dynamic malware execution are not allowed by the current MVP.
+            </p>
+          </div>
+          <div class="card">
+            <h3>Why that is good</h3>
+            <p>
+              The current system does not pretend configuration steering is a sandbox. It fails closed
+              until a future provider proves containment and Vault-only egress for the exact launch.
+            </p>
+          </div>
+        </div>
+
+        <div class="callout warning">
+          <p>
+            <strong>Plain-English status:</strong> this is useful as a security-shaped prototype and
+            local validation harness. It is not yet a tool you would deploy to developers and allow to
+            run untrusted package code, binary artifacts, or API-level behavior probes.
+          </p>
+        </div>
+      </section>
+
+      <section id="mental-model">
+        <h2>Mental Model</h2>
+        <p class="lede">
+          WhoaThere is trying to stop malicious npm and pip packages from reaching secrets, networks,
+          and build systems during install, build, import-time, and admission-time behavior checks.
+          That includes classic lifecycle scripts, Python build backends, binary wheels, native
+          extensions, and packages that look API-compatible but add malicious side effects when their
+          normal functions are used. It does that in two layers: a local endpoint engine and a private
+          Vault proxy.
+        </p>
+
+        <div class="flow" aria-label="High-level WhoaThere flow">
+          <div class="step">
+            <strong>1. Developer or CI runs npm/pip</strong>
+            <span>PATH shims and command classification decide whether this is a protected workflow.</span>
+          </div>
+          <div class="step">
+            <strong>2. Local engine checks policy</strong>
+            <span>Source files, lockfiles, requirements, package identity, and registry/index settings are inspected.</span>
+          </div>
+          <div class="step">
+            <strong>3. Execution is blocked unless proven safe</strong>
+            <span>High-risk install/build/import execution requires verified containment and Vault-only egress.</span>
+          </div>
+          <div class="step">
+            <strong>4. Vault admits package artifacts</strong>
+            <span>Local simulation models quarantine, evidence, digest-bound cache promotion, and promoted-only serving.</span>
+          </div>
+          <div class="step">
+            <strong>5. Evidence drives allow/deny/review</strong>
+            <span>Static and fixture-safe dynamic evidence can be bound to exact artifact, job, tenant, and audit context.</span>
+          </div>
+        </div>
+
+        <p>
+          The key design rule is simple: <strong>do not execute or serve a package just because it looks
+          configured correctly.</strong> A package is allowed only when the right evidence exists and is
+          bound to the exact package digest, request, policy, and execution context. Full application
+          runtime protection is still out of scope, but package admission needs enough install, build,
+          import, and representative API-use probes to catch malicious behavior before approval.
+        </p>
+      </section>
+
+      <section id="architecture">
+        <h2>Architecture In The Current Repo</h2>
+        <p class="lede">
+          The implementation is an 18-crate Rust workspace under <code>whoathere/</code>. The crates map
+          closely to the planned architecture, but several are still contract/simulation layers rather
+          than production services.
+        </p>
+
+        <table class="plain-table">
+          <thead>
+            <tr>
+              <th>Area</th>
+              <th>Main crates or files</th>
+              <th>What they do today</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>CLI and endpoint UX</td>
+              <td><code>whoathere-cli</code>, <code>whoathere-core</code></td>
+              <td>Commands for doctor/status/config/policy/protect/shims/source scans/launch plans/evidence/Vault local-dev routes.</td>
+            </tr>
+            <tr>
+              <td>Policy, source, and audit</td>
+              <td><code>whoathere-policy</code>, <code>whoathere-source</code>, <code>whoathere-audit</code></td>
+              <td>Dependency-confusion checks, npm/pip source override checks, workspace scans, redacted audit records.</td>
+            </tr>
+            <tr>
+              <td>Execution guard</td>
+              <td><code>whoathere-runner</code>, <code>whoathere-launch</code>, <code>whoathere-sandbox</code></td>
+              <td>Refuses install/build/import execution, allows only explicit read-only version probes, models proof requirements and provider diagnostics.</td>
+            </tr>
+            <tr>
+              <td>Vault model</td>
+              <td><code>whoathere-vault-api</code>, <code>whoathere-vault-dev</code>, <code>whoathere-admission</code>, <code>whoathere-cache</code>, <code>whoathere-registry</code></td>
+              <td>Local HTTP routing, admission simulation, digest-bound cache promotion, npm/PyPI promoted-cache routes, enterprise auth boundary checks.</td>
+            </tr>
+            <tr>
+              <td>Detection and evidence</td>
+              <td><code>whoathere-detector</code>, <code>whoathere-detonation</code>, <code>whoathere-evidence</code>, <code>whoathere-job-log</code></td>
+              <td>Static manifest scans, evidence profile contracts, sanitized job logs, fixture-safe dynamic behavior evidence.</td>
+            </tr>
+            <tr>
+              <td>Infrastructure plan</td>
+              <td><code>whoathere/infra/aws/</code></td>
+              <td>AWS-first Terraform skeleton for VPC, private subnets, S3 CAS bucket, KMS, queue, log group, NLB, and security groups.</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3>Important boundary</h3>
+        <div class="callout">
+          <p>
+            Current Vault and detonation behavior is mostly local-dev simulation and typed contracts.
+            That is valuable because it lets the project prove binding, fail-closed behavior, and
+            sanitization before adding dangerous execution paths.
+          </p>
+        </div>
+      </section>
+
+      <section id="phase-status">
+        <h2>Phase-By-Phase Status</h2>
+
+        <div class="phase">
+          <div class="phase-label">Phase 1</div>
+          <div>
+            <h3>Local CLI MVP: implemented and validated for the safe cutline</h3>
+            <p>
+              The CLI can classify npm/pip workflows, materialize shims for <code>npm</code>,
+              <code>npx</code>, <code>pip</code>, and <code>pip3</code>, optionally materialize
+              Python shims, inspect source/config files, block dependency confusion and unsafe sources,
+              and emit redacted audit records. High-risk installs remain denied.
+            </p>
+            <div class="legend">
+              <span class="pill good">Implemented</span>
+              <span class="pill good">Fail-closed tests</span>
+              <span class="pill warn">No real install execution</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="phase">
+          <div class="phase-label">Phase 2</div>
+          <div>
+            <h3>Isolation and proof model: diagnostic contract implemented, real containment not yet</h3>
+            <p>
+              The project has provider control levels, macOS and Linux readiness diagnostics,
+              challenge/replay models, active-probe receipt validation, and launch proof binding.
+              It deliberately does not report current local providers as production verified.
+            </p>
+            <div class="legend">
+              <span class="pill good">Proof contracts</span>
+              <span class="pill good">Read-only diagnostics</span>
+              <span class="pill warn">macOS beta</span>
+              <span class="pill warn">Linux runner not production</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="phase">
+          <div class="phase-label">Phase 3</div>
+          <div>
+            <h3>Vault data-plane MVP: local serving model implemented, production AWS not yet</h3>
+            <p>
+              Vault has a bounded loopback HTTP path, health/readiness split, promoted-only npm/PyPI
+              fixture serving, tenant checks, digest-bound cache promotion, enterprise auth posture checks,
+              and an AWS skeleton. It does not yet fetch from public registries or persist to real cloud storage.
+            </p>
+            <div class="legend">
+              <span class="pill good">Local HTTP path</span>
+              <span class="pill good">Promoted-cache invariant</span>
+              <span class="pill warn">No public upstream fetch</span>
+              <span class="pill warn">No durable AWS service</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="phase">
+          <div class="phase-label">Phase 4</div>
+          <div>
+            <h3>Dynamic evidence MVP: fixture-safe contracts implemented, real detonation not yet</h3>
+            <p>
+              The project now has typed dynamic behavior jobs, result binding, sanitized behavior signals,
+              mock-canary fixtures, a local-dev dynamic route, and admin workflow contracts. It never runs
+              arbitrary public package code in this path. It represents import-time, native-extension,
+              platform-specific, and direct-source risk, but it does not yet execute real binary wheels
+              or API-use probes inside isolation.
+            </p>
+            <div class="legend">
+              <span class="pill good">Typed evidence</span>
+              <span class="pill good">Sanitized fixture harness</span>
+              <span class="pill good">Admission binding tests</span>
+              <span class="pill warn">No production detonator</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="validated">
+        <h2>What Is Validated</h2>
+        <p class="lede">
+          The strongest validation today is unit-level and local smoke validation of fail-closed contracts,
+          redaction, binding, and local-dev protocol behavior. It is not yet production environment validation.
+        </p>
+
+        <table class="status-table">
+          <thead>
+            <tr>
+              <th>Validation area</th>
+              <th>Evidence</th>
+              <th>Meaning</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Current workspace tests</td>
+              <td><code>cargo test --manifest-path whoathere/Cargo.toml</code> passed in this report run.</td>
+              <td>All crate unit tests and doctests currently pass on this tree.</td>
+            </tr>
+            <tr>
+              <td>Test coverage footprint</td>
+              <td>384 <code>#[test]</code> functions across crates; phase checkpoints also record full validation passes.</td>
+              <td>Broad contract coverage exists for the current MVP cutline.</td>
+            </tr>
+            <tr>
+              <td>Endpoint fail-closed behavior</td>
+              <td>CLI, source, policy, launch, runner, and smoke tests.</td>
+              <td>High-risk npm/pip execution is blocked unless future verified proofs exist.</td>
+            </tr>
+            <tr>
+              <td>Proof binding and replay control</td>
+              <td>Sandbox and challenge-authority tests, active-probe fixture/admission tests.</td>
+              <td>Claims must bind subject, context hash, Vault host, provider/session, freshness, and challenge state.</td>
+            </tr>
+            <tr>
+              <td>Vault promoted-cache rule</td>
+              <td>Vault dev, registry, admission, cache tests.</td>
+              <td>Local registry routes serve only exact promoted artifact/cache-key pairs and deny unknown/unpromoted cases.</td>
+            </tr>
+            <tr>
+              <td>Static and dynamic evidence contracts</td>
+              <td>Detector, job-log, evidence, detonation, Vault API tests.</td>
+              <td>Evidence is reason-coded, sanitized, digest-bound, and rejected when stale, mismatched, or unsafe.</td>
+            </tr>
+            <tr>
+              <td>Phase 4 route smoke</td>
+              <td>Clean dynamic fixture returned bound local-dev result; npm postinstall canary returned fail-closed result.</td>
+              <td>The CLI can exercise the fixture-safe dynamic behavior route through the local-dev HTTP path.</td>
+            </tr>
+            <tr>
+              <td>Formatting and linting</td>
+              <td>Phase 4 checkpoint records <code>cargo clippy</code>, <code>cargo fmt --check</code>, and ASCII scan passing.</td>
+              <td>The last implementation checkpoint closed with clean Rust quality gates.</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3>Smoke scripts available</h3>
+        <p>
+          There are local smoke scripts for endpoint shims, provider diagnostics, provider challenges,
+          Linux active-probe admission, Docker active-probe paths, internal Vault probe paths, replay-store
+          stress, compatibility, and Vault challenge authority. These are useful for focused regression
+          checks, but they do not replace production staging tests.
+        </p>
+      </section>
+
+      <section id="marginal">
+        <h2>What Is Marginal Or Easy To Misread</h2>
+        <p class="lede">
+          These are the areas most likely to be overestimated by a new reader. The code is doing useful
+          work, but the product should not claim more than this.
+        </p>
+
+        <div class="grid">
+          <div class="card wide">
+            <h3>macOS isolation is not production containment</h3>
+            <p>
+              macOS support is currently readiness detection and beta positioning. It checks for relevant
+              primitives and describes the VM-first path, but it does not run package installs inside a
+              production macOS VM helper.
+            </p>
+          </div>
+          <div class="card wide">
+            <h3>Linux active probes do not authorize installs</h3>
+            <p>
+              Linux diagnostics and Docker probe paths produce receipts and prove contract boundaries.
+              They still report no proof minting and no execution authorization.
+            </p>
+          </div>
+          <div class="card wide">
+            <h3>Registry steering is not security</h3>
+            <p>
+              The CLI can point npm/pip configuration at a Vault origin, but the docs and launch code
+              correctly treat this as compatibility setup. Real egress enforcement still needs a provider.
+            </p>
+          </div>
+          <div class="card wide">
+            <h3>Vault is local-dev shaped</h3>
+            <p>
+              The Vault data plane has strong local invariants, but durable storage, real cloud identity,
+              public upstream fetch, scanner queues, and AWS service deployment are not implemented.
+            </p>
+          </div>
+          <div class="card wide">
+            <h3>Dynamic behavior is fixture-safe</h3>
+            <p>
+              Phase 4 deliberately uses deterministic mock-canary fixtures. That proves schemas,
+              binding, sanitization, and fail-closed behavior. It does not prove real malware behavior
+              will be observed under production isolation.
+            </p>
+          </div>
+          <div class="card wide">
+            <h3>Compatibility is not broad yet</h3>
+            <p>
+              The plans call for workspaces, native modules, Python sdists/wheels, markers, extras,
+              subprocess inheritance, cleanup crash cases, and package-manager edge cases. Only a safe
+              subset is implemented today.
+            </p>
+          </div>
+          <div class="card wide">
+            <h3>API-shaped malicious behavior is not yet proven</h3>
+            <p>
+              A package can keep the same public API and still add hostile side effects inside ordinary
+              calls. The current fixture layer names import-time and native risks, but it does not yet
+              run representative API-use probes for real packages under isolation.
+            </p>
+          </div>
+          <div class="card wide">
+            <h3>Binary wheels need their own evidence path</h3>
+            <p>
+              Python wheels and native npm modules may contain compiled code that bypasses simple script
+              scanning. Current evidence profiles recognize wheel/native-extension classes, but real
+              binary inspection and isolated install/import/use behavior are still future work.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section id="not-built">
+        <h2>What We Want But Have Not Built</h2>
+        <table class="status-table">
+          <thead>
+            <tr>
+              <th>Capability</th>
+              <th>Why it matters</th>
+              <th>Current state</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Real macOS VM helper</td>
+              <td>Highest user priority for endpoint containment and package-manager compatibility.</td>
+              <td>Planned; diagnostics and beta labeling exist, helper does not.</td>
+            </tr>
+            <tr>
+              <td>Real Linux namespace/seccomp/cgroup/Landlock runner</td>
+              <td>Likely fastest path to strong CI containment and detonation workers.</td>
+              <td>Planned; readiness/probe contracts exist, runner does not.</td>
+            </tr>
+            <tr>
+              <td>Verified Vault-only egress enforcement</td>
+              <td>Prevents lifecycle scripts from bypassing Vault and reaching public networks directly.</td>
+              <td>Modeled and challenged; not enforced by a trusted production provider.</td>
+            </tr>
+            <tr>
+              <td>AWS production Vault</td>
+              <td>Needed for real private registry proxy, shared CI use, durable cache, and enterprise deployment.</td>
+              <td>AWS skeleton exists; ECS/Aurora/S3/SQS/IAM/workers are not wired as a deployed service.</td>
+            </tr>
+            <tr>
+              <td>Public upstream fetch into quarantine</td>
+              <td>Required for cache misses and real registry mirror behavior.</td>
+              <td>Fetch job planning exists with network disabled; real fetch not implemented.</td>
+            </tr>
+            <tr>
+              <td>Production scanner/detonator workers</td>
+              <td>Needed to approve new artifacts safely.</td>
+              <td>Static and fixture-safe contracts exist; real isolated workers do not.</td>
+            </tr>
+            <tr>
+              <td>Binary wheel and native artifact analysis</td>
+              <td>Compiled artifacts can perform malicious work without obvious install scripts.</td>
+              <td>Profiles and risk labels exist; real binary inspection and isolated behavior tests do not.</td>
+            </tr>
+            <tr>
+              <td>Representative API-use probes</td>
+              <td>Some attacks preserve the expected API but add exfiltration or credential access when common functions are called.</td>
+              <td>Import-time fixtures exist; API-shape-aware probes are not built.</td>
+            </tr>
+            <tr>
+              <td>Admin review queue and dashboard</td>
+              <td>Needed for manual review, break-glass, audit search/export, and operator workflows.</td>
+              <td>Typed contracts exist; UI/control-plane workflow is not built.</td>
+            </tr>
+            <tr>
+              <td>Performance and scale validation</td>
+              <td>Required for hundreds of developers and 1,000 concurrent CI jobs.</td>
+              <td>Planned; no deployed warm-cache benchmark yet.</td>
+            </tr>
+            <tr>
+              <td>Secure update and external distribution</td>
+              <td>Needed before developers install the endpoint broadly.</td>
+              <td>Planned; not implemented in the Rust prototype.</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="release-readiness">
+        <h2>Release Readiness</h2>
+        <div class="callout danger">
+          <p>
+            <strong>Not ready for production 1.0:</strong> the system does not yet provide the real
+            isolation, durable cloud proxy, upstream fetch path, production detonation, performance
+            benchmark, or admin operations required for enterprise rollout.
+          </p>
+        </div>
+
+        <h3>Reasonable labels today</h3>
+        <ul>
+          <li><strong>Accurate:</strong> local security prototype, local-dev Vault model, fail-closed endpoint guard, fixture-safe evidence harness.</li>
+          <li><strong>Accurate:</strong> architecture and contract foundation for a future npm/pip supply-chain security tool.</li>
+          <li><strong>Not accurate:</strong> production package sandbox, production private registry, production malware detonator, or complete CI-ready release.</li>
+        </ul>
+
+        <h3>What an internal preview could mean</h3>
+        <p>
+          A defensible internal preview would be read-only and fail-closed: developers can run diagnostics,
+          inspect policy/source decisions, materialize shims in a sandbox directory, and see why high-risk
+          installs would be blocked. It should not enable real protected package execution yet.
+        </p>
+      </section>
+
+      <section id="next-steps">
+        <h2>Recommended Next Steps</h2>
+        <p class="lede">
+          The next work should avoid boiling the ocean. Pick one narrow path that turns the existing
+          contracts into a real control boundary, then expand from there.
+        </p>
+
+        <ol>
+          <li>
+            <strong>Define the next release target in one sentence.</strong>
+            For example: "internal macOS-first preview that always blocks high-risk installs but gives
+            clear diagnostics" or "Linux CI detonation worker that can run one npm fixture under real isolation."
+          </li>
+          <li>
+            <strong>Build one real isolation backend.</strong>
+            Given current priorities, start with the macOS VM helper research path for endpoint value, while
+            keeping Linux as the practical CI/detonation proving ground.
+          </li>
+          <li>
+            <strong>Connect the proof provider to launch decisions.</strong>
+            The contracts already require subject, context hash, Vault host, provider session, challenge,
+            and freshness. The next step is a trusted provider that can satisfy those checks outside test support.
+          </li>
+          <li>
+            <strong>Make Vault durable in a staging AWS environment.</strong>
+            Implement the smallest AWS path for S3 CAS, transactional metadata, auth, queueing, and promoted-only serving.
+          </li>
+          <li>
+            <strong>Turn fixture-safe detonation into isolated detonation.</strong>
+            Keep mock malware non-destructive, but run it inside the real worker boundary and prove secret redaction,
+            network denial, DNS/HTTPS handling, and audit binding.
+          </li>
+          <li>
+            <strong>Add binary and API-behavior probes to the evidence plan.</strong>
+            Define minimal import/use probes for high-risk package classes, especially wheels, native modules,
+            and packages where a malicious update can preserve the API while changing side effects.
+          </li>
+          <li>
+            <strong>Run a release-gate audit before broadening compatibility.</strong>
+            Use the phase-gate scorecard to prevent accidental claims like "production sandbox" or "safe dynamic analysis"
+            before the proof exists.
+          </li>
+        </ol>
+      </section>
+
+      <section id="best-in-class-plan">
+        <h2>Best-In-Class Offering Plan</h2>
+        <p class="lede">
+          The strongest path is to make WhoaThere an AWS-backed package artifact admission system
+          for npm and PyPI, not merely an install-script blocker. The v1 claim should be precise:
+          WhoaThere prevents unapproved high-risk package artifacts from executing through protected
+          npm/pip workflows and serves only digest-approved artifacts through Vault.
+        </p>
+
+        <div class="callout">
+          <p>
+            Use the existing Rust workspace and Phase 1/2 endpoint work as the base. Do not restart
+            or redesign. The v1 target is AWS Vault GA for CI/private registry serving; macOS
+            first-class for endpoint UX, policy, audit, and fail-closed protection; and Linux first
+            for production containment and detonation proof.
+          </p>
+        </div>
+
+        <h3>Key changes</h3>
+        <ul>
+          <li>Reframe docs, gates, and product language around <strong>digest-bound package artifact admission control</strong>.</li>
+          <li>Split acceptance criteria into <code>v1_release_gate</code>, <code>v1_beta_gate</code>, and <code>post_v1</code>.</li>
+          <li>Auto-allow in v1 only for <code>npm.registry_tarball.v1</code> and <code>pypi.pure_wheel.v1</code> after complete evidence.</li>
+          <li>Make native, binary, direct, VCS, editable, unknown, and unsupported platform-selector classes manual-review or deny by default.</li>
+          <li>Treat provenance, OIDC, SLSA, signatures, maintainer reputation, and source repo history as evidence only, never as standalone approval.</li>
+          <li>Bind every allow verdict to ecosystem, package, version, digest, source, dependency closure, platform, package-manager mode, policy version, evidence profile, scanner/detonator versions, Vault host, and expiry.</li>
+        </ul>
+
+        <h3>Implementation plan</h3>
+        <ol>
+          <li>
+            <strong>Foundation gate:</strong> make the threat-model review canonical, define the v1 launch claim,
+            update release gates, and document what is deliberately not in v1.
+          </li>
+          <li>
+            <strong>Production Vault spine:</strong> replace local-dev/in-memory Vault state with AWS-backed Rust
+            services using Aurora/Postgres, S3 CAS, SQS, KMS, CloudWatch/Otel, NLB/PrivateLink,
+            VPC endpoints, NAT, and AWS Network Firewall.
+          </li>
+          <li>
+            <strong>Atomic promotion:</strong> advance <code>servable_generation</code> only after verified CAS object,
+            metadata snapshot, source policy, complete evidence, verdict, and alias update all match.
+          </li>
+          <li>
+            <strong>Cold-miss pipeline:</strong> fetch the full resolved dependency closure into quarantine, hash,
+            unpack, classify, compare source to registry, run provenance/reputation checks, static scanners,
+            and required detonation jobs before any promotion.
+          </li>
+          <li>
+            <strong>Static scanning:</strong> classify lifecycle scripts, PEP 517 backends, <code>.pth</code>,
+            <code>sitecustomize.py</code>, npm <code>bin</code>, <code>binding.gyp</code>, native files,
+            WASM, executables, suspicious blobs, credential path strings, second-stage URLs, and
+            registry-only payloads.
+          </li>
+          <li>
+            <strong>Linux detonation:</strong> build <code>whoathere-detonator-worker</code> on hardened EC2 workers
+            using per-job namespace/seccomp/cgroup v2/Landlock containment, read-only rootfs, fake home,
+            cleared env, bounded resources, no IMDS, and Vault-only evidence egress.
+          </li>
+          <li>
+            <strong>Behavior probes:</strong> run npm lifecycle/install smoke, require/ESM import smoke,
+            declared bin <code>--help</code>/<code>--version</code>, PyPI wheel install, interpreter startup for
+            <code>.pth</code>, top-level import smoke, and limited API-use canary probes.
+          </li>
+          <li>
+            <strong>Control plane:</strong> ship minimal policy CRUD/validation, namespace/source rules,
+            manual review, break-glass lifecycle, evidence summaries, audit search/export, privacy export/delete,
+            admin identity, and incident notification. Dashboard polish is not required for v1.
+          </li>
+        </ol>
+
+        <h3>Interfaces</h3>
+        <ul>
+          <li>CLI additions: <code>whoathere vault login</code>, <code>whoathere policy sync</code>, <code>whoathere cache prewarm</code>, and <code>whoathere explain &lt;audit_event_id&gt;</code>.</li>
+          <li>Vault APIs: health/readiness, npm facade, PyPI Simple facade, admission request/status, verdict lookup, artifact serving by digest, evidence profile listing, policy/source rules, manual review, break-glass, audit export, and privacy export/delete.</li>
+          <li>Core types: <code>ArtifactClass</code>, <code>ClosureManifest</code>, <code>EvidenceProfile</code>, <code>EvidenceJobKind</code>, <code>DetonationJob</code>, <code>BehaviorEvidence</code>, <code>ReleaseDiffEvidence</code>, <code>ProvenanceEvidence</code>, <code>ServableGeneration</code>, <code>SourcePolicy</code>, and <code>RedactedEvidenceSummary</code>.</li>
+          <li>API errors: every non-2xx response includes <code>reason_code</code>, <code>retryable</code>, <code>audit_event_id</code>, <code>policy_version</code>, and <code>admission_request_id</code>.</li>
+          <li>Registry invariant: protected npm/PyPI metadata must never point clients at public upstream artifact URLs.</li>
+        </ul>
+
+        <h3>Test plan</h3>
+        <ul>
+          <li>Final validation: Rust tests, clippy with <code>-D warnings</code>, fmt check, OpenAPI/schema tests, and Terraform validate/plan in AWS staging.</li>
+          <li>Invariant tests: no public fallback, no unapproved bytes served, no allow without complete evidence, no stale or partial promotion, no tenant mismatch serving, and no break-glass durable allow.</li>
+          <li>Red-team fixtures: npm postinstall exfil, npm prepare fetch, <code>binding.gyp</code>, npm CLI-bin token theft, API-compatible constructor exfil, PEP 517 backend abuse, wheel <code>.pth</code>, import-time payload, native marker, DNS/DoH/HTTPS exfil, platform split, delayed <code>CI=true</code>, dependency confusion, maintainer takeover diff, and valid-looking provenance.</li>
+          <li>Performance gates: 1,000 concurrent warm CI jobs, large artifact streaming without full buffering, metadata fanout, cold-miss admission timing, and scanner/detonator backlog behavior.</li>
+          <li>Operations gates: Vault outage, scanner outage, detonator outage, CAS tamper, policy outage, audit outage, rollback, revocation, break-glass expiry, and incident drill.</li>
+        </ul>
+
+        <h3>Assumptions and boundaries</h3>
+        <ul>
+          <li>AWS-only dedicated enterprise deployment is the v1 default; Cloudflare remains later.</li>
+          <li>Rust remains the implementation language, and npm/PyPI are the only v1 ecosystems.</li>
+          <li>macOS is the first endpoint UX priority; Linux is the first production containment and detonation proof path.</li>
+          <li>Best-in-class means strong boundaries, accurate claims, high-quality evidence, reliable fail-closed behavior, and excellent operational recovery, not universal malware certainty.</li>
+          <li>Windows, Cloudflare deployment, full runtime app protection, broad IDE/plugin scanning, TLS MITM, raw payload capture, customer source-code collection, and full environment dumps are not v1 goals.</li>
+        </ul>
+      </section>
+
+      <section id="sources">
+        <h2>Local Sources Used</h2>
+        <p class="lede">
+          This report was built from the local repo, not external research. The most useful source documents
+          are linked below.
+        </p>
+        <ul class="source-list">
+          <li><a href="phase-1-mvp-checkpoint.md">Phase 1 MVP checkpoint</a></li>
+          <li><a href="phase-2-isolation-checkpoint.md">Phase 2 isolation checkpoint</a></li>
+          <li><a href="phase-3-enterprise-vault-checkpoint.md">Phase 3 Vault checkpoint</a></li>
+          <li><a href="phase-4-detonation-checkpoint.md">Phase 4 detonation checkpoint</a></li>
+          <li><a href="../acceptance-test-matrix.md">Acceptance test matrix</a></li>
+          <li><a href="../outputs/GOAL-07/release-gates.md">Release gates</a></li>
+          <li><a href="../outputs/GOAL-09/phase-gate-scorecard.md">Phase-gate scorecard</a></li>
+          <li><a href="../outputs/GOAL-02/module-boundaries.md">Module boundaries</a></li>
+          <li><a href="../outputs/GOAL-04/ADR-011-vault-deployment-recommendation.md">Vault deployment recommendation</a></li>
+          <li><a href="../../../whoathere/README.md">Implementation README</a></li>
+        </ul>
+
+        <div class="footer">
+          Report generated on June 26, 2026 from repo state at commit <code>25626f5</code>. Current
+          validation run: <code>cargo test --manifest-path whoathere/Cargo.toml</code> passed.
+        </div>
+      </section>
+    </main>
+  </div>
+</body>
+</html>
