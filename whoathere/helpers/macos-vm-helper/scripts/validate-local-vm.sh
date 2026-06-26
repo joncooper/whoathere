@@ -8,6 +8,8 @@ STATE_DIR=${2:-"$HOME/.whoathere/macos-vm-validation"}
 HELPER_PATH="$HELPER_ROOT/.build/arm64-apple-macosx/debug/whoathere-macos-vm-helper"
 GUEST_TOOLS_IMAGE_BASE="$STATE_DIR/bundle/guest-tools"
 GUEST_TOOLS_IMAGE="$GUEST_TOOLS_IMAGE_BASE.dmg"
+MEMORY_MIB=${WHOATHERE_VM_MEMORY_MIB:-6144}
+DISK_GIB=${WHOATHERE_VM_DISK_GIB:-40}
 
 if [ -z "$RESTORE_IMAGE" ]; then
   echo "usage: $0 /absolute/path/to/macos-restore.ipsw [state-dir]" >&2
@@ -41,12 +43,16 @@ if [ "$FETCH_LATEST" = true ]; then
   "$HELPER_PATH" init \
     --state-dir "$STATE_DIR" \
     --fetch-latest-restore-image \
+    --memory-mib "$MEMORY_MIB" \
+    --disk-gib "$DISK_GIB" \
     --execute \
     --json
 else
   "$HELPER_PATH" init \
     --state-dir "$STATE_DIR" \
     --restore-image "$RESTORE_IMAGE" \
+    --memory-mib "$MEMORY_MIB" \
+    --disk-gib "$DISK_GIB" \
     --execute \
     --json
 fi

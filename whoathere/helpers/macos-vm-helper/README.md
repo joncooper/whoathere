@@ -58,6 +58,9 @@ status, start, health, suspend, and final status. It creates a large local VM di
 Until the guest readiness agent is built and run inside the guest, `health` is expected to fail
 closed.
 
+For local resource tuning, set `WHOATHERE_VM_DISK_GIB` or `WHOATHERE_VM_MEMORY_MIB` before running
+the validation script.
+
 Smoke commands:
 
 ```sh
