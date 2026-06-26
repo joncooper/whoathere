@@ -314,27 +314,149 @@ struct WhoaThereMacosVmHelper {
     }
 
     private static func start(_ options: HelperOptions) {
-        lifecycleBlocked(options, operation: "start")
+        let layout = BundleLayout(stateDir: stateDirURL(from: options))
+        if !options.execute {
+            emit(
+                fields: baseFields(status: "dry_run").merging([
+                    "operation": "start",
+                    "mutation": false,
+                    "state_dir": layout.stateDir.path,
+                    "reason_codes": ["execute_required_for_mutation"],
+                    "exit_code": 0
+                ]) { _, new in new },
+                exitCode: 0
+            )
+        }
+        if let pid = readRuntimePID(layout), processIsAlive(pid) {
+            emit(
+                fields: baseFields(status: "ok").merging([
+                    "operation": "start",
+                    "mutation": false,
+                    "state_dir": layout.stateDir.path,
+                    "runtime_pid": Int(pid),
+                    "runtime_pid_alive": true,
+                    "high_risk_package_execution_enabled": false,
+                    "exit_code": 0
+                ]) { _, new in new },
+                exitCode: 0
+            )
+        }
+        let reasons = runtimeStartReasons(layout: layout)
+        if !reasons.isEmpty {
+            emit(
+                fields: failClosedFields(layout: layout, reasons: reasons, exitCode: 20)
+                    .merging([
+                        "operation": "start",
+                        "mutation": false,
+                        "high_risk_package_execution_enabled": false
+                    ]) { _, new in new },
+                exitCode: 20
+            )
+        }
+        do {
+            try createManagedDirectories(layout)
+            try removeIfPresent(layout.runtimeStatePath)
+            try removeIfPresent(layout.healthProofPath)
+            try removeIfPresent(layout.runtimePidPath)
+            let process = try spawnRuntimeProcess(layout: layout)
+            try "\(process.processIdentifier)\n".write(to: layout.runtimePidPath, atomically: true, encoding: .utf8)
+            let status = waitForRuntimeStart(layout: layout, pid: process.processIdentifier, process: process)
+            emit(
+                fields: baseFields(status: status.status).merging([
+                    "operation": "start",
+                    "mutation": true,
+                    "state_dir": layout.stateDir.path,
+                    "runtime_pid": Int(process.processIdentifier),
+                    "runtime_pid_alive": processIsAlive(process.processIdentifier),
+                    "health_proof_present": fileExists(layout.healthProofPath),
+                    "high_risk_package_execution_enabled": false,
+                    "reason_codes": status.reasonCodes,
+                    "exit_code": status.exitCode
+                ]) { _, new in new },
+                exitCode: status.exitCode
+            )
+        } catch {
+            emit(
+                fields: failClosedFields(layout: layout, reasons: ["runtime_start_failed", sanitizedReason(error)], exitCode: 70),
+                exitCode: 70
+            )
+        }
     }
 
     private static func suspend(_ options: HelperOptions) {
-        lifecycleBlocked(options, operation: "suspend")
+        let layout = BundleLayout(stateDir: stateDirURL(from: options))
+        if !options.execute {
+            emit(
+                fields: baseFields(status: "dry_run").merging([
+                    "operation": "suspend",
+                    "mutation": false,
+                    "state_dir": layout.stateDir.path,
+                    "reason_codes": ["execute_required_for_mutation"],
+                    "exit_code": 0
+                ]) { _, new in new },
+                exitCode: 0
+            )
+        }
+        guard let pid = readRuntimePID(layout), processIsAlive(pid) else {
+            emit(
+                fields: failClosedFields(layout: layout, reasons: ["runtime_process_not_running"], exitCode: 20)
+                    .merging([
+                        "operation": "suspend",
+                        "mutation": false
+                    ]) { _, new in new },
+                exitCode: 20
+            )
+        }
+        _ = kill(pid, SIGTERM)
+        do {
+            try removeIfPresent(layout.runtimePidPath)
+            try removeIfPresent(layout.runtimeStatePath)
+            try removeIfPresent(layout.healthProofPath)
+            try removeIfPresent(layout.runtimePidPath)
+            try removeIfPresent(layout.savedStatePath)
+            emit(
+                fields: baseFields(status: "ok").merging([
+                    "operation": "suspend",
+                    "mutation": true,
+                    "state_dir": layout.stateDir.path,
+                    "runtime_pid": Int(pid),
+                    "suspend_semantics": "terminate_runtime_process",
+                    "high_risk_package_execution_enabled": false,
+                    "exit_code": 0
+                ]) { _, new in new },
+                exitCode: 0
+            )
+        } catch {
+            emit(
+                fields: failClosedFields(layout: layout, reasons: ["suspend_cleanup_failed", sanitizedReason(error)], exitCode: 70),
+                exitCode: 70
+            )
+        }
     }
 
     private static func runPersistentVm(_ options: HelperOptions) {
         let layout = BundleLayout(stateDir: stateDirURL(from: options))
-        emit(
-            fields: failClosedFields(
-                layout: layout,
-                reasons: ["persistent_vm_runtime_not_implemented"],
+        let reasons = runtimeStartReasons(layout: layout)
+        if !reasons.isEmpty {
+            emit(
+                fields: failClosedFields(layout: layout, reasons: reasons, exitCode: 20)
+                    .merging([
+                        "operation": "run",
+                        "mutation": false,
+                        "high_risk_package_execution_enabled": false
+                    ]) { _, new in new },
                 exitCode: 20
-            ).merging([
-                "operation": "run",
-                "mutation": false,
-                "high_risk_package_execution_enabled": false
-            ]) { _, new in new },
-            exitCode: 20
-        )
+            )
+        }
+        do {
+            let configuration = try loadInstalledMacOSConfiguration(layout: layout)
+            try startAndHoldVirtualMachine(configuration: configuration, layout: layout)
+        } catch {
+            emit(
+                fields: failClosedFields(layout: layout, reasons: ["runtime_vm_start_failed", sanitizedReason(error)], exitCode: 70),
+                exitCode: 70
+            )
+        }
     }
 
     private struct RestoreInstallSummary {
@@ -494,6 +616,155 @@ struct WhoaThereMacosVmHelper {
         return cpuCount
     }
 
+    private struct RuntimeStartStatus {
+        var status: String
+        var reasonCodes: [String]
+        var exitCode: Int32
+    }
+
+    private static func runtimeStartReasons(layout: BundleLayout) -> [String] {
+        var reasons: [String] = []
+        if !hostSupported() {
+            reasons.append("host_not_apple_silicon_macos")
+        }
+        if !virtualizationFrameworkLinked() {
+            reasons.append("virtualization_framework_unavailable")
+        }
+        if !fileExists(layout.bundleDir) {
+            reasons.append("bundle_missing")
+        }
+        if !fileExists(layout.configPath) {
+            reasons.append("config_missing")
+        }
+        if !fileExists(layout.manifestPath) {
+            reasons.append("manifest_missing")
+        }
+        if !fileExists(layout.diskPath) {
+            reasons.append("disk_missing")
+        }
+        if !fileExists(layout.auxiliaryStoragePath) {
+            reasons.append("auxiliary_storage_missing")
+        }
+        if !fileExists(layout.hardwareModelPath) {
+            reasons.append("hardware_model_missing")
+        }
+        if !fileExists(layout.machineIdentifierPath) {
+            reasons.append("machine_identifier_missing")
+        }
+        return reasonArray(reasons)
+    }
+
+    private static func spawnRuntimeProcess(layout: BundleLayout) throws -> Process {
+        try FileManager.default.createDirectory(at: layout.logsDir, withIntermediateDirectories: true)
+        let stdoutURL = layout.logsDir.appendingPathComponent("runtime.stdout.log")
+        let stderrURL = layout.logsDir.appendingPathComponent("runtime.stderr.log")
+        FileManager.default.createFile(atPath: stdoutURL.path, contents: nil)
+        FileManager.default.createFile(atPath: stderrURL.path, contents: nil)
+        let stdout = try FileHandle(forWritingTo: stdoutURL)
+        let stderr = try FileHandle(forWritingTo: stderrURL)
+        defer {
+            try? stdout.close()
+            try? stderr.close()
+        }
+
+        let executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
+        let process = Process()
+        process.executableURL = executableURL
+        process.arguments = [
+            "run",
+            "--state-dir", layout.stateDir.path,
+            "--json"
+        ]
+        process.environment = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"]
+        process.standardOutput = stdout
+        process.standardError = stderr
+        try process.run()
+        return process
+    }
+
+    private static func waitForRuntimeStart(layout: BundleLayout, pid: pid_t, process: Process) -> RuntimeStartStatus {
+        let deadline = Date().addingTimeInterval(15)
+        while Date() < deadline {
+            if fileExists(layout.healthProofPath), processIsAlive(pid) {
+                return RuntimeStartStatus(status: "ok", reasonCodes: [], exitCode: 0)
+            }
+            if !process.isRunning {
+                return RuntimeStartStatus(
+                    status: "fail_closed",
+                    reasonCodes: ["runtime_process_exited_before_health"],
+                    exitCode: 20
+                )
+            }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+        return RuntimeStartStatus(
+            status: "starting",
+            reasonCodes: ["runtime_health_pending"],
+            exitCode: 0
+        )
+    }
+
+    private static func loadInstalledMacOSConfiguration(layout: BundleLayout) throws -> VZVirtualMachineConfiguration {
+        let hardwareData = try Data(contentsOf: layout.hardwareModelPath)
+        guard let hardwareModel = VZMacHardwareModel(dataRepresentation: hardwareData) else {
+            throw helperError("hardware_model_data_invalid")
+        }
+        guard hardwareModel.isSupported else {
+            throw helperError("hardware_model_not_supported")
+        }
+        let machineData = try Data(contentsOf: layout.machineIdentifierPath)
+        guard let machineIdentifier = VZMacMachineIdentifier(dataRepresentation: machineData) else {
+            throw helperError("machine_identifier_data_invalid")
+        }
+        let auxiliaryStorage = VZMacAuxiliaryStorage(url: layout.auxiliaryStoragePath)
+        let config = readBundleConfig(layout)
+        let cpuCount = intConfig(config, key: "cpu_count", defaultValue: 2)
+        let memoryMiB = uint64Config(config, key: "memory_mib", defaultValue: 6144)
+        let (memoryBytes, overflow) = memoryMiB.multipliedReportingOverflow(by: 1_048_576)
+        guard !overflow else {
+            throw helperError("configured_memory_overflow")
+        }
+        return try buildMacOSConfiguration(
+            layout: layout,
+            hardwareModel: hardwareModel,
+            machineIdentifier: machineIdentifier,
+            auxiliaryStorage: auxiliaryStorage,
+            cpuCount: cpuCount,
+            memoryBytes: memoryBytes
+        )
+    }
+
+    private static func startAndHoldVirtualMachine(configuration: VZVirtualMachineConfiguration, layout: BundleLayout) throws -> Never {
+        let queue = DispatchQueue(label: "whoathere.macos.vm.runtime")
+        let semaphore = DispatchSemaphore(value: 0)
+        let resultBox = LockedResultBox<Void>()
+        let configurationBox = UncheckedSendableBox(value: configuration)
+        queue.async {
+            let virtualMachine = VZVirtualMachine(configuration: configurationBox.value, queue: queue)
+            virtualMachine.start { result in
+                resultBox.store(result.mapError { $0 })
+                semaphore.signal()
+            }
+        }
+        semaphore.wait()
+        guard let result = resultBox.load() else {
+            throw helperError("runtime_start_returned_no_result")
+        }
+        try result.get()
+        try writeRuntimeProof(layout: layout, pid: getpid())
+        writeJSONFields(baseFields(status: "ok").merging([
+            "operation": "run",
+            "state_dir": layout.stateDir.path,
+            "runtime_pid": Int(getpid()),
+            "health_proof_type": "host_vm_start_only",
+            "guest_health_proven": false,
+            "high_risk_package_execution_enabled": false,
+            "exit_code": 0
+        ]) { _, new in new })
+        RunLoop.current.run()
+        exit(0)
+    }
+
     private static func lifecycleBlocked(_ options: HelperOptions, operation: String) {
         let layout = BundleLayout(stateDir: stateDirURL(from: options))
         if !options.execute {
@@ -570,6 +841,17 @@ struct WhoaThereMacosVmHelper {
                 exitCode: 0
             )
         }
+        if let pid = readRuntimePID(layout), processIsAlive(pid) {
+            emit(
+                fields: failClosedFields(layout: layout, reasons: ["runtime_process_running"], exitCode: 20)
+                    .merging([
+                        "operation": "prune",
+                        "mutation": false,
+                        "runtime_pid": Int(pid)
+                    ]) { _, new in new },
+                exitCode: 20
+            )
+        }
         do {
             try removeIfPresent(layout.bundleDir)
             emit(
@@ -589,16 +871,33 @@ struct WhoaThereMacosVmHelper {
 
     private static func health(_ options: HelperOptions) {
         let layout = BundleLayout(stateDir: stateDirURL(from: options))
-        emit(
-            fields: failClosedFields(
-                layout: layout,
-                reasons: ["guest_health_proof_not_implemented"],
+        guard let pid = readRuntimePID(layout), processIsAlive(pid), fileExists(layout.healthProofPath) else {
+            emit(
+                fields: failClosedFields(
+                    layout: layout,
+                    reasons: ["host_runtime_health_proof_missing"],
+                    exitCode: 20
+                ).merging([
+                    "health_proven": false,
+                    "guest_health_proven": false,
+                    "high_risk_package_execution_enabled": false
+                ]) { _, new in new },
                 exitCode: 20
-            ).merging([
-                "health_proven": false,
-                "high_risk_package_execution_enabled": false
+            )
+        }
+        emit(
+            fields: baseFields(status: "ok").merging([
+                "state_dir": layout.stateDir.path,
+                "bundle_dir": layout.bundleDir.path,
+                "runtime_pid": Int(pid),
+                "runtime_pid_alive": true,
+                "health_proven": true,
+                "health_proof_type": "host_vm_start_only",
+                "guest_health_proven": false,
+                "high_risk_package_execution_enabled": false,
+                "exit_code": 0
             ]) { _, new in new },
-            exitCode: 20
+            exitCode: 0
         )
     }
 
@@ -759,6 +1058,65 @@ struct WhoaThereMacosVmHelper {
         try data.write(to: layout.configPath, options: [.atomic])
     }
 
+    private static func writeRuntimeProof(layout: BundleLayout, pid: pid_t) throws {
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        let runtimeState: [String: Any] = [
+            "schema_version": bundleSchemaVersion,
+            "helper_version": helperVersion,
+            "runtime_pid": Int(pid),
+            "state": "running",
+            "started_at": timestamp,
+            "high_risk_package_execution_enabled": false
+        ]
+        let healthProof: [String: Any] = [
+            "schema_version": bundleSchemaVersion,
+            "helper_version": helperVersion,
+            "runtime_pid": Int(pid),
+            "health_proof_type": "host_vm_start_only",
+            "host_vm_started": true,
+            "guest_health_proven": false,
+            "created_at": timestamp,
+            "high_risk_package_execution_enabled": false
+        ]
+        try JSONSerialization.data(withJSONObject: runtimeState, options: [.prettyPrinted, .sortedKeys])
+            .write(to: layout.runtimeStatePath, options: [.atomic])
+        try JSONSerialization.data(withJSONObject: healthProof, options: [.prettyPrinted, .sortedKeys])
+            .write(to: layout.healthProofPath, options: [.atomic])
+        try "\(pid)\n".write(to: layout.runtimePidPath, atomically: true, encoding: .utf8)
+    }
+
+    private static func readBundleConfig(_ layout: BundleLayout) -> [String: Any] {
+        guard let data = try? Data(contentsOf: layout.configPath),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              let config = object as? [String: Any] else {
+            return [:]
+        }
+        return config
+    }
+
+    private static func intConfig(_ config: [String: Any], key: String, defaultValue: Int) -> Int {
+        if let value = config[key] as? Int {
+            return value
+        }
+        if let value = config[key] as? NSNumber {
+            return value.intValue
+        }
+        return defaultValue
+    }
+
+    private static func uint64Config(_ config: [String: Any], key: String, defaultValue: UInt64) -> UInt64 {
+        if let value = config[key] as? UInt64 {
+            return value
+        }
+        if let value = config[key] as? Int, value >= 0 {
+            return UInt64(value)
+        }
+        if let value = config[key] as? NSNumber {
+            return value.uint64Value
+        }
+        return defaultValue
+    }
+
     private static func manifestSignatureStatus(layout: BundleLayout) -> String? {
         guard let contents = try? String(contentsOf: layout.manifestPath, encoding: .utf8) else {
             return nil
@@ -862,10 +1220,14 @@ struct WhoaThereMacosVmHelper {
     }
 
     private static func emit(fields: [String: Any], exitCode: Int32) -> Never {
+        writeJSONFields(fields)
+        exit(exitCode)
+    }
+
+    private static func writeJSONFields(_ fields: [String: Any]) {
         let data = (try? JSONSerialization.data(withJSONObject: fields, options: [.prettyPrinted, .sortedKeys]))
             ?? Data("{\"status\":\"error\",\"reason_codes\":[\"json_encoding_failed\"],\"exit_code\":70}".utf8)
         FileHandle.standardOutput.write(data)
         FileHandle.standardOutput.write(Data("\n".utf8))
-        exit(exitCode)
     }
 }

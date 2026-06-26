@@ -12,7 +12,9 @@ Current state:
 - Writes bundle config, disk copy, and image manifest metadata.
 - Keeps disk-import bundles non-ready until auxiliary storage, hardware model, machine identifier metadata, and real signature verification exist.
 - Keeps high-risk package execution disabled.
-- Fails closed for start and health until Virtualization metadata, signature verification, and persistent VM runtime are implemented.
+- Starts a persistent helper runtime only when disk, auxiliary storage, hardware model, and machine identifier metadata are present.
+- Writes host-runtime state and health proof after `VZVirtualMachine.start` succeeds.
+- Keeps guest readiness, package execution, sync-back, and real signature verification blocked.
 
 Build and test:
 
@@ -38,8 +40,8 @@ The `init --execute` command requires one of:
 The current goal slice supports `--image` disk import and a first `--restore-image` local IPSW
 install path. A disk image alone is not a bootable macOS VM bundle. Restore-image installation is
 the path that produces the required auxiliary storage, hardware model, and machine identifier
-metadata, but the bundle still remains non-ready until real signature verification and persistent
-runtime health proof are implemented.
+metadata. Runtime health proof is host-only: it means `VZVirtualMachine.start` returned success,
+not that the guest OS is provisioned, reachable, or safe for package execution.
 
 Rust CLI integration:
 
