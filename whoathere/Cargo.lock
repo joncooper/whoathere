@@ -33,6 +33,7 @@ dependencies = [
  "whoathere-detector",
  "whoathere-evidence",
  "whoathere-launch",
+ "whoathere-macos-vm",
  "whoathere-policy",
  "whoathere-runner",
  "whoathere-sandbox",
@@ -87,6 +88,10 @@ dependencies = [
  "whoathere-sandbox",
  "whoathere-source",
 ]
+
+[[package]]
+name = "whoathere-macos-vm"
+version = "0.1.0"
 
 [[package]]
 name = "whoathere-policy"

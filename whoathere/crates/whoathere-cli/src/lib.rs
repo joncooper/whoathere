@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use whoathere_admission::AdmissionController;
 use whoathere_audit::{
     append_jsonl, redact_token_like, sensitive_key_like, AuditCleanupSummary, AuditProofSummary,
@@ -17,6 +19,13 @@ use whoathere_evidence::{
 use whoathere_launch::{
     build_launch_plan, cleanup_runtime_plan, load_cleanup_manifest, CleanupResult, LaunchPlan,
     LaunchRequest, LaunchStatus,
+};
+use whoathere_macos_vm::{
+    classify_artifact, create_state_dirs, decide_local_sync, default_canaries, default_state_dir,
+    default_sync_allowlist, parse_image_manifest, required_local_evidence, scanner_adapters,
+    status_from_config, ArtifactSignals, HostPlatform, LocalEvidenceFlags, MacosVmConfig,
+    MacosVmImageManifest, PackageClass, DEFAULT_NATIVE_MEMORY_MIB, NETWORK_MODEL, RELEASE_CLAIM,
+    RELEASE_TARGET, SYNC_POLICY, TARGET_ARCH, VM_BOUNDARY,
 };
 use whoathere_policy::{
     evaluate_source_policy, outage_decision, parse_policy_document, NamespaceOwnership,
@@ -61,7 +70,9 @@ pub struct CommandResult {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
-    Doctor,
+    Doctor {
+        json: bool,
+    },
     Status,
     ShimInstall {
         dry_run: bool,
@@ -76,6 +87,41 @@ pub enum Command {
         audit_path: Option<String>,
         replay_store: Option<String>,
         include_python: bool,
+    },
+    VmStatus {
+        state_dir: Option<String>,
+        manifest_path: Option<String>,
+        json: bool,
+    },
+    VmInit {
+        state_dir: Option<String>,
+        manifest_path: Option<String>,
+        memory_mib: Option<u64>,
+        disk_gib: Option<u64>,
+        execute: bool,
+    },
+    VmAction {
+        action: VmAction,
+        state_dir: Option<String>,
+        execute: bool,
+    },
+    VmReleasePlan {
+        artifact_class: Option<String>,
+        ecosystem: Option<String>,
+        source: Option<String>,
+        filename: Option<String>,
+        lifecycle_script: bool,
+        pep517_backend: bool,
+        native_marker: bool,
+        editable: bool,
+        evidence: LocalEvidenceFlags,
+        json: bool,
+    },
+    VmCanaries {
+        json: bool,
+    },
+    VmSyncPolicy {
+        json: bool,
     },
     PolicyExplain {
         subject: String,
@@ -229,6 +275,14 @@ pub enum ProviderScope {
     Invalid,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VmAction {
+    Start,
+    Suspend,
+    Reset,
+    Prune,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShimSpec {
     pub name: &'static str,
@@ -357,7 +411,9 @@ fn set_executable(_path: &std::path::Path) -> std::io::Result<()> {
 pub fn parse_command(args: &[String]) -> Command {
     match args {
         [] => Command::Help,
-        [cmd] if cmd == "doctor" => Command::Doctor,
+        [cmd, rest @ ..] if cmd == "doctor" => Command::Doctor {
+            json: rest.iter().any(|arg| arg == "--json"),
+        },
         [cmd] if cmd == "status" => Command::Status,
         [cmd, sub, subject] if cmd == "policy" && sub == "explain" => Command::PolicyExplain {
             subject: subject.clone(),
@@ -480,6 +536,51 @@ pub fn parse_command(args: &[String]) -> Command {
             include_python: rest.iter().any(|arg| arg == "--include-python"),
         },
         [cmd, sub, rest @ ..] if cmd == "endpoint" && sub == "setup" => parse_endpoint_setup(rest),
+        [cmd, sub, rest @ ..] if cmd == "vm" && sub == "status" => Command::VmStatus {
+            state_dir: parse_flag_value(rest, "--state-dir"),
+            manifest_path: parse_flag_value(rest, "--manifest"),
+            json: rest.iter().any(|arg| arg == "--json"),
+        },
+        [cmd, sub, rest @ ..] if cmd == "vm" && sub == "init" => Command::VmInit {
+            state_dir: parse_flag_value(rest, "--state-dir"),
+            manifest_path: parse_flag_value(rest, "--manifest"),
+            memory_mib: parse_u64_flag(rest, "--memory-mib"),
+            disk_gib: parse_u64_flag(rest, "--disk-gib"),
+            execute: rest.iter().any(|arg| arg == "--execute"),
+        },
+        [cmd, sub, rest @ ..]
+            if cmd == "vm" && matches!(sub.as_str(), "start" | "suspend" | "reset" | "prune") =>
+        {
+            Command::VmAction {
+                action: match sub.as_str() {
+                    "start" => VmAction::Start,
+                    "suspend" => VmAction::Suspend,
+                    "reset" => VmAction::Reset,
+                    "prune" => VmAction::Prune,
+                    _ => unreachable!(),
+                },
+                state_dir: parse_flag_value(rest, "--state-dir"),
+                execute: rest.iter().any(|arg| arg == "--execute"),
+            }
+        }
+        [cmd, sub, rest @ ..] if cmd == "vm" && sub == "release-plan" => Command::VmReleasePlan {
+            artifact_class: parse_flag_value(rest, "--class"),
+            ecosystem: parse_flag_value(rest, "--ecosystem"),
+            source: parse_flag_value(rest, "--source"),
+            filename: parse_flag_value(rest, "--filename"),
+            lifecycle_script: rest.iter().any(|arg| arg == "--lifecycle-script"),
+            pep517_backend: rest.iter().any(|arg| arg == "--pep517-backend"),
+            native_marker: rest.iter().any(|arg| arg == "--native-marker"),
+            editable: rest.iter().any(|arg| arg == "--editable"),
+            evidence: parse_local_evidence_flags(rest),
+            json: rest.iter().any(|arg| arg == "--json"),
+        },
+        [cmd, sub, rest @ ..] if cmd == "vm" && sub == "canaries" => Command::VmCanaries {
+            json: rest.iter().any(|arg| arg == "--json"),
+        },
+        [cmd, sub, rest @ ..] if cmd == "vm" && sub == "sync-policy" => Command::VmSyncPolicy {
+            json: rest.iter().any(|arg| arg == "--json"),
+        },
         [cmd, rest @ ..] if cmd == "protect" => parse_protect(rest),
         _ => Command::Help,
     }
@@ -497,14 +598,7 @@ pub fn evaluate_command(command: Command) -> CommandResult {
 
 fn render_command_text(command: Command) -> String {
     match command {
-        Command::Doctor => {
-            let backend = UnsupportedBackend;
-            let plan = backend.plan(ExecutionMode::Protected);
-            format!(
-                "whoathere doctor\nstatus=ok\nsandbox_label={}\nhigh_risk_allowed={}",
-                plan.label, plan.high_risk_allowed
-            )
-        }
+        Command::Doctor { json } => render_doctor(json),
         Command::Status => {
             let config = WhoaThereConfig::default();
             format!(
@@ -563,6 +657,54 @@ fn render_command_text(command: Command) -> String {
             replay_store.as_deref(),
             include_python,
         ),
+        Command::VmStatus {
+            state_dir,
+            manifest_path,
+            json,
+        } => render_vm_status(state_dir.as_deref(), manifest_path.as_deref(), json),
+        Command::VmInit {
+            state_dir,
+            manifest_path,
+            memory_mib,
+            disk_gib,
+            execute,
+        } => render_vm_init(
+            state_dir.as_deref(),
+            manifest_path.as_deref(),
+            memory_mib,
+            disk_gib,
+            execute,
+        ),
+        Command::VmAction {
+            action,
+            state_dir,
+            execute,
+        } => render_vm_action(action, state_dir.as_deref(), execute),
+        Command::VmReleasePlan {
+            artifact_class,
+            ecosystem,
+            source,
+            filename,
+            lifecycle_script,
+            pep517_backend,
+            native_marker,
+            editable,
+            evidence,
+            json,
+        } => render_vm_release_plan(VmReleasePlanArgs {
+            artifact_class: artifact_class.as_deref(),
+            ecosystem: ecosystem.as_deref(),
+            source: source.as_deref(),
+            filename: filename.as_deref(),
+            lifecycle_script,
+            pep517_backend,
+            native_marker,
+            editable,
+            evidence,
+            json,
+        }),
+        Command::VmCanaries { json } => render_vm_canaries(json),
+        Command::VmSyncPolicy { json } => render_vm_sync_policy(json),
         Command::PolicyExplain { subject } => {
             format!(
                 "whoathere policy explain\nsubject={subject}\ndefault_ci_outage=deny\nunknown_source=manual_review_or_deny\nexit_deny={}",
@@ -889,7 +1031,7 @@ fn render_command_text(command: Command) -> String {
                 execution
             )
         }
-        Command::Help => "whoathere <doctor|status|config check <path>|policy check <path>|policy check-source <pkg> <source> [--policy <path>|--internal-prefix <prefix>]|shim install --dry-run [--include-python]|shim install --dest <sandbox-dir> [--include-python]|endpoint setup --shim-dir <dir> --workspace <path> --vault-origin <url> [--policy <path>] [--audit-path <path>] [--replay-store <path>] [--include-python]|protect [--workspace <path> --vault-origin <url>] npm -- <args>|protect pip -- <args>|scan manifest npm-package-json <path>|scan manifest pyproject <path>|source scan <kind> <path> --vault-origin <url>|source scan-workspace <path> --vault-origin <url>|source context <tool> --vault-origin <url>|launch plan [--workspace <path> --vault-origin <url> --runtime-dir <path>] npm -- <args>|launch provider-check [--workspace <path> --vault-origin <url> --runtime-dir <path>] npm -- <args>|launch audit [--audit-path <path> --workspace <path> --vault-origin <url> --runtime-dir <path>] npm -- <args>|launch cleanup --manifest <path> [--execute] [--audit-path <path>]|evidence profiles|evidence providers [--json] [--require-ready] [--scope all|current|linux|macos]|evidence challenge --subject <id> --context-hash <hash> --vault-host <host> [--json] [--scope current|linux|macos]|evidence linux-active-probe-fixture --subject <id> --context-hash <hash> --vault-host <host> --profile complete|incomplete|overpermissive [--json]|evidence linux-active-probe-admission --subject <id> --context-hash <hash> --vault-host <host> --profile complete|incomplete|overpermissive [--replay|--unknown-challenge|--mutate-context] [--json]|evidence linux-active-probe-docker --subject <id> --context-hash <hash> --vault-host <host> [--image <image>] [--docker-network <internal-network>] [--replay-store <path>] [--audit-path <path>] [--execute] [--admit] [--replay] [--json]|vault simulate [--complete]|vault challenge-sim [--replay|--unknown-challenge|--mutate-context|--expired]|vault dev-http <METHOD> <PATH> [--header <name:value>] [body]|vault dev-serve [--bind <loopback:port>] [--max-requests <n>] [--idle-timeout-ms <ms>]>".to_string(),
+        Command::Help => "whoathere <doctor [--json]|status|config check <path>|policy check <path>|policy check-source <pkg> <source> [--policy <path>|--internal-prefix <prefix>]|shim install --dry-run [--include-python]|shim install --dest <sandbox-dir> [--include-python]|endpoint setup --shim-dir <dir> --workspace <path> --vault-origin <url> [--policy <path>] [--audit-path <path>] [--replay-store <path>] [--include-python]|vm status [--state-dir <dir>] [--manifest <path>] [--json]|vm init [--state-dir <dir>] [--manifest <path>] [--memory-mib <n>] [--disk-gib <n>] [--execute]|vm start|suspend|reset|prune [--state-dir <dir>] [--execute]|vm release-plan [--class <class>|--ecosystem <name> --source <kind> --filename <name>] [--vm-ready --static-clean --dynamic-clean --egress-clean --no-canary-access --scanner-clean --diff-clean --freshness-allowed] [--json]|vm canaries [--json]|vm sync-policy [--json]|protect [--workspace <path> --vault-origin <url>] npm|pip|uv -- <args>|scan manifest npm-package-json <path>|scan manifest pyproject <path>|source scan <kind> <path> --vault-origin <url>|source scan-workspace <path> --vault-origin <url>|source context <tool> --vault-origin <url>|launch plan [--workspace <path> --vault-origin <url> --runtime-dir <path>] npm -- <args>|launch provider-check [--workspace <path> --vault-origin <url> --runtime-dir <path>] npm -- <args>|launch audit [--audit-path <path> --workspace <path> --vault-origin <url> --runtime-dir <path>] npm -- <args>|launch cleanup --manifest <path> [--execute] [--audit-path <path>]|evidence profiles|evidence providers [--json] [--require-ready] [--scope all|current|linux|macos]|evidence challenge --subject <id> --context-hash <hash> --vault-host <host> [--json] [--scope current|linux|macos]|evidence linux-active-probe-fixture --subject <id> --context-hash <hash> --vault-host <host> --profile complete|incomplete|overpermissive [--json]|evidence linux-active-probe-admission --subject <id> --context-hash <hash> --vault-host <host> --profile complete|incomplete|overpermissive [--replay|--unknown-challenge|--mutate-context] [--json]|evidence linux-active-probe-docker --subject <id> --context-hash <hash> --vault-host <host> [--image <image>] [--docker-network <internal-network>] [--replay-store <path>] [--audit-path <path>] [--execute] [--admit] [--replay] [--json]|vault simulate [--complete]|vault challenge-sim [--replay|--unknown-challenge|--mutate-context|--expired]|vault dev-http <METHOD> <PATH> [--header <name:value>] [body]|vault dev-serve [--bind <loopback:port>] [--max-requests <n>] [--idle-timeout-ms <ms>]>".to_string(),
     }
 }
 
@@ -1262,6 +1404,491 @@ fn parse_protect_with_env(args: &[String], env_lookup: impl Fn(&str) -> Option<S
     }
 }
 
+fn render_vm_status(state_dir: Option<&str>, manifest_path: Option<&str>, json: bool) -> String {
+    let config = macos_vm_config(state_dir, None, None);
+    let (manifest, manifest_load_reason) = load_macos_vm_manifest(manifest_path);
+    let status = status_from_config(&config, HostPlatform::current(), manifest.as_ref());
+    if json {
+        return render_vm_status_json(&status, manifest_path, manifest_load_reason.as_deref());
+    }
+    let mut output = format!(
+        "whoathere vm status\nschema_version={}\nrelease_target={}\ntarget_arch={}\nvm_boundary={}\nnetwork_model={}\nsync_policy={}\nstate_dir={}\nhost_os={}\nhost_arch={}\nmemory_mib={}\ndisk_gib={}\nauto_suspend_minutes={}\nstate_dir_exists={}\nmanifest_path={}\nmanifest_present={}\nmanifest_valid={}\nhelper_ready_marker_present={}\nimage_ready_marker_present={}\nready={}\nreason_codes={:?}",
+        status.schema_version,
+        status.release_target,
+        status.target_arch,
+        status.vm_boundary,
+        status.network_model,
+        status.sync_policy,
+        status.state_dir.display(),
+        status.host.os,
+        status.host.arch,
+        status.memory_mib,
+        status.disk_gib,
+        status.auto_suspend_minutes,
+        status.state_dir_exists,
+        manifest_path.unwrap_or("<default-state-dir-manifest>"),
+        status.manifest_present,
+        status.manifest_valid,
+        status.helper_ready_marker_present,
+        status.image_ready_marker_present,
+        status.ready,
+        status.reason_codes
+    );
+    if let Some(reason) = manifest_load_reason {
+        output.push_str(&format!("\nmanifest_load_reason={reason}"));
+    }
+    output
+}
+
+fn render_vm_init(
+    state_dir: Option<&str>,
+    manifest_path: Option<&str>,
+    memory_mib: Option<u64>,
+    disk_gib: Option<u64>,
+    execute: bool,
+) -> String {
+    let config = macos_vm_config(state_dir, memory_mib, disk_gib);
+    let (manifest, manifest_load_reason) = load_macos_vm_manifest(manifest_path);
+    let status = status_from_config(&config, HostPlatform::current(), manifest.as_ref());
+    let mut reason_codes = status.reason_codes.clone();
+    if !execute {
+        reason_codes.push("macos_vm_init_execute_required_for_mutation".to_string());
+    }
+    reason_codes.sort();
+    reason_codes.dedup();
+
+    let mut created_state_dirs = false;
+    let mut mutation_error = None;
+    if execute {
+        match create_state_dirs(&config.state_dir) {
+            Ok(()) => created_state_dirs = true,
+            Err(error) => mutation_error = Some(error.to_string()),
+        }
+    }
+    if mutation_error.is_some() {
+        reason_codes.push("macos_vm_state_dir_create_failed".to_string());
+    }
+
+    let mut output = format!(
+        "whoathere vm init\nschema_version={}\nrelease_target={}\ntarget_arch={}\nvm_boundary={}\nnetwork_model={}\nsync_policy={}\nmutation={}\ncreated_state_dirs={}\nstate_dir={}\nmanifest_path={}\nmemory_mib={}\ndisk_gib={}\nnative_memory_mib={}\nready=false\nreason_codes={:?}",
+        whoathere_macos_vm::STATUS_SCHEMA_VERSION,
+        RELEASE_TARGET,
+        TARGET_ARCH,
+        VM_BOUNDARY,
+        NETWORK_MODEL,
+        SYNC_POLICY,
+        execute,
+        created_state_dirs,
+        config.state_dir.display(),
+        manifest_path.unwrap_or("<default-state-dir-manifest>"),
+        config.memory_mib,
+        config.disk_gib,
+        DEFAULT_NATIVE_MEMORY_MIB,
+        reason_codes
+    );
+    if let Some(reason) = manifest_load_reason {
+        output.push_str(&format!("\nmanifest_load_reason={reason}"));
+    }
+    if let Some(error) = mutation_error {
+        output.push_str(&format!(
+            "\nstatus=error\nerror={}",
+            redacted_scalar(&error)
+        ));
+    }
+    output
+}
+
+fn render_vm_action(action: VmAction, state_dir: Option<&str>, execute: bool) -> String {
+    let action_name = match action {
+        VmAction::Start => "start",
+        VmAction::Suspend => "suspend",
+        VmAction::Reset => "reset",
+        VmAction::Prune => "prune",
+    };
+    let config = macos_vm_config(state_dir, None, None);
+    format!(
+        "whoathere vm {action_name}\nrelease_target={}\nstate_dir={}\nmutation={}\nstatus=blocked\nexit_code={}\nready=false\nreason_code=macos_vm_runtime_not_implemented\nexplanation=macOS VM runtime actions remain blocked until the Virtualization.framework helper is implemented and signed",
+        RELEASE_TARGET,
+        config.state_dir.display(),
+        execute,
+        ExitCode::Misuse.code()
+    )
+}
+
+fn macos_vm_config(
+    state_dir: Option<&str>,
+    memory_mib: Option<u64>,
+    disk_gib: Option<u64>,
+) -> MacosVmConfig {
+    let mut config = MacosVmConfig::new(
+        state_dir
+            .map(PathBuf::from)
+            .unwrap_or_else(default_state_dir),
+    );
+    if let Some(memory_mib) = memory_mib {
+        config.memory_mib = memory_mib;
+    }
+    if let Some(disk_gib) = disk_gib {
+        config.disk_gib = disk_gib;
+    }
+    config
+}
+
+fn load_macos_vm_manifest(
+    manifest_path: Option<&str>,
+) -> (Option<MacosVmImageManifest>, Option<String>) {
+    let Some(path) = manifest_path else {
+        return (
+            None,
+            Some("macos_vm_manifest_path_not_configured".to_string()),
+        );
+    };
+    match std::fs::read_to_string(path) {
+        Ok(contents) => match parse_image_manifest(&contents) {
+            Ok(manifest) => (Some(manifest), None),
+            Err(error) => (None, Some(redacted_scalar(&error))),
+        },
+        Err(error) => (None, Some(redacted_scalar(&error.to_string()))),
+    }
+}
+
+fn render_vm_status_json(
+    status: &whoathere_macos_vm::MacosVmStatus,
+    manifest_path: Option<&str>,
+    manifest_load_reason: Option<&str>,
+) -> String {
+    format!(
+        "{{\n  \"command\": \"whoathere vm status\",\n  \"schema_version\": {},\n  \"release_target\": {},\n  \"target_arch\": {},\n  \"vm_boundary\": {},\n  \"network_model\": {},\n  \"sync_policy\": {},\n  \"state_dir\": {},\n  \"host_os\": {},\n  \"host_arch\": {},\n  \"memory_mib\": {},\n  \"disk_gib\": {},\n  \"auto_suspend_minutes\": {},\n  \"state_dir_exists\": {},\n  \"manifest_path\": {},\n  \"manifest_present\": {},\n  \"manifest_valid\": {},\n  \"helper_ready_marker_present\": {},\n  \"image_ready_marker_present\": {},\n  \"ready\": {},\n  \"reason_codes\": [{}],\n  \"manifest_load_reason\": {}\n}}",
+        json_string(status.schema_version),
+        json_string(status.release_target),
+        json_string(status.target_arch),
+        json_string(status.vm_boundary),
+        json_string(status.network_model),
+        json_string(status.sync_policy),
+        json_string(&status.state_dir.display().to_string()),
+        json_string(&status.host.os),
+        json_string(&status.host.arch),
+        status.memory_mib,
+        status.disk_gib,
+        status.auto_suspend_minutes,
+        status.state_dir_exists,
+        json_string(manifest_path.unwrap_or("<default-state-dir-manifest>")),
+        status.manifest_present,
+        status.manifest_valid,
+        status.helper_ready_marker_present,
+        status.image_ready_marker_present,
+        status.ready,
+        status
+            .reason_codes
+            .iter()
+            .map(|reason| json_string(reason))
+            .collect::<Vec<_>>()
+            .join(", "),
+        manifest_load_reason
+            .map(json_string)
+            .unwrap_or_else(|| "null".to_string())
+    )
+}
+
+#[derive(Debug, Clone)]
+struct VmReleasePlanArgs<'a> {
+    artifact_class: Option<&'a str>,
+    ecosystem: Option<&'a str>,
+    source: Option<&'a str>,
+    filename: Option<&'a str>,
+    lifecycle_script: bool,
+    pep517_backend: bool,
+    native_marker: bool,
+    editable: bool,
+    evidence: LocalEvidenceFlags,
+    json: bool,
+}
+
+fn render_doctor(json: bool) -> String {
+    let backend = UnsupportedBackend;
+    let plan = backend.plan(ExecutionMode::Protected);
+    let config = macos_vm_config(None, None, None);
+    let status = status_from_config(&config, HostPlatform::current(), None);
+    let scanners = scanner_adapters();
+    let scanner_available = scanners
+        .iter()
+        .filter(|adapter| command_on_path(adapter.name))
+        .count();
+    if json {
+        let scanner_json = scanners
+            .iter()
+            .map(|adapter| {
+                format!(
+                    "{{\"name\": {}, \"available\": {}, \"required_for_auto_sync\": {}, \"evidence_role\": {}}}",
+                    json_string(adapter.name),
+                    command_on_path(adapter.name),
+                    adapter.required_for_auto_sync,
+                    json_string(adapter.evidence_role)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        return format!(
+            "{{\n  \"command\": \"whoathere doctor\",\n  \"status\": \"ok\",\n  \"release_target\": {},\n  \"release_claim\": {},\n  \"sandbox_label\": {},\n  \"high_risk_allowed\": {},\n  \"vm_ready\": {},\n  \"vm_reason_codes\": {},\n  \"scanner_available_count\": {},\n  \"scanner_required_count\": {},\n  \"scanners\": [{}]\n}}",
+            json_string(RELEASE_TARGET),
+            json_string(RELEASE_CLAIM),
+            json_string(plan.label),
+            plan.high_risk_allowed,
+            status.ready,
+            json_string_array(&status.reason_codes),
+            scanner_available,
+            scanners
+                .iter()
+                .filter(|adapter| adapter.required_for_auto_sync)
+                .count(),
+            scanner_json
+        );
+    }
+    let scanner_lines = scanners
+        .iter()
+        .map(|adapter| {
+            format!(
+                "scanner_adapter={} available={} required_for_auto_sync={} evidence_role=\"{}\"",
+                adapter.name,
+                command_on_path(adapter.name),
+                adapter.required_for_auto_sync,
+                adapter.evidence_role
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "whoathere doctor\nstatus=ok\nrelease_target={}\nrelease_claim={}\nsandbox_label={}\nhigh_risk_allowed={}\nvm_ready={}\nvm_reason_codes={:?}\nscanner_available_count={}\n{}",
+        RELEASE_TARGET,
+        RELEASE_CLAIM,
+        plan.label,
+        plan.high_risk_allowed,
+        status.ready,
+        status.reason_codes,
+        scanner_available,
+        scanner_lines
+    )
+}
+
+fn render_vm_release_plan(args: VmReleasePlanArgs<'_>) -> String {
+    let package_class = match package_class_from_release_args(&args) {
+        Ok(package_class) => package_class,
+        Err(reason) => {
+            if args.json {
+                return format!(
+                    "{{\n  \"command\": \"whoathere vm release-plan\",\n  \"status\": \"error\",\n  \"reason_code\": {},\n  \"exit_code\": {}\n}}",
+                    json_string(reason),
+                    ExitCode::Misuse.code()
+                );
+            }
+            return format!(
+                "whoathere vm release-plan\nstatus=error\nreason_code={reason}\nexit_code={}",
+                ExitCode::Misuse.code()
+            );
+        }
+    };
+    let decision = decide_local_sync(package_class, &args.evidence);
+    let exit_code = local_admission_exit_code(decision.verdict);
+    if args.json {
+        return format!(
+            "{{\n  \"command\": \"whoathere vm release-plan\",\n  \"release_target\": {},\n  \"release_claim\": {},\n  \"vm_boundary\": {},\n  \"network_model\": {},\n  \"sync_policy\": {},\n  \"authorization\": false,\n  \"sync_authorized\": false,\n  \"authorization_reason\": \"release_plan_is_not_runtime_verdict\",\n  \"package_class\": {},\n  \"verdict\": {},\n  \"auto_sync_eligible\": {},\n  \"sync_paths\": {},\n  \"required_evidence\": {},\n  \"reason_codes\": {},\n  \"evidence\": {{\"vm_ready\": {}, \"static_clean\": {}, \"dynamic_clean\": {}, \"egress_clean\": {}, \"no_canary_access\": {}, \"scanner_clean\": {}, \"diff_clean_or_baseline_absent\": {}, \"freshness_allowed\": {}}},\n  \"exit_code\": {exit_code}\n}}",
+            json_string(RELEASE_TARGET),
+            json_string(RELEASE_CLAIM),
+            json_string(VM_BOUNDARY),
+            json_string(NETWORK_MODEL),
+            json_string(SYNC_POLICY),
+            json_string(package_class.as_str()),
+            json_string(decision.verdict.as_str()),
+            decision.auto_sync_eligible,
+            json_string_array(
+                &decision
+                    .sync_paths
+                    .iter()
+                    .map(|path| (*path).to_string())
+                    .collect::<Vec<_>>()
+            ),
+            json_string_array(
+                &decision
+                    .required_evidence
+                    .iter()
+                    .map(|evidence| (*evidence).to_string())
+                    .collect::<Vec<_>>()
+            ),
+            json_string_array(&decision.reason_codes),
+            args.evidence.vm_ready,
+            args.evidence.static_clean,
+            args.evidence.dynamic_clean,
+            args.evidence.egress_clean,
+            args.evidence.no_canary_access,
+            args.evidence.scanner_clean,
+            args.evidence.diff_clean_or_baseline_absent,
+            args.evidence.freshness_allowed,
+        );
+    }
+    format!(
+        "whoathere vm release-plan\nrelease_target={}\nrelease_claim={}\nvm_boundary={}\nnetwork_model={}\nsync_policy={}\nauthorization=false\nsync_authorized=false\nauthorization_reason=release_plan_is_not_runtime_verdict\npackage_class={}\nverdict={}\nauto_sync_eligible={}\nsync_paths={:?}\nrequired_evidence={:?}\nreason_codes={:?}\nevidence_vm_ready={}\nevidence_static_clean={}\nevidence_dynamic_clean={}\nevidence_egress_clean={}\nevidence_no_canary_access={}\nevidence_scanner_clean={}\nevidence_diff_clean_or_baseline_absent={}\nevidence_freshness_allowed={}\nexit_code={exit_code}",
+        RELEASE_TARGET,
+        RELEASE_CLAIM,
+        VM_BOUNDARY,
+        NETWORK_MODEL,
+        SYNC_POLICY,
+        package_class.as_str(),
+        decision.verdict.as_str(),
+        decision.auto_sync_eligible,
+        decision.sync_paths,
+        decision.required_evidence,
+        decision.reason_codes,
+        args.evidence.vm_ready,
+        args.evidence.static_clean,
+        args.evidence.dynamic_clean,
+        args.evidence.egress_clean,
+        args.evidence.no_canary_access,
+        args.evidence.scanner_clean,
+        args.evidence.diff_clean_or_baseline_absent,
+        args.evidence.freshness_allowed,
+    )
+}
+
+fn render_vm_canaries(json: bool) -> String {
+    let canaries = default_canaries();
+    if json {
+        let canary_json = canaries
+            .iter()
+            .map(|canary| {
+                format!(
+                    "{{\"category\": {}, \"env_name\": {}, \"path_hint\": {}}}",
+                    json_string(canary.category),
+                    json_string(canary.env_name),
+                    json_string(canary.path_hint)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        return format!(
+            "{{\n  \"command\": \"whoathere vm canaries\",\n  \"release_target\": {},\n  \"canaries\": [{}]\n}}",
+            json_string(RELEASE_TARGET),
+            canary_json
+        );
+    }
+    let rows = canaries
+        .iter()
+        .map(|canary| {
+            format!(
+                "canary category={} env_name={} path_hint={}",
+                canary.category,
+                canary.env_name,
+                redacted_scalar(canary.path_hint)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "whoathere vm canaries\nrelease_target={}\nhost_secret_mounting=false\n{}",
+        RELEASE_TARGET, rows
+    )
+}
+
+fn render_vm_sync_policy(json: bool) -> String {
+    let rules = default_sync_allowlist();
+    let evidence = required_local_evidence();
+    let scanners = scanner_adapters();
+    if json {
+        let rule_json = rules
+            .iter()
+            .map(|rule| {
+                format!(
+                    "{{\"path_pattern\": {}, \"reason\": {}}}",
+                    json_string(rule.path_pattern),
+                    json_string(rule.reason)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let scanner_json = scanners
+            .iter()
+            .map(|adapter| {
+                format!(
+                    "{{\"name\": {}, \"required_for_auto_sync\": {}, \"evidence_role\": {}}}",
+                    json_string(adapter.name),
+                    adapter.required_for_auto_sync,
+                    json_string(adapter.evidence_role)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        return format!(
+            "{{\n  \"command\": \"whoathere vm sync-policy\",\n  \"release_target\": {},\n  \"sync_policy\": {},\n  \"auto_sync_classes\": [\"npm.registry_tarball.v1\", \"pypi.pure_wheel.v1\"],\n  \"deny_default_classes\": [\"direct_vcs_editable.v1\", \"unsupported_unknown.v1\"],\n  \"manual_review_classes\": [\"pypi.sdist_pep517.v1\", \"pypi.binary_wheel.v1\", \"native_extension.v1\"],\n  \"sync_allowlist\": [{}],\n  \"required_evidence\": {},\n  \"scanner_adapters\": [{}]\n}}",
+            json_string(RELEASE_TARGET),
+            json_string(SYNC_POLICY),
+            rule_json,
+            json_string_array(&evidence.iter().map(|item| (*item).to_string()).collect::<Vec<_>>()),
+            scanner_json
+        );
+    }
+    let rule_rows = rules
+        .iter()
+        .map(|rule| {
+            format!(
+                "sync_allow path_pattern={} reason=\"{}\"",
+                rule.path_pattern, rule.reason
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let scanner_rows = scanners
+        .iter()
+        .map(|adapter| {
+            format!(
+                "scanner_adapter={} required_for_auto_sync={} evidence_role=\"{}\"",
+                adapter.name, adapter.required_for_auto_sync, adapter.evidence_role
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "whoathere vm sync-policy\nrelease_target={}\nsync_policy={}\nauto_sync_classes=[\"npm.registry_tarball.v1\", \"pypi.pure_wheel.v1\"]\nmanual_review_classes=[\"pypi.sdist_pep517.v1\", \"pypi.binary_wheel.v1\", \"native_extension.v1\"]\ndeny_default_classes=[\"direct_vcs_editable.v1\", \"unsupported_unknown.v1\"]\nrequired_evidence={:?}\n{}\n{}",
+        RELEASE_TARGET, SYNC_POLICY, evidence, rule_rows, scanner_rows
+    )
+}
+
+fn package_class_from_release_args(
+    args: &VmReleasePlanArgs<'_>,
+) -> Result<PackageClass, &'static str> {
+    if let Some(artifact_class) = args.artifact_class {
+        return PackageClass::parse(artifact_class).ok_or("macos_vm_package_class_invalid");
+    }
+    let Some(ecosystem) = args.ecosystem else {
+        return Err("macos_vm_release_plan_class_or_ecosystem_required");
+    };
+    let Some(source) = args.source else {
+        return Err("macos_vm_release_plan_class_or_source_required");
+    };
+    let Some(filename) = args.filename else {
+        return Err("macos_vm_release_plan_class_or_filename_required");
+    };
+    let mut signals = ArtifactSignals::new(ecosystem, source, filename);
+    signals.has_lifecycle_script = args.lifecycle_script;
+    signals.has_pep517_backend = args.pep517_backend;
+    signals.has_native_marker = args.native_marker;
+    signals.editable = args.editable;
+    Ok(classify_artifact(&signals))
+}
+
+fn local_admission_exit_code(verdict: whoathere_macos_vm::LocalAdmissionVerdict) -> i32 {
+    match verdict {
+        whoathere_macos_vm::LocalAdmissionVerdict::AutoSync => ExitCode::Allow.code(),
+        whoathere_macos_vm::LocalAdmissionVerdict::ManualReview => ExitCode::ManualReview.code(),
+        whoathere_macos_vm::LocalAdmissionVerdict::Deny => ExitCode::Deny.code(),
+    }
+}
+
+fn command_on_path(command: &str) -> bool {
+    let Some(paths) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&paths).any(|path| path.join(command).is_file())
+}
+
 fn nonempty_env_default(env_lookup: &impl Fn(&str) -> Option<String>, key: &str) -> Option<String> {
     env_lookup(key).filter(|value| !value.trim().is_empty())
 }
@@ -1319,6 +1946,19 @@ fn parse_usize_flag(args: &[String], flag: &str) -> Option<usize> {
 
 fn parse_u64_flag(args: &[String], flag: &str) -> Option<u64> {
     parse_flag_value(args, flag)?.parse::<u64>().ok()
+}
+
+fn parse_local_evidence_flags(args: &[String]) -> LocalEvidenceFlags {
+    LocalEvidenceFlags {
+        vm_ready: args.iter().any(|arg| arg == "--vm-ready"),
+        static_clean: args.iter().any(|arg| arg == "--static-clean"),
+        dynamic_clean: args.iter().any(|arg| arg == "--dynamic-clean"),
+        egress_clean: args.iter().any(|arg| arg == "--egress-clean"),
+        no_canary_access: args.iter().any(|arg| arg == "--no-canary-access"),
+        scanner_clean: args.iter().any(|arg| arg == "--scanner-clean"),
+        diff_clean_or_baseline_absent: args.iter().any(|arg| arg == "--diff-clean"),
+        freshness_allowed: args.iter().any(|arg| arg == "--freshness-allowed"),
+    }
 }
 
 fn load_policy_document(path: &str) -> Result<PolicyDocument, String> {
@@ -2072,6 +2712,8 @@ fn package_identity_gate_applies(kind: CommandKind) -> bool {
             | CommandKind::NpmExec
             | CommandKind::PipInstall
             | CommandKind::PythonModulePipInstall
+            | CommandKind::UvSync
+            | CommandKind::UvPipInstall
     )
 }
 
@@ -2080,9 +2722,10 @@ fn package_identity_ecosystem_for_command(kind: CommandKind) -> PackageIdentityE
         CommandKind::NpmInstall | CommandKind::NpmCi | CommandKind::NpmExec => {
             PackageIdentityEcosystem::Npm
         }
-        CommandKind::PipInstall | CommandKind::PythonModulePipInstall => {
-            PackageIdentityEcosystem::Python
-        }
+        CommandKind::PipInstall
+        | CommandKind::PythonModulePipInstall
+        | CommandKind::UvSync
+        | CommandKind::UvPipInstall => PackageIdentityEcosystem::Python,
         CommandKind::VersionProbe | CommandKind::Unknown => PackageIdentityEcosystem::Npm,
     }
 }
@@ -2235,7 +2878,9 @@ fn command_package_identities(
                 });
             }
         }
-        CommandKind::PipInstall | CommandKind::PythonModulePipInstall => {
+        CommandKind::PipInstall
+        | CommandKind::PythonModulePipInstall
+        | CommandKind::UvPipInstall => {
             for (name, source_kind) in pip_package_arg_entries(tool, args, kind) {
                 report.push_identity(PackageIdentity {
                     ecosystem: PackageIdentityEcosystem::Python,
@@ -2245,7 +2890,10 @@ fn command_package_identities(
                 });
             }
         }
-        CommandKind::NpmCi | CommandKind::VersionProbe | CommandKind::Unknown => {}
+        CommandKind::NpmCi
+        | CommandKind::UvSync
+        | CommandKind::VersionProbe
+        | CommandKind::Unknown => {}
     }
     report
 }
@@ -5334,6 +5982,211 @@ mod tests {
                 include_python: false
             }
         );
+    }
+
+    #[test]
+    fn parses_vm_status_command() {
+        let args = vec![
+            "vm".to_string(),
+            "status".to_string(),
+            "--state-dir".to_string(),
+            "/tmp/whoathere-vm".to_string(),
+            "--manifest".to_string(),
+            "/tmp/whoathere-vm/image.manifest".to_string(),
+            "--json".to_string(),
+        ];
+        assert_eq!(
+            parse_command(&args),
+            Command::VmStatus {
+                state_dir: Some("/tmp/whoathere-vm".to_string()),
+                manifest_path: Some("/tmp/whoathere-vm/image.manifest".to_string()),
+                json: true
+            }
+        );
+    }
+
+    #[test]
+    fn vm_status_reports_release_contract_without_authorizing_runtime() {
+        let result = evaluate_command(Command::VmStatus {
+            state_dir: Some("/tmp/whoathere-vm-status-test".to_string()),
+            manifest_path: None,
+            json: false,
+        });
+        assert_eq!(result.exit_code, 0);
+        assert!(result
+            .output
+            .contains("release_target=macos_apple_silicon_local_vm"));
+        assert!(result
+            .output
+            .contains("vm_boundary=apple_virtualization_macos_guest"));
+        assert!(result.output.contains("network_model=recorded_egress"));
+        assert!(result.output.contains("sync_policy=pure_safe_only"));
+        assert!(result.output.contains("ready=false"));
+        assert!(result.output.contains("macos_vm_runtime_not_implemented"));
+    }
+
+    #[test]
+    fn vm_init_execute_creates_state_directories_only() {
+        let root = temp_root("whoathere-cli-vm-init");
+        let _ = std::fs::remove_dir_all(&root);
+        let result = evaluate_command(Command::VmInit {
+            state_dir: Some(root.display().to_string()),
+            manifest_path: None,
+            memory_mib: Some(6144),
+            disk_gib: Some(40),
+            execute: true,
+        });
+        assert_eq!(result.exit_code, 0);
+        assert!(result.output.contains("mutation=true"));
+        assert!(result.output.contains("created_state_dirs=true"));
+        assert!(root.join("cache").is_dir());
+        assert!(root.join("runs").is_dir());
+        assert!(root.join("reports").is_dir());
+        assert!(root.join("overlays").is_dir());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vm_runtime_actions_remain_blocked_until_helper_exists() {
+        let result = evaluate_command(Command::VmAction {
+            action: VmAction::Start,
+            state_dir: Some("/tmp/whoathere-vm-action".to_string()),
+            execute: true,
+        });
+        assert_eq!(result.exit_code, 64);
+        assert!(result.output.contains("status=blocked"));
+        assert!(result
+            .output
+            .contains("reason_code=macos_vm_runtime_not_implemented"));
+    }
+
+    #[test]
+    fn vm_release_plan_auto_sync_requires_complete_clean_evidence() {
+        let result = evaluate_command(Command::VmReleasePlan {
+            artifact_class: Some("npm.registry_tarball.v1".to_string()),
+            ecosystem: None,
+            source: None,
+            filename: None,
+            lifecycle_script: false,
+            pep517_backend: false,
+            native_marker: false,
+            editable: false,
+            evidence: LocalEvidenceFlags::clean(true),
+            json: false,
+        });
+        assert_eq!(result.exit_code, 0);
+        assert!(result.output.contains("verdict=auto_sync"));
+        assert!(result
+            .output
+            .contains("sync_paths=[\"node_modules/**\", \"package-lock.json\"]"));
+    }
+
+    #[test]
+    fn vm_release_plan_keeps_binary_and_direct_classes_out_of_auto_sync() {
+        let binary = evaluate_command(Command::VmReleasePlan {
+            artifact_class: Some("pypi.binary_wheel.v1".to_string()),
+            ecosystem: None,
+            source: None,
+            filename: None,
+            lifecycle_script: false,
+            pep517_backend: false,
+            native_marker: false,
+            editable: false,
+            evidence: LocalEvidenceFlags::clean(true),
+            json: false,
+        });
+        assert_eq!(binary.exit_code, 22);
+        assert!(binary.output.contains("verdict=manual_review"));
+        assert!(binary
+            .output
+            .contains("binary_wheel_requires_manual_review"));
+
+        let direct = evaluate_command(Command::VmReleasePlan {
+            artifact_class: Some("direct_vcs_editable.v1".to_string()),
+            ecosystem: None,
+            source: None,
+            filename: None,
+            lifecycle_script: false,
+            pep517_backend: false,
+            native_marker: false,
+            editable: false,
+            evidence: LocalEvidenceFlags::clean(true),
+            json: false,
+        });
+        assert_eq!(direct.exit_code, 20);
+        assert!(direct.output.contains("verdict=deny"));
+        assert!(direct
+            .output
+            .contains("direct_vcs_editable_denied_by_default"));
+    }
+
+    #[test]
+    fn vm_release_plan_can_classify_from_artifact_signals() {
+        let result = evaluate_command(Command::VmReleasePlan {
+            artifact_class: None,
+            ecosystem: Some("pypi".to_string()),
+            source: Some("registry".to_string()),
+            filename: Some("pkg-1.0.0-py3-none-any.whl".to_string()),
+            lifecycle_script: false,
+            pep517_backend: false,
+            native_marker: false,
+            editable: false,
+            evidence: LocalEvidenceFlags::clean(true),
+            json: true,
+        });
+        assert_eq!(result.exit_code, 0);
+        assert!(result
+            .output
+            .contains("\"package_class\": \"pypi.pure_wheel.v1\""));
+        assert!(result.output.contains("\"verdict\": \"auto_sync\""));
+    }
+
+    #[test]
+    fn vm_canaries_and_sync_policy_expose_release_contract() {
+        let canaries = evaluate_command(Command::VmCanaries { json: false });
+        assert_eq!(canaries.exit_code, 0);
+        assert!(canaries.output.contains("host_secret_mounting=false"));
+        assert!(canaries.output.contains("env_name=NPM_TOKEN"));
+        assert!(canaries.output.contains("env_name=OPENAI_API_KEY"));
+
+        let sync = evaluate_command(Command::VmSyncPolicy { json: false });
+        assert_eq!(sync.exit_code, 0);
+        assert!(sync
+            .output
+            .contains("auto_sync_classes=[\"npm.registry_tarball.v1\", \"pypi.pure_wheel.v1\"]"));
+        assert!(sync.output.contains(
+            "deny_default_classes=[\"direct_vcs_editable.v1\", \"unsupported_unknown.v1\"]"
+        ));
+        assert!(sync.output.contains("scanner_adapter=guarddog"));
+    }
+
+    #[test]
+    fn doctor_json_reports_vm_release_readiness_without_enabling_runtime() {
+        let result = evaluate_command(Command::Doctor { json: true });
+        assert_eq!(result.exit_code, 0);
+        assert!(result
+            .output
+            .contains("\"release_target\": \"macos_apple_silicon_local_vm\""));
+        assert!(result.output.contains("\"vm_ready\": false"));
+        assert!(result.output.contains("macos_vm_runtime_not_implemented"));
+        assert!(result.output.contains("\"high_risk_allowed\": false"));
+    }
+
+    #[test]
+    fn protect_uv_sync_is_classified_before_fail_closed_execution() {
+        let result = evaluate_command(Command::Protect {
+            tool: "uv".to_string(),
+            args: vec!["sync".to_string()],
+            execute: false,
+            policy_path: None,
+            workspace: None,
+            vault_origin: None,
+            audit_path: None,
+        });
+        assert!(result.output.contains("ecosystem=Pypi"));
+        assert!(result.output.contains("kind=UvSync"));
+        assert!(result.output.contains("risk=High"));
+        assert!(result.output.contains("uv_sync_project_environment"));
     }
 
     #[test]

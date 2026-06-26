@@ -494,12 +494,16 @@
         <li><a href="#summary">Summary</a></li>
         <li><a href="whoathere-threat-model-review.html">Threat Model Review</a></li>
         <li><a href="#mental-model">Mental Model</a></li>
+        <li><a href="#security-model-current">Security Model: Current</a></li>
+        <li><a href="#security-model-target">Security Model: Target</a></li>
+        <li><a href="#security-model-gap-plan">Security Model: Gap Plan</a></li>
         <li><a href="#architecture">Architecture</a></li>
         <li><a href="#phase-status">Phase Status</a></li>
         <li><a href="#validated">Validated</a></li>
         <li><a href="#marginal">Marginal Areas</a></li>
         <li><a href="#not-built">Not Built Yet</a></li>
         <li><a href="#release-readiness">Release Readiness</a></li>
+        <li><a href="#macos-local-release">macOS Local Release Target</a></li>
         <li><a href="#next-steps">Next Steps</a></li>
         <li><a href="#best-in-class-plan">Best-In-Class Plan</a></li>
         <li><a href="#sources">Sources</a></li>
@@ -515,8 +519,8 @@
           promoted-cache registry routes, static scanning, fixture-safe dynamic behavior evidence, and
           audit-safe admin workflow contracts. The major security shape is right: unknown or unproven
           package execution does not proceed. The missing work is the hard production boundary: real
-          macOS/Linux isolation that can run npm/pip safely, real AWS Vault persistence and fetch workers,
-          and real isolated detonation of untrusted packages.
+          macOS VM isolation that can run npm/pip/uv safely, real install/detonation telemetry,
+          safe sync-back, and later the AWS Vault persistence and fetch workers needed for enterprise use.
         </p>
         <div class="meta">
           <span class="pill good">Started from clean tree</span>
@@ -625,6 +629,252 @@
           bound to the exact package digest, request, policy, and execution context. Full application
           runtime protection is still out of scope, but package admission needs enough install, build,
           import, and representative API-use probes to catch malicious behavior before approval.
+        </p>
+      </section>
+
+      <section id="security-model-current">
+        <h2>Security Model: Current</h2>
+        <p class="lede">
+          The current system is a fail-closed local security prototype. Its strongest property is that
+          supported high-risk npm and pip workflows are stopped before package-manager execution unless
+          the exact proof requirements are satisfied. It is useful as a guardrail and validation harness,
+          but it is not yet a production sandbox or production package admission service.
+        </p>
+
+        <table class="plain-table">
+          <thead>
+            <tr>
+              <th>Boundary</th>
+              <th>Current control</th>
+              <th>Security result</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Developer or CI command</td>
+              <td>PATH shims and <code>protect</code> command classification for supported npm/pip entry points.</td>
+              <td>Known high-risk workflows are routed through WhoaThere decision logic before execution.</td>
+            </tr>
+            <tr>
+              <td>Source and dependency policy</td>
+              <td>Workspace source scans, package identity checks, dependency-confusion checks, and registry/index override detection.</td>
+              <td>Unsafe sources can be denied before package-manager execution, especially for protected CI/high-risk contexts.</td>
+            </tr>
+            <tr>
+              <td>Install/build/import execution</td>
+              <td>Launch planning requires verified containment and Vault-only egress proof; current real providers do not satisfy production proof.</td>
+              <td>High-risk execution remains blocked. This is protective, but it does not prove any package is safe.</td>
+            </tr>
+            <tr>
+              <td>Vault and package serving</td>
+              <td>Local-dev Vault simulation models promoted-only serving, digest-bound cache promotion, and admission evidence binding.</td>
+              <td>The invariants are modeled locally, but public upstream fetch, durable storage, and production serving are not implemented.</td>
+            </tr>
+            <tr>
+              <td>Detection and evidence</td>
+              <td>Static manifest scanning, evidence profile contracts, sanitized job logs, and fixture-safe dynamic behavior evidence.</td>
+              <td>The schema and redaction posture are useful, but real untrusted package code is not detonated.</td>
+            </tr>
+            <tr>
+              <td>Audit and privacy</td>
+              <td>Redacted local audit records and job summaries avoid raw secret and raw payload capture.</td>
+              <td>The system is intentionally conservative about stored data, but enterprise audit search/export is not built.</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="callout warning">
+          <p>
+            <strong>Current claim:</strong> WhoaThere can prevent unapproved high-risk execution in protected local
+            workflows. It should not yet claim safe package execution, safe dynamic analysis, malware detection,
+            or production private-registry protection.
+          </p>
+        </div>
+      </section>
+
+      <section id="security-model-target">
+        <h2>Security Model: Target</h2>
+        <p class="lede">
+          The target system is a digest-bound admission-control platform. Package managers should receive only
+          artifacts that Vault has fetched into quarantine, verified, scanned, detonated where required, and
+          promoted into a servable generation. Endpoint enforcement, Vault serving, scanner evidence, detonation
+          evidence, policy, and audit all bind to the same artifact digest and policy context.
+        </p>
+
+        <table class="plain-table">
+          <thead>
+            <tr>
+              <th>Target boundary</th>
+              <th>Target control</th>
+              <th>Guarantee</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Endpoint and CI</td>
+              <td>All protected npm/pip workflows route to Vault and inherit fail-closed policy, identity, audit, and egress rules.</td>
+              <td>No protected workflow reaches public npm/PyPI directly or executes unknown high-risk package code.</td>
+            </tr>
+            <tr>
+              <td>Registry facade</td>
+              <td>npm packuments, tarballs, PyPI Simple responses, and file links are rendered only from active approved generations.</td>
+              <td>Package-manager-compatible metadata never points protected clients at public upstream artifact URLs.</td>
+            </tr>
+            <tr>
+              <td>Artifact admission</td>
+              <td>Vault resolves the full dependency closure, fetches into quarantine, verifies hashes, snapshots metadata, and classifies artifact type.</td>
+              <td>Unknown, tampered, partial, scanner-failed, detonator-failed, or policy-denied artifacts never serve as approved content.</td>
+            </tr>
+            <tr>
+              <td>Evidence and verdicts</td>
+              <td>Allow verdicts bind artifact digest, source, dependency closure, policy version, evidence profile, platform set, scanner versions, detonator versions, Vault host, and expiry.</td>
+              <td>Approval is narrow and reproducible; a clean name, trusted publisher, or old approval cannot cover a new digest.</td>
+            </tr>
+            <tr>
+              <td>Detonation</td>
+              <td>Linux workers run install/build/import/startup/CLI/API-use probes in isolated, ephemeral environments with fake secrets and Vault-only evidence egress.</td>
+              <td>Credential reads, DNS/HTTPS exfil, native build behavior, startup hooks, and platform-gated behavior are blocked or recorded before promotion.</td>
+            </tr>
+            <tr>
+              <td>Cloud and tenant boundary</td>
+              <td>AWS is authoritative for CAS, metadata, verdicts, policy, audit, KMS, worker identity, and deployment state; v1 uses dedicated enterprise deployments by default.</td>
+              <td>Downstream resources are isolated from public registries, and tenant data does not depend on cross-tenant artifact sharing.</td>
+            </tr>
+            <tr>
+              <td>Operations</td>
+              <td>Manual review, break-glass, revocation, rollback, incident response, privacy export/delete, and audit export are first-class workflows.</td>
+              <td>Operators can respond to malicious packages, false positives, outages, and policy mistakes without public fallback or unaudited bypass.</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="callout">
+          <p>
+            <strong>Target claim:</strong> WhoaThere serves and permits execution only for artifacts whose exact
+            digest and dependency context have complete policy, source, integrity, evidence, and audit coverage.
+            It still does not claim universal runtime protection after an admitted package is used in arbitrary application code.
+          </p>
+        </div>
+      </section>
+
+      <section id="security-model-gap-plan">
+        <h2>Security Model: Gap Filling Plan</h2>
+        <p class="lede">
+          The gap is not conceptual; the contracts are mostly in place. The remaining work is to turn the modeled
+          boundaries into production controls, then keep the launch claim narrow until each artifact class has
+          evidence that justifies promotion.
+        </p>
+
+        <ol>
+          <li>
+            <strong>Lock the security claim.</strong>
+            State that v1 prevents unapproved high-risk npm/pip execution and serves only digest-approved Vault artifacts.
+            Do not claim universal malware detection, production macOS sandboxing, or runtime app protection.
+          </li>
+          <li>
+            <strong>Define v1 artifact classes.</strong>
+            Auto-allow only <code>npm.registry_tarball.v1</code> and <code>pypi.pure_wheel.v1</code> after complete evidence.
+            Route native, binary, direct, VCS, editable, unknown, and unsupported platform-selector classes to manual review or deny.
+          </li>
+          <li>
+            <strong>Build durable Vault state.</strong>
+            Move admission, metadata, evidence, verdict, alias, audit, review, and break-glass state from local-dev simulation to AWS-backed storage and transactions.
+          </li>
+          <li>
+            <strong>Implement atomic promotion.</strong>
+            Advance <code>servable_generation</code> only when CAS object, metadata snapshot, source policy, evidence profile, verdict, and alias update match in one transaction.
+          </li>
+          <li>
+            <strong>Resolve and scan full dependency closures.</strong>
+            Fetch, hash, unpack, classify, and scan the full npm/PyPI closure before serving any newly requested artifact.
+          </li>
+          <li>
+            <strong>Add scanner coverage for modern attack surfaces.</strong>
+            Cover lifecycle scripts, PEP 517, <code>.pth</code>, <code>sitecustomize.py</code>, npm <code>bin</code>,
+            <code>binding.gyp</code>, native files, wheels, WASM, executable blobs, suspicious URLs, credential path strings,
+            and registry-vs-source drift.
+          </li>
+          <li>
+            <strong>Prove Linux detonation.</strong>
+            Run non-destructive malware fixtures inside isolated Linux workers with no host secrets, no IMDS,
+            bounded resources, fake canary secrets, denied/recorded egress, and redacted evidence output.
+          </li>
+          <li>
+            <strong>Make macOS honest and useful.</strong>
+            Keep macOS first for endpoint UX, source policy, audit, Vault routing, and fail-closed protection,
+            while labeling local containment as beta until production isolation is proven.
+          </li>
+          <li>
+            <strong>Ship the minimum control plane.</strong>
+            Provide policy CRUD/validation, manual review, break-glass lifecycle, audit search/export, privacy export/delete,
+            revocation, rollback, and incident notification before enterprise rollout.
+          </li>
+          <li>
+            <strong>Gate release with adversarial tests.</strong>
+            Require no public fallback, no unapproved serving, no broad break-glass, outage fail-closed behavior,
+            redacted evidence, dependency-confusion denial, warm-cache scale, and mock-malware fixture coverage.
+          </li>
+        </ol>
+
+        <div class="callout warning">
+          <p>
+            <strong>Gap-plan rule:</strong> do not broaden auto-allow coverage because a scanner is promising.
+            Broaden it only after that artifact class has complete evidence profiles, production detonation,
+            outage tests, privacy tests, compatibility tests, and rollback behavior.
+          </p>
+        </div>
+
+        <h3>Admission signals to add</h3>
+        <ul>
+          <li>
+            <strong>Known-good package diffs:</strong> when Vault has a previously approved version or digest,
+            compare the new artifact against that known-good baseline. Diff registry artifacts directly, not only
+            source repositories, and flag new lifecycle hooks, build hooks, <code>.pth</code> files, native files,
+            dependency changes, obfuscated code, and suspicious credential or network references.
+          </li>
+          <li>
+            <strong>AI-assisted review as triage:</strong> use AI and static code scanning to summarize risky diffs
+            and generate reviewer notes, but never let an AI summary create an allow verdict by itself.
+          </li>
+          <li>
+            <strong>Package reputation:</strong> score downloads, repository age, GitHub stars, maintainer history,
+            release cadence, issue activity, recent ownership changes, provenance changes, and ecosystem centrality.
+            Reputation should reduce review friction for boring changes, not override missing evidence.
+          </li>
+          <li>
+            <strong>External tool integrations:</strong> evaluate public repo-quality and supply-chain tools for
+            additional evidence, including vulnerability databases, malware feeds, OpenSSF-style scorecards,
+            secret scanners, dependency analyzers, provenance validators, license scanners, and repository
+            hygiene checks. Integrations should feed reason codes and evidence summaries into WhoaThere, while
+            WhoaThere remains the authoritative policy and promotion decision point.
+          </li>
+          <li>
+            <strong>Fresh-release cooldown:</strong> by default, do not auto-use packages or versions newer than a
+            configurable age threshold. New packages, first releases after dormancy, and sudden patch bursts should
+            remain quarantined or manual-review until policy, evidence, and age gates pass.
+          </li>
+          <li>
+            <strong>Unpinned dependency stabilization:</strong> when WhoaThere is resolving on behalf of tools like
+            <code>uv</code>, <code>pip</code>, or a <code>requirements.txt</code> file and the requested version is
+            unpinned, prefer the latest approved last-known-good version by default instead of floating to a newer
+            public release. Emit a clear warning and audit event that records the requested range, selected digest,
+            policy reason, and how to opt into reviewing a newer version.
+          </li>
+        </ul>
+
+        <h3>Icebox idea: distributed package attestations</h3>
+        <p>
+          A later version could let end users publish signed "I think this package is evil" or "this package
+          behaved suspiciously" attestations to a shared network. Those reports could become another reputation
+          and review signal across WhoaThere deployments, especially for fast-moving attacks discovered by one
+          customer before others encounter the same digest.
+        </p>
+        <p>
+          This is intentionally not v1. A shared attestation network would need abuse resistance before it could
+          influence policy: signer reputation, tenant-scoped trust, rate limits, evidence requirements, digest-bound
+          claims, Sybil resistance, appeal/retraction flows, and possibly consensus or zero-knowledge techniques to
+          reduce denial-of-service mischief and protect sensitive reporter context. Until that is researched, external
+          community reports should be treated as manual-review triggers, not automatic denies.
         </p>
       </section>
 
@@ -995,53 +1245,114 @@
 
         <h3>What an internal preview could mean</h3>
         <p>
-          A defensible internal preview would be read-only and fail-closed: developers can run diagnostics,
-          inspect policy/source decisions, materialize shims in a sandbox directory, and see why high-risk
-          installs would be blocked. It should not enable real protected package execution yet.
+          The next release target is now narrower and more useful than the earlier read-only preview:
+          an Apple Silicon macOS-only local CLI that runs supported npm, pip, and uv workflows inside
+          a macOS guest VM, records risky behavior, and syncs back only approved safe outputs. Until
+          that VM helper and sync gate exist, the CLI must continue to fail closed for high-risk installs.
         </p>
+      </section>
+
+      <section id="macos-local-release">
+        <h2>macOS Local Release Target</h2>
+        <p class="lede">
+          The immediate release target is local-first and Apple Silicon only. It comes before the
+          broader enterprise Vault plan: prove that WhoaThere can protect a developer Mac with a real
+          VM boundary, useful npm/PyPI/uv coverage, and honest fail-closed behavior.
+        </p>
+
+        <div class="callout">
+          <p>
+            Current implementation progress: the CLI now has macOS VM lifecycle/status surfaces,
+            uv workflow classification, release-policy commands, canary inventory, sync-policy
+            reporting, and doctor JSON readiness. Runtime VM start, detonation, egress recording,
+            and sync-back remain deliberately blocked until a signed Virtualization.framework helper
+            and guest image are implemented.
+          </p>
+        </div>
+
+        <h3>Release claim</h3>
+        <p>
+          WhoaThere runs supported npm, pip, and uv installs inside a macOS guest VM, injects only
+          fake canary secrets, records filesystem/process/package-manager/network behavior, and syncs
+          back only approved project outputs. The release does not claim universal malware detection,
+          safe arbitrary native execution, runtime application protection, or enterprise package admission.
+        </p>
+
+        <h3>Implemented command contract</h3>
+        <ul>
+          <li><code>whoathere vm status</code> reports Apple Silicon macOS VM readiness and remains fail-closed until the runtime is implemented.</li>
+          <li><code>whoathere vm init --execute</code> creates local VM state directories only; it does not install an image or start a VM.</li>
+          <li><code>whoathere vm start</code>, <code>suspend</code>, <code>reset</code>, and <code>prune</code> are present but blocked with <code>macos_vm_runtime_not_implemented</code>.</li>
+          <li><code>whoathere vm release-plan</code> classifies artifact risk and returns model verdict exit codes, but explicitly does not authorize runtime execution or sync-back.</li>
+          <li><code>whoathere vm canaries</code> lists fake credential classes for npm, PyPI, GitHub, SSH, cloud, Kubernetes, Vault, env files, and AI-tool auth.</li>
+          <li><code>whoathere vm sync-policy</code> documents deny-by-default sync-back rules, evidence requirements, and external scanner adapters.</li>
+          <li><code>whoathere doctor --json</code> reports VM readiness and scanner adapter availability without authorizing high-risk execution.</li>
+        </ul>
+
+        <h3>Admission posture</h3>
+        <ul>
+          <li>Auto-sync is possible only for <code>npm.registry_tarball.v1</code> and <code>pypi.pure_wheel.v1</code> after complete clean evidence.</li>
+          <li>PEP 517 sdists, binary wheels, native extensions, and platform-specific native artifacts require manual review.</li>
+          <li>Direct URL, VCS, editable, local path, unknown, and unsupported package classes are denied by default.</li>
+          <li>Recorded egress is allowed inside the VM for compatibility, but suspicious destinations, DNS tunneling, canary access, or unexpected second-stage downloads block sync.</li>
+          <li>Sync-back is deny-by-default and limited to project dependency outputs such as <code>node_modules/**</code>, lockfiles, project <code>.venv/**</code>, and uv outputs.</li>
+        </ul>
+
+        <h3>Remaining build gates</h3>
+        <ol>
+          <li>Build the signed Swift helper around Apple Virtualization.framework for image install, start, suspend, reset, and guest command execution.</li>
+          <li>Create and verify a signed Apple Silicon macOS guest image manifest with digest checks and first-run setup.</li>
+          <li>Implement sanitized project mirror creation that excludes host secrets, user home data, SSH keys, npm/PyPI tokens, cloud creds, and local env files.</li>
+          <li>Run package-manager commands and import/CLI probes inside the guest with canaries and bounded resources.</li>
+          <li>Record process, filesystem, DNS, HTTPS, direct IP, Git, metadata-IP, and package-manager behavior as sanitized evidence.</li>
+          <li>Implement sync-back diffing and allowlist enforcement so arbitrary guest writes cannot land on the host.</li>
+          <li>Wire GuardDog, OSV-Scanner, pip-audit, Scorecard-style reputation, and SBOM/vulnerability adapters as evidence sources.</li>
+          <li>Package, sign, notarize, and document a CLI-only Apple Silicon installer with clear unsupported-workflow errors.</li>
+        </ol>
       </section>
 
       <section id="next-steps">
         <h2>Recommended Next Steps</h2>
         <p class="lede">
-          The next work should avoid boiling the ocean. Pick one narrow path that turns the existing
-          contracts into a real control boundary, then expand from there.
+          The next work should avoid boiling the ocean. Execute the macOS local release path first,
+          prove the VM boundary, then return to the enterprise Vault plan.
         </p>
 
         <ol>
           <li>
-            <strong>Define the next release target in one sentence.</strong>
-            For example: "internal macOS-first preview that always blocks high-risk installs but gives
-            clear diagnostics" or "Linux CI detonation worker that can run one npm fixture under real isolation."
+            <strong>Keep the next release target fixed.</strong>
+            Apple Silicon macOS only, CLI only, local-first, npm/pip/uv, VM-backed detonation,
+            recorded egress, and deny-by-default sync-back.
           </li>
           <li>
-            <strong>Build one real isolation backend.</strong>
-            Given current priorities, start with the macOS VM helper research path for endpoint value, while
-            keeping Linux as the practical CI/detonation proving ground.
+            <strong>Build the macOS VM helper before broadening scope.</strong>
+            The release is not useful until a signed helper can create, start, command, suspend,
+            and reset the macOS guest reliably.
           </li>
           <li>
-            <strong>Connect the proof provider to launch decisions.</strong>
-            The contracts already require subject, context hash, Vault host, provider session, challenge,
-            and freshness. The next step is a trusted provider that can satisfy those checks outside test support.
+            <strong>Connect guest execution to launch decisions.</strong>
+            The CLI must route supported high-risk npm/pip/uv installs into the guest and keep
+            unsupported global/system installs blocked.
           </li>
           <li>
-            <strong>Make Vault durable in a staging AWS environment.</strong>
-            Implement the smallest AWS path for S3 CAS, transactional metadata, auth, queueing, and promoted-only serving.
+            <strong>Make sync-back the hard safety gate.</strong>
+            Approve only whitelisted project outputs after clean evidence. Native, binary, direct,
+            VCS, editable, suspicious, and unsupported classes stay manual-review or deny.
           </li>
           <li>
-            <strong>Turn fixture-safe detonation into isolated detonation.</strong>
-            Keep mock malware non-destructive, but run it inside the real worker boundary and prove secret redaction,
-            network denial, DNS/HTTPS handling, and audit binding.
+            <strong>Run non-destructive red-team fixtures in the guest.</strong>
+            Use fake canaries to prove install-script exfil, PEP 517 abuse, import-time payloads,
+            DNS/HTTPS exfil, delayed CI activation, and API-compatible credential theft are detected or blocked.
           </li>
           <li>
-            <strong>Add binary and API-behavior probes to the evidence plan.</strong>
-            Define minimal import/use probes for high-risk package classes, especially wheels, native modules,
-            and packages where a malicious update can preserve the API while changing side effects.
+            <strong>Compare against open-source tools without overclaiming.</strong>
+            GuardDog, OpenSSF Package Analysis, OSV-Scanner, pip-audit, Scorecard, Syft,
+            Grype, and Trivy are evidence sources and comparator gates, not the security boundary.
           </li>
           <li>
-            <strong>Run a release-gate audit before broadening compatibility.</strong>
-            Use the phase-gate scorecard to prevent accidental claims like "production sandbox" or "safe dynamic analysis"
-            before the proof exists.
+            <strong>Run a release-gate audit before enterprise work resumes.</strong>
+            Verify the CLI is signed/notarized, VM image manifests are signed, unsupported cases fail closed,
+            docs are honest, and no workflow depends on host secrets or public fallback.
           </li>
         </ol>
       </section>
@@ -1049,8 +1360,9 @@
       <section id="best-in-class-plan">
         <h2>Best-In-Class Offering Plan</h2>
         <p class="lede">
-          The strongest path is to make WhoaThere an AWS-backed package artifact admission system
-          for npm and PyPI, not merely an install-script blocker. The v1 claim should be precise:
+          This is the later enterprise path after the Apple Silicon macOS local release is proven.
+          The strongest long-term path is to make WhoaThere an AWS-backed package artifact admission system
+          for npm and PyPI, not merely an install-script blocker. The enterprise claim should be precise:
           WhoaThere prevents unapproved high-risk package artifacts from executing through protected
           npm/pip workflows and serves only digest-approved artifacts through Vault.
         </p>
@@ -1058,9 +1370,9 @@
         <div class="callout">
           <p>
             Use the existing Rust workspace and Phase 1/2 endpoint work as the base. Do not restart
-            or redesign. The v1 target is AWS Vault GA for CI/private registry serving; macOS
-            first-class for endpoint UX, policy, audit, and fail-closed protection; and Linux first
-            for production containment and detonation proof.
+            or redesign. This plan resumes after the macOS VM-backed local release. Its target is
+            AWS Vault GA for CI/private registry serving, with macOS first-class for endpoint UX,
+            policy, audit, and fail-closed protection.
           </p>
         </div>
 
@@ -1165,8 +1477,11 @@
         </ul>
 
         <div class="footer">
-          Report generated on June 26, 2026 from repo state at commit <code>25626f5</code>. Current
-          validation run: <code>cargo test --manifest-path whoathere/Cargo.toml</code> passed.
+          Report updated on June 26, 2026 from the local working tree. Current validation:
+          <code>cargo fmt --manifest-path whoathere/Cargo.toml --all -- --check</code>,
+          <code>cargo test --manifest-path whoathere/Cargo.toml</code>, and
+          <code>cargo clippy --manifest-path whoathere/Cargo.toml --all-targets -- -D warnings</code>
+          passed.
         </div>
       </section>
     </main>

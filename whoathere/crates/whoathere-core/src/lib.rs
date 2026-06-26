@@ -53,6 +53,8 @@ pub enum CommandKind {
     NpmExec,
     PipInstall,
     PythonModulePipInstall,
+    UvSync,
+    UvPipInstall,
     Unknown,
 }
 
@@ -287,6 +289,10 @@ pub fn classify_package_command(invoked: &str, args: &[String]) -> CommandClassi
         return classify_pip(&remaining, CommandKind::PythonModulePipInstall);
     }
 
+    if invoked_name == "uv" {
+        return classify_uv(args);
+    }
+
     CommandClassification::unsupported("unsupported_tool")
 }
 
@@ -386,6 +392,8 @@ fn classify_pip(args: &[String], kind: CommandKind) -> CommandClassification {
     let mut reasons = vec!["pip_install_build_backend_capable".to_string()];
     if kind == CommandKind::PythonModulePipInstall {
         reasons.push("python_module_pip".to_string());
+    } else if kind == CommandKind::UvPipInstall {
+        reasons.push("uv_pip_install".to_string());
     }
 
     CommandClassification {
@@ -406,6 +414,40 @@ fn classify_pip(args: &[String], kind: CommandKind) -> CommandClassification {
         } else {
             BypassSignal::None
         },
+    }
+}
+
+fn classify_uv(args: &[String]) -> CommandClassification {
+    if is_readonly_version_probe(args) {
+        return version_probe_classification(Ecosystem::Pypi);
+    }
+
+    let first_command = args
+        .iter()
+        .find(|arg| !arg.starts_with('-'))
+        .map(String::as_str);
+    match first_command {
+        Some("sync") => CommandClassification {
+            ecosystem: Ecosystem::Pypi,
+            kind: CommandKind::UvSync,
+            risk: WorkflowRisk::High,
+            protected: true,
+            reason_codes: vec![
+                "uv_sync_project_environment".to_string(),
+                "uv_resolution_install_capable".to_string(),
+            ],
+            bypass_signal: BypassSignal::None,
+        },
+        Some("pip") => {
+            let pip_args = args
+                .iter()
+                .skip_while(|arg| arg.as_str() != "pip")
+                .skip(1)
+                .cloned()
+                .collect::<Vec<_>>();
+            classify_pip(&pip_args, CommandKind::UvPipInstall)
+        }
+        _ => CommandClassification::unsupported("unsupported_uv_workflow"),
     }
 }
 
@@ -523,6 +565,40 @@ mod tests {
         assert_eq!(classification.ecosystem, Ecosystem::Pypi);
         assert_eq!(classification.kind, CommandKind::PythonModulePipInstall);
         assert_eq!(classification.bypass_signal, BypassSignal::PythonModule);
+    }
+
+    #[test]
+    fn classifies_uv_sync_as_protected_high_risk() {
+        let args = vec!["sync".to_string()];
+        let classification = classify_package_command("uv", &args);
+        assert_eq!(classification.ecosystem, Ecosystem::Pypi);
+        assert_eq!(classification.kind, CommandKind::UvSync);
+        assert_eq!(classification.risk, WorkflowRisk::High);
+        assert!(classification.protected);
+        assert!(classification
+            .reason_codes
+            .contains(&"uv_sync_project_environment".to_string()));
+    }
+
+    #[test]
+    fn classifies_uv_pip_install_source_override() {
+        let args = vec![
+            "pip".to_string(),
+            "install".to_string(),
+            "--index-url=https://pypi.org/simple".to_string(),
+            "example".to_string(),
+        ];
+        let classification = classify_package_command("uv", &args);
+        assert_eq!(classification.ecosystem, Ecosystem::Pypi);
+        assert_eq!(classification.kind, CommandKind::UvPipInstall);
+        assert_eq!(
+            classification.bypass_signal,
+            BypassSignal::DirectRegistryEgress
+        );
+        assert!(!classification.protected);
+        assert!(classification
+            .reason_codes
+            .contains(&"uv_pip_install".to_string()));
     }
 
     #[test]
