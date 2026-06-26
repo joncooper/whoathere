@@ -58,7 +58,9 @@ Still gated:
 - Treating launch planning as permission to execute installs.
 - PATH mutation.
 - Linux namespace/seccomp/Landlock runner.
-- macOS VM helper.
+- macOS VM package detonation and sync-back. The local lifecycle helper exists, but release use
+  still requires a booted Apple Silicon VM, guest readiness proof, signature verification, and
+  package-execution wiring.
 - Production Vault service persistence/full AWS deployment and public registry fetch.
 - Production dynamic detonation of arbitrary install/build/import paths.
 - Real isolated scanner/detonator worker execution, durable behavior logs, worker scheduling/auth, and production review queue.
@@ -70,6 +72,8 @@ Still gated:
 cargo test --manifest-path whoathere/Cargo.toml
 cargo run --manifest-path whoathere/Cargo.toml -p whoathere-cli -- doctor
 cargo run --manifest-path whoathere/Cargo.toml -p whoathere-cli -- status
+cargo run --manifest-path whoathere/Cargo.toml -p whoathere-cli -- vm status --helper /absolute/path/to/whoathere-macos-vm-helper --json
+cargo run --manifest-path whoathere/Cargo.toml -p whoathere-cli -- vm health --helper /absolute/path/to/whoathere-macos-vm-helper
 cargo run --manifest-path whoathere/Cargo.toml -p whoathere-cli -- config check whoathere/examples/whoathere.config
 cargo run --manifest-path whoathere/Cargo.toml -p whoathere-cli -- policy check whoathere/examples/whoathere.policy
 cargo run --manifest-path whoathere/Cargo.toml -p whoathere-cli -- policy check-source @company/build-tools public --internal-prefix @company/

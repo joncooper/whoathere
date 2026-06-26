@@ -24,6 +24,7 @@ detonation, or sync-back execution.
 - Helper `start` and `health` fail closed until the VM has real Virtualization metadata, signature verification, persistent runtime management, and guest readiness proof.
 - Rust CLI accepts `--helper <path>` or `WHOATHERE_MACOS_VM_HELPER` for VM and doctor commands.
 - Rust CLI delegates helper-backed `vm status`, `vm init --execute`, and lifecycle actions while preserving dry-run behavior.
+- Rust CLI delegates read-only `vm health` to the helper and preserves the helper's fail-closed exit code when guest proof is missing.
 - Rust CLI helper execution now requires an absolute canonical helper path, clears the inherited environment, bounds stdout/stderr, and enforces operation timeouts.
 - `protect uv -- sync` and other high-risk workflows remain fail-closed.
 
@@ -79,6 +80,7 @@ Wire helper into Rust CLI:
 ```sh
 export WHOATHERE_MACOS_VM_HELPER=/Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/.build/debug/whoathere-macos-vm-helper
 cargo run --manifest-path /Users/jdc/src/whoathere/whoathere/Cargo.toml -p whoathere-cli -- vm status --json
+cargo run --manifest-path /Users/jdc/src/whoathere/whoathere/Cargo.toml -p whoathere-cli -- vm health
 ```
 
 Expected today: helper is available, high-risk execution is disabled, and lifecycle readiness

@@ -291,6 +291,7 @@ pub enum VmAction {
     Suspend,
     Reset,
     Prune,
+    Health,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -564,7 +565,11 @@ pub fn parse_command(args: &[String]) -> Command {
             execute: rest.iter().any(|arg| arg == "--execute"),
         },
         [cmd, sub, rest @ ..]
-            if cmd == "vm" && matches!(sub.as_str(), "start" | "suspend" | "reset" | "prune") =>
+            if cmd == "vm"
+                && matches!(
+                    sub.as_str(),
+                    "start" | "suspend" | "reset" | "prune" | "health"
+                ) =>
         {
             Command::VmAction {
                 action: match sub.as_str() {
@@ -572,6 +577,7 @@ pub fn parse_command(args: &[String]) -> Command {
                     "suspend" => VmAction::Suspend,
                     "reset" => VmAction::Reset,
                     "prune" => VmAction::Prune,
+                    "health" => VmAction::Health,
                     _ => unreachable!(),
                 },
                 state_dir: parse_flag_value(rest, "--state-dir"),
@@ -1089,6 +1095,7 @@ fn command_help() -> String {
         "|vm status [--state-dir <dir>] [--manifest <path>] [--helper <path>] [--json]",
         "|vm init [--state-dir <dir>] [--manifest <path>] [--helper <path>] [--image <path>|--restore-image <path>] [--memory-mib <n>] [--disk-gib <n>] [--execute]",
         "|vm start|suspend|reset|prune [--state-dir <dir>] [--helper <path>] [--execute]",
+        "|vm health [--state-dir <dir>] [--helper <path>]",
         "|vm release-plan [--class <class>|--ecosystem <name> --source <kind> --filename <name>] [--vm-ready --static-clean --dynamic-clean --egress-clean --no-canary-access --scanner-clean --diff-clean --freshness-allowed] [--json]",
         "|vm canaries [--json]",
         "|vm sync-policy [--json]",
@@ -1643,8 +1650,27 @@ fn render_vm_action(
         VmAction::Suspend => "suspend",
         VmAction::Reset => "reset",
         VmAction::Prune => "prune",
+        VmAction::Health => "health",
     };
     let config = macos_vm_config(state_dir, None, None);
+    if matches!(action, VmAction::Health) {
+        let helper = run_macos_vm_helper(
+            helper_path,
+            action_name,
+            &[
+                "--state-dir".to_string(),
+                config.state_dir.display().to_string(),
+                "--json".to_string(),
+            ],
+        );
+        let exit_code = helper.exit_code.unwrap_or_else(|| ExitCode::Misuse.code());
+        return format!(
+            "whoathere vm {action_name}\nrelease_target={}\nstate_dir={}\nmutation=false\nready=false\n{}\nexit_code={exit_code}",
+            RELEASE_TARGET,
+            config.state_dir.display(),
+            helper.render_text()
+        );
+    }
     if execute {
         let helper = run_macos_vm_helper(
             helper_path,
@@ -6436,6 +6462,27 @@ mod tests {
     }
 
     #[test]
+    fn parses_vm_health_command() {
+        let args = vec![
+            "vm".to_string(),
+            "health".to_string(),
+            "--state-dir".to_string(),
+            "/tmp/whoathere-vm".to_string(),
+            "--helper".to_string(),
+            "/tmp/helper".to_string(),
+        ];
+        assert_eq!(
+            parse_command(&args),
+            Command::VmAction {
+                action: VmAction::Health,
+                state_dir: Some("/tmp/whoathere-vm".to_string()),
+                helper_path: Some("/tmp/helper".to_string()),
+                execute: false
+            }
+        );
+    }
+
+    #[test]
     fn vm_status_reports_release_contract_without_authorizing_runtime() {
         let result = evaluate_command(Command::VmStatus {
             state_dir: Some("/tmp/whoathere-vm-status-test".to_string()),
@@ -6554,6 +6601,38 @@ mod tests {
             "<init><--state-dir><{}><--memory-mib><4096><--disk-gib><25><--json>",
             state_dir.display()
         )));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vm_health_invokes_helper_without_execute() {
+        let root = temp_root("whoathere-cli-vm-health-helper");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("temp root");
+        let helper = root.join("helper.sh");
+        write_new_file(
+            &helper,
+            b"#!/bin/sh\nprintf 'args='\nfor arg in \"$@\"; do printf '<%s>' \"$arg\"; done\nprintf '\\n'\nexit 20\n",
+        )
+        .expect("helper script");
+        set_executable(&helper).expect("executable helper");
+
+        let state_dir = root.join("state");
+        let result = evaluate_command(Command::VmAction {
+            action: VmAction::Health,
+            state_dir: Some(state_dir.display().to_string()),
+            helper_path: Some(helper.display().to_string()),
+            execute: false,
+        });
+
+        assert_eq!(result.exit_code, 20);
+        assert!(result.output.contains("mutation=false"));
+        assert!(result.output.contains(&format!(
+            "<health><--state-dir><{}><--json>",
+            state_dir.display()
+        )));
+        assert!(!result.output.contains("<--execute>"));
 
         let _ = std::fs::remove_dir_all(&root);
     }

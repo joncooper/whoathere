@@ -1295,6 +1295,7 @@
           <li><code>whoathere vm init --execute --helper &lt;path&gt; --restore-image &lt;path&gt;</code> uses Apple Virtualization.framework restore-image APIs to install from a local IPSW and persist required VM metadata, subject to entitlement and host support.</li>
           <li><code>whoathere vm init --execute</code> without a helper or image fails closed with exact required inputs rather than creating placeholder readiness.</li>
           <li><code>whoathere vm start</code>, <code>suspend</code>, <code>reset</code>, and <code>prune</code> delegate to the helper when configured; start requires bootable metadata and writes host-runtime health proof, while <code>vm health</code> requires a matching guest vsock proof.</li>
+          <li><code>whoathere vm health --helper &lt;path&gt;</code> is read-only, delegates to helper <code>health</code>, and preserves fail-closed exit code <code>20</code> until guest proof is present.</li>
           <li>The helper includes a <code>whoathere.guest_ready.v1</code> vsock protocol and guest-agent source under <code>guest-agent/</code>; the agent must be built and run inside the guest before guest health is proven.</li>
           <li>The helper includes a <code>com.apple.security.virtualization</code> entitlement plist and local signing script for development validation.</li>
           <li>The Rust CLI invokes the helper with an absolute canonical path, cleared environment, minimal <code>PATH</code>, bounded output, and operation timeouts.</li>

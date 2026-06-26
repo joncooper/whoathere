@@ -85,10 +85,13 @@ Rust CLI integration:
 ```sh
 export WHOATHERE_MACOS_VM_HELPER=/absolute/path/to/.build/debug/whoathere-macos-vm-helper
 cargo run --manifest-path whoathere/Cargo.toml -p whoathere-cli -- vm status --json
+cargo run --manifest-path whoathere/Cargo.toml -p whoathere-cli -- vm health
 ```
 
 The Rust CLI launches the helper with a cleared environment, a minimal `PATH`, bounded output,
-and operation timeouts. Helper status is diagnostic and never authorizes package execution.
+and operation timeouts. `vm health` is read-only and returns the helper's fail-closed exit code
+until the guest vsock proof is present. Helper status and health are diagnostic and never authorize
+package execution.
 
 Security boundaries:
 
