@@ -337,6 +337,7 @@ struct WhoaThereMacosVmHelper {
                 "runtime_state_present": fileExists(layout.runtimeStatePath),
                 "health_proof_present": fileExists(layout.healthProofPath),
                 "guest_health_proof_present": fileExists(layout.guestHealthProofPath),
+                "guest_tools_image_present": fileExists(layout.guestToolsImagePath),
                 "runtime_shutdown_present": fileExists(layout.runtimeShutdownPath),
                 "runtime_pid_present": fileExists(layout.runtimePidPath),
                 "runtime_pid_alive": runtimeAlive,
@@ -833,6 +834,16 @@ struct WhoaThereMacosVmHelper {
             synchronizationMode: .fsync
         )
         let storage = VZVirtioBlockDeviceConfiguration(attachment: diskAttachment)
+        var storageDevices: [VZStorageDeviceConfiguration] = [storage]
+        if fileExists(layout.guestToolsImagePath) {
+            let toolsAttachment = try VZDiskImageStorageDeviceAttachment(
+                url: layout.guestToolsImagePath,
+                readOnly: true,
+                cachingMode: .automatic,
+                synchronizationMode: .fsync
+            )
+            storageDevices.append(VZUSBMassStorageDeviceConfiguration(attachment: toolsAttachment))
+        }
         let network = VZVirtioNetworkDeviceConfiguration()
         network.attachment = VZNATNetworkDeviceAttachment()
         let graphics = VZMacGraphicsDeviceConfiguration()
@@ -845,7 +856,7 @@ struct WhoaThereMacosVmHelper {
         configuration.bootLoader = VZMacOSBootLoader()
         configuration.cpuCount = cpuCount
         configuration.memorySize = memoryBytes
-        configuration.storageDevices = [storage]
+        configuration.storageDevices = storageDevices
         configuration.networkDevices = [network]
         configuration.graphicsDevices = [graphics]
         configuration.socketDevices = [VZVirtioSocketDeviceConfiguration()]
@@ -1566,6 +1577,7 @@ struct WhoaThereMacosVmHelper {
             "guest_readiness_protocol": guestReadinessProtocol,
             "guest_readiness_port": Int(guestReadinessPort),
             "guest_readiness_challenge_sha256": sha256Hex(challenge),
+            "guest_tools_image_attached": fileExists(layout.guestToolsImagePath),
             "high_risk_package_execution_enabled": false
         ]
         let healthProof: [String: Any] = [
@@ -1581,6 +1593,7 @@ struct WhoaThereMacosVmHelper {
             "guest_readiness_protocol": guestReadinessProtocol,
             "guest_readiness_port": Int(guestReadinessPort),
             "guest_readiness_challenge_sha256": sha256Hex(challenge),
+            "guest_tools_image_attached": fileExists(layout.guestToolsImagePath),
             "created_at": timestamp,
             "high_risk_package_execution_enabled": false
         ]

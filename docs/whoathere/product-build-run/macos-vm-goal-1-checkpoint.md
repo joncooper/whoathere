@@ -21,6 +21,7 @@ detonation, or sync-back execution.
 - Added `guest-agent/whoathere-guest-ready.c`, a tiny guest-side agent that answers a one-time `whoathere.guest_ready.v1` challenge over `AF_VSOCK`.
 - Helper `health` now fails closed on host-runtime proof alone and only succeeds when a matching guest proof exists for the live runtime session, challenge hash, image digest, protocol, port, and helper version.
 - Guest health proof stores sanitized response metadata and challenge hash, not the raw readiness challenge.
+- Helper startup attaches `bundle/guest-tools.dmg` as an optional read-only USB mass-storage device when present; the local validation script creates that image from the guest-agent source only.
 - Added a helper entitlement plist and local signing script for `com.apple.security.virtualization`.
 - Added a local IPSW validation script that runs build, test, sign, restore-image install, status, start, fail-closed-or-proven health, suspend, and final status.
 - Helper `status` reports missing bundle/config/manifest/disk/auxiliary storage/hardware model/machine identifier/signature proof independently.
@@ -51,6 +52,7 @@ bundle/machine-identifier.bin
 bundle/runtime.json
 bundle/health.json
 bundle/guest-health.json
+bundle/guest-tools.dmg
 bundle/shutdown.json
 bundle/runtime.pid
 bundle/saved-state.bin

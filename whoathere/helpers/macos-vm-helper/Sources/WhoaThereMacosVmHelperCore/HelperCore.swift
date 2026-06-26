@@ -143,6 +143,7 @@ public struct BundleLayout: Equatable, Sendable {
     public var runtimeStatePath: URL { bundleDir.appendingPathComponent("runtime.json") }
     public var healthProofPath: URL { bundleDir.appendingPathComponent("health.json") }
     public var guestHealthProofPath: URL { bundleDir.appendingPathComponent("guest-health.json") }
+    public var guestToolsImagePath: URL { bundleDir.appendingPathComponent("guest-tools.dmg") }
     public var runtimeShutdownPath: URL { bundleDir.appendingPathComponent("shutdown.json") }
     public var runtimePidPath: URL { bundleDir.appendingPathComponent("runtime.pid") }
     public var savedStatePath: URL { bundleDir.appendingPathComponent("saved-state.bin") }

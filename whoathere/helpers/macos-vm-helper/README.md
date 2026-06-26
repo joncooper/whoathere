@@ -44,10 +44,10 @@ Real local VM validation with a local IPSW:
 ./scripts/validate-local-vm.sh /absolute/path/to/macos-restore.ipsw
 ```
 
-This performs build, test, sign, restore-image install, status, start, health, suspend, and final
-status. It creates a large local VM disk under `~/.whoathere/macos-vm-validation` unless a second
-state-directory argument is supplied. Until the guest readiness agent is copied into and run inside
-the guest, `health` is expected to fail closed with `guest_health_proof_missing_or_mismatched`.
+This performs build, test, sign, restore-image install, creation of a read-only guest tools DMG,
+status, start, health, suspend, and final status. It creates a large local VM disk under
+`~/.whoathere/macos-vm-validation` unless a second state-directory argument is supplied. Until the
+guest readiness agent is built and run inside the guest, `health` is expected to fail closed.
 
 Smoke commands:
 
@@ -90,6 +90,9 @@ uses `AF_VSOCK` only; it does not run package managers, import project code, mou
 sync files back to the host.
 The host stores only sanitized readiness evidence: session id, image digest, helper version,
 protocol, port, and challenge hash. It does not persist the raw readiness challenge.
+The validation script packages this source into `bundle/guest-tools.dmg`, which the helper attaches
+as a read-only USB mass-storage device when present. This shares only the guest-agent source, not
+the host home directory or project workspace.
 
 Rust CLI integration:
 

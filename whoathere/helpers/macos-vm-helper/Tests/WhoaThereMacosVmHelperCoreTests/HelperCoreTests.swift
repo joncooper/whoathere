@@ -38,6 +38,7 @@ import Testing
     #expect(layout.runtimePidPath.path == "/tmp/whoathere-vm/bundle/runtime.pid")
     #expect(layout.healthProofPath.path == "/tmp/whoathere-vm/bundle/health.json")
     #expect(layout.guestHealthProofPath.path == "/tmp/whoathere-vm/bundle/guest-health.json")
+    #expect(layout.guestToolsImagePath.path == "/tmp/whoathere-vm/bundle/guest-tools.dmg")
     #expect(layout.runtimeShutdownPath.path == "/tmp/whoathere-vm/bundle/shutdown.json")
     #expect(layout.savedStatePath.path == "/tmp/whoathere-vm/bundle/saved-state.bin")
     #expect(layout.logsDir.path == "/tmp/whoathere-vm/logs")

@@ -1280,9 +1280,11 @@
             The helper now also exposes a vsock guest-readiness challenge and a tiny guest-agent
             source artifact; <code>vm health</code> still fails closed until that guest proof is
             produced for the current runtime session, challenge hash, image digest, protocol, port,
-            and helper version. The raw readiness challenge is not persisted. Detonation, egress
-            recording, and sync-back remain deliberately blocked until guest provisioning, signature
-            verification, and runtime control pieces are implemented.
+            and helper version. The raw readiness challenge is not persisted. The local validation
+            script now packages the guest-agent source into an optional read-only
+            <code>bundle/guest-tools.dmg</code> that the helper attaches when present. Detonation,
+            egress recording, and sync-back remain deliberately blocked until guest provisioning,
+            signature verification, and runtime control pieces are implemented.
           </p>
         </div>
 
