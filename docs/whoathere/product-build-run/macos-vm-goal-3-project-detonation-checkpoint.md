@@ -20,7 +20,7 @@ This goal does not claim public PyPI resolution, binary wheel safety, native ext
 - `whoathere vm detonate` now has a project mode for local pip project detonation when no fixture is supplied and `--workspace` points to a supported Python project.
 - The CLI mirror planner records allowed files, included relative paths, file classes, byte counts, secret exclusions, symlink escapes, large-file exclusions, and reason codes.
 - The mirror allowlist includes Python build config, requirements/constraints files, Python source, package `__init__.py`, and `.pth` startup-hook probes.
-- The mirror excludes known secret and credential paths such as `.env`, `.pypirc`, `.npmrc`, `.ssh`, `.aws`, `.kube`, `.git-credentials`, private-key names, and related config directories.
+- The mirror excludes known secret and credential paths such as `.env`, `.pypirc`, `.npmrc`, `.ssh`, `.aws`, `.gcp`, `.kube`, `.git-credentials`, private-key names, Google ADC files, and related config directories.
 - The mirror blocks symlink escapes and unsafe relative paths.
 - The CLI enforces payload limits: 128 files, 128 KiB per file, and 512 KiB total mirrored content.
 - The CLI serializes a bounded `WTP1` project payload into WhoaThere-managed state under `runs/project-payloads/` and forwards only the payload file path to the helper.
@@ -91,7 +91,7 @@ Live evidence summary:
 - `validate-detonation-fixtures.sh` exited `0` with `detonation_fixture_validation=ok`.
 - Fixture sweep proved pip clean allow, pip setup/PEP 517/import/`.pth` canary deny, risky native/direct classes manual review, npm/uv fail-closed where guest tooling is absent, `sync_back_enabled=false`, `host_package_execution_enabled=false`, and `raw_canary_values_captured=false`.
 - `validate-project-detonation.sh` exited `0` with `project_detonation_validation=ok`.
-- Project validation proved clean local project and local `requirements.txt` install return `allow_observed_clean`; setup, PEP 517, import-time, and `.pth` canary cases return deny/fail-closed; public, VCS, editable, and traversal requirements fail before helper invocation; secret files are excluded from the mirror; symlink escapes and large files are recorded without host sync-back.
+- Project validation proved clean local project and local `requirements.txt` install return `allow_observed_clean`; setup, PEP 517, import-time, and `.pth` canary cases return deny/fail-closed; public, direct URL, VCS, editable, and traversal requirements fail before helper invocation; secret files are excluded from the mirror; symlink escapes and large files are recorded without host sync-back.
 - VM cleanup succeeded with `runtime_stop_observed=true`.
 - Final status confirmed `runtime_pid_alive=false`, `runtime_pid_present=false`, and readiness is fail-closed while stopped.
 
@@ -104,7 +104,7 @@ Live evidence summary:
 - Swift parser test proves project payload flags are accepted.
 - Guest agent compile check covers the project payload decoder/materializer.
 - Guest-agent project-payload harness proves clean materialization and rejects `../` and metacharacter paths before live VM validation.
-- Project validation script covers clean project, local requirements, `setup.py`, PEP 517, import-time, `.pth`, public/direct/VCS/editable/traversal requirements, secret exclusion, symlink escape, large file exclusion, and no host marker/sync-back behavior.
+- Project validation script covers clean project with explicit `allow_observed_clean` verdict assertions, local requirements, `setup.py`, PEP 517, import-time, `.pth`, public/direct URL/VCS/editable/traversal requirements, secret exclusion, symlink escape, large file exclusion, and no host marker/sync-back behavior.
 
 ## Known Limitations
 

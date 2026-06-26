@@ -2336,10 +2336,6 @@ fn allowed_mirror_input_class(path: &Path) -> Option<&'static str> {
         .extension()
         .map(|extension| extension.to_string_lossy().to_ascii_lowercase());
     match file_name.as_str() {
-        "package.json" => Some("npm_manifest"),
-        "package-lock.json" | "npm-shrinkwrap.json" | "yarn.lock" | "pnpm-lock.yaml" => {
-            Some("npm_lockfile")
-        }
         "pyproject.toml" | "setup.py" | "setup.cfg" => Some("python_build_config"),
         "uv.lock" | "poetry.lock" => Some("python_lockfile"),
         _ if file_name.starts_with("requirements") && file_name.ends_with(".txt") => {
@@ -2389,9 +2385,11 @@ fn is_secret_or_credential_path(path: &Path) -> bool {
                 | ".netrc"
                 | ".aws"
                 | ".azure"
+                | ".gcp"
                 | ".config"
                 | ".kube"
                 | ".ssh"
+                | "application_default_credentials.json"
                 | "id_rsa"
                 | "id_ed25519"
                 | "known_hosts"
@@ -7878,7 +7876,7 @@ mod tests {
         assert!(result
             .output
             .contains("command_class=npm_install_detonation"));
-        assert!(result.output.contains("mirror_allowed_file_count=1"));
+        assert!(result.output.contains("mirror_allowed_file_count=0"));
         assert!(result.output.contains("mirror_secret_exclusion_count=1"));
         assert!(result.output.contains("verdict=dry_run_execute_required"));
         assert!(result.output.contains("helper_invoked=false"));
@@ -8072,22 +8070,31 @@ mod tests {
         .expect("setup py");
         std::fs::write(root.join("whoathere_clean.py"), "VALUE = 'clean'\n").expect("module");
         std::fs::write(root.join(".pypirc"), "password=real-secret").expect("pypirc");
+        std::fs::create_dir_all(root.join(".gcp")).expect("gcp dir");
+        std::fs::write(
+            root.join(".gcp")
+                .join("application_default_credentials.json"),
+            r#"{"token":"real-gcp-secret"}"#,
+        )
+        .expect("gcp credentials");
 
         let plan = build_detonation_mirror_plan(&root.display().to_string());
-        assert_eq!(plan.secret_exclusion_count, 1);
+        assert_eq!(plan.secret_exclusion_count, 2);
         let payload = encode_project_payload(&plan.files).expect("payload");
         let payload_text = String::from_utf8_lossy(&payload);
         assert!(payload_text.contains("setup.py"));
         assert!(payload_text.contains("whoathere_clean.py"));
         assert!(!payload_text.contains(".pypirc"));
+        assert!(!payload_text.contains(".gcp"));
         assert!(!payload_text.contains("real-secret"));
+        assert!(!payload_text.contains("real-gcp-secret"));
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
     fn vm_detonation_mirror_blocks_symlink_escape() {
         let root = temp_root("whoathere-cli-vm-detonate-symlink");
-        std::fs::write(root.join("package.json"), r#"{"name":"clean"}"#).expect("package json");
+        std::fs::write(root.join("setup.py"), "from setuptools import setup\n").expect("setup py");
         let outside = root.with_extension("outside");
         let _ = std::fs::remove_dir_all(&outside);
         std::fs::create_dir_all(&outside).expect("outside");

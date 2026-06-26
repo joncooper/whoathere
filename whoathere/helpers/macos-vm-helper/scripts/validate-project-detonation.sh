@@ -190,18 +190,28 @@ run_project_case() {
 
   echo "project_case=$name expected_exit=$expected"
   set +e
-  "$WHOATHERE_BIN" vm detonate \
+  output=$("$WHOATHERE_BIN" vm detonate \
     --workspace "$project" \
     --state-dir "$STATE_DIR" \
     --helper "$HELPER" \
     --timeout-seconds 120 \
     --execute \
-    pip -- "$@"
+    pip -- "$@" 2>&1)
   status=$?
   set -e
+  printf '%s\n' "$output"
   if [ "$status" -ne "$expected" ]; then
     echo "project_case_result=failed name=$name actual_exit=$status expected_exit=$expected" >&2
     exit 1
+  fi
+  if [ "$expected" -eq 0 ]; then
+    case "$output" in
+      *allow_observed_clean*) ;;
+      *)
+        echo "project_case_result=failed name=$name expected_verdict_missing=allow_observed_clean" >&2
+        exit 1
+        ;;
+    esac
   fi
   assert_no_host_markers "$project"
   echo "project_case_result=ok name=$name actual_exit=$status"
@@ -299,6 +309,8 @@ printf 'requests\n' > "$unsafe_requirements/requirements.txt"
 run_fail_closed_gate public_requirement "$unsafe_requirements" install -r requirements.txt
 printf 'git+https://example.invalid/repo.git\n' > "$unsafe_requirements/requirements.txt"
 run_fail_closed_gate vcs_requirement "$unsafe_requirements" install -r requirements.txt
+printf 'https://example.invalid/pkg-0.0.1.tar.gz\n' > "$unsafe_requirements/requirements.txt"
+run_fail_closed_gate direct_url_requirement "$unsafe_requirements" install -r requirements.txt
 printf '%s\n' '-e .' > "$unsafe_requirements/requirements.txt"
 run_fail_closed_gate editable_requirement "$unsafe_requirements" install -r requirements.txt
 printf -- '-r ../outside.txt\n' > "$unsafe_requirements/requirements.txt"
