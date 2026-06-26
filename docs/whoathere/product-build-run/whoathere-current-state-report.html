@@ -1263,10 +1263,12 @@
         <div class="callout">
           <p>
             Current implementation progress: the CLI now has macOS VM lifecycle/status surfaces,
-            uv workflow classification, release-policy commands, canary inventory, sync-policy
-            reporting, and doctor JSON readiness. Runtime VM start, detonation, egress recording,
-            and sync-back remain deliberately blocked until a signed Virtualization.framework helper
-            and guest image are implemented.
+            a separate Swift helper that imports Apple Virtualization.framework, uv workflow
+            classification, release-policy commands, canary inventory, sync-policy reporting,
+            and doctor JSON readiness. The helper can report host/framework readiness and initialize
+            a managed bundle from an explicit local disk image. VM boot, guest health proof,
+            detonation, egress recording, and sync-back remain deliberately blocked until the
+            missing VM metadata, signature verification, and persistent runtime pieces are implemented.
           </p>
         </div>
 
@@ -1280,14 +1282,25 @@
 
         <h3>Implemented command contract</h3>
         <ul>
-          <li><code>whoathere vm status</code> reports Apple Silicon macOS VM readiness and remains fail-closed until the runtime is implemented.</li>
-          <li><code>whoathere vm init --execute</code> creates local VM state directories only; it does not install an image or start a VM.</li>
-          <li><code>whoathere vm start</code>, <code>suspend</code>, <code>reset</code>, and <code>prune</code> are present but blocked with <code>macos_vm_runtime_not_implemented</code>.</li>
+          <li><code>whoathere vm status --helper &lt;path&gt;</code> reports Rust-side and Swift-helper VM readiness, including precise missing bundle and metadata reason codes.</li>
+          <li><code>whoathere vm init --execute --helper &lt;path&gt; --image &lt;path&gt;</code> imports an explicit local installed disk image into the managed bundle and writes config plus manifest metadata.</li>
+          <li><code>whoathere vm init --execute</code> without a helper or image fails closed with exact required inputs rather than creating placeholder readiness.</li>
+          <li><code>whoathere vm start</code>, <code>suspend</code>, <code>reset</code>, and <code>prune</code> delegate to the helper when configured; start and health fail closed until bootable metadata and persistent runtime support exist.</li>
           <li><code>whoathere vm release-plan</code> classifies artifact risk and returns model verdict exit codes, but explicitly does not authorize runtime execution or sync-back.</li>
           <li><code>whoathere vm canaries</code> lists fake credential classes for npm, PyPI, GitHub, SSH, cloud, Kubernetes, Vault, env files, and AI-tool auth.</li>
           <li><code>whoathere vm sync-policy</code> documents deny-by-default sync-back rules, evidence requirements, and external scanner adapters.</li>
-          <li><code>whoathere doctor --json</code> reports VM readiness and scanner adapter availability without authorizing high-risk execution.</li>
+          <li><code>whoathere doctor --json --helper &lt;path&gt;</code> reports VM readiness, helper availability, and scanner adapter availability without authorizing high-risk execution.</li>
         </ul>
+
+        <h3>Helper bundle layout</h3>
+        <p>
+          The helper uses a managed state directory with <code>bundle/config.json</code>,
+          <code>bundle/image.manifest</code>, <code>bundle/disk.img</code>,
+          <code>bundle/auxiliary-storage</code>, <code>bundle/hardware-model.bin</code>,
+          <code>bundle/machine-identifier.bin</code>, <code>bundle/runtime.json</code>,
+          <code>bundle/health.json</code>, <code>logs/</code>, <code>runs/</code>,
+          <code>cache/</code>, <code>reports/</code>, and <code>overlays/</code>.
+        </p>
 
         <h3>Admission posture</h3>
         <ul>
@@ -1300,8 +1313,9 @@
 
         <h3>Remaining build gates</h3>
         <ol>
-          <li>Build the signed Swift helper around Apple Virtualization.framework for image install, start, suspend, reset, and guest command execution.</li>
-          <li>Create and verify a signed Apple Silicon macOS guest image manifest with digest checks and first-run setup.</li>
+          <li>Implement restore-image installation and Virtualization metadata capture for auxiliary storage, hardware model, and machine identifier.</li>
+          <li>Implement real signature/notarization verification for the helper and image manifest.</li>
+          <li>Implement persistent VM process management for start, suspend, reset, prune, and guest health proof.</li>
           <li>Implement sanitized project mirror creation that excludes host secrets, user home data, SSH keys, npm/PyPI tokens, cloud creds, and local env files.</li>
           <li>Run package-manager commands and import/CLI probes inside the guest with canaries and bounded resources.</li>
           <li>Record process, filesystem, DNS, HTTPS, direct IP, Git, metadata-IP, and package-manager behavior as sanitized evidence.</li>
@@ -1468,6 +1482,7 @@
           <li><a href="phase-2-isolation-checkpoint.md">Phase 2 isolation checkpoint</a></li>
           <li><a href="phase-3-enterprise-vault-checkpoint.md">Phase 3 Vault checkpoint</a></li>
           <li><a href="phase-4-detonation-checkpoint.md">Phase 4 detonation checkpoint</a></li>
+          <li><a href="macos-vm-goal-1-checkpoint.md">macOS VM Goal 1 checkpoint</a></li>
           <li><a href="../acceptance-test-matrix.md">Acceptance test matrix</a></li>
           <li><a href="../outputs/GOAL-07/release-gates.md">Release gates</a></li>
           <li><a href="../outputs/GOAL-09/phase-gate-scorecard.md">Phase-gate scorecard</a></li>
@@ -1481,7 +1496,7 @@
           <code>cargo fmt --manifest-path whoathere/Cargo.toml --all -- --check</code>,
           <code>cargo test --manifest-path whoathere/Cargo.toml</code>, and
           <code>cargo clippy --manifest-path whoathere/Cargo.toml --all-targets -- -D warnings</code>
-          passed.
+          plus <code>swift test</code> for the macOS helper passed.
         </div>
       </section>
     </main>

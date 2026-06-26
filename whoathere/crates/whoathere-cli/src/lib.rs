@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::process::Command as ProcessCommand;
 
 use whoathere_admission::AdmissionController;
 use whoathere_audit::{
@@ -21,7 +22,7 @@ use whoathere_launch::{
     LaunchRequest, LaunchStatus,
 };
 use whoathere_macos_vm::{
-    classify_artifact, create_state_dirs, decide_local_sync, default_canaries, default_state_dir,
+    classify_artifact, decide_local_sync, default_canaries, default_state_dir,
     default_sync_allowlist, parse_image_manifest, required_local_evidence, scanner_adapters,
     status_from_config, ArtifactSignals, HostPlatform, LocalEvidenceFlags, MacosVmConfig,
     MacosVmImageManifest, PackageClass, DEFAULT_NATIVE_MEMORY_MIB, NETWORK_MODEL, RELEASE_CLAIM,
@@ -72,6 +73,7 @@ pub struct CommandResult {
 pub enum Command {
     Doctor {
         json: bool,
+        helper_path: Option<String>,
     },
     Status,
     ShimInstall {
@@ -91,11 +93,15 @@ pub enum Command {
     VmStatus {
         state_dir: Option<String>,
         manifest_path: Option<String>,
+        helper_path: Option<String>,
         json: bool,
     },
     VmInit {
         state_dir: Option<String>,
         manifest_path: Option<String>,
+        helper_path: Option<String>,
+        image_path: Option<String>,
+        restore_image_path: Option<String>,
         memory_mib: Option<u64>,
         disk_gib: Option<u64>,
         execute: bool,
@@ -103,6 +109,7 @@ pub enum Command {
     VmAction {
         action: VmAction,
         state_dir: Option<String>,
+        helper_path: Option<String>,
         execute: bool,
     },
     VmReleasePlan {
@@ -413,6 +420,7 @@ pub fn parse_command(args: &[String]) -> Command {
         [] => Command::Help,
         [cmd, rest @ ..] if cmd == "doctor" => Command::Doctor {
             json: rest.iter().any(|arg| arg == "--json"),
+            helper_path: parse_helper_path(rest),
         },
         [cmd] if cmd == "status" => Command::Status,
         [cmd, sub, subject] if cmd == "policy" && sub == "explain" => Command::PolicyExplain {
@@ -539,11 +547,15 @@ pub fn parse_command(args: &[String]) -> Command {
         [cmd, sub, rest @ ..] if cmd == "vm" && sub == "status" => Command::VmStatus {
             state_dir: parse_flag_value(rest, "--state-dir"),
             manifest_path: parse_flag_value(rest, "--manifest"),
+            helper_path: parse_helper_path(rest),
             json: rest.iter().any(|arg| arg == "--json"),
         },
         [cmd, sub, rest @ ..] if cmd == "vm" && sub == "init" => Command::VmInit {
             state_dir: parse_flag_value(rest, "--state-dir"),
             manifest_path: parse_flag_value(rest, "--manifest"),
+            helper_path: parse_helper_path(rest),
+            image_path: parse_flag_value(rest, "--image"),
+            restore_image_path: parse_flag_value(rest, "--restore-image"),
             memory_mib: parse_u64_flag(rest, "--memory-mib"),
             disk_gib: parse_u64_flag(rest, "--disk-gib"),
             execute: rest.iter().any(|arg| arg == "--execute"),
@@ -560,6 +572,7 @@ pub fn parse_command(args: &[String]) -> Command {
                     _ => unreachable!(),
                 },
                 state_dir: parse_flag_value(rest, "--state-dir"),
+                helper_path: parse_helper_path(rest),
                 execute: rest.iter().any(|arg| arg == "--execute"),
             }
         }
@@ -598,7 +611,7 @@ pub fn evaluate_command(command: Command) -> CommandResult {
 
 fn render_command_text(command: Command) -> String {
     match command {
-        Command::Doctor { json } => render_doctor(json),
+        Command::Doctor { json, helper_path } => render_doctor(json, helper_path.as_deref()),
         Command::Status => {
             let config = WhoaThereConfig::default();
             format!(
@@ -660,26 +673,44 @@ fn render_command_text(command: Command) -> String {
         Command::VmStatus {
             state_dir,
             manifest_path,
+            helper_path,
             json,
-        } => render_vm_status(state_dir.as_deref(), manifest_path.as_deref(), json),
+        } => render_vm_status(
+            state_dir.as_deref(),
+            manifest_path.as_deref(),
+            helper_path.as_deref(),
+            json,
+        ),
         Command::VmInit {
             state_dir,
             manifest_path,
+            helper_path,
+            image_path,
+            restore_image_path,
             memory_mib,
             disk_gib,
             execute,
-        } => render_vm_init(
-            state_dir.as_deref(),
-            manifest_path.as_deref(),
+        } => render_vm_init(VmInitRenderArgs {
+            state_dir: state_dir.as_deref(),
+            manifest_path: manifest_path.as_deref(),
+            helper_path: helper_path.as_deref(),
+            image_path: image_path.as_deref(),
+            restore_image_path: restore_image_path.as_deref(),
             memory_mib,
             disk_gib,
             execute,
-        ),
+        }),
         Command::VmAction {
             action,
             state_dir,
+            helper_path,
             execute,
-        } => render_vm_action(action, state_dir.as_deref(), execute),
+        } => render_vm_action(
+            action,
+            state_dir.as_deref(),
+            helper_path.as_deref(),
+            execute,
+        ),
         Command::VmReleasePlan {
             artifact_class,
             ecosystem,
@@ -745,18 +776,16 @@ fn render_command_text(command: Command) -> String {
             runtime_dir,
             containment_available,
             egress_enforced,
-        } => render_launch_plan(
-            LaunchCommandArgs {
-                tool: &tool,
-                args: &args,
-                execute,
-                workspace: workspace.as_deref(),
-                vault_origin: vault_origin.as_deref(),
-                runtime_dir: runtime_dir.as_deref(),
-                containment_available,
-                egress_enforced,
-            },
-        ),
+        } => render_launch_plan(LaunchCommandArgs {
+            tool: &tool,
+            args: &args,
+            execute,
+            workspace: workspace.as_deref(),
+            vault_origin: vault_origin.as_deref(),
+            runtime_dir: runtime_dir.as_deref(),
+            containment_available,
+            egress_enforced,
+        }),
         Command::LaunchProviderCheck {
             tool,
             args,
@@ -925,15 +954,23 @@ fn render_command_text(command: Command) -> String {
             let policy_status = loaded_policy
                 .as_ref()
                 .map(|document| {
-                    format!("policy_status=ok\npolicy_version={}", document.policy_version)
+                    format!(
+                        "policy_status=ok\npolicy_version={}",
+                        document.policy_version
+                    )
                 })
                 .unwrap_or_else(|| "policy_status=default".to_string());
             let policy_document = loaded_policy.clone().unwrap_or_default();
             let classification = classify_package_command(&tool, &args);
             let decision = default_decision(&classification);
             let decision_label = decision_label(decision);
-            let identity_gate =
-                render_protect_package_identity_gate(&tool, &args, &classification, &workspace, &policy_document);
+            let identity_gate = render_protect_package_identity_gate(
+                &tool,
+                &args,
+                &classification,
+                &workspace,
+                &policy_document,
+            );
             if let Some(blocked) = identity_gate.blocked_output {
                 let audit_status = render_audit_write_status(
                     "package_identity",
@@ -1031,8 +1068,50 @@ fn render_command_text(command: Command) -> String {
                 execution
             )
         }
-        Command::Help => "whoathere <doctor [--json]|status|config check <path>|policy check <path>|policy check-source <pkg> <source> [--policy <path>|--internal-prefix <prefix>]|shim install --dry-run [--include-python]|shim install --dest <sandbox-dir> [--include-python]|endpoint setup --shim-dir <dir> --workspace <path> --vault-origin <url> [--policy <path>] [--audit-path <path>] [--replay-store <path>] [--include-python]|vm status [--state-dir <dir>] [--manifest <path>] [--json]|vm init [--state-dir <dir>] [--manifest <path>] [--memory-mib <n>] [--disk-gib <n>] [--execute]|vm start|suspend|reset|prune [--state-dir <dir>] [--execute]|vm release-plan [--class <class>|--ecosystem <name> --source <kind> --filename <name>] [--vm-ready --static-clean --dynamic-clean --egress-clean --no-canary-access --scanner-clean --diff-clean --freshness-allowed] [--json]|vm canaries [--json]|vm sync-policy [--json]|protect [--workspace <path> --vault-origin <url>] npm|pip|uv -- <args>|scan manifest npm-package-json <path>|scan manifest pyproject <path>|source scan <kind> <path> --vault-origin <url>|source scan-workspace <path> --vault-origin <url>|source context <tool> --vault-origin <url>|launch plan [--workspace <path> --vault-origin <url> --runtime-dir <path>] npm -- <args>|launch provider-check [--workspace <path> --vault-origin <url> --runtime-dir <path>] npm -- <args>|launch audit [--audit-path <path> --workspace <path> --vault-origin <url> --runtime-dir <path>] npm -- <args>|launch cleanup --manifest <path> [--execute] [--audit-path <path>]|evidence profiles|evidence providers [--json] [--require-ready] [--scope all|current|linux|macos]|evidence challenge --subject <id> --context-hash <hash> --vault-host <host> [--json] [--scope current|linux|macos]|evidence linux-active-probe-fixture --subject <id> --context-hash <hash> --vault-host <host> --profile complete|incomplete|overpermissive [--json]|evidence linux-active-probe-admission --subject <id> --context-hash <hash> --vault-host <host> --profile complete|incomplete|overpermissive [--replay|--unknown-challenge|--mutate-context] [--json]|evidence linux-active-probe-docker --subject <id> --context-hash <hash> --vault-host <host> [--image <image>] [--docker-network <internal-network>] [--replay-store <path>] [--audit-path <path>] [--execute] [--admit] [--replay] [--json]|vault simulate [--complete]|vault challenge-sim [--replay|--unknown-challenge|--mutate-context|--expired]|vault dev-http <METHOD> <PATH> [--header <name:value>] [body]|vault dev-serve [--bind <loopback:port>] [--max-requests <n>] [--idle-timeout-ms <ms>]>".to_string(),
+        Command::Help => command_help(),
     }
+}
+
+fn command_help() -> String {
+    concat!(
+        "whoathere <",
+        "doctor [--json] [--helper <path>]",
+        "|status",
+        "|config check <path>",
+        "|policy check <path>",
+        "|policy check-source <pkg> <source> [--policy <path>|--internal-prefix <prefix>]",
+        "|shim install --dry-run [--include-python]",
+        "|shim install --dest <sandbox-dir> [--include-python]",
+        "|endpoint setup --shim-dir <dir> --workspace <path> --vault-origin <url> [--policy <path>] [--audit-path <path>] [--replay-store <path>] [--include-python]",
+        "|vm status [--state-dir <dir>] [--manifest <path>] [--helper <path>] [--json]",
+        "|vm init [--state-dir <dir>] [--manifest <path>] [--helper <path>] [--image <path>|--restore-image <path>] [--memory-mib <n>] [--disk-gib <n>] [--execute]",
+        "|vm start|suspend|reset|prune [--state-dir <dir>] [--helper <path>] [--execute]",
+        "|vm release-plan [--class <class>|--ecosystem <name> --source <kind> --filename <name>] [--vm-ready --static-clean --dynamic-clean --egress-clean --no-canary-access --scanner-clean --diff-clean --freshness-allowed] [--json]",
+        "|vm canaries [--json]",
+        "|vm sync-policy [--json]",
+        "|protect [--workspace <path> --vault-origin <url>] npm|pip|uv -- <args>",
+        "|scan manifest npm-package-json <path>",
+        "|scan manifest pyproject <path>",
+        "|source scan <kind> <path> --vault-origin <url>",
+        "|source scan-workspace <path> --vault-origin <url>",
+        "|source context <tool> --vault-origin <url>",
+        "|launch plan [--workspace <path> --vault-origin <url> --runtime-dir <path>] npm -- <args>",
+        "|launch provider-check [--workspace <path> --vault-origin <url> --runtime-dir <path>] npm -- <args>",
+        "|launch audit [--audit-path <path> --workspace <path> --vault-origin <url> --runtime-dir <path>] npm -- <args>",
+        "|launch cleanup --manifest <path> [--execute] [--audit-path <path>]",
+        "|evidence profiles",
+        "|evidence providers [--json] [--require-ready] [--scope all|current|linux|macos]",
+        "|evidence challenge --subject <id> --context-hash <hash> --vault-host <host> [--json] [--scope current|linux|macos]",
+        "|evidence linux-active-probe-fixture --subject <id> --context-hash <hash> --vault-host <host> --profile complete|incomplete|overpermissive [--json]",
+        "|evidence linux-active-probe-admission --subject <id> --context-hash <hash> --vault-host <host> --profile complete|incomplete|overpermissive [--replay|--unknown-challenge|--mutate-context] [--json]",
+        "|evidence linux-active-probe-docker --subject <id> --context-hash <hash> --vault-host <host> [--image <image>] [--docker-network <internal-network>] [--replay-store <path>] [--audit-path <path>] [--execute] [--admit] [--replay] [--json]",
+        "|vault simulate [--complete]",
+        "|vault challenge-sim [--replay|--unknown-challenge|--mutate-context|--expired]",
+        "|vault dev-http <METHOD> <PATH> [--header <name:value>] [body]",
+        "|vault dev-serve [--bind <loopback:port>] [--max-requests <n>] [--idle-timeout-ms <ms>]",
+        ">"
+    )
+    .to_string()
 }
 
 fn infer_exit_code(output: &str) -> i32 {
@@ -1404,15 +1483,34 @@ fn parse_protect_with_env(args: &[String], env_lookup: impl Fn(&str) -> Option<S
     }
 }
 
-fn render_vm_status(state_dir: Option<&str>, manifest_path: Option<&str>, json: bool) -> String {
+fn render_vm_status(
+    state_dir: Option<&str>,
+    manifest_path: Option<&str>,
+    helper_path: Option<&str>,
+    json: bool,
+) -> String {
     let config = macos_vm_config(state_dir, None, None);
     let (manifest, manifest_load_reason) = load_macos_vm_manifest(manifest_path);
     let status = status_from_config(&config, HostPlatform::current(), manifest.as_ref());
+    let helper = run_macos_vm_helper(
+        helper_path,
+        "status",
+        &[
+            "--state-dir".to_string(),
+            config.state_dir.display().to_string(),
+            "--json".to_string(),
+        ],
+    );
     if json {
-        return render_vm_status_json(&status, manifest_path, manifest_load_reason.as_deref());
+        return render_vm_status_json(
+            &status,
+            manifest_path,
+            manifest_load_reason.as_deref(),
+            &helper,
+        );
     }
     let mut output = format!(
-        "whoathere vm status\nschema_version={}\nrelease_target={}\ntarget_arch={}\nvm_boundary={}\nnetwork_model={}\nsync_policy={}\nstate_dir={}\nhost_os={}\nhost_arch={}\nmemory_mib={}\ndisk_gib={}\nauto_suspend_minutes={}\nstate_dir_exists={}\nmanifest_path={}\nmanifest_present={}\nmanifest_valid={}\nhelper_ready_marker_present={}\nimage_ready_marker_present={}\nready={}\nreason_codes={:?}",
+        "whoathere vm status\nschema_version={}\nrelease_target={}\ntarget_arch={}\nvm_boundary={}\nnetwork_model={}\nsync_policy={}\nstate_dir={}\nhost_os={}\nhost_arch={}\nmemory_mib={}\ndisk_gib={}\nauto_suspend_minutes={}\nstate_dir_exists={}\nmanifest_path={}\nmanifest_present={}\nmanifest_valid={}\nhelper_ready_marker_present={}\nimage_ready_marker_present={}\nready={}\nreason_codes={:?}\n{}",
         status.schema_version,
         status.release_target,
         status.target_arch,
@@ -1432,7 +1530,8 @@ fn render_vm_status(state_dir: Option<&str>, manifest_path: Option<&str>, json: 
         status.helper_ready_marker_present,
         status.image_ready_marker_present,
         status.ready,
-        status.reason_codes
+        status.reason_codes,
+        helper.render_text()
     );
     if let Some(reason) = manifest_load_reason {
         output.push_str(&format!("\nmanifest_load_reason={reason}"));
@@ -1440,65 +1539,90 @@ fn render_vm_status(state_dir: Option<&str>, manifest_path: Option<&str>, json: 
     output
 }
 
-fn render_vm_init(
-    state_dir: Option<&str>,
-    manifest_path: Option<&str>,
+struct VmInitRenderArgs<'a> {
+    state_dir: Option<&'a str>,
+    manifest_path: Option<&'a str>,
+    helper_path: Option<&'a str>,
+    image_path: Option<&'a str>,
+    restore_image_path: Option<&'a str>,
     memory_mib: Option<u64>,
     disk_gib: Option<u64>,
     execute: bool,
-) -> String {
-    let config = macos_vm_config(state_dir, memory_mib, disk_gib);
-    let (manifest, manifest_load_reason) = load_macos_vm_manifest(manifest_path);
+}
+
+fn render_vm_init(args: VmInitRenderArgs<'_>) -> String {
+    let config = macos_vm_config(args.state_dir, args.memory_mib, args.disk_gib);
+    let (manifest, manifest_load_reason) = load_macos_vm_manifest(args.manifest_path);
     let status = status_from_config(&config, HostPlatform::current(), manifest.as_ref());
     let mut reason_codes = status.reason_codes.clone();
-    if !execute {
+    if !args.execute {
         reason_codes.push("macos_vm_init_execute_required_for_mutation".to_string());
     }
     reason_codes.sort();
     reason_codes.dedup();
 
-    let mut created_state_dirs = false;
-    let mut mutation_error = None;
-    if execute {
-        match create_state_dirs(&config.state_dir) {
-            Ok(()) => created_state_dirs = true,
-            Err(error) => mutation_error = Some(error.to_string()),
+    let helper = if args.execute {
+        let mut helper_args = vec![
+            "--state-dir".to_string(),
+            config.state_dir.display().to_string(),
+            "--memory-mib".to_string(),
+            config.memory_mib.to_string(),
+            "--disk-gib".to_string(),
+            config.disk_gib.to_string(),
+            "--execute".to_string(),
+            "--json".to_string(),
+        ];
+        if let Some(image_path) = args.image_path {
+            helper_args.push("--image".to_string());
+            helper_args.push(image_path.to_string());
         }
-    }
-    if mutation_error.is_some() {
-        reason_codes.push("macos_vm_state_dir_create_failed".to_string());
-    }
+        if let Some(restore_image_path) = args.restore_image_path {
+            helper_args.push("--restore-image".to_string());
+            helper_args.push(restore_image_path.to_string());
+        }
+        run_macos_vm_helper(args.helper_path, "init", &helper_args)
+    } else {
+        run_macos_vm_helper(args.helper_path, "init", &["--json".to_string()])
+    };
+    let final_exit_code = if args.execute {
+        helper.exit_code.unwrap_or_else(|| ExitCode::Misuse.code())
+    } else {
+        ExitCode::Allow.code()
+    };
 
     let mut output = format!(
-        "whoathere vm init\nschema_version={}\nrelease_target={}\ntarget_arch={}\nvm_boundary={}\nnetwork_model={}\nsync_policy={}\nmutation={}\ncreated_state_dirs={}\nstate_dir={}\nmanifest_path={}\nmemory_mib={}\ndisk_gib={}\nnative_memory_mib={}\nready=false\nreason_codes={:?}",
+        "whoathere vm init\nschema_version={}\nrelease_target={}\ntarget_arch={}\nvm_boundary={}\nnetwork_model={}\nsync_policy={}\nmutation={}\ndirect_cli_state_mutation=false\nstate_dir={}\nmanifest_path={}\nhelper_required_for_execute={}\nimage_path={}\nrestore_image_path={}\nmemory_mib={}\ndisk_gib={}\nnative_memory_mib={}\nready=false\nreason_codes={:?}\n{}",
         whoathere_macos_vm::STATUS_SCHEMA_VERSION,
         RELEASE_TARGET,
         TARGET_ARCH,
         VM_BOUNDARY,
         NETWORK_MODEL,
         SYNC_POLICY,
-        execute,
-        created_state_dirs,
+        args.execute,
         config.state_dir.display(),
-        manifest_path.unwrap_or("<default-state-dir-manifest>"),
+        args.manifest_path.unwrap_or("<default-state-dir-manifest>"),
+        args.execute,
+        redacted_option_scalar(args.image_path),
+        redacted_option_scalar(args.restore_image_path),
         config.memory_mib,
         config.disk_gib,
         DEFAULT_NATIVE_MEMORY_MIB,
-        reason_codes
+        reason_codes,
+        helper.render_text()
     );
     if let Some(reason) = manifest_load_reason {
         output.push_str(&format!("\nmanifest_load_reason={reason}"));
     }
-    if let Some(error) = mutation_error {
-        output.push_str(&format!(
-            "\nstatus=error\nerror={}",
-            redacted_scalar(&error)
-        ));
-    }
+    output.push_str(&format!("\nexit_code={final_exit_code}"));
     output
 }
 
-fn render_vm_action(action: VmAction, state_dir: Option<&str>, execute: bool) -> String {
+fn render_vm_action(
+    action: VmAction,
+    state_dir: Option<&str>,
+    helper_path: Option<&str>,
+    execute: bool,
+) -> String {
     let action_name = match action {
         VmAction::Start => "start",
         VmAction::Suspend => "suspend",
@@ -1506,12 +1630,31 @@ fn render_vm_action(action: VmAction, state_dir: Option<&str>, execute: bool) ->
         VmAction::Prune => "prune",
     };
     let config = macos_vm_config(state_dir, None, None);
+    if execute {
+        let helper = run_macos_vm_helper(
+            helper_path,
+            action_name,
+            &[
+                "--state-dir".to_string(),
+                config.state_dir.display().to_string(),
+                "--execute".to_string(),
+                "--json".to_string(),
+            ],
+        );
+        let exit_code = helper.exit_code.unwrap_or_else(|| ExitCode::Misuse.code());
+        return format!(
+            "whoathere vm {action_name}\nrelease_target={}\nstate_dir={}\nmutation=true\nready=false\n{}\nexit_code={exit_code}",
+            RELEASE_TARGET,
+            config.state_dir.display(),
+            helper.render_text()
+        );
+    }
     format!(
-        "whoathere vm {action_name}\nrelease_target={}\nstate_dir={}\nmutation={}\nstatus=blocked\nexit_code={}\nready=false\nreason_code=macos_vm_runtime_not_implemented\nexplanation=macOS VM runtime actions remain blocked until the Virtualization.framework helper is implemented and signed",
+        "whoathere vm {action_name}\nrelease_target={}\nstate_dir={}\nmutation={}\nstatus=dry_run\nexit_code={}\nready=false\nreason_code=execute_required_for_mutation\nexplanation=rerun with --execute and a configured macOS VM helper to perform lifecycle mutation",
         RELEASE_TARGET,
         config.state_dir.display(),
         execute,
-        ExitCode::Misuse.code()
+        ExitCode::Allow.code()
     )
 }
 
@@ -1552,13 +1695,118 @@ fn load_macos_vm_manifest(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MacosVmHelperOutput {
+    configured_path: Option<String>,
+    available: bool,
+    exit_code: Option<i32>,
+    stdout: String,
+    stderr: String,
+    reason_codes: Vec<String>,
+}
+
+impl MacosVmHelperOutput {
+    fn render_text(&self) -> String {
+        format!(
+            "helper_path={}\nhelper_available={}\nhelper_exit_code={}\nhelper_reason_codes={:?}\nhelper_stdout={}\nhelper_stderr={}",
+            self.configured_path
+                .as_deref()
+                .map(redacted_scalar)
+                .unwrap_or_else(|| "unset".to_string()),
+            self.available,
+            self.exit_code
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            self.reason_codes,
+            single_line(&redacted_scalar(&self.stdout)),
+            single_line(&redacted_scalar(&self.stderr))
+        )
+    }
+}
+
+fn run_macos_vm_helper(
+    helper_path: Option<&str>,
+    operation: &str,
+    operation_args: &[String],
+) -> MacosVmHelperOutput {
+    let configured_path = configured_macos_vm_helper_path(helper_path);
+    let Some(path) = configured_path.as_ref() else {
+        return MacosVmHelperOutput {
+            configured_path: None,
+            available: false,
+            exit_code: Some(ExitCode::Misuse.code()),
+            stdout: String::new(),
+            stderr: String::new(),
+            reason_codes: vec!["macos_vm_helper_path_not_configured".to_string()],
+        };
+    };
+    if !path.is_file() {
+        return MacosVmHelperOutput {
+            configured_path: Some(path.display().to_string()),
+            available: false,
+            exit_code: Some(ExitCode::Misuse.code()),
+            stdout: String::new(),
+            stderr: String::new(),
+            reason_codes: vec!["macos_vm_helper_not_found".to_string()],
+        };
+    }
+
+    let mut args = vec![operation.to_string()];
+    args.extend(operation_args.iter().cloned());
+    match ProcessCommand::new(path).args(&args).output() {
+        Ok(output) => MacosVmHelperOutput {
+            configured_path: Some(path.display().to_string()),
+            available: true,
+            exit_code: output
+                .status
+                .code()
+                .or(Some(ExitCode::InternalError.code())),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            reason_codes: if output.status.success() {
+                Vec::new()
+            } else {
+                vec!["macos_vm_helper_command_failed".to_string()]
+            },
+        },
+        Err(error) => MacosVmHelperOutput {
+            configured_path: Some(path.display().to_string()),
+            available: true,
+            exit_code: Some(ExitCode::InternalError.code()),
+            stdout: String::new(),
+            stderr: error.to_string(),
+            reason_codes: vec!["macos_vm_helper_spawn_failed".to_string()],
+        },
+    }
+}
+
+fn configured_macos_vm_helper_path(helper_path: Option<&str>) -> Option<PathBuf> {
+    helper_path
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var("WHOATHERE_MACOS_VM_HELPER")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .map(PathBuf::from)
+        })
+}
+
+fn single_line(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+}
+
 fn render_vm_status_json(
     status: &whoathere_macos_vm::MacosVmStatus,
     manifest_path: Option<&str>,
     manifest_load_reason: Option<&str>,
+    helper: &MacosVmHelperOutput,
 ) -> String {
     format!(
-        "{{\n  \"command\": \"whoathere vm status\",\n  \"schema_version\": {},\n  \"release_target\": {},\n  \"target_arch\": {},\n  \"vm_boundary\": {},\n  \"network_model\": {},\n  \"sync_policy\": {},\n  \"state_dir\": {},\n  \"host_os\": {},\n  \"host_arch\": {},\n  \"memory_mib\": {},\n  \"disk_gib\": {},\n  \"auto_suspend_minutes\": {},\n  \"state_dir_exists\": {},\n  \"manifest_path\": {},\n  \"manifest_present\": {},\n  \"manifest_valid\": {},\n  \"helper_ready_marker_present\": {},\n  \"image_ready_marker_present\": {},\n  \"ready\": {},\n  \"reason_codes\": [{}],\n  \"manifest_load_reason\": {}\n}}",
+        "{{\n  \"command\": \"whoathere vm status\",\n  \"schema_version\": {},\n  \"release_target\": {},\n  \"target_arch\": {},\n  \"vm_boundary\": {},\n  \"network_model\": {},\n  \"sync_policy\": {},\n  \"state_dir\": {},\n  \"host_os\": {},\n  \"host_arch\": {},\n  \"memory_mib\": {},\n  \"disk_gib\": {},\n  \"auto_suspend_minutes\": {},\n  \"state_dir_exists\": {},\n  \"manifest_path\": {},\n  \"manifest_present\": {},\n  \"manifest_valid\": {},\n  \"helper_ready_marker_present\": {},\n  \"image_ready_marker_present\": {},\n  \"ready\": {},\n  \"reason_codes\": [{}],\n  \"manifest_load_reason\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {}\n}}",
         json_string(status.schema_version),
         json_string(status.release_target),
         json_string(status.target_arch),
@@ -1586,7 +1834,20 @@ fn render_vm_status_json(
             .join(", "),
         manifest_load_reason
             .map(json_string)
-            .unwrap_or_else(|| "null".to_string())
+            .unwrap_or_else(|| "null".to_string()),
+        helper
+            .configured_path
+            .as_deref()
+            .map(json_string)
+            .unwrap_or_else(|| "null".to_string()),
+        helper.available,
+        helper
+            .exit_code
+            .map(|code| code.to_string())
+            .unwrap_or_else(|| "null".to_string()),
+        json_string_array(&helper.reason_codes),
+        json_string(&single_line(&redacted_scalar(&helper.stdout))),
+        json_string(&single_line(&redacted_scalar(&helper.stderr)))
     )
 }
 
@@ -1604,11 +1865,20 @@ struct VmReleasePlanArgs<'a> {
     json: bool,
 }
 
-fn render_doctor(json: bool) -> String {
+fn render_doctor(json: bool, helper_path: Option<&str>) -> String {
     let backend = UnsupportedBackend;
     let plan = backend.plan(ExecutionMode::Protected);
     let config = macos_vm_config(None, None, None);
     let status = status_from_config(&config, HostPlatform::current(), None);
+    let helper = run_macos_vm_helper(
+        helper_path,
+        "status",
+        &[
+            "--state-dir".to_string(),
+            config.state_dir.display().to_string(),
+            "--json".to_string(),
+        ],
+    );
     let scanners = scanner_adapters();
     let scanner_available = scanners
         .iter()
@@ -1629,13 +1899,26 @@ fn render_doctor(json: bool) -> String {
             .collect::<Vec<_>>()
             .join(", ");
         return format!(
-            "{{\n  \"command\": \"whoathere doctor\",\n  \"status\": \"ok\",\n  \"release_target\": {},\n  \"release_claim\": {},\n  \"sandbox_label\": {},\n  \"high_risk_allowed\": {},\n  \"vm_ready\": {},\n  \"vm_reason_codes\": {},\n  \"scanner_available_count\": {},\n  \"scanner_required_count\": {},\n  \"scanners\": [{}]\n}}",
+            "{{\n  \"command\": \"whoathere doctor\",\n  \"status\": \"ok\",\n  \"release_target\": {},\n  \"release_claim\": {},\n  \"sandbox_label\": {},\n  \"high_risk_allowed\": {},\n  \"vm_ready\": {},\n  \"vm_reason_codes\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {},\n  \"scanner_available_count\": {},\n  \"scanner_required_count\": {},\n  \"scanners\": [{}]\n}}",
             json_string(RELEASE_TARGET),
             json_string(RELEASE_CLAIM),
             json_string(plan.label),
             plan.high_risk_allowed,
             status.ready,
             json_string_array(&status.reason_codes),
+            helper
+                .configured_path
+                .as_deref()
+                .map(json_string)
+                .unwrap_or_else(|| "null".to_string()),
+            helper.available,
+            helper
+                .exit_code
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "null".to_string()),
+            json_string_array(&helper.reason_codes),
+            json_string(&single_line(&redacted_scalar(&helper.stdout))),
+            json_string(&single_line(&redacted_scalar(&helper.stderr))),
             scanner_available,
             scanners
                 .iter()
@@ -1658,13 +1941,14 @@ fn render_doctor(json: bool) -> String {
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "whoathere doctor\nstatus=ok\nrelease_target={}\nrelease_claim={}\nsandbox_label={}\nhigh_risk_allowed={}\nvm_ready={}\nvm_reason_codes={:?}\nscanner_available_count={}\n{}",
+        "whoathere doctor\nstatus=ok\nrelease_target={}\nrelease_claim={}\nsandbox_label={}\nhigh_risk_allowed={}\nvm_ready={}\nvm_reason_codes={:?}\n{}\nscanner_available_count={}\n{}",
         RELEASE_TARGET,
         RELEASE_CLAIM,
         plan.label,
         plan.high_risk_allowed,
         status.ready,
         status.reason_codes,
+        helper.render_text(),
         scanner_available,
         scanner_lines
     )
@@ -1907,6 +2191,10 @@ fn parse_policy_path(args: &[String]) -> Option<String> {
 
 fn parse_vault_origin(args: &[String]) -> Option<String> {
     parse_flag_value(args, "--vault-origin")
+}
+
+fn parse_helper_path(args: &[String]) -> Option<String> {
+    parse_flag_value(args, "--helper")
 }
 
 fn parse_provider_scope(args: &[String]) -> ProviderScope {
@@ -6000,6 +6288,7 @@ mod tests {
             Command::VmStatus {
                 state_dir: Some("/tmp/whoathere-vm".to_string()),
                 manifest_path: Some("/tmp/whoathere-vm/image.manifest".to_string()),
+                helper_path: None,
                 json: true
             }
         );
@@ -6010,6 +6299,7 @@ mod tests {
         let result = evaluate_command(Command::VmStatus {
             state_dir: Some("/tmp/whoathere-vm-status-test".to_string()),
             manifest_path: None,
+            helper_path: None,
             json: false,
         });
         assert_eq!(result.exit_code, 0);
@@ -6026,23 +6316,27 @@ mod tests {
     }
 
     #[test]
-    fn vm_init_execute_creates_state_directories_only() {
+    fn vm_init_execute_requires_real_helper() {
         let root = temp_root("whoathere-cli-vm-init");
         let _ = std::fs::remove_dir_all(&root);
         let result = evaluate_command(Command::VmInit {
             state_dir: Some(root.display().to_string()),
             manifest_path: None,
+            helper_path: None,
+            image_path: None,
+            restore_image_path: None,
             memory_mib: Some(6144),
             disk_gib: Some(40),
             execute: true,
         });
-        assert_eq!(result.exit_code, 0);
+        assert_eq!(result.exit_code, 64);
         assert!(result.output.contains("mutation=true"));
-        assert!(result.output.contains("created_state_dirs=true"));
-        assert!(root.join("cache").is_dir());
-        assert!(root.join("runs").is_dir());
-        assert!(root.join("reports").is_dir());
-        assert!(root.join("overlays").is_dir());
+        assert!(result.output.contains("direct_cli_state_mutation=false"));
+        assert!(result.output.contains("helper_required_for_execute=true"));
+        assert!(result
+            .output
+            .contains("macos_vm_helper_path_not_configured"));
+        assert!(!root.exists());
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -6051,13 +6345,41 @@ mod tests {
         let result = evaluate_command(Command::VmAction {
             action: VmAction::Start,
             state_dir: Some("/tmp/whoathere-vm-action".to_string()),
+            helper_path: None,
             execute: true,
         });
         assert_eq!(result.exit_code, 64);
-        assert!(result.output.contains("status=blocked"));
         assert!(result
             .output
-            .contains("reason_code=macos_vm_runtime_not_implemented"));
+            .contains("macos_vm_helper_path_not_configured"));
+    }
+
+    #[test]
+    fn vm_status_invokes_configured_helper_without_authorizing_runtime() {
+        let root = temp_root("whoathere-cli-vm-helper");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("temp root");
+        let helper = root.join("helper.sh");
+        write_new_file(
+            &helper,
+            b"#!/bin/sh\nprintf '{\"status\":\"fail_closed\",\"exit_code\":20,\"reason_codes\":[\"fixture_bundle_missing\"]}\\n'\nexit 20\n",
+        )
+        .expect("helper script");
+        set_executable(&helper).expect("executable helper");
+
+        let result = evaluate_command(Command::VmStatus {
+            state_dir: Some(root.join("state").display().to_string()),
+            manifest_path: None,
+            helper_path: Some(helper.display().to_string()),
+            json: false,
+        });
+        assert_eq!(result.exit_code, 0);
+        assert!(result.output.contains("helper_available=true"));
+        assert!(result.output.contains("helper_exit_code=20"));
+        assert!(result.output.contains("fixture_bundle_missing"));
+        assert!(result.output.contains("ready=false"));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -6162,12 +6484,16 @@ mod tests {
 
     #[test]
     fn doctor_json_reports_vm_release_readiness_without_enabling_runtime() {
-        let result = evaluate_command(Command::Doctor { json: true });
+        let result = evaluate_command(Command::Doctor {
+            json: true,
+            helper_path: None,
+        });
         assert_eq!(result.exit_code, 0);
         assert!(result
             .output
             .contains("\"release_target\": \"macos_apple_silicon_local_vm\""));
         assert!(result.output.contains("\"vm_ready\": false"));
+        assert!(result.output.contains("\"helper_available\": false"));
         assert!(result.output.contains("macos_vm_runtime_not_implemented"));
         assert!(result.output.contains("\"high_risk_allowed\": false"));
     }

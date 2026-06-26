@@ -1,0 +1,72 @@
+# macOS VM Goal 1 Checkpoint
+
+Status: in progress.
+
+Goal 1 is the Apple Silicon macOS VM lifecycle foundation. It does not enable npm, pip, uv,
+detonation, or sync-back execution.
+
+## Implemented
+
+- Added `whoathere/helpers/macos-vm-helper`, a Swift Package Manager helper that imports Apple `Virtualization.framework`.
+- Helper commands: `version`, `status`, `init`, `start`, `suspend`, `reset`, `prune`, and `health`.
+- Helper JSON contract includes schema version, helper version, host support, Virtualization.framework linkage, bundle paths, reason codes, and exit code.
+- Helper `init --execute --image <path>` creates a managed bundle from an explicit local installed disk image, copies the disk to `bundle/disk.img`, writes `bundle/config.json`, and writes `bundle/image.manifest`.
+- Helper `status` reports missing bundle/config/manifest/disk/auxiliary storage/hardware model/machine identifier/signature proof independently.
+- Helper `start` and `health` fail closed until the VM has real Virtualization metadata, signature verification, persistent runtime management, and guest readiness proof.
+- Rust CLI accepts `--helper <path>` or `WHOATHERE_MACOS_VM_HELPER` for VM and doctor commands.
+- Rust CLI delegates helper-backed `vm status`, `vm init --execute`, and lifecycle actions while preserving dry-run behavior.
+- `protect uv -- sync` and other high-risk workflows remain fail-closed.
+
+## Bundle Layout
+
+Default state directory:
+
+```text
+~/.whoathere/macos-vm
+```
+
+Managed files and directories:
+
+```text
+bundle/config.json
+bundle/image.manifest
+bundle/disk.img
+bundle/auxiliary-storage
+bundle/hardware-model.bin
+bundle/machine-identifier.bin
+bundle/runtime.json
+bundle/health.json
+logs/
+runs/
+cache/
+reports/
+overlays/
+```
+
+## Current Blockers
+
+- Restore-image installation is not implemented yet.
+- Full signature/notarization verification is not implemented yet.
+- Persistent VM process management is not implemented yet.
+- Guest readiness proof is not implemented yet.
+- A real bootable bundle requires auxiliary storage, hardware model, and machine identifier metadata.
+- No package-manager command is allowed to execute from this work.
+
+## Local Smoke
+
+Build and test helper:
+
+```sh
+cd /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper
+swift test
+```
+
+Wire helper into Rust CLI:
+
+```sh
+export WHOATHERE_MACOS_VM_HELPER=/Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/.build/debug/whoathere-macos-vm-helper
+cargo run --manifest-path /Users/jdc/src/whoathere/whoathere/Cargo.toml -p whoathere-cli -- vm status --json
+```
+
+Expected today: helper is available, high-risk execution is disabled, and lifecycle readiness
+fails closed with precise missing-bundle or missing-metadata reason codes.
