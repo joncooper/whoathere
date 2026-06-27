@@ -4011,6 +4011,113 @@ fn configured_macos_vm_helper_path(helper_path: Option<&str>) -> Option<PathBuf>
         })
 }
 
+fn guest_reprovision_command(
+    helper_path: Option<&str>,
+    state_dir: &Path,
+    provisioning: &MacosVmGuestProvisioningSummary,
+) -> Option<String> {
+    if provisioning.reason_codes().is_empty() {
+        return None;
+    }
+    let helper_root = helper_root_from_helper_path(Path::new(helper_path?))?;
+    let script_path = helper_root
+        .join("scripts")
+        .join("provision-guest-readiness.sh");
+    if !script_path.is_file() {
+        return None;
+    }
+
+    let mut parts = vec!["sudo".to_string()];
+    if let Some(node_runtime_dir) = detect_node_runtime_dir_for_reprovision() {
+        parts.push(format!(
+            "WHOATHERE_NODE_RUNTIME_DIR={}",
+            shell_quote(&node_runtime_dir.display().to_string())
+        ));
+    }
+    if let Some(uv_binary) = detect_uv_binary_for_reprovision() {
+        parts.push(format!(
+            "WHOATHERE_UV_BINARY={}",
+            shell_quote(&uv_binary.display().to_string())
+        ));
+    }
+    parts.push(shell_quote(&script_path.display().to_string()));
+    parts.push(shell_quote(&state_dir.display().to_string()));
+    Some(parts.join(" "))
+}
+
+fn helper_root_from_helper_path(helper_path: &Path) -> Option<PathBuf> {
+    for ancestor in helper_path.ancestors() {
+        if ancestor.file_name().and_then(|name| name.to_str()) == Some(".build") {
+            return ancestor.parent().map(Path::to_path_buf);
+        }
+    }
+    None
+}
+
+fn detect_node_runtime_dir_for_reprovision() -> Option<PathBuf> {
+    if let Ok(value) = std::env::var("WHOATHERE_NODE_RUNTIME_DIR") {
+        let path = PathBuf::from(value);
+        if node_runtime_dir_is_usable(&path) {
+            return Some(path);
+        }
+    }
+
+    if let Some(home) = home_dir_from_env() {
+        let nvm_root = home.join(".nvm").join("versions").join("node");
+        if let Ok(entries) = std::fs::read_dir(nvm_root) {
+            let mut candidates = entries
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .filter(|path| node_runtime_dir_is_usable(path))
+                .collect::<Vec<_>>();
+            candidates.sort();
+            if let Some(path) = candidates.pop() {
+                return Some(path);
+            }
+        }
+    }
+
+    let node_bin = find_executable_on_path("node")?;
+    let candidate = node_bin.parent()?.parent()?.to_path_buf();
+    node_runtime_dir_is_usable(&candidate).then_some(candidate)
+}
+
+fn node_runtime_dir_is_usable(path: &Path) -> bool {
+    path.join("bin").join("node").is_file() && path.join("bin").join("npm").is_file()
+}
+
+fn detect_uv_binary_for_reprovision() -> Option<PathBuf> {
+    if let Ok(value) = std::env::var("WHOATHERE_UV_BINARY") {
+        let path = PathBuf::from(value);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+
+    if let Some(home) = home_dir_from_env() {
+        let user_uv = home.join(".local").join("bin").join("uv");
+        if user_uv.is_file() {
+            return Some(user_uv);
+        }
+    }
+
+    find_executable_on_path("uv")
+}
+
+fn home_dir_from_env() -> Option<PathBuf> {
+    std::env::var("HOME")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from)
+}
+
+fn find_executable_on_path(name: &str) -> Option<PathBuf> {
+    let path_var = std::env::var_os("PATH")?;
+    std::env::split_paths(&path_var)
+        .map(|dir| dir.join(name))
+        .find(|path| path.is_file())
+}
+
 fn single_line(value: &str) -> String {
     value
         .replace('\\', "\\\\")
@@ -4224,6 +4331,11 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
         scanner_available,
         scanner_required,
     );
+    let guest_reprovision_command = guest_reprovision_command(
+        helper.configured_path.as_deref(),
+        &config.state_dir,
+        &provisioning,
+    );
     if json {
         let scanner_json = scanners
             .iter()
@@ -4239,7 +4351,7 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
             .collect::<Vec<_>>()
             .join(", ");
         return format!(
-            "{{\n  \"command\": \"whoathere doctor\",\n  \"status\": \"ok\",\n  \"release_target\": {},\n  \"release_claim\": {},\n  \"sandbox_label\": {},\n  \"high_risk_allowed\": {},\n  \"state_dir\": {},\n  \"vm_manifest_path\": {},\n  \"vm_manifest_load_reason\": {},\n  \"guest_provisioning\": {},\n  \"release_readiness_schema\": {},\n  \"release_stage\": {},\n  \"release_ready\": {},\n  \"release_blocking_reason_codes\": {},\n  \"scanner_release_blocking\": {},\n  \"scanner_release_scope\": {},\n  \"package_acquisition_policy\": {},\n  \"implemented_workflows\": {},\n  \"fail_closed_workflows\": {},\n  \"manual_review_classes\": {},\n  \"next_actions\": {},\n  \"vm_ready\": {},\n  \"vm_reason_codes\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout_truncated\": {},\n  \"helper_stderr_truncated\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {},\n  \"scanner_available_count\": {},\n  \"scanner_required_count\": {},\n  \"scanners\": [{}]\n}}",
+            "{{\n  \"command\": \"whoathere doctor\",\n  \"status\": \"ok\",\n  \"release_target\": {},\n  \"release_claim\": {},\n  \"sandbox_label\": {},\n  \"high_risk_allowed\": {},\n  \"state_dir\": {},\n  \"vm_manifest_path\": {},\n  \"vm_manifest_load_reason\": {},\n  \"guest_provisioning\": {},\n  \"guest_reprovision_command\": {},\n  \"release_readiness_schema\": {},\n  \"release_stage\": {},\n  \"release_ready\": {},\n  \"release_blocking_reason_codes\": {},\n  \"scanner_release_blocking\": {},\n  \"scanner_release_scope\": {},\n  \"package_acquisition_policy\": {},\n  \"implemented_workflows\": {},\n  \"fail_closed_workflows\": {},\n  \"manual_review_classes\": {},\n  \"next_actions\": {},\n  \"vm_ready\": {},\n  \"vm_reason_codes\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout_truncated\": {},\n  \"helper_stderr_truncated\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {},\n  \"scanner_available_count\": {},\n  \"scanner_required_count\": {},\n  \"scanners\": [{}]\n}}",
             json_string(RELEASE_TARGET),
             json_string(RELEASE_CLAIM),
             json_string(plan.label),
@@ -4251,6 +4363,10 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
                 .map(json_string)
                 .unwrap_or_else(|| "null".to_string()),
             render_guest_provisioning_json(&provisioning),
+            guest_reprovision_command
+                .as_deref()
+                .map(json_string)
+                .unwrap_or_else(|| "null".to_string()),
             json_string(readiness.schema_version),
             json_string(readiness.release_stage),
             readiness.release_ready,
@@ -4298,7 +4414,7 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "whoathere doctor\nstatus=ok\nrelease_target={}\nrelease_claim={}\nsandbox_label={}\nhigh_risk_allowed={}\nstate_dir={}\nvm_manifest_path={}\nvm_manifest_load_reason={}\n{}\nrelease_readiness_schema={}\nrelease_stage={}\nrelease_ready={}\nrelease_blocking_reason_codes={:?}\nscanner_release_blocking={}\nscanner_release_scope={}\npackage_acquisition_policy={}\nimplemented_workflows={:?}\nfail_closed_workflows={:?}\nmanual_review_classes={:?}\nnext_actions={:?}\nvm_ready={}\nvm_reason_codes={:?}\n{}\nscanner_available_count={}\nscanner_required_count={}\n{}",
+        "whoathere doctor\nstatus=ok\nrelease_target={}\nrelease_claim={}\nsandbox_label={}\nhigh_risk_allowed={}\nstate_dir={}\nvm_manifest_path={}\nvm_manifest_load_reason={}\n{}\nguest_reprovision_command={}\nrelease_readiness_schema={}\nrelease_stage={}\nrelease_ready={}\nrelease_blocking_reason_codes={:?}\nscanner_release_blocking={}\nscanner_release_scope={}\npackage_acquisition_policy={}\nimplemented_workflows={:?}\nfail_closed_workflows={:?}\nmanual_review_classes={:?}\nnext_actions={:?}\nvm_ready={}\nvm_reason_codes={:?}\n{}\nscanner_available_count={}\nscanner_required_count={}\n{}",
         RELEASE_TARGET,
         RELEASE_CLAIM,
         plan.label,
@@ -4307,6 +4423,9 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
         effective_manifest_path,
         manifest_load_reason.unwrap_or_else(|| "none".to_string()),
         provisioning.render_text(),
+        guest_reprovision_command
+            .as_deref()
+            .unwrap_or("none"),
         readiness.schema_version,
         readiness.release_stage,
         readiness.release_ready,
@@ -10277,6 +10396,54 @@ exit 0
             .contains("\"state_dir\": \"/private/tmp/whoathere-doctor-state\""));
         assert!(result.output.contains("\"release_ready\": false"));
         assert!(result.output.contains("\"high_risk_allowed\": false"));
+    }
+
+    #[test]
+    fn doctor_json_reports_exact_guest_reprovision_command_when_receipt_missing() {
+        let root = temp_root("whoathere-cli-doctor-reprovision-command");
+        let package_root = root.join("package");
+        let helper_root = package_root.join("helpers").join("macos-vm-helper");
+        let helper_dir = helper_root
+            .join(".build")
+            .join("arm64-apple-macosx")
+            .join("release");
+        let helper = helper_dir.join("whoathere-macos-vm-helper");
+        let script = helper_root
+            .join("scripts")
+            .join("provision-guest-readiness.sh");
+        let state_dir = root.join("state");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&helper_dir).expect("helper dir");
+        std::fs::create_dir_all(script.parent().expect("script parent")).expect("script dir");
+        std::fs::create_dir_all(state_dir.join("bundle")).expect("state bundle");
+        write_new_file(
+            &helper,
+            b"#!/bin/sh\nif [ \"$1\" = \"status\" ]; then printf '{\"status\":\"fail_closed\",\"exit_code\":20}\\n'; exit 20; fi\nexit 64\n",
+        )
+        .expect("helper script");
+        set_executable(&helper).expect("executable helper");
+        write_new_file(&script, b"#!/bin/sh\nexit 64\n").expect("provision script");
+        set_executable(&script).expect("executable provision script");
+
+        let result = evaluate_command(Command::Doctor {
+            json: true,
+            state_dir: Some(state_dir.display().to_string()),
+            helper_path: Some(helper.display().to_string()),
+        });
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result
+            .output
+            .contains("\"guest_reprovision_command\": \"sudo "));
+        assert!(result.output.contains("provision-guest-readiness.sh"));
+        assert!(result
+            .output
+            .contains(&shell_quote(&state_dir.display().to_string())));
+        assert!(result
+            .output
+            .contains("macos_vm_guest_provisioning_receipt_missing"));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

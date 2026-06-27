@@ -143,6 +143,8 @@ sudo WHOATHERE_NODE_RUNTIME_DIR="$WHOATHERE_NODE_RUNTIME_DIR" WHOATHERE_UV_BINAR
 If provisioning is missing or stale, `provision-guest-readiness.sh` and the validation scripts
 emit a machine-specific `sudo ... provision-guest-readiness.sh ...` command with detected
 `WHOATHERE_NODE_RUNTIME_DIR` and `WHOATHERE_UV_BINARY` values when they are available.
+`whoathere doctor --json` also reports `guest_reprovision_command` when it can derive the helper
+script path from the configured helper and the guest provisioning receipt is missing or stale.
 
 Then verify the receipt and live guest state:
 

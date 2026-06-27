@@ -46,7 +46,7 @@ The macOS local release is ready only when all of the following are true:
 | Native and binary artifacts | Fail closed/manual review | Native markers, binary wheels, direct URLs, VCS, editable, and unknown classes are not auto-allowed. |
 | Network evidence | Partial | Controlled fixtures and reason codes exist, but robust DNS/HTTPS observation is still marker-based rather than a full network monitor. |
 | Sync-back | Explicitly out of scope for preview | Current posture is detonation/admission evidence only. Host sync-back remains disabled and is not required for the preview release gate. Future sync-back still requires a deny-by-default whitelist and live validation before any claim changes. |
-| Doctor/readiness UX | Improved in this checkpoint | `whoathere doctor --json --state-dir <dir> --helper <path>` now reports release readiness, the inspected VM state directory, guest provisioning receipt/toolchain status, implemented workflows, fail-closed workflows, manual-review classes, blocking reason codes, and next actions. |
+| Doctor/readiness UX | Improved in this checkpoint | `whoathere doctor --json --state-dir <dir> --helper <path>` now reports release readiness, the inspected VM state directory, guest provisioning receipt/toolchain status, package acquisition policy, implemented workflows, fail-closed workflows, manual-review classes, blocking reason codes, next actions, and a derived `guest_reprovision_command` when guest provisioning is missing or stale and the helper script path can be resolved. |
 | Default VM manifest loading | Implemented for CLI status/readiness | `vm status` and `doctor` now load `<state-dir>/bundle/image.manifest` by default, tolerate the helper restore-image manifest shape, accept helper-created `local_developer_verified` preview manifests for lifecycle gating, and still reject stale or unverified manifests. Production release signing/notarization remains a separate blocker. |
 | Scanner adapters | Advisory for no-sync preview | External scanner binaries are still reported and remain required before any future auto-sync/auto-allow release. They are no longer a hard blocker for the current detonation/admission-only preview because sync-back is disabled and `whoathere vm red-team-gate` provides local fixture-safe comparator coverage. |
 | Packaging/onboarding | Preview implemented | [macOS local-first preview runbook](macos-local-first-preview-runbook.md) now documents first-run build, signing, VM init, provisioning, health, detonation validation, limitations, cleanup, and the repeatable preview tarball script. The package script builds the release CLI/helper, signs them locally, runs local gates, writes a checksum, and was validated from an extracted archive. Developer ID signing, notarization, and installer UX remain outside the preview package claim. |
@@ -63,6 +63,7 @@ The current tree is a credible VM-backed Python local project detonation prototy
 `whoathere doctor --json` now includes:
 
 - `guest_provisioning`
+- `guest_reprovision_command`
 - `release_readiness_schema`
 - `release_stage`
 - `release_ready`
@@ -111,7 +112,7 @@ scripts/whoathere-package-macos-preview.sh
 cc -O2 -Wall -Wextra -target arm64-apple-macos13 -fsyntax-only whoathere/helpers/macos-vm-helper/guest-agent/whoathere-guest-ready.c
 ```
 
-The `doctor --json` smokes reported `release_ready=false`, `high_risk_allowed=false`, `vm_ready=false`, the inspected VM state directory, `package_acquisition_policy=local_only_no_public_resolver`, implemented pip/local detonation workflows, fail-closed npm/uv/public-resolution/sync-back workflows, and release blockers for npm, uv, VM runtime readiness, and signature/notarization. Sync-back is reported as disabled for the preview rather than as a readiness blocker. Scanner availability is reported with `scanner_release_blocking=false` and `scanner_release_scope=required_before_auto_sync_not_no_sync_preview`.
+The `doctor --json` smokes reported `release_ready=false`, `high_risk_allowed=false`, `vm_ready=false`, the inspected VM state directory, `package_acquisition_policy=local_only_no_public_resolver`, implemented pip/local detonation workflows, fail-closed npm/uv/public-resolution/sync-back workflows, and release blockers for npm, uv, VM runtime readiness, and signature/notarization. Sync-back is reported as disabled for the preview rather than as a readiness blocker. Scanner availability is reported with `scanner_release_blocking=false` and `scanner_release_scope=required_before_auto_sync_not_no_sync_preview`. A focused unit test verifies `guest_reprovision_command` is emitted from a package-shaped helper layout when the guest provisioning receipt is missing.
 
 The red-team fixture gate passed with `passed=true`, `case_count=18`, `public_network_used=false`, and `external_scanners_required=false`. The gate does not execute arbitrary packages and does not replace scanner adapters; it proves the local fixture-safe static/dynamic evidence paths and binding checks catch or reject representative attack shapes without leaking canaries or local paths.
 
