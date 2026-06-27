@@ -1637,8 +1637,10 @@ fn render_vm_status(
 ) -> String {
     let config = macos_vm_config(state_dir, None, None);
     let default_manifest_path = default_macos_vm_manifest_path(&config);
+    let provisioning_path = default_macos_vm_guest_provisioning_path(&config);
     let (manifest, manifest_load_reason, effective_manifest_path) =
         load_macos_vm_manifest(manifest_path, &default_manifest_path);
+    let provisioning = load_macos_vm_guest_provisioning(&provisioning_path);
     let status = status_from_config(&config, HostPlatform::current(), manifest.as_ref());
     let helper = run_macos_vm_helper(
         helper_path,
@@ -1654,11 +1656,12 @@ fn render_vm_status(
             &status,
             &effective_manifest_path,
             manifest_load_reason.as_deref(),
+            &provisioning,
             &helper,
         );
     }
     let mut output = format!(
-        "whoathere vm status\nschema_version={}\nrelease_target={}\ntarget_arch={}\nvm_boundary={}\nnetwork_model={}\nsync_policy={}\nstate_dir={}\nhost_os={}\nhost_arch={}\nmemory_mib={}\ndisk_gib={}\nauto_suspend_minutes={}\nstate_dir_exists={}\nmanifest_path={}\nmanifest_present={}\nmanifest_valid={}\nhelper_ready_marker_present={}\nimage_ready_marker_present={}\nready={}\nreason_codes={:?}\n{}",
+        "whoathere vm status\nschema_version={}\nrelease_target={}\ntarget_arch={}\nvm_boundary={}\nnetwork_model={}\nsync_policy={}\nstate_dir={}\nhost_os={}\nhost_arch={}\nmemory_mib={}\ndisk_gib={}\nauto_suspend_minutes={}\nstate_dir_exists={}\nmanifest_path={}\nmanifest_present={}\nmanifest_valid={}\nhelper_ready_marker_present={}\nimage_ready_marker_present={}\nready={}\nreason_codes={:?}\n{}\n{}",
         status.schema_version,
         status.release_target,
         status.target_arch,
@@ -1679,6 +1682,7 @@ fn render_vm_status(
         status.image_ready_marker_present,
         status.ready,
         status.reason_codes,
+        provisioning.render_text(),
         helper.render_text()
     );
     if let Some(reason) = manifest_load_reason {
@@ -3283,6 +3287,13 @@ fn default_macos_vm_manifest_path(config: &MacosVmConfig) -> PathBuf {
     config.state_dir.join("bundle").join("image.manifest")
 }
 
+fn default_macos_vm_guest_provisioning_path(config: &MacosVmConfig) -> PathBuf {
+    config
+        .state_dir
+        .join("bundle")
+        .join("guest-provisioning.json")
+}
+
 fn load_macos_vm_manifest(
     manifest_path: Option<&str>,
     default_manifest_path: &Path,
@@ -3302,6 +3313,190 @@ fn load_macos_vm_manifest(
             effective_path,
         ),
     }
+}
+
+const MACOS_VM_GUEST_PROVISIONING_SCHEMA_VERSION: &str = "whoathere.macos_vm.guest_provisioning.v1";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MacosVmGuestProvisioningSummary {
+    path: PathBuf,
+    present: bool,
+    load_reason: Option<String>,
+    schema_version: Option<String>,
+    offline_python_runtime_status: Option<String>,
+    offline_python_wheels_status: Option<String>,
+    wheel_package_status: Option<String>,
+    offline_node_runtime_status: Option<String>,
+    offline_node_runtime_npm_version: Option<String>,
+    offline_uv_binary_status: Option<String>,
+    offline_uv_binary_version: Option<String>,
+    high_risk_package_execution_enabled: Option<bool>,
+    host_home_mounted: Option<bool>,
+    host_secrets_mounted: Option<bool>,
+}
+
+impl MacosVmGuestProvisioningSummary {
+    fn missing(path: PathBuf, load_reason: String) -> Self {
+        Self {
+            path,
+            present: false,
+            load_reason: Some(load_reason),
+            schema_version: None,
+            offline_python_runtime_status: None,
+            offline_python_wheels_status: None,
+            wheel_package_status: None,
+            offline_node_runtime_status: None,
+            offline_node_runtime_npm_version: None,
+            offline_uv_binary_status: None,
+            offline_uv_binary_version: None,
+            high_risk_package_execution_enabled: None,
+            host_home_mounted: None,
+            host_secrets_mounted: None,
+        }
+    }
+
+    fn from_contents(path: PathBuf, contents: &str) -> Self {
+        Self {
+            path,
+            present: true,
+            load_reason: None,
+            schema_version: json_extract_string_field(contents, "schema_version"),
+            offline_python_runtime_status: json_extract_string_field(
+                contents,
+                "offline_python_runtime_status",
+            ),
+            offline_python_wheels_status: json_extract_string_field(
+                contents,
+                "offline_python_wheels_status",
+            ),
+            wheel_package_status: json_extract_string_field(contents, "wheel_package_status"),
+            offline_node_runtime_status: json_extract_string_field(
+                contents,
+                "offline_node_runtime_status",
+            ),
+            offline_node_runtime_npm_version: json_extract_string_field(
+                contents,
+                "offline_node_runtime_npm_version",
+            ),
+            offline_uv_binary_status: json_extract_string_field(
+                contents,
+                "offline_uv_binary_status",
+            ),
+            offline_uv_binary_version: json_extract_string_field(
+                contents,
+                "offline_uv_binary_version",
+            ),
+            high_risk_package_execution_enabled: json_extract_bool_field(
+                contents,
+                "high_risk_package_execution_enabled",
+            ),
+            host_home_mounted: json_extract_bool_field(contents, "host_home_mounted"),
+            host_secrets_mounted: json_extract_bool_field(contents, "host_secrets_mounted"),
+        }
+    }
+
+    fn reason_codes(&self) -> Vec<String> {
+        let mut reasons = Vec::new();
+        if !self.present {
+            reasons.push("macos_vm_guest_provisioning_receipt_missing".to_string());
+        }
+        if self.schema_version.as_deref() != Some(MACOS_VM_GUEST_PROVISIONING_SCHEMA_VERSION) {
+            reasons.push("macos_vm_guest_provisioning_schema_invalid".to_string());
+        }
+        if self.offline_python_runtime_status.as_deref() != Some("installed") {
+            reasons.push("macos_vm_guest_python_runtime_not_provisioned".to_string());
+        }
+        if self.offline_python_wheels_status.as_deref() != Some("installed")
+            || self.wheel_package_status.as_deref() != Some("installed")
+        {
+            reasons.push("macos_vm_guest_pip_tooling_not_provisioned".to_string());
+        }
+        if self.offline_node_runtime_status.as_deref() != Some("installed") {
+            reasons.push("macos_vm_guest_node_runtime_not_provisioned".to_string());
+        }
+        if self.offline_uv_binary_status.as_deref() != Some("installed") {
+            reasons.push("macos_vm_guest_uv_binary_not_provisioned".to_string());
+        }
+        if self.high_risk_package_execution_enabled != Some(false) {
+            reasons
+                .push("macos_vm_guest_high_risk_execution_state_not_proven_disabled".to_string());
+        }
+        if self.host_home_mounted != Some(false) {
+            reasons.push("macos_vm_guest_host_home_mount_state_not_proven_disabled".to_string());
+        }
+        if self.host_secrets_mounted != Some(false) {
+            reasons.push("macos_vm_guest_host_secret_mount_state_not_proven_disabled".to_string());
+        }
+        reasons.sort();
+        reasons.dedup();
+        reasons
+    }
+
+    fn render_text(&self) -> String {
+        format!(
+            "guest_provisioning_receipt_path={}\nguest_provisioning_receipt_present={}\nguest_provisioning_load_reason={}\nguest_provisioning_reason_codes={:?}\nguest_provisioning_schema_version={}\nguest_provisioning_python_runtime_status={}\nguest_provisioning_python_wheels_status={}\nguest_provisioning_wheel_package_status={}\nguest_provisioning_node_runtime_status={}\nguest_provisioning_npm_version={}\nguest_provisioning_uv_binary_status={}\nguest_provisioning_uv_version={}\nguest_provisioning_high_risk_package_execution_enabled={}\nguest_provisioning_host_home_mounted={}\nguest_provisioning_host_secrets_mounted={}",
+            self.path.display(),
+            self.present,
+            self.load_reason
+                .as_deref()
+                .map(redacted_scalar)
+                .unwrap_or_else(|| "none".to_string()),
+            self.reason_codes(),
+            self.schema_version
+                .as_deref()
+                .map(redacted_scalar)
+                .unwrap_or_else(|| "missing".to_string()),
+            option_string_text(self.offline_python_runtime_status.as_deref()),
+            option_string_text(self.offline_python_wheels_status.as_deref()),
+            option_string_text(self.wheel_package_status.as_deref()),
+            option_string_text(self.offline_node_runtime_status.as_deref()),
+            option_string_text(self.offline_node_runtime_npm_version.as_deref()),
+            option_string_text(self.offline_uv_binary_status.as_deref()),
+            option_string_text(self.offline_uv_binary_version.as_deref()),
+            option_bool_text(self.high_risk_package_execution_enabled),
+            option_bool_text(self.host_home_mounted),
+            option_bool_text(self.host_secrets_mounted),
+        )
+    }
+}
+
+fn load_macos_vm_guest_provisioning(path: &Path) -> MacosVmGuestProvisioningSummary {
+    match std::fs::read_to_string(path) {
+        Ok(contents) => {
+            MacosVmGuestProvisioningSummary::from_contents(path.to_path_buf(), &contents)
+        }
+        Err(error) => MacosVmGuestProvisioningSummary::missing(
+            path.to_path_buf(),
+            redacted_scalar(&error.to_string()),
+        ),
+    }
+}
+
+fn option_string_text(value: Option<&str>) -> String {
+    value
+        .map(redacted_scalar)
+        .unwrap_or_else(|| "missing".to_string())
+}
+
+fn render_guest_provisioning_json(summary: &MacosVmGuestProvisioningSummary) -> String {
+    format!(
+        "{{\"receipt_path\": {}, \"receipt_present\": {}, \"load_reason\": {}, \"reason_codes\": {}, \"schema_version\": {}, \"python_runtime_status\": {}, \"python_wheels_status\": {}, \"wheel_package_status\": {}, \"node_runtime_status\": {}, \"npm_version\": {}, \"uv_binary_status\": {}, \"uv_version\": {}, \"high_risk_package_execution_enabled\": {}, \"host_home_mounted\": {}, \"host_secrets_mounted\": {}}}",
+        json_string(&summary.path.display().to_string()),
+        summary.present,
+        json_option_string_redacted(summary.load_reason.as_deref()),
+        json_string_array(&summary.reason_codes()),
+        json_option_string_redacted(summary.schema_version.as_deref()),
+        json_option_string_redacted(summary.offline_python_runtime_status.as_deref()),
+        json_option_string_redacted(summary.offline_python_wheels_status.as_deref()),
+        json_option_string_redacted(summary.wheel_package_status.as_deref()),
+        json_option_string_redacted(summary.offline_node_runtime_status.as_deref()),
+        json_option_string_redacted(summary.offline_node_runtime_npm_version.as_deref()),
+        json_option_string_redacted(summary.offline_uv_binary_status.as_deref()),
+        json_option_string_redacted(summary.offline_uv_binary_version.as_deref()),
+        json_option(summary.high_risk_package_execution_enabled),
+        json_option(summary.host_home_mounted),
+        json_option(summary.host_secrets_mounted),
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3535,10 +3730,11 @@ fn render_vm_status_json(
     status: &whoathere_macos_vm::MacosVmStatus,
     manifest_path: &str,
     manifest_load_reason: Option<&str>,
+    provisioning: &MacosVmGuestProvisioningSummary,
     helper: &MacosVmHelperOutput,
 ) -> String {
     format!(
-        "{{\n  \"command\": \"whoathere vm status\",\n  \"schema_version\": {},\n  \"release_target\": {},\n  \"target_arch\": {},\n  \"vm_boundary\": {},\n  \"network_model\": {},\n  \"sync_policy\": {},\n  \"state_dir\": {},\n  \"host_os\": {},\n  \"host_arch\": {},\n  \"memory_mib\": {},\n  \"disk_gib\": {},\n  \"auto_suspend_minutes\": {},\n  \"state_dir_exists\": {},\n  \"manifest_path\": {},\n  \"manifest_present\": {},\n  \"manifest_valid\": {},\n  \"helper_ready_marker_present\": {},\n  \"image_ready_marker_present\": {},\n  \"ready\": {},\n  \"reason_codes\": [{}],\n  \"manifest_load_reason\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout_truncated\": {},\n  \"helper_stderr_truncated\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {}\n}}",
+        "{{\n  \"command\": \"whoathere vm status\",\n  \"schema_version\": {},\n  \"release_target\": {},\n  \"target_arch\": {},\n  \"vm_boundary\": {},\n  \"network_model\": {},\n  \"sync_policy\": {},\n  \"state_dir\": {},\n  \"host_os\": {},\n  \"host_arch\": {},\n  \"memory_mib\": {},\n  \"disk_gib\": {},\n  \"auto_suspend_minutes\": {},\n  \"state_dir_exists\": {},\n  \"manifest_path\": {},\n  \"manifest_present\": {},\n  \"manifest_valid\": {},\n  \"helper_ready_marker_present\": {},\n  \"image_ready_marker_present\": {},\n  \"ready\": {},\n  \"reason_codes\": [{}],\n  \"manifest_load_reason\": {},\n  \"guest_provisioning\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout_truncated\": {},\n  \"helper_stderr_truncated\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {}\n}}",
         json_string(status.schema_version),
         json_string(status.release_target),
         json_string(status.target_arch),
@@ -3567,6 +3763,7 @@ fn render_vm_status_json(
         manifest_load_reason
             .map(json_string)
             .unwrap_or_else(|| "null".to_string()),
+        render_guest_provisioning_json(provisioning),
         helper
             .configured_path
             .as_deref()
@@ -3616,11 +3813,13 @@ struct MacosLocalReleaseReadiness {
 
 fn macos_local_release_readiness(
     status: &whoathere_macos_vm::MacosVmStatus,
+    provisioning: &MacosVmGuestProvisioningSummary,
     helper: &MacosVmHelperOutput,
     scanner_available_count: usize,
     scanner_required_count: usize,
 ) -> MacosLocalReleaseReadiness {
     let mut blocking_reason_codes = status.reason_codes.clone();
+    blocking_reason_codes.extend(provisioning.reason_codes());
     blocking_reason_codes.extend(helper.reason_codes.iter().cloned());
 
     if !helper.available {
@@ -3675,6 +3874,7 @@ fn macos_local_release_readiness(
         blocking_reason_codes,
         next_actions: string_vec(&[
             "validate default VM image lifecycle without hidden sudo requirements",
+            "reprovision the stopped VM with explicit Node/npm and uv tool sources until receipt and health prove toolchains",
             "make npm detonation either work in VM or remain explicitly unclaimed",
             "decide detonation-only versus narrow tested sync-back for this release",
             "write install/onboarding/troubleshooting docs for Apple Silicon users",
@@ -3692,8 +3892,10 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
     let plan = backend.plan(ExecutionMode::Protected);
     let config = macos_vm_config(state_dir, None, None);
     let default_manifest_path = default_macos_vm_manifest_path(&config);
+    let provisioning_path = default_macos_vm_guest_provisioning_path(&config);
     let (manifest, manifest_load_reason, effective_manifest_path) =
         load_macos_vm_manifest(None, &default_manifest_path);
+    let provisioning = load_macos_vm_guest_provisioning(&provisioning_path);
     let status = status_from_config(&config, HostPlatform::current(), manifest.as_ref());
     let helper = run_macos_vm_helper(
         helper_path,
@@ -3713,8 +3915,13 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
         .iter()
         .filter(|adapter| adapter.required_for_auto_sync)
         .count();
-    let readiness =
-        macos_local_release_readiness(&status, &helper, scanner_available, scanner_required);
+    let readiness = macos_local_release_readiness(
+        &status,
+        &provisioning,
+        &helper,
+        scanner_available,
+        scanner_required,
+    );
     if json {
         let scanner_json = scanners
             .iter()
@@ -3730,7 +3937,7 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
             .collect::<Vec<_>>()
             .join(", ");
         return format!(
-            "{{\n  \"command\": \"whoathere doctor\",\n  \"status\": \"ok\",\n  \"release_target\": {},\n  \"release_claim\": {},\n  \"sandbox_label\": {},\n  \"high_risk_allowed\": {},\n  \"state_dir\": {},\n  \"vm_manifest_path\": {},\n  \"vm_manifest_load_reason\": {},\n  \"release_readiness_schema\": {},\n  \"release_stage\": {},\n  \"release_ready\": {},\n  \"release_blocking_reason_codes\": {},\n  \"implemented_workflows\": {},\n  \"fail_closed_workflows\": {},\n  \"manual_review_classes\": {},\n  \"next_actions\": {},\n  \"vm_ready\": {},\n  \"vm_reason_codes\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout_truncated\": {},\n  \"helper_stderr_truncated\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {},\n  \"scanner_available_count\": {},\n  \"scanner_required_count\": {},\n  \"scanners\": [{}]\n}}",
+            "{{\n  \"command\": \"whoathere doctor\",\n  \"status\": \"ok\",\n  \"release_target\": {},\n  \"release_claim\": {},\n  \"sandbox_label\": {},\n  \"high_risk_allowed\": {},\n  \"state_dir\": {},\n  \"vm_manifest_path\": {},\n  \"vm_manifest_load_reason\": {},\n  \"guest_provisioning\": {},\n  \"release_readiness_schema\": {},\n  \"release_stage\": {},\n  \"release_ready\": {},\n  \"release_blocking_reason_codes\": {},\n  \"implemented_workflows\": {},\n  \"fail_closed_workflows\": {},\n  \"manual_review_classes\": {},\n  \"next_actions\": {},\n  \"vm_ready\": {},\n  \"vm_reason_codes\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout_truncated\": {},\n  \"helper_stderr_truncated\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {},\n  \"scanner_available_count\": {},\n  \"scanner_required_count\": {},\n  \"scanners\": [{}]\n}}",
             json_string(RELEASE_TARGET),
             json_string(RELEASE_CLAIM),
             json_string(plan.label),
@@ -3741,6 +3948,7 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
                 .as_deref()
                 .map(json_string)
                 .unwrap_or_else(|| "null".to_string()),
+            render_guest_provisioning_json(&provisioning),
             json_string(readiness.schema_version),
             json_string(readiness.release_stage),
             readiness.release_ready,
@@ -3785,7 +3993,7 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "whoathere doctor\nstatus=ok\nrelease_target={}\nrelease_claim={}\nsandbox_label={}\nhigh_risk_allowed={}\nstate_dir={}\nvm_manifest_path={}\nvm_manifest_load_reason={}\nrelease_readiness_schema={}\nrelease_stage={}\nrelease_ready={}\nrelease_blocking_reason_codes={:?}\nimplemented_workflows={:?}\nfail_closed_workflows={:?}\nmanual_review_classes={:?}\nnext_actions={:?}\nvm_ready={}\nvm_reason_codes={:?}\n{}\nscanner_available_count={}\nscanner_required_count={}\n{}",
+        "whoathere doctor\nstatus=ok\nrelease_target={}\nrelease_claim={}\nsandbox_label={}\nhigh_risk_allowed={}\nstate_dir={}\nvm_manifest_path={}\nvm_manifest_load_reason={}\n{}\nrelease_readiness_schema={}\nrelease_stage={}\nrelease_ready={}\nrelease_blocking_reason_codes={:?}\nimplemented_workflows={:?}\nfail_closed_workflows={:?}\nmanual_review_classes={:?}\nnext_actions={:?}\nvm_ready={}\nvm_reason_codes={:?}\n{}\nscanner_available_count={}\nscanner_required_count={}\n{}",
         RELEASE_TARGET,
         RELEASE_CLAIM,
         plan.label,
@@ -3793,6 +4001,7 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
         config.state_dir.display(),
         effective_manifest_path,
         manifest_load_reason.unwrap_or_else(|| "none".to_string()),
+        provisioning.render_text(),
         readiness.schema_version,
         readiness.release_stage,
         readiness.release_ready,
@@ -9099,6 +9308,108 @@ exit 0
             .contains("macos_vm_manifest_signature_not_verified"));
         assert!(!result.output.contains("macos_vm_image_manifest_missing"));
         assert!(result.output.contains("\"release_ready\": false"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vm_status_reports_guest_provisioning_summary() {
+        let root = temp_root("whoathere-cli-vm-status-provisioning");
+        let state_dir = root.join("state");
+        let bundle_dir = state_dir.join("bundle");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&bundle_dir).expect("bundle dir");
+        std::fs::write(
+            bundle_dir.join("guest-provisioning.json"),
+            r#"{
+  "schema_version": "whoathere.macos_vm.guest_provisioning.v1",
+  "offline_python_runtime_status": "installed",
+  "offline_python_wheels_status": "installed",
+  "wheel_package_status": "installed",
+  "offline_node_runtime_status": "installed",
+  "offline_node_runtime_npm_version": "10.9.8",
+  "offline_uv_binary_status": "installed",
+  "offline_uv_binary_version": "uv 0.10.9",
+  "high_risk_package_execution_enabled": false,
+  "host_home_mounted": false,
+  "host_secrets_mounted": false
+}"#,
+        )
+        .expect("receipt");
+
+        let result = evaluate_command(Command::VmStatus {
+            state_dir: Some(state_dir.display().to_string()),
+            manifest_path: None,
+            helper_path: None,
+            json: false,
+        });
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result
+            .output
+            .contains("guest_provisioning_receipt_present=true"));
+        assert!(result
+            .output
+            .contains("guest_provisioning_node_runtime_status=installed"));
+        assert!(result
+            .output
+            .contains("guest_provisioning_npm_version=10.9.8"));
+        assert!(result
+            .output
+            .contains("guest_provisioning_uv_binary_status=installed"));
+        assert!(result.output.contains("guest_provisioning_reason_codes=[]"));
+        assert!(!result
+            .output
+            .contains("macos_vm_guest_node_runtime_not_provisioned"));
+        assert!(!result
+            .output
+            .contains("macos_vm_guest_uv_binary_not_provisioned"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn doctor_reports_stale_guest_provisioning_as_release_blocker() {
+        let root = temp_root("whoathere-cli-doctor-stale-provisioning");
+        let state_dir = root.join("state");
+        let bundle_dir = state_dir.join("bundle");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&bundle_dir).expect("bundle dir");
+        std::fs::write(
+            bundle_dir.join("guest-provisioning.json"),
+            r#"{
+  "schema_version": "whoathere.macos_vm.guest_provisioning.v1",
+  "offline_python_runtime_status": "installed",
+  "offline_python_wheels_status": "installed",
+  "wheel_package_status": "installed",
+  "high_risk_package_execution_enabled": false,
+  "host_home_mounted": false,
+  "host_secrets_mounted": false
+}"#,
+        )
+        .expect("receipt");
+
+        let result = evaluate_command(Command::Doctor {
+            json: true,
+            state_dir: Some(state_dir.display().to_string()),
+            helper_path: None,
+        });
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result.output.contains("\"guest_provisioning\": {"));
+        assert!(result.output.contains("\"receipt_present\": true"));
+        assert!(result
+            .output
+            .contains("\"python_runtime_status\": \"installed\""));
+        assert!(result.output.contains("\"node_runtime_status\": null"));
+        assert!(result
+            .output
+            .contains("macos_vm_guest_node_runtime_not_provisioned"));
+        assert!(result
+            .output
+            .contains("macos_vm_guest_uv_binary_not_provisioned"));
+        assert!(result.output.contains("\"release_ready\": false"));
+        assert!(result.output.contains("\"high_risk_allowed\": false"));
 
         let _ = std::fs::remove_dir_all(&root);
     }

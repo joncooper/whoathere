@@ -46,7 +46,7 @@ The macOS local release is ready only when all of the following are true:
 | Native and binary artifacts | Fail closed/manual review | Native markers, binary wheels, direct URLs, VCS, editable, and unknown classes are not auto-allowed. |
 | Network evidence | Partial | Controlled fixtures and reason codes exist, but robust DNS/HTTPS observation is still marker-based rather than a full network monitor. |
 | Sync-back | Not implemented | Current posture is detonation/admission evidence only. Host sync-back remains disabled. |
-| Doctor/readiness UX | Improved in this checkpoint | `whoathere doctor --json --state-dir <dir> --helper <path>` now reports release readiness, the inspected VM state directory, implemented workflows, fail-closed workflows, manual-review classes, blocking reason codes, and next actions. |
+| Doctor/readiness UX | Improved in this checkpoint | `whoathere doctor --json --state-dir <dir> --helper <path>` now reports release readiness, the inspected VM state directory, guest provisioning receipt/toolchain status, implemented workflows, fail-closed workflows, manual-review classes, blocking reason codes, and next actions. |
 | Default VM manifest loading | Implemented for CLI status/readiness | `vm status` and `doctor` now load `<state-dir>/bundle/image.manifest` by default, tolerate the helper restore-image manifest shape, and report signature verification as the real blocker instead of falsely reporting a missing manifest. |
 | Packaging/onboarding | Not release-ready | Installer, signed artifacts, codesign/notarization verification, and user-facing first-run docs still need a release pass. |
 | Comparator/red-team gate | Not complete | Existing fixtures are useful, but the release still needs a deliberate comparator pass against GuardDog, OSV/pip-audit class tools, and recent npm/PyPI attack patterns. |
@@ -61,6 +61,7 @@ The current tree is a credible VM-backed Python local project detonation prototy
 
 `whoathere doctor --json` now includes:
 
+- `guest_provisioning`
 - `release_readiness_schema`
 - `release_stage`
 - `release_ready`
@@ -101,6 +102,19 @@ The `doctor --json` smokes reported `release_ready=false`, `high_risk_allowed=fa
 
 The live validation VM smoke now reports `manifest_present=true`, `manifest_path=/Users/jdc/.whoathere/macos-vm-validation/bundle/image.manifest`, and `macos_vm_manifest_signature_not_verified`; it no longer reports `macos_vm_image_manifest_missing` for the prepared validation state directory.
 
+This checkpoint adds a structured guest provisioning summary to `vm status --json` and `doctor --json`. On the current validation VM, the summary proves the receipt is present and Python tooling is installed, but Node/npm and uv are not recorded in the stale receipt:
+
+```text
+guest_provisioning.reason_codes=["macos_vm_guest_node_runtime_not_provisioned", "macos_vm_guest_uv_binary_not_provisioned"]
+guest_provisioning.python_runtime_status=installed
+guest_provisioning.python_wheels_status=installed
+guest_provisioning.wheel_package_status=installed
+guest_provisioning.node_runtime_status=null
+guest_provisioning.uv_binary_status=null
+```
+
+Those reason codes now appear in `release_blocking_reason_codes`, so stale or incomplete provisioning cannot be mistaken for npm/uv release readiness.
+
 The helper lifecycle smoke showed that `swift build` replaces the signed helper binary, so the helper must be re-signed before VM start. After re-signing, start returned `exit_code=0`, health returned `guest_health_proven=true`, `guest_toolchain_python3_available=true`, `guest_toolchain_pip_available=true`, `guest_toolchain_npm_available=false`, and `guest_toolchain_uv_available=false`. Updated suspend behavior returned `exit_code=0`, `runtime_stop_observed=true`, and `suspend_semantics=force_stop`. Final health returned fail-closed with `runtime_process_not_running`, confirming the VM was stopped.
 
 Offline provisioning now supports copying host or repo-provided Node/npm and uv tooling into the guest under `/usr/local/whoathere`. The guest agent uses a fixed WhoaThere-owned PATH for tool discovery and detonation. Static validation passed, but live npm/uv proof is still pending because `sudo ./scripts/provision-guest-readiness.sh /Users/jdc/.whoathere/macos-vm-validation` requires an interactive sudo password in this environment.
@@ -112,7 +126,7 @@ Live VM validation is not required for this checkpoint because the implementatio
 Focus on VM lifecycle and onboarding UX before expanding package-manager coverage:
 
 1. Run `doctor`, `vm status`, `vm init`, `vm start`, `vm health`, `vm suspend`, `vm reset`, and `vm prune` against the validation VM from a clean user perspective.
-2. Reprovision the stopped validation VM with `sudo ./scripts/provision-guest-readiness.sh /Users/jdc/.whoathere/macos-vm-validation`, then rerun health to prove `guest_toolchain_npm_available=true` and `guest_toolchain_uv_available=true`.
+2. Reprovision the stopped validation VM with `sudo WHOATHERE_NODE_RUNTIME_DIR=/Users/jdc/.nvm/versions/node/v22.22.3 WHOATHERE_UV_BINARY=/Users/jdc/.local/bin/uv /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/scripts/provision-guest-readiness.sh /Users/jdc/.whoathere/macos-vm-validation`, then rerun status and health to prove the receipt and live guest report `guest_toolchain_npm_available=true` and `guest_toolchain_uv_available=true`.
 3. Run the npm and uv fixture suites. Keep npm/uv release claims fail-closed until those live checks pass.
 4. Turn the helper signing requirement into first-run onboarding so users do not run an unsigned helper after `swift build`.
 5. Decide whether force-stop is acceptable release behavior for `vm suspend`, or whether guest-requested stop must be made reliable before release.

@@ -129,6 +129,10 @@ stopped VM disk with ownership enabled, installs the `whoathere-guest-ready` bin
 usable host or repo-provided runtimes are found, writes `bundle/guest-provisioning.json`, and
 detaches the disk. Set `WHOATHERE_NODE_RUNTIME_DIR` or `WHOATHERE_UV_BINARY` to force explicit
 tool sources for repeatable validation.
+`whoathere vm status --json` and `whoathere doctor --json` read
+`bundle/guest-provisioning.json` directly and report provisioning reason codes such as
+`macos_vm_guest_node_runtime_not_provisioned` or `macos_vm_guest_uv_binary_not_provisioned`.
+Those diagnostics are evidence only; they do not authorize package execution.
 It does not mount host home, SSH keys, project workspaces, real credentials, or package-manager
 state. A non-root-owned daemon was tested and did not produce a guest proof.
 
