@@ -1757,7 +1757,7 @@ fn render_vm_status(
         guest_reprovision_admin_required(&provisioning),
         guest_reprovision_operator_action(&provisioning, guest_reprovision_command.as_deref()),
         guest_reprovision_command.as_deref().unwrap_or("none"),
-        helper.render_text()
+        helper.render_summary_text()
     );
     if let Some(reason) = manifest_load_reason {
         output.push_str(&format!("\nmanifest_load_reason={reason}"));
@@ -4544,6 +4544,44 @@ impl MacosVmHelperOutput {
             single_line(&redacted_scalar(&self.stderr))
         )
     }
+
+    fn render_summary_text(&self) -> String {
+        let stdout = render_bounded_helper_stream_text("helper_stdout", &self.stdout);
+        let stderr = render_bounded_helper_stream_text("helper_stderr", &self.stderr);
+        format!(
+            "helper_path={}\nhelper_available={}\nhelper_exit_code={}\nhelper_reason_codes={:?}\nhelper_stdout_truncated={}\nhelper_stderr_truncated={}\n{}\n{}",
+            self.configured_path
+                .as_deref()
+                .map(redacted_scalar)
+                .unwrap_or_else(|| "unset".to_string()),
+            self.available,
+            self.exit_code
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            self.reason_codes,
+            self.stdout_truncated,
+            self.stderr_truncated,
+            stdout,
+            stderr
+        )
+    }
+}
+
+fn render_bounded_helper_stream_text(name: &str, value: &str) -> String {
+    const TEXT_STREAM_LIMIT_BYTES: usize = 512;
+
+    let redacted = single_line(&redacted_scalar(value));
+    if redacted.len() > TEXT_STREAM_LIMIT_BYTES {
+        format!(
+            "{name}_bytes={}\n{name}_omitted=true\n{name}=omitted_long_payload",
+            value.len()
+        )
+    } else {
+        format!(
+            "{name}_bytes={}\n{name}_omitted=false\n{name}={redacted}",
+            value.len()
+        )
+    }
 }
 
 fn run_macos_vm_helper(
@@ -5350,7 +5388,7 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
         effective_vm_reason_codes.is_empty(),
         effective_vm_reason_codes.is_empty(),
         effective_vm_reason_codes,
-        helper.render_text(),
+        helper.render_summary_text(),
         scanner_available,
         scanner_required,
         scanner_lines
@@ -10456,6 +10494,29 @@ mod tests {
         assert!(result.output.contains("ready=false"));
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn helper_text_omits_long_stdout_payloads() {
+        let long_stdout = "x".repeat(600);
+        let helper = MacosVmHelperOutput {
+            configured_path: Some("/tmp/whoathere-helper".to_string()),
+            available: true,
+            exit_code: Some(0),
+            stdout: long_stdout.clone(),
+            stderr: String::new(),
+            stdout_truncated: false,
+            stderr_truncated: false,
+            reason_codes: Vec::new(),
+        };
+
+        let output = helper.render_summary_text();
+
+        assert!(output.contains("helper_stdout_bytes=600"));
+        assert!(output.contains("helper_stdout_omitted=true"));
+        assert!(output.contains("helper_stdout=omitted_long_payload"));
+        assert!(!output.contains(&long_stdout));
+        assert!(output.contains("helper_stderr_omitted=false"));
     }
 
     #[test]
