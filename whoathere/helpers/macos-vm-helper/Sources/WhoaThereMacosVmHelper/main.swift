@@ -9,6 +9,7 @@ private let guestReadinessPort: UInt32 = 47078
 private let guestReadinessProtocol = "whoathere.guest_ready.v1"
 private let guestDetonationProtocol = "whoathere.guest_detonation.v1"
 private let maxProjectPayloadHexBytes = 2 * 1024 * 1024
+private let maxSyncBackArchiveHexBytes = 8 * 1024 * 1024
 
 private final class LockedResultBox<Value>: @unchecked Sendable {
     private let lock = NSLock()
@@ -179,7 +180,8 @@ private final class GuestReadinessListener: NSObject, VZVirtioSocketListenerDele
                 requestFields["protocol"] = guestDetonationProtocol
                 requestFields["vm_session_id"] = sessionID
                 requestFields["helper_version"] = helperVersion
-                requestFields["sync_back_enabled"] = false
+                let syncBackRequested = requestFields["sync_back_enabled"] as? Bool ?? false
+                requestFields["sync_back_enabled"] = syncBackRequested
                 requestFields["host_package_execution_enabled"] = false
                 requestFields["high_risk_package_execution_enabled"] = false
                 guard writeJSONLine(requestFields, to: connection.fileDescriptor) else {
@@ -198,7 +200,7 @@ private final class GuestReadinessListener: NSObject, VZVirtioSocketListenerDele
                 guard let responseData = readFileDescriptor(
                     connection.fileDescriptor,
                     timeoutSeconds: Int32(timeout),
-                    maxBytes: 128 * 1024
+                    maxBytes: maxSyncBackArchiveHexBytes + 128 * 1024
                 ),
                       var response = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
                       response["protocol"] as? String == guestDetonationProtocol else {
@@ -215,7 +217,28 @@ private final class GuestReadinessListener: NSObject, VZVirtioSocketListenerDele
                 }
                 response["job_id"] = response["job_id"] as? String ?? jobID
                 response["vm_session_id"] = sessionID
-                response["sync_back_enabled"] = false
+                let guestSyncBackEnabled = response["sync_back_enabled"] as? Bool ?? false
+                response["sync_back_enabled"] = syncBackRequested && guestSyncBackEnabled
+                if syncBackRequested,
+                   guestSyncBackEnabled,
+                   let archiveHex = response["sync_output_archive_hex"] as? String {
+                    guard let archiveData = dataFromHex(
+                        archiveHex,
+                        maxBytes: maxSyncBackArchiveHexBytes / 2
+                    ) else {
+                        writeDetonationResult(
+                            to: resultURL,
+                            fields: detonationFailureResult(
+                                jobID: jobID,
+                                reasons: ["guest_sync_output_archive_invalid"],
+                                exitCode: 20
+                            )
+                        )
+                        try? FileManager.default.removeItem(at: activeURL)
+                        continue
+                    }
+                    response["sync_output_archive_sha256"] = sha256Digest(data: archiveData)
+                }
                 response["host_package_execution_enabled"] = false
                 response["high_risk_package_execution_enabled"] = false
                 writeDetonationResult(to: resultURL, fields: response)
@@ -391,6 +414,27 @@ private func imageDigestForProof(_ layout: BundleLayout) -> String {
 
 private func sha256Hex(_ string: String) -> String {
     SHA256.hash(data: Data(string.utf8)).map { String(format: "%02x", $0) }.joined()
+}
+
+private func sha256Digest(data: Data) -> String {
+    "sha256:" + SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+}
+
+private func dataFromHex(_ hex: String, maxBytes: Int) -> Data? {
+    guard !hex.isEmpty, hex.count % 2 == 0, hex.count <= maxBytes * 2 else {
+        return nil
+    }
+    var data = Data(capacity: hex.count / 2)
+    var index = hex.startIndex
+    while index < hex.endIndex {
+        let next = hex.index(index, offsetBy: 2)
+        guard let byte = UInt8(hex[index..<next], radix: 16) else {
+            return nil
+        }
+        data.append(byte)
+        index = next
+    }
+    return data
 }
 
 private func readJSONObject(_ url: URL) -> [String: Any]? {
@@ -1977,7 +2021,7 @@ struct WhoaThereMacosVmHelper {
                 fields: baseFields(status: "dry_run").merging([
                     "operation": "detonate",
                     "mutation": false,
-                    "sync_back_enabled": false,
+                    "sync_back_enabled": options.detonationSyncBack,
                     "host_package_execution_enabled": false,
                     "high_risk_package_execution_enabled": false,
                     "state_dir": layout.stateDir.path,
@@ -2177,7 +2221,7 @@ struct WhoaThereMacosVmHelper {
                 "fixture": fixture,
                 "timeout_seconds": min(900, max(5, options.detonationTimeoutSeconds)),
                 "argv_count": options.detonationArgs.count,
-                "sync_back_enabled": false,
+                "sync_back_enabled": options.detonationSyncBack,
                 "host_package_execution_enabled": false,
                 "high_risk_package_execution_enabled": false
             ]
@@ -2232,7 +2276,7 @@ struct WhoaThereMacosVmHelper {
             fields["project_workflow"] = options.detonationProjectWorkflow ?? "none"
             fields["project_import_module"] = options.detonationProjectImportModule ?? "none"
             fields["project_requirements_path"] = options.detonationProjectRequirementsPath ?? "none"
-            fields["sync_back_enabled"] = false
+            fields["sync_back_enabled"] = result["sync_back_enabled"] as? Bool ?? false
             fields["host_package_execution_enabled"] = false
             fields["high_risk_package_execution_enabled"] = false
             fields["exit_code"] = resultExit

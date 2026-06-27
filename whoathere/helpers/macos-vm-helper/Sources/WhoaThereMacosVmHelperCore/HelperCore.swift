@@ -37,6 +37,7 @@ public struct HelperOptions: Equatable, Sendable {
     public var detonationProjectWorkflow: String?
     public var detonationProjectImportModule: String?
     public var detonationProjectRequirementsPath: String?
+    public var detonationSyncBack: Bool
     public var detonationArgs: [String]
 
     public init(
@@ -57,6 +58,7 @@ public struct HelperOptions: Equatable, Sendable {
         detonationProjectWorkflow: String? = nil,
         detonationProjectImportModule: String? = nil,
         detonationProjectRequirementsPath: String? = nil,
+        detonationSyncBack: Bool = false,
         detonationArgs: [String] = []
     ) {
         self.command = command
@@ -76,6 +78,7 @@ public struct HelperOptions: Equatable, Sendable {
         self.detonationProjectWorkflow = detonationProjectWorkflow
         self.detonationProjectImportModule = detonationProjectImportModule
         self.detonationProjectRequirementsPath = detonationProjectRequirementsPath
+        self.detonationSyncBack = detonationSyncBack
         self.detonationArgs = detonationArgs
     }
 }
@@ -151,6 +154,9 @@ public func parseArguments(_ arguments: [String]) throws -> HelperOptions {
             options.detonationProjectImportModule = try value(after: token, in: arguments, at: &index)
         case "--project-requirements-path":
             options.detonationProjectRequirementsPath = try value(after: token, in: arguments, at: &index)
+        case "--sync-back":
+            options.detonationSyncBack = true
+            index += 1
         case "--":
             options.detonationArgs = Array(arguments[arguments.index(after: index)..<arguments.endIndex])
             index = arguments.endIndex
@@ -199,6 +205,11 @@ public func parseArguments(_ arguments: [String]) throws -> HelperOptions {
                     options.detonationProjectImportModule = rawValue
                 case "--project-requirements-path":
                     options.detonationProjectRequirementsPath = rawValue
+                case "--sync-back":
+                    guard rawValue == "true" else {
+                        throw ArgumentError.unknownFlag(token)
+                    }
+                    options.detonationSyncBack = true
                 default:
                     throw ArgumentError.unknownFlag(flag)
                 }

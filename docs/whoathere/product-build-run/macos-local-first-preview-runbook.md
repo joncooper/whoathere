@@ -4,7 +4,7 @@
 
 This runbook is the operator-facing path for the Apple Silicon macOS local-first preview release.
 It is intentionally narrower than the enterprise WhoaThere vision: no Vault dependency, no AWS,
-no Windows, no Linux release claim, no public package resolver fallback, and no host sync-back.
+no Windows, no Linux release claim, and no public package resolver fallback.
 
 The current usable claim is:
 
@@ -16,7 +16,10 @@ The current usable claim is:
 - uv has a narrow local `uv pip install` project planner, but live uv remains fail-closed until uv
   is provisioned into the validation VM and live fixture/project checks pass. `uv sync` remains
   deferred until lock/source policy is explicit.
-- Sync-back remains disabled. The current posture is detonation/admission evidence only.
+- Sync-back is an explicit beta path. It requires `--sync-back`, clean VM evidence, a bounded guest
+  output archive, a deny-by-default host allowlist, and a current `sync-validation.json` receipt.
+  Unsupported, suspicious, native, binary, direct/VCS/editable, traversal, symlink, canary, or
+  network-signaling outputs sync nothing.
 - Package acquisition is local-only for this preview: `doctor` reports
   `package_acquisition_policy=local_only_no_public_resolver`. Public npm/PyPI resolution remains
   fail-closed unless a separate VM-only resolver policy is implemented and tested.
@@ -275,6 +278,12 @@ Run a local Python project detonation:
 $WHOATHERE vm detonate --workspace /absolute/path/to/python-project --state-dir "$WHOATHERE_STATE" --helper "$WHOATHERE_HELPER" --execute --json pip -- install .
 ```
 
+Run the same workflow with beta sync-back enabled:
+
+```sh
+$WHOATHERE vm detonate --workspace /absolute/path/to/python-project --state-dir "$WHOATHERE_STATE" --helper "$WHOATHERE_HELPER" --execute --sync-back --json pip -- install .
+```
+
 Run local-only requirements detonation:
 
 ```sh
@@ -287,6 +296,10 @@ Run a local npm project detonation only for a package with no external dependenc
 $WHOATHERE vm detonate --workspace /absolute/path/to/npm-project --state-dir "$WHOATHERE_STATE" --helper "$WHOATHERE_HELPER" --execute --json npm -- install
 ```
 
+To sync approved npm outputs, add `--sync-back`. The host accepts only `package-lock.json` and
+`node_modules` files that pass the sync planner. `node_modules/.bin`, native outputs, and suspicious
+paths remain blocked.
+
 This path is intentionally narrow. `package.json` dependency sections, package specs passed to
 `npm install`, public registry overrides, native markers, and lockfiles that imply external
 resolution remain fail-closed until a public package acquisition policy exists.
@@ -298,6 +311,9 @@ resolution projects:
 $WHOATHERE vm detonate --workspace /absolute/path/to/python-project --state-dir "$WHOATHERE_STATE" --helper "$WHOATHERE_HELPER" --execute --json uv -- pip install .
 ```
 
+To sync approved uv outputs, add `--sync-back`. The host accepts only project-local Python
+environment files under the approved `.venv/lib/...` output shape.
+
 `uv sync` is intentionally not a claimed live workflow yet; it remains fail-closed until lockfile
 and source policy are explicit and tested.
 
@@ -308,9 +324,15 @@ helper execution, checks `uv sync` remains deferred, and suspends the VM if it s
 tooling is missing, it prints the exact reprovision command and exits before VM start. After a
 complete successful run it writes `$WHOATHERE_STATE/bundle/release-validation.json`. `doctor --json`
 uses that receipt as npm/uv release proof only when it is bound to the current
-`guest-provisioning.json` SHA-256 digest and records disabled host execution, disabled sync-back,
+`guest-provisioning.json` SHA-256 digest and records disabled host execution,
 disabled high-risk execution, and `package_acquisition_policy=local_only_no_public_resolver`.
 Missing, stale, or mismatched release-validation receipts keep npm/uv release blockers in place.
+
+A successful `--sync-back` run writes `$WHOATHERE_STATE/bundle/sync-validation.json`. `doctor --json`
+uses that receipt as sync-back release proof only when it is bound to the current CLI digest, current
+helper digest, current `guest-provisioning.json` digest, and
+`whoathere.sync_policy.local_beta.v1`. Missing or stale sync-validation receipts keep
+`release_sync_back_validation_not_verified` in place.
 
 Unsupported or unsafe inputs must fail before helper execution, including:
 
@@ -332,11 +354,9 @@ $WHOATHERE vm health --state-dir "$WHOATHERE_STATE" --helper "$WHOATHERE_HELPER"
 Final health should fail closed with `runtime_process_not_running`.
 
 `whoathere vm status --json` and `whoathere doctor --json` also report a `runtime_shutdown` object
-when `bundle/shutdown.json` exists. For this no-sync preview, `stop_method=force_stop` is acceptable
-only when the receipt reports `status=ok`, `high_risk_package_execution_enabled=false`, the VM is
-stopped or runtime health is fail-closed, and no sync-back claim is being made. `guest_requested_stop`
-is preferred. Any future sync-back release must revisit this decision and validate a stricter stop
-and output-integrity model.
+when `bundle/shutdown.json` exists. `guest_requested_stop` is preferred. For beta sync-back,
+readiness depends on the explicit sync-validation receipt rather than on trusting stopped guest
+state after the fact.
 
 ## Release Gate
 
@@ -354,17 +374,21 @@ Do not call the macOS local-first preview ready until all of these are true:
 - For npm/uv claims, `validate-npm-uv-detonation.sh` has written a current
   `release-validation.json` receipt and `doctor --json` no longer reports
   `release_npm_vm_detonation_not_verified` or `release_uv_vm_detonation_not_verified`.
+- For sync-back claims, at least one supported clean `--sync-back` run has written a current
+  `sync-validation.json` receipt and `doctor --json` no longer reports
+  `release_sync_back_validation_not_verified`.
 - `doctor --json` still reports `release_ready=false` until packaging, signing/notarization,
-  npm/uv proof, and public package policy gates are actually complete.
-- Missing scanner binaries are acceptable only while sync-back remains disabled; they must be
-  installed or otherwise replaced by explicit evidence before any auto-sync or auto-allow claim.
+  npm/uv proof, sync-validation proof, and public package policy gates are actually complete.
+- Missing scanner binaries are advisory for the local-only sync beta; they must be installed or
+  otherwise replaced by explicit evidence before any public package auto-sync or auto-allow claim.
 
 ## Limitations
 
 - This is not a universal malware detector.
 - This does not protect arbitrary runtime application behavior after a package is admitted.
 - This does not safely execute arbitrary native code.
-- This does not sync VM outputs back to the host.
+- This syncs VM outputs back to the host only through the explicit beta allowlist after clean VM
+  evidence. Unsupported or suspicious outputs sync nothing.
 - This does not support global/system Python installs.
 - This does not claim npm or uv success until tool provisioning and live detonation pass.
 - This does not use public package resolver fallback.

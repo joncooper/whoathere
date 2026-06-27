@@ -52,14 +52,15 @@ Default materialized shims cover `npm`, `npx`, `pip`, and `pip3`. `python` and `
 
 Still gated:
 
-- Real package-manager execution.
-- Install/build/import package-manager execution.
+- Real package-manager execution outside the macOS VM-backed detonation path.
+- Host-side install/build/import package-manager execution.
 - Treating registry/index steering as an egress security boundary.
 - Treating launch planning as permission to execute installs.
 - PATH mutation.
 - Linux namespace/seccomp/Landlock runner.
 - macOS VM package detonation is preview-only and limited to claimed local workflows after live
-  guest proof. Sync-back is disabled for the macOS local preview. Broader release use still requires
+  guest proof. Sync-back is available only through the explicit local beta allowlist, only after
+  clean VM evidence, and only for approved project-local outputs. Broader release use still requires
   signature verification, npm/uv live validation, scanner/comparator validation, and packaging.
 - Production Vault service persistence/full AWS deployment and public registry fetch.
 - Production dynamic detonation of arbitrary install/build/import paths.

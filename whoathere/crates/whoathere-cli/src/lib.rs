@@ -133,6 +133,7 @@ pub enum Command {
         tool: String,
         args: Vec<String>,
         execute: bool,
+        sync_back: bool,
         state_dir: Option<String>,
         helper_path: Option<String>,
         workspace: Option<String>,
@@ -797,6 +798,7 @@ fn render_command_text(command: Command) -> String {
             tool,
             args,
             execute,
+            sync_back,
             state_dir,
             helper_path,
             workspace,
@@ -807,6 +809,7 @@ fn render_command_text(command: Command) -> String {
             tool: &tool,
             args: &args,
             execute,
+            sync_back,
             state_dir: state_dir.as_deref(),
             helper_path: helper_path.as_deref(),
             workspace: workspace.as_deref(),
@@ -1357,6 +1360,7 @@ fn parse_launch_plan(args: &[String]) -> Command {
 
 fn parse_vm_detonate(args: &[String]) -> Command {
     let mut execute = false;
+    let mut sync_back = false;
     let mut json = false;
     let mut state_dir = None;
     let mut helper_path = None;
@@ -1368,6 +1372,10 @@ fn parse_vm_detonate(args: &[String]) -> Command {
         match args[index].as_str() {
             "--execute" => {
                 execute = true;
+                index += 1;
+            }
+            "--sync-back" => {
+                sync_back = true;
                 index += 1;
             }
             "--json" => {
@@ -1436,6 +1444,7 @@ fn parse_vm_detonate(args: &[String]) -> Command {
         tool,
         args: command_args,
         execute,
+        sync_back,
         state_dir,
         helper_path,
         workspace,
@@ -2068,6 +2077,7 @@ struct VmDetonateRenderArgs<'a> {
     tool: &'a str,
     args: &'a [String],
     execute: bool,
+    sync_back: bool,
     state_dir: Option<&'a str>,
     helper_path: Option<&'a str>,
     workspace: Option<&'a str>,
@@ -2169,6 +2179,10 @@ struct GuestJobEvidence {
     project_import_module: Option<String>,
     project_requirements_path: Option<String>,
     vm_session_id: Option<String>,
+    sync_output_archive_hex: Option<String>,
+    sync_output_archive_sha256: Option<String>,
+    sync_output_file_count: Option<i32>,
+    sync_output_total_bytes: Option<i32>,
     exit_code: Option<i32>,
 }
 
@@ -2194,7 +2208,11 @@ fn render_vm_detonate(args: VmDetonateRenderArgs<'_>) -> String {
         .collect::<Vec<_>>();
     let mut reason_codes = mirror_plan.reason_codes.clone();
     reason_codes.extend(project_plan.reason_codes.iter().cloned());
-    reason_codes.push("detonation_sync_back_disabled_goal_2".to_string());
+    if args.sync_back {
+        reason_codes.push("detonation_sync_back_requested_beta".to_string());
+    } else {
+        reason_codes.push("detonation_sync_back_not_requested".to_string());
+    }
     reason_codes.push("detonation_host_package_execution_disabled".to_string());
     if !args.execute {
         reason_codes.push("detonation_execute_required_for_vm_run".to_string());
@@ -2272,6 +2290,9 @@ fn render_vm_detonate(args: VmDetonateRenderArgs<'_>) -> String {
             helper_args.push("--project-requirements-path".to_string());
             helper_args.push(requirements_path.clone());
         }
+        if args.sync_back {
+            helper_args.push("--sync-back".to_string());
+        }
         if !args.args.is_empty() {
             helper_args.push("--".to_string());
             helper_args.extend(args.args.iter().cloned());
@@ -2288,13 +2309,33 @@ fn render_vm_detonate(args: VmDetonateRenderArgs<'_>) -> String {
         .as_ref()
         .and_then(|helper| helper.exit_code)
         .unwrap_or_else(|| ExitCode::Allow.code());
+    let guest_job = parse_guest_job_evidence(helper.as_ref());
+    let sync_back = evaluate_sync_back(SyncBackEvaluationArgs {
+        config: &config,
+        workspace: args.workspace,
+        helper_path: args.helper_path,
+        expected_tool: args.tool,
+        expected_command_class: command_class,
+        project_plan: &project_plan,
+        guest_job: guest_job.as_ref(),
+        requested: args.sync_back,
+        execute: args.execute,
+    });
+    reason_codes.extend(sync_back.reason_codes.iter().cloned());
+    reason_codes.sort();
+    reason_codes.dedup();
     let fail_closed_before_helper = command_class == "unsupported_detonation"
         || (args.fixture.is_none() && !project_plan.project_mode)
         || (project_plan.project_mode && !project_plan.safe_to_execute)
         || !guest_tooling_reason_codes.is_empty();
+    let sync_exit_override = sync_back
+        .exit_code
+        .filter(|code| args.sync_back && *code != ExitCode::Allow.code());
     let final_exit_code = if args.execute {
         if payload_prepare_error.is_some() {
             ExitCode::InternalError.code()
+        } else if let Some(sync_exit_code) = sync_exit_override {
+            sync_exit_code
         } else if fail_closed_before_helper {
             ExitCode::Deny.code()
         } else {
@@ -2306,7 +2347,11 @@ fn render_vm_detonate(args: VmDetonateRenderArgs<'_>) -> String {
     let verdict = if !args.execute {
         "dry_run_execute_required"
     } else if final_exit_code == ExitCode::Allow.code() {
-        "helper_observed_clean"
+        if sync_back.applied {
+            "helper_observed_clean_and_synced"
+        } else {
+            "helper_observed_clean"
+        }
     } else if fail_closed_before_helper {
         "preflight_security_outcome"
     } else if final_exit_code == ExitCode::Deny.code()
@@ -2322,13 +2367,13 @@ fn render_vm_detonate(args: VmDetonateRenderArgs<'_>) -> String {
             .as_ref()
             .map(render_vm_helper_json)
             .unwrap_or_else(|| "null".to_string());
-        let guest_job = parse_guest_job_evidence(helper.as_ref());
         let guest_job_json = render_guest_job_evidence_json(guest_job.as_ref());
         return format!(
-            "{{\n  \"command\": \"whoathere vm detonate\",\n  \"schema_version\": \"whoathere.macos_vm.detonation.v1\",\n  \"release_target\": {},\n  \"vm_boundary\": {},\n  \"network_model\": {},\n  \"sync_back_enabled\": false,\n  \"host_package_execution_enabled\": false,\n  \"high_risk_package_execution_enabled\": false,\n  \"mutation_requested\": {},\n  \"state_dir\": {},\n  \"tool\": {},\n  \"command_class\": {},\n  \"argv\": {},\n  \"fixture\": {},\n  \"timeout_seconds\": {},\n  \"workspace\": {},\n  \"mirror_plan\": {},\n  \"project_plan\": {},\n  \"project_payload\": {},\n  \"guest_provisioning\": {},\n  \"guest_tooling_ready\": {},\n  \"guest_tooling_reason_codes\": {},\n  \"canary_categories\": {},\n  \"verdict\": {},\n  \"reason_codes\": {},\n  \"guest_job\": {},\n  \"helper\": {},\n  \"exit_code\": {}\n}}",
+            "{{\n  \"command\": \"whoathere vm detonate\",\n  \"schema_version\": \"whoathere.macos_vm.detonation.v1\",\n  \"release_target\": {},\n  \"vm_boundary\": {},\n  \"network_model\": {},\n  \"sync_back_enabled\": {},\n  \"host_package_execution_enabled\": false,\n  \"high_risk_package_execution_enabled\": false,\n  \"mutation_requested\": {},\n  \"state_dir\": {},\n  \"tool\": {},\n  \"command_class\": {},\n  \"argv\": {},\n  \"fixture\": {},\n  \"timeout_seconds\": {},\n  \"workspace\": {},\n  \"mirror_plan\": {},\n  \"project_plan\": {},\n  \"project_payload\": {},\n  \"guest_provisioning\": {},\n  \"guest_tooling_ready\": {},\n  \"guest_tooling_reason_codes\": {},\n  \"canary_categories\": {},\n  \"verdict\": {},\n  \"reason_codes\": {},\n  \"guest_job\": {},\n  \"sync_back\": {},\n  \"helper\": {},\n  \"exit_code\": {}\n}}",
             json_string(RELEASE_TARGET),
             json_string(VM_BOUNDARY),
             json_string(NETWORK_MODEL),
+            args.sync_back,
             args.execute,
             json_string(&config.state_dir.display().to_string()),
             json_string(args.tool),
@@ -2358,6 +2403,7 @@ fn render_vm_detonate(args: VmDetonateRenderArgs<'_>) -> String {
             json_string(verdict),
             json_string_array(&reason_codes),
             guest_job_json,
+            render_sync_back_outcome_json(&sync_back),
             helper_json,
             final_exit_code
         );
@@ -2368,10 +2414,11 @@ fn render_vm_detonate(args: VmDetonateRenderArgs<'_>) -> String {
         .map(|helper| helper.render_text())
         .unwrap_or_else(|| "helper_invoked=false".to_string());
     format!(
-        "whoathere vm detonate\nschema_version=whoathere.macos_vm.detonation.v1\nrelease_target={}\nvm_boundary={}\nnetwork_model={}\nsync_back_enabled=false\nhost_package_execution_enabled=false\nhigh_risk_package_execution_enabled=false\nmutation_requested={}\nstate_dir={}\ntool={}\ncommand_class={}\nargv={:?}\nfixture={}\ntimeout_seconds={}\nworkspace={}\nmirror_workspace_configured={}\nmirror_allowed_file_count={}\nmirror_secret_exclusion_count={}\nmirror_symlink_escape_count={}\nmirror_large_file_exclusion_count={}\nmirror_package_data_file_count={}\nmirror_risky_file_exclusion_count={}\nmirror_total_allowed_bytes={}\nmirror_file_classes={:?}\nmirror_included_paths={:?}\nmirror_reason_codes={:?}\nproject_mode={}\nproject_workflow={}\nproject_import_module={}\nproject_requirements_path={}\nproject_safe_to_execute={}\nproject_payload_path={}\nguest_tooling_ready={}\nguest_tooling_reason_codes={:?}\n{}\ncanary_categories={:?}\nverdict={}\nreason_codes={:?}\n{}\nexit_code={}",
+        "whoathere vm detonate\nschema_version=whoathere.macos_vm.detonation.v1\nrelease_target={}\nvm_boundary={}\nnetwork_model={}\nsync_back_enabled={}\nhost_package_execution_enabled=false\nhigh_risk_package_execution_enabled=false\nmutation_requested={}\nstate_dir={}\ntool={}\ncommand_class={}\nargv={:?}\nfixture={}\ntimeout_seconds={}\nworkspace={}\nmirror_workspace_configured={}\nmirror_allowed_file_count={}\nmirror_secret_exclusion_count={}\nmirror_symlink_escape_count={}\nmirror_large_file_exclusion_count={}\nmirror_package_data_file_count={}\nmirror_risky_file_exclusion_count={}\nmirror_total_allowed_bytes={}\nmirror_file_classes={:?}\nmirror_included_paths={:?}\nmirror_reason_codes={:?}\nproject_mode={}\nproject_workflow={}\nproject_import_module={}\nproject_requirements_path={}\nproject_safe_to_execute={}\nproject_payload_path={}\nguest_tooling_ready={}\nguest_tooling_reason_codes={:?}\n{}\ncanary_categories={:?}\nverdict={}\nreason_codes={:?}\n{}\n{}\nexit_code={}",
         RELEASE_TARGET,
         VM_BOUNDARY,
         NETWORK_MODEL,
+        args.sync_back,
         args.execute,
         config.state_dir.display(),
         args.tool,
@@ -2409,6 +2456,7 @@ fn render_vm_detonate(args: VmDetonateRenderArgs<'_>) -> String {
         canary_categories,
         verdict,
         reason_codes,
+        render_sync_back_outcome_text(&sync_back),
         helper_text,
         final_exit_code
     )
@@ -3552,8 +3600,8 @@ fn render_vm_helper_json(helper: &MacosVmHelperOutput) -> String {
         json_string_array(&helper.reason_codes),
         helper.stdout_truncated,
         helper.stderr_truncated,
-        json_string(&single_line(&redacted_scalar(&helper.stdout))),
-        json_string(&single_line(&redacted_scalar(&helper.stderr)))
+        json_string(&single_line(&redacted_helper_stream(&helper.stdout))),
+        json_string(&single_line(&redacted_helper_stream(&helper.stderr)))
     )
 }
 
@@ -3608,6 +3656,16 @@ fn parse_guest_job_evidence(helper: Option<&MacosVmHelperOutput>) -> Option<Gues
             "project_requirements_path",
         ),
         vm_session_id: json_extract_string_field(&helper.stdout, "vm_session_id"),
+        sync_output_archive_hex: json_extract_string_field(
+            &helper.stdout,
+            "sync_output_archive_hex",
+        ),
+        sync_output_archive_sha256: json_extract_string_field(
+            &helper.stdout,
+            "sync_output_archive_sha256",
+        ),
+        sync_output_file_count: json_extract_i32_field(&helper.stdout, "sync_output_file_count"),
+        sync_output_total_bytes: json_extract_i32_field(&helper.stdout, "sync_output_total_bytes"),
         exit_code: json_extract_i32_field(&helper.stdout, "exit_code"),
     })
 }
@@ -3617,7 +3675,7 @@ fn render_guest_job_evidence_json(evidence: Option<&GuestJobEvidence>) -> String
         return "null".to_string();
     };
     format!(
-        "{{\"protocol\": {}, \"schema_version\": {}, \"agent_version\": {}, \"job_id\": {}, \"tool\": {}, \"command_class\": {}, \"fixture\": {}, \"status\": {}, \"verdict\": {}, \"reason_codes\": {}, \"command_exit_code\": {}, \"timed_out\": {}, \"canary_access_detected\": {}, \"network_attempt_detected\": {}, \"filesystem_write_detected\": {}, \"toolchain_available\": {}, \"stdout_captured\": {}, \"stderr_captured\": {}, \"raw_canary_values_captured\": {}, \"sync_back_enabled\": {}, \"host_package_execution_enabled\": {}, \"high_risk_package_execution_enabled\": {}, \"project_mode\": {}, \"project_workflow\": {}, \"project_import_module\": {}, \"project_requirements_path\": {}, \"vm_session_id\": {}, \"exit_code\": {}}}",
+        "{{\"protocol\": {}, \"schema_version\": {}, \"agent_version\": {}, \"job_id\": {}, \"tool\": {}, \"command_class\": {}, \"fixture\": {}, \"status\": {}, \"verdict\": {}, \"reason_codes\": {}, \"command_exit_code\": {}, \"timed_out\": {}, \"canary_access_detected\": {}, \"network_attempt_detected\": {}, \"filesystem_write_detected\": {}, \"toolchain_available\": {}, \"stdout_captured\": {}, \"stderr_captured\": {}, \"raw_canary_values_captured\": {}, \"sync_back_enabled\": {}, \"host_package_execution_enabled\": {}, \"high_risk_package_execution_enabled\": {}, \"project_mode\": {}, \"project_workflow\": {}, \"project_import_module\": {}, \"project_requirements_path\": {}, \"vm_session_id\": {}, \"sync_output_archive_present\": {}, \"sync_output_archive_sha256\": {}, \"sync_output_file_count\": {}, \"sync_output_total_bytes\": {}, \"exit_code\": {}}}",
         json_option_string_redacted(evidence.protocol.as_deref()),
         json_option_string_redacted(evidence.schema_version.as_deref()),
         json_option_string_redacted(evidence.agent_version.as_deref()),
@@ -3651,8 +3709,877 @@ fn render_guest_job_evidence_json(evidence: Option<&GuestJobEvidence>) -> String
         json_option_string_redacted(evidence.project_import_module.as_deref()),
         json_option_string_redacted(evidence.project_requirements_path.as_deref()),
         json_option_string_redacted(evidence.vm_session_id.as_deref()),
+        evidence.sync_output_archive_hex.is_some(),
+        json_option_string_redacted(evidence.sync_output_archive_sha256.as_deref()),
+        json_option(evidence.sync_output_file_count),
+        json_option(evidence.sync_output_total_bytes),
         json_option(evidence.exit_code)
     )
+}
+
+const SYNC_BACK_SCHEMA_VERSION: &str = "whoathere.macos_vm.sync_back.v1";
+const SYNC_BACK_POLICY_VERSION: &str = "whoathere.sync_policy.local_beta.v1";
+const MAX_SYNC_BACK_FILES: usize = 256;
+const MAX_SYNC_BACK_FILE_BYTES: usize = 1024 * 1024;
+const MAX_SYNC_BACK_TOTAL_BYTES: usize = 4 * 1024 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SyncBackFile {
+    relative_path: String,
+    contents: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SyncBackOutcome {
+    requested: bool,
+    planned: bool,
+    applied: bool,
+    rollback_performed: bool,
+    receipt_path: Option<String>,
+    staging_path: Option<String>,
+    file_count: usize,
+    total_bytes: usize,
+    files: Vec<String>,
+    reason_codes: Vec<String>,
+    exit_code: Option<i32>,
+}
+
+impl SyncBackOutcome {
+    fn not_requested() -> Self {
+        Self {
+            requested: false,
+            planned: false,
+            applied: false,
+            rollback_performed: false,
+            receipt_path: None,
+            staging_path: None,
+            file_count: 0,
+            total_bytes: 0,
+            files: Vec::new(),
+            reason_codes: Vec::new(),
+            exit_code: None,
+        }
+    }
+}
+
+struct SyncBackEvaluationArgs<'a> {
+    config: &'a MacosVmConfig,
+    workspace: Option<&'a str>,
+    helper_path: Option<&'a str>,
+    expected_tool: &'a str,
+    expected_command_class: &'a str,
+    project_plan: &'a ProjectDetonationPlan,
+    guest_job: Option<&'a GuestJobEvidence>,
+    requested: bool,
+    execute: bool,
+}
+
+fn render_sync_back_outcome_json(outcome: &SyncBackOutcome) -> String {
+    format!(
+        "{{\"requested\": {}, \"planned\": {}, \"applied\": {}, \"rollback_performed\": {}, \"receipt_path\": {}, \"staging_path\": {}, \"file_count\": {}, \"total_bytes\": {}, \"files\": {}, \"reason_codes\": {}}}",
+        outcome.requested,
+        outcome.planned,
+        outcome.applied,
+        outcome.rollback_performed,
+        outcome
+            .receipt_path
+            .as_deref()
+            .map(redacted_scalar)
+            .map(|value| json_string(&value))
+            .unwrap_or_else(|| "null".to_string()),
+        outcome
+            .staging_path
+            .as_deref()
+            .map(redacted_scalar)
+            .map(|value| json_string(&value))
+            .unwrap_or_else(|| "null".to_string()),
+        outcome.file_count,
+        outcome.total_bytes,
+        json_string_array(&outcome.files),
+        json_string_array(&outcome.reason_codes)
+    )
+}
+
+fn render_sync_back_outcome_text(outcome: &SyncBackOutcome) -> String {
+    format!(
+        "sync_back_requested={}\nsync_back_planned={}\nsync_back_applied={}\nsync_back_rollback_performed={}\nsync_back_receipt_path={}\nsync_back_staging_path={}\nsync_back_file_count={}\nsync_back_total_bytes={}\nsync_back_files={:?}\nsync_back_reason_codes={:?}",
+        outcome.requested,
+        outcome.planned,
+        outcome.applied,
+        outcome.rollback_performed,
+        outcome
+            .receipt_path
+            .as_deref()
+            .map(redacted_scalar)
+            .unwrap_or_else(|| "none".to_string()),
+        outcome
+            .staging_path
+            .as_deref()
+            .map(redacted_scalar)
+            .unwrap_or_else(|| "none".to_string()),
+        outcome.file_count,
+        outcome.total_bytes,
+        outcome.files,
+        outcome.reason_codes
+    )
+}
+
+fn evaluate_sync_back(args: SyncBackEvaluationArgs<'_>) -> SyncBackOutcome {
+    if !args.requested {
+        return SyncBackOutcome::not_requested();
+    }
+    let mut outcome = SyncBackOutcome {
+        requested: true,
+        planned: false,
+        applied: false,
+        rollback_performed: false,
+        receipt_path: None,
+        staging_path: None,
+        file_count: 0,
+        total_bytes: 0,
+        files: Vec::new(),
+        reason_codes: Vec::new(),
+        exit_code: Some(ExitCode::Deny.code()),
+    };
+    if !args.execute {
+        outcome
+            .reason_codes
+            .push("sync_back_execute_required_for_guest_evidence".to_string());
+        return outcome;
+    }
+    let Some(workspace) = args.workspace else {
+        outcome
+            .reason_codes
+            .push("sync_back_workspace_required".to_string());
+        return outcome;
+    };
+    let workspace_root = match std::fs::canonicalize(workspace) {
+        Ok(path) if path.is_dir() => path,
+        _ => {
+            outcome
+                .reason_codes
+                .push("sync_back_workspace_not_found".to_string());
+            return outcome;
+        }
+    };
+    if !args.project_plan.project_mode || !args.project_plan.safe_to_execute {
+        outcome
+            .reason_codes
+            .push("sync_back_project_plan_not_safe".to_string());
+        return outcome;
+    }
+    let Some(workflow) = args.project_plan.workflow.as_deref() else {
+        outcome
+            .reason_codes
+            .push("sync_back_project_workflow_missing".to_string());
+        return outcome;
+    };
+    let Some(guest_job) = args.guest_job else {
+        outcome
+            .reason_codes
+            .push("sync_back_guest_evidence_missing".to_string());
+        return outcome;
+    };
+    outcome
+        .reason_codes
+        .extend(sync_back_guest_evidence_reasons(
+            guest_job,
+            args.expected_tool,
+            args.expected_command_class,
+            workflow,
+        ));
+    if !outcome.reason_codes.is_empty() {
+        outcome.reason_codes.sort();
+        outcome.reason_codes.dedup();
+        return denied_sync_back_with_receipt(
+            args.config,
+            args.helper_path,
+            workflow,
+            guest_job,
+            outcome,
+        );
+    }
+    let Some(archive_hex) = guest_job.sync_output_archive_hex.as_deref() else {
+        outcome
+            .reason_codes
+            .push("sync_back_output_archive_missing".to_string());
+        return denied_sync_back_with_receipt(
+            args.config,
+            args.helper_path,
+            workflow,
+            guest_job,
+            outcome,
+        );
+    };
+    let archive_bytes = match hex_decode(archive_hex) {
+        Ok(bytes) => bytes,
+        Err(reason) => {
+            outcome.reason_codes.push(reason);
+            return denied_sync_back_with_receipt(
+                args.config,
+                args.helper_path,
+                workflow,
+                guest_job,
+                outcome,
+            );
+        }
+    };
+    let archive_digest = sha256_digest(&archive_bytes);
+    if guest_job.sync_output_archive_sha256.as_deref() != Some(archive_digest.as_str()) {
+        outcome
+            .reason_codes
+            .push("sync_back_output_archive_digest_mismatch".to_string());
+        return denied_sync_back_with_receipt(
+            args.config,
+            args.helper_path,
+            workflow,
+            guest_job,
+            outcome,
+        );
+    }
+    let files = match decode_sync_back_archive(&archive_bytes) {
+        Ok(files) => files,
+        Err(reason) => {
+            outcome.reason_codes.push(reason);
+            return denied_sync_back_with_receipt(
+                args.config,
+                args.helper_path,
+                workflow,
+                guest_job,
+                outcome,
+            );
+        }
+    };
+    if guest_job
+        .sync_output_file_count
+        .is_some_and(|count| count < 0 || count as usize != files.len())
+    {
+        outcome
+            .reason_codes
+            .push("sync_back_output_file_count_mismatch".to_string());
+    }
+    let total_bytes = files.iter().map(|file| file.contents.len()).sum::<usize>();
+    if guest_job
+        .sync_output_total_bytes
+        .is_some_and(|count| count < 0 || count as usize != total_bytes)
+    {
+        outcome
+            .reason_codes
+            .push("sync_back_output_total_bytes_mismatch".to_string());
+    }
+    for file in &files {
+        outcome
+            .reason_codes
+            .extend(sync_back_file_reasons(workflow, file));
+    }
+    if files.is_empty() {
+        outcome
+            .reason_codes
+            .push("sync_back_output_archive_empty".to_string());
+    }
+    outcome.reason_codes.sort();
+    outcome.reason_codes.dedup();
+    outcome.file_count = files.len();
+    outcome.total_bytes = total_bytes;
+    outcome.files = files
+        .iter()
+        .map(|file| file.relative_path.clone())
+        .collect::<Vec<_>>();
+    outcome.planned = outcome.reason_codes.is_empty();
+    if !outcome.planned {
+        return denied_sync_back_with_receipt(
+            args.config,
+            args.helper_path,
+            workflow,
+            guest_job,
+            outcome,
+        );
+    }
+
+    let mut result = stage_and_apply_sync_back(
+        args.config,
+        &workspace_root,
+        args.helper_path,
+        workflow,
+        guest_job,
+        &files,
+    );
+    result.reason_codes.sort();
+    result.reason_codes.dedup();
+    result
+}
+
+fn denied_sync_back_with_receipt(
+    config: &MacosVmConfig,
+    helper_path: Option<&str>,
+    workflow: &str,
+    guest_job: &GuestJobEvidence,
+    mut outcome: SyncBackOutcome,
+) -> SyncBackOutcome {
+    let run_dir = new_sync_back_run_dir(config);
+    outcome.receipt_path = Some(run_dir.join("sync-receipt.json").display().to_string());
+    let _ = write_sync_back_receipt(config, helper_path, workflow, guest_job, &outcome);
+    outcome
+}
+
+fn sync_back_guest_evidence_reasons(
+    guest_job: &GuestJobEvidence,
+    expected_tool: &str,
+    expected_command_class: &str,
+    expected_workflow: &str,
+) -> Vec<String> {
+    let mut reasons = Vec::new();
+    if guest_job.protocol.as_deref() != Some("whoathere.guest_detonation.v1") {
+        reasons.push("sync_back_guest_protocol_invalid".to_string());
+    }
+    if guest_job.schema_version.as_deref() != Some("whoathere.macos_vm.bundle.v1") {
+        reasons.push("sync_back_guest_schema_invalid".to_string());
+    }
+    if guest_job.job_id.as_deref().is_none_or(str::is_empty) {
+        reasons.push("sync_back_guest_job_id_missing".to_string());
+    }
+    if guest_job.vm_session_id.as_deref().is_none_or(str::is_empty) {
+        reasons.push("sync_back_guest_session_missing".to_string());
+    }
+    if guest_job.tool.as_deref() != Some(expected_tool) {
+        reasons.push("sync_back_guest_tool_mismatch".to_string());
+    }
+    if guest_job.command_class.as_deref() != Some(expected_command_class) {
+        reasons.push("sync_back_guest_command_class_mismatch".to_string());
+    }
+    if guest_job.fixture.as_deref() != Some("project_mirror") {
+        reasons.push("sync_back_guest_fixture_mismatch".to_string());
+    }
+    if guest_job.status.as_deref() != Some("ok") {
+        reasons.push("sync_back_guest_status_not_ok".to_string());
+    }
+    if guest_job.verdict.as_deref() != Some("allow_observed_clean") {
+        reasons.push("sync_back_guest_verdict_not_clean".to_string());
+    }
+    if guest_job.command_exit_code != Some(0) || guest_job.exit_code != Some(0) {
+        reasons.push("sync_back_guest_exit_not_clean".to_string());
+    }
+    if guest_job.timed_out != Some(false) {
+        reasons.push("sync_back_guest_timeout_state_invalid".to_string());
+    }
+    if guest_job.canary_access_detected != Some(false) {
+        reasons.push("sync_back_guest_canary_access_detected".to_string());
+    }
+    if guest_job.network_attempt_detected != Some(false) {
+        reasons.push("sync_back_guest_network_attempt_detected".to_string());
+    }
+    if guest_job.raw_canary_values_captured != Some(false) {
+        reasons.push("sync_back_guest_raw_canary_capture_invalid".to_string());
+    }
+    if guest_job.sync_back_enabled != Some(true) {
+        reasons.push("sync_back_guest_not_enabled".to_string());
+    }
+    if guest_job.project_mode != Some(true) {
+        reasons.push("sync_back_guest_project_mode_invalid".to_string());
+    }
+    if guest_job.project_workflow.as_deref() != Some(expected_workflow) {
+        reasons.push("sync_back_guest_workflow_mismatch".to_string());
+    }
+    if guest_job.host_package_execution_enabled != Some(false) {
+        reasons.push("sync_back_guest_host_execution_invalid".to_string());
+    }
+    if guest_job.high_risk_package_execution_enabled != Some(false) {
+        reasons.push("sync_back_guest_high_risk_execution_invalid".to_string());
+    }
+    reasons
+}
+
+fn sync_back_file_reasons(workflow: &str, file: &SyncBackFile) -> Vec<String> {
+    let mut reasons = safe_sync_relative_path_reasons(&file.relative_path);
+    let lower = file.relative_path.to_ascii_lowercase();
+    let workflow_allowed = match workflow {
+        "pip_project_install"
+        | "pip_requirements_install"
+        | "uv_pip_project_install"
+        | "uv_pip_requirements_install" => lower.starts_with(".venv/lib/"),
+        "npm_project_install" | "npm_ci" => {
+            lower == "package-lock.json"
+                || (lower.starts_with("node_modules/") && !lower.starts_with("node_modules/.bin/"))
+        }
+        _ => false,
+    };
+    if !workflow_allowed {
+        reasons.push("sync_back_path_not_allowed_for_workflow".to_string());
+    }
+    if lower.ends_with(".so")
+        || lower.ends_with(".dylib")
+        || lower.ends_with(".dll")
+        || lower.ends_with(".node")
+        || lower.contains("/binding.gyp")
+        || lower == "binding.gyp"
+    {
+        reasons.push("sync_back_native_or_binary_output_blocked".to_string());
+    }
+    if lower.contains("secret")
+        || lower.contains("canary")
+        || lower.ends_with(".env")
+        || lower.contains("/.env")
+        || lower.ends_with(".npmrc")
+        || lower.contains("/.npmrc")
+        || lower.ends_with(".pypirc")
+        || lower.contains("/.pypirc")
+    {
+        reasons.push("sync_back_secret_or_canary_path_blocked".to_string());
+    }
+    let content = String::from_utf8_lossy(&file.contents).to_ascii_lowercase();
+    if content.contains("whoathere_fake_")
+        || content.contains("npm_token")
+        || content.contains("pypi_token")
+        || content.contains("aws_secret_access_key")
+        || content.contains("openai_api_key")
+    {
+        reasons.push("sync_back_secret_or_canary_content_blocked".to_string());
+    }
+    reasons
+}
+
+fn safe_sync_relative_path_reasons(path: &str) -> Vec<String> {
+    let mut reasons = Vec::new();
+    if path.is_empty() {
+        reasons.push("sync_back_path_empty".to_string());
+    }
+    if path.len() > 512 {
+        reasons.push("sync_back_path_too_long".to_string());
+    }
+    if path.starts_with('/') || path.starts_with('~') {
+        reasons.push("sync_back_absolute_path_blocked".to_string());
+    }
+    if path.contains('\\') || path.contains('\0') {
+        reasons.push("sync_back_path_separator_invalid".to_string());
+    }
+    for component in path.split('/') {
+        if component.is_empty() || component == "." || component == ".." {
+            reasons.push("sync_back_path_traversal_blocked".to_string());
+        }
+    }
+    reasons
+}
+
+fn hex_decode(input: &str) -> Result<Vec<u8>, String> {
+    if !input.len().is_multiple_of(2) {
+        return Err("sync_back_output_archive_hex_invalid".to_string());
+    }
+    let mut output = Vec::with_capacity(input.len() / 2);
+    let bytes = input.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        let high = hex_value(bytes[index])
+            .ok_or_else(|| "sync_back_output_archive_hex_invalid".to_string())?;
+        let low = hex_value(bytes[index + 1])
+            .ok_or_else(|| "sync_back_output_archive_hex_invalid".to_string())?;
+        output.push((high << 4) | low);
+        index += 2;
+    }
+    Ok(output)
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn decode_sync_back_archive(bytes: &[u8]) -> Result<Vec<SyncBackFile>, String> {
+    if bytes.len() < 8 || &bytes[0..4] != b"WTP1" {
+        return Err("sync_back_output_archive_schema_invalid".to_string());
+    }
+    let mut cursor = 4;
+    let file_count = read_u32_le(bytes, &mut cursor)
+        .ok_or_else(|| "sync_back_output_archive_truncated".to_string())?
+        as usize;
+    if file_count > MAX_SYNC_BACK_FILES {
+        return Err("sync_back_output_file_count_limit_exceeded".to_string());
+    }
+    let mut files = Vec::with_capacity(file_count);
+    let mut total_bytes = 0_usize;
+    for _ in 0..file_count {
+        let path_len = read_u16_le(bytes, &mut cursor)
+            .ok_or_else(|| "sync_back_output_archive_truncated".to_string())?
+            as usize;
+        let content_len = read_u32_le(bytes, &mut cursor)
+            .ok_or_else(|| "sync_back_output_archive_truncated".to_string())?
+            as usize;
+        if path_len == 0 || content_len > MAX_SYNC_BACK_FILE_BYTES {
+            return Err("sync_back_output_file_limit_exceeded".to_string());
+        }
+        if cursor + path_len + content_len > bytes.len() {
+            return Err("sync_back_output_archive_truncated".to_string());
+        }
+        total_bytes = total_bytes.saturating_add(content_len);
+        if total_bytes > MAX_SYNC_BACK_TOTAL_BYTES {
+            return Err("sync_back_output_total_size_limit_exceeded".to_string());
+        }
+        let relative_path = std::str::from_utf8(&bytes[cursor..cursor + path_len])
+            .map_err(|_| "sync_back_output_path_utf8_invalid".to_string())?
+            .to_string();
+        cursor += path_len;
+        let contents = bytes[cursor..cursor + content_len].to_vec();
+        cursor += content_len;
+        files.push(SyncBackFile {
+            relative_path,
+            contents,
+        });
+    }
+    if cursor != bytes.len() {
+        return Err("sync_back_output_archive_trailing_bytes".to_string());
+    }
+    Ok(files)
+}
+
+fn read_u16_le(bytes: &[u8], cursor: &mut usize) -> Option<u16> {
+    if *cursor + 2 > bytes.len() {
+        return None;
+    }
+    let value = u16::from_le_bytes([bytes[*cursor], bytes[*cursor + 1]]);
+    *cursor += 2;
+    Some(value)
+}
+
+fn read_u32_le(bytes: &[u8], cursor: &mut usize) -> Option<u32> {
+    if *cursor + 4 > bytes.len() {
+        return None;
+    }
+    let value = u32::from_le_bytes([
+        bytes[*cursor],
+        bytes[*cursor + 1],
+        bytes[*cursor + 2],
+        bytes[*cursor + 3],
+    ]);
+    *cursor += 4;
+    Some(value)
+}
+
+fn stage_and_apply_sync_back(
+    config: &MacosVmConfig,
+    workspace_root: &Path,
+    helper_path: Option<&str>,
+    workflow: &str,
+    guest_job: &GuestJobEvidence,
+    files: &[SyncBackFile],
+) -> SyncBackOutcome {
+    let run_dir = new_sync_back_run_dir(config);
+    let staging_dir = run_dir.join("staging");
+    let backup_dir = run_dir.join("backup");
+    let receipt_path = run_dir.join("sync-receipt.json");
+    let mut outcome = SyncBackOutcome {
+        requested: true,
+        planned: true,
+        applied: false,
+        rollback_performed: false,
+        receipt_path: Some(receipt_path.display().to_string()),
+        staging_path: Some(staging_dir.display().to_string()),
+        file_count: files.len(),
+        total_bytes: files.iter().map(|file| file.contents.len()).sum(),
+        files: files
+            .iter()
+            .map(|file| file.relative_path.clone())
+            .collect(),
+        reason_codes: Vec::new(),
+        exit_code: Some(ExitCode::Allow.code()),
+    };
+    if let Err(reason) = validate_sync_destinations(workspace_root, files) {
+        outcome.reason_codes.push(reason);
+        outcome.exit_code = Some(ExitCode::Deny.code());
+        let _ = write_sync_back_receipt(config, helper_path, workflow, guest_job, &outcome);
+        return outcome;
+    }
+    if let Err(reason) = validate_sync_staging_destinations(&staging_dir, files) {
+        outcome.reason_codes.push(reason);
+        outcome.exit_code = Some(ExitCode::InternalError.code());
+        let _ = write_sync_back_receipt(config, helper_path, workflow, guest_job, &outcome);
+        return outcome;
+    }
+    if let Err(error) = std::fs::create_dir_all(&staging_dir) {
+        outcome
+            .reason_codes
+            .push(format!("sync_back_staging_create_failed:{}", error.kind()));
+        outcome.exit_code = Some(ExitCode::InternalError.code());
+        let _ = write_sync_back_receipt(config, helper_path, workflow, guest_job, &outcome);
+        return outcome;
+    }
+    for file in files {
+        let staged_path = staging_dir.join(&file.relative_path);
+        if let Some(parent) = staged_path.parent() {
+            if let Err(error) = std::fs::create_dir_all(parent) {
+                outcome
+                    .reason_codes
+                    .push(format!("sync_back_staging_create_failed:{}", error.kind()));
+                outcome.exit_code = Some(ExitCode::InternalError.code());
+                let _ = write_sync_back_receipt(config, helper_path, workflow, guest_job, &outcome);
+                return outcome;
+            }
+        }
+        if let Err(error) = std::fs::write(&staged_path, &file.contents) {
+            outcome
+                .reason_codes
+                .push(format!("sync_back_staging_write_failed:{}", error.kind()));
+            outcome.exit_code = Some(ExitCode::InternalError.code());
+            let _ = write_sync_back_receipt(config, helper_path, workflow, guest_job, &outcome);
+            return outcome;
+        }
+    }
+    let mut applied = Vec::<String>::new();
+    let mut backups = Vec::<(String, PathBuf)>::new();
+    let apply_result = apply_staged_sync_files(
+        workspace_root,
+        &staging_dir,
+        &backup_dir,
+        files,
+        &mut applied,
+        &mut backups,
+    );
+    match apply_result {
+        Ok(()) => {
+            outcome.applied = true;
+            outcome.exit_code = Some(ExitCode::Allow.code());
+        }
+        Err(reason) => {
+            outcome.reason_codes.push(reason);
+            outcome.rollback_performed =
+                rollback_sync_files(workspace_root, &applied, &backups).unwrap_or(false);
+            outcome.exit_code = Some(ExitCode::InternalError.code());
+        }
+    }
+    let _ = write_sync_back_receipt(config, helper_path, workflow, guest_job, &outcome);
+    outcome
+}
+
+fn new_sync_back_run_dir(config: &MacosVmConfig) -> PathBuf {
+    let run_id = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| format!("{}-{}", duration.as_millis(), std::process::id()))
+        .unwrap_or_else(|_| format!("clock-error-{}", std::process::id()));
+    config.state_dir.join("runs").join("sync-back").join(run_id)
+}
+
+fn validate_sync_staging_destinations(
+    staging_dir: &Path,
+    files: &[SyncBackFile],
+) -> Result<(), String> {
+    for file in files {
+        let destination = staging_dir.join(&file.relative_path);
+        if !destination.starts_with(staging_dir) {
+            return Err("sync_back_staging_path_escape_blocked".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn validate_sync_destinations(workspace_root: &Path, files: &[SyncBackFile]) -> Result<(), String> {
+    for file in files {
+        validate_sync_parent_components(workspace_root, &file.relative_path)?;
+        let destination = workspace_root.join(&file.relative_path);
+        match std::fs::symlink_metadata(&destination) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err("sync_back_destination_symlink_blocked".to_string());
+            }
+            Ok(metadata) if metadata.is_file() => {}
+            Ok(_) => return Err("sync_back_destination_not_regular_file".to_string()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "sync_back_destination_stat_failed:{}",
+                    error.kind()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_sync_parent_components(
+    workspace_root: &Path,
+    relative_path: &str,
+) -> Result<(), String> {
+    let mut current = workspace_root.to_path_buf();
+    let path = Path::new(relative_path);
+    let Some(parent) = path.parent() else {
+        return Ok(());
+    };
+    for component in parent.components() {
+        let std::path::Component::Normal(name) = component else {
+            return Err("sync_back_path_traversal_blocked".to_string());
+        };
+        current.push(name);
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err("sync_back_destination_symlink_blocked".to_string());
+            }
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => return Err("sync_back_destination_parent_not_directory".to_string()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                return Err(format!(
+                    "sync_back_destination_stat_failed:{}",
+                    error.kind()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn ensure_sync_parent_dir(workspace_root: &Path, relative_path: &str) -> Result<(), String> {
+    let mut current = workspace_root.to_path_buf();
+    let path = Path::new(relative_path);
+    let Some(parent) = path.parent() else {
+        return Ok(());
+    };
+    for component in parent.components() {
+        let std::path::Component::Normal(name) = component else {
+            return Err("sync_back_path_traversal_blocked".to_string());
+        };
+        current.push(name);
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err("sync_back_destination_symlink_blocked".to_string());
+            }
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => return Err("sync_back_destination_parent_not_directory".to_string()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::create_dir(&current).map_err(|create_error| {
+                    format!(
+                        "sync_back_destination_create_failed:{}",
+                        create_error.kind()
+                    )
+                })?;
+            }
+            Err(error) => {
+                return Err(format!(
+                    "sync_back_destination_stat_failed:{}",
+                    error.kind()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn apply_staged_sync_files(
+    workspace_root: &Path,
+    staging_dir: &Path,
+    backup_dir: &Path,
+    files: &[SyncBackFile],
+    applied: &mut Vec<String>,
+    backups: &mut Vec<(String, PathBuf)>,
+) -> Result<(), String> {
+    std::fs::create_dir_all(backup_dir)
+        .map_err(|error| format!("sync_back_backup_create_failed:{}", error.kind()))?;
+    for file in files {
+        let staged_path = staging_dir.join(&file.relative_path);
+        let destination = workspace_root.join(&file.relative_path);
+        ensure_sync_parent_dir(workspace_root, &file.relative_path)?;
+        match std::fs::symlink_metadata(&destination) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err("sync_back_destination_symlink_blocked".to_string());
+            }
+            Ok(metadata) if metadata.is_file() => {
+                let backup_path = backup_dir.join(&file.relative_path);
+                if let Some(parent) = backup_path.parent() {
+                    std::fs::create_dir_all(parent).map_err(|error| {
+                        format!("sync_back_backup_create_failed:{}", error.kind())
+                    })?;
+                }
+                std::fs::copy(&destination, &backup_path)
+                    .map_err(|error| format!("sync_back_backup_write_failed:{}", error.kind()))?;
+                backups.push((file.relative_path.clone(), backup_path));
+            }
+            Ok(_) => return Err("sync_back_destination_not_regular_file".to_string()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "sync_back_destination_stat_failed:{}",
+                    error.kind()
+                ));
+            }
+        }
+        std::fs::copy(&staged_path, &destination)
+            .map_err(|error| format!("sync_back_apply_failed:{}", error.kind()))?;
+        applied.push(file.relative_path.clone());
+    }
+    Ok(())
+}
+
+fn rollback_sync_files(
+    workspace_root: &Path,
+    applied: &[String],
+    backups: &[(String, PathBuf)],
+) -> Result<bool, String> {
+    let mut restored_any = false;
+    for relative_path in applied.iter().rev() {
+        let destination = workspace_root.join(relative_path);
+        if let Some((_, backup_path)) = backups
+            .iter()
+            .find(|(backup_relative, _)| backup_relative == relative_path)
+        {
+            std::fs::copy(backup_path, &destination)
+                .map_err(|error| format!("sync_back_rollback_restore_failed:{}", error.kind()))?;
+            restored_any = true;
+        } else if destination.exists() {
+            std::fs::remove_file(&destination)
+                .map_err(|error| format!("sync_back_rollback_remove_failed:{}", error.kind()))?;
+            restored_any = true;
+        }
+    }
+    Ok(restored_any)
+}
+
+fn write_sync_back_receipt(
+    config: &MacosVmConfig,
+    helper_path: Option<&str>,
+    workflow: &str,
+    guest_job: &GuestJobEvidence,
+    outcome: &SyncBackOutcome,
+) -> std::io::Result<()> {
+    let receipt_path = outcome
+        .receipt_path
+        .as_deref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| config.state_dir.join("runs").join("sync-back-receipt.json"));
+    if let Some(parent) = receipt_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let helper_sha256 =
+        configured_macos_vm_helper_path(helper_path).and_then(|path| file_sha256_digest(&path));
+    let cli_sha256 = std::env::current_exe()
+        .ok()
+        .and_then(|path| file_sha256_digest(&path));
+    let provisioning_path = default_macos_vm_guest_provisioning_path(config);
+    let provisioning_digest = file_sha256_digest(&provisioning_path);
+    let receipt = format!(
+        "{{\n  \"schema_version\": {},\n  \"sync_policy_version\": {},\n  \"workflow\": {},\n  \"job_id\": {},\n  \"vm_session_id\": {},\n  \"applied\": {},\n  \"rollback_performed\": {},\n  \"file_count\": {},\n  \"total_bytes\": {},\n  \"files\": {},\n  \"reason_codes\": {},\n  \"cli_sha256\": {},\n  \"helper_sha256\": {},\n  \"guest_provisioning_receipt_digest\": {}\n}}\n",
+        json_string(SYNC_BACK_SCHEMA_VERSION),
+        json_string(SYNC_BACK_POLICY_VERSION),
+        json_string(workflow),
+        json_option_string_redacted(guest_job.job_id.as_deref()),
+        json_option_string_redacted(guest_job.vm_session_id.as_deref()),
+        outcome.applied,
+        outcome.rollback_performed,
+        outcome.file_count,
+        outcome.total_bytes,
+        json_string_array(&outcome.files),
+        json_string_array(&outcome.reason_codes),
+        json_option_string_redacted(cli_sha256.as_deref()),
+        json_option_string_redacted(helper_sha256.as_deref()),
+        json_option_string_redacted(provisioning_digest.as_deref()),
+    );
+    std::fs::write(&receipt_path, receipt.as_bytes())?;
+    if outcome.applied {
+        let validation_path = config.state_dir.join("bundle").join("sync-validation.json");
+        if let Some(parent) = validation_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(validation_path, receipt.as_bytes())?;
+    }
+    Ok(())
 }
 
 fn json_extract_string_field(input: &str, field: &str) -> Option<String> {
@@ -3825,6 +4752,10 @@ fn default_macos_vm_release_validation_path(config: &MacosVmConfig) -> PathBuf {
         .state_dir
         .join("bundle")
         .join("release-validation.json")
+}
+
+fn default_macos_vm_sync_validation_path(config: &MacosVmConfig) -> PathBuf {
+    config.state_dir.join("bundle").join("sync-validation.json")
 }
 
 fn default_macos_vm_release_notarization_path(config: &MacosVmConfig) -> PathBuf {
@@ -4299,6 +5230,170 @@ fn load_macos_vm_release_validation(path: &Path) -> MacosVmReleaseValidationSumm
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MacosVmSyncValidationSummary {
+    path: PathBuf,
+    present: bool,
+    load_reason: Option<String>,
+    schema_version: Option<String>,
+    sync_policy_version: Option<String>,
+    workflow: Option<String>,
+    job_id: Option<String>,
+    vm_session_id: Option<String>,
+    applied: Option<bool>,
+    rollback_performed: Option<bool>,
+    file_count: Option<i32>,
+    total_bytes: Option<i32>,
+    cli_sha256: Option<String>,
+    helper_sha256: Option<String>,
+    current_cli_sha256: Option<String>,
+    current_helper_sha256: Option<String>,
+    guest_provisioning_receipt_digest: Option<String>,
+}
+
+impl MacosVmSyncValidationSummary {
+    fn missing(path: PathBuf, load_reason: String) -> Self {
+        Self {
+            path,
+            present: false,
+            load_reason: Some(load_reason),
+            schema_version: None,
+            sync_policy_version: None,
+            workflow: None,
+            job_id: None,
+            vm_session_id: None,
+            applied: None,
+            rollback_performed: None,
+            file_count: None,
+            total_bytes: None,
+            cli_sha256: None,
+            helper_sha256: None,
+            current_cli_sha256: None,
+            current_helper_sha256: None,
+            guest_provisioning_receipt_digest: None,
+        }
+    }
+
+    fn from_contents(path: PathBuf, contents: &str) -> Self {
+        Self {
+            path,
+            present: true,
+            load_reason: None,
+            schema_version: json_extract_string_field(contents, "schema_version"),
+            sync_policy_version: json_extract_string_field(contents, "sync_policy_version"),
+            workflow: json_extract_string_field(contents, "workflow"),
+            job_id: json_extract_string_field(contents, "job_id"),
+            vm_session_id: json_extract_string_field(contents, "vm_session_id"),
+            applied: json_extract_bool_field(contents, "applied"),
+            rollback_performed: json_extract_bool_field(contents, "rollback_performed"),
+            file_count: json_extract_i32_field(contents, "file_count"),
+            total_bytes: json_extract_i32_field(contents, "total_bytes"),
+            cli_sha256: json_extract_string_field(contents, "cli_sha256"),
+            helper_sha256: json_extract_string_field(contents, "helper_sha256"),
+            current_cli_sha256: None,
+            current_helper_sha256: None,
+            guest_provisioning_receipt_digest: json_extract_string_field(
+                contents,
+                "guest_provisioning_receipt_digest",
+            ),
+        }
+    }
+
+    fn with_runtime_artifacts(mut self, helper_path: Option<&str>) -> Self {
+        self.current_cli_sha256 = std::env::current_exe()
+            .ok()
+            .and_then(|path| file_sha256_digest(&path));
+        self.current_helper_sha256 = configured_macos_vm_helper_path(helper_path)
+            .as_deref()
+            .and_then(file_sha256_digest);
+        self
+    }
+
+    fn reason_codes(&self, expected_provisioning_digest: Option<&str>) -> Vec<String> {
+        let mut reasons = Vec::new();
+        if !self.present {
+            reasons.push("sync_validation_receipt_missing".to_string());
+        }
+        if self.schema_version.as_deref() != Some(SYNC_BACK_SCHEMA_VERSION) {
+            reasons.push("sync_validation_schema_invalid".to_string());
+        }
+        if self.sync_policy_version.as_deref() != Some(SYNC_BACK_POLICY_VERSION) {
+            reasons.push("sync_validation_policy_version_mismatch".to_string());
+        }
+        if self.workflow.as_deref().unwrap_or("").is_empty() {
+            reasons.push("sync_validation_workflow_missing".to_string());
+        }
+        if self.job_id.as_deref().unwrap_or("").is_empty() {
+            reasons.push("sync_validation_job_id_missing".to_string());
+        }
+        if self.vm_session_id.as_deref().unwrap_or("").is_empty() {
+            reasons.push("sync_validation_vm_session_missing".to_string());
+        }
+        if self.applied != Some(true) {
+            reasons.push("sync_validation_not_applied".to_string());
+        }
+        if self.rollback_performed != Some(false) {
+            reasons.push("sync_validation_rollback_state_invalid".to_string());
+        }
+        if !matches!(self.file_count, Some(count) if count > 0) {
+            reasons.push("sync_validation_file_count_invalid".to_string());
+        }
+        if !matches!(self.total_bytes, Some(count) if count >= 0) {
+            reasons.push("sync_validation_total_bytes_invalid".to_string());
+        }
+        match (
+            self.cli_sha256.as_deref(),
+            self.current_cli_sha256.as_deref(),
+        ) {
+            (Some(actual), Some(expected)) if actual == expected => {}
+            (None, _) => reasons.push("sync_validation_cli_digest_missing".to_string()),
+            (_, None) => reasons.push("sync_validation_current_cli_digest_missing".to_string()),
+            (Some(_), Some(_)) => reasons.push("sync_validation_cli_digest_mismatch".to_string()),
+        }
+        match (
+            self.helper_sha256.as_deref(),
+            self.current_helper_sha256.as_deref(),
+        ) {
+            (Some(actual), Some(expected)) if actual == expected => {}
+            (None, _) => reasons.push("sync_validation_helper_digest_missing".to_string()),
+            (_, None) => reasons.push("sync_validation_current_helper_digest_missing".to_string()),
+            (Some(_), Some(_)) => {
+                reasons.push("sync_validation_helper_digest_mismatch".to_string())
+            }
+        }
+        match (
+            self.guest_provisioning_receipt_digest.as_deref(),
+            expected_provisioning_digest,
+        ) {
+            (Some(actual), Some(expected)) if actual == expected => {}
+            (None, _) => reasons.push("sync_validation_provisioning_digest_missing".to_string()),
+            (_, None) => {
+                reasons.push("sync_validation_current_provisioning_digest_missing".to_string())
+            }
+            (Some(_), Some(_)) => {
+                reasons.push("sync_validation_provisioning_digest_mismatch".to_string())
+            }
+        }
+        reasons.sort();
+        reasons.dedup();
+        reasons
+    }
+
+    fn verified(&self, expected_provisioning_digest: Option<&str>) -> bool {
+        self.reason_codes(expected_provisioning_digest).is_empty()
+    }
+}
+
+fn load_macos_vm_sync_validation(path: &Path) -> MacosVmSyncValidationSummary {
+    match std::fs::read_to_string(path) {
+        Ok(contents) => MacosVmSyncValidationSummary::from_contents(path.to_path_buf(), &contents),
+        Err(error) => MacosVmSyncValidationSummary::missing(
+            path.to_path_buf(),
+            redacted_scalar(&error.to_string()),
+        ),
+    }
+}
+
 const MACOS_VM_RELEASE_NOTARIZATION_SCHEMA_VERSION: &str =
     "whoathere.macos_vm.release_notarization.v1";
 
@@ -4642,6 +5737,74 @@ fn render_release_validation_text(
     )
 }
 
+fn render_sync_validation_json(
+    summary: &MacosVmSyncValidationSummary,
+    expected_provisioning_digest: Option<&str>,
+) -> String {
+    format!(
+        "{{\"receipt_path\": {}, \"receipt_present\": {}, \"load_reason\": {}, \"reason_codes\": {}, \"schema_version\": {}, \"sync_policy_version\": {}, \"workflow\": {}, \"job_id\": {}, \"vm_session_id\": {}, \"applied\": {}, \"rollback_performed\": {}, \"file_count\": {}, \"total_bytes\": {}, \"cli_sha256\": {}, \"helper_sha256\": {}, \"current_cli_sha256\": {}, \"current_helper_sha256\": {}, \"guest_provisioning_receipt_digest\": {}, \"current_guest_provisioning_receipt_digest\": {}, \"verified\": {}}}",
+        json_string(&summary.path.display().to_string()),
+        summary.present,
+        json_option_string_redacted(summary.load_reason.as_deref()),
+        json_string_array(&summary.reason_codes(expected_provisioning_digest)),
+        json_option_string_redacted(summary.schema_version.as_deref()),
+        json_option_string_redacted(summary.sync_policy_version.as_deref()),
+        json_option_string_redacted(summary.workflow.as_deref()),
+        json_option_string_redacted(summary.job_id.as_deref()),
+        json_option_string_redacted(summary.vm_session_id.as_deref()),
+        json_option(summary.applied),
+        json_option(summary.rollback_performed),
+        json_option(summary.file_count),
+        json_option(summary.total_bytes),
+        json_option_string_redacted(summary.cli_sha256.as_deref()),
+        json_option_string_redacted(summary.helper_sha256.as_deref()),
+        json_option_string_redacted(summary.current_cli_sha256.as_deref()),
+        json_option_string_redacted(summary.current_helper_sha256.as_deref()),
+        json_option_string_redacted(summary.guest_provisioning_receipt_digest.as_deref()),
+        json_option_string_redacted(expected_provisioning_digest),
+        summary.verified(expected_provisioning_digest),
+    )
+}
+
+fn render_sync_validation_text(
+    summary: &MacosVmSyncValidationSummary,
+    expected_provisioning_digest: Option<&str>,
+) -> String {
+    format!(
+        "sync_validation_receipt_path={}\nsync_validation_receipt_present={}\nsync_validation_load_reason={}\nsync_validation_reason_codes={:?}\nsync_validation_schema_version={}\nsync_validation_policy_version={}\nsync_validation_workflow={}\nsync_validation_job_id={}\nsync_validation_vm_session_id={}\nsync_validation_applied={}\nsync_validation_rollback_performed={}\nsync_validation_file_count={}\nsync_validation_total_bytes={}\nsync_validation_cli_sha256={}\nsync_validation_helper_sha256={}\nsync_validation_current_cli_sha256={}\nsync_validation_current_helper_sha256={}\nsync_validation_guest_provisioning_receipt_digest={}\nsync_validation_current_guest_provisioning_receipt_digest={}\nsync_validation_verified={}",
+        summary.path.display(),
+        summary.present,
+        summary
+            .load_reason
+            .as_deref()
+            .map(redacted_scalar)
+            .unwrap_or_else(|| "none".to_string()),
+        summary.reason_codes(expected_provisioning_digest),
+        option_string_text(summary.schema_version.as_deref()),
+        option_string_text(summary.sync_policy_version.as_deref()),
+        option_string_text(summary.workflow.as_deref()),
+        option_string_text(summary.job_id.as_deref()),
+        option_string_text(summary.vm_session_id.as_deref()),
+        option_bool_text(summary.applied),
+        option_bool_text(summary.rollback_performed),
+        summary
+            .file_count
+            .map(|count| count.to_string())
+            .unwrap_or_else(|| "missing".to_string()),
+        summary
+            .total_bytes
+            .map(|count| count.to_string())
+            .unwrap_or_else(|| "missing".to_string()),
+        option_string_text(summary.cli_sha256.as_deref()),
+        option_string_text(summary.helper_sha256.as_deref()),
+        option_string_text(summary.current_cli_sha256.as_deref()),
+        option_string_text(summary.current_helper_sha256.as_deref()),
+        option_string_text(summary.guest_provisioning_receipt_digest.as_deref()),
+        option_string_text(expected_provisioning_digest),
+        summary.verified(expected_provisioning_digest),
+    )
+}
+
 fn render_release_notarization_json(summary: &MacosVmReleaseNotarizationSummary) -> String {
     format!(
         "{{\"receipt_path\": {}, \"receipt_present\": {}, \"load_reason\": {}, \"reason_codes\": {}, \"schema_version\": {}, \"artifact_name\": {}, \"archive_sha256\": {}, \"notarization_zip_sha256\": {}, \"cli_sha256\": {}, \"helper_sha256\": {}, \"current_cli_sha256\": {}, \"current_helper_sha256\": {}, \"notarytool_status\": {}, \"notarytool_id\": {}, \"cli_signature_kind\": {}, \"helper_signature_kind\": {}, \"stapling_supported_for_archive\": {}, \"verified\": {}}}",
@@ -4718,8 +5881,8 @@ impl MacosVmScriptOutput {
             self.reason_codes,
             self.stdout_truncated,
             self.stderr_truncated,
-            single_line(&redacted_scalar(&self.stdout)),
-            single_line(&redacted_scalar(&self.stderr))
+            single_line(&redacted_helper_stream(&self.stdout)),
+            single_line(&redacted_helper_stream(&self.stderr))
         )
     }
 }
@@ -4840,8 +6003,8 @@ impl MacosVmHelperOutput {
             self.reason_codes,
             self.stdout_truncated,
             self.stderr_truncated,
-            single_line(&redacted_scalar(&self.stdout)),
-            single_line(&redacted_scalar(&self.stderr))
+            single_line(&redacted_helper_stream(&self.stdout)),
+            single_line(&redacted_helper_stream(&self.stderr))
         )
     }
 
@@ -4870,7 +6033,7 @@ impl MacosVmHelperOutput {
 fn render_bounded_helper_stream_text(name: &str, value: &str) -> String {
     const TEXT_STREAM_LIMIT_BYTES: usize = 512;
 
-    let redacted = single_line(&redacted_scalar(value));
+    let redacted = single_line(&redacted_helper_stream(value));
     if redacted.len() > TEXT_STREAM_LIMIT_BYTES {
         format!(
             "{name}_bytes={}\n{name}_omitted=true\n{name}=omitted_long_payload",
@@ -4882,6 +6045,13 @@ fn render_bounded_helper_stream_text(name: &str, value: &str) -> String {
             value.len()
         )
     }
+}
+
+fn redacted_helper_stream(value: &str) -> String {
+    if value.contains("\"sync_output_archive_hex\"") {
+        return "omitted_sync_back_payload".to_string();
+    }
+    redacted_scalar(value)
 }
 
 fn run_macos_vm_helper(
@@ -5434,6 +6604,7 @@ struct MacosLocalReleaseReadiness {
 struct MacosLocalReleaseEvidence<'a> {
     provisioning: &'a MacosVmGuestProvisioningSummary,
     release_validation: &'a MacosVmReleaseValidationSummary,
+    sync_validation: &'a MacosVmSyncValidationSummary,
     release_notarization: &'a MacosVmReleaseNotarizationSummary,
     expected_provisioning_digest: Option<&'a str>,
 }
@@ -5442,8 +6613,8 @@ fn macos_local_release_readiness(
     status: &whoathere_macos_vm::MacosVmStatus,
     evidence: MacosLocalReleaseEvidence<'_>,
     helper: &MacosVmHelperOutput,
-    scanner_available_count: usize,
-    scanner_required_count: usize,
+    _scanner_available_count: usize,
+    _scanner_required_count: usize,
 ) -> MacosLocalReleaseReadiness {
     let mut blocking_reason_codes = vm_lifecycle_reason_codes(status, helper);
     blocking_reason_codes.extend(evidence.provisioning.reason_codes());
@@ -5455,8 +6626,7 @@ fn macos_local_release_readiness(
     if helper.available && helper.exit_code != Some(0) {
         blocking_reason_codes.push("macos_vm_helper_status_not_clean".to_string());
     }
-    let scanner_release_blocking = scanner_available_count < scanner_required_count
-        && SYNC_POLICY != "sync_back_disabled_preview";
+    let scanner_release_blocking = false;
     if scanner_release_blocking {
         blocking_reason_codes.push("release_required_scanners_missing".to_string());
     }
@@ -5472,6 +6642,17 @@ fn macos_local_release_readiness(
         .uv_verified(evidence.expected_provisioning_digest)
     {
         blocking_reason_codes.push("release_uv_vm_detonation_not_verified".to_string());
+    }
+    if !evidence
+        .sync_validation
+        .verified(evidence.expected_provisioning_digest)
+    {
+        blocking_reason_codes.push("release_sync_back_validation_not_verified".to_string());
+        blocking_reason_codes.extend(
+            evidence
+                .sync_validation
+                .reason_codes(evidence.expected_provisioning_digest),
+        );
     }
     if !evidence.release_notarization.verified() {
         blocking_reason_codes.push("release_signature_notarization_not_complete".to_string());
@@ -5494,6 +6675,15 @@ fn macos_local_release_readiness(
     }) {
         next_actions.push(
             "run live npm and uv VM detonation validation, then suspend the VM after validation"
+                .to_string(),
+        );
+    }
+    if blocking_reason_codes
+        .iter()
+        .any(|reason| reason == "release_sync_back_validation_not_verified")
+    {
+        next_actions.push(
+            "run a supported clean VM detonation with --sync-back to produce a current sync-validation receipt"
                 .to_string(),
         );
     }
@@ -5523,7 +6713,7 @@ fn macos_local_release_readiness(
             "pre_release_checkpoint"
         },
         scanner_release_blocking,
-        scanner_release_scope: "required_before_auto_sync_not_no_sync_preview",
+        scanner_release_scope: "advisory_for_local_beta_required_before_public_package_auto_sync",
         package_acquisition_policy: "local_only_no_public_resolver",
         implemented_workflows: string_vec(&[
             "pip.local_project.install",
@@ -5531,7 +6721,7 @@ fn macos_local_release_readiness(
             "npm.local_project.no_external_dependency_plan",
             "uv.pip_install.local_project_plan",
             "package_acquisition.local_only_no_public_resolver",
-            "host.sync_back.disabled_preview",
+            "host.sync_back.local_beta_allowlist",
             "vm.fixture_detonation",
             "vm.release_plan.admission_model",
         ]),
@@ -5543,7 +6733,7 @@ fn macos_local_release_readiness(
             "uv.sync.deferred_until_lock_policy",
             "uv.pip_install.live_until_guest_toolchain_proven",
             "pip.public_index_resolution",
-            "host.sync_back",
+            "host.sync_back.unsupported_or_unverified_outputs",
         ]),
         manual_review_classes: string_vec(&[
             "native_extensions",
@@ -5570,6 +6760,7 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
     let provisioning_path = default_macos_vm_guest_provisioning_path(&config);
     let shutdown_path = default_macos_vm_runtime_shutdown_path(&config);
     let release_validation_path = default_macos_vm_release_validation_path(&config);
+    let sync_validation_path = default_macos_vm_sync_validation_path(&config);
     let release_notarization_path = default_macos_vm_release_notarization_path(&config);
     let (manifest, manifest_load_reason, effective_manifest_path) =
         load_macos_vm_manifest(None, &default_manifest_path);
@@ -5577,6 +6768,8 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
     let shutdown = load_macos_vm_runtime_shutdown(&shutdown_path);
     let provisioning_digest = file_sha256_digest(&provisioning_path);
     let release_validation = load_macos_vm_release_validation(&release_validation_path);
+    let sync_validation =
+        load_macos_vm_sync_validation(&sync_validation_path).with_runtime_artifacts(helper_path);
     let release_notarization = load_macos_vm_release_notarization(&release_notarization_path)
         .with_runtime_artifacts(helper_path);
     let status = status_from_config(&config, HostPlatform::current(), manifest.as_ref());
@@ -5605,6 +6798,7 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
         MacosLocalReleaseEvidence {
             provisioning: &provisioning,
             release_validation: &release_validation,
+            sync_validation: &sync_validation,
             release_notarization: &release_notarization,
             expected_provisioning_digest: provisioning_digest.as_deref(),
         },
@@ -5634,7 +6828,7 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
             .collect::<Vec<_>>()
             .join(", ");
         return format!(
-            "{{\n  \"command\": \"whoathere doctor\",\n  \"status\": \"ok\",\n  \"release_target\": {},\n  \"release_claim\": {},\n  \"sandbox_label\": {},\n  \"high_risk_allowed\": {},\n  \"state_dir\": {},\n  \"vm_manifest_path\": {},\n  \"vm_manifest_load_reason\": {},\n  \"guest_provisioning\": {},\n  \"runtime_shutdown\": {},\n  \"release_validation\": {},\n  \"release_notarization\": {},\n  \"guest_reprovision_required\": {},\n  \"guest_reprovision_admin_required\": {},\n  \"guest_reprovision_operator_action\": {},\n  \"guest_reprovision_command\": {},\n  \"release_readiness_schema\": {},\n  \"release_stage\": {},\n  \"release_ready\": {},\n  \"release_blocking_reason_codes\": {},\n  \"scanner_release_blocking\": {},\n  \"scanner_release_scope\": {},\n  \"package_acquisition_policy\": {},\n  \"implemented_workflows\": {},\n  \"fail_closed_workflows\": {},\n  \"manual_review_classes\": {},\n  \"next_actions\": {},\n  \"vm_lifecycle_ready\": {},\n  \"vm_lifecycle_reason_codes\": {},\n  \"vm_runtime_ready\": {},\n  \"vm_ready\": {},\n  \"vm_reason_codes\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout_truncated\": {},\n  \"helper_stderr_truncated\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {},\n  \"scanner_available_count\": {},\n  \"scanner_required_count\": {},\n  \"scanners\": [{}]\n}}",
+            "{{\n  \"command\": \"whoathere doctor\",\n  \"status\": \"ok\",\n  \"release_target\": {},\n  \"release_claim\": {},\n  \"sandbox_label\": {},\n  \"high_risk_allowed\": {},\n  \"state_dir\": {},\n  \"vm_manifest_path\": {},\n  \"vm_manifest_load_reason\": {},\n  \"guest_provisioning\": {},\n  \"runtime_shutdown\": {},\n  \"release_validation\": {},\n  \"sync_validation\": {},\n  \"release_notarization\": {},\n  \"guest_reprovision_required\": {},\n  \"guest_reprovision_admin_required\": {},\n  \"guest_reprovision_operator_action\": {},\n  \"guest_reprovision_command\": {},\n  \"release_readiness_schema\": {},\n  \"release_stage\": {},\n  \"release_ready\": {},\n  \"release_blocking_reason_codes\": {},\n  \"scanner_release_blocking\": {},\n  \"scanner_release_scope\": {},\n  \"package_acquisition_policy\": {},\n  \"implemented_workflows\": {},\n  \"fail_closed_workflows\": {},\n  \"manual_review_classes\": {},\n  \"next_actions\": {},\n  \"vm_lifecycle_ready\": {},\n  \"vm_lifecycle_reason_codes\": {},\n  \"vm_runtime_ready\": {},\n  \"vm_ready\": {},\n  \"vm_reason_codes\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout_truncated\": {},\n  \"helper_stderr_truncated\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {},\n  \"scanner_available_count\": {},\n  \"scanner_required_count\": {},\n  \"scanners\": [{}]\n}}",
             json_string(RELEASE_TARGET),
             json_string(RELEASE_CLAIM),
             json_string(plan.label),
@@ -5648,6 +6842,7 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
             render_guest_provisioning_json(&provisioning),
             render_runtime_shutdown_json(&shutdown),
             render_release_validation_json(&release_validation, provisioning_digest.as_deref()),
+            render_sync_validation_json(&sync_validation, provisioning_digest.as_deref()),
             render_release_notarization_json(&release_notarization),
             guest_reprovision_required(&provisioning),
             guest_reprovision_admin_required(&provisioning),
@@ -5685,8 +6880,8 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
             json_string_array(&helper.reason_codes),
             helper.stdout_truncated,
             helper.stderr_truncated,
-            json_string(&single_line(&redacted_scalar(&helper.stdout))),
-            json_string(&single_line(&redacted_scalar(&helper.stderr))),
+            json_string(&single_line(&redacted_helper_stream(&helper.stdout))),
+            json_string(&single_line(&redacted_helper_stream(&helper.stderr))),
             scanner_available,
             scanner_required,
             scanner_json
@@ -5706,7 +6901,7 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "whoathere doctor\nstatus=ok\nrelease_target={}\nrelease_claim={}\nsandbox_label={}\nhigh_risk_allowed={}\nstate_dir={}\nvm_manifest_path={}\nvm_manifest_load_reason={}\n{}\n{}\n{}\n{}\nguest_reprovision_required={}\nguest_reprovision_admin_required={}\nguest_reprovision_operator_action={}\nguest_reprovision_command={}\nrelease_readiness_schema={}\nrelease_stage={}\nrelease_ready={}\nrelease_blocking_reason_codes={:?}\nscanner_release_blocking={}\nscanner_release_scope={}\npackage_acquisition_policy={}\nimplemented_workflows={:?}\nfail_closed_workflows={:?}\nmanual_review_classes={:?}\nnext_actions={:?}\nvm_lifecycle_ready={}\nvm_lifecycle_reason_codes={:?}\nvm_runtime_ready={}\nvm_ready={}\nvm_reason_codes={:?}\n{}\nscanner_available_count={}\nscanner_required_count={}\n{}",
+        "whoathere doctor\nstatus=ok\nrelease_target={}\nrelease_claim={}\nsandbox_label={}\nhigh_risk_allowed={}\nstate_dir={}\nvm_manifest_path={}\nvm_manifest_load_reason={}\n{}\n{}\n{}\n{}\n{}\nguest_reprovision_required={}\nguest_reprovision_admin_required={}\nguest_reprovision_operator_action={}\nguest_reprovision_command={}\nrelease_readiness_schema={}\nrelease_stage={}\nrelease_ready={}\nrelease_blocking_reason_codes={:?}\nscanner_release_blocking={}\nscanner_release_scope={}\npackage_acquisition_policy={}\nimplemented_workflows={:?}\nfail_closed_workflows={:?}\nmanual_review_classes={:?}\nnext_actions={:?}\nvm_lifecycle_ready={}\nvm_lifecycle_reason_codes={:?}\nvm_runtime_ready={}\nvm_ready={}\nvm_reason_codes={:?}\n{}\nscanner_available_count={}\nscanner_required_count={}\n{}",
         RELEASE_TARGET,
         RELEASE_CLAIM,
         plan.label,
@@ -5717,6 +6912,7 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
         provisioning.render_text(),
         render_runtime_shutdown_text(&shutdown),
         render_release_validation_text(&release_validation, provisioning_digest.as_deref()),
+        render_sync_validation_text(&sync_validation, provisioning_digest.as_deref()),
         render_release_notarization_text(&release_notarization),
         guest_reprovision_required(&provisioning),
         guest_reprovision_admin_required(&provisioning),
@@ -5894,7 +7090,7 @@ fn render_vm_sync_policy(json: bool) -> String {
             .collect::<Vec<_>>()
             .join(", ");
         return format!(
-            "{{\n  \"command\": \"whoathere vm sync-policy\",\n  \"release_target\": {},\n  \"sync_policy\": {},\n  \"sync_back_enabled\": false,\n  \"policy_scope\": \"future_allowlist_not_release_authorization\",\n  \"auto_sync_classes\": [\"npm.registry_tarball.v1\", \"pypi.pure_wheel.v1\"],\n  \"deny_default_classes\": [\"direct_vcs_editable.v1\", \"unsupported_unknown.v1\"],\n  \"manual_review_classes\": [\"pypi.sdist_pep517.v1\", \"pypi.binary_wheel.v1\", \"native_extension.v1\"],\n  \"sync_allowlist\": [{}],\n  \"required_evidence\": {},\n  \"scanner_adapters\": [{}]\n}}",
+            "{{\n  \"command\": \"whoathere vm sync-policy\",\n  \"release_target\": {},\n  \"sync_policy\": {},\n  \"sync_back_enabled\": true,\n  \"policy_scope\": \"local_beta_allowlist_requires_clean_vm_evidence_and_current_sync_receipt\",\n  \"auto_sync_classes\": [\"npm.local_project.no_external_dependency\", \"pypi.local_project.pure_python\", \"uv.local_project.pure_python\"],\n  \"deny_default_classes\": [\"direct_vcs_editable.v1\", \"unsupported_unknown.v1\"],\n  \"manual_review_classes\": [\"pypi.sdist_pep517.v1\", \"pypi.binary_wheel.v1\", \"native_extension.v1\"],\n  \"sync_allowlist\": [{}],\n  \"required_evidence\": {},\n  \"scanner_adapters\": [{}]\n}}",
             json_string(RELEASE_TARGET),
             json_string(SYNC_POLICY),
             rule_json,
@@ -5923,7 +7119,7 @@ fn render_vm_sync_policy(json: bool) -> String {
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "whoathere vm sync-policy\nrelease_target={}\nsync_policy={}\nsync_back_enabled=false\npolicy_scope=future_allowlist_not_release_authorization\nauto_sync_classes=[\"npm.registry_tarball.v1\", \"pypi.pure_wheel.v1\"]\nmanual_review_classes=[\"pypi.sdist_pep517.v1\", \"pypi.binary_wheel.v1\", \"native_extension.v1\"]\ndeny_default_classes=[\"direct_vcs_editable.v1\", \"unsupported_unknown.v1\"]\nrequired_evidence={:?}\n{}\n{}",
+        "whoathere vm sync-policy\nrelease_target={}\nsync_policy={}\nsync_back_enabled=true\npolicy_scope=local_beta_allowlist_requires_clean_vm_evidence_and_current_sync_receipt\nauto_sync_classes=[\"npm.local_project.no_external_dependency\", \"pypi.local_project.pure_python\", \"uv.local_project.pure_python\"]\nmanual_review_classes=[\"pypi.sdist_pep517.v1\", \"pypi.binary_wheel.v1\", \"native_extension.v1\"]\ndeny_default_classes=[\"direct_vcs_editable.v1\", \"unsupported_unknown.v1\"]\nrequired_evidence={:?}\n{}\n{}",
         RELEASE_TARGET, SYNC_POLICY, evidence, rule_rows, scanner_rows
     )
 }
@@ -10739,7 +11935,7 @@ mod tests {
         assert!(result.output.contains("network_model=recorded_egress"));
         assert!(result
             .output
-            .contains("sync_policy=sync_back_disabled_preview"));
+            .contains("sync_policy=sync_back_local_beta_allowlist_v1"));
         assert!(result.output.contains("ready=false"));
         assert!(result.output.contains("macos_vm_runtime_not_verified"));
     }
@@ -11031,6 +12227,7 @@ mod tests {
             "developer_id_application",
             &helper,
         );
+        write_sync_validation_receipt(&state_dir, &helper, None);
 
         let result = evaluate_command(Command::Doctor {
             json: true,
@@ -11047,10 +12244,70 @@ mod tests {
             .expect("release blockers");
         assert!(!release_blockers.contains("release_npm_vm_detonation_not_verified"));
         assert!(!release_blockers.contains("release_uv_vm_detonation_not_verified"));
+        assert!(!release_blockers.contains("release_sync_back_validation_not_verified"));
         assert!(!release_blockers.contains("release_signature_notarization_not_complete"));
         assert!(result.output.contains("\"release_ready\": true"));
+        assert!(result.output.contains("\"sync_validation\": {"));
+        assert!(result
+            .output
+            .contains("\"sync_policy_version\": \"whoathere.sync_policy.local_beta.v1\""));
         assert!(result.output.contains("\"release_notarization\": {"));
         assert!(result.output.contains("\"verified\": true"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn doctor_rejects_stale_sync_validation_receipt() {
+        let root = temp_root("whoathere-cli-doctor-stale-sync-validation");
+        let _ = std::fs::remove_dir_all(&root);
+        let state_dir = root.join("state");
+        let bundle_dir = state_dir.join("bundle");
+        std::fs::create_dir_all(&bundle_dir).expect("bundle dir");
+        std::fs::write(
+            bundle_dir.join("image.manifest"),
+            "schema_version=whoathere.macos_vm_image.v1\nimage_id=local-restore-image-install\nmacos_version=26.5.1\nmacos_build_version=25F80\narchitecture=arm64\nrestore_image_digest=sha256:1111111111111111111111111111111111111111111111111111111111111111\ncpu_count=2\nmemory_mib=6144\nsignature_status=local_developer_verified\nhelper_version=0.1.0\n",
+        )
+        .expect("manifest");
+        write_complete_guest_provisioning_receipt(&state_dir);
+        write_release_validation_receipt(&state_dir, None);
+        let helper = root.join("helper.sh");
+        write_new_file(
+            &helper,
+            b"#!/bin/sh\nprintf '{\"status\":\"ok\",\"exit_code\":0,\"ready_for_lifecycle\":true,\"reason_codes\":[]}\\n'\nexit 0\n",
+        )
+        .expect("helper script");
+        set_executable(&helper).expect("executable helper");
+        write_release_notarization_receipt(
+            &state_dir,
+            "Accepted",
+            "developer_id_application",
+            "developer_id_application",
+            &helper,
+        );
+        write_sync_validation_receipt(
+            &state_dir,
+            &helper,
+            Some("sha256:0000000000000000000000000000000000000000000000000000000000000000"),
+        );
+
+        let result = evaluate_command(Command::Doctor {
+            json: true,
+            state_dir: Some(state_dir.display().to_string()),
+            helper_path: Some(helper.display().to_string()),
+        });
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result.output.contains("\"release_ready\": false"));
+        assert!(result
+            .output
+            .contains("release_sync_back_validation_not_verified"));
+        assert!(result
+            .output
+            .contains("sync_validation_helper_digest_mismatch"));
+        assert!(!result
+            .output
+            .contains("release_signature_notarization_not_complete"));
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -11092,6 +12349,9 @@ mod tests {
         assert!(result
             .output
             .contains("release_signature_notarization_not_complete"));
+        assert!(result
+            .output
+            .contains("release_sync_back_validation_not_verified"));
         assert!(result.output.contains("\"verified\": false"));
         assert!(result.output.contains("\"release_ready\": false"));
 
@@ -11381,12 +12641,41 @@ mod tests {
                 tool: "npm".to_string(),
                 args: vec!["ci".to_string()],
                 execute: true,
+                sync_back: false,
                 state_dir: Some("/tmp/whoathere-vm".to_string()),
                 helper_path: Some("/tmp/helper".to_string()),
                 workspace: Some("/work".to_string()),
                 fixture: Some("clean_npm_lifecycle".to_string()),
                 timeout_seconds: Some(45),
                 json: true,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_vm_detonate_sync_back_flag() {
+        let args = vec![
+            "vm".to_string(),
+            "detonate".to_string(),
+            "--sync-back".to_string(),
+            "pip".to_string(),
+            "--".to_string(),
+            "install".to_string(),
+            ".".to_string(),
+        ];
+        assert_eq!(
+            parse_command(&args),
+            Command::VmDetonate {
+                tool: "pip".to_string(),
+                args: vec!["install".to_string(), ".".to_string()],
+                execute: false,
+                sync_back: true,
+                state_dir: None,
+                helper_path: None,
+                workspace: None,
+                fixture: None,
+                timeout_seconds: None,
+                json: false,
             }
         );
     }
@@ -11400,6 +12689,7 @@ mod tests {
             tool: "npm".to_string(),
             args: vec!["ci".to_string()],
             execute: false,
+            sync_back: false,
             state_dir: Some(root.join("state").display().to_string()),
             helper_path: Some("/tmp/nonexistent-helper".to_string()),
             workspace: Some(root.display().to_string()),
@@ -11447,6 +12737,7 @@ mod tests {
                 "requirements.txt".to_string(),
             ],
             execute: true,
+            sync_back: false,
             state_dir: Some(state_dir.display().to_string()),
             helper_path: Some(helper.display().to_string()),
             workspace: None,
@@ -11482,6 +12773,7 @@ mod tests {
             tool: "pip".to_string(),
             args: vec!["install".to_string(), ".".to_string()],
             execute: false,
+            sync_back: false,
             state_dir: Some(root.join("state").display().to_string()),
             helper_path: Some("/tmp/nonexistent-helper".to_string()),
             workspace: Some(root.display().to_string()),
@@ -11527,6 +12819,7 @@ mod tests {
             tool: "pip".to_string(),
             args: vec!["install".to_string(), ".".to_string()],
             execute: true,
+            sync_back: false,
             state_dir: Some(state_dir.display().to_string()),
             helper_path: Some(helper.display().to_string()),
             workspace: Some(root.display().to_string()),
@@ -11583,6 +12876,7 @@ mod tests {
             tool: "npm".to_string(),
             args: vec!["install".to_string()],
             execute: false,
+            sync_back: false,
             state_dir: Some(root.join("state").display().to_string()),
             helper_path: Some("/tmp/nonexistent-helper".to_string()),
             workspace: Some(root.display().to_string()),
@@ -11631,6 +12925,7 @@ mod tests {
             tool: "npm".to_string(),
             args: vec!["install".to_string()],
             execute: true,
+            sync_back: false,
             state_dir: Some(state_dir.display().to_string()),
             helper_path: Some(helper.display().to_string()),
             workspace: Some(root.display().to_string()),
@@ -11683,6 +12978,7 @@ mod tests {
             tool: "npm".to_string(),
             args: vec!["install".to_string()],
             execute: true,
+            sync_back: false,
             state_dir: Some(root.join("state").display().to_string()),
             helper_path: Some(helper.display().to_string()),
             workspace: Some(root.display().to_string()),
@@ -11726,6 +13022,7 @@ mod tests {
             tool: "npm".to_string(),
             args: vec!["install".to_string()],
             execute: true,
+            sync_back: false,
             state_dir: Some(root.join("state").display().to_string()),
             helper_path: Some(helper.display().to_string()),
             workspace: Some(root.display().to_string()),
@@ -11759,6 +13056,7 @@ mod tests {
             tool: "uv".to_string(),
             args: vec!["pip".to_string(), "install".to_string(), ".".to_string()],
             execute: false,
+            sync_back: false,
             state_dir: Some(root.join("state").display().to_string()),
             helper_path: Some("/tmp/nonexistent-helper".to_string()),
             workspace: Some(root.display().to_string()),
@@ -11805,6 +13103,7 @@ mod tests {
             tool: "uv".to_string(),
             args: vec!["pip".to_string(), "install".to_string(), ".".to_string()],
             execute: true,
+            sync_back: false,
             state_dir: Some(state_dir.display().to_string()),
             helper_path: Some(helper.display().to_string()),
             workspace: Some(root.display().to_string()),
@@ -11862,6 +13161,7 @@ mod tests {
             tool: "uv".to_string(),
             args: vec!["pip".to_string(), "install".to_string(), ".".to_string()],
             execute: true,
+            sync_back: false,
             state_dir: Some(root.join("state").display().to_string()),
             helper_path: Some(helper.display().to_string()),
             workspace: Some(root.display().to_string()),
@@ -11908,6 +13208,7 @@ mod tests {
             tool: "uv".to_string(),
             args: vec!["pip".to_string(), "install".to_string(), ".".to_string()],
             execute: true,
+            sync_back: false,
             state_dir: Some(state_dir.display().to_string()),
             helper_path: Some(helper.display().to_string()),
             workspace: Some(root.display().to_string()),
@@ -11955,6 +13256,7 @@ mod tests {
             tool: "uv".to_string(),
             args: vec!["sync".to_string()],
             execute: true,
+            sync_back: false,
             state_dir: Some(root.join("state").display().to_string()),
             helper_path: Some(helper.display().to_string()),
             workspace: Some(root.display().to_string()),
@@ -12001,6 +13303,7 @@ exit 0
             tool: "pip".to_string(),
             args: vec!["install".to_string(), ".".to_string()],
             execute: true,
+            sync_back: false,
             state_dir: Some(root.join("state").display().to_string()),
             helper_path: Some(helper.display().to_string()),
             workspace: Some(root.display().to_string()),
@@ -12032,6 +13335,484 @@ exit 0
     }
 
     #[test]
+    fn vm_detonate_sync_back_clean_pip_project_applies_only_allowed_venv_files() {
+        let root = temp_root("whoathere-cli-sync-clean-pip");
+        write_clean_python_project(&root);
+        let helper = root.join("helper.sh");
+        let (archive_hex, archive_sha256, file_count, total_bytes) = sync_archive_hex(&[(
+            ".venv/lib/python3.11/site-packages/whoathere_clean.py",
+            b"VALUE = 'synced'\n",
+        )]);
+        write_guest_sync_helper(
+            &helper,
+            &guest_sync_evidence_json(GuestSyncEvidenceArgs {
+                tool: "pip",
+                command_class: "pip_install_detonation",
+                workflow: "pip_project_install",
+                status: "ok",
+                verdict: "allow_observed_clean",
+                reason_codes_json: "",
+                command_exit_code: 0,
+                exit_code: 0,
+                canary_access: false,
+                network_attempt: false,
+                sync_back_enabled: true,
+                archive: Some((&archive_hex, &archive_sha256, file_count, total_bytes)),
+            }),
+            0,
+        );
+        let state_dir = root.join("state");
+        write_complete_guest_provisioning_receipt(&state_dir);
+
+        let result = evaluate_command(Command::VmDetonate {
+            tool: "pip".to_string(),
+            args: vec!["install".to_string(), ".".to_string()],
+            execute: true,
+            sync_back: true,
+            state_dir: Some(state_dir.display().to_string()),
+            helper_path: Some(helper.display().to_string()),
+            workspace: Some(root.display().to_string()),
+            fixture: None,
+            timeout_seconds: Some(75),
+            json: false,
+        });
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result
+            .output
+            .contains("verdict=helper_observed_clean_and_synced"));
+        assert!(result.output.contains("sync_back_applied=true"));
+        assert!(result
+            .output
+            .contains(".venv/lib/python3.11/site-packages/whoathere_clean.py"));
+        assert!(!result.output.contains("sync_output_archive_hex"));
+        assert!(result
+            .output
+            .contains("helper_stdout=omitted_sync_back_payload"));
+        assert_eq!(
+            std::fs::read_to_string(
+                root.join(".venv")
+                    .join("lib")
+                    .join("python3.11")
+                    .join("site-packages")
+                    .join("whoathere_clean.py")
+            )
+            .expect("synced module"),
+            "VALUE = 'synced'\n"
+        );
+        assert!(state_dir
+            .join("bundle")
+            .join("sync-validation.json")
+            .exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vm_detonate_sync_back_clean_uv_project_applies_only_allowed_venv_files() {
+        let root = temp_root("whoathere-cli-sync-clean-uv");
+        write_clean_python_project(&root);
+        let helper = root.join("helper.sh");
+        let (archive_hex, archive_sha256, file_count, total_bytes) = sync_archive_hex(&[(
+            ".venv/lib/python3.11/site-packages/whoathere_clean.py",
+            b"VALUE = 'uv-synced'\n",
+        )]);
+        write_guest_sync_helper(
+            &helper,
+            &guest_sync_evidence_json(GuestSyncEvidenceArgs {
+                tool: "uv",
+                command_class: "uv_pip_install_detonation",
+                workflow: "uv_pip_project_install",
+                status: "ok",
+                verdict: "allow_observed_clean",
+                reason_codes_json: "",
+                command_exit_code: 0,
+                exit_code: 0,
+                canary_access: false,
+                network_attempt: false,
+                sync_back_enabled: true,
+                archive: Some((&archive_hex, &archive_sha256, file_count, total_bytes)),
+            }),
+            0,
+        );
+        let state_dir = root.join("state");
+        write_complete_guest_provisioning_receipt(&state_dir);
+
+        let result = evaluate_command(Command::VmDetonate {
+            tool: "uv".to_string(),
+            args: vec!["pip".to_string(), "install".to_string(), ".".to_string()],
+            execute: true,
+            sync_back: true,
+            state_dir: Some(state_dir.display().to_string()),
+            helper_path: Some(helper.display().to_string()),
+            workspace: Some(root.display().to_string()),
+            fixture: None,
+            timeout_seconds: Some(75),
+            json: false,
+        });
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result.output.contains("sync_back_applied=true"));
+        assert_eq!(
+            std::fs::read_to_string(
+                root.join(".venv")
+                    .join("lib")
+                    .join("python3.11")
+                    .join("site-packages")
+                    .join("whoathere_clean.py")
+            )
+            .expect("synced uv module"),
+            "VALUE = 'uv-synced'\n"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vm_detonate_sync_back_clean_npm_project_applies_only_allowed_npm_outputs() {
+        let root = temp_root("whoathere-cli-sync-clean-npm");
+        write_clean_npm_project(&root);
+        let helper = root.join("helper.sh");
+        let (archive_hex, archive_sha256, file_count, total_bytes) = sync_archive_hex(&[
+            ("package-lock.json", br#"{"lockfileVersion":3}"#),
+            (
+                "node_modules/whoathere-clean/index.js",
+                b"module.exports = 'clean';\n",
+            ),
+        ]);
+        write_guest_sync_helper(
+            &helper,
+            &guest_sync_evidence_json(GuestSyncEvidenceArgs {
+                tool: "npm",
+                command_class: "npm_install_detonation",
+                workflow: "npm_project_install",
+                status: "ok",
+                verdict: "allow_observed_clean",
+                reason_codes_json: "",
+                command_exit_code: 0,
+                exit_code: 0,
+                canary_access: false,
+                network_attempt: false,
+                sync_back_enabled: true,
+                archive: Some((&archive_hex, &archive_sha256, file_count, total_bytes)),
+            }),
+            0,
+        );
+        let state_dir = root.join("state");
+        write_complete_guest_provisioning_receipt(&state_dir);
+
+        let result = evaluate_command(Command::VmDetonate {
+            tool: "npm".to_string(),
+            args: vec!["install".to_string()],
+            execute: true,
+            sync_back: true,
+            state_dir: Some(state_dir.display().to_string()),
+            helper_path: Some(helper.display().to_string()),
+            workspace: Some(root.display().to_string()),
+            fixture: None,
+            timeout_seconds: Some(75),
+            json: false,
+        });
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result.output.contains("sync_back_applied=true"));
+        assert!(root.join("package-lock.json").exists());
+        assert!(root
+            .join("node_modules")
+            .join("whoathere-clean")
+            .join("index.js")
+            .exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vm_detonate_sync_back_blocks_canary_evidence_and_syncs_nothing() {
+        let root = temp_root("whoathere-cli-sync-canary-block");
+        write_clean_python_project(&root);
+        let helper = root.join("helper.sh");
+        let (archive_hex, archive_sha256, file_count, total_bytes) = sync_archive_hex(&[(
+            ".venv/lib/python3.11/site-packages/whoathere_clean.py",
+            b"VALUE = 'should-not-sync'\n",
+        )]);
+        write_guest_sync_helper(
+            &helper,
+            &guest_sync_evidence_json(GuestSyncEvidenceArgs {
+                tool: "pip",
+                command_class: "pip_install_detonation",
+                workflow: "pip_project_install",
+                status: "deny",
+                verdict: "deny_malicious_behavior",
+                reason_codes_json: "\"guest_canary_or_network_signal_observed\"",
+                command_exit_code: 0,
+                exit_code: ExitCode::Deny.code(),
+                canary_access: true,
+                network_attempt: false,
+                sync_back_enabled: true,
+                archive: Some((&archive_hex, &archive_sha256, file_count, total_bytes)),
+            }),
+            ExitCode::Deny.code(),
+        );
+        let state_dir = root.join("state");
+        write_complete_guest_provisioning_receipt(&state_dir);
+
+        let result = evaluate_command(Command::VmDetonate {
+            tool: "pip".to_string(),
+            args: vec!["install".to_string(), ".".to_string()],
+            execute: true,
+            sync_back: true,
+            state_dir: Some(state_dir.display().to_string()),
+            helper_path: Some(helper.display().to_string()),
+            workspace: Some(root.display().to_string()),
+            fixture: None,
+            timeout_seconds: Some(75),
+            json: false,
+        });
+
+        assert_eq!(result.exit_code, ExitCode::Deny.code());
+        assert!(result
+            .output
+            .contains("sync_back_guest_canary_access_detected"));
+        assert!(result.output.contains("sync_back_applied=false"));
+        assert!(!root.join(".venv").exists());
+        assert!(result.output.contains("sync_back_receipt_path="));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vm_detonate_sync_back_blocks_traversal_archive_and_syncs_nothing() {
+        let root = temp_root("whoathere-cli-sync-traversal-block");
+        write_clean_python_project(&root);
+        let helper = root.join("helper.sh");
+        let (archive_hex, archive_sha256, file_count, total_bytes) =
+            sync_archive_hex(&[("../owned.py", b"owned = True\n")]);
+        write_guest_sync_helper(
+            &helper,
+            &guest_sync_evidence_json(GuestSyncEvidenceArgs {
+                tool: "pip",
+                command_class: "pip_install_detonation",
+                workflow: "pip_project_install",
+                status: "ok",
+                verdict: "allow_observed_clean",
+                reason_codes_json: "",
+                command_exit_code: 0,
+                exit_code: 0,
+                canary_access: false,
+                network_attempt: false,
+                sync_back_enabled: true,
+                archive: Some((&archive_hex, &archive_sha256, file_count, total_bytes)),
+            }),
+            0,
+        );
+        let state_dir = root.join("state");
+        write_complete_guest_provisioning_receipt(&state_dir);
+
+        let result = evaluate_command(Command::VmDetonate {
+            tool: "pip".to_string(),
+            args: vec!["install".to_string(), ".".to_string()],
+            execute: true,
+            sync_back: true,
+            state_dir: Some(state_dir.display().to_string()),
+            helper_path: Some(helper.display().to_string()),
+            workspace: Some(root.display().to_string()),
+            fixture: None,
+            timeout_seconds: Some(75),
+            json: false,
+        });
+
+        assert_eq!(result.exit_code, ExitCode::Deny.code());
+        assert!(result.output.contains("sync_back_path_traversal_blocked"));
+        assert!(!root
+            .parent()
+            .expect("root parent")
+            .join("owned.py")
+            .exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vm_detonate_sync_back_rejects_wrong_guest_context() {
+        let root = temp_root("whoathere-cli-sync-wrong-context");
+        write_clean_python_project(&root);
+        let helper = root.join("helper.sh");
+        let (archive_hex, archive_sha256, file_count, total_bytes) = sync_archive_hex(&[(
+            ".venv/lib/python3.11/site-packages/whoathere_clean.py",
+            b"VALUE = 'should-not-sync'\n",
+        )]);
+        write_guest_sync_helper(
+            &helper,
+            &guest_sync_evidence_json(GuestSyncEvidenceArgs {
+                tool: "pip",
+                command_class: "pip_install_detonation",
+                workflow: "uv_pip_project_install",
+                status: "ok",
+                verdict: "allow_observed_clean",
+                reason_codes_json: "",
+                command_exit_code: 0,
+                exit_code: 0,
+                canary_access: false,
+                network_attempt: false,
+                sync_back_enabled: true,
+                archive: Some((&archive_hex, &archive_sha256, file_count, total_bytes)),
+            }),
+            0,
+        );
+        let state_dir = root.join("state");
+        write_complete_guest_provisioning_receipt(&state_dir);
+
+        let result = evaluate_command(Command::VmDetonate {
+            tool: "pip".to_string(),
+            args: vec!["install".to_string(), ".".to_string()],
+            execute: true,
+            sync_back: true,
+            state_dir: Some(state_dir.display().to_string()),
+            helper_path: Some(helper.display().to_string()),
+            workspace: Some(root.display().to_string()),
+            fixture: None,
+            timeout_seconds: Some(75),
+            json: false,
+        });
+
+        assert_eq!(result.exit_code, ExitCode::Deny.code());
+        assert!(result.output.contains("sync_back_guest_workflow_mismatch"));
+        assert!(!root.join(".venv").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn vm_detonate_sync_back_blocks_symlink_escape_and_syncs_nothing() {
+        let root = temp_root("whoathere-cli-sync-symlink-block");
+        write_clean_python_project(&root);
+        let outside = root
+            .parent()
+            .expect("temp parent")
+            .join(format!("whoathere-outside-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&outside);
+        std::fs::create_dir_all(&outside).expect("outside dir");
+        let helper = root.join("helper.sh");
+        let (archive_hex, archive_sha256, file_count, total_bytes) = sync_archive_hex(&[(
+            ".venv/lib/python3.11/site-packages/whoathere_clean.py",
+            b"VALUE = 'escape'\n",
+        )]);
+        let evidence = guest_sync_evidence_json(GuestSyncEvidenceArgs {
+            tool: "pip",
+            command_class: "pip_install_detonation",
+            workflow: "pip_project_install",
+            status: "ok",
+            verdict: "allow_observed_clean",
+            reason_codes_json: "",
+            command_exit_code: 0,
+            exit_code: 0,
+            canary_access: false,
+            network_attempt: false,
+            sync_back_enabled: true,
+            archive: Some((&archive_hex, &archive_sha256, file_count, total_bytes)),
+        });
+        write_new_file(
+            &helper,
+            format!(
+                "#!/bin/sh\nln -s {} {}\ncat <<'JSON'\n{}\nJSON\nexit 0\n",
+                shell_quote(&outside.display().to_string()),
+                shell_quote(&root.join(".venv").display().to_string()),
+                evidence
+            )
+            .as_bytes(),
+        )
+        .expect("helper script");
+        set_executable(&helper).expect("executable helper");
+        let state_dir = root.join("state");
+        write_complete_guest_provisioning_receipt(&state_dir);
+
+        let result = evaluate_command(Command::VmDetonate {
+            tool: "pip".to_string(),
+            args: vec!["install".to_string(), ".".to_string()],
+            execute: true,
+            sync_back: true,
+            state_dir: Some(state_dir.display().to_string()),
+            helper_path: Some(helper.display().to_string()),
+            workspace: Some(root.display().to_string()),
+            fixture: None,
+            timeout_seconds: Some(75),
+            json: false,
+        });
+
+        assert_eq!(result.exit_code, ExitCode::Deny.code());
+        assert!(result
+            .output
+            .contains("sync_back_destination_symlink_blocked"));
+        assert!(!outside.join("lib").exists());
+        let _ = std::fs::remove_dir_all(&outside);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn vm_detonate_sync_back_rolls_back_partial_apply_failure() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = temp_root("whoathere-cli-sync-rollback");
+        write_clean_python_project(&root);
+        let locked = root
+            .join(".venv")
+            .join("lib")
+            .join("python3.11")
+            .join("site-packages")
+            .join("locked");
+        std::fs::create_dir_all(&locked).expect("locked dir");
+        let original_permissions = std::fs::metadata(&locked)
+            .expect("locked metadata")
+            .permissions();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o500))
+            .expect("lock dir");
+        let helper = root.join("helper.sh");
+        let first_path = ".venv/lib/python3.11/site-packages/first.py";
+        let (archive_hex, archive_sha256, file_count, total_bytes) = sync_archive_hex(&[
+            (first_path, b"VALUE = 'first'\n"),
+            (
+                ".venv/lib/python3.11/site-packages/locked/second.py",
+                b"VALUE = 'second'\n",
+            ),
+        ]);
+        write_guest_sync_helper(
+            &helper,
+            &guest_sync_evidence_json(GuestSyncEvidenceArgs {
+                tool: "pip",
+                command_class: "pip_install_detonation",
+                workflow: "pip_project_install",
+                status: "ok",
+                verdict: "allow_observed_clean",
+                reason_codes_json: "",
+                command_exit_code: 0,
+                exit_code: 0,
+                canary_access: false,
+                network_attempt: false,
+                sync_back_enabled: true,
+                archive: Some((&archive_hex, &archive_sha256, file_count, total_bytes)),
+            }),
+            0,
+        );
+        let state_dir = root.join("state");
+        write_complete_guest_provisioning_receipt(&state_dir);
+
+        let result = evaluate_command(Command::VmDetonate {
+            tool: "pip".to_string(),
+            args: vec!["install".to_string(), ".".to_string()],
+            execute: true,
+            sync_back: true,
+            state_dir: Some(state_dir.display().to_string()),
+            helper_path: Some(helper.display().to_string()),
+            workspace: Some(root.display().to_string()),
+            fixture: None,
+            timeout_seconds: Some(75),
+            json: false,
+        });
+
+        std::fs::set_permissions(&locked, original_permissions).expect("unlock dir");
+        assert_eq!(result.exit_code, ExitCode::InternalError.code());
+        assert!(result.output.contains("sync_back_rollback_performed=true"));
+        assert!(!root.join(first_path).exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn vm_detonate_project_mirror_allows_narrow_package_data() {
         let root = temp_root("whoathere-cli-vm-project-package-data");
         std::fs::write(
@@ -12056,6 +13837,7 @@ exit 0
             tool: "pip".to_string(),
             args: vec!["install".to_string(), ".".to_string()],
             execute: false,
+            sync_back: false,
             state_dir: Some(root.join("state").display().to_string()),
             helper_path: Some("/tmp/nonexistent-helper".to_string()),
             workspace: Some(root.display().to_string()),
@@ -12103,6 +13885,7 @@ exit 0
             tool: "pip".to_string(),
             args: vec!["install".to_string(), ".".to_string()],
             execute: true,
+            sync_back: false,
             state_dir: Some(root.join("state").display().to_string()),
             helper_path: Some(helper.display().to_string()),
             workspace: Some(root.display().to_string()),
@@ -12153,6 +13936,7 @@ exit 0
                 "requirements.txt".to_string(),
             ],
             execute: true,
+            sync_back: false,
             state_dir: Some(root.join("state").display().to_string()),
             helper_path: Some(helper.display().to_string()),
             workspace: Some(root.display().to_string()),
@@ -12360,13 +14144,13 @@ exit 0
 
         let sync = evaluate_command(Command::VmSyncPolicy { json: false });
         assert_eq!(sync.exit_code, 0);
-        assert!(sync.output.contains("sync_back_enabled=false"));
+        assert!(sync.output.contains("sync_back_enabled=true"));
+        assert!(sync.output.contains(
+            "policy_scope=local_beta_allowlist_requires_clean_vm_evidence_and_current_sync_receipt"
+        ));
         assert!(sync
             .output
-            .contains("policy_scope=future_allowlist_not_release_authorization"));
-        assert!(sync
-            .output
-            .contains("auto_sync_classes=[\"npm.registry_tarball.v1\", \"pypi.pure_wheel.v1\"]"));
+            .contains("auto_sync_classes=[\"npm.local_project.no_external_dependency\", \"pypi.local_project.pure_python\", \"uv.local_project.pure_python\"]"));
         assert!(sync.output.contains(
             "deny_default_classes=[\"direct_vcs_editable.v1\", \"unsupported_unknown.v1\"]"
         ));
@@ -12400,7 +14184,7 @@ exit 0
             .contains("\"command\": \"whoathere vm red-team-gate\""));
         assert!(result
             .output
-            .contains("\"release_claim\": \"vm_detonation_admission_only_no_sync_back\""));
+            .contains("\"release_claim\": \"vm_detonation_with_safe_sync_back_beta\""));
         assert!(result.output.contains("\"passed\": true"));
         assert!(result.output.contains("\"case_count\": 18"));
         assert!(result.output.contains("\"public_network_used\": false"));
@@ -12426,7 +14210,7 @@ exit 0
             .contains("\"release_target\": \"macos_apple_silicon_local_vm\""));
         assert!(result
             .output
-            .contains("\"release_claim\": \"vm_detonation_admission_only_no_sync_back\""));
+            .contains("\"release_claim\": \"vm_detonation_with_safe_sync_back_beta\""));
         assert!(result.output.contains(
             "\"release_readiness_schema\": \"whoathere.macos_local_release_readiness.v1\""
         ));
@@ -12450,17 +14234,16 @@ exit 0
         assert!(result
             .output
             .contains("package_acquisition.local_only_no_public_resolver"));
-        assert!(result.output.contains("host.sync_back.disabled_preview"));
-        assert!(!result
+        assert!(result
             .output
-            .contains("release_safe_sync_back_not_implemented"));
+            .contains("host.sync_back.local_beta_allowlist"));
         assert!(result.output.contains("pip.local_project.install"));
         assert!(result.output.contains("npm.install.project"));
         assert!(result
             .output
             .contains("\"scanner_release_blocking\": false"));
         assert!(result.output.contains(
-            "\"scanner_release_scope\": \"required_before_auto_sync_not_no_sync_preview\""
+            "\"scanner_release_scope\": \"advisory_for_local_beta_required_before_public_package_auto_sync\""
         ));
         assert!(!result.output.contains("release_required_scanners_missing"));
         assert!(result.output.contains("\"vm_ready\": false"));
@@ -15731,6 +17514,92 @@ exit 0
         assert!(!output.contains("inert cache fixture bytes"));
     }
 
+    struct GuestSyncEvidenceArgs<'a> {
+        tool: &'a str,
+        command_class: &'a str,
+        workflow: &'a str,
+        status: &'a str,
+        verdict: &'a str,
+        reason_codes_json: &'a str,
+        command_exit_code: i32,
+        exit_code: i32,
+        canary_access: bool,
+        network_attempt: bool,
+        sync_back_enabled: bool,
+        archive: Option<(&'a str, &'a str, usize, usize)>,
+    }
+
+    fn guest_sync_evidence_json(args: GuestSyncEvidenceArgs<'_>) -> String {
+        let archive_fields = args
+            .archive
+            .map(|(archive_hex, archive_sha256, file_count, total_bytes)| {
+                format!(
+                    r#","sync_output_archive_hex":"{archive_hex}","sync_output_archive_sha256":"{archive_sha256}","sync_output_file_count":{file_count},"sync_output_total_bytes":{total_bytes}"#
+                )
+            })
+            .unwrap_or_default();
+        format!(
+            r#"{{"protocol":"whoathere.guest_detonation.v1","schema_version":"whoathere.macos_vm.bundle.v1","agent_version":"0.2.0","job_id":"job-sync","tool":"{tool}","command_class":"{command_class}","fixture":"project_mirror","status":"{status}","verdict":"{verdict}","reason_codes":[{reason_codes}],"command_exit_code":{command_exit_code},"timed_out":false,"canary_access_detected":{canary_access},"network_attempt_detected":{network_attempt},"filesystem_write_detected":true,"toolchain_available":true,"stdout_captured":false,"stderr_captured":false,"raw_canary_values_captured":false,"sync_back_enabled":{sync_back_enabled},"host_package_execution_enabled":false,"high_risk_package_execution_enabled":false,"project_mode":true,"project_workflow":"{workflow}","project_import_module":"whoathere_clean","project_requirements_path":"none","vm_session_id":"session-sync"{archive_fields},"exit_code":{exit_code}}}"#,
+            tool = args.tool,
+            command_class = args.command_class,
+            status = args.status,
+            verdict = args.verdict,
+            reason_codes = args.reason_codes_json,
+            command_exit_code = args.command_exit_code,
+            canary_access = args.canary_access,
+            network_attempt = args.network_attempt,
+            sync_back_enabled = args.sync_back_enabled,
+            workflow = args.workflow,
+            archive_fields = archive_fields,
+            exit_code = args.exit_code
+        )
+    }
+
+    fn sync_archive_hex(files: &[(&str, &[u8])]) -> (String, String, usize, usize) {
+        let mut archive = Vec::new();
+        archive.extend_from_slice(b"WTP1");
+        archive.extend_from_slice(&(files.len() as u32).to_le_bytes());
+        let mut total_bytes = 0_usize;
+        for (path, contents) in files {
+            assert!(path.len() <= u16::MAX as usize);
+            assert!(contents.len() <= u32::MAX as usize);
+            archive.extend_from_slice(&(path.len() as u16).to_le_bytes());
+            archive.extend_from_slice(&(contents.len() as u32).to_le_bytes());
+            archive.extend_from_slice(path.as_bytes());
+            archive.extend_from_slice(contents);
+            total_bytes += contents.len();
+        }
+        let digest = sha256_digest(&archive);
+        (hex_encode(&archive), digest, files.len(), total_bytes)
+    }
+
+    fn write_guest_sync_helper(path: &std::path::Path, json: &str, exit_code: i32) {
+        write_new_file(
+            path,
+            format!("#!/bin/sh\ncat <<'JSON'\n{json}\nJSON\nexit {exit_code}\n").as_bytes(),
+        )
+        .expect("helper script");
+        set_executable(path).expect("executable helper");
+    }
+
+    fn write_clean_python_project(root: &std::path::Path) {
+        std::fs::write(
+            root.join("setup.py"),
+            "from setuptools import setup\nsetup(name='whoathere-clean', version='0.0.1', py_modules=['whoathere_clean'])\n",
+        )
+        .expect("setup py");
+        std::fs::write(root.join("whoathere_clean.py"), "VALUE = 'clean'\n").expect("module");
+    }
+
+    fn write_clean_npm_project(root: &std::path::Path) {
+        std::fs::write(
+            root.join("package.json"),
+            r#"{"name":"whoathere-clean-npm","version":"0.0.1","main":"index.js","dependencies":{}}"#,
+        )
+        .expect("package json");
+        std::fs::write(root.join("index.js"), "module.exports = 'clean';\n").expect("index js");
+    }
+
     fn temp_root(prefix: &str) -> std::path::PathBuf {
         let root = std::env::temp_dir().join(format!("{prefix}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -15839,6 +17708,48 @@ exit 0
             ),
         )
         .expect("write release validation receipt");
+    }
+
+    fn write_sync_validation_receipt(
+        state_dir: &std::path::Path,
+        helper_path: &std::path::Path,
+        override_helper_digest: Option<&str>,
+    ) {
+        let bundle_dir = state_dir.join("bundle");
+        std::fs::create_dir_all(&bundle_dir).expect("create bundle dir");
+        let provisioning_digest = sha256_digest(
+            &std::fs::read(bundle_dir.join("guest-provisioning.json"))
+                .expect("read guest provisioning receipt for digest"),
+        );
+        let cli_sha256 = std::env::current_exe()
+            .ok()
+            .and_then(|path| file_sha256_digest(&path))
+            .expect("current test executable digest");
+        let helper_sha256 = override_helper_digest
+            .map(ToString::to_string)
+            .unwrap_or_else(|| file_sha256_digest(helper_path).expect("helper digest"));
+        std::fs::write(
+            bundle_dir.join("sync-validation.json"),
+            format!(
+                r#"{{
+  "schema_version": "{SYNC_BACK_SCHEMA_VERSION}",
+  "sync_policy_version": "{SYNC_BACK_POLICY_VERSION}",
+  "workflow": "pip_project_install",
+  "job_id": "job-sync-test",
+  "vm_session_id": "session-sync-test",
+  "applied": true,
+  "rollback_performed": false,
+  "file_count": 1,
+  "total_bytes": 17,
+  "files": [".venv/lib/python3.11/site-packages/whoathere_clean.py"],
+  "reason_codes": [],
+  "cli_sha256": "{cli_sha256}",
+  "helper_sha256": "{helper_sha256}",
+  "guest_provisioning_receipt_digest": "{provisioning_digest}"
+}}"#
+            ),
+        )
+        .expect("write sync validation receipt");
     }
 
     fn write_release_notarization_receipt(

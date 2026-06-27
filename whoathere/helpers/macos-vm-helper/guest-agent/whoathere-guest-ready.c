@@ -1,5 +1,7 @@
+#include <dirent.h>
 #include <errno.h>
 #include <signal.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,15 +18,21 @@
 
 #define WHOATHERE_GUEST_READY_PORT 47078U
 #define WHOATHERE_MAX_LINE 4096
-#define WHOATHERE_MAX_JSON_LINE (2U * 1024U * 1024U + 16384U)
+#define WHOATHERE_MAX_JSON_LINE (10U * 1024U * 1024U)
 #define WHOATHERE_MAX_CHALLENGE 128
 #define WHOATHERE_MAX_FIELD 256
+#define WHOATHERE_MAX_SYNC_BACK_FILES 256U
+#define WHOATHERE_MAX_SYNC_BACK_FILE_BYTES (1024U * 1024U)
+#define WHOATHERE_MAX_SYNC_BACK_TOTAL_BYTES (4U * 1024U * 1024U)
 #define WHOATHERE_WORK_ROOT "/private/var/tmp/whoathere-detonation"
 #define WHOATHERE_TOOL_PATH "/usr/local/whoathere/node/bin:/usr/local/whoathere/uv/bin:/usr/local/whoathere/python/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 #define WHOATHERE_PATH_PREFIX "PATH=" WHOATHERE_TOOL_PATH "; export PATH; "
 #define WHOATHERE_GUEST_PYTHON "/usr/local/whoathere/python/bin/python3"
 #define WHOATHERE_PIP_WHEEL_DIR "/usr/local/whoathere/python-wheels"
 #define WHOATHERE_PIP_PREFIX WHOATHERE_PATH_PREFIX "WHOATHERE_PYTHON=" WHOATHERE_GUEST_PYTHON "; if [ ! -x \"$WHOATHERE_PYTHON\" ]; then WHOATHERE_PYTHON=python3; fi; PIP_WHEEL=$(ls " WHOATHERE_PIP_WHEEL_DIR "/pip-*.whl 2>/dev/null | head -n 1); SETUPTOOLS_WHEEL=$(ls " WHOATHERE_PIP_WHEEL_DIR "/setuptools-*.whl 2>/dev/null | head -n 1); WHEEL_WHEEL=$(ls " WHOATHERE_PIP_WHEEL_DIR "/wheel-*.whl 2>/dev/null | head -n 1); if [ -n \"$PIP_WHEEL\" ] && [ -n \"$SETUPTOOLS_WHEEL\" ] && [ -n \"$WHEEL_WHEEL\" ]; then export PYTHONPATH=\"$PIP_WHEEL:$SETUPTOOLS_WHEEL:$WHEEL_WHEEL\"; elif [ -n \"$PIP_WHEEL\" ] && [ -n \"$SETUPTOOLS_WHEEL\" ]; then export PYTHONPATH=\"$PIP_WHEEL:$SETUPTOOLS_WHEEL\"; fi; "
+
+static int path_exists(const char *path);
+static int safe_relative_path(const char *path);
 
 static int read_line(int fd, char *buffer, size_t capacity) {
     size_t used = 0;
@@ -158,6 +166,285 @@ static int write_all(int fd, const char *buffer, size_t length) {
     return 0;
 }
 
+struct sync_archive {
+    unsigned char *bytes;
+    size_t length;
+    size_t capacity;
+    unsigned int file_count;
+    size_t total_file_bytes;
+};
+
+static void sync_archive_free(struct sync_archive *archive) {
+    if (archive->bytes != NULL) {
+        free(archive->bytes);
+    }
+    archive->bytes = NULL;
+    archive->length = 0;
+    archive->capacity = 0;
+    archive->file_count = 0;
+    archive->total_file_bytes = 0;
+}
+
+static int sync_archive_reserve(struct sync_archive *archive, size_t additional) {
+    if (additional > SIZE_MAX - archive->length) {
+        return -1;
+    }
+    size_t required = archive->length + additional;
+    if (required <= archive->capacity) {
+        return 0;
+    }
+    size_t next_capacity = archive->capacity == 0 ? 4096U : archive->capacity;
+    while (next_capacity < required) {
+        if (next_capacity > SIZE_MAX / 2U) {
+            return -1;
+        }
+        next_capacity *= 2U;
+    }
+    unsigned char *next = realloc(archive->bytes, next_capacity);
+    if (next == NULL) {
+        return -1;
+    }
+    archive->bytes = next;
+    archive->capacity = next_capacity;
+    return 0;
+}
+
+static int sync_archive_append(struct sync_archive *archive, const void *bytes, size_t length) {
+    if (sync_archive_reserve(archive, length) != 0) {
+        return -1;
+    }
+    memcpy(archive->bytes + archive->length, bytes, length);
+    archive->length += length;
+    return 0;
+}
+
+static int sync_archive_append_le16(struct sync_archive *archive, unsigned short value) {
+    unsigned char bytes[2] = {
+        (unsigned char)(value & 0xffU),
+        (unsigned char)((value >> 8U) & 0xffU)
+    };
+    return sync_archive_append(archive, bytes, sizeof(bytes));
+}
+
+static int sync_archive_append_le32(struct sync_archive *archive, unsigned int value) {
+    unsigned char bytes[4] = {
+        (unsigned char)(value & 0xffU),
+        (unsigned char)((value >> 8U) & 0xffU),
+        (unsigned char)((value >> 16U) & 0xffU),
+        (unsigned char)((value >> 24U) & 0xffU)
+    };
+    return sync_archive_append(archive, bytes, sizeof(bytes));
+}
+
+static int sync_archive_init(struct sync_archive *archive) {
+    memset(archive, 0, sizeof(*archive));
+    if (sync_archive_append(archive, "WTP1", 4) != 0) {
+        return -1;
+    }
+    return sync_archive_append_le32(archive, 0);
+}
+
+static void sync_archive_finish(struct sync_archive *archive) {
+    if (archive->length >= 8U) {
+        archive->bytes[4] = (unsigned char)(archive->file_count & 0xffU);
+        archive->bytes[5] = (unsigned char)((archive->file_count >> 8U) & 0xffU);
+        archive->bytes[6] = (unsigned char)((archive->file_count >> 16U) & 0xffU);
+        archive->bytes[7] = (unsigned char)((archive->file_count >> 24U) & 0xffU);
+    }
+}
+
+static int sync_archive_append_file(
+    struct sync_archive *archive,
+    const char *filesystem_path,
+    const char *sync_path
+) {
+    struct stat st;
+    if (lstat(filesystem_path, &st) != 0) {
+        return -1;
+    }
+    if (S_ISLNK(st.st_mode)) {
+        return -2;
+    }
+    if (!S_ISREG(st.st_mode)) {
+        return 0;
+    }
+    size_t path_length = strlen(sync_path);
+    if (path_length == 0 || path_length > 65535U || !safe_relative_path(sync_path)) {
+        return -1;
+    }
+    if (st.st_size < 0 || (size_t)st.st_size > WHOATHERE_MAX_SYNC_BACK_FILE_BYTES) {
+        return -1;
+    }
+    if (archive->file_count >= WHOATHERE_MAX_SYNC_BACK_FILES) {
+        return -1;
+    }
+    size_t content_length = (size_t)st.st_size;
+    if (content_length > WHOATHERE_MAX_SYNC_BACK_TOTAL_BYTES - archive->total_file_bytes) {
+        return -1;
+    }
+    FILE *file = fopen(filesystem_path, "rb");
+    if (file == NULL) {
+        return -1;
+    }
+    unsigned char *contents = malloc(content_length == 0 ? 1 : content_length);
+    if (contents == NULL) {
+        fclose(file);
+        return -1;
+    }
+    size_t read_count = fread(contents, 1, content_length, file);
+    int close_result = fclose(file);
+    if (read_count != content_length || close_result != 0) {
+        free(contents);
+        return -1;
+    }
+    if (sync_archive_append_le16(archive, (unsigned short)path_length) != 0
+        || sync_archive_append_le32(archive, (unsigned int)content_length) != 0
+        || sync_archive_append(archive, sync_path, path_length) != 0
+        || sync_archive_append(archive, contents, content_length) != 0) {
+        free(contents);
+        return -1;
+    }
+    free(contents);
+    archive->file_count++;
+    archive->total_file_bytes += content_length;
+    return 0;
+}
+
+static int sync_archive_append_tree(
+    struct sync_archive *archive,
+    const char *filesystem_root,
+    const char *sync_prefix
+) {
+    struct stat st;
+    if (lstat(filesystem_root, &st) != 0) {
+        if (errno == ENOENT) {
+            return 0;
+        }
+        return -1;
+    }
+    if (S_ISLNK(st.st_mode)) {
+        return -2;
+    }
+    if (S_ISREG(st.st_mode)) {
+        return sync_archive_append_file(archive, filesystem_root, sync_prefix);
+    }
+    if (!S_ISDIR(st.st_mode)) {
+        return 0;
+    }
+    DIR *dir = opendir(filesystem_root);
+    if (dir == NULL) {
+        return -1;
+    }
+    struct dirent *entry = NULL;
+    while ((entry = readdir(dir)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            continue;
+        }
+        char child_filesystem_path[1024];
+        char child_sync_path[1024];
+        int fs_length = snprintf(
+            child_filesystem_path,
+            sizeof(child_filesystem_path),
+            "%s/%s",
+            filesystem_root,
+            entry->d_name
+        );
+        int sync_length = snprintf(
+            child_sync_path,
+            sizeof(child_sync_path),
+            "%s/%s",
+            sync_prefix,
+            entry->d_name
+        );
+        if (fs_length < 0 || (size_t)fs_length >= sizeof(child_filesystem_path)
+            || sync_length < 0 || (size_t)sync_length >= sizeof(child_sync_path)) {
+            closedir(dir);
+            return -1;
+        }
+        int append_result = sync_archive_append_tree(archive, child_filesystem_path, child_sync_path);
+        if (append_result != 0) {
+            closedir(dir);
+            return append_result;
+        }
+    }
+    closedir(dir);
+    return 0;
+}
+
+static char *hex_encode_bytes(const unsigned char *bytes, size_t length) {
+    static const char hex[] = "0123456789abcdef";
+    if (length > (SIZE_MAX - 1U) / 2U) {
+        return NULL;
+    }
+    char *output = malloc(length * 2U + 1U);
+    if (output == NULL) {
+        return NULL;
+    }
+    for (size_t index = 0; index < length; index++) {
+        output[index * 2U] = hex[(bytes[index] >> 4U) & 0x0fU];
+        output[index * 2U + 1U] = hex[bytes[index] & 0x0fU];
+    }
+    output[length * 2U] = '\0';
+    return output;
+}
+
+static int build_sync_output_archive(
+    const char *workspace,
+    const char *tool,
+    char **archive_hex,
+    unsigned int *file_count,
+    unsigned int *total_bytes
+) {
+    struct sync_archive archive;
+    if (sync_archive_init(&archive) != 0) {
+        return -1;
+    }
+    int append_result = 0;
+    if (strcmp(tool, "npm") == 0) {
+        char lockfile[1024];
+        char node_modules[1024];
+        if (snprintf(lockfile, sizeof(lockfile), "%s/package-lock.json", workspace) < 0
+            || snprintf(node_modules, sizeof(node_modules), "%s/node_modules", workspace) < 0) {
+            sync_archive_free(&archive);
+            return -1;
+        }
+        if (path_exists(lockfile)) {
+            append_result = sync_archive_append_file(&archive, lockfile, "package-lock.json");
+        }
+        if (append_result == 0 && path_exists(node_modules)) {
+            append_result = sync_archive_append_tree(&archive, node_modules, "node_modules");
+        }
+    } else if (strcmp(tool, "pip") == 0 || strcmp(tool, "uv") == 0) {
+        char target[1024];
+        if (snprintf(target, sizeof(target), "%s/target", workspace) < 0) {
+            sync_archive_free(&archive);
+            return -1;
+        }
+        append_result = sync_archive_append_tree(
+            &archive,
+            target,
+            ".venv/lib/python3.11/site-packages"
+        );
+    } else {
+        append_result = -1;
+    }
+    if (append_result != 0 || archive.file_count == 0) {
+        sync_archive_free(&archive);
+        return append_result == -2 ? -2 : -1;
+    }
+    sync_archive_finish(&archive);
+    char *hex = hex_encode_bytes(archive.bytes, archive.length);
+    if (hex == NULL) {
+        sync_archive_free(&archive);
+        return -1;
+    }
+    *archive_hex = hex;
+    *file_count = archive.file_count;
+    *total_bytes = (unsigned int)archive.total_file_bytes;
+    sync_archive_free(&archive);
+    return 0;
+}
+
 static unsigned int extract_json_uint(const char *json, const char *key, unsigned int fallback) {
     char pattern[64];
     if (snprintf(pattern, sizeof(pattern), "\"%s\"", key) < 0) {
@@ -184,6 +471,35 @@ static unsigned int extract_json_uint(const char *json, const char *key, unsigne
         return fallback;
     }
     return (unsigned int)value;
+}
+
+static int extract_json_bool(const char *json, const char *key, int fallback) {
+    char pattern[64];
+    if (snprintf(pattern, sizeof(pattern), "\"%s\"", key) < 0) {
+        return fallback;
+    }
+    const char *cursor = strstr(json, pattern);
+    if (cursor == NULL) {
+        return fallback;
+    }
+    cursor += strlen(pattern);
+    while (*cursor == ' ' || *cursor == '\t' || *cursor == '\r' || *cursor == '\n') {
+        cursor++;
+    }
+    if (*cursor != ':') {
+        return fallback;
+    }
+    cursor++;
+    while (*cursor == ' ' || *cursor == '\t' || *cursor == '\r' || *cursor == '\n') {
+        cursor++;
+    }
+    if (strncmp(cursor, "true", 4) == 0) {
+        return 1;
+    }
+    if (strncmp(cursor, "false", 5) == 0) {
+        return 0;
+    }
+    return fallback;
 }
 
 static int mkdir_if_missing(const char *path, mode_t mode) {
@@ -652,6 +968,89 @@ static const char *classification_reason(const char *fixture) {
     return "\"fixture_class_requires_manual_review\"";
 }
 
+static int write_detonation_response_ex(
+    int fd,
+    const char *job_id,
+    const char *tool,
+    const char *command_class,
+    const char *fixture,
+    const char *status,
+    const char *verdict,
+    const char *reason_codes_json,
+    int exit_code,
+    int command_exit_code,
+    int timed_out,
+    int canary_access,
+    int network_attempt,
+    int filesystem_write,
+    int toolchain_available,
+    int sync_back_enabled,
+    const char *sync_output_archive_hex,
+    unsigned int sync_output_file_count,
+    unsigned int sync_output_total_bytes
+) {
+    char response[8192];
+    int length = snprintf(
+        response,
+        sizeof(response),
+        "{\"protocol\":\"whoathere.guest_detonation.v1\",\"schema_version\":\"whoathere.macos_vm.bundle.v1\",\"agent_version\":\"0.2.0\",\"job_id\":\"%s\",\"tool\":\"%s\",\"command_class\":\"%s\",\"fixture\":\"%s\",\"status\":\"%s\",\"verdict\":\"%s\",\"reason_codes\":[%s],\"command_exit_code\":%d,\"timed_out\":%s,\"canary_access_detected\":%s,\"network_attempt_detected\":%s,\"filesystem_write_detected\":%s,\"toolchain_available\":%s,\"stdout_captured\":false,\"stderr_captured\":false,\"raw_canary_values_captured\":false,\"sync_back_enabled\":%s,\"host_package_execution_enabled\":false,\"high_risk_package_execution_enabled\":false",
+        job_id,
+        tool,
+        command_class,
+        fixture,
+        status,
+        verdict,
+        reason_codes_json,
+        command_exit_code,
+        timed_out ? "true" : "false",
+        canary_access ? "true" : "false",
+        network_attempt ? "true" : "false",
+        filesystem_write ? "true" : "false",
+        toolchain_available ? "true" : "false",
+        sync_back_enabled ? "true" : "false"
+    );
+    if (length < 0 || (size_t)length >= sizeof(response)) {
+        return -1;
+    }
+    if (write_all(fd, response, (size_t)length) != 0) {
+        return -1;
+    }
+    if (sync_back_enabled && sync_output_archive_hex != NULL) {
+        char sync_fields[256];
+        int sync_length = snprintf(
+            sync_fields,
+            sizeof(sync_fields),
+            ",\"sync_output_archive_hex\":\""
+        );
+        if (sync_length < 0 || (size_t)sync_length >= sizeof(sync_fields)) {
+            return -1;
+        }
+        if (write_all(fd, sync_fields, (size_t)sync_length) != 0
+            || write_all(fd, sync_output_archive_hex, strlen(sync_output_archive_hex)) != 0) {
+            return -1;
+        }
+        sync_length = snprintf(
+            sync_fields,
+            sizeof(sync_fields),
+            "\",\"sync_output_file_count\":%u,\"sync_output_total_bytes\":%u",
+            sync_output_file_count,
+            sync_output_total_bytes
+        );
+        if (sync_length < 0 || (size_t)sync_length >= sizeof(sync_fields)) {
+            return -1;
+        }
+        if (write_all(fd, sync_fields, (size_t)sync_length) != 0) {
+            return -1;
+        }
+    }
+    char suffix[64];
+    int suffix_length = snprintf(suffix, sizeof(suffix), ",\"exit_code\":%d}\n", exit_code);
+    if (suffix_length < 0 || (size_t)suffix_length >= sizeof(suffix)) {
+        return -1;
+    }
+    return write_all(fd, suffix, (size_t)suffix_length);
+}
+
 static int write_detonation_response(
     int fd,
     const char *job_id,
@@ -669,11 +1068,8 @@ static int write_detonation_response(
     int filesystem_write,
     int toolchain_available
 ) {
-    char response[8192];
-    int length = snprintf(
-        response,
-        sizeof(response),
-        "{\"protocol\":\"whoathere.guest_detonation.v1\",\"schema_version\":\"whoathere.macos_vm.bundle.v1\",\"agent_version\":\"0.2.0\",\"job_id\":\"%s\",\"tool\":\"%s\",\"command_class\":\"%s\",\"fixture\":\"%s\",\"status\":\"%s\",\"verdict\":\"%s\",\"reason_codes\":[%s],\"command_exit_code\":%d,\"timed_out\":%s,\"canary_access_detected\":%s,\"network_attempt_detected\":%s,\"filesystem_write_detected\":%s,\"toolchain_available\":%s,\"stdout_captured\":false,\"stderr_captured\":false,\"raw_canary_values_captured\":false,\"sync_back_enabled\":false,\"host_package_execution_enabled\":false,\"high_risk_package_execution_enabled\":false,\"exit_code\":%d}\n",
+    return write_detonation_response_ex(
+        fd,
         job_id,
         tool,
         command_class,
@@ -681,18 +1077,18 @@ static int write_detonation_response(
         status,
         verdict,
         reason_codes_json,
+        exit_code,
         command_exit_code,
-        timed_out ? "true" : "false",
-        canary_access ? "true" : "false",
-        network_attempt ? "true" : "false",
-        filesystem_write ? "true" : "false",
-        toolchain_available ? "true" : "false",
-        exit_code
+        timed_out,
+        canary_access,
+        network_attempt,
+        filesystem_write,
+        toolchain_available,
+        0,
+        NULL,
+        0,
+        0
     );
-    if (length < 0 || (size_t)length >= sizeof(response)) {
-        return -1;
-    }
-    return write_all(fd, response, (size_t)length);
 }
 
 static int run_detonation_job(int fd, const char *line) {
@@ -729,6 +1125,7 @@ static int run_detonation_job(int fd, const char *line) {
     if (timeout_seconds > 900) {
         timeout_seconds = 900;
     }
+    int sync_back_requested = extract_json_bool(line, "sync_back_enabled", 0);
     int project_mode = strcmp(fixture, "project_mirror") == 0;
     char project_workflow[WHOATHERE_MAX_FIELD] = "";
     char project_import_module[WHOATHERE_MAX_FIELD] = "";
@@ -1022,6 +1419,63 @@ static int run_detonation_job(int fd, const char *line) {
     }
     if (command_result.exit_code != 0) {
         return write_detonation_response(fd, job_id, tool, command_class, fixture, "fail_closed", "fail_closed_runner_error", "\"guest_command_failed\"", 20, command_result.exit_code, 0, canary_access, network_attempt, filesystem_write, available);
+    }
+    if (project_mode && sync_back_requested) {
+        char *archive_hex = NULL;
+        unsigned int sync_file_count = 0;
+        unsigned int sync_total_bytes = 0;
+        int archive_result = build_sync_output_archive(
+            workspace,
+            tool,
+            &archive_hex,
+            &sync_file_count,
+            &sync_total_bytes
+        );
+        if (archive_result != 0) {
+            const char *reason = archive_result == -2
+                ? "\"guest_sync_output_symlink_or_special_file\""
+                : "\"guest_sync_output_archive_failed\"";
+            return write_detonation_response(
+                fd,
+                job_id,
+                tool,
+                command_class,
+                fixture,
+                "fail_closed",
+                "fail_closed_sync_output",
+                reason,
+                20,
+                command_result.exit_code,
+                0,
+                0,
+                0,
+                filesystem_write,
+                available
+            );
+        }
+        int response_result = write_detonation_response_ex(
+            fd,
+            job_id,
+            tool,
+            command_class,
+            fixture,
+            "ok",
+            "allow_observed_clean",
+            "",
+            0,
+            command_result.exit_code,
+            0,
+            0,
+            0,
+            filesystem_write,
+            available,
+            1,
+            archive_hex,
+            sync_file_count,
+            sync_total_bytes
+        );
+        free(archive_hex);
+        return response_result;
     }
     return write_detonation_response(fd, job_id, tool, command_class, fixture, "ok", "allow_observed_clean", "", 0, command_result.exit_code, 0, 0, 0, filesystem_write, available);
 }

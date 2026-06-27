@@ -129,6 +129,7 @@ import Testing
         "--project-workflow=pip_project_install",
         "--project-import-module", "whoathere_clean",
         "--project-requirements-path=requirements.txt",
+        "--sync-back",
         "--execute",
         "--",
         "install",
@@ -144,6 +145,7 @@ import Testing
     #expect(options.detonationProjectWorkflow == "pip_project_install")
     #expect(options.detonationProjectImportModule == "whoathere_clean")
     #expect(options.detonationProjectRequirementsPath == "requirements.txt")
+    #expect(options.detonationSyncBack)
     #expect(options.detonationArgs == ["install", "."])
     #expect(options.execute)
 }
