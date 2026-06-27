@@ -192,6 +192,17 @@ evidence, and printed this interactive admin command:
 sudo WHOATHERE_NODE_RUNTIME_DIR='/Users/jdc/.nvm/versions/node/v22.22.3' WHOATHERE_UV_BINARY='/Users/jdc/.local/bin/uv' '/Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/scripts/provision-guest-readiness.sh' '/Users/jdc/.whoathere/macos-vm-validation'
 ```
 
+After commit `21c70a0`, `scripts/whoathere-package-macos-preview.sh` passed. The package script ran
+the full Rust test suite, clippy with `-D warnings`, release CLI build, Swift helper tests/build,
+local code signing, the fixture-safe red-team gate, archive checksum verification, and extracted
+package smoke tests. It produced:
+
+```text
+package_created=/Users/jdc/src/whoathere/dist/whoathere-macos-arm64-preview-21c70a0.tar.gz
+checksum_created=/Users/jdc/src/whoathere/dist/whoathere-macos-arm64-preview-21c70a0.tar.gz.sha256
+notarization_status=not_performed
+```
+
 The `doctor --json` smokes reported `release_ready=false`, `high_risk_allowed=false`, the inspected VM state directory, `package_acquisition_policy=local_only_no_public_resolver`, implemented pip/local detonation workflows, fail-closed npm/uv/public-resolution/sync-back workflows, and release blockers for npm guest tooling/proof, uv guest tooling/proof, and signature/notarization. While the VM was running with host and guest health proofs, doctor reported `vm_lifecycle_ready=true`, `vm_runtime_ready=true`, and `vm_reason_codes=[]`; after suspend, doctor reported `vm_lifecycle_ready=true`, `vm_runtime_ready=false`, and `vm_reason_codes=["macos_vm_runtime_not_verified"]`, while `release_blocking_reason_codes` no longer included `macos_vm_runtime_not_verified`. Sync-back is reported as disabled for the preview rather than as a readiness blocker. Scanner availability is reported with `scanner_release_blocking=false` and `scanner_release_scope=required_before_auto_sync_not_no_sync_preview`. Focused unit tests verify `guest_reprovision_command` is emitted from a package-shaped helper layout when the guest provisioning receipt is missing, that helper-derived lifecycle/runtime health removes stale marker-based VM blockers, and that stopped runtime state stays visible without blocking release readiness.
 
 The red-team fixture gate passed with `passed=true`, `case_count=18`, `public_network_used=false`, and `external_scanners_required=false`. The gate does not execute arbitrary packages and does not replace scanner adapters; it proves the local fixture-safe static/dynamic evidence paths and binding checks catch or reject representative attack shapes without leaking canaries or local paths.
