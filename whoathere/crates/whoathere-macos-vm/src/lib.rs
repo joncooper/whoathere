@@ -208,8 +208,9 @@ pub fn parse_image_manifest(input: &str) -> Result<MacosVmImageManifest, String>
             "image_id" => image_id = Some(value),
             "macos_version" => macos_version = Some(value),
             "architecture" => architecture = Some(value),
-            "image_digest" => image_digest = Some(value),
+            "image_digest" | "restore_image_digest" => image_digest = Some(value),
             "signature_status" => signature_status = Some(value),
+            "macos_build_version" | "cpu_count" | "memory_mib" | "helper_version" => {}
             unknown => return Err(format!("manifest_key_unknown:{unknown}")),
         }
     }
@@ -686,6 +687,23 @@ mod tests {
         ))
         .expect("manifest");
         assert!(manifest.validate().is_empty());
+    }
+
+    #[test]
+    fn parses_helper_restore_image_manifest_shape() {
+        let manifest = parse_image_manifest(&format!(
+            "schema_version={IMAGE_MANIFEST_SCHEMA_VERSION}\nimage_id=local-restore-image-install\nmacos_version=26.5.1\nmacos_build_version=25F80\narchitecture=arm64\nrestore_image_digest={DIGEST}\ncpu_count=2\nmemory_mib=6144\nsignature_status=signature_verification_not_implemented\nhelper_version=0.1.0\n"
+        ))
+        .expect("manifest");
+        assert_eq!(manifest.image_digest, DIGEST);
+        assert_eq!(
+            manifest.signature_status,
+            "signature_verification_not_implemented"
+        );
+        assert_eq!(
+            manifest.validate(),
+            vec!["macos_vm_manifest_signature_not_verified".to_string()]
+        );
     }
 
     #[test]

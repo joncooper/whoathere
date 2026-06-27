@@ -46,6 +46,7 @@ The macOS local release is ready only when all of the following are true:
 | Network evidence | Partial | Controlled fixtures and reason codes exist, but robust DNS/HTTPS observation is still marker-based rather than a full network monitor. |
 | Sync-back | Not implemented | Current posture is detonation/admission evidence only. Host sync-back remains disabled. |
 | Doctor/readiness UX | Improved in this checkpoint | `whoathere doctor --json --state-dir <dir> --helper <path>` now reports release readiness, the inspected VM state directory, implemented workflows, fail-closed workflows, manual-review classes, blocking reason codes, and next actions. |
+| Default VM manifest loading | Implemented for CLI status/readiness | `vm status` and `doctor` now load `<state-dir>/bundle/image.manifest` by default, tolerate the helper restore-image manifest shape, and report signature verification as the real blocker instead of falsely reporting a missing manifest. |
 | Packaging/onboarding | Not release-ready | Installer, signed artifacts, codesign/notarization verification, and user-facing first-run docs still need a release pass. |
 | Comparator/red-team gate | Not complete | Existing fixtures are useful, but the release still needs a deliberate comparator pass against GuardDog, OSV/pip-audit class tools, and recent npm/PyPI attack patterns. |
 
@@ -81,9 +82,14 @@ cargo clippy --manifest-path whoathere/Cargo.toml --all-targets -- -D warnings
 rg -n "[^[:ascii:]]" docs/whoathere/product-build-run/macos-local-release-readiness.md whoathere/crates/whoathere-cli/src/lib.rs whoathere/crates/whoathere-macos-vm/src/lib.rs
 cargo run --quiet --manifest-path whoathere/Cargo.toml --bin whoathere -- doctor --json
 cargo run --quiet --manifest-path whoathere/Cargo.toml --bin whoathere -- doctor --json --state-dir /private/tmp/whoathere-doctor-state
+cargo build --manifest-path whoathere/Cargo.toml -p whoathere-cli --bin whoathere
+whoathere/target/debug/whoathere vm status --json --state-dir /Users/jdc/.whoathere/macos-vm-validation --helper /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/.build/arm64-apple-macosx/debug/whoathere-macos-vm-helper
+whoathere/target/debug/whoathere doctor --json --state-dir /Users/jdc/.whoathere/macos-vm-validation --helper /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/.build/arm64-apple-macosx/debug/whoathere-macos-vm-helper
 ```
 
 The `doctor --json` smokes reported `release_ready=false`, `high_risk_allowed=false`, `vm_ready=false`, the inspected VM state directory, implemented pip/local detonation workflows, fail-closed npm/uv/public-resolution/sync-back workflows, and release blockers for npm, uv, public package resolution, sync-back, packaging, comparator/red-team validation, scanner availability, VM runtime readiness, and signature/notarization.
+
+The live validation VM smoke now reports `manifest_present=true`, `manifest_path=/Users/jdc/.whoathere/macos-vm-validation/bundle/image.manifest`, and `macos_vm_manifest_signature_not_verified`; it no longer reports `macos_vm_image_manifest_missing` for the prepared validation state directory.
 
 Live VM validation is not required for this checkpoint because the implementation slice changes only readiness reporting and documentation. The next implementation slices that change VM behavior must include live VM checks for every claimed workflow.
 

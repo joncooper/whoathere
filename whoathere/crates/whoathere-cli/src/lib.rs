@@ -1636,7 +1636,9 @@ fn render_vm_status(
     json: bool,
 ) -> String {
     let config = macos_vm_config(state_dir, None, None);
-    let (manifest, manifest_load_reason) = load_macos_vm_manifest(manifest_path);
+    let default_manifest_path = default_macos_vm_manifest_path(&config);
+    let (manifest, manifest_load_reason, effective_manifest_path) =
+        load_macos_vm_manifest(manifest_path, &default_manifest_path);
     let status = status_from_config(&config, HostPlatform::current(), manifest.as_ref());
     let helper = run_macos_vm_helper(
         helper_path,
@@ -1650,7 +1652,7 @@ fn render_vm_status(
     if json {
         return render_vm_status_json(
             &status,
-            manifest_path,
+            &effective_manifest_path,
             manifest_load_reason.as_deref(),
             &helper,
         );
@@ -1670,7 +1672,7 @@ fn render_vm_status(
         status.disk_gib,
         status.auto_suspend_minutes,
         status.state_dir_exists,
-        manifest_path.unwrap_or("<default-state-dir-manifest>"),
+        effective_manifest_path,
         status.manifest_present,
         status.manifest_valid,
         status.helper_ready_marker_present,
@@ -1699,7 +1701,9 @@ struct VmInitRenderArgs<'a> {
 
 fn render_vm_init(args: VmInitRenderArgs<'_>) -> String {
     let config = macos_vm_config(args.state_dir, args.memory_mib, args.disk_gib);
-    let (manifest, manifest_load_reason) = load_macos_vm_manifest(args.manifest_path);
+    let default_manifest_path = default_macos_vm_manifest_path(&config);
+    let (manifest, manifest_load_reason, effective_manifest_path) =
+        load_macos_vm_manifest(args.manifest_path, &default_manifest_path);
     let status = status_from_config(&config, HostPlatform::current(), manifest.as_ref());
     let mut reason_codes = status.reason_codes.clone();
     if !args.execute {
@@ -1762,7 +1766,7 @@ fn render_vm_init(args: VmInitRenderArgs<'_>) -> String {
         SYNC_POLICY,
         args.execute,
         config.state_dir.display(),
-        args.manifest_path.unwrap_or("<default-state-dir-manifest>"),
+        effective_manifest_path,
         args.execute,
         redacted_option_scalar(args.image_path),
         redacted_option_scalar(args.restore_image_path),
@@ -3275,21 +3279,28 @@ fn macos_vm_config(
     config
 }
 
+fn default_macos_vm_manifest_path(config: &MacosVmConfig) -> PathBuf {
+    config.state_dir.join("bundle").join("image.manifest")
+}
+
 fn load_macos_vm_manifest(
     manifest_path: Option<&str>,
-) -> (Option<MacosVmImageManifest>, Option<String>) {
-    let Some(path) = manifest_path else {
-        return (
-            None,
-            Some("macos_vm_manifest_path_not_configured".to_string()),
-        );
-    };
-    match std::fs::read_to_string(path) {
+    default_manifest_path: &Path,
+) -> (Option<MacosVmImageManifest>, Option<String>, String) {
+    let path = manifest_path
+        .map(PathBuf::from)
+        .unwrap_or_else(|| default_manifest_path.to_path_buf());
+    let effective_path = path.display().to_string();
+    match std::fs::read_to_string(&path) {
         Ok(contents) => match parse_image_manifest(&contents) {
-            Ok(manifest) => (Some(manifest), None),
-            Err(error) => (None, Some(redacted_scalar(&error))),
+            Ok(manifest) => (Some(manifest), None, effective_path),
+            Err(error) => (None, Some(redacted_scalar(&error)), effective_path),
         },
-        Err(error) => (None, Some(redacted_scalar(&error.to_string()))),
+        Err(error) => (
+            None,
+            Some(redacted_scalar(&error.to_string())),
+            effective_path,
+        ),
     }
 }
 
@@ -3522,7 +3533,7 @@ fn single_line(value: &str) -> String {
 
 fn render_vm_status_json(
     status: &whoathere_macos_vm::MacosVmStatus,
-    manifest_path: Option<&str>,
+    manifest_path: &str,
     manifest_load_reason: Option<&str>,
     helper: &MacosVmHelperOutput,
 ) -> String {
@@ -3541,7 +3552,7 @@ fn render_vm_status_json(
         status.disk_gib,
         status.auto_suspend_minutes,
         status.state_dir_exists,
-        json_string(manifest_path.unwrap_or("<default-state-dir-manifest>")),
+        json_string(manifest_path),
         status.manifest_present,
         status.manifest_valid,
         status.helper_ready_marker_present,
@@ -3680,7 +3691,10 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
     let backend = UnsupportedBackend;
     let plan = backend.plan(ExecutionMode::Protected);
     let config = macos_vm_config(state_dir, None, None);
-    let status = status_from_config(&config, HostPlatform::current(), None);
+    let default_manifest_path = default_macos_vm_manifest_path(&config);
+    let (manifest, manifest_load_reason, effective_manifest_path) =
+        load_macos_vm_manifest(None, &default_manifest_path);
+    let status = status_from_config(&config, HostPlatform::current(), manifest.as_ref());
     let helper = run_macos_vm_helper(
         helper_path,
         "status",
@@ -3716,12 +3730,17 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
             .collect::<Vec<_>>()
             .join(", ");
         return format!(
-            "{{\n  \"command\": \"whoathere doctor\",\n  \"status\": \"ok\",\n  \"release_target\": {},\n  \"release_claim\": {},\n  \"sandbox_label\": {},\n  \"high_risk_allowed\": {},\n  \"state_dir\": {},\n  \"release_readiness_schema\": {},\n  \"release_stage\": {},\n  \"release_ready\": {},\n  \"release_blocking_reason_codes\": {},\n  \"implemented_workflows\": {},\n  \"fail_closed_workflows\": {},\n  \"manual_review_classes\": {},\n  \"next_actions\": {},\n  \"vm_ready\": {},\n  \"vm_reason_codes\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout_truncated\": {},\n  \"helper_stderr_truncated\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {},\n  \"scanner_available_count\": {},\n  \"scanner_required_count\": {},\n  \"scanners\": [{}]\n}}",
+            "{{\n  \"command\": \"whoathere doctor\",\n  \"status\": \"ok\",\n  \"release_target\": {},\n  \"release_claim\": {},\n  \"sandbox_label\": {},\n  \"high_risk_allowed\": {},\n  \"state_dir\": {},\n  \"vm_manifest_path\": {},\n  \"vm_manifest_load_reason\": {},\n  \"release_readiness_schema\": {},\n  \"release_stage\": {},\n  \"release_ready\": {},\n  \"release_blocking_reason_codes\": {},\n  \"implemented_workflows\": {},\n  \"fail_closed_workflows\": {},\n  \"manual_review_classes\": {},\n  \"next_actions\": {},\n  \"vm_ready\": {},\n  \"vm_reason_codes\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout_truncated\": {},\n  \"helper_stderr_truncated\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {},\n  \"scanner_available_count\": {},\n  \"scanner_required_count\": {},\n  \"scanners\": [{}]\n}}",
             json_string(RELEASE_TARGET),
             json_string(RELEASE_CLAIM),
             json_string(plan.label),
             plan.high_risk_allowed,
             json_string(&config.state_dir.display().to_string()),
+            json_string(&effective_manifest_path),
+            manifest_load_reason
+                .as_deref()
+                .map(json_string)
+                .unwrap_or_else(|| "null".to_string()),
             json_string(readiness.schema_version),
             json_string(readiness.release_stage),
             readiness.release_ready,
@@ -3766,12 +3785,14 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "whoathere doctor\nstatus=ok\nrelease_target={}\nrelease_claim={}\nsandbox_label={}\nhigh_risk_allowed={}\nstate_dir={}\nrelease_readiness_schema={}\nrelease_stage={}\nrelease_ready={}\nrelease_blocking_reason_codes={:?}\nimplemented_workflows={:?}\nfail_closed_workflows={:?}\nmanual_review_classes={:?}\nnext_actions={:?}\nvm_ready={}\nvm_reason_codes={:?}\n{}\nscanner_available_count={}\nscanner_required_count={}\n{}",
+        "whoathere doctor\nstatus=ok\nrelease_target={}\nrelease_claim={}\nsandbox_label={}\nhigh_risk_allowed={}\nstate_dir={}\nvm_manifest_path={}\nvm_manifest_load_reason={}\nrelease_readiness_schema={}\nrelease_stage={}\nrelease_ready={}\nrelease_blocking_reason_codes={:?}\nimplemented_workflows={:?}\nfail_closed_workflows={:?}\nmanual_review_classes={:?}\nnext_actions={:?}\nvm_ready={}\nvm_reason_codes={:?}\n{}\nscanner_available_count={}\nscanner_required_count={}\n{}",
         RELEASE_TARGET,
         RELEASE_CLAIM,
         plan.label,
         plan.high_risk_allowed,
         config.state_dir.display(),
+        effective_manifest_path,
+        manifest_load_reason.unwrap_or_else(|| "none".to_string()),
         readiness.schema_version,
         readiness.release_stage,
         readiness.release_ready,
@@ -8199,6 +8220,40 @@ mod tests {
     }
 
     #[test]
+    fn vm_status_loads_default_state_dir_manifest() {
+        let root = temp_root("whoathere-cli-vm-status-default-manifest");
+        let state_dir = root.join("state");
+        let bundle_dir = state_dir.join("bundle");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&bundle_dir).expect("bundle dir");
+        std::fs::write(
+            bundle_dir.join("image.manifest"),
+            "schema_version=whoathere.macos_vm_image.v1\nimage_id=local-restore-image-install\nmacos_version=26.5.1\nmacos_build_version=25F80\narchitecture=arm64\nrestore_image_digest=sha256:1111111111111111111111111111111111111111111111111111111111111111\ncpu_count=2\nmemory_mib=6144\nsignature_status=signature_verification_not_implemented\nhelper_version=0.1.0\n",
+        )
+        .expect("manifest");
+
+        let result = evaluate_command(Command::VmStatus {
+            state_dir: Some(state_dir.display().to_string()),
+            manifest_path: None,
+            helper_path: None,
+            json: false,
+        });
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result.output.contains("manifest_present=true"));
+        assert!(result.output.contains(&format!(
+            "manifest_path={}",
+            bundle_dir.join("image.manifest").display()
+        )));
+        assert!(result
+            .output
+            .contains("macos_vm_manifest_signature_not_verified"));
+        assert!(!result.output.contains("macos_vm_image_manifest_missing"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn vm_init_execute_requires_real_helper() {
         let root = temp_root("whoathere-cli-vm-init");
         let _ = std::fs::remove_dir_all(&root);
@@ -9013,6 +9068,39 @@ exit 0
             .contains("\"state_dir\": \"/private/tmp/whoathere-doctor-state\""));
         assert!(result.output.contains("\"release_ready\": false"));
         assert!(result.output.contains("\"high_risk_allowed\": false"));
+    }
+
+    #[test]
+    fn doctor_loads_default_state_dir_manifest_for_readiness() {
+        let root = temp_root("whoathere-cli-doctor-default-manifest");
+        let state_dir = root.join("state");
+        let bundle_dir = state_dir.join("bundle");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&bundle_dir).expect("bundle dir");
+        std::fs::write(
+            bundle_dir.join("image.manifest"),
+            "schema_version=whoathere.macos_vm_image.v1\nimage_id=local-restore-image-install\nmacos_version=26.5.1\nmacos_build_version=25F80\narchitecture=arm64\nrestore_image_digest=sha256:1111111111111111111111111111111111111111111111111111111111111111\ncpu_count=2\nmemory_mib=6144\nsignature_status=signature_verification_not_implemented\nhelper_version=0.1.0\n",
+        )
+        .expect("manifest");
+
+        let result = evaluate_command(Command::Doctor {
+            json: true,
+            state_dir: Some(state_dir.display().to_string()),
+            helper_path: None,
+        });
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result.output.contains(&format!(
+            "\"vm_manifest_path\": \"{}\"",
+            bundle_dir.join("image.manifest").display()
+        )));
+        assert!(result
+            .output
+            .contains("macos_vm_manifest_signature_not_verified"));
+        assert!(!result.output.contains("macos_vm_image_manifest_missing"));
+        assert!(result.output.contains("\"release_ready\": false"));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
