@@ -36,6 +36,7 @@ The macOS local release is ready only when all of the following are true:
 | Area | Status | Evidence |
 | --- | --- | --- |
 | Apple Silicon macOS VM boundary | Partial | VM lifecycle, helper, provisioning, guest-health, and detonation commands exist, but release packaging and signature/notarization gates remain incomplete. |
+| VM start/health/suspend lifecycle | Improved in this checkpoint | Live validation starts the signed helper VM, proves guest health over vsock, reports Python/pip available and npm/uv unavailable, suspends with observed runtime stop, and confirms final stopped state. |
 | Host package-manager isolation | Strong for claimed pip paths | Goals 3 and 4 validate local pip project and local-only requirements detonation inside the guest without host package-manager execution. |
 | Secret exclusion | Strong for claimed pip paths | Sanitized mirror excludes known secret paths, credential files, symlink escapes, traversal, and large unsafe payloads. |
 | Python local project detonation | Implemented | Live validation covers clean project, local requirements, safe package data, setup.py canary, PEP 517 canary, import-time canary, and `.pth` canary cases. |
@@ -85,11 +86,20 @@ cargo run --quiet --manifest-path whoathere/Cargo.toml --bin whoathere -- doctor
 cargo build --manifest-path whoathere/Cargo.toml -p whoathere-cli --bin whoathere
 whoathere/target/debug/whoathere vm status --json --state-dir /Users/jdc/.whoathere/macos-vm-validation --helper /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/.build/arm64-apple-macosx/debug/whoathere-macos-vm-helper
 whoathere/target/debug/whoathere doctor --json --state-dir /Users/jdc/.whoathere/macos-vm-validation --helper /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/.build/arm64-apple-macosx/debug/whoathere-macos-vm-helper
+swift test
+swift build
+./scripts/sign-local-helper.sh
+whoathere/target/debug/whoathere vm start --state-dir /Users/jdc/.whoathere/macos-vm-validation --helper /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/.build/arm64-apple-macosx/debug/whoathere-macos-vm-helper --execute
+whoathere/target/debug/whoathere vm health --state-dir /Users/jdc/.whoathere/macos-vm-validation --helper /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/.build/arm64-apple-macosx/debug/whoathere-macos-vm-helper
+whoathere/target/debug/whoathere vm suspend --state-dir /Users/jdc/.whoathere/macos-vm-validation --helper /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/.build/arm64-apple-macosx/debug/whoathere-macos-vm-helper --execute
+whoathere/target/debug/whoathere vm health --state-dir /Users/jdc/.whoathere/macos-vm-validation --helper /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/.build/arm64-apple-macosx/debug/whoathere-macos-vm-helper
 ```
 
 The `doctor --json` smokes reported `release_ready=false`, `high_risk_allowed=false`, `vm_ready=false`, the inspected VM state directory, implemented pip/local detonation workflows, fail-closed npm/uv/public-resolution/sync-back workflows, and release blockers for npm, uv, public package resolution, sync-back, packaging, comparator/red-team validation, scanner availability, VM runtime readiness, and signature/notarization.
 
 The live validation VM smoke now reports `manifest_present=true`, `manifest_path=/Users/jdc/.whoathere/macos-vm-validation/bundle/image.manifest`, and `macos_vm_manifest_signature_not_verified`; it no longer reports `macos_vm_image_manifest_missing` for the prepared validation state directory.
+
+The helper lifecycle smoke showed that `swift build` replaces the signed helper binary, so the helper must be re-signed before VM start. After re-signing, start returned `exit_code=0`, health returned `guest_health_proven=true`, `guest_toolchain_python3_available=true`, `guest_toolchain_pip_available=true`, `guest_toolchain_npm_available=false`, and `guest_toolchain_uv_available=false`. Updated suspend behavior returned `exit_code=0`, `runtime_stop_observed=true`, and `suspend_semantics=force_stop`. Final health returned fail-closed with `runtime_process_not_running`, confirming the VM was stopped.
 
 Live VM validation is not required for this checkpoint because the implementation slice changes only readiness reporting and documentation. The next implementation slices that change VM behavior must include live VM checks for every claimed workflow.
 
@@ -98,9 +108,9 @@ Live VM validation is not required for this checkpoint because the implementatio
 Focus on VM lifecycle and onboarding UX before expanding package-manager coverage:
 
 1. Run `doctor`, `vm status`, `vm init`, `vm start`, `vm health`, `vm suspend`, `vm reset`, and `vm prune` against the validation VM from a clean user perspective.
-2. Use `doctor --json --state-dir "$HOME/.whoathere/macos-vm-validation" --helper <helper>` as the machine-readable preflight for that lifecycle pass.
-3. Remove or document any hidden sudo, signing, provisioning, or state-directory assumptions.
-4. Make failure messages actionable without exposing secrets or raw guest output.
+2. Turn the helper signing requirement into first-run onboarding so users do not run an unsigned helper after `swift build`.
+3. Decide whether force-stop is acceptable release behavior for `vm suspend`, or whether guest-requested stop must be made reliable before release.
+4. Make remaining failure messages actionable without exposing secrets or raw guest output.
 5. Update onboarding docs with exact first-run commands, expected resource use, and known limitations.
 
 After that, move to npm VM detonation. If npm cannot be made reliable without extra guest provisioning, keep npm explicitly fail-closed and document the blocker instead of expanding the release claim.

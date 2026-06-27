@@ -37,6 +37,8 @@ swift build
 
 Set `WHOATHERE_CODESIGN_IDENTITY` to a Developer ID or Apple Development signing identity for
 non-ad-hoc signing. The default identity is `-` for local ad-hoc development signing.
+Run the signing script after every `swift build`; SwiftPM replaces the helper binary and the
+unsigned replacement cannot start an Apple Virtualization VM.
 
 Real local VM validation with a local IPSW:
 

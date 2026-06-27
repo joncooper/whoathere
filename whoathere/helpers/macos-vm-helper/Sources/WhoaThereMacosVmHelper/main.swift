@@ -916,10 +916,10 @@ struct WhoaThereMacosVmHelper {
         do {
             try removeIfPresent(layout.runtimeShutdownPath)
             _ = kill(pid, SIGTERM)
-            let stopped = waitForRuntimeProcessExit(pid, timeoutSeconds: 30)
+            let stopped = waitForRuntimeProcessExit(pid, timeoutSeconds: 75)
             if !stopped {
                 _ = kill(pid, SIGKILL)
-                _ = waitForRuntimeProcessExit(pid, timeoutSeconds: 5)
+                let forceKilled = waitForRuntimeProcessExit(pid, timeoutSeconds: 10)
                 try removeRuntimeProofFiles(layout)
                 emit(
                     fields: failClosedFields(
@@ -931,7 +931,7 @@ struct WhoaThereMacosVmHelper {
                         "mutation": true,
                         "runtime_pid": Int(pid),
                         "suspend_semantics": "signal_runtime_guest_stop_request",
-                        "runtime_stop_observed": false,
+                        "runtime_stop_observed": forceKilled,
                         "high_risk_package_execution_enabled": false
                     ]) { _, new in new },
                     exitCode: 70
