@@ -6,7 +6,7 @@ HELPER_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 . "$SCRIPT_DIR/provision-command-lib.sh"
 RESTORE_IMAGE=${1:-}
 STATE_DIR=${2:-"$HOME/.whoathere/macos-vm-validation"}
-HELPER_PATH="$HELPER_ROOT/.build/arm64-apple-macosx/debug/whoathere-macos-vm-helper"
+HELPER_PATH=$(whoathere_default_helper_path "$HELPER_ROOT")
 BUNDLE_DIR="$STATE_DIR/bundle"
 CONFIG_PATH="$BUNDLE_DIR/config.json"
 MANIFEST_PATH="$BUNDLE_DIR/image.manifest"

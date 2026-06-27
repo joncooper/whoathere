@@ -3,17 +3,21 @@ set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 HELPER_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+PACKAGE_ROOT=$(CDPATH= cd -- "$HELPER_ROOT/../.." && pwd)
 REPO_ROOT=$(CDPATH= cd -- "$HELPER_ROOT/../../.." && pwd)
 RUST_WORKSPACE="$REPO_ROOT/whoathere"
+. "$SCRIPT_DIR/provision-command-lib.sh"
 
-if [ -x "$RUST_WORKSPACE/target/debug/whoathere" ]; then
+if [ -x "$PACKAGE_ROOT/bin/whoathere" ]; then
+  DEFAULT_WHOATHERE_BIN="$PACKAGE_ROOT/bin/whoathere"
+elif [ -x "$RUST_WORKSPACE/target/debug/whoathere" ]; then
   DEFAULT_WHOATHERE_BIN="$RUST_WORKSPACE/target/debug/whoathere"
 else
   DEFAULT_WHOATHERE_BIN="$REPO_ROOT/target/debug/whoathere"
 fi
 
 WHOATHERE_BIN=${WHOATHERE_BIN:-"$DEFAULT_WHOATHERE_BIN"}
-HELPER=${WHOATHERE_MACOS_VM_HELPER:-"$HELPER_ROOT/.build/arm64-apple-macosx/debug/whoathere-macos-vm-helper"}
+HELPER=$(whoathere_default_helper_path "$HELPER_ROOT")
 STATE_DIR=${WHOATHERE_VM_STATE_DIR:-"$HOME/.whoathere/macos-vm-validation"}
 
 run_case() {

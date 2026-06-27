@@ -49,7 +49,7 @@ The macOS local release is ready only when all of the following are true:
 | Doctor/readiness UX | Improved in this checkpoint | `whoathere doctor --json --state-dir <dir> --helper <path>` now reports release readiness, the inspected VM state directory, guest provisioning receipt/toolchain status, implemented workflows, fail-closed workflows, manual-review classes, blocking reason codes, and next actions. |
 | Default VM manifest loading | Implemented for CLI status/readiness | `vm status` and `doctor` now load `<state-dir>/bundle/image.manifest` by default, tolerate the helper restore-image manifest shape, accept helper-created `local_developer_verified` preview manifests for lifecycle gating, and still reject stale or unverified manifests. Production release signing/notarization remains a separate blocker. |
 | Scanner adapters | Advisory for no-sync preview | External scanner binaries are still reported and remain required before any future auto-sync/auto-allow release. They are no longer a hard blocker for the current detonation/admission-only preview because sync-back is disabled and `whoathere vm red-team-gate` provides local fixture-safe comparator coverage. |
-| Packaging/onboarding | Partial | [macOS local-first preview runbook](macos-local-first-preview-runbook.md) now documents first-run build, signing, VM init, provisioning, health, detonation validation, limitations, and cleanup. Installer, signed artifacts, codesign/notarization verification, and release packaging still need a release pass. |
+| Packaging/onboarding | Partial | [macOS local-first preview runbook](macos-local-first-preview-runbook.md) now documents first-run build, signing, VM init, provisioning, health, detonation validation, limitations, cleanup, and the repeatable preview tarball script. The package script builds the release CLI/helper, signs them locally, runs local gates, and writes a checksum. Developer ID signing, notarization, installer UX, and final release packaging still need a release pass. |
 | Comparator/red-team gate | Implemented for fixture-safe local gate | `whoathere vm red-team-gate` now runs 18 deterministic local cases covering static lifecycle/PEP 517 signals, dynamic npm/PyPI exfiltration shapes, DNS/HTTPS exfiltration, delayed CI activation, native/platform/direct-source risk, stale/wrong-context evidence, and raw-material rejection. It uses comparator labels for GuardDog/OpenSSF Package Analysis-style coverage without requiring public network or external scanner binaries. |
 
 ## Current Verdict
@@ -105,6 +105,8 @@ sh -n whoathere/helpers/macos-vm-helper/scripts/provision-guest-readiness.sh
 sh -n whoathere/helpers/macos-vm-helper/scripts/provision-command-lib.sh
 sh -n whoathere/helpers/macos-vm-helper/scripts/validate-local-vm.sh
 sh -n whoathere/helpers/macos-vm-helper/scripts/validate-project-detonation.sh
+sh -n scripts/whoathere-package-macos-preview.sh
+scripts/whoathere-package-macos-preview.sh
 cc -O2 -Wall -Wextra -target arm64-apple-macos13 -fsyntax-only whoathere/helpers/macos-vm-helper/guest-agent/whoathere-guest-ready.c
 ```
 
@@ -144,6 +146,17 @@ printed `WHOATHERE_NODE_RUNTIME_DIR=/Users/jdc/.nvm/versions/node/v22.22.3` and
 `WHOATHERE_UV_BINARY=/Users/jdc/.local/bin/uv` in the suggested `sudo` command, then failed closed
 with exit 64 as expected.
 
+The preview packaging path now has `scripts/whoathere-package-macos-preview.sh`. It validates the
+Rust workspace, builds the release CLI, locally signs the CLI, runs Swift helper tests, builds and
+signs the release helper, runs the local red-team fixture gate, stages helper scripts and docs, and
+writes a tarball plus SHA-256 checksum under ignored `dist/`. It deliberately reports
+`notarization_status=not_performed`; final Developer ID/notarization work remains open.
+
+The packaging script was run end to end on this host and produced a preview tarball plus checksum.
+After extracting the archive to `/private/tmp`, the packaged `bin/whoathere --help` worked and the
+packaged `validate-project-detonation.sh` resolved the package-local release helper and failed
+closed at the missing guest provisioning receipt with a package-local reprovision command.
+
 The latest npm/uv planner slices changed host planner, Swift helper, and guest-agent behavior. They were validated with unit tests, helper build/tests, guest C syntax checks, and live `doctor` fail-closed readiness output. Live npm/uv detonation is still not claimed because the stopped validation VM must first be reprovisioned with Node/npm and uv tooling through the interactive sudo step above.
 
 ## Next Recommended Slice
@@ -153,7 +166,7 @@ Focus on live VM validation and packaging UX before expanding package-manager co
 1. Run `doctor`, `vm status`, `vm init`, `vm start`, `vm health`, `vm suspend`, `vm reset`, and `vm prune` against the validation VM from a clean user perspective.
 2. Reprovision the stopped validation VM with the exact `sudo ... provision-guest-readiness.sh ...` command emitted by `provision-guest-readiness.sh` or `validate-project-detonation.sh`, then rerun status and health to prove the receipt and live guest report `guest_toolchain_npm_available=true` and `guest_toolchain_uv_available=true`.
 3. Run the npm and uv fixture suites. Keep npm/uv release claims fail-closed until those live checks pass.
-4. Turn the helper signing requirement into first-run onboarding so users do not run an unsigned helper after `swift build`.
+4. Exercise `scripts/whoathere-package-macos-preview.sh` as the release candidate build path, then add Developer ID signing/notarization or keep the artifact clearly labeled as a local preview.
 5. Keep sync-back disabled for the preview unless a separately tested deny-by-default whitelist is implemented.
 6. Decide whether force-stop is acceptable release behavior for `vm suspend`, or whether guest-requested stop must be made reliable before release.
 7. Make remaining failure messages actionable without exposing secrets or raw guest output.

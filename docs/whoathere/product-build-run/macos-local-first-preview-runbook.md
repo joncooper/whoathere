@@ -69,6 +69,26 @@ export WHOATHERE_STATE=/Users/jdc/.whoathere/macos-vm-validation
 export WHOATHERE_HELPER=/Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/.build/arm64-apple-macosx/debug/whoathere-macos-vm-helper
 ```
 
+## Package A Preview Artifact
+
+To build a repeatable Apple Silicon preview tarball with the release CLI, signed release helper,
+helper scripts, guest readiness agent source, and local preview docs:
+
+```sh
+scripts/whoathere-package-macos-preview.sh
+```
+
+The script runs Rust validation, builds the release CLI, locally signs the CLI, runs Swift helper
+tests, builds and signs the release helper, runs the local red-team fixture gate, and writes:
+
+```text
+dist/whoathere-macos-arm64-preview-<git-sha>.tar.gz
+dist/whoathere-macos-arm64-preview-<git-sha>.tar.gz.sha256
+```
+
+Set `WHOATHERE_CODESIGN_IDENTITY` to use a non-ad-hoc signing identity. The script does not perform
+Apple notarization, so final release signing/notarization remains a separate blocker.
+
 ## Initialize Or Reuse The VM
 
 Fetch and install Apple's latest supported restore image:

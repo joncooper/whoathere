@@ -4,6 +4,23 @@ whoathere_shell_quote() {
   printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
 }
 
+whoathere_default_helper_path() {
+  HELPER_ROOT_FOR_PATH=$1
+  if [ -n "${WHOATHERE_MACOS_VM_HELPER:-}" ]; then
+    printf '%s\n' "$WHOATHERE_MACOS_VM_HELPER"
+    return
+  fi
+
+  RELEASE_HELPER="$HELPER_ROOT_FOR_PATH/.build/arm64-apple-macosx/release/whoathere-macos-vm-helper"
+  DEBUG_HELPER="$HELPER_ROOT_FOR_PATH/.build/arm64-apple-macosx/debug/whoathere-macos-vm-helper"
+  if [ -x "$RELEASE_HELPER" ]; then
+    printf '%s\n' "$RELEASE_HELPER"
+    return
+  fi
+
+  printf '%s\n' "$DEBUG_HELPER"
+}
+
 whoathere_user_home_default() {
   if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
     USER_HOME=$(dscl . -read "/Users/$SUDO_USER" NFSHomeDirectory 2>/dev/null | awk '{print $2}')

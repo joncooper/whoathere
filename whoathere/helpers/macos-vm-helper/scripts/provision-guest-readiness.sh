@@ -368,6 +368,7 @@ STATE_DIR=${1:-$(state_dir_default)}
 BUNDLE_DIR="$STATE_DIR/bundle"
 DISK_IMAGE="$BUNDLE_DIR/disk.img"
 RUNTIME_PID="$BUNDLE_DIR/runtime.pid"
+HELPER_PATH=$(whoathere_default_helper_path "$HELPER_ROOT")
 AGENT_SOURCE="$HELPER_ROOT/guest-agent/whoathere-guest-ready.c"
 RECEIPT_PATH="$BUNDLE_DIR/guest-provisioning.json"
 BUILD_DIR=${TMPDIR:-/tmp}/whoathere-guest-ready.$$
@@ -407,7 +408,7 @@ if [ -f "$RUNTIME_PID" ]; then
     *)
       if kill -0 "$PID" 2>/dev/null; then
         echo "vm_runtime_running=true" >&2
-        echo "stop_vm_first=$HELPER_ROOT/.build/arm64-apple-macosx/debug/whoathere-macos-vm-helper suspend --state-dir $STATE_DIR --execute --json" >&2
+        echo "stop_vm_first=$HELPER_PATH suspend --state-dir $STATE_DIR --execute --json" >&2
         exit 20
       fi
       ;;
@@ -530,4 +531,4 @@ echo "offline_node_runtime_name=$NODE_RUNTIME_NAME"
 echo "offline_uv_binary_status=$UV_BINARY_STATUS"
 echo "offline_uv_binary_source_kind=$UV_BINARY_SOURCE_KIND"
 echo "offline_uv_binary_name=$UV_BINARY_NAME"
-echo "next_start=$HELPER_ROOT/.build/arm64-apple-macosx/debug/whoathere-macos-vm-helper start --state-dir $STATE_DIR --execute --json"
+echo "next_start=$HELPER_PATH start --state-dir $STATE_DIR --execute --json"
