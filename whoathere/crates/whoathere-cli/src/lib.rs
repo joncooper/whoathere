@@ -4132,7 +4132,6 @@ fn macos_local_release_readiness(
         "release_npm_vm_detonation_not_verified",
         "release_uv_vm_detonation_not_verified",
         "release_public_package_resolution_policy_not_implemented",
-        "release_packaging_and_onboarding_not_complete",
         "release_signature_notarization_not_complete",
     ]));
     blocking_reason_codes.sort();
@@ -4177,7 +4176,7 @@ fn macos_local_release_readiness(
             "reprovision the stopped VM with explicit Node/npm and uv tool sources until receipt and health prove toolchains",
             "make npm and uv detonation either work in VM or remain explicitly unclaimed",
             "keep sync-back disabled for the preview unless a separately tested whitelist is implemented",
-            "complete signed packaging and notarization docs for Apple Silicon users",
+            "complete Developer ID signing and notarization for Apple Silicon users",
             "run whoathere vm red-team-gate on every release candidate",
         ]),
     }
@@ -10226,6 +10225,12 @@ exit 0
         assert!(result
             .output
             .contains("release_npm_vm_detonation_not_verified"));
+        assert!(result
+            .output
+            .contains("release_signature_notarization_not_complete"));
+        assert!(!result
+            .output
+            .contains("release_packaging_and_onboarding_not_complete"));
         assert!(result.output.contains("host.sync_back.disabled_preview"));
         assert!(!result
             .output
