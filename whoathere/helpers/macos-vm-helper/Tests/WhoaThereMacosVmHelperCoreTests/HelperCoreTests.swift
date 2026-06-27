@@ -79,6 +79,20 @@ import Testing
     #expect(options.execute)
 }
 
+@Test func parsesUpgradeLocalManifestArguments() throws {
+    let options = try parseArguments([
+        "upgrade-local-manifest",
+        "--state-dir", "/tmp/whoathere-vm",
+        "--execute",
+        "--json"
+    ])
+
+    #expect(options.command == .upgradeLocalManifest)
+    #expect(options.stateDir == "/tmp/whoathere-vm")
+    #expect(options.execute)
+    #expect(options.json)
+}
+
 @Test func parsesDetonationArguments() throws {
     let options = try parseArguments([
         "detonate",

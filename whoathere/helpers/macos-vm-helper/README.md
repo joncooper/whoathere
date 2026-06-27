@@ -44,6 +44,21 @@ non-ad-hoc signing. The default identity is `-` for local ad-hoc development sig
 Run the signing script after every `swift build`; SwiftPM replaces the helper binary and the
 unsigned replacement cannot start an Apple Virtualization VM.
 
+Legacy local preview manifests created before `local_developer_verified` support can be upgraded
+explicitly through the CLI after the bundle is otherwise complete:
+
+```sh
+cargo run --manifest-path ../../Cargo.toml -p whoathere-cli -- \
+  vm upgrade-local-manifest \
+  --state-dir "$WHOATHERE_STATE" \
+  --helper .build/arm64-apple-macosx/debug/whoathere-macos-vm-helper \
+  --execute
+```
+
+The command only rewrites helper-created local preview manifests from
+`signature_verification_not_implemented` to `local_developer_verified`; malformed, non-local, or
+incomplete bundles remain fail closed.
+
 Real local VM validation with a local IPSW:
 
 ```sh

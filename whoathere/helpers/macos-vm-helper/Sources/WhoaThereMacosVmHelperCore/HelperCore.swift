@@ -9,6 +9,7 @@ public enum HelperCommand: String, Sendable {
     case version
     case status
     case `init`
+    case upgradeLocalManifest = "upgrade-local-manifest"
     case start
     case run
     case suspend

@@ -308,6 +308,7 @@ pub enum VmAction {
     Reset,
     Prune,
     Health,
+    UpgradeLocalManifest,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -588,7 +589,7 @@ pub fn parse_command(args: &[String]) -> Command {
             if cmd == "vm"
                 && matches!(
                     sub.as_str(),
-                    "start" | "suspend" | "reset" | "prune" | "health"
+                    "start" | "suspend" | "reset" | "prune" | "health" | "upgrade-local-manifest"
                 ) =>
         {
             Command::VmAction {
@@ -598,6 +599,7 @@ pub fn parse_command(args: &[String]) -> Command {
                     "reset" => VmAction::Reset,
                     "prune" => VmAction::Prune,
                     "health" => VmAction::Health,
+                    "upgrade-local-manifest" => VmAction::UpgradeLocalManifest,
                     _ => unreachable!(),
                 },
                 state_dir: parse_flag_value(rest, "--state-dir"),
@@ -1146,7 +1148,7 @@ fn command_help() -> String {
         "|endpoint setup --shim-dir <dir> --workspace <path> --vault-origin <url> [--policy <path>] [--audit-path <path>] [--replay-store <path>] [--include-python]",
         "|vm status [--state-dir <dir>] [--manifest <path>] [--helper <path>] [--json]",
         "|vm init [--state-dir <dir>] [--manifest <path>] [--helper <path>] [--image <path>|--restore-image <path>|--fetch-latest-restore-image] [--memory-mib <n>] [--disk-gib <n>] [--execute]",
-        "|vm start|suspend|reset|prune [--state-dir <dir>] [--helper <path>] [--execute]",
+        "|vm start|suspend|reset|prune|upgrade-local-manifest [--state-dir <dir>] [--helper <path>] [--execute]",
         "|vm health [--state-dir <dir>] [--helper <path>]",
         "|vm detonate [--workspace <path>] [--state-dir <dir>] [--helper <path>] [--fixture <name>] [--timeout-seconds <n>] [--execute] [--json] npm|pip|uv -- <args>",
         "|vm release-plan [--class <class>|--ecosystem <name> --source <kind> --filename <name>] [--vm-ready --static-clean --dynamic-clean --egress-clean --no-canary-access --scanner-clean --diff-clean --freshness-allowed] [--json]",
@@ -1659,6 +1661,7 @@ fn render_vm_status(
             "--json".to_string(),
         ],
     );
+    let effective_reason_codes = effective_vm_reason_codes(&status, &helper);
     if json {
         return render_vm_status_json(
             &status,
@@ -1666,6 +1669,7 @@ fn render_vm_status(
             manifest_load_reason.as_deref(),
             &provisioning,
             &helper,
+            &effective_reason_codes,
         );
     }
     let mut output = format!(
@@ -1688,8 +1692,8 @@ fn render_vm_status(
         status.manifest_valid,
         status.helper_ready_marker_present,
         status.image_ready_marker_present,
-        status.ready,
-        status.reason_codes,
+        effective_reason_codes.is_empty(),
+        effective_reason_codes,
         provisioning.render_text(),
         helper.render_text()
     );
@@ -1808,6 +1812,7 @@ fn render_vm_action(
         VmAction::Reset => "reset",
         VmAction::Prune => "prune",
         VmAction::Health => "health",
+        VmAction::UpgradeLocalManifest => "upgrade-local-manifest",
     };
     let config = macos_vm_config(state_dir, None, None);
     if matches!(action, VmAction::Health) {
@@ -4125,12 +4130,77 @@ fn single_line(value: &str) -> String {
         .replace('\r', "\\r")
 }
 
+fn helper_json_bool_field(output: &str, field: &str) -> Option<bool> {
+    let quoted_field = format!("\"{field}\"");
+    for line in output.lines() {
+        let trimmed = line.trim().trim_end_matches(',');
+        let Some((key, value)) = trimmed.split_once(':') else {
+            continue;
+        };
+        if key.trim() != quoted_field {
+            continue;
+        }
+        return match value.trim() {
+            "true" => Some(true),
+            "false" => Some(false),
+            _ => None,
+        };
+    }
+    let compact = output
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect::<String>();
+    if compact.contains(&format!("{quoted_field}:true")) {
+        return Some(true);
+    }
+    if compact.contains(&format!("{quoted_field}:false")) {
+        return Some(false);
+    }
+    None
+}
+
+fn helper_lifecycle_ready(helper: &MacosVmHelperOutput) -> bool {
+    helper.available
+        && helper.exit_code == Some(0)
+        && helper.reason_codes.is_empty()
+        && !helper.stdout_truncated
+        && !helper.stderr_truncated
+        && helper_json_bool_field(&helper.stdout, "ready_for_lifecycle") == Some(true)
+}
+
+fn helper_runtime_verified(helper: &MacosVmHelperOutput) -> bool {
+    helper_lifecycle_ready(helper)
+        && helper_json_bool_field(&helper.stdout, "runtime_pid_alive") == Some(true)
+        && helper_json_bool_field(&helper.stdout, "host_runtime_health_proven") == Some(true)
+        && helper_json_bool_field(&helper.stdout, "health_proven") == Some(true)
+        && helper_json_bool_field(&helper.stdout, "guest_health_proven") == Some(true)
+}
+
+fn effective_vm_reason_codes(
+    status: &whoathere_macos_vm::MacosVmStatus,
+    helper: &MacosVmHelperOutput,
+) -> Vec<String> {
+    let mut reasons = status.reason_codes.clone();
+    if helper_lifecycle_ready(helper) {
+        reasons.retain(|reason| {
+            reason != "macos_vm_helper_not_ready" && reason != "macos_vm_image_not_ready"
+        });
+    }
+    if helper_runtime_verified(helper) {
+        reasons.retain(|reason| reason != "macos_vm_runtime_not_verified");
+    }
+    reasons.sort();
+    reasons.dedup();
+    reasons
+}
+
 fn render_vm_status_json(
     status: &whoathere_macos_vm::MacosVmStatus,
     manifest_path: &str,
     manifest_load_reason: Option<&str>,
     provisioning: &MacosVmGuestProvisioningSummary,
     helper: &MacosVmHelperOutput,
+    effective_reason_codes: &[String],
 ) -> String {
     format!(
         "{{\n  \"command\": \"whoathere vm status\",\n  \"schema_version\": {},\n  \"release_target\": {},\n  \"target_arch\": {},\n  \"vm_boundary\": {},\n  \"network_model\": {},\n  \"sync_policy\": {},\n  \"state_dir\": {},\n  \"host_os\": {},\n  \"host_arch\": {},\n  \"memory_mib\": {},\n  \"disk_gib\": {},\n  \"auto_suspend_minutes\": {},\n  \"state_dir_exists\": {},\n  \"manifest_path\": {},\n  \"manifest_present\": {},\n  \"manifest_valid\": {},\n  \"helper_ready_marker_present\": {},\n  \"image_ready_marker_present\": {},\n  \"ready\": {},\n  \"reason_codes\": [{}],\n  \"manifest_load_reason\": {},\n  \"guest_provisioning\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout_truncated\": {},\n  \"helper_stderr_truncated\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {}\n}}",
@@ -4152,9 +4222,8 @@ fn render_vm_status_json(
         status.manifest_valid,
         status.helper_ready_marker_present,
         status.image_ready_marker_present,
-        status.ready,
-        status
-            .reason_codes
+        effective_reason_codes.is_empty(),
+        effective_reason_codes
             .iter()
             .map(|reason| json_string(reason))
             .collect::<Vec<_>>()
@@ -4220,7 +4289,7 @@ fn macos_local_release_readiness(
     scanner_available_count: usize,
     scanner_required_count: usize,
 ) -> MacosLocalReleaseReadiness {
-    let mut blocking_reason_codes = status.reason_codes.clone();
+    let mut blocking_reason_codes = effective_vm_reason_codes(status, helper);
     blocking_reason_codes.extend(provisioning.reason_codes());
     blocking_reason_codes.extend(helper.reason_codes.iter().cloned());
 
@@ -4315,6 +4384,7 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
             "--json".to_string(),
         ],
     );
+    let effective_vm_reason_codes = effective_vm_reason_codes(&status, &helper);
     let scanners = scanner_adapters();
     let scanner_available = scanners
         .iter()
@@ -4378,8 +4448,8 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
             json_string_array(&readiness.fail_closed_workflows),
             json_string_array(&readiness.manual_review_classes),
             json_string_array(&readiness.next_actions),
-            status.ready,
-            json_string_array(&status.reason_codes),
+            effective_vm_reason_codes.is_empty(),
+            json_string_array(&effective_vm_reason_codes),
             helper
                 .configured_path
                 .as_deref()
@@ -4437,8 +4507,8 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
         readiness.fail_closed_workflows,
         readiness.manual_review_classes,
         readiness.next_actions,
-        status.ready,
-        status.reason_codes,
+        effective_vm_reason_codes.is_empty(),
+        effective_vm_reason_codes,
         helper.render_text(),
         scanner_available,
         scanner_required,
@@ -9189,6 +9259,28 @@ mod tests {
     }
 
     #[test]
+    fn parses_vm_upgrade_local_manifest_command() {
+        let args = vec![
+            "vm".to_string(),
+            "upgrade-local-manifest".to_string(),
+            "--state-dir".to_string(),
+            "/tmp/whoathere-vm".to_string(),
+            "--helper".to_string(),
+            "/tmp/helper".to_string(),
+            "--execute".to_string(),
+        ];
+        assert_eq!(
+            parse_command(&args),
+            Command::VmAction {
+                action: VmAction::UpgradeLocalManifest,
+                state_dir: Some("/tmp/whoathere-vm".to_string()),
+                helper_path: Some("/tmp/helper".to_string()),
+                execute: true,
+            }
+        );
+    }
+
+    #[test]
     fn vm_status_reports_release_contract_without_authorizing_runtime() {
         let result = evaluate_command(Command::VmStatus {
             state_dir: Some("/tmp/whoathere-vm-status-test".to_string()),
@@ -9316,6 +9408,109 @@ mod tests {
     }
 
     #[test]
+    fn vm_status_uses_clean_helper_lifecycle_readiness_over_legacy_markers() {
+        let root = temp_root("whoathere-cli-vm-helper-lifecycle-ready");
+        let _ = std::fs::remove_dir_all(&root);
+        let state_dir = root.join("state");
+        let bundle_dir = state_dir.join("bundle");
+        std::fs::create_dir_all(&bundle_dir).expect("bundle dir");
+        std::fs::write(
+            bundle_dir.join("image.manifest"),
+            "schema_version=whoathere.macos_vm_image.v1\nimage_id=local-restore-image-install\nmacos_version=26.5.1\nmacos_build_version=25F80\narchitecture=arm64\nrestore_image_digest=sha256:1111111111111111111111111111111111111111111111111111111111111111\ncpu_count=2\nmemory_mib=6144\nsignature_status=local_developer_verified\nhelper_version=0.1.0\n",
+        )
+        .expect("manifest");
+        let helper = root.join("helper.sh");
+        write_new_file(
+            &helper,
+            b"#!/bin/sh\nprintf '{\"status\":\"ok\",\"exit_code\":0,\"ready_for_lifecycle\":true,\"reason_codes\":[]}\\n'\nexit 0\n",
+        )
+        .expect("helper script");
+        set_executable(&helper).expect("executable helper");
+
+        let result = evaluate_command(Command::VmStatus {
+            state_dir: Some(state_dir.display().to_string()),
+            manifest_path: None,
+            helper_path: Some(helper.display().to_string()),
+            json: false,
+        });
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result.output.contains("macos_vm_runtime_not_verified"));
+        assert!(!result.output.contains("macos_vm_helper_not_ready"));
+        assert!(!result.output.contains("macos_vm_image_not_ready"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn doctor_release_blockers_use_clean_helper_lifecycle_readiness() {
+        let root = temp_root("whoathere-cli-doctor-helper-lifecycle-ready");
+        let _ = std::fs::remove_dir_all(&root);
+        let state_dir = root.join("state");
+        let bundle_dir = state_dir.join("bundle");
+        std::fs::create_dir_all(&bundle_dir).expect("bundle dir");
+        std::fs::write(
+            bundle_dir.join("image.manifest"),
+            "schema_version=whoathere.macos_vm_image.v1\nimage_id=local-restore-image-install\nmacos_version=26.5.1\nmacos_build_version=25F80\narchitecture=arm64\nrestore_image_digest=sha256:1111111111111111111111111111111111111111111111111111111111111111\ncpu_count=2\nmemory_mib=6144\nsignature_status=local_developer_verified\nhelper_version=0.1.0\n",
+        )
+        .expect("manifest");
+        let helper = root.join("helper.sh");
+        write_new_file(
+            &helper,
+            b"#!/bin/sh\nprintf '{\"status\":\"ok\",\"exit_code\":0,\"ready_for_lifecycle\":true,\"reason_codes\":[]}\\n'\nexit 0\n",
+        )
+        .expect("helper script");
+        set_executable(&helper).expect("executable helper");
+
+        let result = evaluate_command(Command::Doctor {
+            json: true,
+            state_dir: Some(state_dir.display().to_string()),
+            helper_path: Some(helper.display().to_string()),
+        });
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result.output.contains("macos_vm_runtime_not_verified"));
+        assert!(!result.output.contains("macos_vm_helper_not_ready"));
+        assert!(!result.output.contains("macos_vm_image_not_ready"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vm_status_uses_helper_runtime_health_proof() {
+        let root = temp_root("whoathere-cli-vm-runtime-health-ready");
+        let _ = std::fs::remove_dir_all(&root);
+        let state_dir = root.join("state");
+        let bundle_dir = state_dir.join("bundle");
+        std::fs::create_dir_all(&bundle_dir).expect("bundle dir");
+        std::fs::write(
+            bundle_dir.join("image.manifest"),
+            "schema_version=whoathere.macos_vm_image.v1\nimage_id=local-restore-image-install\nmacos_version=26.5.1\nmacos_build_version=25F80\narchitecture=arm64\nrestore_image_digest=sha256:1111111111111111111111111111111111111111111111111111111111111111\ncpu_count=2\nmemory_mib=6144\nsignature_status=local_developer_verified\nhelper_version=0.1.0\n",
+        )
+        .expect("manifest");
+        let helper = root.join("helper.sh");
+        write_new_file(
+            &helper,
+            b"#!/bin/sh\nprintf '{\"status\":\"ok\",\"exit_code\":0,\"ready_for_lifecycle\":true,\"runtime_pid_alive\":true,\"host_runtime_health_proven\":true,\"health_proven\":true,\"guest_health_proven\":true,\"reason_codes\":[]}\\n'\nexit 0\n",
+        )
+        .expect("helper script");
+        set_executable(&helper).expect("executable helper");
+
+        let result = evaluate_command(Command::VmStatus {
+            state_dir: Some(state_dir.display().to_string()),
+            manifest_path: None,
+            helper_path: Some(helper.display().to_string()),
+            json: false,
+        });
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result.output.contains("reason_codes=[]"));
+        assert!(!result.output.contains("macos_vm_runtime_not_verified"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn vm_init_dry_run_forwards_state_dir_to_helper() {
         let root = temp_root("whoathere-cli-vm-init-helper");
         let _ = std::fs::remove_dir_all(&root);
@@ -9381,6 +9576,37 @@ mod tests {
         assert!(result.output.contains("fetch_latest_restore_image=true"));
         assert!(result.output.contains(&format!(
             "<init><--state-dir><{}><--memory-mib><4096><--disk-gib><64><--execute><--json><--fetch-latest-restore-image>",
+            state_dir.display()
+        )));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vm_upgrade_local_manifest_invokes_helper_with_execute() {
+        let root = temp_root("whoathere-cli-vm-upgrade-local-manifest");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("temp root");
+        let helper = root.join("helper.sh");
+        write_new_file(
+            &helper,
+            b"#!/bin/sh\nprintf 'args='\nfor arg in \"$@\"; do printf '<%s>' \"$arg\"; done\nprintf '\\n'\nexit 0\n",
+        )
+        .expect("helper script");
+        set_executable(&helper).expect("executable helper");
+
+        let state_dir = root.join("state");
+        let result = evaluate_command(Command::VmAction {
+            action: VmAction::UpgradeLocalManifest,
+            state_dir: Some(state_dir.display().to_string()),
+            helper_path: Some(helper.display().to_string()),
+            execute: true,
+        });
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result.output.contains("mutation_requested=true"));
+        assert!(result.output.contains(&format!(
+            "<upgrade-local-manifest><--state-dir><{}><--execute><--json>",
             state_dir.display()
         )));
 

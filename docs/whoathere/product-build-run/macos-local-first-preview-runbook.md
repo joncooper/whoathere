@@ -118,9 +118,16 @@ Expected before release hardening is complete:
 - `release_ready=false`
 - `high_risk_allowed=false`
 - Existing validation bundles created before local developer manifest verification may still report
-  `macos_vm_manifest_signature_not_verified` until they are reinitialized or upgraded. New
-  helper-created preview bundles use `signature_status=local_developer_verified` for local
-  lifecycle gating.
+  `macos_vm_manifest_signature_not_verified` until they are reinitialized or explicitly upgraded:
+
+  ```sh
+  $WHOATHERE vm upgrade-local-manifest --state-dir "$WHOATHERE_STATE" --helper "$WHOATHERE_HELPER" --execute
+  ```
+
+  The upgrade command only rewrites helper-created local preview manifests from
+  `signature_verification_not_implemented` to `local_developer_verified`; malformed, non-local, or
+  incomplete bundles remain fail closed. New helper-created preview bundles use
+  `signature_status=local_developer_verified` for local lifecycle gating.
 - scanner and packaging/red-team release blockers
 
 ## Provision Guest Readiness Tooling

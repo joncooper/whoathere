@@ -440,6 +440,8 @@ struct WhoaThereMacosVmHelper {
             status(options)
         case .`init`:
             initialize(options)
+        case .upgradeLocalManifest:
+            upgradeLocalManifest(options)
         case .start:
             start(options)
         case .run:
@@ -473,6 +475,7 @@ struct WhoaThereMacosVmHelper {
         let readyForLifecycle = reasonCodes.isEmpty
         let runtimePID = readRuntimePID(layout)
         let runtimeAlive = runtimePID.map(runtimeProcessIsAlive) ?? false
+        let runtimeHealth = runtimeHealthSummary(layout: layout, runtimePID: runtimePID)
         let manifestValidation = validateManifest(layout: layout, includeSignatureReason: true)
         emit(
             fields: baseFields(status: readyForLifecycle ? "ok" : "fail_closed").merging([
@@ -497,6 +500,15 @@ struct WhoaThereMacosVmHelper {
                 "runtime_shutdown_present": fileExists(layout.runtimeShutdownPath),
                 "runtime_pid_present": fileExists(layout.runtimePidPath),
                 "runtime_pid_alive": runtimeAlive,
+                "host_runtime_health_proven": runtimeHealth.hostRuntimeHealthProven,
+                "health_proven": runtimeHealth.healthProven,
+                "health_proof_type": runtimeHealth.healthProofType,
+                "guest_health_proven": runtimeHealth.guestHealthProven,
+                "runtime_health_reason_codes": runtimeHealth.reasonCodes,
+                "guest_toolchain_npm_available": runtimeHealth.guestToolchainNpmAvailable,
+                "guest_toolchain_python3_available": runtimeHealth.guestToolchainPython3Available,
+                "guest_toolchain_pip_available": runtimeHealth.guestToolchainPipAvailable,
+                "guest_toolchain_uv_available": runtimeHealth.guestToolchainUvAvailable,
                 "ready_for_lifecycle": readyForLifecycle,
                 "high_risk_package_execution_enabled": false,
                 "reason_codes": reasonCodes,
@@ -1235,6 +1247,20 @@ struct WhoaThereMacosVmHelper {
         var exitCode: Int32
     }
 
+    private struct RuntimeHealthSummary {
+        var runtimePID: pid_t?
+        var runtimeAlive: Bool
+        var hostRuntimeHealthProven: Bool
+        var healthProven: Bool
+        var guestHealthProven: Bool
+        var healthProofType: String
+        var reasonCodes: [String]
+        var guestToolchainNpmAvailable: Bool
+        var guestToolchainPython3Available: Bool
+        var guestToolchainPipAvailable: Bool
+        var guestToolchainUvAvailable: Bool
+    }
+
     private static func runtimeStartReasons(layout: BundleLayout) -> [String] {
         var reasons: [String] = []
         if !hostSupported() {
@@ -1541,6 +1567,124 @@ struct WhoaThereMacosVmHelper {
         )
     }
 
+    private static func upgradeLocalManifest(_ options: HelperOptions) {
+        let layout = BundleLayout(stateDir: stateDirURL(from: options))
+        if !options.execute {
+            emit(
+                fields: baseFields(status: "dry_run").merging([
+                    "operation": "upgrade-local-manifest",
+                    "mutation": false,
+                    "state_dir": layout.stateDir.path,
+                    "manifest_path": layout.manifestPath.path,
+                    "reason_codes": ["execute_required_for_mutation"],
+                    "exit_code": 0
+                ]) { _, new in new },
+                exitCode: 0
+            )
+        }
+
+        let validationWithoutSignature = validateManifest(layout: layout, includeSignatureReason: false)
+        var reasons = validationWithoutSignature.reasonCodes
+        let fields = validationWithoutSignature.fields
+        let imageID = fields["image_id", default: ""]
+        let signatureStatus = fields["signature_status", default: ""]
+
+        if signatureStatus != "signature_verification_not_implemented" {
+            reasons.append("manifest_upgrade_signature_status_not_legacy_local")
+        }
+        if imageID != "local-restore-image-install" && imageID != "local-imported-disk" {
+            reasons.append("manifest_upgrade_image_id_not_local_developer")
+        }
+        if !fileExists(layout.configPath) {
+            reasons.append("config_missing")
+        }
+        if !fileExists(layout.diskPath) {
+            reasons.append("disk_missing")
+        }
+        if imageID == "local-restore-image-install" {
+            if !fileExists(layout.auxiliaryStoragePath) {
+                reasons.append("auxiliary_storage_missing")
+            }
+            if !fileExists(layout.hardwareModelPath) {
+                reasons.append("hardware_model_missing")
+            }
+            if !fileExists(layout.machineIdentifierPath) {
+                reasons.append("machine_identifier_missing")
+            }
+        }
+
+        let finalReasons = reasonArray(reasons)
+        guard finalReasons.isEmpty else {
+            emit(
+                fields: failClosedFields(layout: layout, reasons: finalReasons, exitCode: 20)
+                    .merging([
+                        "operation": "upgrade-local-manifest",
+                        "mutation": false,
+                        "manifest_path": layout.manifestPath.path,
+                        "manifest_signature_status": signatureStatus.isEmpty ? "missing" : signatureStatus,
+                        "image_id": imageID.isEmpty ? "missing" : imageID
+                    ]) { _, new in new },
+                exitCode: 20
+            )
+        }
+
+        do {
+            guard let contents = try? String(contentsOf: layout.manifestPath, encoding: .utf8) else {
+                throw helperError("manifest_unreadable")
+            }
+            let upgraded = contents
+                .split(separator: "\n", omittingEmptySubsequences: false)
+                .map { rawLine -> String in
+                    let line = String(rawLine)
+                    if line.trimmingCharacters(in: .whitespaces)
+                        == "signature_status=signature_verification_not_implemented" {
+                        return "signature_status=local_developer_verified"
+                    }
+                    return line
+                }
+                .joined(separator: "\n")
+            try (upgraded.hasSuffix("\n") ? upgraded : upgraded + "\n")
+                .write(to: layout.manifestPath, atomically: true, encoding: .utf8)
+            let upgradedValidation = validateManifest(layout: layout, includeSignatureReason: true)
+            guard upgradedValidation.reasonCodes.isEmpty else {
+                emit(
+                    fields: failClosedFields(layout: layout, reasons: upgradedValidation.reasonCodes, exitCode: 70)
+                        .merging([
+                            "operation": "upgrade-local-manifest",
+                            "mutation": true,
+                            "manifest_path": layout.manifestPath.path,
+                            "manifest_signature_status": upgradedValidation.signatureStatus
+                        ]) { _, new in new },
+                    exitCode: 70
+                )
+            }
+            emit(
+                fields: baseFields(status: "ok").merging([
+                    "operation": "upgrade-local-manifest",
+                    "mutation": true,
+                    "state_dir": layout.stateDir.path,
+                    "manifest_path": layout.manifestPath.path,
+                    "image_id": imageID,
+                    "previous_signature_status": signatureStatus,
+                    "manifest_signature_status": upgradedValidation.signatureStatus,
+                    "high_risk_package_execution_enabled": false,
+                    "exit_code": 0
+                ]) { _, new in new },
+                exitCode: 0
+            )
+        } catch {
+            emit(
+                fields: failClosedFields(layout: layout, reasons: ["manifest_upgrade_failed", sanitizedReason(error)], exitCode: 70)
+                    .merging([
+                        "operation": "upgrade-local-manifest",
+                        "mutation": false,
+                        "manifest_path": layout.manifestPath.path
+                    ]) { _, new in new },
+                exitCode: 70
+            )
+        }
+    }
+
     private static func reset(_ options: HelperOptions) {
         let layout = BundleLayout(stateDir: stateDirURL(from: options))
         if !options.execute {
@@ -1616,6 +1760,97 @@ struct WhoaThereMacosVmHelper {
         } catch {
             emit(fields: failClosedFields(layout: layout, reasons: ["prune_failed", sanitizedReason(error)], exitCode: 70), exitCode: 70)
         }
+    }
+
+    private static func runtimeHealthSummary(layout: BundleLayout, runtimePID: pid_t?) -> RuntimeHealthSummary {
+        guard let pid = runtimePID, runtimeProcessIsAlive(pid) else {
+            return RuntimeHealthSummary(
+                runtimePID: runtimePID,
+                runtimeAlive: false,
+                hostRuntimeHealthProven: false,
+                healthProven: false,
+                guestHealthProven: false,
+                healthProofType: "none",
+                reasonCodes: runtimePID == nil ? ["runtime_pid_missing"] : ["runtime_process_not_running"],
+                guestToolchainNpmAvailable: false,
+                guestToolchainPython3Available: false,
+                guestToolchainPipAvailable: false,
+                guestToolchainUvAvailable: false
+            )
+        }
+        guard fileExists(layout.healthProofPath),
+              let runtimeState = readJSONObject(layout.runtimeStatePath),
+              let hostProof = readJSONObject(layout.healthProofPath),
+              intField(runtimeState, "runtime_pid") == Int(pid),
+              intField(hostProof, "runtime_pid") == Int(pid),
+              let sessionID = runtimeState["vm_session_id"] as? String,
+              hostProof["vm_session_id"] as? String == sessionID else {
+            return RuntimeHealthSummary(
+                runtimePID: pid,
+                runtimeAlive: true,
+                hostRuntimeHealthProven: false,
+                healthProven: false,
+                guestHealthProven: false,
+                healthProofType: "none",
+                reasonCodes: ["host_runtime_health_proof_missing_or_mismatched"],
+                guestToolchainNpmAvailable: false,
+                guestToolchainPython3Available: false,
+                guestToolchainPipAvailable: false,
+                guestToolchainUvAvailable: false
+            )
+        }
+        guard let guestProof = readJSONObject(layout.guestHealthProofPath) else {
+            return RuntimeHealthSummary(
+                runtimePID: pid,
+                runtimeAlive: true,
+                hostRuntimeHealthProven: true,
+                healthProven: false,
+                guestHealthProven: false,
+                healthProofType: "host_vm_start_only",
+                reasonCodes: ["guest_health_proof_missing_or_mismatched"],
+                guestToolchainNpmAvailable: false,
+                guestToolchainPython3Available: false,
+                guestToolchainPipAvailable: false,
+                guestToolchainUvAvailable: false
+            )
+        }
+        let guestProofReasons = validateGuestHealthProof(
+            runtimeState: runtimeState,
+            hostProof: hostProof,
+            guestProof: guestProof,
+            runtimePID: Int(pid),
+            expectedHelperVersion: helperVersion,
+            expectedProtocol: guestReadinessProtocol,
+            expectedPort: Int(guestReadinessPort)
+        )
+        guard guestProofReasons.isEmpty else {
+            return RuntimeHealthSummary(
+                runtimePID: pid,
+                runtimeAlive: true,
+                hostRuntimeHealthProven: true,
+                healthProven: false,
+                guestHealthProven: false,
+                healthProofType: "host_vm_start_only",
+                reasonCodes: guestProofReasons,
+                guestToolchainNpmAvailable: false,
+                guestToolchainPython3Available: false,
+                guestToolchainPipAvailable: false,
+                guestToolchainUvAvailable: false
+            )
+        }
+        return RuntimeHealthSummary(
+            runtimePID: pid,
+            runtimeAlive: true,
+            hostRuntimeHealthProven: true,
+            healthProven: true,
+            guestHealthProven: true,
+            healthProofType: "guest_vsock_readiness",
+            reasonCodes: [],
+            guestToolchainNpmAvailable: guestProof["guest_toolchain_npm_available"] as? Bool ?? false,
+            guestToolchainPython3Available: guestProof["guest_toolchain_python3_available"] as? Bool ?? false,
+            guestToolchainPipAvailable: guestProof["guest_toolchain_pip_available"] as? Bool ?? false,
+            guestToolchainUvAvailable: guestProof["guest_toolchain_uv_available"] as? Bool ?? false
+        )
     }
 
     private static func health(_ options: HelperOptions) {
