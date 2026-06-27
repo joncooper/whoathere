@@ -94,6 +94,15 @@ The CLI wrapper prints the exact interactive admin command by default, and the p
 whether the VM disk is present, the VM is stopped, and Python, wheel, Node/npm, and uv sources are
 available. It returns success only when `ready_for_sudo_provisioning=true`.
 
+After guest provisioning succeeds, run the npm/uv release gate through the CLI:
+
+```sh
+whoathere vm validate-npm-uv --state-dir /absolute/path/to/vm-state-dir --helper /absolute/path/to/whoathere-macos-vm-helper --execute
+```
+
+The wrapper delegates to `scripts/validate-npm-uv-detonation.sh`, writes the release-validation
+receipt only after the live gate passes, and remains fail-closed while guest tooling is stale.
+
 For local resource tuning, set `WHOATHERE_VM_DISK_GIB` or `WHOATHERE_VM_MEMORY_MIB` before running
 the validation script. Restore-backed macOS bundles currently use a 64 GiB disk by default, and the
 helper rejects smaller restore disks before starting Apple's installer.

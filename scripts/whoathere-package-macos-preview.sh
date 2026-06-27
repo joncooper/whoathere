@@ -138,6 +138,7 @@ smoke_package() {
   DOCTOR_OUTPUT="$SMOKE_ROOT/doctor.json"
   PREFLIGHT_OUTPUT="$SMOKE_ROOT/provision-preflight.txt"
   CLI_PREFLIGHT_OUTPUT="$SMOKE_ROOT/cli-provision-preflight.txt"
+  CLI_NPM_UV_OUTPUT="$SMOKE_ROOT/cli-npm-uv-validation.txt"
 
   "$EXTRACTED_CLI" --help >/dev/null
   test -x "$EXTRACTED_NPM_UV_VALIDATOR"
@@ -161,6 +162,15 @@ smoke_package() {
   grep -q 'status=preflight' "$CLI_PREFLIGHT_OUTPUT"
   grep -q 'disk_image_present=false' "$CLI_PREFLIGHT_OUTPUT"
   grep -q 'ready_for_sudo_provisioning=false' "$CLI_PREFLIGHT_OUTPUT"
+  set +e
+  "$EXTRACTED_CLI" vm validate-npm-uv --execute --state-dir "$EXTRACTED_STATE" --helper "$EXTRACTED_HELPER" > "$CLI_NPM_UV_OUTPUT" 2>&1
+  CLI_NPM_UV_STATUS=$?
+  set -e
+  test "$CLI_NPM_UV_STATUS" -eq 64
+  grep -q 'whoathere vm validate-npm-uv' "$CLI_NPM_UV_OUTPUT"
+  grep -q 'status=execute' "$CLI_NPM_UV_OUTPUT"
+  grep -q 'guest_tooling_not_ready_for_npm_uv_validation=true' "$CLI_NPM_UV_OUTPUT"
+  grep -q 'ready_for_sudo_provisioning=false' "$CLI_NPM_UV_OUTPUT"
   /usr/bin/codesign --verify --strict --verbose=2 "$EXTRACTED_CLI" >/dev/null
   /usr/bin/codesign --verify --strict --verbose=2 "$EXTRACTED_HELPER" >/dev/null
   "$EXTRACTED_CLI" doctor --json --state-dir "$EXTRACTED_STATE" --helper "$EXTRACTED_HELPER" > "$DOCTOR_OUTPUT"

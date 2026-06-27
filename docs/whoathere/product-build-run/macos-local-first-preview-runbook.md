@@ -239,7 +239,7 @@ Run fixture validation:
 ```sh
 WHOATHERE_VM_STATE_DIR="$WHOATHERE_STATE" /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/scripts/validate-detonation-fixtures.sh
 WHOATHERE_VM_STATE_DIR="$WHOATHERE_STATE" /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/scripts/validate-project-detonation.sh
-WHOATHERE_VM_STATE_DIR="$WHOATHERE_STATE" /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/scripts/validate-npm-uv-detonation.sh
+$WHOATHERE vm validate-npm-uv --state-dir "$WHOATHERE_STATE" --helper "$WHOATHERE_HELPER" --execute
 ```
 
 Run a local Python project detonation:

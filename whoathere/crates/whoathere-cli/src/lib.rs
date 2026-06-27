@@ -118,6 +118,11 @@ pub enum Command {
         preflight: bool,
         execute: bool,
     },
+    VmValidateNpmUv {
+        state_dir: Option<String>,
+        helper_path: Option<String>,
+        execute: bool,
+    },
     VmAction {
         action: VmAction,
         state_dir: Option<String>,
@@ -598,6 +603,13 @@ pub fn parse_command(args: &[String]) -> Command {
             preflight: rest.iter().any(|arg| arg == "--preflight"),
             execute: rest.iter().any(|arg| arg == "--execute"),
         },
+        [cmd, sub, rest @ ..] if cmd == "vm" && sub == "validate-npm-uv" => {
+            Command::VmValidateNpmUv {
+                state_dir: parse_flag_value(rest, "--state-dir"),
+                helper_path: parse_helper_path(rest),
+                execute: rest.iter().any(|arg| arg == "--execute"),
+            }
+        }
         [cmd, sub, rest @ ..]
             if cmd == "vm"
                 && matches!(
@@ -765,6 +777,11 @@ fn render_command_text(command: Command) -> String {
             preflight,
             execute,
         ),
+        Command::VmValidateNpmUv {
+            state_dir,
+            helper_path,
+            execute,
+        } => render_vm_validate_npm_uv(state_dir.as_deref(), helper_path.as_deref(), execute),
         Command::VmAction {
             action,
             state_dir,
@@ -1173,6 +1190,7 @@ fn command_help() -> String {
         "|vm status [--state-dir <dir>] [--manifest <path>] [--helper <path>] [--json]",
         "|vm init [--state-dir <dir>] [--manifest <path>] [--helper <path>] [--image <path>|--restore-image <path>|--fetch-latest-restore-image] [--memory-mib <n>] [--disk-gib <n>] [--execute]",
         "|vm reprovision [--state-dir <dir>] [--helper <path>] [--preflight|--execute]",
+        "|vm validate-npm-uv [--state-dir <dir>] [--helper <path>] [--execute]",
         "|vm start|suspend|reset|prune|upgrade-local-manifest [--state-dir <dir>] [--helper <path>] [--execute]",
         "|vm health [--state-dir <dir>] [--helper <path>]",
         "|vm detonate [--workspace <path>] [--state-dir <dir>] [--helper <path>] [--fixture <name>] [--timeout-seconds <n>] [--execute] [--json] npm|pip|uv -- <args>",
@@ -1888,7 +1906,12 @@ fn render_vm_reprovision(
         script_args.push("--preflight".to_string());
     }
     script_args.push(config.state_dir.display().to_string());
-    let script_output = run_guest_reprovision_script(&script_path, &script_args);
+    let script_output = run_macos_vm_script(
+        &script_path,
+        &script_args,
+        &[],
+        Duration::from_secs(20 * 60),
+    );
     let exit_code = script_output
         .exit_code
         .unwrap_or_else(|| ExitCode::InternalError.code());
@@ -1900,6 +1923,81 @@ fn render_vm_reprovision(
         config.state_dir.display(),
         true,
         reprovision_command,
+        script_output.render_text()
+    )
+}
+
+fn render_vm_validate_npm_uv(
+    state_dir: Option<&str>,
+    helper_path: Option<&str>,
+    execute: bool,
+) -> String {
+    let config = macos_vm_config(state_dir, None, None);
+    let script_path = match resolve_helper_script_path(
+        helper_path,
+        "validate-npm-uv-detonation.sh",
+        "npm_uv_validation_script_not_found",
+    ) {
+        Ok(path) => path,
+        Err(reason_code) => {
+            return format!(
+                "whoathere vm validate-npm-uv\nrelease_target={}\nstate_dir={}\nmutation=false\nexecute_requested={execute}\nstatus=error\nreason_code={reason_code}\nexit_code={}",
+                RELEASE_TARGET,
+                config.state_dir.display(),
+                ExitCode::Misuse.code()
+            );
+        }
+    };
+    let validation_command = format!(
+        "{} vm validate-npm-uv --state-dir {} --helper {} --execute",
+        std::env::current_exe()
+            .ok()
+            .map(|path| shell_quote(&path.display().to_string()))
+            .unwrap_or_else(|| "whoathere".to_string()),
+        shell_quote(&config.state_dir.display().to_string()),
+        shell_quote(
+            &configured_macos_vm_helper_path(helper_path)
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "missing".to_string())
+        )
+    );
+    if !execute {
+        return format!(
+            "whoathere vm validate-npm-uv\nrelease_target={}\nstate_dir={}\nmutation=false\nexecute_requested=false\nstatus=dry_run\nscript_path={}\nvalidation_command={}\nexplanation=run with --execute after guest provisioning proves Node/npm and uv\nexit_code={}",
+            RELEASE_TARGET,
+            config.state_dir.display(),
+            redacted_scalar(&script_path.display().to_string()),
+            validation_command,
+            ExitCode::Allow.code()
+        );
+    }
+
+    let whoathere_bin = std::env::current_exe()
+        .ok()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "whoathere".to_string());
+    let helper = configured_macos_vm_helper_path(helper_path)
+        .map(|path| path.display().to_string())
+        .unwrap_or_default();
+    let extra_env = vec![
+        (
+            "WHOATHERE_VM_STATE_DIR",
+            config.state_dir.display().to_string(),
+        ),
+        ("WHOATHERE_MACOS_VM_HELPER", helper),
+        ("WHOATHERE_BIN", whoathere_bin),
+    ];
+    let script_output =
+        run_macos_vm_script(&script_path, &[], &extra_env, Duration::from_secs(30 * 60));
+    let exit_code = script_output
+        .exit_code
+        .unwrap_or_else(|| ExitCode::InternalError.code());
+    let mutation = exit_code == ExitCode::Allow.code();
+    format!(
+        "whoathere vm validate-npm-uv\nrelease_target={}\nstate_dir={}\nmutation={mutation}\nexecute_requested=true\nstatus=execute\nvalidation_command={}\n{}\nexit_code={exit_code}",
+        RELEASE_TARGET,
+        config.state_dir.display(),
+        validation_command,
         script_output.render_text()
     )
 }
@@ -4297,7 +4395,7 @@ fn render_release_validation_text(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct GuestReprovisionScriptOutput {
+struct MacosVmScriptOutput {
     script_path: String,
     available: bool,
     exit_code: Option<i32>,
@@ -4308,7 +4406,7 @@ struct GuestReprovisionScriptOutput {
     reason_codes: Vec<String>,
 }
 
-impl GuestReprovisionScriptOutput {
+impl MacosVmScriptOutput {
     fn render_text(&self) -> String {
         format!(
             "script_path={}\nscript_available={}\nscript_exit_code={}\nscript_reason_codes={:?}\nscript_stdout_truncated={}\nscript_stderr_truncated={}\nscript_stdout={}\nscript_stderr={}",
@@ -4326,10 +4424,12 @@ impl GuestReprovisionScriptOutput {
     }
 }
 
-fn run_guest_reprovision_script(
+fn run_macos_vm_script(
     script_path: &Path,
     script_args: &[String],
-) -> GuestReprovisionScriptOutput {
+    extra_env: &[(&str, String)],
+    timeout: Duration,
+) -> MacosVmScriptOutput {
     let mut command = ProcessCommand::new(script_path);
     command
         .args(script_args)
@@ -4351,12 +4451,15 @@ fn run_guest_reprovision_script(
     if let Some(uv_binary) = detect_uv_binary_for_reprovision() {
         command.env("WHOATHERE_UV_BINARY", uv_binary);
     }
+    for (name, value) in extra_env {
+        command.env(name, value);
+    }
 
     match command.spawn() {
         Ok(mut child) => {
             let stdout_reader = spawn_limited_reader(child.stdout.take());
             let stderr_reader = spawn_limited_reader(child.stderr.take());
-            let deadline = Instant::now() + Duration::from_secs(60);
+            let deadline = Instant::now() + timeout;
             let mut timed_out = false;
             let status = loop {
                 match child.try_wait() {
@@ -4374,17 +4477,17 @@ fn run_guest_reprovision_script(
             let (stderr, stderr_truncated) = join_limited_reader(stderr_reader);
             let mut reason_codes = Vec::new();
             if timed_out {
-                reason_codes.push("guest_reprovision_script_timeout".to_string());
+                reason_codes.push("macos_vm_script_timeout".to_string());
             } else if !status.map(|status| status.success()).unwrap_or(false) {
-                reason_codes.push("guest_reprovision_script_failed".to_string());
+                reason_codes.push("macos_vm_script_failed".to_string());
             }
             if stdout_truncated {
-                reason_codes.push("guest_reprovision_script_stdout_truncated".to_string());
+                reason_codes.push("macos_vm_script_stdout_truncated".to_string());
             }
             if stderr_truncated {
-                reason_codes.push("guest_reprovision_script_stderr_truncated".to_string());
+                reason_codes.push("macos_vm_script_stderr_truncated".to_string());
             }
-            GuestReprovisionScriptOutput {
+            MacosVmScriptOutput {
                 script_path: script_path.display().to_string(),
                 available: true,
                 exit_code: status
@@ -4397,7 +4500,7 @@ fn run_guest_reprovision_script(
                 reason_codes,
             }
         }
-        Err(error) => GuestReprovisionScriptOutput {
+        Err(error) => MacosVmScriptOutput {
             script_path: script_path.display().to_string(),
             available: true,
             exit_code: Some(ExitCode::InternalError.code()),
@@ -4405,7 +4508,7 @@ fn run_guest_reprovision_script(
             stderr: error.to_string(),
             stdout_truncated: false,
             stderr_truncated: false,
-            reason_codes: vec!["guest_reprovision_script_spawn_failed".to_string()],
+            reason_codes: vec!["macos_vm_script_spawn_failed".to_string()],
         },
     }
 }
@@ -4670,6 +4773,18 @@ fn reprovision_command_for_script(script_path: &Path, state_dir: &Path) -> Strin
 fn resolve_guest_reprovision_script_path(
     helper_path: Option<&str>,
 ) -> Result<PathBuf, &'static str> {
+    resolve_helper_script_path(
+        helper_path,
+        "provision-guest-readiness.sh",
+        "guest_reprovision_script_not_found",
+    )
+}
+
+fn resolve_helper_script_path(
+    helper_path: Option<&str>,
+    script_name: &str,
+    missing_script_reason: &'static str,
+) -> Result<PathBuf, &'static str> {
     let Some(path) = configured_macos_vm_helper_path(helper_path) else {
         return Err("macos_vm_helper_path_not_configured");
     };
@@ -4685,15 +4800,13 @@ fn resolve_guest_reprovision_script_path(
     let Some(helper_root) = helper_root_from_helper_path(&canonical_helper) else {
         return Err("macos_vm_helper_root_not_resolved");
     };
-    let script_path = helper_root
-        .join("scripts")
-        .join("provision-guest-readiness.sh");
+    let script_path = helper_root.join("scripts").join(script_name);
     if !script_path.is_file() {
-        return Err("guest_reprovision_script_not_found");
+        return Err(missing_script_reason);
     }
     script_path
         .canonicalize()
-        .map_err(|_| "guest_reprovision_script_not_found")
+        .map_err(|_| missing_script_reason)
 }
 
 fn guest_reprovision_required(provisioning: &MacosVmGuestProvisioningSummary) -> bool {
@@ -10109,6 +10222,111 @@ mod tests {
         assert!(result.output.contains("script_exit_code=0"));
         assert!(result.output.contains("guest_readiness_preflight=true"));
         assert!(result.output.contains("ready_for_sudo_provisioning=true"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn parses_vm_validate_npm_uv_command() {
+        let args = vec![
+            "vm".to_string(),
+            "validate-npm-uv".to_string(),
+            "--state-dir".to_string(),
+            "/tmp/whoathere-vm".to_string(),
+            "--helper".to_string(),
+            "/tmp/helper".to_string(),
+            "--execute".to_string(),
+        ];
+        assert_eq!(
+            parse_command(&args),
+            Command::VmValidateNpmUv {
+                state_dir: Some("/tmp/whoathere-vm".to_string()),
+                helper_path: Some("/tmp/helper".to_string()),
+                execute: true,
+            }
+        );
+    }
+
+    #[test]
+    fn vm_validate_npm_uv_dry_run_prints_execute_command() {
+        let root = temp_root("whoathere-cli-vm-validate-npm-uv-dry-run");
+        let helper_root = root.join("helpers").join("macos-vm-helper");
+        let helper_dir = helper_root
+            .join(".build")
+            .join("arm64-apple-macosx")
+            .join("release");
+        let helper = helper_dir.join("whoathere-macos-vm-helper");
+        let script = helper_root
+            .join("scripts")
+            .join("validate-npm-uv-detonation.sh");
+        let state_dir = root.join("state");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&helper_dir).expect("helper dir");
+        std::fs::create_dir_all(script.parent().expect("script parent")).expect("script dir");
+        write_new_file(&helper, b"#!/bin/sh\nexit 0\n").expect("helper");
+        set_executable(&helper).expect("executable helper");
+        write_new_file(&script, b"#!/bin/sh\nexit 0\n").expect("validation script");
+        set_executable(&script).expect("executable validation script");
+
+        let result = evaluate_command(Command::VmValidateNpmUv {
+            state_dir: Some(state_dir.display().to_string()),
+            helper_path: Some(helper.display().to_string()),
+            execute: false,
+        });
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result.output.contains("status=dry_run"));
+        assert!(result.output.contains("mutation=false"));
+        assert!(result.output.contains("validation_command="));
+        assert!(result.output.contains("validate-npm-uv"));
+        assert!(result.output.contains("--execute"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vm_validate_npm_uv_execute_runs_packaged_script() {
+        let root = temp_root("whoathere-cli-vm-validate-npm-uv-execute");
+        let helper_root = root.join("helpers").join("macos-vm-helper");
+        let helper_dir = helper_root
+            .join(".build")
+            .join("arm64-apple-macosx")
+            .join("release");
+        let helper = helper_dir.join("whoathere-macos-vm-helper");
+        let script = helper_root
+            .join("scripts")
+            .join("validate-npm-uv-detonation.sh");
+        let state_dir = root.join("state");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&helper_dir).expect("helper dir");
+        std::fs::create_dir_all(script.parent().expect("script parent")).expect("script dir");
+        write_new_file(&helper, b"#!/bin/sh\nexit 0\n").expect("helper");
+        set_executable(&helper).expect("executable helper");
+        write_new_file(
+            &script,
+            b"#!/bin/sh\necho npm_uv_validation_script=true\necho state_dir=$WHOATHERE_VM_STATE_DIR\necho helper=$WHOATHERE_MACOS_VM_HELPER\necho bin_set=$([ -n \"$WHOATHERE_BIN\" ] && echo true || echo false)\nexit 64\n",
+        )
+        .expect("validation script");
+        set_executable(&script).expect("executable validation script");
+
+        let result = evaluate_command(Command::VmValidateNpmUv {
+            state_dir: Some(state_dir.display().to_string()),
+            helper_path: Some(helper.display().to_string()),
+            execute: true,
+        });
+
+        assert_eq!(result.exit_code, 64);
+        assert!(result.output.contains("status=execute"));
+        assert!(result.output.contains("mutation=false"));
+        assert!(result.output.contains("script_exit_code=64"));
+        assert!(result.output.contains("npm_uv_validation_script=true"));
+        assert!(result
+            .output
+            .contains(&format!("state_dir={}", state_dir.display())));
+        assert!(result
+            .output
+            .contains(&format!("helper={}", helper.display())));
+        assert!(result.output.contains("bin_set=true"));
 
         let _ = std::fs::remove_dir_all(&root);
     }

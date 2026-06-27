@@ -143,6 +143,9 @@ sh -n scripts/whoathere-notarize-macos-release.sh
 whoathere/target/debug/whoathere vm reprovision --preflight --state-dir /Users/jdc/.whoathere/macos-vm-validation --helper /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/.build/arm64-apple-macosx/release/whoathere-macos-vm-helper
 # expected exit 64 when not run as root; proves the wrapper does not cross the admin boundary
 whoathere/target/debug/whoathere vm reprovision --execute --state-dir /Users/jdc/.whoathere/macos-vm-validation --helper /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/.build/arm64-apple-macosx/release/whoathere-macos-vm-helper
+whoathere/target/debug/whoathere vm validate-npm-uv --state-dir /Users/jdc/.whoathere/macos-vm-validation --helper /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/.build/arm64-apple-macosx/release/whoathere-macos-vm-helper
+# expected exit 64 until guest provisioning proves Node/npm and uv
+whoathere/target/debug/whoathere vm validate-npm-uv --execute --state-dir /Users/jdc/.whoathere/macos-vm-validation --helper /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/.build/arm64-apple-macosx/release/whoathere-macos-vm-helper
 whoathere/helpers/macos-vm-helper/scripts/provision-guest-readiness.sh --preflight /Users/jdc/.whoathere/macos-vm-validation
 cargo test --manifest-path whoathere/Cargo.toml -p whoathere-cli release_validation
 scripts/whoathere-package-macos-preview.sh
@@ -217,6 +220,13 @@ command that `doctor` reports. A non-root `whoathere vm reprovision --execute` s
 `mutation=false`, and the same rerun command, proving the CLI wrapper does not silently try to cross
 the admin boundary or mutate the VM without an interactive privileged operator action.
 
+The new `whoathere vm validate-npm-uv` wrapper prints the post-provision execute command by default
+and delegates to `validate-npm-uv-detonation.sh` only with `--execute`. On the current stale
+validation VM, the wrapper exits 64 before VM start with
+`guest_tooling_not_ready_for_npm_uv_validation=true`, the provisioning preflight output, and
+`mutation=false`. This keeps npm/uv release proof fail-closed while making the post-provision gate a
+normal CLI workflow.
+
 The preview packaging path now has `scripts/whoathere-package-macos-preview.sh`. It validates the
 Rust workspace, builds the release CLI, locally signs the CLI, runs Swift helper tests, builds and
 signs the release helper, runs the local red-team fixture gate, stages helper scripts and docs, and
@@ -259,7 +269,9 @@ preview packages must pass the same smoke before the script reports success. The
 verifies that the extracted npm/uv detonation validator is executable, the extracted provisioning
 script passes shell syntax validation, the packaged provisioning preflight fails closed on a fresh
 empty package-smoke state before any admin mutation, and the packaged `bin/whoathere vm reprovision
---preflight` wrapper reports the same fail-closed preflight state.
+--preflight` wrapper reports the same fail-closed preflight state. It also verifies the packaged
+`bin/whoathere vm validate-npm-uv --execute` wrapper fails closed on the empty package-smoke state
+before any VM start or npm/uv release claim.
 
 The latest npm/uv planner slices changed host planner, Swift helper, and guest-agent behavior. They were validated with unit tests, helper build/tests, guest C syntax checks, and live `doctor` fail-closed readiness output. Live npm/uv detonation is still not claimed because the stopped validation VM must first be reprovisioned with Node/npm and uv tooling through the interactive sudo step above.
 
@@ -272,11 +284,12 @@ live npm and uv smokes returned `helper=null`, `project_payload=null`,
 `verdict=preflight_security_outcome`, and tool-specific blockers
 `macos_vm_guest_node_runtime_not_provisioned` and `macos_vm_guest_uv_binary_not_provisioned`.
 
-The post-provision npm/uv release gate now lives at
-`whoathere/helpers/macos-vm-helper/scripts/validate-npm-uv-detonation.sh`. It checks the provisioning
-receipt before VM start, starts the VM only when the receipt is ready, requires live guest health to
-prove `python3`, `pip`, `npm`, and `uv`, runs clean local npm install/ci and uv pip project cases,
-runs canary-reading npm lifecycle/API-use and uv import-time cases, verifies public npm/uv
+The post-provision npm/uv release gate now lives behind
+`whoathere vm validate-npm-uv --execute`, which delegates to
+`whoathere/helpers/macos-vm-helper/scripts/validate-npm-uv-detonation.sh`. It checks the
+provisioning receipt before VM start, starts the VM only when the receipt is ready, requires live
+guest health to prove `python3`, `pip`, `npm`, and `uv`, runs clean local npm install/ci and uv pip
+project cases, runs canary-reading npm lifecycle/API-use and uv import-time cases, verifies public npm/uv
 resolution and `uv sync` remain fail-closed before helper execution, rejects raw canary value
 leakage, checks the host project was not mutated, writes
 `<state-dir>/bundle/release-validation.json` after success, and suspends the VM if it started it. In
