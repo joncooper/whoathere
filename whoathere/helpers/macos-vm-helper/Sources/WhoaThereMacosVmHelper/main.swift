@@ -1835,11 +1835,11 @@ struct WhoaThereMacosVmHelper {
                 exitCode: 20
             )
         }
-        guard !projectMode || tool == "pip" else {
+        guard !projectMode || tool == "pip" || tool == "npm" else {
             emit(
                 fields: failClosedFields(
                     layout: layout,
-                    reasons: ["project_detonation_pip_only_goal_3"],
+                    reasons: ["project_detonation_tool_unsupported"],
                     exitCode: 20
                 ).merging([
                     "operation": "detonate",
@@ -1898,7 +1898,12 @@ struct WhoaThereMacosVmHelper {
         }
         if projectMode {
             guard let workflow = options.detonationProjectWorkflow,
-                  ["pip_project_install", "pip_requirements_install"].contains(workflow) else {
+                  [
+                    "pip_project_install",
+                    "pip_requirements_install",
+                    "npm_project_install",
+                    "npm_ci"
+                  ].contains(workflow) else {
                 emit(
                     fields: failClosedFields(
                         layout: layout,

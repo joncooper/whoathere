@@ -2420,6 +2420,8 @@ fn allowed_mirror_input_class(path: &Path, workspace_root: &Path) -> Option<&'st
         .extension()
         .map(|extension| extension.to_string_lossy().to_ascii_lowercase());
     match file_name.as_str() {
+        "package.json" => Some("npm_manifest"),
+        "package-lock.json" | "npm-shrinkwrap.json" => Some("npm_lockfile"),
         "pyproject.toml" | "setup.py" | "setup.cfg" => Some("python_build_config"),
         "uv.lock" | "poetry.lock" => Some("python_lockfile"),
         _ if file_name.starts_with("requirements") && file_name.ends_with(".txt") => {
@@ -2428,6 +2430,7 @@ fn allowed_mirror_input_class(path: &Path, workspace_root: &Path) -> Option<&'st
         _ if file_name.starts_with("constraints") && file_name.ends_with(".txt") => {
             Some("python_constraints")
         }
+        _ if matches!(extension.as_deref(), Some("js" | "cjs" | "mjs")) => Some("npm_source"),
         "__init__.py" => Some("python_package_init"),
         _ if extension.as_deref() == Some("py") => Some("python_source"),
         _ if extension.as_deref() == Some("pth") => Some("python_startup_hook"),
@@ -2643,6 +2646,9 @@ fn build_project_detonation_plan(
             reason_codes: Vec::new(),
         };
     }
+    if tool == "npm" {
+        return build_npm_project_detonation_plan(args, mirror_plan);
+    }
     if tool != "pip" {
         return ProjectDetonationPlan {
             project_mode: false,
@@ -2756,6 +2762,234 @@ fn build_project_detonation_plan(
         safe_to_execute: false,
         reason_codes,
     }
+}
+
+fn build_npm_project_detonation_plan(
+    args: &[String],
+    mirror_plan: &DetonationMirrorPlan,
+) -> ProjectDetonationPlan {
+    if !mirror_plan.workspace_configured || mirror_plan.workspace_root.is_none() {
+        return ProjectDetonationPlan {
+            project_mode: false,
+            workflow: None,
+            import_module: None,
+            requirements_path: None,
+            safe_to_execute: false,
+            reason_codes: vec!["project_detonation_workspace_required".to_string()],
+        };
+    }
+
+    let mut reason_codes = Vec::new();
+    let workflow = if args.iter().any(|arg| arg == "ci") {
+        if !mirror_plan
+            .included_paths
+            .iter()
+            .any(|path| matches!(path.as_str(), "package-lock.json" | "npm-shrinkwrap.json"))
+        {
+            reason_codes.push("project_npm_ci_lockfile_required".to_string());
+        }
+        Some("npm_ci".to_string())
+    } else if args.iter().any(|arg| arg == "install") {
+        Some("npm_project_install".to_string())
+    } else {
+        reason_codes.push("project_npm_install_or_ci_required".to_string());
+        None
+    };
+
+    if !mirror_plan
+        .included_paths
+        .iter()
+        .any(|path| path == "package.json")
+    {
+        reason_codes.push("project_npm_manifest_required".to_string());
+    }
+    if mirror_plan.symlink_escape_count > 0 {
+        reason_codes.push("project_symlink_escape_blocked".to_string());
+    }
+    if mirror_plan.risky_file_exclusion_count > 0 {
+        reason_codes.push("project_risky_file_requires_manual_review".to_string());
+    }
+    if npm_args_request_external_resolution(args) {
+        reason_codes.push("project_npm_external_package_arg_denied".to_string());
+    }
+    match validate_npm_project_manifest_and_lock(mirror_plan) {
+        Ok(mut npm_reasons) => reason_codes.append(&mut npm_reasons),
+        Err(reason) => reason_codes.push(reason),
+    }
+    reason_codes.sort();
+    reason_codes.dedup();
+
+    ProjectDetonationPlan {
+        project_mode: true,
+        workflow,
+        import_module: None,
+        requirements_path: None,
+        safe_to_execute: reason_codes.is_empty(),
+        reason_codes,
+    }
+}
+
+fn npm_args_request_external_resolution(args: &[String]) -> bool {
+    let mut command_seen = false;
+    for arg in args {
+        if matches!(
+            arg.as_str(),
+            "--registry" | "--cache" | "--prefix" | "--userconfig" | "--globalconfig"
+        ) {
+            return true;
+        }
+        if matches!(arg.as_str(), "-g" | "--global") || arg.starts_with("--registry=") {
+            return true;
+        }
+        if arg == "install" || arg == "ci" {
+            command_seen = true;
+            continue;
+        }
+        if !command_seen || arg.starts_with('-') {
+            continue;
+        }
+        return true;
+    }
+    false
+}
+
+fn validate_npm_project_manifest_and_lock(
+    mirror_plan: &DetonationMirrorPlan,
+) -> Result<Vec<String>, String> {
+    let package_file = mirror_plan
+        .files
+        .iter()
+        .find(|file| file.relative_path == "package.json")
+        .ok_or_else(|| "project_npm_manifest_required".to_string())?;
+    let package_json = std::fs::read_to_string(&package_file.absolute_path)
+        .map_err(|_| "project_npm_manifest_read_failed".to_string())?;
+    let mut reasons = Vec::new();
+    for dependency_key in [
+        "dependencies",
+        "devDependencies",
+        "optionalDependencies",
+        "peerDependencies",
+        "bundleDependencies",
+        "bundledDependencies",
+    ] {
+        match json_object_field_is_empty(&package_json, dependency_key) {
+            JsonObjectFieldState::Missing | JsonObjectFieldState::Empty => {}
+            JsonObjectFieldState::NonEmpty => {
+                reasons.push("project_npm_dependency_resolution_deferred".to_string())
+            }
+            JsonObjectFieldState::Invalid => {
+                reasons.push("project_npm_manifest_dependency_section_invalid".to_string())
+            }
+        }
+    }
+    if contains_npm_source_override(&package_json) {
+        reasons.push("project_npm_source_override_denied".to_string());
+    }
+    if package_json.contains("\"gypfile\"") || package_json.contains("binding.gyp") {
+        reasons.push("project_npm_native_marker_requires_manual_review".to_string());
+    }
+
+    for lock in mirror_plan.files.iter().filter(|file| {
+        matches!(
+            file.relative_path.as_str(),
+            "package-lock.json" | "npm-shrinkwrap.json"
+        )
+    }) {
+        let lock_text = std::fs::read_to_string(&lock.absolute_path)
+            .map_err(|_| "project_npm_lockfile_read_failed".to_string())?;
+        if contains_npm_source_override(&lock_text) || lock_text.contains("\"node_modules/") {
+            reasons.push("project_npm_lock_resolution_deferred".to_string());
+        }
+    }
+
+    reasons.sort();
+    reasons.dedup();
+    Ok(reasons)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JsonObjectFieldState {
+    Missing,
+    Empty,
+    NonEmpty,
+    Invalid,
+}
+
+fn json_object_field_is_empty(input: &str, key: &str) -> JsonObjectFieldState {
+    let Some(position) = input.find(&format!("\"{key}\"")) else {
+        return JsonObjectFieldState::Missing;
+    };
+    let after_key = &input[position + key.len() + 2..];
+    let Some(colon_position) = after_key.find(':') else {
+        return JsonObjectFieldState::Invalid;
+    };
+    let after_colon = after_key[colon_position + 1..].trim_start();
+    if !after_colon.starts_with('{') {
+        return JsonObjectFieldState::Invalid;
+    }
+    let mut depth = 0_i32;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut saw_content = false;
+    for character in after_colon.chars() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                in_string = false;
+            }
+            if depth == 1 {
+                saw_content = true;
+            }
+            continue;
+        }
+        match character {
+            '"' => {
+                in_string = true;
+                if depth == 1 {
+                    saw_content = true;
+                }
+            }
+            '{' => {
+                depth += 1;
+                if depth > 1 {
+                    saw_content = true;
+                }
+            }
+            '}' => {
+                if depth == 1 {
+                    return if saw_content {
+                        JsonObjectFieldState::NonEmpty
+                    } else {
+                        JsonObjectFieldState::Empty
+                    };
+                }
+                depth -= 1;
+                if depth < 0 {
+                    return JsonObjectFieldState::Invalid;
+                }
+            }
+            character if character.is_whitespace() => {}
+            _ if depth == 1 => saw_content = true,
+            _ => {}
+        }
+    }
+    JsonObjectFieldState::Invalid
+}
+
+fn contains_npm_source_override(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    lower.contains("http://")
+        || lower.contains("https://")
+        || lower.contains("git+")
+        || lower.contains("github:")
+        || lower.contains("gitlab:")
+        || lower.contains("bitbucket:")
+        || lower.contains("file:")
+        || lower.contains("link:")
+        || lower.contains("workspace:")
 }
 
 fn project_has_python_build_input(mirror_plan: &DetonationMirrorPlan) -> bool {
@@ -3857,13 +4091,15 @@ fn macos_local_release_readiness(
         implemented_workflows: string_vec(&[
             "pip.local_project.install",
             "pip.local_requirements.local_only",
+            "npm.local_project.no_external_dependency_plan",
             "host.sync_back.disabled_preview",
             "vm.fixture_detonation",
             "vm.release_plan.admission_model",
         ]),
         fail_closed_workflows: string_vec(&[
-            "npm.install.project",
-            "npm.ci.project",
+            "npm.install.project.live_until_guest_toolchain_proven",
+            "npm.ci.project.live_until_guest_toolchain_proven",
+            "npm.public_dependency_resolution",
             "npm.exec_or_npx",
             "uv.sync",
             "uv.pip_install",
@@ -9061,7 +9297,8 @@ mod tests {
         assert!(result
             .output
             .contains("command_class=npm_install_detonation"));
-        assert!(result.output.contains("mirror_allowed_file_count=0"));
+        assert!(result.output.contains("mirror_allowed_file_count=1"));
+        assert!(result.output.contains("npm_manifest"));
         assert!(result.output.contains("mirror_secret_exclusion_count=1"));
         assert!(result.output.contains("verdict=dry_run_execute_required"));
         assert!(result.output.contains("helper_invoked=false"));
@@ -9197,6 +9434,146 @@ mod tests {
             })
             .count();
         assert_eq!(payload_count, 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vm_detonate_npm_project_dry_run_plans_safe_no_dependency_project() {
+        let root = temp_root("whoathere-cli-vm-npm-project-dry-run");
+        std::fs::write(
+            root.join("package.json"),
+            r#"{"name":"whoathere-clean-npm","version":"0.0.1","main":"index.js","scripts":{"postinstall":"node index.js"},"dependencies":{}}"#,
+        )
+        .expect("package json");
+        std::fs::write(
+            root.join("index.js"),
+            "module.exports = { run() { return 'clean'; } };\n",
+        )
+        .expect("index js");
+        std::fs::write(
+            root.join(".npmrc"),
+            "//registry.npmjs.org/:_authToken=real-secret",
+        )
+        .expect("npmrc");
+
+        let result = evaluate_command(Command::VmDetonate {
+            tool: "npm".to_string(),
+            args: vec!["install".to_string()],
+            execute: false,
+            state_dir: Some(root.join("state").display().to_string()),
+            helper_path: Some("/tmp/nonexistent-helper".to_string()),
+            workspace: Some(root.display().to_string()),
+            fixture: None,
+            timeout_seconds: Some(30),
+            json: false,
+        });
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result.output.contains("project_mode=true"));
+        assert!(result
+            .output
+            .contains("project_workflow=npm_project_install"));
+        assert!(result.output.contains("project_safe_to_execute=true"));
+        assert!(result.output.contains("npm_manifest"));
+        assert!(result.output.contains("npm_source"));
+        assert!(result.output.contains("mirror_secret_exclusion_count=1"));
+        assert!(!result.output.contains("real-secret"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vm_detonate_npm_project_execute_forwards_payload_to_helper() {
+        let root = temp_root("whoathere-cli-vm-npm-project-helper");
+        std::fs::write(
+            root.join("package.json"),
+            r#"{"name":"whoathere-clean-npm","version":"0.0.1","main":"index.js","scripts":{"postinstall":"node index.js"}}"#,
+        )
+        .expect("package json");
+        std::fs::write(
+            root.join("index.js"),
+            "module.exports = { run() { return 'clean'; } };\n",
+        )
+        .expect("index js");
+        let helper = root.join("helper.sh");
+        write_new_file(
+            &helper,
+            b"#!/bin/sh\nprintf 'args='\nfor arg in \"$@\"; do printf '<%s>' \"$arg\"; done\nprintf '\\n'\nexit 0\n",
+        )
+        .expect("helper script");
+        set_executable(&helper).expect("executable helper");
+        let state_dir = root.join("state");
+
+        let result = evaluate_command(Command::VmDetonate {
+            tool: "npm".to_string(),
+            args: vec!["install".to_string()],
+            execute: true,
+            state_dir: Some(state_dir.display().to_string()),
+            helper_path: Some(helper.display().to_string()),
+            workspace: Some(root.display().to_string()),
+            fixture: None,
+            timeout_seconds: Some(75),
+            json: false,
+        });
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result.output.contains("<--tool><npm>"));
+        assert!(result.output.contains("<--fixture><project_mirror>"));
+        assert!(result.output.contains("<--project-payload-path>"));
+        assert!(result
+            .output
+            .contains("<--project-workflow><npm_project_install>"));
+        assert!(!result.output.contains("<--project-import-module>"));
+        let payload_dir = state_dir.join("runs").join("project-payloads");
+        let payload_count = std::fs::read_dir(payload_dir)
+            .expect("payload dir")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".payload.hex")
+            })
+            .count();
+        assert_eq!(payload_count, 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vm_detonate_npm_project_public_dependency_fails_before_helper() {
+        let root = temp_root("whoathere-cli-vm-npm-project-public-dep");
+        std::fs::write(
+            root.join("package.json"),
+            r#"{"name":"whoathere-risky-npm","version":"0.0.1","dependencies":{"left-pad":"^1.3.0"}}"#,
+        )
+        .expect("package json");
+        let helper = root.join("helper.sh");
+        write_new_file(
+            &helper,
+            b"#!/bin/sh\nprintf 'helper should not run\\n'\nexit 0\n",
+        )
+        .expect("helper script");
+        set_executable(&helper).expect("executable helper");
+
+        let result = evaluate_command(Command::VmDetonate {
+            tool: "npm".to_string(),
+            args: vec!["install".to_string()],
+            execute: true,
+            state_dir: Some(root.join("state").display().to_string()),
+            helper_path: Some(helper.display().to_string()),
+            workspace: Some(root.display().to_string()),
+            fixture: None,
+            timeout_seconds: Some(75),
+            json: false,
+        });
+
+        assert_eq!(result.exit_code, ExitCode::Deny.code());
+        assert!(result.output.contains("project_mode=true"));
+        assert!(result.output.contains("project_safe_to_execute=false"));
+        assert!(result
+            .output
+            .contains("project_npm_dependency_resolution_deferred"));
+        assert!(result.output.contains("helper_invoked=false"));
+        assert!(!result.output.contains("helper should not run"));
         let _ = std::fs::remove_dir_all(&root);
     }
 

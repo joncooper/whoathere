@@ -11,8 +11,10 @@ The current usable claim is:
 - Python local project and local-only requirements detonation can run inside a macOS guest VM.
 - Host package-manager execution remains disabled for high-risk workflows.
 - Host secrets are not mirrored into the VM.
-- npm and uv remain fail-closed until Node/npm and uv are provisioned into the validation VM and
-  live fixture/project checks pass.
+- npm has a narrow local no-external-dependency project planner, but live npm remains fail-closed
+  until Node/npm are provisioned into the validation VM and live fixture/project checks pass.
+- uv remains fail-closed until uv is provisioned into the validation VM and live fixture/project
+  checks pass.
 - Sync-back remains disabled. The current posture is detonation/admission evidence only.
 
 ## Prerequisites
@@ -153,6 +155,16 @@ Run local-only requirements detonation:
 ```sh
 $WHOATHERE vm detonate --workspace /absolute/path/to/python-project --state-dir "$WHOATHERE_STATE" --helper "$WHOATHERE_HELPER" --execute --json pip -- install -r requirements.txt
 ```
+
+Run a local npm project detonation only for a package with no external dependency resolution:
+
+```sh
+$WHOATHERE vm detonate --workspace /absolute/path/to/npm-project --state-dir "$WHOATHERE_STATE" --helper "$WHOATHERE_HELPER" --execute --json npm -- install
+```
+
+This path is intentionally narrow. `package.json` dependency sections, package specs passed to
+`npm install`, public registry overrides, native markers, and lockfiles that imply external
+resolution remain fail-closed until a public package acquisition policy exists.
 
 Unsupported or unsafe inputs must fail before helper execution, including:
 
