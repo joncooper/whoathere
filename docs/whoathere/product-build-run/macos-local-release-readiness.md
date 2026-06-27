@@ -204,6 +204,42 @@ checksum_created=/Users/jdc/src/whoathere/dist/whoathere-macos-arm64-preview-<gi
 notarization_status=not_performed
 ```
 
+Additional focused validation for the user-level installer and committed preview package slice on
+2026-06-27:
+
+```sh
+sh -n scripts/whoathere-install-macos-preview.sh
+sh -n scripts/whoathere-package-macos-preview.sh
+rg -n "[^[:ascii:]]" scripts/whoathere-install-macos-preview.sh scripts/whoathere-package-macos-preview.sh docs/whoathere/product-build-run/macos-local-first-preview-runbook.md docs/whoathere/product-build-run/macos-local-release-readiness.md
+git diff --check
+scripts/whoathere-package-macos-preview.sh
+scripts/whoathere-notarize-macos-release.sh --dry-run dist/whoathere-macos-arm64-preview-c4ee161.tar.gz
+# expected exit 64 before notarytool submission because the package uses ad-hoc local signatures
+scripts/whoathere-notarize-macos-release.sh --submit dist/whoathere-macos-arm64-preview-c4ee161.tar.gz
+```
+
+The committed preview package for installer commit `c4ee161` produced:
+
+```text
+package_created=/Users/jdc/src/whoathere/dist/whoathere-macos-arm64-preview-c4ee161.tar.gz
+checksum_created=/Users/jdc/src/whoathere/dist/whoathere-macos-arm64-preview-c4ee161.tar.gz.sha256
+notarization_status=not_performed
+```
+
+The package smoke now proves the extracted installer can run in dry-run mode, install into a
+temporary user prefix whose path contains both a space and an apostrophe, execute the installed
+`bin/whoathere` wrapper, and run `doctor --json` with `WHOATHERE_MACOS_VM_HELPER` pointing at the
+installed helper. The installed doctor smoke still reports `release_ready=false`; it does not
+silently convert a successful install into a release-readiness claim.
+
+The notarization dry run for `dist/whoathere-macos-arm64-preview-c4ee161.tar.gz` exited 0 after
+checksum and packaged codesign verification, wrote
+`dist/whoathere-macos-arm64-preview-c4ee161-notarization.zip`, and reported
+`cli_signature_kind=adhoc`, `helper_signature_kind=adhoc`,
+`notary_credentials_configured=false`, and `notarization_submit_ready=false`. Submit mode exited 64
+with `notarization_blocker=adhoc_signature_present`, before any `xcrun notarytool` submission. This
+keeps `release_signature_notarization_not_complete` as a real remaining release blocker.
+
 The `doctor --json` smokes reported `release_ready=false`, `high_risk_allowed=false`, the inspected VM state directory, `package_acquisition_policy=local_only_no_public_resolver`, implemented pip/local detonation workflows, fail-closed npm/uv/public-resolution/sync-back workflows, and release blockers for npm guest tooling/proof, uv guest tooling/proof, and signature/notarization. While the VM was running with host and guest health proofs, doctor reported `vm_lifecycle_ready=true`, `vm_runtime_ready=true`, and `vm_reason_codes=[]`; after suspend, doctor reported `vm_lifecycle_ready=true`, `vm_runtime_ready=false`, and `vm_reason_codes=["macos_vm_runtime_not_verified"]`, while `release_blocking_reason_codes` no longer included `macos_vm_runtime_not_verified`. Sync-back is reported as disabled for the preview rather than as a readiness blocker. Scanner availability is reported with `scanner_release_blocking=false` and `scanner_release_scope=required_before_auto_sync_not_no_sync_preview`. Focused unit tests verify `guest_reprovision_command` is emitted from a package-shaped helper layout when the guest provisioning receipt is missing, that helper-derived lifecycle/runtime health removes stale marker-based VM blockers, and that stopped runtime state stays visible without blocking release readiness.
 
 The red-team fixture gate passed with `passed=true`, `case_count=18`, `public_network_used=false`, and `external_scanners_required=false`. The gate does not execute arbitrary packages and does not replace scanner adapters; it proves the local fixture-safe static/dynamic evidence paths and binding checks catch or reject representative attack shapes without leaking canaries or local paths.
