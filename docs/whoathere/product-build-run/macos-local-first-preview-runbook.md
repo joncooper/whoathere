@@ -86,8 +86,10 @@ tests, builds and signs the release helper, runs the local red-team fixture gate
 archive and checksum, then extracts the archive and smoke-tests the packaged CLI/helper. The smoke
 verifies the checksum, `bin/whoathere --help`, packaged codesign state, and packaged
 `doctor --json` fail-closed output with a package-local guest reprovision command. The package
-smoke also verifies that the packaged doctor output includes the release-validation gate and keeps
-the npm/uv release blockers present when no current validation receipt exists.
+smoke also verifies that the packaged doctor output includes the runtime-shutdown and
+release-validation gates, keeps the npm/uv release blockers present when no current validation
+receipt exists, and does not treat a missing shutdown receipt in a fresh package smoke state as a
+successful VM stop proof.
 
 ```text
 dist/whoathere-macos-arm64-preview-<git-sha>.tar.gz

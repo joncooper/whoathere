@@ -143,9 +143,9 @@ sh -n scripts/whoathere-notarize-macos-release.sh
 cargo test --manifest-path whoathere/Cargo.toml -p whoathere-cli release_validation
 scripts/whoathere-package-macos-preview.sh
 WHOATHERE_VM_HEALTH_INTERVAL_SECONDS=1 WHOATHERE_VM_HEALTH_ATTEMPTS=1 whoathere/helpers/macos-vm-helper/scripts/validate-npm-uv-detonation.sh
-scripts/whoathere-notarize-macos-release.sh --dry-run dist/whoathere-macos-arm64-preview-bcd5bd9.tar.gz
+scripts/whoathere-notarize-macos-release.sh --dry-run dist/whoathere-macos-arm64-preview-<git-short-sha>.tar.gz
 # expected exit 64 before notarytool submission because the local preview uses ad-hoc signatures
-scripts/whoathere-notarize-macos-release.sh --submit dist/whoathere-macos-arm64-preview-bcd5bd9.tar.gz
+scripts/whoathere-notarize-macos-release.sh --submit dist/whoathere-macos-arm64-preview-<git-short-sha>.tar.gz
 cc -O2 -Wall -Wextra -target arm64-apple-macos13 -fsyntax-only whoathere/helpers/macos-vm-helper/guest-agent/whoathere-guest-ready.c
 ```
 
@@ -200,7 +200,7 @@ mode it verifies the package checksum sidecar, extracts the archive, verifies CL
 state, checks the packaged npm/uv validator is executable and shell-syntax-clean, writes a
 notarization zip, reports whether signatures are ad-hoc, and reports whether notary credentials are
 configured. On the current local preview archive it produced
-`dist/whoathere-macos-arm64-preview-bcd5bd9-notarization.zip` and correctly reported
+`dist/whoathere-macos-arm64-preview-<git-short-sha>-notarization.zip` and correctly reported
 `cli_signature_adhoc=true`, `helper_signature_adhoc=true`, `notary_credentials_configured=false`,
 and `notarization_submit_ready=false`. A submit-mode guard smoke on the same archive exited 64 with
 `notarization_blocker=adhoc_signature_present`, before any `xcrun notarytool` submission.
@@ -210,21 +210,26 @@ so the final
 artifact is accepted by Apple notarization.
 
 The packaging smoke now explicitly checks that the packaged `doctor --json` output includes the
-`release_validation` object, `package_acquisition_policy=local_only_no_public_resolver`, the
-detonation/admission-only release claim, and fail-closed npm/uv release blockers when no current
-release-validation receipt exists. This prevents a preview artifact with an empty VM state from
-silently overclaiming npm/uv readiness.
+`runtime_shutdown` and `release_validation` objects,
+`package_acquisition_policy=local_only_no_public_resolver`, the detonation/admission-only release
+claim, and fail-closed npm/uv release blockers when no current release-validation receipt exists.
+For a fresh package-smoke VM state, it also verifies `runtime_shutdown.receipt_present=false` and
+`runtime_shutdown.receipt_acceptable_for_no_sync_preview=false`, so a missing shutdown receipt is
+not silently treated as successful VM stop proof. This prevents a preview artifact with an empty VM
+state from overclaiming npm/uv readiness or VM shutdown evidence.
 
-The packaging script was rerun after the release-validation gate changes and produced
-`dist/whoathere-macos-arm64-preview-bcd5bd9.tar.gz` plus a checksum. The checksum verified from the
-extracted archive smoke, packaged `bin/whoathere --help` worked, both packaged binaries passed
-`codesign --verify --strict --verbose=2`, and packaged `doctor --json` failed closed against an
-empty temporary VM state directory while emitting a package-local `guest_reprovision_command`,
+The packaging script was rerun after the release-validation and runtime-shutdown gate changes and
+produced `dist/whoathere-macos-arm64-preview-<git-short-sha>.tar.gz` plus a checksum. The checksum
+verified from the extracted archive smoke, packaged `bin/whoathere --help` worked, both packaged
+binaries passed `codesign --verify --strict --verbose=2`, and packaged `doctor --json` failed
+closed against an empty temporary VM state directory while emitting a package-local
+`guest_reprovision_command`,
 `guest_reprovision_operator_action=run_guest_reprovision_command_in_interactive_admin_terminal`,
-the `release_validation` receipt gate, and npm/uv release blockers. Those extracted-artifact checks
-are now part of `scripts/whoathere-package-macos-preview.sh`, so future preview packages must pass
-the same smoke before the script reports success. The package smoke also verifies that the
-extracted npm/uv detonation validator is executable and passes shell syntax validation.
+the `runtime_shutdown` and `release_validation` receipt gates, and npm/uv release blockers. Those
+extracted-artifact checks are now part of `scripts/whoathere-package-macos-preview.sh`, so future
+preview packages must pass the same smoke before the script reports success. The package smoke also
+verifies that the extracted npm/uv detonation validator is executable and passes shell syntax
+validation.
 
 The latest npm/uv planner slices changed host planner, Swift helper, and guest-agent behavior. They were validated with unit tests, helper build/tests, guest C syntax checks, and live `doctor` fail-closed readiness output. Live npm/uv detonation is still not claimed because the stopped validation VM must first be reprovisioned with Node/npm and uv tooling through the interactive sudo step above.
 
