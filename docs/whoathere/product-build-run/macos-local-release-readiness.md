@@ -40,8 +40,8 @@ The macOS local release is ready only when all of the following are true:
 | Host package-manager isolation | Strong for claimed pip paths | Goals 3 and 4 validate local pip project and local-only requirements detonation inside the guest without host package-manager execution. |
 | Secret exclusion | Strong for claimed pip paths | Sanitized mirror excludes known secret paths, credential files, symlink escapes, traversal, and large unsafe payloads. |
 | Python local project detonation | Implemented | Live validation covers clean project, local requirements, safe package data, setup.py canary, PEP 517 canary, import-time canary, and `.pth` canary cases. |
-| npm detonation | Host planner improved, not release-ready | The CLI now supports a narrow local npm project mirror plan for `npm install` and `npm ci` when `package.json` has no external dependency resolution and the workspace contains no native/risky artifacts. The Swift helper and guest agent accept that project payload path, but successful npm detonation is not claimed until the validation VM is reprovisioned with Node/npm and live npm fixture/project workflows pass. Public npm dependencies remain fail-closed. |
-| uv detonation | Host planner improved, not release-ready | The CLI now supports a narrow local `uv pip install` project mirror plan by reusing the pip local-project safety rules, and the Swift helper/guest agent accept `uv_pip_project_install` and `uv_pip_requirements_install` payloads. `uv sync` remains deferred until lock/source policy is explicit. Live uv execution remains unclaimed until the validation VM is reprovisioned with uv and live fixture/project workflows pass. |
+| npm detonation | Host planner improved, not release-ready | The CLI now supports a narrow local npm project mirror plan for `npm install` and `npm ci` when `package.json` has no external dependency resolution and the workspace contains no native/risky artifacts. `--execute` now checks the root-owned guest provisioning receipt before preparing a project payload or invoking the helper, so npm fails closed with `macos_vm_guest_node_runtime_not_provisioned` while Node/npm are absent. Successful npm detonation is not claimed until the validation VM is reprovisioned with Node/npm and live npm fixture/project workflows pass. Public npm dependencies remain fail-closed. |
+| uv detonation | Host planner improved, not release-ready | The CLI now supports a narrow local `uv pip install` project mirror plan by reusing the pip local-project safety rules, and the Swift helper/guest agent accept `uv_pip_project_install` and `uv_pip_requirements_install` payloads. `uv pip install` is now labeled `uv_pip_install_detonation` in evidence, and `--execute` fails closed before helper invocation unless the guest provisioning receipt proves uv, Python, pip wheel tooling, and disabled host secret/home/high-risk states. `uv sync` remains deferred until lock/source policy is explicit. Live uv execution remains unclaimed until the validation VM is reprovisioned with uv and live fixture/project workflows pass. |
 | Package acquisition policy | Implemented local-only preview policy | Public PyPI/npm resolver behavior remains blocked and there is no public fallback claim. The preview policy is `local_only_no_public_resolver`: supported workflows use local projects, local requirements, and no-external-dependency npm project plans only. |
 | Native and binary artifacts | Fail closed/manual review | Native markers, binary wheels, direct URLs, VCS, editable, and unknown classes are not auto-allowed. |
 | Network evidence | Partial | Controlled fixtures and reason codes exist, but robust DNS/HTTPS observation is still marker-based rather than a full network monitor. |
@@ -179,6 +179,15 @@ script smoke was validated on this tree with
 `dist/whoathere-macos-arm64-preview-9ad106f.tar.gz` and printed `package_smoke_passed=true`.
 
 The latest npm/uv planner slices changed host planner, Swift helper, and guest-agent behavior. They were validated with unit tests, helper build/tests, guest C syntax checks, and live `doctor` fail-closed readiness output. Live npm/uv detonation is still not claimed because the stopped validation VM must first be reprovisioned with Node/npm and uv tooling through the interactive sudo step above.
+
+The detonation execution path now performs a guest-tooling preflight before helper invocation. Dry
+runs still produce mirror and project plans without requiring a VM receipt. For `--execute`, npm
+requires Node/npm proof; pip requires Python and pip wheel proof; uv requires uv plus the Python and
+pip wheel proof used by the guest probes. All three also require safety fields proving high-risk
+execution, host home mounts, and host secret mounts are disabled. On the current stale validation VM,
+live npm and uv smokes returned `helper=null`, `project_payload=null`,
+`verdict=preflight_security_outcome`, and tool-specific blockers
+`macos_vm_guest_node_runtime_not_provisioned` and `macos_vm_guest_uv_binary_not_provisioned`.
 
 ## Next Recommended Slice
 

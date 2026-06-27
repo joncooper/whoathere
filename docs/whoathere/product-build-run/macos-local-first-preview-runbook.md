@@ -178,6 +178,13 @@ high_risk_package_execution_enabled=false
 If npm or uv is missing from either receipt or health output, keep npm/uv workflows unclaimed and
 fail closed.
 
+`whoathere vm detonate --execute` also checks the guest provisioning receipt before preparing a
+project payload or invoking the helper. When npm, uv, or the Python/pip staging materials used by
+`uv pip install` are missing, the command should fail closed with `helper=null`,
+`project_payload=null`, `verdict=preflight_security_outcome`, and the matching toolchain reason code
+such as `macos_vm_guest_node_runtime_not_provisioned`,
+`macos_vm_guest_uv_binary_not_provisioned`, or `macos_vm_guest_pip_tooling_not_provisioned`.
+
 ## Validate Detonation
 
 Run fixture validation:

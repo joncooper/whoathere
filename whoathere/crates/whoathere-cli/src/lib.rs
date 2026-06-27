@@ -1991,6 +1991,8 @@ const MAX_DETONATION_PROJECT_TOTAL_BYTES: u64 = 512 * 1024;
 
 fn render_vm_detonate(args: VmDetonateRenderArgs<'_>) -> String {
     let config = macos_vm_config(args.state_dir, None, None);
+    let provisioning_path = default_macos_vm_guest_provisioning_path(&config);
+    let provisioning = load_macos_vm_guest_provisioning(&provisioning_path);
     let timeout_seconds = args.timeout_seconds.unwrap_or(120);
     let command_class = detonation_command_class(args.tool, args.args);
     let mirror_plan = args
@@ -2016,9 +2018,23 @@ fn render_vm_detonate(args: VmDetonateRenderArgs<'_>) -> String {
     if args.execute && args.fixture.is_none() && !project_plan.project_mode {
         reason_codes.push("detonation_fixture_or_project_required".to_string());
     }
+    let helper_candidate_before_payload = args.execute
+        && command_class != "unsupported_detonation"
+        && (args.fixture.is_some() || project_plan.project_mode)
+        && (!project_plan.project_mode || project_plan.safe_to_execute);
+    let guest_tooling_reason_codes = if helper_candidate_before_payload {
+        detonation_guest_tooling_reason_codes(args.tool, &provisioning)
+    } else {
+        Vec::new()
+    };
+    reason_codes.extend(guest_tooling_reason_codes.iter().cloned());
     let mut payload_preparation: Option<ProjectPayloadPreparation> = None;
     let mut payload_prepare_error: Option<String> = None;
-    if args.execute && project_plan.project_mode && project_plan.safe_to_execute {
+    if args.execute
+        && project_plan.project_mode
+        && project_plan.safe_to_execute
+        && guest_tooling_reason_codes.is_empty()
+    {
         match prepare_project_payload(&config.state_dir, &mirror_plan) {
             Ok(preparation) => payload_preparation = Some(preparation),
             Err(reason) => {
@@ -2030,11 +2046,9 @@ fn render_vm_detonate(args: VmDetonateRenderArgs<'_>) -> String {
     reason_codes.sort();
     reason_codes.dedup();
 
-    let helper_invocation_allowed = args.execute
-        && command_class != "unsupported_detonation"
+    let helper_invocation_allowed = helper_candidate_before_payload
         && payload_prepare_error.is_none()
-        && (args.fixture.is_some() || project_plan.project_mode)
-        && (!project_plan.project_mode || project_plan.safe_to_execute);
+        && guest_tooling_reason_codes.is_empty();
     let helper = if helper_invocation_allowed {
         let mut helper_args = vec![
             "--state-dir".to_string(),
@@ -2089,7 +2103,8 @@ fn render_vm_detonate(args: VmDetonateRenderArgs<'_>) -> String {
         .unwrap_or_else(|| ExitCode::Allow.code());
     let fail_closed_before_helper = command_class == "unsupported_detonation"
         || (args.fixture.is_none() && !project_plan.project_mode)
-        || (project_plan.project_mode && !project_plan.safe_to_execute);
+        || (project_plan.project_mode && !project_plan.safe_to_execute)
+        || !guest_tooling_reason_codes.is_empty();
     let final_exit_code = if args.execute {
         if payload_prepare_error.is_some() {
             ExitCode::InternalError.code()
@@ -2105,6 +2120,8 @@ fn render_vm_detonate(args: VmDetonateRenderArgs<'_>) -> String {
         "dry_run_execute_required"
     } else if final_exit_code == ExitCode::Allow.code() {
         "helper_observed_clean"
+    } else if fail_closed_before_helper {
+        "preflight_security_outcome"
     } else if final_exit_code == ExitCode::Deny.code()
         || final_exit_code == ExitCode::ManualReview.code()
     {
@@ -2121,7 +2138,7 @@ fn render_vm_detonate(args: VmDetonateRenderArgs<'_>) -> String {
         let guest_job = parse_guest_job_evidence(helper.as_ref());
         let guest_job_json = render_guest_job_evidence_json(guest_job.as_ref());
         return format!(
-            "{{\n  \"command\": \"whoathere vm detonate\",\n  \"schema_version\": \"whoathere.macos_vm.detonation.v1\",\n  \"release_target\": {},\n  \"vm_boundary\": {},\n  \"network_model\": {},\n  \"sync_back_enabled\": false,\n  \"host_package_execution_enabled\": false,\n  \"high_risk_package_execution_enabled\": false,\n  \"mutation_requested\": {},\n  \"state_dir\": {},\n  \"tool\": {},\n  \"command_class\": {},\n  \"argv\": {},\n  \"fixture\": {},\n  \"timeout_seconds\": {},\n  \"workspace\": {},\n  \"mirror_plan\": {},\n  \"project_plan\": {},\n  \"project_payload\": {},\n  \"canary_categories\": {},\n  \"verdict\": {},\n  \"reason_codes\": {},\n  \"guest_job\": {},\n  \"helper\": {},\n  \"exit_code\": {}\n}}",
+            "{{\n  \"command\": \"whoathere vm detonate\",\n  \"schema_version\": \"whoathere.macos_vm.detonation.v1\",\n  \"release_target\": {},\n  \"vm_boundary\": {},\n  \"network_model\": {},\n  \"sync_back_enabled\": false,\n  \"host_package_execution_enabled\": false,\n  \"high_risk_package_execution_enabled\": false,\n  \"mutation_requested\": {},\n  \"state_dir\": {},\n  \"tool\": {},\n  \"command_class\": {},\n  \"argv\": {},\n  \"fixture\": {},\n  \"timeout_seconds\": {},\n  \"workspace\": {},\n  \"mirror_plan\": {},\n  \"project_plan\": {},\n  \"project_payload\": {},\n  \"guest_provisioning\": {},\n  \"guest_tooling_ready\": {},\n  \"guest_tooling_reason_codes\": {},\n  \"canary_categories\": {},\n  \"verdict\": {},\n  \"reason_codes\": {},\n  \"guest_job\": {},\n  \"helper\": {},\n  \"exit_code\": {}\n}}",
             json_string(RELEASE_TARGET),
             json_string(VM_BOUNDARY),
             json_string(NETWORK_MODEL),
@@ -2147,6 +2164,9 @@ fn render_vm_detonate(args: VmDetonateRenderArgs<'_>) -> String {
             render_detonation_mirror_plan_json(&mirror_plan),
             render_project_detonation_plan_json(&project_plan),
             render_project_payload_preparation_json(payload_preparation.as_ref()),
+            render_guest_provisioning_json(&provisioning),
+            guest_tooling_reason_codes.is_empty(),
+            json_string_array(&guest_tooling_reason_codes),
             json_string_array(&canary_categories),
             json_string(verdict),
             json_string_array(&reason_codes),
@@ -2161,7 +2181,7 @@ fn render_vm_detonate(args: VmDetonateRenderArgs<'_>) -> String {
         .map(|helper| helper.render_text())
         .unwrap_or_else(|| "helper_invoked=false".to_string());
     format!(
-        "whoathere vm detonate\nschema_version=whoathere.macos_vm.detonation.v1\nrelease_target={}\nvm_boundary={}\nnetwork_model={}\nsync_back_enabled=false\nhost_package_execution_enabled=false\nhigh_risk_package_execution_enabled=false\nmutation_requested={}\nstate_dir={}\ntool={}\ncommand_class={}\nargv={:?}\nfixture={}\ntimeout_seconds={}\nworkspace={}\nmirror_workspace_configured={}\nmirror_allowed_file_count={}\nmirror_secret_exclusion_count={}\nmirror_symlink_escape_count={}\nmirror_large_file_exclusion_count={}\nmirror_package_data_file_count={}\nmirror_risky_file_exclusion_count={}\nmirror_total_allowed_bytes={}\nmirror_file_classes={:?}\nmirror_included_paths={:?}\nmirror_reason_codes={:?}\nproject_mode={}\nproject_workflow={}\nproject_import_module={}\nproject_requirements_path={}\nproject_safe_to_execute={}\nproject_payload_path={}\ncanary_categories={:?}\nverdict={}\nreason_codes={:?}\n{}\nexit_code={}",
+        "whoathere vm detonate\nschema_version=whoathere.macos_vm.detonation.v1\nrelease_target={}\nvm_boundary={}\nnetwork_model={}\nsync_back_enabled=false\nhost_package_execution_enabled=false\nhigh_risk_package_execution_enabled=false\nmutation_requested={}\nstate_dir={}\ntool={}\ncommand_class={}\nargv={:?}\nfixture={}\ntimeout_seconds={}\nworkspace={}\nmirror_workspace_configured={}\nmirror_allowed_file_count={}\nmirror_secret_exclusion_count={}\nmirror_symlink_escape_count={}\nmirror_large_file_exclusion_count={}\nmirror_package_data_file_count={}\nmirror_risky_file_exclusion_count={}\nmirror_total_allowed_bytes={}\nmirror_file_classes={:?}\nmirror_included_paths={:?}\nmirror_reason_codes={:?}\nproject_mode={}\nproject_workflow={}\nproject_import_module={}\nproject_requirements_path={}\nproject_safe_to_execute={}\nproject_payload_path={}\nguest_tooling_ready={}\nguest_tooling_reason_codes={:?}\n{}\ncanary_categories={:?}\nverdict={}\nreason_codes={:?}\n{}\nexit_code={}",
         RELEASE_TARGET,
         VM_BOUNDARY,
         NETWORK_MODEL,
@@ -2196,6 +2216,9 @@ fn render_vm_detonate(args: VmDetonateRenderArgs<'_>) -> String {
             .as_ref()
             .map(|payload| redacted_scalar(&payload.payload_path))
             .unwrap_or_else(|| "none".to_string()),
+        guest_tooling_reason_codes.is_empty(),
+        guest_tooling_reason_codes,
+        provisioning.render_text(),
         canary_categories,
         verdict,
         reason_codes,
@@ -2215,7 +2238,7 @@ fn detonation_command_class(tool: &str, args: &[String]) -> &'static str {
             .windows(2)
             .any(|pair| pair[0] == "pip" && pair[1] == "install") =>
         {
-            "uv_sync_detonation"
+            "uv_pip_install_detonation"
         }
         _ => "unsupported_detonation",
     }
@@ -3782,6 +3805,64 @@ fn load_macos_vm_guest_provisioning(path: &Path) -> MacosVmGuestProvisioningSumm
             redacted_scalar(&error.to_string()),
         ),
     }
+}
+
+fn detonation_guest_tooling_reason_codes(
+    tool: &str,
+    provisioning: &MacosVmGuestProvisioningSummary,
+) -> Vec<String> {
+    let mut reasons = Vec::new();
+    if !provisioning.present {
+        reasons.push("macos_vm_guest_provisioning_receipt_missing".to_string());
+    }
+    if provisioning.schema_version.as_deref() != Some(MACOS_VM_GUEST_PROVISIONING_SCHEMA_VERSION) {
+        reasons.push("macos_vm_guest_provisioning_schema_invalid".to_string());
+    }
+    if provisioning.high_risk_package_execution_enabled != Some(false) {
+        reasons.push("macos_vm_guest_high_risk_execution_state_not_proven_disabled".to_string());
+    }
+    if provisioning.host_home_mounted != Some(false) {
+        reasons.push("macos_vm_guest_host_home_mount_state_not_proven_disabled".to_string());
+    }
+    if provisioning.host_secrets_mounted != Some(false) {
+        reasons.push("macos_vm_guest_host_secret_mount_state_not_proven_disabled".to_string());
+    }
+
+    match tool {
+        "npm" => {
+            if provisioning.offline_node_runtime_status.as_deref() != Some("installed") {
+                reasons.push("macos_vm_guest_node_runtime_not_provisioned".to_string());
+            }
+        }
+        "pip" => {
+            if provisioning.offline_python_runtime_status.as_deref() != Some("installed") {
+                reasons.push("macos_vm_guest_python_runtime_not_provisioned".to_string());
+            }
+            if provisioning.offline_python_wheels_status.as_deref() != Some("installed")
+                || provisioning.wheel_package_status.as_deref() != Some("installed")
+            {
+                reasons.push("macos_vm_guest_pip_tooling_not_provisioned".to_string());
+            }
+        }
+        "uv" => {
+            if provisioning.offline_python_runtime_status.as_deref() != Some("installed") {
+                reasons.push("macos_vm_guest_python_runtime_not_provisioned".to_string());
+            }
+            if provisioning.offline_python_wheels_status.as_deref() != Some("installed")
+                || provisioning.wheel_package_status.as_deref() != Some("installed")
+            {
+                reasons.push("macos_vm_guest_pip_tooling_not_provisioned".to_string());
+            }
+            if provisioning.offline_uv_binary_status.as_deref() != Some("installed") {
+                reasons.push("macos_vm_guest_uv_binary_not_provisioned".to_string());
+            }
+        }
+        _ => {}
+    }
+
+    reasons.sort();
+    reasons.dedup();
+    reasons
 }
 
 fn option_string_text(value: Option<&str>) -> String {
@@ -9820,6 +9901,7 @@ mod tests {
         .expect("helper script");
         set_executable(&helper).expect("executable helper");
         let state_dir = root.join("state");
+        write_complete_guest_provisioning_receipt(&state_dir);
         let result = evaluate_command(Command::VmDetonate {
             tool: "pip".to_string(),
             args: vec![
@@ -9902,6 +9984,7 @@ mod tests {
         .expect("helper script");
         set_executable(&helper).expect("executable helper");
         let state_dir = root.join("state");
+        write_complete_guest_provisioning_receipt(&state_dir);
 
         let result = evaluate_command(Command::VmDetonate {
             tool: "pip".to_string(),
@@ -10005,6 +10088,7 @@ mod tests {
         .expect("helper script");
         set_executable(&helper).expect("executable helper");
         let state_dir = root.join("state");
+        write_complete_guest_provisioning_receipt(&state_dir);
 
         let result = evaluate_command(Command::VmDetonate {
             tool: "npm".to_string(),
@@ -10038,6 +10122,50 @@ mod tests {
             })
             .count();
         assert_eq!(payload_count, 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vm_detonate_npm_project_execute_requires_guest_node_before_helper() {
+        let root = temp_root("whoathere-cli-vm-npm-project-missing-node");
+        std::fs::write(
+            root.join("package.json"),
+            r#"{"name":"whoathere-clean-npm","version":"0.0.1","scripts":{"postinstall":"node index.js"}}"#,
+        )
+        .expect("package json");
+        std::fs::write(root.join("index.js"), "console.log('clean');\n").expect("index js");
+        let helper = root.join("helper.sh");
+        write_new_file(
+            &helper,
+            b"#!/bin/sh\nprintf 'helper should not run\\n'\nexit 0\n",
+        )
+        .expect("helper script");
+        set_executable(&helper).expect("executable helper");
+
+        let result = evaluate_command(Command::VmDetonate {
+            tool: "npm".to_string(),
+            args: vec!["install".to_string()],
+            execute: true,
+            state_dir: Some(root.join("state").display().to_string()),
+            helper_path: Some(helper.display().to_string()),
+            workspace: Some(root.display().to_string()),
+            fixture: None,
+            timeout_seconds: Some(75),
+            json: false,
+        });
+
+        assert_eq!(result.exit_code, ExitCode::Deny.code());
+        assert!(result.output.contains("project_safe_to_execute=true"));
+        assert!(result.output.contains("guest_tooling_ready=false"));
+        assert!(result
+            .output
+            .contains("macos_vm_guest_provisioning_receipt_missing"));
+        assert!(result
+            .output
+            .contains("macos_vm_guest_node_runtime_not_provisioned"));
+        assert!(result.output.contains("project_payload_path=none"));
+        assert!(result.output.contains("helper_invoked=false"));
+        assert!(!result.output.contains("helper should not run"));
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -10103,6 +10231,9 @@ mod tests {
         });
 
         assert_eq!(result.exit_code, 0);
+        assert!(result
+            .output
+            .contains("command_class=uv_pip_install_detonation"));
         assert!(result.output.contains("project_mode=true"));
         assert!(result
             .output
@@ -10131,6 +10262,7 @@ mod tests {
         .expect("helper script");
         set_executable(&helper).expect("executable helper");
         let state_dir = root.join("state");
+        write_complete_guest_provisioning_receipt(&state_dir);
 
         let result = evaluate_command(Command::VmDetonate {
             tool: "uv".to_string(),
@@ -10146,6 +10278,9 @@ mod tests {
 
         assert_eq!(result.exit_code, 0);
         assert!(result.output.contains("<--tool><uv>"));
+        assert!(result
+            .output
+            .contains("<--command-class><uv_pip_install_detonation>"));
         assert!(result.output.contains("<--fixture><project_mirror>"));
         assert!(result.output.contains("<--project-payload-path>"));
         assert!(result
@@ -10170,6 +10305,99 @@ mod tests {
     }
 
     #[test]
+    fn vm_detonate_uv_pip_project_execute_requires_guest_uv_before_helper() {
+        let root = temp_root("whoathere-cli-vm-uv-project-missing-uv");
+        std::fs::write(
+            root.join("setup.py"),
+            "from setuptools import setup\nsetup(name='whoathere-clean', version='0.0.1', py_modules=['whoathere_clean'])\n",
+        )
+        .expect("setup py");
+        std::fs::write(root.join("whoathere_clean.py"), "VALUE = 'clean'\n").expect("module");
+        let helper = root.join("helper.sh");
+        write_new_file(
+            &helper,
+            b"#!/bin/sh\nprintf 'helper should not run\\n'\nexit 0\n",
+        )
+        .expect("helper script");
+        set_executable(&helper).expect("executable helper");
+
+        let result = evaluate_command(Command::VmDetonate {
+            tool: "uv".to_string(),
+            args: vec!["pip".to_string(), "install".to_string(), ".".to_string()],
+            execute: true,
+            state_dir: Some(root.join("state").display().to_string()),
+            helper_path: Some(helper.display().to_string()),
+            workspace: Some(root.display().to_string()),
+            fixture: None,
+            timeout_seconds: Some(75),
+            json: false,
+        });
+
+        assert_eq!(result.exit_code, ExitCode::Deny.code());
+        assert!(result.output.contains("project_safe_to_execute=true"));
+        assert!(result.output.contains("guest_tooling_ready=false"));
+        assert!(result
+            .output
+            .contains("macos_vm_guest_provisioning_receipt_missing"));
+        assert!(result
+            .output
+            .contains("macos_vm_guest_uv_binary_not_provisioned"));
+        assert!(result.output.contains("project_payload_path=none"));
+        assert!(result.output.contains("helper_invoked=false"));
+        assert!(!result.output.contains("helper should not run"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vm_detonate_uv_pip_project_execute_requires_guest_python_tooling_before_helper() {
+        let root = temp_root("whoathere-cli-vm-uv-project-missing-python");
+        std::fs::write(
+            root.join("setup.py"),
+            "from setuptools import setup\nsetup(name='whoathere-clean', version='0.0.1', py_modules=['whoathere_clean'])\n",
+        )
+        .expect("setup py");
+        std::fs::write(root.join("whoathere_clean.py"), "VALUE = 'clean'\n").expect("module");
+        let helper = root.join("helper.sh");
+        write_new_file(
+            &helper,
+            b"#!/bin/sh\nprintf 'helper should not run\\n'\nexit 0\n",
+        )
+        .expect("helper script");
+        set_executable(&helper).expect("executable helper");
+        let state_dir = root.join("state");
+        write_uv_only_guest_provisioning_receipt(&state_dir);
+
+        let result = evaluate_command(Command::VmDetonate {
+            tool: "uv".to_string(),
+            args: vec!["pip".to_string(), "install".to_string(), ".".to_string()],
+            execute: true,
+            state_dir: Some(state_dir.display().to_string()),
+            helper_path: Some(helper.display().to_string()),
+            workspace: Some(root.display().to_string()),
+            fixture: None,
+            timeout_seconds: Some(75),
+            json: false,
+        });
+
+        assert_eq!(result.exit_code, ExitCode::Deny.code());
+        assert!(result.output.contains("project_safe_to_execute=true"));
+        assert!(result.output.contains("guest_tooling_ready=false"));
+        assert!(result
+            .output
+            .contains("macos_vm_guest_python_runtime_not_provisioned"));
+        assert!(result
+            .output
+            .contains("macos_vm_guest_pip_tooling_not_provisioned"));
+        assert!(!result
+            .output
+            .contains("macos_vm_guest_uv_binary_not_provisioned"));
+        assert!(result.output.contains("project_payload_path=none"));
+        assert!(result.output.contains("helper_invoked=false"));
+        assert!(!result.output.contains("helper should not run"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn vm_detonate_uv_sync_remains_fail_closed_before_helper() {
         let root = temp_root("whoathere-cli-vm-uv-sync-deferred");
         std::fs::write(
@@ -10184,6 +10412,7 @@ mod tests {
         )
         .expect("helper script");
         set_executable(&helper).expect("executable helper");
+        write_complete_guest_provisioning_receipt(&root.join("state"));
 
         let result = evaluate_command(Command::VmDetonate {
             tool: "uv".to_string(),
@@ -10229,6 +10458,7 @@ exit 0
         )
         .expect("helper script");
         set_executable(&helper).expect("executable helper");
+        write_complete_guest_provisioning_receipt(&root.join("state"));
 
         let result = evaluate_command(Command::VmDetonate {
             tool: "pip".to_string(),
@@ -13766,6 +13996,45 @@ exit 0
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("create temp root");
         root
+    }
+
+    fn write_complete_guest_provisioning_receipt(state_dir: &std::path::Path) {
+        let bundle_dir = state_dir.join("bundle");
+        std::fs::create_dir_all(&bundle_dir).expect("create bundle dir");
+        std::fs::write(
+            bundle_dir.join("guest-provisioning.json"),
+            r#"{
+  "schema_version": "whoathere.macos_vm.guest_provisioning.v1",
+  "offline_python_runtime_status": "installed",
+  "offline_python_wheels_status": "installed",
+  "wheel_package_status": "installed",
+  "offline_node_runtime_status": "installed",
+  "offline_node_runtime_npm_version": "10.9.8",
+  "offline_uv_binary_status": "installed",
+  "offline_uv_binary_version": "uv 0.10.9",
+  "high_risk_package_execution_enabled": false,
+  "host_home_mounted": false,
+  "host_secrets_mounted": false
+}"#,
+        )
+        .expect("write guest provisioning receipt");
+    }
+
+    fn write_uv_only_guest_provisioning_receipt(state_dir: &std::path::Path) {
+        let bundle_dir = state_dir.join("bundle");
+        std::fs::create_dir_all(&bundle_dir).expect("create bundle dir");
+        std::fs::write(
+            bundle_dir.join("guest-provisioning.json"),
+            r#"{
+  "schema_version": "whoathere.macos_vm.guest_provisioning.v1",
+  "offline_uv_binary_status": "installed",
+  "offline_uv_binary_version": "uv 0.10.9",
+  "high_risk_package_execution_enabled": false,
+  "host_home_mounted": false,
+  "host_secrets_mounted": false
+}"#,
+        )
+        .expect("write uv-only guest provisioning receipt");
     }
 
     fn write_cleanup_manifest_fixture(runtime: &std::path::Path) -> std::path::PathBuf {
