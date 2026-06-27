@@ -935,7 +935,7 @@ static int run_detonation_job(int fd, const char *line) {
                 int command_length = snprintf(
                     shell_command_buffer,
                     sizeof(shell_command_buffer),
-                    WHOATHERE_PIP_PREFIX "mkdir -p target && uv pip install --no-index . --target target%s%s",
+                    WHOATHERE_PIP_PREFIX "mkdir -p target && uv pip install --no-index --no-build-isolation --python \"$WHOATHERE_PYTHON\" . --target target%s%s",
                     pth_probe,
                     import_probe
                 );
@@ -950,7 +950,7 @@ static int run_detonation_job(int fd, const char *line) {
                 int command_length = snprintf(
                     shell_command_buffer,
                     sizeof(shell_command_buffer),
-                    WHOATHERE_PIP_PREFIX "mkdir -p target && uv pip install --no-index -r %s --target target%s%s",
+                    WHOATHERE_PIP_PREFIX "mkdir -p target && uv pip install --no-index --no-build-isolation --python \"$WHOATHERE_PYTHON\" -r %s --target target%s%s",
                     project_requirements_path,
                     pth_probe,
                     import_probe
@@ -965,9 +965,9 @@ static int run_detonation_job(int fd, const char *line) {
         } else if (write_python_fixture(workspace, fixture) != 0) {
             return write_detonation_response(fd, job_id, tool, command_class, fixture, "fail_closed", "fail_closed_runner_error", "\"guest_fixture_prepare_failed\"", 70, 70, 0, 0, 0, 0, 0);
         } else if (strcmp(fixture, "api_compatible_canary_theft") == 0) {
-            shell_command = "uv pip install --no-index . --target target && PYTHONPATH=target python3 -c 'import whoathere_fixture; whoathere_fixture.run()'";
+            shell_command = WHOATHERE_PIP_PREFIX "uv pip install --no-index --no-build-isolation --python \"$WHOATHERE_PYTHON\" . --target target && PYTHONPATH=target $WHOATHERE_PYTHON -c 'import whoathere_fixture; whoathere_fixture.run()'";
         } else {
-            shell_command = "uv pip install --no-index . --target target";
+            shell_command = WHOATHERE_PIP_PREFIX "uv pip install --no-index --no-build-isolation --python \"$WHOATHERE_PYTHON\" . --target target";
         }
     } else {
         return write_detonation_response(fd, job_id, tool, command_class, fixture, "fail_closed", "fail_closed_unsupported_workflow", "\"unsupported_tool\"", 20, 20, 0, 0, 0, 0, 0);

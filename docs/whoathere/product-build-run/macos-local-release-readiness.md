@@ -40,8 +40,8 @@ The macOS local release is ready only when all of the following are true:
 | Host package-manager isolation | Strong for claimed pip paths | Goals 3 and 4 validate local pip project and local-only requirements detonation inside the guest without host package-manager execution. |
 | Secret exclusion | Strong for claimed pip paths | Sanitized mirror excludes known secret paths, credential files, symlink escapes, traversal, and large unsafe payloads. |
 | Python local project detonation | Implemented | Live validation covers clean project, local requirements, safe package data, setup.py canary, PEP 517 canary, import-time canary, and `.pth` canary cases. |
-| npm detonation | Host planner improved, not release-ready | The CLI now supports a narrow local npm project mirror plan for `npm install` and `npm ci` when `package.json` has no external dependency resolution and the workspace contains no native/risky artifacts. `--execute` now checks the root-owned guest provisioning receipt before preparing a project payload or invoking the helper, so npm fails closed with `macos_vm_guest_node_runtime_not_provisioned` while Node/npm are absent. Successful npm detonation is not claimed until the validation VM is reprovisioned with Node/npm and live npm fixture/project workflows pass. Public npm dependencies remain fail-closed. |
-| uv detonation | Host planner improved, not release-ready | The CLI now supports a narrow local `uv pip install` project mirror plan by reusing the pip local-project safety rules, and the Swift helper/guest agent accept `uv_pip_project_install` and `uv_pip_requirements_install` payloads. `uv pip install` is now labeled `uv_pip_install_detonation` in evidence, and `--execute` fails closed before helper invocation unless the guest provisioning receipt proves uv, Python, pip wheel tooling, and disabled host secret/home/high-risk states. `uv sync` remains deferred until lock/source policy is explicit. Live uv execution remains unclaimed until the validation VM is reprovisioned with uv and live fixture/project workflows pass. |
+| npm detonation | Host planner improved, not release-ready | The CLI now supports a narrow local npm project mirror plan for `npm install` and `npm ci` when `package.json` has no external dependency resolution and the workspace contains no native/risky artifacts. `--execute` now checks the root-owned guest provisioning receipt before preparing a project payload or invoking the helper, so npm fails closed unless Node/npm, disabled host secret/home/high-risk states, and current guest-agent provisioning are proven. Successful npm detonation is not claimed until the validation VM is reprovisioned with the current guest agent and live npm fixture/project workflows pass. Public npm dependencies remain fail-closed. |
+| uv detonation | Host planner improved, not release-ready | The CLI now supports a narrow local `uv pip install` project mirror plan by reusing the pip local-project safety rules, and the Swift helper/guest agent accept `uv_pip_project_install` and `uv_pip_requirements_install` payloads. The guest-agent uv path now uses the provisioned Python plus offline pip/setuptools/wheel inputs with `--no-build-isolation`, avoiding public-index build isolation for clean local project installs. `uv sync` remains deferred until lock/source policy is explicit. Live uv execution remains unclaimed until the validation VM is reprovisioned with the current guest agent and live fixture/project workflows pass. |
 | Package acquisition policy | Implemented local-only preview policy | Public PyPI/npm resolver behavior remains blocked and there is no public fallback claim. The preview policy is `local_only_no_public_resolver`: supported workflows use local projects, local requirements, and no-external-dependency npm project plans only. |
 | Native and binary artifacts | Fail closed/manual review | Native markers, binary wheels, direct URLs, VCS, editable, and unknown classes are not auto-allowed. |
 | Network evidence | Partial | Controlled fixtures and reason codes exist, but robust DNS/HTTPS observation is still marker-based rather than a full network monitor. |
@@ -56,7 +56,7 @@ The macOS local release is ready only when all of the following are true:
 
 WhoaThere is not yet ready for the macOS-only local-first release target.
 
-The current tree is a credible VM-backed Python local project detonation prototype with strong fail-closed behavior for the workflows it claims, plus host-side local npm and uv project planners for no-external-dependency workspaces, a local-only package acquisition policy, a repeatable preview package path, and a validation VM whose manifest, lifecycle, and guest health can be proven. It is not yet a ready-to-use developer release because live npm/uv guest tooling/proof and signature/notarization are still incomplete. The npm/uv release blockers are now tied to a release-validation receipt that must match the current guest-provisioning receipt digest, so stale or missing live proof keeps those workflows fail-closed. Sync-back is deliberately disabled for this preview rather than an unresolved release requirement, so missing external scanner binaries are advisory until an auto-sync claim exists.
+The current tree is a credible VM-backed Python local project detonation prototype with strong fail-closed behavior for the workflows it claims, plus host-side local npm and uv project planners for no-external-dependency workspaces, a local-only package acquisition policy, a repeatable preview package path, and a validation VM whose manifest, lifecycle, and guest health can be proven. It is not yet a ready-to-use developer release because live npm/uv release validation proof and signature/notarization are still incomplete. The npm/uv release blockers are now tied to a release-validation receipt that must match the current guest-provisioning receipt digest, and the guest-provisioning receipt must match the current guest-agent source digest when a helper path is configured. Stale guest-agent code, stale proof, or missing live proof keeps those workflows fail-closed. Sync-back is deliberately disabled for this preview rather than an unresolved release requirement, so missing external scanner binaries are advisory until an auto-sync claim exists.
 
 ## Machine-Readable Gate
 
@@ -101,6 +101,13 @@ uses `package_acquisition_policy=local_only_no_public_resolver`, and binds to th
 the current guest-provisioning receipt. Missing, stale, or mismatched receipts keep
 `release_npm_vm_detonation_not_verified` and `release_uv_vm_detonation_not_verified` in
 `release_blocking_reason_codes`.
+
+The `guest_provisioning` object now includes `agent_sha256`, `agent_source_sha256`, and
+`current_agent_source_sha256` when a helper path can resolve the local helper root. Missing or
+mismatched source digests add `macos_vm_guest_agent_source_digest_missing` or
+`macos_vm_guest_agent_source_digest_mismatch`, force `guest_reprovision_required=true`, and keep
+release validation blocked. This prevents an old installed guest agent from authorizing npm/uv
+release proof after local guest-agent source changes.
 
 ## Validation Evidence For This Checkpoint
 
@@ -154,6 +161,35 @@ scripts/whoathere-notarize-macos-release.sh --dry-run dist/whoathere-macos-arm64
 # expected exit 64 before notarytool submission because the local preview uses ad-hoc signatures
 scripts/whoathere-notarize-macos-release.sh --submit dist/whoathere-macos-arm64-preview-<git-short-sha>.tar.gz
 cc -O2 -Wall -Wextra -target arm64-apple-macos13 -fsyntax-only whoathere/helpers/macos-vm-helper/guest-agent/whoathere-guest-ready.c
+```
+
+Additional focused validation for the current guest-agent freshness and uv offline-install slice on
+2026-06-27:
+
+```sh
+cargo build --manifest-path whoathere/Cargo.toml -p whoathere-cli
+cargo test --manifest-path whoathere/Cargo.toml -p whoathere-cli guest_agent_source_digest -- --nocapture
+cargo test --manifest-path whoathere/Cargo.toml -p whoathere-cli guest_provisioning -- --nocapture
+sh -n whoathere/helpers/macos-vm-helper/scripts/provision-guest-readiness.sh
+cc -O2 -Wall -Wextra -target arm64-apple-macos13 -fsyntax-only whoathere/helpers/macos-vm-helper/guest-agent/whoathere-guest-ready.c
+whoathere/target/debug/whoathere doctor --json --state-dir /Users/jdc/.whoathere/macos-vm-validation --helper /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/.build/arm64-apple-macosx/release/whoathere-macos-vm-helper
+whoathere/target/debug/whoathere vm validate-npm-uv --execute --state-dir /Users/jdc/.whoathere/macos-vm-validation --helper /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/.build/arm64-apple-macosx/release/whoathere-macos-vm-helper
+whoathere/target/debug/whoathere vm reprovision --preflight --state-dir /Users/jdc/.whoathere/macos-vm-validation --helper /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/.build/arm64-apple-macosx/release/whoathere-macos-vm-helper
+```
+
+The rebuilt `doctor --json` output for the actual validation VM reported Node/npm and uv installed
+in the previous root-owned provisioning receipt, but also reported
+`macos_vm_guest_agent_source_digest_missing` because that older receipt did not bind the installed
+guest agent to the current source digest
+`sha256:28d11a41fe389e72cd89dbc1b9241646ee898dd10fdbd88f2d84dccfb742f043`.
+As intended, this produced `guest_reprovision_required=true`,
+`guest_reprovision_admin_required=true`, and release blockers for the stale guest agent plus npm/uv
+release validation. `whoathere vm validate-npm-uv --execute` exited 64 before VM start with
+`guest_tooling_not_ready_for_npm_uv_validation=true`, printed sanitized provisioning preflight
+evidence, and printed this interactive admin command:
+
+```sh
+sudo WHOATHERE_NODE_RUNTIME_DIR='/Users/jdc/.nvm/versions/node/v22.22.3' WHOATHERE_UV_BINARY='/Users/jdc/.local/bin/uv' '/Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/scripts/provision-guest-readiness.sh' '/Users/jdc/.whoathere/macos-vm-validation'
 ```
 
 The `doctor --json` smokes reported `release_ready=false`, `high_risk_allowed=false`, the inspected VM state directory, `package_acquisition_policy=local_only_no_public_resolver`, implemented pip/local detonation workflows, fail-closed npm/uv/public-resolution/sync-back workflows, and release blockers for npm guest tooling/proof, uv guest tooling/proof, and signature/notarization. While the VM was running with host and guest health proofs, doctor reported `vm_lifecycle_ready=true`, `vm_runtime_ready=true`, and `vm_reason_codes=[]`; after suspend, doctor reported `vm_lifecycle_ready=true`, `vm_runtime_ready=false`, and `vm_reason_codes=["macos_vm_runtime_not_verified"]`, while `release_blocking_reason_codes` no longer included `macos_vm_runtime_not_verified`. Sync-back is reported as disabled for the preview rather than as a readiness blocker. Scanner availability is reported with `scanner_release_blocking=false` and `scanner_release_scope=required_before_auto_sync_not_no_sync_preview`. Focused unit tests verify `guest_reprovision_command` is emitted from a package-shaped helper layout when the guest provisioning receipt is missing, that helper-derived lifecycle/runtime health removes stale marker-based VM blockers, and that stopped runtime state stays visible without blocking release readiness.
@@ -279,16 +315,17 @@ empty package-smoke state before any admin mutation, and the packaged `bin/whoat
 `bin/whoathere vm validate-npm-uv --execute` wrapper fails closed on the empty package-smoke state
 before any VM start or npm/uv release claim.
 
-The latest npm/uv planner slices changed host planner, Swift helper, and guest-agent behavior. They were validated with unit tests, helper build/tests, guest C syntax checks, and live `doctor` fail-closed readiness output. Live npm/uv detonation is still not claimed because the stopped validation VM must first be reprovisioned with Node/npm and uv tooling through the interactive sudo step above.
+The latest npm/uv planner slices changed host planner, Swift helper, and guest-agent behavior. They were validated with unit tests, helper build/tests, guest C syntax checks, and live `doctor` fail-closed readiness output. Live npm/uv detonation is still not claimed because the stopped validation VM must first be reprovisioned with the current guest agent through the interactive sudo step above, then the live npm/uv validator must pass.
 
 The detonation execution path now performs a guest-tooling preflight before helper invocation. Dry
 runs still produce mirror and project plans without requiring a VM receipt. For `--execute`, npm
 requires Node/npm proof; pip requires Python and pip wheel proof; uv requires uv plus the Python and
 pip wheel proof used by the guest probes. All three also require safety fields proving high-risk
-execution, host home mounts, and host secret mounts are disabled. On the current stale validation VM,
-live npm and uv smokes returned `helper=null`, `project_payload=null`,
-`verdict=preflight_security_outcome`, and tool-specific blockers
-`macos_vm_guest_node_runtime_not_provisioned` and `macos_vm_guest_uv_binary_not_provisioned`.
+execution, host home mounts, and host secret mounts are disabled. When a helper path resolves the
+local helper root, the provisioning receipt must also bind the installed guest agent to the current
+guest-agent source digest. On the current validation VM, Node/npm and uv are installed in the old
+receipt, but the receipt predates the source-digest field and therefore returns
+`macos_vm_guest_agent_source_digest_missing`.
 
 The post-provision npm/uv release gate now lives behind
 `whoathere vm validate-npm-uv --execute`, which delegates to
@@ -299,7 +336,7 @@ project cases, runs canary-reading npm lifecycle/API-use and uv import-time case
 resolution and `uv sync` remain fail-closed before helper execution, rejects raw canary value
 leakage, checks the host project was not mutated, writes
 `<state-dir>/bundle/release-validation.json` after success, and suspends the VM if it started it. In
-the current stale validation state it exits with `guest_tooling_not_ready_for_npm_uv_validation=true`
+the current validation state it exits with `guest_tooling_not_ready_for_npm_uv_validation=true`,
 prints the provisioning preflight output, and prints the exact
 `sudo ... provision-guest-readiness.sh ...` command before starting the VM. The focused
 release-validation unit tests prove `doctor` removes the npm/uv release blockers only for a receipt
@@ -310,8 +347,8 @@ bound to the current guest-provisioning digest and rejects a stale digest with
 
 Focus on live VM validation and packaging UX before expanding package-manager coverage:
 
-1. Reprovision the stopped validation VM with the exact `sudo ... provision-guest-readiness.sh ...` command emitted by `doctor`, `provision-guest-readiness.sh`, or `validate-project-detonation.sh`, then rerun status and health to prove the receipt and live guest report `guest_toolchain_npm_available=true` and `guest_toolchain_uv_available=true`.
-2. Run `WHOATHERE_VM_STATE_DIR=/Users/jdc/.whoathere/macos-vm-validation whoathere/helpers/macos-vm-helper/scripts/validate-npm-uv-detonation.sh`. Keep npm/uv release claims fail-closed until that live gate passes.
+1. Reprovision the stopped validation VM with the exact `sudo ... provision-guest-readiness.sh ...` command emitted by `doctor`, `provision-guest-readiness.sh`, or `validate-npm-uv-detonation.sh`, then rerun status and health to prove the receipt includes `agent_source_sha256`, has no guest provisioning reason codes, and the live guest reports `guest_toolchain_npm_available=true` and `guest_toolchain_uv_available=true`.
+2. Run `whoathere/target/debug/whoathere vm validate-npm-uv --execute --state-dir /Users/jdc/.whoathere/macos-vm-validation --helper /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/.build/arm64-apple-macosx/release/whoathere-macos-vm-helper`. Keep npm/uv release claims fail-closed until that live gate passes.
 3. Exercise `scripts/whoathere-package-macos-preview.sh` as the release candidate build path, then add Developer ID signing/notarization or keep the artifact clearly labeled as a local preview.
 4. Keep sync-back disabled for the preview unless a separately tested deny-by-default whitelist is implemented.
 5. Keep the current no-sync force-stop decision visible in `runtime_shutdown`; revisit it before any sync-back or persistent guest-state claim.

@@ -431,6 +431,11 @@ render_preflight() {
   echo "admin_required_for_execute=true"
   echo "disk_image_present=$([ -f "$DISK_IMAGE" ] && echo true || echo false)"
   echo "guest_agent_source_present=$([ -f "$AGENT_SOURCE" ] && echo true || echo false)"
+  if [ -f "$AGENT_SOURCE" ]; then
+    echo "guest_agent_source_sha256=sha256:$(shasum -a 256 "$AGENT_SOURCE" | awk '{print $1}')"
+  else
+    echo "guest_agent_source_sha256=missing"
+  fi
   echo "vm_runtime_running=$RUNTIME_RUNNING"
   echo "python_runtime_source_ready=$([ -n "$PYTHON_SELECTION" ] && echo true || echo false)"
   echo "python_runtime_source_kind=$(preflight_source_kind "$PYTHON_SELECTION")"
@@ -535,6 +540,7 @@ if [ -f "$RUNTIME_PID" ]; then
 fi
 
 mkdir -p "$BUILD_DIR"
+AGENT_SOURCE_DIGEST=$(shasum -a 256 "$AGENT_SOURCE" | awk '{print $1}')
 cc -O2 -Wall -Wextra -target arm64-apple-macos13 -o "$AGENT_BINARY" "$AGENT_SOURCE"
 /usr/bin/codesign --force --sign - "$AGENT_BINARY" >/dev/null 2>&1 || true
 AGENT_DIGEST=$(shasum -a 256 "$AGENT_BINARY" | awk '{print $1}')
@@ -599,6 +605,7 @@ cat > "$RECEIPT_PATH" <<EOF
   "agent_path": "/usr/local/whoathere/whoathere-guest-ready",
   "launchdaemon_path": "/Library/LaunchDaemons/com.whoathere.guest-ready.plist",
   "agent_sha256": "sha256:$AGENT_DIGEST",
+  "agent_source_sha256": "sha256:$AGENT_SOURCE_DIGEST",
   "offline_python_runtime_status": "$PYTHON_RUNTIME_STATUS",
   "offline_python_runtime_source_kind": "$PYTHON_RUNTIME_SOURCE_KIND",
   "offline_python_runtime_name": "$PYTHON_RUNTIME_NAME",
@@ -637,6 +644,7 @@ chmod 0644 "$RECEIPT_PATH"
 echo "guest_readiness_provisioned=true"
 echo "state_dir=$STATE_DIR"
 echo "agent_sha256=sha256:$AGENT_DIGEST"
+echo "agent_source_sha256=sha256:$AGENT_SOURCE_DIGEST"
 echo "offline_python_runtime_status=$PYTHON_RUNTIME_STATUS"
 echo "offline_python_runtime_source_kind=$PYTHON_RUNTIME_SOURCE_KIND"
 echo "offline_python_runtime_name=$PYTHON_RUNTIME_NAME"

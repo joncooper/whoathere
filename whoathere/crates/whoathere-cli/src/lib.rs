@@ -1694,7 +1694,7 @@ fn render_vm_status(
     let shutdown_path = default_macos_vm_runtime_shutdown_path(&config);
     let (manifest, manifest_load_reason, effective_manifest_path) =
         load_macos_vm_manifest(manifest_path, &default_manifest_path);
-    let provisioning = load_macos_vm_guest_provisioning(&provisioning_path);
+    let provisioning = load_macos_vm_guest_provisioning(&provisioning_path, helper_path);
     let shutdown = load_macos_vm_runtime_shutdown(&shutdown_path);
     let status = status_from_config(&config, HostPlatform::current(), manifest.as_ref());
     let helper = run_macos_vm_helper(
@@ -2179,7 +2179,7 @@ const MAX_DETONATION_PROJECT_TOTAL_BYTES: u64 = 512 * 1024;
 fn render_vm_detonate(args: VmDetonateRenderArgs<'_>) -> String {
     let config = macos_vm_config(args.state_dir, None, None);
     let provisioning_path = default_macos_vm_guest_provisioning_path(&config);
-    let provisioning = load_macos_vm_guest_provisioning(&provisioning_path);
+    let provisioning = load_macos_vm_guest_provisioning(&provisioning_path, args.helper_path);
     let timeout_seconds = args.timeout_seconds.unwrap_or(120);
     let command_class = detonation_command_class(args.tool, args.args);
     let mirror_plan = args
@@ -3863,13 +3863,20 @@ struct MacosVmGuestProvisioningSummary {
     offline_node_runtime_npm_version: Option<String>,
     offline_uv_binary_status: Option<String>,
     offline_uv_binary_version: Option<String>,
+    agent_sha256: Option<String>,
+    agent_source_sha256: Option<String>,
+    current_agent_source_sha256: Option<String>,
     high_risk_package_execution_enabled: Option<bool>,
     host_home_mounted: Option<bool>,
     host_secrets_mounted: Option<bool>,
 }
 
 impl MacosVmGuestProvisioningSummary {
-    fn missing(path: PathBuf, load_reason: String) -> Self {
+    fn missing(
+        path: PathBuf,
+        load_reason: String,
+        current_agent_source_sha256: Option<String>,
+    ) -> Self {
         Self {
             path,
             present: false,
@@ -3882,13 +3889,20 @@ impl MacosVmGuestProvisioningSummary {
             offline_node_runtime_npm_version: None,
             offline_uv_binary_status: None,
             offline_uv_binary_version: None,
+            agent_sha256: None,
+            agent_source_sha256: None,
+            current_agent_source_sha256,
             high_risk_package_execution_enabled: None,
             host_home_mounted: None,
             host_secrets_mounted: None,
         }
     }
 
-    fn from_contents(path: PathBuf, contents: &str) -> Self {
+    fn from_contents(
+        path: PathBuf,
+        contents: &str,
+        current_agent_source_sha256: Option<String>,
+    ) -> Self {
         Self {
             path,
             present: true,
@@ -3919,6 +3933,9 @@ impl MacosVmGuestProvisioningSummary {
                 contents,
                 "offline_uv_binary_version",
             ),
+            agent_sha256: json_extract_string_field(contents, "agent_sha256"),
+            agent_source_sha256: json_extract_string_field(contents, "agent_source_sha256"),
+            current_agent_source_sha256,
             high_risk_package_execution_enabled: json_extract_bool_field(
                 contents,
                 "high_risk_package_execution_enabled",
@@ -3950,6 +3967,20 @@ impl MacosVmGuestProvisioningSummary {
         if self.offline_uv_binary_status.as_deref() != Some("installed") {
             reasons.push("macos_vm_guest_uv_binary_not_provisioned".to_string());
         }
+        if self.present {
+            match (
+                self.agent_source_sha256.as_deref(),
+                self.current_agent_source_sha256.as_deref(),
+            ) {
+                (None, Some(_)) => {
+                    reasons.push("macos_vm_guest_agent_source_digest_missing".to_string())
+                }
+                (Some(recorded), Some(current)) if recorded != current => {
+                    reasons.push("macos_vm_guest_agent_source_digest_mismatch".to_string())
+                }
+                _ => {}
+            }
+        }
         if self.high_risk_package_execution_enabled != Some(false) {
             reasons
                 .push("macos_vm_guest_high_risk_execution_state_not_proven_disabled".to_string());
@@ -3967,7 +3998,7 @@ impl MacosVmGuestProvisioningSummary {
 
     fn render_text(&self) -> String {
         format!(
-            "guest_provisioning_receipt_path={}\nguest_provisioning_receipt_present={}\nguest_provisioning_load_reason={}\nguest_provisioning_reason_codes={:?}\nguest_provisioning_schema_version={}\nguest_provisioning_python_runtime_status={}\nguest_provisioning_python_wheels_status={}\nguest_provisioning_wheel_package_status={}\nguest_provisioning_node_runtime_status={}\nguest_provisioning_npm_version={}\nguest_provisioning_uv_binary_status={}\nguest_provisioning_uv_version={}\nguest_provisioning_high_risk_package_execution_enabled={}\nguest_provisioning_host_home_mounted={}\nguest_provisioning_host_secrets_mounted={}",
+            "guest_provisioning_receipt_path={}\nguest_provisioning_receipt_present={}\nguest_provisioning_load_reason={}\nguest_provisioning_reason_codes={:?}\nguest_provisioning_schema_version={}\nguest_provisioning_python_runtime_status={}\nguest_provisioning_python_wheels_status={}\nguest_provisioning_wheel_package_status={}\nguest_provisioning_node_runtime_status={}\nguest_provisioning_npm_version={}\nguest_provisioning_uv_binary_status={}\nguest_provisioning_uv_version={}\nguest_provisioning_agent_sha256={}\nguest_provisioning_agent_source_sha256={}\nguest_provisioning_current_agent_source_sha256={}\nguest_provisioning_high_risk_package_execution_enabled={}\nguest_provisioning_host_home_mounted={}\nguest_provisioning_host_secrets_mounted={}",
             self.path.display(),
             self.present,
             self.load_reason
@@ -3986,6 +4017,9 @@ impl MacosVmGuestProvisioningSummary {
             option_string_text(self.offline_node_runtime_npm_version.as_deref()),
             option_string_text(self.offline_uv_binary_status.as_deref()),
             option_string_text(self.offline_uv_binary_version.as_deref()),
+            option_string_text(self.agent_sha256.as_deref()),
+            option_string_text(self.agent_source_sha256.as_deref()),
+            option_string_text(self.current_agent_source_sha256.as_deref()),
             option_bool_text(self.high_risk_package_execution_enabled),
             option_bool_text(self.host_home_mounted),
             option_bool_text(self.host_secrets_mounted),
@@ -3993,14 +4027,21 @@ impl MacosVmGuestProvisioningSummary {
     }
 }
 
-fn load_macos_vm_guest_provisioning(path: &Path) -> MacosVmGuestProvisioningSummary {
+fn load_macos_vm_guest_provisioning(
+    path: &Path,
+    helper_path: Option<&str>,
+) -> MacosVmGuestProvisioningSummary {
+    let current_agent_source_sha256 = guest_agent_source_digest_for_helper(helper_path);
     match std::fs::read_to_string(path) {
-        Ok(contents) => {
-            MacosVmGuestProvisioningSummary::from_contents(path.to_path_buf(), &contents)
-        }
+        Ok(contents) => MacosVmGuestProvisioningSummary::from_contents(
+            path.to_path_buf(),
+            &contents,
+            current_agent_source_sha256,
+        ),
         Err(error) => MacosVmGuestProvisioningSummary::missing(
             path.to_path_buf(),
             redacted_scalar(&error.to_string()),
+            current_agent_source_sha256,
         ),
     }
 }
@@ -4257,6 +4298,20 @@ fn file_sha256_digest(path: &Path) -> Option<String> {
         .map(|contents| sha256_digest(&contents))
 }
 
+fn guest_agent_source_digest_for_helper(helper_path: Option<&str>) -> Option<String> {
+    let path = configured_macos_vm_helper_path(helper_path)?;
+    if !path.is_absolute() {
+        return None;
+    }
+    let canonical_helper = path.canonicalize().ok()?;
+    let helper_root = helper_root_from_helper_path(&canonical_helper)?;
+    file_sha256_digest(
+        &helper_root
+            .join("guest-agent")
+            .join("whoathere-guest-ready.c"),
+    )
+}
+
 fn detonation_guest_tooling_reason_codes(
     tool: &str,
     provisioning: &MacosVmGuestProvisioningSummary,
@@ -4323,7 +4378,7 @@ fn option_string_text(value: Option<&str>) -> String {
 
 fn render_guest_provisioning_json(summary: &MacosVmGuestProvisioningSummary) -> String {
     format!(
-        "{{\"receipt_path\": {}, \"receipt_present\": {}, \"load_reason\": {}, \"reason_codes\": {}, \"schema_version\": {}, \"python_runtime_status\": {}, \"python_wheels_status\": {}, \"wheel_package_status\": {}, \"node_runtime_status\": {}, \"npm_version\": {}, \"uv_binary_status\": {}, \"uv_version\": {}, \"high_risk_package_execution_enabled\": {}, \"host_home_mounted\": {}, \"host_secrets_mounted\": {}}}",
+        "{{\"receipt_path\": {}, \"receipt_present\": {}, \"load_reason\": {}, \"reason_codes\": {}, \"schema_version\": {}, \"python_runtime_status\": {}, \"python_wheels_status\": {}, \"wheel_package_status\": {}, \"node_runtime_status\": {}, \"npm_version\": {}, \"uv_binary_status\": {}, \"uv_version\": {}, \"agent_sha256\": {}, \"agent_source_sha256\": {}, \"current_agent_source_sha256\": {}, \"high_risk_package_execution_enabled\": {}, \"host_home_mounted\": {}, \"host_secrets_mounted\": {}}}",
         json_string(&summary.path.display().to_string()),
         summary.present,
         json_option_string_redacted(summary.load_reason.as_deref()),
@@ -4336,6 +4391,9 @@ fn render_guest_provisioning_json(summary: &MacosVmGuestProvisioningSummary) -> 
         json_option_string_redacted(summary.offline_node_runtime_npm_version.as_deref()),
         json_option_string_redacted(summary.offline_uv_binary_status.as_deref()),
         json_option_string_redacted(summary.offline_uv_binary_version.as_deref()),
+        json_option_string_redacted(summary.agent_sha256.as_deref()),
+        json_option_string_redacted(summary.agent_source_sha256.as_deref()),
+        json_option_string_redacted(summary.current_agent_source_sha256.as_deref()),
         json_option(summary.high_risk_package_execution_enabled),
         json_option(summary.host_home_mounted),
         json_option(summary.host_secrets_mounted),
@@ -5228,7 +5286,7 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
     let release_validation_path = default_macos_vm_release_validation_path(&config);
     let (manifest, manifest_load_reason, effective_manifest_path) =
         load_macos_vm_manifest(None, &default_manifest_path);
-    let provisioning = load_macos_vm_guest_provisioning(&provisioning_path);
+    let provisioning = load_macos_vm_guest_provisioning(&provisioning_path, helper_path);
     let shutdown = load_macos_vm_runtime_shutdown(&shutdown_path);
     let provisioning_digest = file_sha256_digest(&provisioning_path);
     let release_validation = load_macos_vm_release_validation(&release_validation_path);
@@ -12138,6 +12196,142 @@ exit 0
         assert!(!result
             .output
             .contains("macos_vm_guest_uv_binary_not_provisioned"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vm_status_requires_current_guest_agent_source_digest_when_helper_root_is_known() {
+        let root = temp_root("whoathere-cli-vm-status-provisioning-agent-stale");
+        let state_dir = root.join("state");
+        let bundle_dir = state_dir.join("bundle");
+        let helper_root = root.join("helper-root");
+        let helper = helper_root
+            .join(".build")
+            .join("arm64-apple-macosx")
+            .join("release")
+            .join("whoathere-macos-vm-helper");
+        let guest_agent_source = helper_root
+            .join("guest-agent")
+            .join("whoathere-guest-ready.c");
+        let script = helper_root
+            .join("scripts")
+            .join("provision-guest-readiness.sh");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&bundle_dir).expect("bundle dir");
+        std::fs::create_dir_all(helper.parent().expect("helper parent")).expect("helper parent");
+        std::fs::create_dir_all(guest_agent_source.parent().expect("agent parent"))
+            .expect("agent parent");
+        std::fs::create_dir_all(script.parent().expect("script parent")).expect("script parent");
+        write_new_file(
+            &helper,
+            b"#!/bin/sh\nprintf '{\"status\":\"ok\",\"exit_code\":0,\"ready_for_lifecycle\":true,\"reason_codes\":[]}\\n'\nexit 0\n",
+        )
+        .expect("helper");
+        set_executable(&helper).expect("executable helper");
+        write_new_file(&script, b"#!/bin/sh\nexit 0\n").expect("script");
+        set_executable(&script).expect("executable script");
+        write_new_file(&guest_agent_source, b"int main(void) { return 0; }\n").expect("agent");
+        std::fs::write(
+            bundle_dir.join("guest-provisioning.json"),
+            r#"{
+  "schema_version": "whoathere.macos_vm.guest_provisioning.v1",
+  "agent_sha256": "sha256:compiled",
+  "offline_python_runtime_status": "installed",
+  "offline_python_wheels_status": "installed",
+  "wheel_package_status": "installed",
+  "offline_node_runtime_status": "installed",
+  "offline_node_runtime_npm_version": "10.9.8",
+  "offline_uv_binary_status": "installed",
+  "offline_uv_binary_version": "uv 0.10.9",
+  "high_risk_package_execution_enabled": false,
+  "host_home_mounted": false,
+  "host_secrets_mounted": false
+}"#,
+        )
+        .expect("receipt");
+
+        let result = evaluate_command(Command::VmStatus {
+            state_dir: Some(state_dir.display().to_string()),
+            manifest_path: None,
+            helper_path: Some(helper.display().to_string()),
+            json: false,
+        });
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result
+            .output
+            .contains("macos_vm_guest_agent_source_digest_missing"));
+        assert!(result.output.contains("guest_reprovision_required=true"));
+        assert!(result
+            .output
+            .contains("guest_reprovision_admin_required=true"));
+        assert!(result.output.contains("guest_reprovision_command=sudo "));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vm_status_accepts_matching_guest_agent_source_digest() {
+        let root = temp_root("whoathere-cli-vm-status-provisioning-agent-current");
+        let state_dir = root.join("state");
+        let bundle_dir = state_dir.join("bundle");
+        let helper_root = root.join("helper-root");
+        let helper = helper_root
+            .join(".build")
+            .join("arm64-apple-macosx")
+            .join("release")
+            .join("whoathere-macos-vm-helper");
+        let guest_agent_source = helper_root
+            .join("guest-agent")
+            .join("whoathere-guest-ready.c");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&bundle_dir).expect("bundle dir");
+        std::fs::create_dir_all(helper.parent().expect("helper parent")).expect("helper parent");
+        std::fs::create_dir_all(guest_agent_source.parent().expect("agent parent"))
+            .expect("agent parent");
+        write_new_file(
+            &helper,
+            b"#!/bin/sh\nprintf '{\"status\":\"ok\",\"exit_code\":0,\"ready_for_lifecycle\":true,\"reason_codes\":[]}\\n'\nexit 0\n",
+        )
+        .expect("helper");
+        set_executable(&helper).expect("executable helper");
+        let agent_source = b"int main(void) { return 0; }\n";
+        write_new_file(&guest_agent_source, agent_source).expect("agent");
+        let agent_source_digest = sha256_digest(agent_source);
+        std::fs::write(
+            bundle_dir.join("guest-provisioning.json"),
+            format!(
+                r#"{{
+  "schema_version": "whoathere.macos_vm.guest_provisioning.v1",
+  "agent_sha256": "sha256:compiled",
+  "agent_source_sha256": "{agent_source_digest}",
+  "offline_python_runtime_status": "installed",
+  "offline_python_wheels_status": "installed",
+  "wheel_package_status": "installed",
+  "offline_node_runtime_status": "installed",
+  "offline_node_runtime_npm_version": "10.9.8",
+  "offline_uv_binary_status": "installed",
+  "offline_uv_binary_version": "uv 0.10.9",
+  "high_risk_package_execution_enabled": false,
+  "host_home_mounted": false,
+  "host_secrets_mounted": false
+}}"#
+            ),
+        )
+        .expect("receipt");
+
+        let result = evaluate_command(Command::VmStatus {
+            state_dir: Some(state_dir.display().to_string()),
+            manifest_path: None,
+            helper_path: Some(helper.display().to_string()),
+            json: false,
+        });
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result.output.contains("guest_provisioning_reason_codes=[]"));
+        assert!(result.output.contains("guest_reprovision_required=false"));
+        assert!(!result.output.contains("macos_vm_guest_agent_source_digest"));
 
         let _ = std::fs::remove_dir_all(&root);
     }
