@@ -128,11 +128,11 @@ The helper lifecycle smoke showed that `swift build` replaces the signed helper 
 
 Offline provisioning now supports copying host or repo-provided Node/npm and uv tooling into the guest under `/usr/local/whoathere`. The guest agent uses a fixed WhoaThere-owned PATH for tool discovery and detonation. Static validation passed, but live npm/uv proof is still pending because `sudo ./scripts/provision-guest-readiness.sh /Users/jdc/.whoathere/macos-vm-validation` requires an interactive sudo password in this environment.
 
-Live VM validation is not required for this checkpoint because the implementation slice changes only readiness reporting and documentation. The next implementation slices that change VM behavior must include live VM checks for every claimed workflow.
+The latest npm/uv planner slices changed host planner, Swift helper, and guest-agent behavior. They were validated with unit tests, helper build/tests, guest C syntax checks, and live `doctor` fail-closed readiness output. Live npm/uv detonation is still not claimed because the stopped validation VM must first be reprovisioned with Node/npm and uv tooling through the interactive sudo step above.
 
 ## Next Recommended Slice
 
-Focus on VM lifecycle and onboarding UX before expanding package-manager coverage:
+Focus on live VM validation and packaging UX before expanding package-manager coverage:
 
 1. Run `doctor`, `vm status`, `vm init`, `vm start`, `vm health`, `vm suspend`, `vm reset`, and `vm prune` against the validation VM from a clean user perspective.
 2. Reprovision the stopped validation VM with `sudo WHOATHERE_NODE_RUNTIME_DIR=/Users/jdc/.nvm/versions/node/v22.22.3 WHOATHERE_UV_BINARY=/Users/jdc/.local/bin/uv /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/scripts/provision-guest-readiness.sh /Users/jdc/.whoathere/macos-vm-validation`, then rerun status and health to prove the receipt and live guest report `guest_toolchain_npm_available=true` and `guest_toolchain_uv_available=true`.
