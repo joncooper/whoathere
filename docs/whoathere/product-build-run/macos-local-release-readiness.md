@@ -140,6 +140,7 @@ sh -n whoathere/helpers/macos-vm-helper/scripts/validate-project-detonation.sh
 sh -n whoathere/helpers/macos-vm-helper/scripts/validate-npm-uv-detonation.sh
 sh -n scripts/whoathere-package-macos-preview.sh
 sh -n scripts/whoathere-notarize-macos-release.sh
+whoathere/helpers/macos-vm-helper/scripts/provision-guest-readiness.sh --preflight /Users/jdc/.whoathere/macos-vm-validation
 cargo test --manifest-path whoathere/Cargo.toml -p whoathere-cli release_validation
 scripts/whoathere-package-macos-preview.sh
 WHOATHERE_VM_HEALTH_INTERVAL_SECONDS=1 WHOATHERE_VM_HEALTH_ATTEMPTS=1 whoathere/helpers/macos-vm-helper/scripts/validate-npm-uv-detonation.sh
@@ -177,10 +178,19 @@ Those reason codes now appear in `release_blocking_reason_codes`, so stale or in
 
 The helper lifecycle smoke showed that `swift build` replaces the signed helper binary, so the helper must be re-signed before VM start. After re-signing, start returned `exit_code=0`, health returned `guest_health_proven=true`, `guest_toolchain_python3_available=true`, `guest_toolchain_pip_available=true`, `guest_toolchain_npm_available=false`, and `guest_toolchain_uv_available=false`. Updated suspend behavior returned `exit_code=0`, `runtime_stop_observed=true`, and `suspend_semantics=force_stop`. Final health returned fail-closed with `runtime_process_not_running`, confirming the VM was stopped. Current `vm status` and `doctor` output report `runtime_shutdown.stop_method=force_stop`, `runtime_shutdown.reason_codes=["guest_stop_timeout"]`, `runtime_shutdown.high_risk_package_execution_enabled=false`, and `runtime_shutdown.receipt_acceptable_for_no_sync_preview=true`. This is acceptable for the current no-sync detonation preview because no guest filesystem changes are trusted or copied back to the host; it is not acceptable evidence for a future sync-back release without a new whitelist and validation pass.
 
-Offline provisioning now supports copying host or repo-provided Node/npm and uv tooling into the guest under `/usr/local/whoathere`. The guest agent uses a fixed WhoaThere-owned PATH for tool discovery and detonation. Static validation passed, but live npm/uv proof is still pending because the emitted `sudo ... provision-guest-readiness.sh /Users/jdc/.whoathere/macos-vm-validation` command requires an interactive sudo password in this environment.
+Offline provisioning now supports copying host or repo-provided Node/npm and uv tooling into the
+guest under `/usr/local/whoathere`. The guest agent uses a fixed WhoaThere-owned PATH for tool
+discovery and detonation. The provisioning script also has a non-mutating `--preflight` mode that
+checks the stopped VM disk, guest agent source, Python/wheel sources, Node/npm source, and uv source
+before the operator enters an admin password. Static validation passed, but live npm/uv proof is
+still pending because the emitted
+`sudo ... provision-guest-readiness.sh /Users/jdc/.whoathere/macos-vm-validation` command requires
+an interactive sudo password in this environment.
 
 The provisioning and project validation scripts now emit a concrete machine-specific reprovision
-command when root-owned guest tooling is missing or stale. `vm status` and `doctor` also report
+command when root-owned guest tooling is missing or stale. The npm/uv validation script also prints
+the provisioning preflight output before exiting on stale tooling, so missing tool sources or a
+still-running VM are visible before the admin step. `vm status` and `doctor` also report
 `guest_reprovision_required`, `guest_reprovision_admin_required`, and
 `guest_reprovision_operator_action`, so the admin boundary is explicit rather than hidden in a
 failing install path. On this workstation the non-root smoke printed
@@ -188,6 +198,14 @@ failing install path. On this workstation the non-root smoke printed
 `WHOATHERE_UV_BINARY=/Users/jdc/.local/bin/uv` in the suggested `sudo` command. A non-interactive
 attempt to run that command failed before mutation because sudo required a terminal/password:
 `sudo: a terminal is required to read the password`.
+
+The new non-mutating preflight passed on the current validation VM state with
+`ready_for_sudo_provisioning=true`, `disk_image_present=true`, `vm_runtime_running=false`,
+`python_runtime_source_ready=true`, `python_wheels_source_ready=true`,
+`wheel_package_source_ready=true`, `node_runtime_source_ready=true`, and
+`uv_binary_source_ready=true`. This proves the next interactive sudo step has the required local
+tooling inputs available; it does not replace the admin provisioning receipt or live npm/uv VM
+validation.
 
 The preview packaging path now has `scripts/whoathere-package-macos-preview.sh`. It validates the
 Rust workspace, builds the release CLI, locally signs the CLI, runs Swift helper tests, builds and
@@ -228,8 +246,9 @@ closed against an empty temporary VM state directory while emitting a package-lo
 the `runtime_shutdown` and `release_validation` receipt gates, and npm/uv release blockers. Those
 extracted-artifact checks are now part of `scripts/whoathere-package-macos-preview.sh`, so future
 preview packages must pass the same smoke before the script reports success. The package smoke also
-verifies that the extracted npm/uv detonation validator is executable and passes shell syntax
-validation.
+verifies that the extracted npm/uv detonation validator is executable, the extracted provisioning
+script passes shell syntax validation, and the packaged provisioning preflight fails closed on a
+fresh empty package-smoke state before any admin mutation.
 
 The latest npm/uv planner slices changed host planner, Swift helper, and guest-agent behavior. They were validated with unit tests, helper build/tests, guest C syntax checks, and live `doctor` fail-closed readiness output. Live npm/uv detonation is still not claimed because the stopped validation VM must first be reprovisioned with Node/npm and uv tooling through the interactive sudo step above.
 
@@ -251,9 +270,10 @@ resolution and `uv sync` remain fail-closed before helper execution, rejects raw
 leakage, checks the host project was not mutated, writes
 `<state-dir>/bundle/release-validation.json` after success, and suspends the VM if it started it. In
 the current stale validation state it exits with `guest_tooling_not_ready_for_npm_uv_validation=true`
-and prints the exact `sudo ... provision-guest-readiness.sh ...` command before starting the VM. The
-focused release-validation unit tests prove `doctor` removes the npm/uv release blockers only for a
-receipt bound to the current guest-provisioning digest and rejects a stale digest with
+prints the provisioning preflight output, and prints the exact
+`sudo ... provision-guest-readiness.sh ...` command before starting the VM. The focused
+release-validation unit tests prove `doctor` removes the npm/uv release blockers only for a receipt
+bound to the current guest-provisioning digest and rejects a stale digest with
 `release_validation_provisioning_digest_mismatch`.
 
 ## Next Recommended Slice

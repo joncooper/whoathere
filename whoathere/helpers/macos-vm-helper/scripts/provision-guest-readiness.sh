@@ -364,6 +364,12 @@ copy_uv_binary() {
   UV_BINARY_VERSION=$("$UV_BINARY_SOURCE" --version 2>/dev/null | head -n 1 || true)
 }
 
+PREFLIGHT=0
+if [ "${1:-}" = "--preflight" ]; then
+  PREFLIGHT=1
+  shift
+fi
+
 STATE_DIR=${1:-$(state_dir_default)}
 BUNDLE_DIR="$STATE_DIR/bundle"
 DISK_IMAGE="$BUNDLE_DIR/disk.img"
@@ -375,6 +381,114 @@ BUILD_DIR=${TMPDIR:-/tmp}/whoathere-guest-ready.$$
 AGENT_BINARY="$BUILD_DIR/whoathere-guest-ready"
 ATTACHED_DISK=""
 
+runtime_pid_alive() {
+  [ -f "$RUNTIME_PID" ] || return 1
+  PID=$(cat "$RUNTIME_PID" 2>/dev/null || true)
+  case "$PID" in
+    ''|*[!0-9]*)
+      return 1
+      ;;
+    *)
+      kill -0 "$PID" 2>/dev/null
+      ;;
+  esac
+}
+
+preflight_source_kind() {
+  SELECTION=$1
+  if [ -n "$SELECTION" ]; then
+    printf '%s' "${SELECTION%%:*}"
+  else
+    printf 'none'
+  fi
+}
+
+preflight_source_path() {
+  SELECTION=$1
+  if [ -n "$SELECTION" ]; then
+    printf '%s' "${SELECTION#*:}"
+  else
+    printf 'none'
+  fi
+}
+
+render_preflight() {
+  mkdir -p "$BUILD_DIR"
+  PYTHON_SELECTION=$(detect_python_runtime_dir || true)
+  PYTHON_WHEEL_SELECTION=$(detect_python_wheel_dir || true)
+  WHEEL_PACKAGE_SELECTION=$(detect_wheel_package_file || true)
+  NODE_SELECTION=$(detect_node_runtime_dir || true)
+  UV_SELECTION=$(detect_uv_binary || true)
+
+  RUNTIME_RUNNING=false
+  if runtime_pid_alive; then
+    RUNTIME_RUNNING=true
+  fi
+
+  READY=true
+  echo "guest_readiness_preflight=true"
+  echo "state_dir=$STATE_DIR"
+  echo "admin_required_for_execute=true"
+  echo "disk_image_present=$([ -f "$DISK_IMAGE" ] && echo true || echo false)"
+  echo "guest_agent_source_present=$([ -f "$AGENT_SOURCE" ] && echo true || echo false)"
+  echo "vm_runtime_running=$RUNTIME_RUNNING"
+  echo "python_runtime_source_ready=$([ -n "$PYTHON_SELECTION" ] && echo true || echo false)"
+  echo "python_runtime_source_kind=$(preflight_source_kind "$PYTHON_SELECTION")"
+  echo "python_runtime_source_path=$(preflight_source_path "$PYTHON_SELECTION")"
+  echo "python_wheels_source_ready=$([ -n "$PYTHON_WHEEL_SELECTION" ] && echo true || echo false)"
+  echo "python_wheels_source_kind=$(preflight_source_kind "$PYTHON_WHEEL_SELECTION")"
+  echo "python_wheels_source_path=$(preflight_source_path "$PYTHON_WHEEL_SELECTION")"
+  echo "wheel_package_source_ready=$([ -n "$WHEEL_PACKAGE_SELECTION" ] && echo true || echo false)"
+  echo "wheel_package_source_kind=$(preflight_source_kind "$WHEEL_PACKAGE_SELECTION")"
+  echo "wheel_package_source_path=$(preflight_source_path "$WHEEL_PACKAGE_SELECTION")"
+  echo "node_runtime_source_ready=$([ -n "$NODE_SELECTION" ] && echo true || echo false)"
+  echo "node_runtime_source_kind=$(preflight_source_kind "$NODE_SELECTION")"
+  echo "node_runtime_source_path=$(preflight_source_path "$NODE_SELECTION")"
+  echo "uv_binary_source_ready=$([ -n "$UV_SELECTION" ] && echo true || echo false)"
+  echo "uv_binary_source_kind=$(preflight_source_kind "$UV_SELECTION")"
+  echo "uv_binary_source_path=$(preflight_source_path "$UV_SELECTION")"
+
+  if [ ! -f "$DISK_IMAGE" ]; then
+    echo "reason_code=disk_image_not_found"
+    READY=false
+  fi
+  if [ ! -f "$AGENT_SOURCE" ]; then
+    echo "reason_code=guest_agent_source_not_found"
+    READY=false
+  fi
+  if [ "$RUNTIME_RUNNING" = "true" ]; then
+    echo "reason_code=vm_runtime_must_be_stopped_before_guest_reprovisioning"
+    READY=false
+  fi
+  if [ -z "$PYTHON_SELECTION" ]; then
+    echo "reason_code=python_runtime_source_not_found"
+    READY=false
+  fi
+  if [ -z "$PYTHON_WHEEL_SELECTION" ]; then
+    echo "reason_code=python_wheel_source_not_found"
+    READY=false
+  fi
+  if [ -z "$WHEEL_PACKAGE_SELECTION" ]; then
+    echo "reason_code=wheel_package_source_not_found"
+    READY=false
+  fi
+  if [ -z "$NODE_SELECTION" ]; then
+    echo "reason_code=node_runtime_source_not_found"
+    READY=false
+  fi
+  if [ -z "$UV_SELECTION" ]; then
+    echo "reason_code=uv_binary_source_not_found"
+    READY=false
+  fi
+
+  echo "ready_for_sudo_provisioning=$READY"
+  echo "rerun=$(whoathere_reprovision_command "$HELPER_ROOT" "$STATE_DIR")"
+  if [ "$READY" = "true" ]; then
+    return 0
+  fi
+  return 64
+}
+
 cleanup() {
   if [ -n "$ATTACHED_DISK" ]; then
     hdiutil detach "$ATTACHED_DISK" >/dev/null 2>&1 || true
@@ -382,6 +496,11 @@ cleanup() {
   rm -rf "$BUILD_DIR"
 }
 trap cleanup EXIT HUP INT TERM
+
+if [ "$PREFLIGHT" -eq 1 ]; then
+  render_preflight
+  exit $?
+fi
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "admin_required=true" >&2

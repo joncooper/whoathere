@@ -89,7 +89,9 @@ verifies the checksum, `bin/whoathere --help`, packaged codesign state, and pack
 smoke also verifies that the packaged doctor output includes the runtime-shutdown and
 release-validation gates, keeps the npm/uv release blockers present when no current validation
 receipt exists, and does not treat a missing shutdown receipt in a fresh package smoke state as a
-successful VM stop proof.
+successful VM stop proof. It also syntax-checks the packaged provisioner and verifies
+`provision-guest-readiness.sh --preflight` fails closed on a fresh empty package-smoke state before
+any admin mutation.
 
 ```text
 dist/whoathere-macos-arm64-preview-<git-sha>.tar.gz
@@ -166,6 +168,17 @@ Expected before release hardening is complete:
 The VM must be stopped for provisioning. This step is admin-only because the guest LaunchDaemon and
 agent must be root-owned on the guest Data volume.
 
+Before entering an admin password, run the non-mutating preflight:
+
+```sh
+/Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/scripts/provision-guest-readiness.sh --preflight "$WHOATHERE_STATE"
+```
+
+The preflight checks that the VM disk and guest agent source exist, the VM is stopped, and Python,
+wheel, Node/npm, and uv sources are discoverable. It reports `ready_for_sudo_provisioning=true`
+only when the next `sudo ... provision-guest-readiness.sh ...` command has the required local
+inputs available.
+
 For Python-only provisioning:
 
 ```sh
@@ -181,8 +194,10 @@ sudo WHOATHERE_NODE_RUNTIME_DIR="$WHOATHERE_NODE_RUNTIME_DIR" WHOATHERE_UV_BINAR
 If provisioning is missing or stale, `provision-guest-readiness.sh` and the validation scripts
 emit a machine-specific `sudo ... provision-guest-readiness.sh ...` command with detected
 `WHOATHERE_NODE_RUNTIME_DIR` and `WHOATHERE_UV_BINARY` values when they are available.
-`whoathere doctor --json` also reports `guest_reprovision_command` when it can derive the helper
-script path from the configured helper and the guest provisioning receipt is missing or stale.
+The npm/uv validation gate also prints the provisioning preflight output before it exits, so missing
+tool sources or a still-running VM are visible before the admin step. `whoathere doctor --json` also
+reports `guest_reprovision_command` when it can derive the helper script path from the configured
+helper and the guest provisioning receipt is missing or stale.
 
 Then verify the receipt and live guest state:
 

@@ -133,12 +133,24 @@ smoke_package() {
   EXTRACTED_CLI="$EXTRACTED_ROOT/bin/whoathere"
   EXTRACTED_HELPER="$EXTRACTED_ROOT/helpers/macos-vm-helper/.build/arm64-apple-macosx/release/whoathere-macos-vm-helper"
   EXTRACTED_NPM_UV_VALIDATOR="$EXTRACTED_ROOT/helpers/macos-vm-helper/scripts/validate-npm-uv-detonation.sh"
+  EXTRACTED_PROVISIONER="$EXTRACTED_ROOT/helpers/macos-vm-helper/scripts/provision-guest-readiness.sh"
   EXTRACTED_STATE="$SMOKE_ROOT/state"
   DOCTOR_OUTPUT="$SMOKE_ROOT/doctor.json"
+  PREFLIGHT_OUTPUT="$SMOKE_ROOT/provision-preflight.txt"
 
   "$EXTRACTED_CLI" --help >/dev/null
   test -x "$EXTRACTED_NPM_UV_VALIDATOR"
+  test -x "$EXTRACTED_PROVISIONER"
   sh -n "$EXTRACTED_NPM_UV_VALIDATOR"
+  sh -n "$EXTRACTED_PROVISIONER"
+  set +e
+  "$EXTRACTED_PROVISIONER" --preflight "$EXTRACTED_STATE" > "$PREFLIGHT_OUTPUT" 2>&1
+  PREFLIGHT_STATUS=$?
+  set -e
+  test "$PREFLIGHT_STATUS" -eq 64
+  grep -q 'guest_readiness_preflight=true' "$PREFLIGHT_OUTPUT"
+  grep -q 'disk_image_present=false' "$PREFLIGHT_OUTPUT"
+  grep -q 'ready_for_sudo_provisioning=false' "$PREFLIGHT_OUTPUT"
   /usr/bin/codesign --verify --strict --verbose=2 "$EXTRACTED_CLI" >/dev/null
   /usr/bin/codesign --verify --strict --verbose=2 "$EXTRACTED_HELPER" >/dev/null
   "$EXTRACTED_CLI" doctor --json --state-dir "$EXTRACTED_STATE" --helper "$EXTRACTED_HELPER" > "$DOCTOR_OUTPUT"

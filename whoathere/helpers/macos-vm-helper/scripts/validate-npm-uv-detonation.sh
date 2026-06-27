@@ -58,6 +58,7 @@ require_guest_tooling_receipt() {
   case "$doctor_output" in
     *'"guest_reprovision_required": true'*|*macos_vm_guest_node_runtime_not_provisioned*|*macos_vm_guest_uv_binary_not_provisioned*|*macos_vm_guest_python_runtime_not_provisioned*|*macos_vm_guest_pip_tooling_not_provisioned*)
       echo "guest_tooling_not_ready_for_npm_uv_validation=true" >&2
+      "$SCRIPT_DIR/provision-guest-readiness.sh" --preflight "$STATE_DIR" >&2 || true
       echo "reprovision_command=$(whoathere_reprovision_command "$HELPER_ROOT" "$STATE_DIR")" >&2
       exit 64
       ;;
