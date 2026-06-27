@@ -17,6 +17,9 @@ The current usable claim is:
   is provisioned into the validation VM and live fixture/project checks pass. `uv sync` remains
   deferred until lock/source policy is explicit.
 - Sync-back remains disabled. The current posture is detonation/admission evidence only.
+- Package acquisition is local-only for this preview: `doctor` reports
+  `package_acquisition_policy=local_only_no_public_resolver`. Public npm/PyPI resolution remains
+  fail-closed unless a separate VM-only resolver policy is implemented and tested.
 
 ## Prerequisites
 

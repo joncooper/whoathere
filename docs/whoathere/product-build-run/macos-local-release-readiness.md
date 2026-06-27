@@ -35,14 +35,14 @@ The macOS local release is ready only when all of the following are true:
 
 | Area | Status | Evidence |
 | --- | --- | --- |
-| Apple Silicon macOS VM boundary | Partial | VM lifecycle, helper, provisioning, guest-health, detonation commands, and preview packaging exist, but live npm/uv proof, public package policy, and release signing/notarization gates remain incomplete. |
+| Apple Silicon macOS VM boundary | Partial | VM lifecycle, helper, provisioning, guest-health, detonation commands, local-only package policy, and preview packaging exist, but live npm/uv proof and release signing/notarization gates remain incomplete. |
 | VM start/health/suspend lifecycle | Improved in this checkpoint | Live validation starts the signed helper VM, proves guest health over vsock, reports Python/pip available and npm/uv unavailable, suspends with observed runtime stop, and confirms final stopped state. |
 | Host package-manager isolation | Strong for claimed pip paths | Goals 3 and 4 validate local pip project and local-only requirements detonation inside the guest without host package-manager execution. |
 | Secret exclusion | Strong for claimed pip paths | Sanitized mirror excludes known secret paths, credential files, symlink escapes, traversal, and large unsafe payloads. |
 | Python local project detonation | Implemented | Live validation covers clean project, local requirements, safe package data, setup.py canary, PEP 517 canary, import-time canary, and `.pth` canary cases. |
 | npm detonation | Host planner improved, not release-ready | The CLI now supports a narrow local npm project mirror plan for `npm install` and `npm ci` when `package.json` has no external dependency resolution and the workspace contains no native/risky artifacts. The Swift helper and guest agent accept that project payload path, but successful npm detonation is not claimed until the validation VM is reprovisioned with Node/npm and live npm fixture/project workflows pass. Public npm dependencies remain fail-closed. |
 | uv detonation | Host planner improved, not release-ready | The CLI now supports a narrow local `uv pip install` project mirror plan by reusing the pip local-project safety rules, and the Swift helper/guest agent accept `uv_pip_project_install` and `uv_pip_requirements_install` payloads. `uv sync` remains deferred until lock/source policy is explicit. Live uv execution remains unclaimed until the validation VM is reprovisioned with uv and live fixture/project workflows pass. |
-| Public package acquisition | Not implemented | Public PyPI/npm resolver behavior remains blocked or deferred; there is no public fallback claim. |
+| Package acquisition policy | Implemented local-only preview policy | Public PyPI/npm resolver behavior remains blocked and there is no public fallback claim. The preview policy is `local_only_no_public_resolver`: supported workflows use local projects, local requirements, and no-external-dependency npm project plans only. |
 | Native and binary artifacts | Fail closed/manual review | Native markers, binary wheels, direct URLs, VCS, editable, and unknown classes are not auto-allowed. |
 | Network evidence | Partial | Controlled fixtures and reason codes exist, but robust DNS/HTTPS observation is still marker-based rather than a full network monitor. |
 | Sync-back | Explicitly out of scope for preview | Current posture is detonation/admission evidence only. Host sync-back remains disabled and is not required for the preview release gate. Future sync-back still requires a deny-by-default whitelist and live validation before any claim changes. |
@@ -56,7 +56,7 @@ The macOS local release is ready only when all of the following are true:
 
 WhoaThere is not yet ready for the macOS-only local-first release target.
 
-The current tree is a credible VM-backed Python local project detonation prototype with strong fail-closed behavior for the workflows it claims, plus newly implemented host-side local npm and uv project planners for no-external-dependency workspaces and a repeatable preview package path. It is not yet a ready-to-use developer release because live npm/uv proof, public package acquisition policy, and signature/notarization are still incomplete. Sync-back is deliberately disabled for this preview rather than an unresolved release requirement, so missing external scanner binaries are advisory until an auto-sync claim exists.
+The current tree is a credible VM-backed Python local project detonation prototype with strong fail-closed behavior for the workflows it claims, plus newly implemented host-side local npm and uv project planners for no-external-dependency workspaces, a local-only package acquisition policy, and a repeatable preview package path. It is not yet a ready-to-use developer release because live npm/uv proof and signature/notarization are still incomplete. Sync-back is deliberately disabled for this preview rather than an unresolved release requirement, so missing external scanner binaries are advisory until an auto-sync claim exists.
 
 ## Machine-Readable Gate
 
@@ -67,6 +67,7 @@ The current tree is a credible VM-backed Python local project detonation prototy
 - `release_stage`
 - `release_ready`
 - `release_blocking_reason_codes`
+- `package_acquisition_policy`
 - `implemented_workflows`
 - `fail_closed_workflows`
 - `manual_review_classes`
@@ -110,7 +111,7 @@ scripts/whoathere-package-macos-preview.sh
 cc -O2 -Wall -Wextra -target arm64-apple-macos13 -fsyntax-only whoathere/helpers/macos-vm-helper/guest-agent/whoathere-guest-ready.c
 ```
 
-The `doctor --json` smokes reported `release_ready=false`, `high_risk_allowed=false`, `vm_ready=false`, the inspected VM state directory, implemented pip/local detonation workflows, fail-closed npm/uv/public-resolution/sync-back workflows, and release blockers for npm, uv, public package resolution policy, VM runtime readiness, and signature/notarization. Sync-back is reported as disabled for the preview rather than as a readiness blocker. Scanner availability is reported with `scanner_release_blocking=false` and `scanner_release_scope=required_before_auto_sync_not_no_sync_preview`.
+The `doctor --json` smokes reported `release_ready=false`, `high_risk_allowed=false`, `vm_ready=false`, the inspected VM state directory, `package_acquisition_policy=local_only_no_public_resolver`, implemented pip/local detonation workflows, fail-closed npm/uv/public-resolution/sync-back workflows, and release blockers for npm, uv, VM runtime readiness, and signature/notarization. Sync-back is reported as disabled for the preview rather than as a readiness blocker. Scanner availability is reported with `scanner_release_blocking=false` and `scanner_release_scope=required_before_auto_sync_not_no_sync_preview`.
 
 The red-team fixture gate passed with `passed=true`, `case_count=18`, `public_network_used=false`, and `external_scanners_required=false`. The gate does not execute arbitrary packages and does not replace scanner adapters; it proves the local fixture-safe static/dynamic evidence paths and binding checks catch or reject representative attack shapes without leaking canaries or local paths.
 

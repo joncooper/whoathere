@@ -4098,6 +4098,7 @@ struct MacosLocalReleaseReadiness {
     release_stage: &'static str,
     scanner_release_blocking: bool,
     scanner_release_scope: &'static str,
+    package_acquisition_policy: &'static str,
     implemented_workflows: Vec<String>,
     fail_closed_workflows: Vec<String>,
     manual_review_classes: Vec<String>,
@@ -4131,7 +4132,6 @@ fn macos_local_release_readiness(
     blocking_reason_codes.extend(string_vec(&[
         "release_npm_vm_detonation_not_verified",
         "release_uv_vm_detonation_not_verified",
-        "release_public_package_resolution_policy_not_implemented",
         "release_signature_notarization_not_complete",
     ]));
     blocking_reason_codes.sort();
@@ -4143,11 +4143,13 @@ fn macos_local_release_readiness(
         release_stage: "pre_release_checkpoint",
         scanner_release_blocking,
         scanner_release_scope: "required_before_auto_sync_not_no_sync_preview",
+        package_acquisition_policy: "local_only_no_public_resolver",
         implemented_workflows: string_vec(&[
             "pip.local_project.install",
             "pip.local_requirements.local_only",
             "npm.local_project.no_external_dependency_plan",
             "uv.pip_install.local_project_plan",
+            "package_acquisition.local_only_no_public_resolver",
             "host.sync_back.disabled_preview",
             "vm.fixture_detonation",
             "vm.release_plan.admission_model",
@@ -4175,6 +4177,7 @@ fn macos_local_release_readiness(
             "validate default VM image lifecycle without hidden sudo requirements",
             "reprovision the stopped VM with explicit Node/npm and uv tool sources until receipt and health prove toolchains",
             "make npm and uv detonation either work in VM or remain explicitly unclaimed",
+            "keep public package resolution out of the preview unless a separate VM-only resolver policy is implemented",
             "keep sync-back disabled for the preview unless a separately tested whitelist is implemented",
             "complete Developer ID signing and notarization for Apple Silicon users",
             "run whoathere vm red-team-gate on every release candidate",
@@ -4236,7 +4239,7 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
             .collect::<Vec<_>>()
             .join(", ");
         return format!(
-            "{{\n  \"command\": \"whoathere doctor\",\n  \"status\": \"ok\",\n  \"release_target\": {},\n  \"release_claim\": {},\n  \"sandbox_label\": {},\n  \"high_risk_allowed\": {},\n  \"state_dir\": {},\n  \"vm_manifest_path\": {},\n  \"vm_manifest_load_reason\": {},\n  \"guest_provisioning\": {},\n  \"release_readiness_schema\": {},\n  \"release_stage\": {},\n  \"release_ready\": {},\n  \"release_blocking_reason_codes\": {},\n  \"scanner_release_blocking\": {},\n  \"scanner_release_scope\": {},\n  \"implemented_workflows\": {},\n  \"fail_closed_workflows\": {},\n  \"manual_review_classes\": {},\n  \"next_actions\": {},\n  \"vm_ready\": {},\n  \"vm_reason_codes\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout_truncated\": {},\n  \"helper_stderr_truncated\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {},\n  \"scanner_available_count\": {},\n  \"scanner_required_count\": {},\n  \"scanners\": [{}]\n}}",
+            "{{\n  \"command\": \"whoathere doctor\",\n  \"status\": \"ok\",\n  \"release_target\": {},\n  \"release_claim\": {},\n  \"sandbox_label\": {},\n  \"high_risk_allowed\": {},\n  \"state_dir\": {},\n  \"vm_manifest_path\": {},\n  \"vm_manifest_load_reason\": {},\n  \"guest_provisioning\": {},\n  \"release_readiness_schema\": {},\n  \"release_stage\": {},\n  \"release_ready\": {},\n  \"release_blocking_reason_codes\": {},\n  \"scanner_release_blocking\": {},\n  \"scanner_release_scope\": {},\n  \"package_acquisition_policy\": {},\n  \"implemented_workflows\": {},\n  \"fail_closed_workflows\": {},\n  \"manual_review_classes\": {},\n  \"next_actions\": {},\n  \"vm_ready\": {},\n  \"vm_reason_codes\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout_truncated\": {},\n  \"helper_stderr_truncated\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {},\n  \"scanner_available_count\": {},\n  \"scanner_required_count\": {},\n  \"scanners\": [{}]\n}}",
             json_string(RELEASE_TARGET),
             json_string(RELEASE_CLAIM),
             json_string(plan.label),
@@ -4254,6 +4257,7 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
             json_string_array(&readiness.blocking_reason_codes),
             readiness.scanner_release_blocking,
             json_string(readiness.scanner_release_scope),
+            json_string(readiness.package_acquisition_policy),
             json_string_array(&readiness.implemented_workflows),
             json_string_array(&readiness.fail_closed_workflows),
             json_string_array(&readiness.manual_review_classes),
@@ -4294,7 +4298,7 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "whoathere doctor\nstatus=ok\nrelease_target={}\nrelease_claim={}\nsandbox_label={}\nhigh_risk_allowed={}\nstate_dir={}\nvm_manifest_path={}\nvm_manifest_load_reason={}\n{}\nrelease_readiness_schema={}\nrelease_stage={}\nrelease_ready={}\nrelease_blocking_reason_codes={:?}\nscanner_release_blocking={}\nscanner_release_scope={}\nimplemented_workflows={:?}\nfail_closed_workflows={:?}\nmanual_review_classes={:?}\nnext_actions={:?}\nvm_ready={}\nvm_reason_codes={:?}\n{}\nscanner_available_count={}\nscanner_required_count={}\n{}",
+        "whoathere doctor\nstatus=ok\nrelease_target={}\nrelease_claim={}\nsandbox_label={}\nhigh_risk_allowed={}\nstate_dir={}\nvm_manifest_path={}\nvm_manifest_load_reason={}\n{}\nrelease_readiness_schema={}\nrelease_stage={}\nrelease_ready={}\nrelease_blocking_reason_codes={:?}\nscanner_release_blocking={}\nscanner_release_scope={}\npackage_acquisition_policy={}\nimplemented_workflows={:?}\nfail_closed_workflows={:?}\nmanual_review_classes={:?}\nnext_actions={:?}\nvm_ready={}\nvm_reason_codes={:?}\n{}\nscanner_available_count={}\nscanner_required_count={}\n{}",
         RELEASE_TARGET,
         RELEASE_CLAIM,
         plan.label,
@@ -4309,6 +4313,7 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
         readiness.blocking_reason_codes,
         readiness.scanner_release_blocking,
         readiness.scanner_release_scope,
+        readiness.package_acquisition_policy,
         readiness.implemented_workflows,
         readiness.fail_closed_workflows,
         readiness.manual_review_classes,
@@ -10231,6 +10236,15 @@ exit 0
         assert!(!result
             .output
             .contains("release_packaging_and_onboarding_not_complete"));
+        assert!(!result
+            .output
+            .contains("release_public_package_resolution_policy_not_implemented"));
+        assert!(result
+            .output
+            .contains("\"package_acquisition_policy\": \"local_only_no_public_resolver\""));
+        assert!(result
+            .output
+            .contains("package_acquisition.local_only_no_public_resolver"));
         assert!(result.output.contains("host.sync_back.disabled_preview"));
         assert!(!result
             .output
