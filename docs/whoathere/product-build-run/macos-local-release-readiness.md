@@ -167,10 +167,12 @@ signs the release helper, runs the local red-team fixture gate, stages helper sc
 writes a tarball plus SHA-256 checksum under ignored `dist/`. It deliberately reports
 `notarization_status=not_performed`; final Developer ID/notarization work remains open.
 
-The packaging script was run end to end on this host and produced a preview tarball plus checksum.
-After extracting the archive to `/private/tmp`, the packaged `bin/whoathere --help` worked and the
-packaged `validate-project-detonation.sh` resolved the package-local release helper and failed
-closed at the missing guest provisioning receipt with a package-local reprovision command.
+The packaging script was rerun after the readiness UX changes and produced
+`dist/whoathere-macos-arm64-preview-6b4316b.tar.gz` plus a checksum. The checksum verified from the
+extracted archive smoke, packaged `bin/whoathere --help` worked, both packaged binaries passed
+`codesign --verify --strict --verbose=2`, and packaged `doctor --json` failed closed against an
+empty temporary VM state directory while emitting a package-local `guest_reprovision_command` and
+`guest_reprovision_operator_action=run_guest_reprovision_command_in_interactive_admin_terminal`.
 
 The latest npm/uv planner slices changed host planner, Swift helper, and guest-agent behavior. They were validated with unit tests, helper build/tests, guest C syntax checks, and live `doctor` fail-closed readiness output. Live npm/uv detonation is still not claimed because the stopped validation VM must first be reprovisioned with Node/npm and uv tooling through the interactive sudo step above.
 
