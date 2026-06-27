@@ -86,12 +86,13 @@ directory's cache when no complete bundle already exists.
 Before running the admin provisioning command, you can verify local inputs without mutating the VM:
 
 ```sh
+whoathere vm reprovision --preflight --state-dir /absolute/path/to/vm-state-dir --helper /absolute/path/to/whoathere-macos-vm-helper
 ./scripts/provision-guest-readiness.sh --preflight /absolute/path/to/vm-state-dir
 ```
 
-The preflight reports whether the VM disk is present, the VM is stopped, and Python, wheel,
-Node/npm, and uv sources are available. It returns success only when
-`ready_for_sudo_provisioning=true`.
+The CLI wrapper prints the exact interactive admin command by default, and the preflight reports
+whether the VM disk is present, the VM is stopped, and Python, wheel, Node/npm, and uv sources are
+available. It returns success only when `ready_for_sudo_provisioning=true`.
 
 For local resource tuning, set `WHOATHERE_VM_DISK_GIB` or `WHOATHERE_VM_MEMORY_MIB` before running
 the validation script. Restore-backed macOS bundles currently use a 64 GiB disk by default, and the

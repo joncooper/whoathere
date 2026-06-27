@@ -171,13 +171,17 @@ agent must be root-owned on the guest Data volume.
 Before entering an admin password, run the non-mutating preflight:
 
 ```sh
-/Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/scripts/provision-guest-readiness.sh --preflight "$WHOATHERE_STATE"
+$WHOATHERE vm reprovision --preflight --state-dir "$WHOATHERE_STATE" --helper "$WHOATHERE_HELPER"
 ```
 
 The preflight checks that the VM disk and guest agent source exist, the VM is stopped, and Python,
 wheel, Node/npm, and uv sources are discoverable. It reports `ready_for_sudo_provisioning=true`
 only when the next `sudo ... provision-guest-readiness.sh ...` command has the required local
-inputs available.
+inputs available. To print that command without running the preflight, use:
+
+```sh
+$WHOATHERE vm reprovision --state-dir "$WHOATHERE_STATE" --helper "$WHOATHERE_HELPER"
+```
 
 For Python-only provisioning:
 

@@ -112,6 +112,12 @@ pub enum Command {
         disk_gib: Option<u64>,
         execute: bool,
     },
+    VmReprovision {
+        state_dir: Option<String>,
+        helper_path: Option<String>,
+        preflight: bool,
+        execute: bool,
+    },
     VmAction {
         action: VmAction,
         state_dir: Option<String>,
@@ -586,6 +592,12 @@ pub fn parse_command(args: &[String]) -> Command {
             disk_gib: parse_u64_flag(rest, "--disk-gib"),
             execute: rest.iter().any(|arg| arg == "--execute"),
         },
+        [cmd, sub, rest @ ..] if cmd == "vm" && sub == "reprovision" => Command::VmReprovision {
+            state_dir: parse_flag_value(rest, "--state-dir"),
+            helper_path: parse_helper_path(rest),
+            preflight: rest.iter().any(|arg| arg == "--preflight"),
+            execute: rest.iter().any(|arg| arg == "--execute"),
+        },
         [cmd, sub, rest @ ..]
             if cmd == "vm"
                 && matches!(
@@ -742,6 +754,17 @@ fn render_command_text(command: Command) -> String {
             disk_gib,
             execute,
         }),
+        Command::VmReprovision {
+            state_dir,
+            helper_path,
+            preflight,
+            execute,
+        } => render_vm_reprovision(
+            state_dir.as_deref(),
+            helper_path.as_deref(),
+            preflight,
+            execute,
+        ),
         Command::VmAction {
             action,
             state_dir,
@@ -1149,6 +1172,7 @@ fn command_help() -> String {
         "|endpoint setup --shim-dir <dir> --workspace <path> --vault-origin <url> [--policy <path>] [--audit-path <path>] [--replay-store <path>] [--include-python]",
         "|vm status [--state-dir <dir>] [--manifest <path>] [--helper <path>] [--json]",
         "|vm init [--state-dir <dir>] [--manifest <path>] [--helper <path>] [--image <path>|--restore-image <path>|--fetch-latest-restore-image] [--memory-mib <n>] [--disk-gib <n>] [--execute]",
+        "|vm reprovision [--state-dir <dir>] [--helper <path>] [--preflight|--execute]",
         "|vm start|suspend|reset|prune|upgrade-local-manifest [--state-dir <dir>] [--helper <path>] [--execute]",
         "|vm health [--state-dir <dir>] [--helper <path>]",
         "|vm detonate [--workspace <path>] [--state-dir <dir>] [--helper <path>] [--fixture <name>] [--timeout-seconds <n>] [--execute] [--json] npm|pip|uv -- <args>",
@@ -1818,6 +1842,66 @@ fn render_vm_init(args: VmInitRenderArgs<'_>) -> String {
     }
     output.push_str(&format!("\nexit_code={final_exit_code}"));
     output
+}
+
+fn render_vm_reprovision(
+    state_dir: Option<&str>,
+    helper_path: Option<&str>,
+    preflight: bool,
+    execute: bool,
+) -> String {
+    let config = macos_vm_config(state_dir, None, None);
+    let script_path = match resolve_guest_reprovision_script_path(helper_path) {
+        Ok(path) => path,
+        Err(reason_code) => {
+            return format!(
+                "whoathere vm reprovision\nrelease_target={}\nstate_dir={}\nmutation=false\npreflight_requested={preflight}\nexecute_requested={execute}\nstatus=error\nreason_code={reason_code}\nexit_code={}",
+                RELEASE_TARGET,
+                config.state_dir.display(),
+                ExitCode::Misuse.code()
+            );
+        }
+    };
+    let reprovision_command = reprovision_command_for_script(&script_path, &config.state_dir);
+    if preflight && execute {
+        return format!(
+            "whoathere vm reprovision\nrelease_target={}\nstate_dir={}\nmutation=false\npreflight_requested=true\nexecute_requested=true\nstatus=error\nreason_code=reprovision_preflight_and_execute_conflict\nreprovision_command={}\nexit_code={}",
+            RELEASE_TARGET,
+            config.state_dir.display(),
+            reprovision_command,
+            ExitCode::Misuse.code()
+        );
+    }
+    if !preflight && !execute {
+        return format!(
+            "whoathere vm reprovision\nrelease_target={}\nstate_dir={}\nmutation=false\npreflight_requested=false\nexecute_requested=false\nstatus=dry_run\nadmin_required_for_execute=true\nscript_path={}\nreprovision_command={}\nexplanation=run with --preflight to verify local inputs or run the reprovision_command in an interactive admin terminal\nexit_code={}",
+            RELEASE_TARGET,
+            config.state_dir.display(),
+            redacted_scalar(&script_path.display().to_string()),
+            reprovision_command,
+            ExitCode::Allow.code()
+        );
+    }
+
+    let mut script_args = Vec::new();
+    if preflight {
+        script_args.push("--preflight".to_string());
+    }
+    script_args.push(config.state_dir.display().to_string());
+    let script_output = run_guest_reprovision_script(&script_path, &script_args);
+    let exit_code = script_output
+        .exit_code
+        .unwrap_or_else(|| ExitCode::InternalError.code());
+    let mutation = execute && exit_code == ExitCode::Allow.code();
+    let status = if preflight { "preflight" } else { "execute" };
+    format!(
+        "whoathere vm reprovision\nrelease_target={}\nstate_dir={}\nmutation={mutation}\npreflight_requested={preflight}\nexecute_requested={execute}\nstatus={status}\nadmin_required_for_execute={}\nreprovision_command={}\n{}\nexit_code={exit_code}",
+        RELEASE_TARGET,
+        config.state_dir.display(),
+        true,
+        reprovision_command,
+        script_output.render_text()
+    )
 }
 
 fn render_vm_action(
@@ -4213,6 +4297,120 @@ fn render_release_validation_text(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct GuestReprovisionScriptOutput {
+    script_path: String,
+    available: bool,
+    exit_code: Option<i32>,
+    stdout: String,
+    stderr: String,
+    stdout_truncated: bool,
+    stderr_truncated: bool,
+    reason_codes: Vec<String>,
+}
+
+impl GuestReprovisionScriptOutput {
+    fn render_text(&self) -> String {
+        format!(
+            "script_path={}\nscript_available={}\nscript_exit_code={}\nscript_reason_codes={:?}\nscript_stdout_truncated={}\nscript_stderr_truncated={}\nscript_stdout={}\nscript_stderr={}",
+            redacted_scalar(&self.script_path),
+            self.available,
+            self.exit_code
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            self.reason_codes,
+            self.stdout_truncated,
+            self.stderr_truncated,
+            single_line(&redacted_scalar(&self.stdout)),
+            single_line(&redacted_scalar(&self.stderr))
+        )
+    }
+}
+
+fn run_guest_reprovision_script(
+    script_path: &Path,
+    script_args: &[String],
+) -> GuestReprovisionScriptOutput {
+    let mut command = ProcessCommand::new(script_path);
+    command
+        .args(script_args)
+        .env_clear()
+        .env(
+            "PATH",
+            "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin",
+        )
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    for env_name in ["HOME", "SUDO_USER", "TMPDIR", "USER", "LOGNAME"] {
+        if let Ok(value) = std::env::var(env_name) {
+            command.env(env_name, value);
+        }
+    }
+    if let Some(node_runtime_dir) = detect_node_runtime_dir_for_reprovision() {
+        command.env("WHOATHERE_NODE_RUNTIME_DIR", node_runtime_dir);
+    }
+    if let Some(uv_binary) = detect_uv_binary_for_reprovision() {
+        command.env("WHOATHERE_UV_BINARY", uv_binary);
+    }
+
+    match command.spawn() {
+        Ok(mut child) => {
+            let stdout_reader = spawn_limited_reader(child.stdout.take());
+            let stderr_reader = spawn_limited_reader(child.stderr.take());
+            let deadline = Instant::now() + Duration::from_secs(60);
+            let mut timed_out = false;
+            let status = loop {
+                match child.try_wait() {
+                    Ok(Some(status)) => break Some(status),
+                    Ok(None) if Instant::now() >= deadline => {
+                        timed_out = true;
+                        let _ = child.kill();
+                        break child.wait().ok();
+                    }
+                    Ok(None) => sleep(Duration::from_millis(25)),
+                    Err(_) => break None,
+                }
+            };
+            let (stdout, stdout_truncated) = join_limited_reader(stdout_reader);
+            let (stderr, stderr_truncated) = join_limited_reader(stderr_reader);
+            let mut reason_codes = Vec::new();
+            if timed_out {
+                reason_codes.push("guest_reprovision_script_timeout".to_string());
+            } else if !status.map(|status| status.success()).unwrap_or(false) {
+                reason_codes.push("guest_reprovision_script_failed".to_string());
+            }
+            if stdout_truncated {
+                reason_codes.push("guest_reprovision_script_stdout_truncated".to_string());
+            }
+            if stderr_truncated {
+                reason_codes.push("guest_reprovision_script_stderr_truncated".to_string());
+            }
+            GuestReprovisionScriptOutput {
+                script_path: script_path.display().to_string(),
+                available: true,
+                exit_code: status
+                    .and_then(|status| status.code())
+                    .or(Some(ExitCode::InternalError.code())),
+                stdout,
+                stderr,
+                stdout_truncated,
+                stderr_truncated,
+                reason_codes,
+            }
+        }
+        Err(error) => GuestReprovisionScriptOutput {
+            script_path: script_path.display().to_string(),
+            available: true,
+            exit_code: Some(ExitCode::InternalError.code()),
+            stdout: String::new(),
+            stderr: error.to_string(),
+            stdout_truncated: false,
+            stderr_truncated: false,
+            reason_codes: vec!["guest_reprovision_script_spawn_failed".to_string()],
+        },
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct MacosVmHelperOutput {
     configured_path: Option<String>,
     available: bool,
@@ -4447,7 +4645,10 @@ fn guest_reprovision_command(
     if !script_path.is_file() {
         return None;
     }
+    Some(reprovision_command_for_script(&script_path, state_dir))
+}
 
+fn reprovision_command_for_script(script_path: &Path, state_dir: &Path) -> String {
     let mut parts = vec!["sudo".to_string()];
     if let Some(node_runtime_dir) = detect_node_runtime_dir_for_reprovision() {
         parts.push(format!(
@@ -4463,7 +4664,36 @@ fn guest_reprovision_command(
     }
     parts.push(shell_quote(&script_path.display().to_string()));
     parts.push(shell_quote(&state_dir.display().to_string()));
-    Some(parts.join(" "))
+    parts.join(" ")
+}
+
+fn resolve_guest_reprovision_script_path(
+    helper_path: Option<&str>,
+) -> Result<PathBuf, &'static str> {
+    let Some(path) = configured_macos_vm_helper_path(helper_path) else {
+        return Err("macos_vm_helper_path_not_configured");
+    };
+    if !path.is_absolute() {
+        return Err("macos_vm_helper_path_not_absolute");
+    }
+    let Ok(canonical_helper) = path.canonicalize() else {
+        return Err("macos_vm_helper_not_found");
+    };
+    if !canonical_helper.is_file() {
+        return Err("macos_vm_helper_not_file");
+    }
+    let Some(helper_root) = helper_root_from_helper_path(&canonical_helper) else {
+        return Err("macos_vm_helper_root_not_resolved");
+    };
+    let script_path = helper_root
+        .join("scripts")
+        .join("provision-guest-readiness.sh");
+    if !script_path.is_file() {
+        return Err("guest_reprovision_script_not_found");
+    }
+    script_path
+        .canonicalize()
+        .map_err(|_| "guest_reprovision_script_not_found")
 }
 
 fn guest_reprovision_required(provisioning: &MacosVmGuestProvisioningSummary) -> bool {
@@ -9776,6 +10006,111 @@ mod tests {
                 execute: true,
             }
         );
+    }
+
+    #[test]
+    fn parses_vm_reprovision_command() {
+        let args = vec![
+            "vm".to_string(),
+            "reprovision".to_string(),
+            "--state-dir".to_string(),
+            "/tmp/whoathere-vm".to_string(),
+            "--helper".to_string(),
+            "/tmp/helper".to_string(),
+            "--preflight".to_string(),
+        ];
+        assert_eq!(
+            parse_command(&args),
+            Command::VmReprovision {
+                state_dir: Some("/tmp/whoathere-vm".to_string()),
+                helper_path: Some("/tmp/helper".to_string()),
+                preflight: true,
+                execute: false,
+            }
+        );
+    }
+
+    #[test]
+    fn vm_reprovision_dry_run_prints_admin_command() {
+        let root = temp_root("whoathere-cli-vm-reprovision-dry-run");
+        let helper_root = root.join("helpers").join("macos-vm-helper");
+        let helper_dir = helper_root
+            .join(".build")
+            .join("arm64-apple-macosx")
+            .join("release");
+        let helper = helper_dir.join("whoathere-macos-vm-helper");
+        let script = helper_root
+            .join("scripts")
+            .join("provision-guest-readiness.sh");
+        let state_dir = root.join("state");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&helper_dir).expect("helper dir");
+        std::fs::create_dir_all(script.parent().expect("script parent")).expect("script dir");
+        write_new_file(&helper, b"#!/bin/sh\nexit 0\n").expect("helper");
+        set_executable(&helper).expect("executable helper");
+        write_new_file(&script, b"#!/bin/sh\nexit 0\n").expect("provision script");
+        set_executable(&script).expect("executable provision script");
+
+        let result = evaluate_command(Command::VmReprovision {
+            state_dir: Some(state_dir.display().to_string()),
+            helper_path: Some(helper.display().to_string()),
+            preflight: false,
+            execute: false,
+        });
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result.output.contains("status=dry_run"));
+        assert!(result.output.contains("mutation=false"));
+        assert!(result.output.contains("admin_required_for_execute=true"));
+        assert!(result.output.contains("reprovision_command=sudo "));
+        assert!(result.output.contains("provision-guest-readiness.sh"));
+        assert!(result
+            .output
+            .contains(&shell_quote(&state_dir.display().to_string())));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vm_reprovision_preflight_runs_packaged_script_without_mutation() {
+        let root = temp_root("whoathere-cli-vm-reprovision-preflight");
+        let helper_root = root.join("helpers").join("macos-vm-helper");
+        let helper_dir = helper_root
+            .join(".build")
+            .join("arm64-apple-macosx")
+            .join("release");
+        let helper = helper_dir.join("whoathere-macos-vm-helper");
+        let script = helper_root
+            .join("scripts")
+            .join("provision-guest-readiness.sh");
+        let state_dir = root.join("state");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&helper_dir).expect("helper dir");
+        std::fs::create_dir_all(script.parent().expect("script parent")).expect("script dir");
+        write_new_file(&helper, b"#!/bin/sh\nexit 0\n").expect("helper");
+        set_executable(&helper).expect("executable helper");
+        write_new_file(
+            &script,
+            b"#!/bin/sh\nif [ \"$1\" = \"--preflight\" ]; then echo guest_readiness_preflight=true; echo ready_for_sudo_provisioning=true; exit 0; fi\necho admin_required=true >&2\nexit 64\n",
+        )
+        .expect("provision script");
+        set_executable(&script).expect("executable provision script");
+
+        let result = evaluate_command(Command::VmReprovision {
+            state_dir: Some(state_dir.display().to_string()),
+            helper_path: Some(helper.display().to_string()),
+            preflight: true,
+            execute: false,
+        });
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result.output.contains("status=preflight"));
+        assert!(result.output.contains("mutation=false"));
+        assert!(result.output.contains("script_exit_code=0"));
+        assert!(result.output.contains("guest_readiness_preflight=true"));
+        assert!(result.output.contains("ready_for_sudo_provisioning=true"));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

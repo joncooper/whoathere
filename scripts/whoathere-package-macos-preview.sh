@@ -137,6 +137,7 @@ smoke_package() {
   EXTRACTED_STATE="$SMOKE_ROOT/state"
   DOCTOR_OUTPUT="$SMOKE_ROOT/doctor.json"
   PREFLIGHT_OUTPUT="$SMOKE_ROOT/provision-preflight.txt"
+  CLI_PREFLIGHT_OUTPUT="$SMOKE_ROOT/cli-provision-preflight.txt"
 
   "$EXTRACTED_CLI" --help >/dev/null
   test -x "$EXTRACTED_NPM_UV_VALIDATOR"
@@ -151,6 +152,15 @@ smoke_package() {
   grep -q 'guest_readiness_preflight=true' "$PREFLIGHT_OUTPUT"
   grep -q 'disk_image_present=false' "$PREFLIGHT_OUTPUT"
   grep -q 'ready_for_sudo_provisioning=false' "$PREFLIGHT_OUTPUT"
+  set +e
+  "$EXTRACTED_CLI" vm reprovision --preflight --state-dir "$EXTRACTED_STATE" --helper "$EXTRACTED_HELPER" > "$CLI_PREFLIGHT_OUTPUT" 2>&1
+  CLI_PREFLIGHT_STATUS=$?
+  set -e
+  test "$CLI_PREFLIGHT_STATUS" -eq 64
+  grep -q 'whoathere vm reprovision' "$CLI_PREFLIGHT_OUTPUT"
+  grep -q 'status=preflight' "$CLI_PREFLIGHT_OUTPUT"
+  grep -q 'disk_image_present=false' "$CLI_PREFLIGHT_OUTPUT"
+  grep -q 'ready_for_sudo_provisioning=false' "$CLI_PREFLIGHT_OUTPUT"
   /usr/bin/codesign --verify --strict --verbose=2 "$EXTRACTED_CLI" >/dev/null
   /usr/bin/codesign --verify --strict --verbose=2 "$EXTRACTED_HELPER" >/dev/null
   "$EXTRACTED_CLI" doctor --json --state-dir "$EXTRACTED_STATE" --helper "$EXTRACTED_HELPER" > "$DOCTOR_OUTPUT"

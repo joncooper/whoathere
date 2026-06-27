@@ -140,6 +140,9 @@ sh -n whoathere/helpers/macos-vm-helper/scripts/validate-project-detonation.sh
 sh -n whoathere/helpers/macos-vm-helper/scripts/validate-npm-uv-detonation.sh
 sh -n scripts/whoathere-package-macos-preview.sh
 sh -n scripts/whoathere-notarize-macos-release.sh
+whoathere/target/debug/whoathere vm reprovision --preflight --state-dir /Users/jdc/.whoathere/macos-vm-validation --helper /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/.build/arm64-apple-macosx/release/whoathere-macos-vm-helper
+# expected exit 64 when not run as root; proves the wrapper does not cross the admin boundary
+whoathere/target/debug/whoathere vm reprovision --execute --state-dir /Users/jdc/.whoathere/macos-vm-validation --helper /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/.build/arm64-apple-macosx/release/whoathere-macos-vm-helper
 whoathere/helpers/macos-vm-helper/scripts/provision-guest-readiness.sh --preflight /Users/jdc/.whoathere/macos-vm-validation
 cargo test --manifest-path whoathere/Cargo.toml -p whoathere-cli release_validation
 scripts/whoathere-package-macos-preview.sh
@@ -180,10 +183,10 @@ The helper lifecycle smoke showed that `swift build` replaces the signed helper 
 
 Offline provisioning now supports copying host or repo-provided Node/npm and uv tooling into the
 guest under `/usr/local/whoathere`. The guest agent uses a fixed WhoaThere-owned PATH for tool
-discovery and detonation. The provisioning script also has a non-mutating `--preflight` mode that
-checks the stopped VM disk, guest agent source, Python/wheel sources, Node/npm source, and uv source
-before the operator enters an admin password. Static validation passed, but live npm/uv proof is
-still pending because the emitted
+discovery and detonation. The `whoathere vm reprovision` CLI wrapper now prints the exact admin
+command by default and runs a non-mutating `--preflight` that checks the stopped VM disk, guest
+agent source, Python/wheel sources, Node/npm source, and uv source before the operator enters an
+admin password. Static validation passed, but live npm/uv proof is still pending because the emitted
 `sudo ... provision-guest-readiness.sh /Users/jdc/.whoathere/macos-vm-validation` command requires
 an interactive sudo password in this environment.
 
@@ -199,13 +202,20 @@ failing install path. On this workstation the non-root smoke printed
 attempt to run that command failed before mutation because sudo required a terminal/password:
 `sudo: a terminal is required to read the password`.
 
-The new non-mutating preflight passed on the current validation VM state with
+The new `whoathere vm reprovision --preflight` path and the underlying script preflight both passed
+on the current validation VM state with
 `ready_for_sudo_provisioning=true`, `disk_image_present=true`, `vm_runtime_running=false`,
 `python_runtime_source_ready=true`, `python_wheels_source_ready=true`,
 `wheel_package_source_ready=true`, `node_runtime_source_ready=true`, and
 `uv_binary_source_ready=true`. This proves the next interactive sudo step has the required local
 tooling inputs available; it does not replace the admin provisioning receipt or live npm/uv VM
 validation.
+
+The `whoathere vm reprovision` dry run now prints the same detected `sudo ... provision-guest-readiness.sh ...`
+command that `doctor` reports. A non-root `whoathere vm reprovision --execute` smoke exited 64 with
+`admin_required=true`, `reason_code=guest_readiness_provisioning_requires_root_owned_launchdaemon`,
+`mutation=false`, and the same rerun command, proving the CLI wrapper does not silently try to cross
+the admin boundary or mutate the VM without an interactive privileged operator action.
 
 The preview packaging path now has `scripts/whoathere-package-macos-preview.sh`. It validates the
 Rust workspace, builds the release CLI, locally signs the CLI, runs Swift helper tests, builds and
@@ -247,8 +257,9 @@ the `runtime_shutdown` and `release_validation` receipt gates, and npm/uv releas
 extracted-artifact checks are now part of `scripts/whoathere-package-macos-preview.sh`, so future
 preview packages must pass the same smoke before the script reports success. The package smoke also
 verifies that the extracted npm/uv detonation validator is executable, the extracted provisioning
-script passes shell syntax validation, and the packaged provisioning preflight fails closed on a
-fresh empty package-smoke state before any admin mutation.
+script passes shell syntax validation, the packaged provisioning preflight fails closed on a fresh
+empty package-smoke state before any admin mutation, and the packaged `bin/whoathere vm reprovision
+--preflight` wrapper reports the same fail-closed preflight state.
 
 The latest npm/uv planner slices changed host planner, Swift helper, and guest-agent behavior. They were validated with unit tests, helper build/tests, guest C syntax checks, and live `doctor` fail-closed readiness output. Live npm/uv detonation is still not claimed because the stopped validation VM must first be reprovisioned with Node/npm and uv tooling through the interactive sudo step above.
 
