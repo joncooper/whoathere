@@ -3582,6 +3582,94 @@ struct VmReleasePlanArgs<'a> {
     json: bool,
 }
 
+const MACOS_LOCAL_RELEASE_READINESS_SCHEMA_VERSION: &str =
+    "whoathere.macos_local_release_readiness.v1";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MacosLocalReleaseReadiness {
+    schema_version: &'static str,
+    release_ready: bool,
+    release_stage: &'static str,
+    implemented_workflows: Vec<String>,
+    fail_closed_workflows: Vec<String>,
+    manual_review_classes: Vec<String>,
+    blocking_reason_codes: Vec<String>,
+    next_actions: Vec<String>,
+}
+
+fn macos_local_release_readiness(
+    status: &whoathere_macos_vm::MacosVmStatus,
+    helper: &MacosVmHelperOutput,
+    scanner_available_count: usize,
+    scanner_required_count: usize,
+) -> MacosLocalReleaseReadiness {
+    let mut blocking_reason_codes = status.reason_codes.clone();
+    blocking_reason_codes.extend(helper.reason_codes.iter().cloned());
+
+    if !helper.available {
+        blocking_reason_codes.push("macos_vm_helper_unavailable".to_string());
+    }
+    if helper.available && helper.exit_code != Some(0) {
+        blocking_reason_codes.push("macos_vm_helper_status_not_clean".to_string());
+    }
+    if scanner_available_count < scanner_required_count {
+        blocking_reason_codes.push("release_required_scanners_missing".to_string());
+    }
+
+    blocking_reason_codes.extend(string_vec(&[
+        "release_npm_vm_detonation_not_verified",
+        "release_uv_vm_detonation_not_verified",
+        "release_public_package_resolution_policy_not_implemented",
+        "release_safe_sync_back_not_implemented",
+        "release_packaging_and_onboarding_not_complete",
+        "release_comparator_red_team_gate_not_complete",
+        "release_signature_notarization_not_complete",
+    ]));
+    blocking_reason_codes.sort();
+    blocking_reason_codes.dedup();
+
+    MacosLocalReleaseReadiness {
+        schema_version: MACOS_LOCAL_RELEASE_READINESS_SCHEMA_VERSION,
+        release_ready: blocking_reason_codes.is_empty(),
+        release_stage: "pre_release_checkpoint",
+        implemented_workflows: string_vec(&[
+            "pip.local_project.install",
+            "pip.local_requirements.local_only",
+            "vm.fixture_detonation",
+            "vm.release_plan.admission_model",
+        ]),
+        fail_closed_workflows: string_vec(&[
+            "npm.install.project",
+            "npm.ci.project",
+            "npm.exec_or_npx",
+            "uv.sync",
+            "uv.pip_install",
+            "pip.public_index_resolution",
+            "host.sync_back",
+        ]),
+        manual_review_classes: string_vec(&[
+            "native_extensions",
+            "binary_wheels",
+            "direct_urls",
+            "vcs_dependencies",
+            "editable_installs",
+            "unsupported_unknown_artifacts",
+        ]),
+        blocking_reason_codes,
+        next_actions: string_vec(&[
+            "validate default VM image lifecycle without hidden sudo requirements",
+            "make npm detonation either work in VM or remain explicitly unclaimed",
+            "decide detonation-only versus narrow tested sync-back for this release",
+            "write install/onboarding/troubleshooting docs for Apple Silicon users",
+            "run comparator and red-team fixture gate before release tagging",
+        ]),
+    }
+}
+
+fn string_vec(values: &[&str]) -> Vec<String> {
+    values.iter().map(|value| (*value).to_string()).collect()
+}
+
 fn render_doctor(json: bool, helper_path: Option<&str>) -> String {
     let backend = UnsupportedBackend;
     let plan = backend.plan(ExecutionMode::Protected);
@@ -3601,6 +3689,12 @@ fn render_doctor(json: bool, helper_path: Option<&str>) -> String {
         .iter()
         .filter(|adapter| command_on_path(adapter.name))
         .count();
+    let scanner_required = scanners
+        .iter()
+        .filter(|adapter| adapter.required_for_auto_sync)
+        .count();
+    let readiness =
+        macos_local_release_readiness(&status, &helper, scanner_available, scanner_required);
     if json {
         let scanner_json = scanners
             .iter()
@@ -3616,11 +3710,19 @@ fn render_doctor(json: bool, helper_path: Option<&str>) -> String {
             .collect::<Vec<_>>()
             .join(", ");
         return format!(
-            "{{\n  \"command\": \"whoathere doctor\",\n  \"status\": \"ok\",\n  \"release_target\": {},\n  \"release_claim\": {},\n  \"sandbox_label\": {},\n  \"high_risk_allowed\": {},\n  \"vm_ready\": {},\n  \"vm_reason_codes\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout_truncated\": {},\n  \"helper_stderr_truncated\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {},\n  \"scanner_available_count\": {},\n  \"scanner_required_count\": {},\n  \"scanners\": [{}]\n}}",
+            "{{\n  \"command\": \"whoathere doctor\",\n  \"status\": \"ok\",\n  \"release_target\": {},\n  \"release_claim\": {},\n  \"sandbox_label\": {},\n  \"high_risk_allowed\": {},\n  \"release_readiness_schema\": {},\n  \"release_stage\": {},\n  \"release_ready\": {},\n  \"release_blocking_reason_codes\": {},\n  \"implemented_workflows\": {},\n  \"fail_closed_workflows\": {},\n  \"manual_review_classes\": {},\n  \"next_actions\": {},\n  \"vm_ready\": {},\n  \"vm_reason_codes\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout_truncated\": {},\n  \"helper_stderr_truncated\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {},\n  \"scanner_available_count\": {},\n  \"scanner_required_count\": {},\n  \"scanners\": [{}]\n}}",
             json_string(RELEASE_TARGET),
             json_string(RELEASE_CLAIM),
             json_string(plan.label),
             plan.high_risk_allowed,
+            json_string(readiness.schema_version),
+            json_string(readiness.release_stage),
+            readiness.release_ready,
+            json_string_array(&readiness.blocking_reason_codes),
+            json_string_array(&readiness.implemented_workflows),
+            json_string_array(&readiness.fail_closed_workflows),
+            json_string_array(&readiness.manual_review_classes),
+            json_string_array(&readiness.next_actions),
             status.ready,
             json_string_array(&status.reason_codes),
             helper
@@ -3639,10 +3741,7 @@ fn render_doctor(json: bool, helper_path: Option<&str>) -> String {
             json_string(&single_line(&redacted_scalar(&helper.stdout))),
             json_string(&single_line(&redacted_scalar(&helper.stderr))),
             scanner_available,
-            scanners
-                .iter()
-                .filter(|adapter| adapter.required_for_auto_sync)
-                .count(),
+            scanner_required,
             scanner_json
         );
     }
@@ -3660,15 +3759,24 @@ fn render_doctor(json: bool, helper_path: Option<&str>) -> String {
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "whoathere doctor\nstatus=ok\nrelease_target={}\nrelease_claim={}\nsandbox_label={}\nhigh_risk_allowed={}\nvm_ready={}\nvm_reason_codes={:?}\n{}\nscanner_available_count={}\n{}",
+        "whoathere doctor\nstatus=ok\nrelease_target={}\nrelease_claim={}\nsandbox_label={}\nhigh_risk_allowed={}\nrelease_readiness_schema={}\nrelease_stage={}\nrelease_ready={}\nrelease_blocking_reason_codes={:?}\nimplemented_workflows={:?}\nfail_closed_workflows={:?}\nmanual_review_classes={:?}\nnext_actions={:?}\nvm_ready={}\nvm_reason_codes={:?}\n{}\nscanner_available_count={}\nscanner_required_count={}\n{}",
         RELEASE_TARGET,
         RELEASE_CLAIM,
         plan.label,
         plan.high_risk_allowed,
+        readiness.schema_version,
+        readiness.release_stage,
+        readiness.release_ready,
+        readiness.blocking_reason_codes,
+        readiness.implemented_workflows,
+        readiness.fail_closed_workflows,
+        readiness.manual_review_classes,
+        readiness.next_actions,
         status.ready,
         status.reason_codes,
         helper.render_text(),
         scanner_available,
+        scanner_required,
         scanner_lines
     )
 }
@@ -8841,6 +8949,21 @@ exit 0
         assert!(result
             .output
             .contains("\"release_target\": \"macos_apple_silicon_local_vm\""));
+        assert!(result
+            .output
+            .contains("\"release_claim\": \"vm_detonate_then_sync_safe_outputs\""));
+        assert!(result.output.contains(
+            "\"release_readiness_schema\": \"whoathere.macos_local_release_readiness.v1\""
+        ));
+        assert!(result.output.contains("\"release_ready\": false"));
+        assert!(result
+            .output
+            .contains("release_npm_vm_detonation_not_verified"));
+        assert!(result
+            .output
+            .contains("release_safe_sync_back_not_implemented"));
+        assert!(result.output.contains("pip.local_project.install"));
+        assert!(result.output.contains("npm.install.project"));
         assert!(result.output.contains("\"vm_ready\": false"));
         assert!(result.output.contains("\"helper_available\": false"));
         assert!(result.output.contains("macos_vm_runtime_not_verified"));
