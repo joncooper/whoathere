@@ -1649,9 +1649,11 @@ fn render_vm_status(
     let config = macos_vm_config(state_dir, None, None);
     let default_manifest_path = default_macos_vm_manifest_path(&config);
     let provisioning_path = default_macos_vm_guest_provisioning_path(&config);
+    let shutdown_path = default_macos_vm_runtime_shutdown_path(&config);
     let (manifest, manifest_load_reason, effective_manifest_path) =
         load_macos_vm_manifest(manifest_path, &default_manifest_path);
     let provisioning = load_macos_vm_guest_provisioning(&provisioning_path);
+    let shutdown = load_macos_vm_runtime_shutdown(&shutdown_path);
     let status = status_from_config(&config, HostPlatform::current(), manifest.as_ref());
     let helper = run_macos_vm_helper(
         helper_path,
@@ -1675,6 +1677,7 @@ fn render_vm_status(
             manifest_path: &effective_manifest_path,
             manifest_load_reason: manifest_load_reason.as_deref(),
             provisioning: &provisioning,
+            shutdown: &shutdown,
             guest_reprovision_command: guest_reprovision_command.as_deref(),
             helper: &helper,
             effective_reason_codes: &effective_reason_codes,
@@ -1682,7 +1685,7 @@ fn render_vm_status(
         });
     }
     let mut output = format!(
-        "whoathere vm status\nschema_version={}\nrelease_target={}\ntarget_arch={}\nvm_boundary={}\nnetwork_model={}\nsync_policy={}\nstate_dir={}\nhost_os={}\nhost_arch={}\nmemory_mib={}\ndisk_gib={}\nauto_suspend_minutes={}\nstate_dir_exists={}\nmanifest_path={}\nmanifest_present={}\nmanifest_valid={}\nhelper_ready_marker_present={}\nimage_ready_marker_present={}\nlifecycle_ready={}\nruntime_ready={}\nready={}\nreason_codes={:?}\nlifecycle_reason_codes={:?}\n{}\nguest_reprovision_required={}\nguest_reprovision_admin_required={}\nguest_reprovision_operator_action={}\nguest_reprovision_command={}\n{}",
+        "whoathere vm status\nschema_version={}\nrelease_target={}\ntarget_arch={}\nvm_boundary={}\nnetwork_model={}\nsync_policy={}\nstate_dir={}\nhost_os={}\nhost_arch={}\nmemory_mib={}\ndisk_gib={}\nauto_suspend_minutes={}\nstate_dir_exists={}\nmanifest_path={}\nmanifest_present={}\nmanifest_valid={}\nhelper_ready_marker_present={}\nimage_ready_marker_present={}\nlifecycle_ready={}\nruntime_ready={}\nready={}\nreason_codes={:?}\nlifecycle_reason_codes={:?}\n{}\n{}\nguest_reprovision_required={}\nguest_reprovision_admin_required={}\nguest_reprovision_operator_action={}\nguest_reprovision_command={}\n{}",
         status.schema_version,
         status.release_target,
         status.target_arch,
@@ -1707,6 +1710,7 @@ fn render_vm_status(
         effective_reason_codes,
         lifecycle_reason_codes,
         provisioning.render_text(),
+        render_runtime_shutdown_text(&shutdown),
         guest_reprovision_required(&provisioning),
         guest_reprovision_admin_required(&provisioning),
         guest_reprovision_operator_action(&provisioning, guest_reprovision_command.as_deref()),
@@ -3630,6 +3634,10 @@ fn default_macos_vm_guest_provisioning_path(config: &MacosVmConfig) -> PathBuf {
         .join("guest-provisioning.json")
 }
 
+fn default_macos_vm_runtime_shutdown_path(config: &MacosVmConfig) -> PathBuf {
+    config.state_dir.join("bundle").join("shutdown.json")
+}
+
 fn default_macos_vm_release_validation_path(config: &MacosVmConfig) -> PathBuf {
     config
         .state_dir
@@ -3813,6 +3821,111 @@ fn load_macos_vm_guest_provisioning(path: &Path) -> MacosVmGuestProvisioningSumm
             redacted_scalar(&error.to_string()),
         ),
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MacosVmRuntimeShutdownSummary {
+    path: PathBuf,
+    present: bool,
+    load_reason: Option<String>,
+    schema_version: Option<String>,
+    status: Option<String>,
+    stop_method: Option<String>,
+    reason_codes: Vec<String>,
+    runtime_pid: Option<i32>,
+    high_risk_package_execution_enabled: Option<bool>,
+}
+
+impl MacosVmRuntimeShutdownSummary {
+    fn missing(path: PathBuf, load_reason: String) -> Self {
+        Self {
+            path,
+            present: false,
+            load_reason: Some(load_reason),
+            schema_version: None,
+            status: None,
+            stop_method: None,
+            reason_codes: Vec::new(),
+            runtime_pid: None,
+            high_risk_package_execution_enabled: None,
+        }
+    }
+
+    fn from_contents(path: PathBuf, contents: &str) -> Self {
+        Self {
+            path,
+            present: true,
+            load_reason: None,
+            schema_version: json_extract_string_field(contents, "schema_version"),
+            status: json_extract_string_field(contents, "status"),
+            stop_method: json_extract_string_field(contents, "stop_method"),
+            reason_codes: json_extract_string_array_field(contents, "reason_codes"),
+            runtime_pid: json_extract_i32_field(contents, "runtime_pid"),
+            high_risk_package_execution_enabled: json_extract_bool_field(
+                contents,
+                "high_risk_package_execution_enabled",
+            ),
+        }
+    }
+
+    fn receipt_acceptable_for_no_sync_preview(&self) -> bool {
+        self.present
+            && self.status.as_deref() == Some("ok")
+            && matches!(
+                self.stop_method.as_deref(),
+                Some("guest_requested_stop") | Some("force_stop")
+            )
+            && self.high_risk_package_execution_enabled == Some(false)
+    }
+}
+
+fn load_macos_vm_runtime_shutdown(path: &Path) -> MacosVmRuntimeShutdownSummary {
+    match std::fs::read_to_string(path) {
+        Ok(contents) => MacosVmRuntimeShutdownSummary::from_contents(path.to_path_buf(), &contents),
+        Err(error) => MacosVmRuntimeShutdownSummary::missing(
+            path.to_path_buf(),
+            redacted_scalar(&error.to_string()),
+        ),
+    }
+}
+
+fn render_runtime_shutdown_json(summary: &MacosVmRuntimeShutdownSummary) -> String {
+    format!(
+        "{{\"receipt_path\": {}, \"receipt_present\": {}, \"load_reason\": {}, \"schema_version\": {}, \"status\": {}, \"stop_method\": {}, \"reason_codes\": {}, \"runtime_pid\": {}, \"high_risk_package_execution_enabled\": {}, \"receipt_acceptable_for_no_sync_preview\": {}}}",
+        json_string(&summary.path.display().to_string()),
+        summary.present,
+        json_option_string_redacted(summary.load_reason.as_deref()),
+        json_option_string_redacted(summary.schema_version.as_deref()),
+        json_option_string_redacted(summary.status.as_deref()),
+        json_option_string_redacted(summary.stop_method.as_deref()),
+        json_string_array(&summary.reason_codes),
+        json_option(summary.runtime_pid),
+        json_option(summary.high_risk_package_execution_enabled),
+        summary.receipt_acceptable_for_no_sync_preview(),
+    )
+}
+
+fn render_runtime_shutdown_text(summary: &MacosVmRuntimeShutdownSummary) -> String {
+    format!(
+        "runtime_shutdown_receipt_path={}\nruntime_shutdown_receipt_present={}\nruntime_shutdown_load_reason={}\nruntime_shutdown_schema_version={}\nruntime_shutdown_status={}\nruntime_shutdown_stop_method={}\nruntime_shutdown_reason_codes={:?}\nruntime_shutdown_runtime_pid={}\nruntime_shutdown_high_risk_package_execution_enabled={}\nruntime_shutdown_receipt_acceptable_for_no_sync_preview={}",
+        summary.path.display(),
+        summary.present,
+        summary
+            .load_reason
+            .as_deref()
+            .map(redacted_scalar)
+            .unwrap_or_else(|| "none".to_string()),
+        option_string_text(summary.schema_version.as_deref()),
+        option_string_text(summary.status.as_deref()),
+        option_string_text(summary.stop_method.as_deref()),
+        summary.reason_codes,
+        summary
+            .runtime_pid
+            .map(|pid| pid.to_string())
+            .unwrap_or_else(|| "missing".to_string()),
+        option_bool_text(summary.high_risk_package_execution_enabled),
+        summary.receipt_acceptable_for_no_sync_preview(),
+    )
 }
 
 const MACOS_VM_RELEASE_VALIDATION_SCHEMA_VERSION: &str = "whoathere.macos_vm.release_validation.v1";
@@ -4532,6 +4645,7 @@ struct VmStatusJsonRenderArgs<'a> {
     manifest_path: &'a str,
     manifest_load_reason: Option<&'a str>,
     provisioning: &'a MacosVmGuestProvisioningSummary,
+    shutdown: &'a MacosVmRuntimeShutdownSummary,
     guest_reprovision_command: Option<&'a str>,
     helper: &'a MacosVmHelperOutput,
     effective_reason_codes: &'a [String],
@@ -4540,7 +4654,7 @@ struct VmStatusJsonRenderArgs<'a> {
 
 fn render_vm_status_json(args: VmStatusJsonRenderArgs<'_>) -> String {
     format!(
-        "{{\n  \"command\": \"whoathere vm status\",\n  \"schema_version\": {},\n  \"release_target\": {},\n  \"target_arch\": {},\n  \"vm_boundary\": {},\n  \"network_model\": {},\n  \"sync_policy\": {},\n  \"state_dir\": {},\n  \"host_os\": {},\n  \"host_arch\": {},\n  \"memory_mib\": {},\n  \"disk_gib\": {},\n  \"auto_suspend_minutes\": {},\n  \"state_dir_exists\": {},\n  \"manifest_path\": {},\n  \"manifest_present\": {},\n  \"manifest_valid\": {},\n  \"helper_ready_marker_present\": {},\n  \"image_ready_marker_present\": {},\n  \"lifecycle_ready\": {},\n  \"runtime_ready\": {},\n  \"ready\": {},\n  \"reason_codes\": [{}],\n  \"lifecycle_reason_codes\": [{}],\n  \"manifest_load_reason\": {},\n  \"guest_provisioning\": {},\n  \"guest_reprovision_required\": {},\n  \"guest_reprovision_admin_required\": {},\n  \"guest_reprovision_operator_action\": {},\n  \"guest_reprovision_command\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout_truncated\": {},\n  \"helper_stderr_truncated\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {}\n}}",
+        "{{\n  \"command\": \"whoathere vm status\",\n  \"schema_version\": {},\n  \"release_target\": {},\n  \"target_arch\": {},\n  \"vm_boundary\": {},\n  \"network_model\": {},\n  \"sync_policy\": {},\n  \"state_dir\": {},\n  \"host_os\": {},\n  \"host_arch\": {},\n  \"memory_mib\": {},\n  \"disk_gib\": {},\n  \"auto_suspend_minutes\": {},\n  \"state_dir_exists\": {},\n  \"manifest_path\": {},\n  \"manifest_present\": {},\n  \"manifest_valid\": {},\n  \"helper_ready_marker_present\": {},\n  \"image_ready_marker_present\": {},\n  \"lifecycle_ready\": {},\n  \"runtime_ready\": {},\n  \"ready\": {},\n  \"reason_codes\": [{}],\n  \"lifecycle_reason_codes\": [{}],\n  \"manifest_load_reason\": {},\n  \"guest_provisioning\": {},\n  \"runtime_shutdown\": {},\n  \"guest_reprovision_required\": {},\n  \"guest_reprovision_admin_required\": {},\n  \"guest_reprovision_operator_action\": {},\n  \"guest_reprovision_command\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout_truncated\": {},\n  \"helper_stderr_truncated\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {}\n}}",
         json_string(args.status.schema_version),
         json_string(args.status.release_target),
         json_string(args.status.target_arch),
@@ -4576,6 +4690,7 @@ fn render_vm_status_json(args: VmStatusJsonRenderArgs<'_>) -> String {
             .map(json_string)
             .unwrap_or_else(|| "null".to_string()),
         render_guest_provisioning_json(args.provisioning),
+        render_runtime_shutdown_json(args.shutdown),
         guest_reprovision_required(args.provisioning),
         guest_reprovision_admin_required(args.provisioning),
         json_string(guest_reprovision_operator_action(
@@ -4728,10 +4843,12 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
     let config = macos_vm_config(state_dir, None, None);
     let default_manifest_path = default_macos_vm_manifest_path(&config);
     let provisioning_path = default_macos_vm_guest_provisioning_path(&config);
+    let shutdown_path = default_macos_vm_runtime_shutdown_path(&config);
     let release_validation_path = default_macos_vm_release_validation_path(&config);
     let (manifest, manifest_load_reason, effective_manifest_path) =
         load_macos_vm_manifest(None, &default_manifest_path);
     let provisioning = load_macos_vm_guest_provisioning(&provisioning_path);
+    let shutdown = load_macos_vm_runtime_shutdown(&shutdown_path);
     let provisioning_digest = file_sha256_digest(&provisioning_path);
     let release_validation = load_macos_vm_release_validation(&release_validation_path);
     let status = status_from_config(&config, HostPlatform::current(), manifest.as_ref());
@@ -4786,7 +4903,7 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
             .collect::<Vec<_>>()
             .join(", ");
         return format!(
-            "{{\n  \"command\": \"whoathere doctor\",\n  \"status\": \"ok\",\n  \"release_target\": {},\n  \"release_claim\": {},\n  \"sandbox_label\": {},\n  \"high_risk_allowed\": {},\n  \"state_dir\": {},\n  \"vm_manifest_path\": {},\n  \"vm_manifest_load_reason\": {},\n  \"guest_provisioning\": {},\n  \"release_validation\": {},\n  \"guest_reprovision_required\": {},\n  \"guest_reprovision_admin_required\": {},\n  \"guest_reprovision_operator_action\": {},\n  \"guest_reprovision_command\": {},\n  \"release_readiness_schema\": {},\n  \"release_stage\": {},\n  \"release_ready\": {},\n  \"release_blocking_reason_codes\": {},\n  \"scanner_release_blocking\": {},\n  \"scanner_release_scope\": {},\n  \"package_acquisition_policy\": {},\n  \"implemented_workflows\": {},\n  \"fail_closed_workflows\": {},\n  \"manual_review_classes\": {},\n  \"next_actions\": {},\n  \"vm_lifecycle_ready\": {},\n  \"vm_lifecycle_reason_codes\": {},\n  \"vm_runtime_ready\": {},\n  \"vm_ready\": {},\n  \"vm_reason_codes\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout_truncated\": {},\n  \"helper_stderr_truncated\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {},\n  \"scanner_available_count\": {},\n  \"scanner_required_count\": {},\n  \"scanners\": [{}]\n}}",
+            "{{\n  \"command\": \"whoathere doctor\",\n  \"status\": \"ok\",\n  \"release_target\": {},\n  \"release_claim\": {},\n  \"sandbox_label\": {},\n  \"high_risk_allowed\": {},\n  \"state_dir\": {},\n  \"vm_manifest_path\": {},\n  \"vm_manifest_load_reason\": {},\n  \"guest_provisioning\": {},\n  \"runtime_shutdown\": {},\n  \"release_validation\": {},\n  \"guest_reprovision_required\": {},\n  \"guest_reprovision_admin_required\": {},\n  \"guest_reprovision_operator_action\": {},\n  \"guest_reprovision_command\": {},\n  \"release_readiness_schema\": {},\n  \"release_stage\": {},\n  \"release_ready\": {},\n  \"release_blocking_reason_codes\": {},\n  \"scanner_release_blocking\": {},\n  \"scanner_release_scope\": {},\n  \"package_acquisition_policy\": {},\n  \"implemented_workflows\": {},\n  \"fail_closed_workflows\": {},\n  \"manual_review_classes\": {},\n  \"next_actions\": {},\n  \"vm_lifecycle_ready\": {},\n  \"vm_lifecycle_reason_codes\": {},\n  \"vm_runtime_ready\": {},\n  \"vm_ready\": {},\n  \"vm_reason_codes\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout_truncated\": {},\n  \"helper_stderr_truncated\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {},\n  \"scanner_available_count\": {},\n  \"scanner_required_count\": {},\n  \"scanners\": [{}]\n}}",
             json_string(RELEASE_TARGET),
             json_string(RELEASE_CLAIM),
             json_string(plan.label),
@@ -4798,6 +4915,7 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
                 .map(json_string)
                 .unwrap_or_else(|| "null".to_string()),
             render_guest_provisioning_json(&provisioning),
+            render_runtime_shutdown_json(&shutdown),
             render_release_validation_json(&release_validation, provisioning_digest.as_deref()),
             guest_reprovision_required(&provisioning),
             guest_reprovision_admin_required(&provisioning),
@@ -4856,7 +4974,7 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "whoathere doctor\nstatus=ok\nrelease_target={}\nrelease_claim={}\nsandbox_label={}\nhigh_risk_allowed={}\nstate_dir={}\nvm_manifest_path={}\nvm_manifest_load_reason={}\n{}\n{}\nguest_reprovision_required={}\nguest_reprovision_admin_required={}\nguest_reprovision_operator_action={}\nguest_reprovision_command={}\nrelease_readiness_schema={}\nrelease_stage={}\nrelease_ready={}\nrelease_blocking_reason_codes={:?}\nscanner_release_blocking={}\nscanner_release_scope={}\npackage_acquisition_policy={}\nimplemented_workflows={:?}\nfail_closed_workflows={:?}\nmanual_review_classes={:?}\nnext_actions={:?}\nvm_lifecycle_ready={}\nvm_lifecycle_reason_codes={:?}\nvm_runtime_ready={}\nvm_ready={}\nvm_reason_codes={:?}\n{}\nscanner_available_count={}\nscanner_required_count={}\n{}",
+        "whoathere doctor\nstatus=ok\nrelease_target={}\nrelease_claim={}\nsandbox_label={}\nhigh_risk_allowed={}\nstate_dir={}\nvm_manifest_path={}\nvm_manifest_load_reason={}\n{}\n{}\n{}\nguest_reprovision_required={}\nguest_reprovision_admin_required={}\nguest_reprovision_operator_action={}\nguest_reprovision_command={}\nrelease_readiness_schema={}\nrelease_stage={}\nrelease_ready={}\nrelease_blocking_reason_codes={:?}\nscanner_release_blocking={}\nscanner_release_scope={}\npackage_acquisition_policy={}\nimplemented_workflows={:?}\nfail_closed_workflows={:?}\nmanual_review_classes={:?}\nnext_actions={:?}\nvm_lifecycle_ready={}\nvm_lifecycle_reason_codes={:?}\nvm_runtime_ready={}\nvm_ready={}\nvm_reason_codes={:?}\n{}\nscanner_available_count={}\nscanner_required_count={}\n{}",
         RELEASE_TARGET,
         RELEASE_CLAIM,
         plan.label,
@@ -4865,6 +4983,7 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
         effective_manifest_path,
         manifest_load_reason.unwrap_or_else(|| "none".to_string()),
         provisioning.render_text(),
+        render_runtime_shutdown_text(&shutdown),
         render_release_validation_text(&release_validation, provisioning_digest.as_deref()),
         guest_reprovision_required(&provisioning),
         guest_reprovision_admin_required(&provisioning),
@@ -11410,6 +11529,41 @@ exit 0
     }
 
     #[test]
+    fn vm_status_reports_runtime_shutdown_summary() {
+        let root = temp_root("whoathere-cli-vm-status-shutdown");
+        let state_dir = root.join("state");
+        let _ = std::fs::remove_dir_all(&root);
+        write_runtime_shutdown_receipt(&state_dir, "force_stop", &["guest_stop_timeout"]);
+
+        let result = evaluate_command(Command::VmStatus {
+            state_dir: Some(state_dir.display().to_string()),
+            manifest_path: None,
+            helper_path: None,
+            json: false,
+        });
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result
+            .output
+            .contains("runtime_shutdown_receipt_present=true"));
+        assert!(result.output.contains("runtime_shutdown_status=ok"));
+        assert!(result
+            .output
+            .contains("runtime_shutdown_stop_method=force_stop"));
+        assert!(result
+            .output
+            .contains("runtime_shutdown_reason_codes=[\"guest_stop_timeout\"]"));
+        assert!(result
+            .output
+            .contains("runtime_shutdown_high_risk_package_execution_enabled=false"));
+        assert!(result
+            .output
+            .contains("runtime_shutdown_receipt_acceptable_for_no_sync_preview=true"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn doctor_reports_stale_guest_provisioning_as_release_blocker() {
         let root = temp_root("whoathere-cli-doctor-stale-provisioning");
         let state_dir = root.join("state");
@@ -11463,6 +11617,38 @@ exit 0
             .contains("\"guest_reprovision_command\": null"));
         assert!(result.output.contains("\"release_ready\": false"));
         assert!(result.output.contains("\"high_risk_allowed\": false"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn doctor_json_reports_runtime_shutdown_summary() {
+        let root = temp_root("whoathere-cli-doctor-shutdown");
+        let state_dir = root.join("state");
+        let _ = std::fs::remove_dir_all(&root);
+        write_runtime_shutdown_receipt(&state_dir, "force_stop", &["guest_stop_timeout"]);
+
+        let result = evaluate_command(Command::Doctor {
+            json: true,
+            state_dir: Some(state_dir.display().to_string()),
+            helper_path: None,
+        });
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result.output.contains("\"runtime_shutdown\": {"));
+        assert!(result.output.contains("\"receipt_present\": true"));
+        assert!(result.output.contains("\"status\": \"ok\""));
+        assert!(result.output.contains("\"stop_method\": \"force_stop\""));
+        assert!(result
+            .output
+            .contains("\"reason_codes\": [\"guest_stop_timeout\"]"));
+        assert!(result
+            .output
+            .contains("\"high_risk_package_execution_enabled\": false"));
+        assert!(result
+            .output
+            .contains("\"receipt_acceptable_for_no_sync_preview\": true"));
+        assert!(result.output.contains("\"release_ready\": false"));
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -14343,6 +14529,35 @@ exit 0
 }"#,
         )
         .expect("write uv-only guest provisioning receipt");
+    }
+
+    fn write_runtime_shutdown_receipt(
+        state_dir: &std::path::Path,
+        stop_method: &str,
+        reason_codes: &[&str],
+    ) {
+        let bundle_dir = state_dir.join("bundle");
+        std::fs::create_dir_all(&bundle_dir).expect("create bundle dir");
+        let reason_codes = reason_codes
+            .iter()
+            .map(|reason| format!(r#""{reason}""#))
+            .collect::<Vec<_>>()
+            .join(", ");
+        std::fs::write(
+            bundle_dir.join("shutdown.json"),
+            format!(
+                r#"{{
+  "schema_version": "whoathere.macos_vm.bundle.v1",
+  "helper_version": "0.1.0",
+  "runtime_pid": 15990,
+  "status": "ok",
+  "stop_method": "{stop_method}",
+  "reason_codes": [{reason_codes}],
+  "high_risk_package_execution_enabled": false
+}}"#
+            ),
+        )
+        .expect("write runtime shutdown receipt");
     }
 
     fn write_release_validation_receipt(

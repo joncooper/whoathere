@@ -283,6 +283,13 @@ $WHOATHERE vm health --state-dir "$WHOATHERE_STATE" --helper "$WHOATHERE_HELPER"
 
 Final health should fail closed with `runtime_process_not_running`.
 
+`whoathere vm status --json` and `whoathere doctor --json` also report a `runtime_shutdown` object
+when `bundle/shutdown.json` exists. For this no-sync preview, `stop_method=force_stop` is acceptable
+only when the receipt reports `status=ok`, `high_risk_package_execution_enabled=false`, the VM is
+stopped or runtime health is fail-closed, and no sync-back claim is being made. `guest_requested_stop`
+is preferred. Any future sync-back release must revisit this decision and validate a stricter stop
+and output-integrity model.
+
 ## Release Gate
 
 Do not call the macOS local-first preview ready until all of these are true:

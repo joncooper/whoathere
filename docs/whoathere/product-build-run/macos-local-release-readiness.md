@@ -36,7 +36,7 @@ The macOS local release is ready only when all of the following are true:
 | Area | Status | Evidence |
 | --- | --- | --- |
 | Apple Silicon macOS VM boundary | Partial | VM lifecycle, helper, provisioning, guest-health, detonation commands, local-only package policy, and preview packaging exist, but live npm/uv proof and release signing/notarization gates remain incomplete. |
-| VM start/health/suspend lifecycle | Strong for current preview VM | Live validation starts the entitlement-signed helper VM, proves guest health over vsock, reports Python/pip available and npm/uv unavailable, reports `vm_ready=true` while host and guest health proofs are present, suspends with observed runtime stop, and confirms final stopped state. |
+| VM start/health/suspend lifecycle | Strong for current preview VM | Live validation starts the entitlement-signed helper VM, proves guest health over vsock, reports Python/pip available and npm/uv unavailable, reports `vm_ready=true` while host and guest health proofs are present, suspends with observed runtime stop, and confirms final stopped state. `vm status` and `doctor` now summarize the last shutdown proof from `bundle/shutdown.json`, including `stop_method`, reason codes, and whether that stop is acceptable for the no-sync preview. |
 | Host package-manager isolation | Strong for claimed pip paths | Goals 3 and 4 validate local pip project and local-only requirements detonation inside the guest without host package-manager execution. |
 | Secret exclusion | Strong for claimed pip paths | Sanitized mirror excludes known secret paths, credential files, symlink escapes, traversal, and large unsafe payloads. |
 | Python local project detonation | Implemented | Live validation covers clean project, local requirements, safe package data, setup.py canary, PEP 517 canary, import-time canary, and `.pth` canary cases. |
@@ -63,6 +63,7 @@ The current tree is a credible VM-backed Python local project detonation prototy
 `whoathere doctor --json` now includes:
 
 - `guest_provisioning`
+- `runtime_shutdown`
 - `release_validation`
 - `guest_reprovision_command`
 - `release_readiness_schema`
@@ -83,6 +84,12 @@ The current tree is a credible VM-backed Python local project detonation prototy
 - `guest_reprovision_command`
 
 For this checkpoint, `release_ready` must remain `false`. A future loop may flip it only after the release criteria above are implemented, validated, and documented.
+
+The `runtime_shutdown` object summarizes the last VM stop proof, if present. For this
+detonation/admission-only preview, `stop_method=force_stop` is acceptable only when the shutdown
+receipt reports `status=ok`, `high_risk_package_execution_enabled=false`, runtime health is stopped
+or fail-closed, and sync-back remains disabled. `guest_requested_stop` remains preferred, and any
+future sync-back or persistent guest-state claim must revisit this decision.
 
 The `release_validation` object is written by
 `whoathere/helpers/macos-vm-helper/scripts/validate-npm-uv-detonation.sh` only after the live npm
@@ -110,6 +117,7 @@ cargo run --quiet --manifest-path whoathere/Cargo.toml --bin whoathere -- doctor
 cargo run --quiet --manifest-path whoathere/Cargo.toml --bin whoathere -- vm red-team-gate --json
 cargo test --manifest-path whoathere/Cargo.toml -p whoathere-cli vm_detonate_npm_project
 cargo test --manifest-path whoathere/Cargo.toml -p whoathere-cli vm_detonate_uv
+cargo test --manifest-path whoathere/Cargo.toml -p whoathere-cli runtime_shutdown
 cargo test --manifest-path whoathere/Cargo.toml -p whoathere-macos-vm local_developer_verified
 swift test
 cc -O2 -Wall -Wextra -target arm64-apple-macos13 -fsyntax-only whoathere/helpers/macos-vm-helper/guest-agent/whoathere-guest-ready.c
@@ -135,9 +143,9 @@ sh -n scripts/whoathere-notarize-macos-release.sh
 cargo test --manifest-path whoathere/Cargo.toml -p whoathere-cli release_validation
 scripts/whoathere-package-macos-preview.sh
 WHOATHERE_VM_HEALTH_INTERVAL_SECONDS=1 WHOATHERE_VM_HEALTH_ATTEMPTS=1 whoathere/helpers/macos-vm-helper/scripts/validate-npm-uv-detonation.sh
-scripts/whoathere-notarize-macos-release.sh --dry-run dist/whoathere-macos-arm64-preview-a4e74ba.tar.gz
+scripts/whoathere-notarize-macos-release.sh --dry-run dist/whoathere-macos-arm64-preview-bcd5bd9.tar.gz
 # expected exit 64 before notarytool submission because the local preview uses ad-hoc signatures
-scripts/whoathere-notarize-macos-release.sh --submit dist/whoathere-macos-arm64-preview-a4e74ba.tar.gz
+scripts/whoathere-notarize-macos-release.sh --submit dist/whoathere-macos-arm64-preview-bcd5bd9.tar.gz
 cc -O2 -Wall -Wextra -target arm64-apple-macos13 -fsyntax-only whoathere/helpers/macos-vm-helper/guest-agent/whoathere-guest-ready.c
 ```
 
@@ -167,7 +175,7 @@ guest_provisioning.uv_binary_status=null
 
 Those reason codes now appear in `release_blocking_reason_codes`, so stale or incomplete provisioning cannot be mistaken for npm/uv release readiness.
 
-The helper lifecycle smoke showed that `swift build` replaces the signed helper binary, so the helper must be re-signed before VM start. After re-signing, start returned `exit_code=0`, health returned `guest_health_proven=true`, `guest_toolchain_python3_available=true`, `guest_toolchain_pip_available=true`, `guest_toolchain_npm_available=false`, and `guest_toolchain_uv_available=false`. Updated suspend behavior returned `exit_code=0`, `runtime_stop_observed=true`, and `suspend_semantics=force_stop`. Final health returned fail-closed with `runtime_process_not_running`, confirming the VM was stopped.
+The helper lifecycle smoke showed that `swift build` replaces the signed helper binary, so the helper must be re-signed before VM start. After re-signing, start returned `exit_code=0`, health returned `guest_health_proven=true`, `guest_toolchain_python3_available=true`, `guest_toolchain_pip_available=true`, `guest_toolchain_npm_available=false`, and `guest_toolchain_uv_available=false`. Updated suspend behavior returned `exit_code=0`, `runtime_stop_observed=true`, and `suspend_semantics=force_stop`. Final health returned fail-closed with `runtime_process_not_running`, confirming the VM was stopped. Current `vm status` and `doctor` output report `runtime_shutdown.stop_method=force_stop`, `runtime_shutdown.reason_codes=["guest_stop_timeout"]`, `runtime_shutdown.high_risk_package_execution_enabled=false`, and `runtime_shutdown.receipt_acceptable_for_no_sync_preview=true`. This is acceptable for the current no-sync detonation preview because no guest filesystem changes are trusted or copied back to the host; it is not acceptable evidence for a future sync-back release without a new whitelist and validation pass.
 
 Offline provisioning now supports copying host or repo-provided Node/npm and uv tooling into the guest under `/usr/local/whoathere`. The guest agent uses a fixed WhoaThere-owned PATH for tool discovery and detonation. Static validation passed, but live npm/uv proof is still pending because the emitted `sudo ... provision-guest-readiness.sh /Users/jdc/.whoathere/macos-vm-validation` command requires an interactive sudo password in this environment.
 
@@ -192,7 +200,7 @@ mode it verifies the package checksum sidecar, extracts the archive, verifies CL
 state, checks the packaged npm/uv validator is executable and shell-syntax-clean, writes a
 notarization zip, reports whether signatures are ad-hoc, and reports whether notary credentials are
 configured. On the current local preview archive it produced
-`dist/whoathere-macos-arm64-preview-a4e74ba-notarization.zip` and correctly reported
+`dist/whoathere-macos-arm64-preview-bcd5bd9-notarization.zip` and correctly reported
 `cli_signature_adhoc=true`, `helper_signature_adhoc=true`, `notary_credentials_configured=false`,
 and `notarization_submit_ready=false`. A submit-mode guard smoke on the same archive exited 64 with
 `notarization_blocker=adhoc_signature_present`, before any `xcrun notarytool` submission.
@@ -208,7 +216,7 @@ release-validation receipt exists. This prevents a preview artifact with an empt
 silently overclaiming npm/uv readiness.
 
 The packaging script was rerun after the release-validation gate changes and produced
-`dist/whoathere-macos-arm64-preview-a4e74ba.tar.gz` plus a checksum. The checksum verified from the
+`dist/whoathere-macos-arm64-preview-bcd5bd9.tar.gz` plus a checksum. The checksum verified from the
 extracted archive smoke, packaged `bin/whoathere --help` worked, both packaged binaries passed
 `codesign --verify --strict --verbose=2`, and packaged `doctor --json` failed closed against an
 empty temporary VM state directory while emitting a package-local `guest_reprovision_command`,
@@ -251,7 +259,7 @@ Focus on live VM validation and packaging UX before expanding package-manager co
 2. Run `WHOATHERE_VM_STATE_DIR=/Users/jdc/.whoathere/macos-vm-validation whoathere/helpers/macos-vm-helper/scripts/validate-npm-uv-detonation.sh`. Keep npm/uv release claims fail-closed until that live gate passes.
 3. Exercise `scripts/whoathere-package-macos-preview.sh` as the release candidate build path, then add Developer ID signing/notarization or keep the artifact clearly labeled as a local preview.
 4. Keep sync-back disabled for the preview unless a separately tested deny-by-default whitelist is implemented.
-5. Decide whether force-stop is acceptable release behavior for `vm suspend`, or whether guest-requested stop must be made reliable before release.
+5. Keep the current no-sync force-stop decision visible in `runtime_shutdown`; revisit it before any sync-back or persistent guest-state claim.
 6. Make remaining failure messages actionable without exposing secrets or raw guest output.
 7. Run `whoathere vm red-team-gate --json` on every release candidate and keep the macOS local-first preview runbook updated as npm/uv, sync-back, scanner, and packaging claims change.
 
