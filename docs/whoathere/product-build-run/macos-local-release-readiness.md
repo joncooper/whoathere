@@ -46,7 +46,7 @@ The macOS local release is ready only when all of the following are true:
 | Native and binary artifacts | Fail closed/manual review | Native markers, binary wheels, direct URLs, VCS, editable, and unknown classes are not auto-allowed. |
 | Network evidence | Partial | Controlled fixtures and reason codes exist, but robust DNS/HTTPS observation is still marker-based rather than a full network monitor. |
 | Sync-back | Explicitly out of scope for preview | Current posture is detonation/admission evidence only. Host sync-back remains disabled and is not required for the preview release gate. Future sync-back still requires a deny-by-default whitelist and live validation before any claim changes. |
-| Doctor/readiness UX | Improved in this checkpoint | `whoathere doctor --json --state-dir <dir> --helper <path>` now reports release readiness, the inspected VM state directory, guest provisioning receipt/toolchain status, package acquisition policy, implemented workflows, fail-closed workflows, manual-review classes, blocking reason codes, next actions, separate VM lifecycle/runtime readiness, and a derived `guest_reprovision_command` when guest provisioning is missing or stale and the helper script path can be resolved. A stopped VM is visible as `vm_runtime_ready=false` but is not a release blocker when lifecycle readiness is otherwise proven. |
+| Doctor/readiness UX | Improved in this checkpoint | `whoathere doctor --json --state-dir <dir> --helper <path>` now reports release readiness, the inspected VM state directory, guest provisioning receipt/toolchain status, release-validation receipt status, package acquisition policy, implemented workflows, fail-closed workflows, manual-review classes, blocking reason codes, next actions, separate VM lifecycle/runtime readiness, and a derived `guest_reprovision_command` when guest provisioning is missing or stale and the helper script path can be resolved. A stopped VM is visible as `vm_runtime_ready=false` but is not a release blocker when lifecycle readiness is otherwise proven. |
 | Default VM manifest loading | Implemented for CLI status/readiness | `vm status` and `doctor` now load `<state-dir>/bundle/image.manifest` by default, tolerate the helper restore-image manifest shape, accept helper-created `local_developer_verified` preview manifests for lifecycle gating, and still reject stale or unverified manifests. `vm upgrade-local-manifest --execute` explicitly upgrades only legacy helper-created local preview manifests after bundle validation. Production release signing/notarization remains a separate blocker. |
 | Scanner adapters | Advisory for no-sync preview | External scanner binaries are still reported and remain required before any future auto-sync/auto-allow release. They are no longer a hard blocker for the current detonation/admission-only preview because sync-back is disabled and `whoathere vm red-team-gate` provides local fixture-safe comparator coverage. |
 | Packaging/onboarding | Preview implemented | [macOS local-first preview runbook](macos-local-first-preview-runbook.md) now documents first-run build, signing, VM init, provisioning, health, detonation validation, limitations, cleanup, the repeatable preview tarball script, and the notarization-prep path. The package script builds the release CLI/helper, signs them locally, runs local gates, writes a checksum, and smoke-tests the extracted archive before reporting success. `scripts/whoathere-notarize-macos-release.sh` verifies a packaged artifact, builds a notary zip, detects ad-hoc signatures, and submits only when Developer ID signatures and notary credentials are configured. Actual Developer ID notarization remains outside the preview package claim until run with release credentials. |
@@ -56,13 +56,14 @@ The macOS local release is ready only when all of the following are true:
 
 WhoaThere is not yet ready for the macOS-only local-first release target.
 
-The current tree is a credible VM-backed Python local project detonation prototype with strong fail-closed behavior for the workflows it claims, plus host-side local npm and uv project planners for no-external-dependency workspaces, a local-only package acquisition policy, a repeatable preview package path, and a validation VM whose manifest, lifecycle, and guest health can be proven. It is not yet a ready-to-use developer release because live npm/uv guest tooling/proof and signature/notarization are still incomplete. Sync-back is deliberately disabled for this preview rather than an unresolved release requirement, so missing external scanner binaries are advisory until an auto-sync claim exists.
+The current tree is a credible VM-backed Python local project detonation prototype with strong fail-closed behavior for the workflows it claims, plus host-side local npm and uv project planners for no-external-dependency workspaces, a local-only package acquisition policy, a repeatable preview package path, and a validation VM whose manifest, lifecycle, and guest health can be proven. It is not yet a ready-to-use developer release because live npm/uv guest tooling/proof and signature/notarization are still incomplete. The npm/uv release blockers are now tied to a release-validation receipt that must match the current guest-provisioning receipt digest, so stale or missing live proof keeps those workflows fail-closed. Sync-back is deliberately disabled for this preview rather than an unresolved release requirement, so missing external scanner binaries are advisory until an auto-sync claim exists.
 
 ## Machine-Readable Gate
 
 `whoathere doctor --json` now includes:
 
 - `guest_provisioning`
+- `release_validation`
 - `guest_reprovision_command`
 - `release_readiness_schema`
 - `release_stage`
@@ -82,6 +83,17 @@ The current tree is a credible VM-backed Python local project detonation prototy
 - `guest_reprovision_command`
 
 For this checkpoint, `release_ready` must remain `false`. A future loop may flip it only after the release criteria above are implemented, validated, and documented.
+
+The `release_validation` object is written by
+`whoathere/helpers/macos-vm-helper/scripts/validate-npm-uv-detonation.sh` only after the live npm
+and uv fixture cases pass, canary output remains sanitized, host project mutation checks pass, and
+public resolver/`uv sync` cases remain fail-closed before helper execution. `doctor` accepts npm and
+uv release proof only when that receipt uses schema
+`whoathere.macos_vm.release_validation.v1`, records disabled host execution/sync/high-risk states,
+uses `package_acquisition_policy=local_only_no_public_resolver`, and binds to the SHA-256 digest of
+the current guest-provisioning receipt. Missing, stale, or mismatched receipts keep
+`release_npm_vm_detonation_not_verified` and `release_uv_vm_detonation_not_verified` in
+`release_blocking_reason_codes`.
 
 ## Validation Evidence For This Checkpoint
 
@@ -119,6 +131,7 @@ sh -n whoathere/helpers/macos-vm-helper/scripts/validate-project-detonation.sh
 sh -n whoathere/helpers/macos-vm-helper/scripts/validate-npm-uv-detonation.sh
 sh -n scripts/whoathere-package-macos-preview.sh
 sh -n scripts/whoathere-notarize-macos-release.sh
+cargo test --manifest-path whoathere/Cargo.toml -p whoathere-cli release_validation
 scripts/whoathere-package-macos-preview.sh
 WHOATHERE_VM_HEALTH_INTERVAL_SECONDS=1 WHOATHERE_VM_HEALTH_ATTEMPTS=1 whoathere/helpers/macos-vm-helper/scripts/validate-npm-uv-detonation.sh
 scripts/whoathere-notarize-macos-release.sh --dry-run dist/whoathere-macos-arm64-preview-109dba7.tar.gz
@@ -215,9 +228,13 @@ receipt before VM start, starts the VM only when the receipt is ready, requires 
 prove `python3`, `pip`, `npm`, and `uv`, runs clean local npm install/ci and uv pip project cases,
 runs canary-reading npm lifecycle/API-use and uv import-time cases, verifies public npm/uv
 resolution and `uv sync` remain fail-closed before helper execution, rejects raw canary value
-leakage, checks the host project was not mutated, and suspends the VM if it started it. In the
-current stale validation state it exits with `guest_tooling_not_ready_for_npm_uv_validation=true`
-and prints the exact `sudo ... provision-guest-readiness.sh ...` command before starting the VM.
+leakage, checks the host project was not mutated, writes
+`<state-dir>/bundle/release-validation.json` after success, and suspends the VM if it started it. In
+the current stale validation state it exits with `guest_tooling_not_ready_for_npm_uv_validation=true`
+and prints the exact `sudo ... provision-guest-readiness.sh ...` command before starting the VM. The
+focused release-validation unit tests prove `doctor` removes the npm/uv release blockers only for a
+receipt bound to the current guest-provisioning digest and rejects a stale digest with
+`release_validation_provisioning_digest_mismatch`.
 
 ## Next Recommended Slice
 

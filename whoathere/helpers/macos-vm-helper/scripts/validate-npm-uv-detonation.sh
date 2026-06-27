@@ -20,6 +20,7 @@ WHOATHERE_BIN=${WHOATHERE_BIN:-"$DEFAULT_WHOATHERE_BIN"}
 HELPER=$(whoathere_default_helper_path "$HELPER_ROOT")
 STATE_DIR=${WHOATHERE_VM_STATE_DIR:-"$HOME/.whoathere/macos-vm-validation"}
 WORK_ROOT=${TMPDIR:-/tmp}/whoathere-npm-uv-detonation.$$
+RELEASE_VALIDATION_RECEIPT="$STATE_DIR/bundle/release-validation.json"
 HEALTH_ATTEMPTS=${WHOATHERE_VM_HEALTH_ATTEMPTS:-30}
 HEALTH_INTERVAL_SECONDS=${WHOATHERE_VM_HEALTH_INTERVAL_SECONDS:-10}
 STARTED_BY_SCRIPT=0
@@ -370,6 +371,36 @@ run_preflight_case() {
   echo "npm_uv_preflight_case_result=ok name=$name actual_exit=$status"
 }
 
+write_release_validation_receipt() {
+  provisioning_receipt="$STATE_DIR/bundle/guest-provisioning.json"
+  if [ ! -f "$provisioning_receipt" ]; then
+    echo "guest_provisioning_receipt_missing_before_release_validation_write=true" >&2
+    exit 1
+  fi
+  provisioning_digest=sha256:$(shasum -a 256 "$provisioning_receipt" | awk '{print $1}')
+  created_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+  mkdir -p "$(dirname -- "$RELEASE_VALIDATION_RECEIPT")"
+  temp_receipt="$RELEASE_VALIDATION_RECEIPT.$$"
+  cat > "$temp_receipt" <<EOF
+{
+  "schema_version": "whoathere.macos_vm.release_validation.v1",
+  "validator": "validate-npm-uv-detonation.sh",
+  "created_at_utc": "$created_at",
+  "guest_provisioning_receipt_digest": "$provisioning_digest",
+  "npm_vm_detonation_verified": true,
+  "uv_vm_detonation_verified": true,
+  "live_guest_toolchains_verified": true,
+  "host_package_execution_enabled": false,
+  "sync_back_enabled": false,
+  "high_risk_package_execution_enabled": false,
+  "package_acquisition_policy": "local_only_no_public_resolver"
+}
+EOF
+  mv "$temp_receipt" "$RELEASE_VALIDATION_RECEIPT"
+  echo "release_validation_receipt=$RELEASE_VALIDATION_RECEIPT"
+  echo "release_validation_guest_provisioning_receipt_digest=$provisioning_digest"
+}
+
 require_tooling
 mkdir -p "$WORK_ROOT"
 require_guest_tooling_receipt
@@ -409,4 +440,5 @@ uv_sync="$WORK_ROOT/uv-sync"
 write_uv_sync_project "$uv_sync"
 run_preflight_case uv_sync_deferred project_uv_sync_deferred_until_lock_policy "$uv_sync" uv sync
 
+write_release_validation_receipt
 echo "npm_uv_detonation_validation=ok"

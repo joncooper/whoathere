@@ -20,6 +20,7 @@ use whoathere_evidence::{
     minimum_profiles, EvidenceBundle, EvidenceJobBinding, EvidenceJobResult, EvidenceProfile,
     JobState,
 };
+use whoathere_hash::sha256_digest;
 use whoathere_launch::{
     build_launch_plan, cleanup_runtime_plan, load_cleanup_manifest, CleanupResult, LaunchPlan,
     LaunchRequest, LaunchStatus,
@@ -3629,6 +3630,13 @@ fn default_macos_vm_guest_provisioning_path(config: &MacosVmConfig) -> PathBuf {
         .join("guest-provisioning.json")
 }
 
+fn default_macos_vm_release_validation_path(config: &MacosVmConfig) -> PathBuf {
+    config
+        .state_dir
+        .join("bundle")
+        .join("release-validation.json")
+}
+
 fn load_macos_vm_manifest(
     manifest_path: Option<&str>,
     default_manifest_path: &Path,
@@ -3807,6 +3815,153 @@ fn load_macos_vm_guest_provisioning(path: &Path) -> MacosVmGuestProvisioningSumm
     }
 }
 
+const MACOS_VM_RELEASE_VALIDATION_SCHEMA_VERSION: &str = "whoathere.macos_vm.release_validation.v1";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MacosVmReleaseValidationSummary {
+    path: PathBuf,
+    present: bool,
+    load_reason: Option<String>,
+    schema_version: Option<String>,
+    validator: Option<String>,
+    guest_provisioning_receipt_digest: Option<String>,
+    npm_vm_detonation_verified: Option<bool>,
+    uv_vm_detonation_verified: Option<bool>,
+    live_guest_toolchains_verified: Option<bool>,
+    host_package_execution_enabled: Option<bool>,
+    sync_back_enabled: Option<bool>,
+    high_risk_package_execution_enabled: Option<bool>,
+    package_acquisition_policy: Option<String>,
+}
+
+impl MacosVmReleaseValidationSummary {
+    fn missing(path: PathBuf, load_reason: String) -> Self {
+        Self {
+            path,
+            present: false,
+            load_reason: Some(load_reason),
+            schema_version: None,
+            validator: None,
+            guest_provisioning_receipt_digest: None,
+            npm_vm_detonation_verified: None,
+            uv_vm_detonation_verified: None,
+            live_guest_toolchains_verified: None,
+            host_package_execution_enabled: None,
+            sync_back_enabled: None,
+            high_risk_package_execution_enabled: None,
+            package_acquisition_policy: None,
+        }
+    }
+
+    fn from_contents(path: PathBuf, contents: &str) -> Self {
+        Self {
+            path,
+            present: true,
+            load_reason: None,
+            schema_version: json_extract_string_field(contents, "schema_version"),
+            validator: json_extract_string_field(contents, "validator"),
+            guest_provisioning_receipt_digest: json_extract_string_field(
+                contents,
+                "guest_provisioning_receipt_digest",
+            ),
+            npm_vm_detonation_verified: json_extract_bool_field(
+                contents,
+                "npm_vm_detonation_verified",
+            ),
+            uv_vm_detonation_verified: json_extract_bool_field(
+                contents,
+                "uv_vm_detonation_verified",
+            ),
+            live_guest_toolchains_verified: json_extract_bool_field(
+                contents,
+                "live_guest_toolchains_verified",
+            ),
+            host_package_execution_enabled: json_extract_bool_field(
+                contents,
+                "host_package_execution_enabled",
+            ),
+            sync_back_enabled: json_extract_bool_field(contents, "sync_back_enabled"),
+            high_risk_package_execution_enabled: json_extract_bool_field(
+                contents,
+                "high_risk_package_execution_enabled",
+            ),
+            package_acquisition_policy: json_extract_string_field(
+                contents,
+                "package_acquisition_policy",
+            ),
+        }
+    }
+
+    fn reason_codes(&self, expected_provisioning_digest: Option<&str>) -> Vec<String> {
+        let mut reasons = Vec::new();
+        if !self.present {
+            reasons.push("release_validation_receipt_missing".to_string());
+        }
+        if self.schema_version.as_deref() != Some(MACOS_VM_RELEASE_VALIDATION_SCHEMA_VERSION) {
+            reasons.push("release_validation_schema_invalid".to_string());
+        }
+        if self.live_guest_toolchains_verified != Some(true) {
+            reasons.push("release_validation_live_guest_toolchains_not_verified".to_string());
+        }
+        if self.host_package_execution_enabled != Some(false) {
+            reasons.push("release_validation_host_execution_state_invalid".to_string());
+        }
+        if self.sync_back_enabled != Some(false) {
+            reasons.push("release_validation_sync_back_state_invalid".to_string());
+        }
+        if self.high_risk_package_execution_enabled != Some(false) {
+            reasons.push("release_validation_high_risk_state_invalid".to_string());
+        }
+        if self.package_acquisition_policy.as_deref() != Some("local_only_no_public_resolver") {
+            reasons.push("release_validation_package_acquisition_policy_invalid".to_string());
+        }
+        match (
+            self.guest_provisioning_receipt_digest.as_deref(),
+            expected_provisioning_digest,
+        ) {
+            (Some(actual), Some(expected)) if actual == expected => {}
+            (None, _) => reasons.push("release_validation_provisioning_digest_missing".to_string()),
+            (_, None) => {
+                reasons.push("release_validation_current_provisioning_digest_missing".to_string())
+            }
+            (Some(_), Some(_)) => {
+                reasons.push("release_validation_provisioning_digest_mismatch".to_string())
+            }
+        }
+        reasons.sort();
+        reasons.dedup();
+        reasons
+    }
+
+    fn npm_verified(&self, expected_provisioning_digest: Option<&str>) -> bool {
+        self.npm_vm_detonation_verified == Some(true)
+            && self.reason_codes(expected_provisioning_digest).is_empty()
+    }
+
+    fn uv_verified(&self, expected_provisioning_digest: Option<&str>) -> bool {
+        self.uv_vm_detonation_verified == Some(true)
+            && self.reason_codes(expected_provisioning_digest).is_empty()
+    }
+}
+
+fn load_macos_vm_release_validation(path: &Path) -> MacosVmReleaseValidationSummary {
+    match std::fs::read_to_string(path) {
+        Ok(contents) => {
+            MacosVmReleaseValidationSummary::from_contents(path.to_path_buf(), &contents)
+        }
+        Err(error) => MacosVmReleaseValidationSummary::missing(
+            path.to_path_buf(),
+            redacted_scalar(&error.to_string()),
+        ),
+    }
+}
+
+fn file_sha256_digest(path: &Path) -> Option<String> {
+    std::fs::read(path)
+        .ok()
+        .map(|contents| sha256_digest(&contents))
+}
+
 fn detonation_guest_tooling_reason_codes(
     tool: &str,
     provisioning: &MacosVmGuestProvisioningSummary,
@@ -3889,6 +4044,58 @@ fn render_guest_provisioning_json(summary: &MacosVmGuestProvisioningSummary) -> 
         json_option(summary.high_risk_package_execution_enabled),
         json_option(summary.host_home_mounted),
         json_option(summary.host_secrets_mounted),
+    )
+}
+
+fn render_release_validation_json(
+    summary: &MacosVmReleaseValidationSummary,
+    expected_provisioning_digest: Option<&str>,
+) -> String {
+    format!(
+        "{{\"receipt_path\": {}, \"receipt_present\": {}, \"load_reason\": {}, \"reason_codes\": {}, \"schema_version\": {}, \"validator\": {}, \"guest_provisioning_receipt_digest\": {}, \"current_guest_provisioning_receipt_digest\": {}, \"npm_vm_detonation_verified\": {}, \"uv_vm_detonation_verified\": {}, \"live_guest_toolchains_verified\": {}, \"host_package_execution_enabled\": {}, \"sync_back_enabled\": {}, \"high_risk_package_execution_enabled\": {}, \"package_acquisition_policy\": {}}}",
+        json_string(&summary.path.display().to_string()),
+        summary.present,
+        json_option_string_redacted(summary.load_reason.as_deref()),
+        json_string_array(&summary.reason_codes(expected_provisioning_digest)),
+        json_option_string_redacted(summary.schema_version.as_deref()),
+        json_option_string_redacted(summary.validator.as_deref()),
+        json_option_string_redacted(summary.guest_provisioning_receipt_digest.as_deref()),
+        json_option_string_redacted(expected_provisioning_digest),
+        json_option(summary.npm_vm_detonation_verified),
+        json_option(summary.uv_vm_detonation_verified),
+        json_option(summary.live_guest_toolchains_verified),
+        json_option(summary.host_package_execution_enabled),
+        json_option(summary.sync_back_enabled),
+        json_option(summary.high_risk_package_execution_enabled),
+        json_option_string_redacted(summary.package_acquisition_policy.as_deref()),
+    )
+}
+
+fn render_release_validation_text(
+    summary: &MacosVmReleaseValidationSummary,
+    expected_provisioning_digest: Option<&str>,
+) -> String {
+    format!(
+        "release_validation_receipt_path={}\nrelease_validation_receipt_present={}\nrelease_validation_load_reason={}\nrelease_validation_reason_codes={:?}\nrelease_validation_schema_version={}\nrelease_validation_validator={}\nrelease_validation_guest_provisioning_receipt_digest={}\nrelease_validation_current_guest_provisioning_receipt_digest={}\nrelease_validation_npm_vm_detonation_verified={}\nrelease_validation_uv_vm_detonation_verified={}\nrelease_validation_live_guest_toolchains_verified={}\nrelease_validation_host_package_execution_enabled={}\nrelease_validation_sync_back_enabled={}\nrelease_validation_high_risk_package_execution_enabled={}\nrelease_validation_package_acquisition_policy={}",
+        summary.path.display(),
+        summary.present,
+        summary
+            .load_reason
+            .as_deref()
+            .map(redacted_scalar)
+            .unwrap_or_else(|| "none".to_string()),
+        summary.reason_codes(expected_provisioning_digest),
+        option_string_text(summary.schema_version.as_deref()),
+        option_string_text(summary.validator.as_deref()),
+        option_string_text(summary.guest_provisioning_receipt_digest.as_deref()),
+        option_string_text(expected_provisioning_digest),
+        option_bool_text(summary.npm_vm_detonation_verified),
+        option_bool_text(summary.uv_vm_detonation_verified),
+        option_bool_text(summary.live_guest_toolchains_verified),
+        option_bool_text(summary.host_package_execution_enabled),
+        option_bool_text(summary.sync_back_enabled),
+        option_bool_text(summary.high_risk_package_execution_enabled),
+        option_string_text(summary.package_acquisition_policy.as_deref()),
     )
 }
 
@@ -4431,6 +4638,8 @@ struct MacosLocalReleaseReadiness {
 fn macos_local_release_readiness(
     status: &whoathere_macos_vm::MacosVmStatus,
     provisioning: &MacosVmGuestProvisioningSummary,
+    release_validation: &MacosVmReleaseValidationSummary,
+    expected_provisioning_digest: Option<&str>,
     helper: &MacosVmHelperOutput,
     scanner_available_count: usize,
     scanner_required_count: usize,
@@ -4451,11 +4660,13 @@ fn macos_local_release_readiness(
         blocking_reason_codes.push("release_required_scanners_missing".to_string());
     }
 
-    blocking_reason_codes.extend(string_vec(&[
-        "release_npm_vm_detonation_not_verified",
-        "release_uv_vm_detonation_not_verified",
-        "release_signature_notarization_not_complete",
-    ]));
+    if !release_validation.npm_verified(expected_provisioning_digest) {
+        blocking_reason_codes.push("release_npm_vm_detonation_not_verified".to_string());
+    }
+    if !release_validation.uv_verified(expected_provisioning_digest) {
+        blocking_reason_codes.push("release_uv_vm_detonation_not_verified".to_string());
+    }
+    blocking_reason_codes.push("release_signature_notarization_not_complete".to_string());
     blocking_reason_codes.sort();
     blocking_reason_codes.dedup();
 
@@ -4517,9 +4728,12 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
     let config = macos_vm_config(state_dir, None, None);
     let default_manifest_path = default_macos_vm_manifest_path(&config);
     let provisioning_path = default_macos_vm_guest_provisioning_path(&config);
+    let release_validation_path = default_macos_vm_release_validation_path(&config);
     let (manifest, manifest_load_reason, effective_manifest_path) =
         load_macos_vm_manifest(None, &default_manifest_path);
     let provisioning = load_macos_vm_guest_provisioning(&provisioning_path);
+    let provisioning_digest = file_sha256_digest(&provisioning_path);
+    let release_validation = load_macos_vm_release_validation(&release_validation_path);
     let status = status_from_config(&config, HostPlatform::current(), manifest.as_ref());
     let helper = run_macos_vm_helper(
         helper_path,
@@ -4544,6 +4758,8 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
     let readiness = macos_local_release_readiness(
         &status,
         &provisioning,
+        &release_validation,
+        provisioning_digest.as_deref(),
         &helper,
         scanner_available,
         scanner_required,
@@ -4570,7 +4786,7 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
             .collect::<Vec<_>>()
             .join(", ");
         return format!(
-            "{{\n  \"command\": \"whoathere doctor\",\n  \"status\": \"ok\",\n  \"release_target\": {},\n  \"release_claim\": {},\n  \"sandbox_label\": {},\n  \"high_risk_allowed\": {},\n  \"state_dir\": {},\n  \"vm_manifest_path\": {},\n  \"vm_manifest_load_reason\": {},\n  \"guest_provisioning\": {},\n  \"guest_reprovision_required\": {},\n  \"guest_reprovision_admin_required\": {},\n  \"guest_reprovision_operator_action\": {},\n  \"guest_reprovision_command\": {},\n  \"release_readiness_schema\": {},\n  \"release_stage\": {},\n  \"release_ready\": {},\n  \"release_blocking_reason_codes\": {},\n  \"scanner_release_blocking\": {},\n  \"scanner_release_scope\": {},\n  \"package_acquisition_policy\": {},\n  \"implemented_workflows\": {},\n  \"fail_closed_workflows\": {},\n  \"manual_review_classes\": {},\n  \"next_actions\": {},\n  \"vm_lifecycle_ready\": {},\n  \"vm_lifecycle_reason_codes\": {},\n  \"vm_runtime_ready\": {},\n  \"vm_ready\": {},\n  \"vm_reason_codes\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout_truncated\": {},\n  \"helper_stderr_truncated\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {},\n  \"scanner_available_count\": {},\n  \"scanner_required_count\": {},\n  \"scanners\": [{}]\n}}",
+            "{{\n  \"command\": \"whoathere doctor\",\n  \"status\": \"ok\",\n  \"release_target\": {},\n  \"release_claim\": {},\n  \"sandbox_label\": {},\n  \"high_risk_allowed\": {},\n  \"state_dir\": {},\n  \"vm_manifest_path\": {},\n  \"vm_manifest_load_reason\": {},\n  \"guest_provisioning\": {},\n  \"release_validation\": {},\n  \"guest_reprovision_required\": {},\n  \"guest_reprovision_admin_required\": {},\n  \"guest_reprovision_operator_action\": {},\n  \"guest_reprovision_command\": {},\n  \"release_readiness_schema\": {},\n  \"release_stage\": {},\n  \"release_ready\": {},\n  \"release_blocking_reason_codes\": {},\n  \"scanner_release_blocking\": {},\n  \"scanner_release_scope\": {},\n  \"package_acquisition_policy\": {},\n  \"implemented_workflows\": {},\n  \"fail_closed_workflows\": {},\n  \"manual_review_classes\": {},\n  \"next_actions\": {},\n  \"vm_lifecycle_ready\": {},\n  \"vm_lifecycle_reason_codes\": {},\n  \"vm_runtime_ready\": {},\n  \"vm_ready\": {},\n  \"vm_reason_codes\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout_truncated\": {},\n  \"helper_stderr_truncated\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {},\n  \"scanner_available_count\": {},\n  \"scanner_required_count\": {},\n  \"scanners\": [{}]\n}}",
             json_string(RELEASE_TARGET),
             json_string(RELEASE_CLAIM),
             json_string(plan.label),
@@ -4582,6 +4798,7 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
                 .map(json_string)
                 .unwrap_or_else(|| "null".to_string()),
             render_guest_provisioning_json(&provisioning),
+            render_release_validation_json(&release_validation, provisioning_digest.as_deref()),
             guest_reprovision_required(&provisioning),
             guest_reprovision_admin_required(&provisioning),
             json_string(guest_reprovision_operator_action),
@@ -4639,7 +4856,7 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "whoathere doctor\nstatus=ok\nrelease_target={}\nrelease_claim={}\nsandbox_label={}\nhigh_risk_allowed={}\nstate_dir={}\nvm_manifest_path={}\nvm_manifest_load_reason={}\n{}\nguest_reprovision_required={}\nguest_reprovision_admin_required={}\nguest_reprovision_operator_action={}\nguest_reprovision_command={}\nrelease_readiness_schema={}\nrelease_stage={}\nrelease_ready={}\nrelease_blocking_reason_codes={:?}\nscanner_release_blocking={}\nscanner_release_scope={}\npackage_acquisition_policy={}\nimplemented_workflows={:?}\nfail_closed_workflows={:?}\nmanual_review_classes={:?}\nnext_actions={:?}\nvm_lifecycle_ready={}\nvm_lifecycle_reason_codes={:?}\nvm_runtime_ready={}\nvm_ready={}\nvm_reason_codes={:?}\n{}\nscanner_available_count={}\nscanner_required_count={}\n{}",
+        "whoathere doctor\nstatus=ok\nrelease_target={}\nrelease_claim={}\nsandbox_label={}\nhigh_risk_allowed={}\nstate_dir={}\nvm_manifest_path={}\nvm_manifest_load_reason={}\n{}\n{}\nguest_reprovision_required={}\nguest_reprovision_admin_required={}\nguest_reprovision_operator_action={}\nguest_reprovision_command={}\nrelease_readiness_schema={}\nrelease_stage={}\nrelease_ready={}\nrelease_blocking_reason_codes={:?}\nscanner_release_blocking={}\nscanner_release_scope={}\npackage_acquisition_policy={}\nimplemented_workflows={:?}\nfail_closed_workflows={:?}\nmanual_review_classes={:?}\nnext_actions={:?}\nvm_lifecycle_ready={}\nvm_lifecycle_reason_codes={:?}\nvm_runtime_ready={}\nvm_ready={}\nvm_reason_codes={:?}\n{}\nscanner_available_count={}\nscanner_required_count={}\n{}",
         RELEASE_TARGET,
         RELEASE_CLAIM,
         plan.label,
@@ -4648,6 +4865,7 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
         effective_manifest_path,
         manifest_load_reason.unwrap_or_else(|| "none".to_string()),
         provisioning.render_text(),
+        render_release_validation_text(&release_validation, provisioning_digest.as_deref()),
         guest_reprovision_required(&provisioning),
         guest_reprovision_admin_required(&provisioning),
         guest_reprovision_operator_action,
@@ -9651,6 +9869,96 @@ mod tests {
     }
 
     #[test]
+    fn doctor_accepts_bound_npm_uv_release_validation_receipt() {
+        let root = temp_root("whoathere-cli-doctor-release-validation-ready");
+        let _ = std::fs::remove_dir_all(&root);
+        let state_dir = root.join("state");
+        let bundle_dir = state_dir.join("bundle");
+        std::fs::create_dir_all(&bundle_dir).expect("bundle dir");
+        std::fs::write(
+            bundle_dir.join("image.manifest"),
+            "schema_version=whoathere.macos_vm_image.v1\nimage_id=local-restore-image-install\nmacos_version=26.5.1\nmacos_build_version=25F80\narchitecture=arm64\nrestore_image_digest=sha256:1111111111111111111111111111111111111111111111111111111111111111\ncpu_count=2\nmemory_mib=6144\nsignature_status=local_developer_verified\nhelper_version=0.1.0\n",
+        )
+        .expect("manifest");
+        write_complete_guest_provisioning_receipt(&state_dir);
+        write_release_validation_receipt(&state_dir, None);
+        let helper = root.join("helper.sh");
+        write_new_file(
+            &helper,
+            b"#!/bin/sh\nprintf '{\"status\":\"ok\",\"exit_code\":0,\"ready_for_lifecycle\":true,\"reason_codes\":[]}\\n'\nexit 0\n",
+        )
+        .expect("helper script");
+        set_executable(&helper).expect("executable helper");
+
+        let result = evaluate_command(Command::Doctor {
+            json: true,
+            state_dir: Some(state_dir.display().to_string()),
+            helper_path: Some(helper.display().to_string()),
+        });
+
+        assert_eq!(result.exit_code, 0);
+        let release_blockers = result
+            .output
+            .split("\"release_blocking_reason_codes\": [")
+            .nth(1)
+            .and_then(|value| value.split(']').next())
+            .expect("release blockers");
+        assert!(!release_blockers.contains("release_npm_vm_detonation_not_verified"));
+        assert!(!release_blockers.contains("release_uv_vm_detonation_not_verified"));
+        assert!(release_blockers.contains("release_signature_notarization_not_complete"));
+        assert!(result.output.contains("\"release_validation\": {"));
+        assert!(result.output.contains("\"reason_codes\": []"));
+        assert!(result
+            .output
+            .contains("\"npm_vm_detonation_verified\": true"));
+        assert!(result
+            .output
+            .contains("\"uv_vm_detonation_verified\": true"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn doctor_rejects_stale_npm_uv_release_validation_receipt() {
+        let root = temp_root("whoathere-cli-doctor-release-validation-stale");
+        let _ = std::fs::remove_dir_all(&root);
+        let state_dir = root.join("state");
+        let bundle_dir = state_dir.join("bundle");
+        std::fs::create_dir_all(&bundle_dir).expect("bundle dir");
+        write_complete_guest_provisioning_receipt(&state_dir);
+        write_release_validation_receipt(
+            &state_dir,
+            Some("sha256:0000000000000000000000000000000000000000000000000000000000000000"),
+        );
+        let helper = root.join("helper.sh");
+        write_new_file(
+            &helper,
+            b"#!/bin/sh\nprintf '{\"status\":\"ok\",\"exit_code\":0,\"ready_for_lifecycle\":true,\"reason_codes\":[]}\\n'\nexit 0\n",
+        )
+        .expect("helper script");
+        set_executable(&helper).expect("executable helper");
+
+        let result = evaluate_command(Command::Doctor {
+            json: true,
+            state_dir: Some(state_dir.display().to_string()),
+            helper_path: Some(helper.display().to_string()),
+        });
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result
+            .output
+            .contains("release_validation_provisioning_digest_mismatch"));
+        assert!(result
+            .output
+            .contains("release_npm_vm_detonation_not_verified"));
+        assert!(result
+            .output
+            .contains("release_uv_vm_detonation_not_verified"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn vm_status_uses_helper_runtime_health_proof() {
         let root = temp_root("whoathere-cli-vm-runtime-health-ready");
         let _ = std::fs::remove_dir_all(&root);
@@ -14035,6 +14343,41 @@ exit 0
 }"#,
         )
         .expect("write uv-only guest provisioning receipt");
+    }
+
+    fn write_release_validation_receipt(
+        state_dir: &std::path::Path,
+        override_provisioning_digest: Option<&str>,
+    ) {
+        let bundle_dir = state_dir.join("bundle");
+        std::fs::create_dir_all(&bundle_dir).expect("create bundle dir");
+        let provisioning_path = bundle_dir.join("guest-provisioning.json");
+        let provisioning_digest = override_provisioning_digest
+            .map(ToString::to_string)
+            .unwrap_or_else(|| {
+                sha256_digest(
+                    &std::fs::read(&provisioning_path)
+                        .expect("read guest provisioning receipt for digest"),
+                )
+            });
+        std::fs::write(
+            bundle_dir.join("release-validation.json"),
+            format!(
+                r#"{{
+  "schema_version": "whoathere.macos_vm.release_validation.v1",
+  "validator": "validate-npm-uv-detonation.sh",
+  "guest_provisioning_receipt_digest": "{provisioning_digest}",
+  "npm_vm_detonation_verified": true,
+  "uv_vm_detonation_verified": true,
+  "live_guest_toolchains_verified": true,
+  "host_package_execution_enabled": false,
+  "sync_back_enabled": false,
+  "high_risk_package_execution_enabled": false,
+  "package_acquisition_policy": "local_only_no_public_resolver"
+}}"#
+            ),
+        )
+        .expect("write release validation receipt");
     }
 
     fn write_cleanup_manifest_fixture(runtime: &std::path::Path) -> std::path::PathBuf {

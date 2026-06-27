@@ -32,6 +32,7 @@ dependencies = [
  "whoathere-core",
  "whoathere-detector",
  "whoathere-evidence",
+ "whoathere-hash",
  "whoathere-launch",
  "whoathere-macos-vm",
  "whoathere-policy",

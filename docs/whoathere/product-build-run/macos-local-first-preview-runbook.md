@@ -255,7 +255,12 @@ The npm/uv validation script starts the VM when needed, requires live guest heal
 `python3`, `pip`, `npm`, and `uv`, runs clean local npm and uv project cases, runs canary-reading
 npm lifecycle/API-use and uv import-time cases, verifies public npm/uv resolution fails before
 helper execution, checks `uv sync` remains deferred, and suspends the VM if it started it. If guest
-tooling is missing, it prints the exact reprovision command and exits before VM start.
+tooling is missing, it prints the exact reprovision command and exits before VM start. After a
+complete successful run it writes `$WHOATHERE_STATE/bundle/release-validation.json`. `doctor --json`
+uses that receipt as npm/uv release proof only when it is bound to the current
+`guest-provisioning.json` SHA-256 digest and records disabled host execution, disabled sync-back,
+disabled high-risk execution, and `package_acquisition_policy=local_only_no_public_resolver`.
+Missing, stale, or mismatched release-validation receipts keep npm/uv release blockers in place.
 
 Unsupported or unsafe inputs must fail before helper execution, including:
 
@@ -289,6 +294,9 @@ Do not call the macOS local-first preview ready until all of these are true:
 - ASCII scan over touched docs/scripts/Rust/Swift/C files has no matches.
 - `whoathere vm red-team-gate --json` passes with `passed=true`.
 - Live VM validation passes for every workflow claimed in the release.
+- For npm/uv claims, `validate-npm-uv-detonation.sh` has written a current
+  `release-validation.json` receipt and `doctor --json` no longer reports
+  `release_npm_vm_detonation_not_verified` or `release_uv_vm_detonation_not_verified`.
 - `doctor --json` still reports `release_ready=false` until packaging, signing/notarization,
   npm/uv proof, and public package policy gates are actually complete.
 - Missing scanner binaries are acceptable only while sync-back remains disabled; they must be
