@@ -307,7 +307,10 @@ artifact is accepted by Apple notarization.
 The packaging smoke now explicitly checks that the packaged `doctor --json` output includes the
 `runtime_shutdown` and `release_validation` objects,
 `package_acquisition_policy=local_only_no_public_resolver`, the detonation/admission-only release
-claim, and fail-closed npm/uv release blockers when no current release-validation receipt exists.
+claim, and fail-closed npm/uv release blockers when no current release-validation receipt exists. It
+also checks the packaged `install-macos-preview.sh` user-level installer in dry-run and execute
+mode against a temporary prefix, then verifies the installed `bin/whoathere` wrapper can run
+`doctor --json` with the installed helper path supplied through `WHOATHERE_MACOS_VM_HELPER`.
 For a fresh package-smoke VM state, it also verifies `runtime_shutdown.receipt_present=false` and
 `runtime_shutdown.receipt_acceptable_for_no_sync_preview=false`, so a missing shutdown receipt is
 not silently treated as successful VM stop proof. This prevents a preview artifact with an empty VM

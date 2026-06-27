@@ -80,6 +80,7 @@ stage_package() {
     "$PACKAGE_ROOT/helpers/macos-vm-helper/scripts"
 
   install -m 0755 "$CLI_BIN" "$PACKAGE_ROOT/bin/whoathere"
+  install -m 0755 "$REPO_ROOT/scripts/whoathere-install-macos-preview.sh" "$PACKAGE_ROOT/install-macos-preview.sh"
   install -m 0755 "$HELPER_BIN" "$PACKAGE_ROOT/helpers/macos-vm-helper/.build/arm64-apple-macosx/release/whoathere-macos-vm-helper"
   install -m 0644 "$HELPER_ROOT/whoathere-macos-vm-helper.entitlements" "$PACKAGE_ROOT/helpers/macos-vm-helper/whoathere-macos-vm-helper.entitlements"
   install -m 0644 "$HELPER_ROOT/guest-agent/whoathere-guest-ready.c" "$PACKAGE_ROOT/helpers/macos-vm-helper/guest-agent/whoathere-guest-ready.c"
@@ -102,6 +103,7 @@ Included:
 - bin/whoathere
 - helpers/macos-vm-helper/.build/arm64-apple-macosx/release/whoathere-macos-vm-helper
 - helper provisioning and validation scripts
+- install-macos-preview.sh user-level installer
 - guest readiness agent source
 - local-first preview runbook and release-readiness checkpoint
 
@@ -131,20 +133,37 @@ smoke_package() {
 
   EXTRACTED_ROOT="$SMOKE_ROOT/$PACKAGE_NAME"
   EXTRACTED_CLI="$EXTRACTED_ROOT/bin/whoathere"
+  EXTRACTED_INSTALLER="$EXTRACTED_ROOT/install-macos-preview.sh"
   EXTRACTED_HELPER="$EXTRACTED_ROOT/helpers/macos-vm-helper/.build/arm64-apple-macosx/release/whoathere-macos-vm-helper"
   EXTRACTED_NPM_UV_VALIDATOR="$EXTRACTED_ROOT/helpers/macos-vm-helper/scripts/validate-npm-uv-detonation.sh"
   EXTRACTED_PROVISIONER="$EXTRACTED_ROOT/helpers/macos-vm-helper/scripts/provision-guest-readiness.sh"
   EXTRACTED_STATE="$SMOKE_ROOT/state"
+  INSTALL_PREFIX="$SMOKE_ROOT/install prefix's"
+  INSTALL_DRY_RUN_OUTPUT="$SMOKE_ROOT/install-dry-run.txt"
+  INSTALL_OUTPUT="$SMOKE_ROOT/install.txt"
+  INSTALLED_DOCTOR_OUTPUT="$SMOKE_ROOT/installed-doctor.json"
   DOCTOR_OUTPUT="$SMOKE_ROOT/doctor.json"
   PREFLIGHT_OUTPUT="$SMOKE_ROOT/provision-preflight.txt"
   CLI_PREFLIGHT_OUTPUT="$SMOKE_ROOT/cli-provision-preflight.txt"
   CLI_NPM_UV_OUTPUT="$SMOKE_ROOT/cli-npm-uv-validation.txt"
 
   "$EXTRACTED_CLI" --help >/dev/null
+  test -x "$EXTRACTED_INSTALLER"
   test -x "$EXTRACTED_NPM_UV_VALIDATOR"
   test -x "$EXTRACTED_PROVISIONER"
+  sh -n "$EXTRACTED_INSTALLER"
   sh -n "$EXTRACTED_NPM_UV_VALIDATOR"
   sh -n "$EXTRACTED_PROVISIONER"
+  "$EXTRACTED_INSTALLER" --dry-run --prefix "$INSTALL_PREFIX" > "$INSTALL_DRY_RUN_OUTPUT"
+  grep -q 'install_status=dry_run_not_installed' "$INSTALL_DRY_RUN_OUTPUT"
+  "$EXTRACTED_INSTALLER" --prefix "$INSTALL_PREFIX" > "$INSTALL_OUTPUT"
+  grep -q 'install_status=ok' "$INSTALL_OUTPUT"
+  "$INSTALL_PREFIX/bin/whoathere" --help >/dev/null
+  "$INSTALL_PREFIX/bin/whoathere" doctor --json --state-dir "$SMOKE_ROOT/installed-state" > "$INSTALLED_DOCTOR_OUTPUT"
+  EXPECTED_INSTALLED_HELPER="$INSTALL_PREFIX/releases/$PACKAGE_NAME/helpers/macos-vm-helper/.build/arm64-apple-macosx/release/whoathere-macos-vm-helper"
+  EXPECTED_INSTALLED_HELPER_CANONICAL=$(cd "$(dirname "$EXPECTED_INSTALLED_HELPER")" && pwd -P)/$(basename "$EXPECTED_INSTALLED_HELPER")
+  grep -F -q "$EXPECTED_INSTALLED_HELPER_CANONICAL" "$INSTALLED_DOCTOR_OUTPUT"
+  grep -q '"release_ready": false' "$INSTALLED_DOCTOR_OUTPUT"
   set +e
   "$EXTRACTED_PROVISIONER" --preflight "$EXTRACTED_STATE" > "$PREFLIGHT_OUTPUT" 2>&1
   PREFLIGHT_STATUS=$?

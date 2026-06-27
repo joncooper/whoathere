@@ -75,7 +75,7 @@ export WHOATHERE_HELPER=/Users/jdc/src/whoathere/whoathere/helpers/macos-vm-help
 ## Package A Preview Artifact
 
 To build a repeatable Apple Silicon preview tarball with the release CLI, signed release helper,
-helper scripts, guest readiness agent source, and local preview docs:
+helper scripts, a no-sudo user installer, guest readiness agent source, and local preview docs:
 
 ```sh
 scripts/whoathere-package-macos-preview.sh
@@ -84,9 +84,12 @@ scripts/whoathere-package-macos-preview.sh
 The script runs Rust validation, builds the release CLI, locally signs the CLI, runs Swift helper
 tests, builds and signs the release helper, runs the local red-team fixture gate, writes the
 archive and checksum, then extracts the archive and smoke-tests the packaged CLI/helper. The smoke
-verifies the checksum, `bin/whoathere --help`, packaged codesign state, and packaged
-`doctor --json` fail-closed output with a package-local guest reprovision command. The package
-smoke also verifies that the packaged doctor output includes the runtime-shutdown and
+verifies the checksum, `bin/whoathere --help`, packaged codesign state, the package installer,
+and packaged `doctor --json` fail-closed output with a package-local guest reprovision command.
+The package smoke also installs into a temporary user prefix and verifies the installed
+`bin/whoathere` wrapper sets `WHOATHERE_MACOS_VM_HELPER` to the installed helper without requiring
+manual `--helper` flags. The package smoke also verifies that the packaged doctor output includes
+the runtime-shutdown and
 release-validation gates, keeps the npm/uv release blockers present when no current validation
 receipt exists, and does not treat a missing shutdown receipt in a fresh package smoke state as a
 successful VM stop proof. It also syntax-checks the packaged provisioner and verifies
@@ -97,6 +100,19 @@ any admin mutation.
 dist/whoathere-macos-arm64-preview-<git-sha>.tar.gz
 dist/whoathere-macos-arm64-preview-<git-sha>.tar.gz.sha256
 ```
+
+After extracting the archive, install for the current user without sudo:
+
+```sh
+./install-macos-preview.sh --prefix "$HOME/.whoathere"
+export PATH="$HOME/.whoathere/bin:$PATH"
+whoathere doctor --json
+```
+
+The installer copies the extracted package under `$HOME/.whoathere/releases/<package-name>` and
+writes `$HOME/.whoathere/bin/whoathere` as a wrapper that points the CLI at the packaged helper. It
+does not initialize or mutate the VM; use the `vm init`, `vm reprovision`, and validation commands
+below for that.
 
 Set `WHOATHERE_CODESIGN_IDENTITY` to use a non-ad-hoc signing identity. The script does not perform
 Apple notarization, so final release signing/notarization remains a separate blocker.
