@@ -49,7 +49,7 @@ The macOS local release is ready only when all of the following are true:
 | Doctor/readiness UX | Improved in this checkpoint | `whoathere doctor --json --state-dir <dir> --helper <path>` now reports release readiness, the inspected VM state directory, guest provisioning receipt/toolchain status, package acquisition policy, implemented workflows, fail-closed workflows, manual-review classes, blocking reason codes, next actions, separate VM lifecycle/runtime readiness, and a derived `guest_reprovision_command` when guest provisioning is missing or stale and the helper script path can be resolved. A stopped VM is visible as `vm_runtime_ready=false` but is not a release blocker when lifecycle readiness is otherwise proven. |
 | Default VM manifest loading | Implemented for CLI status/readiness | `vm status` and `doctor` now load `<state-dir>/bundle/image.manifest` by default, tolerate the helper restore-image manifest shape, accept helper-created `local_developer_verified` preview manifests for lifecycle gating, and still reject stale or unverified manifests. `vm upgrade-local-manifest --execute` explicitly upgrades only legacy helper-created local preview manifests after bundle validation. Production release signing/notarization remains a separate blocker. |
 | Scanner adapters | Advisory for no-sync preview | External scanner binaries are still reported and remain required before any future auto-sync/auto-allow release. They are no longer a hard blocker for the current detonation/admission-only preview because sync-back is disabled and `whoathere vm red-team-gate` provides local fixture-safe comparator coverage. |
-| Packaging/onboarding | Preview implemented | [macOS local-first preview runbook](macos-local-first-preview-runbook.md) now documents first-run build, signing, VM init, provisioning, health, detonation validation, limitations, cleanup, and the repeatable preview tarball script. The package script builds the release CLI/helper, signs them locally, runs local gates, writes a checksum, and smoke-tests the extracted archive before reporting success. Developer ID signing, notarization, and installer UX remain outside the preview package claim. |
+| Packaging/onboarding | Preview implemented | [macOS local-first preview runbook](macos-local-first-preview-runbook.md) now documents first-run build, signing, VM init, provisioning, health, detonation validation, limitations, cleanup, the repeatable preview tarball script, and the notarization-prep path. The package script builds the release CLI/helper, signs them locally, runs local gates, writes a checksum, and smoke-tests the extracted archive before reporting success. `scripts/whoathere-notarize-macos-release.sh` verifies a packaged artifact, builds a notary zip, detects ad-hoc signatures, and submits only when Developer ID signatures and notary credentials are configured. Actual Developer ID notarization remains outside the preview package claim until run with release credentials. |
 | Comparator/red-team gate | Implemented for fixture-safe local gate | `whoathere vm red-team-gate` now runs 18 deterministic local cases covering static lifecycle/PEP 517 signals, dynamic npm/PyPI exfiltration shapes, DNS/HTTPS exfiltration, delayed CI activation, native/platform/direct-source risk, stale/wrong-context evidence, and raw-material rejection. It uses comparator labels for GuardDog/OpenSSF Package Analysis-style coverage without requiring public network or external scanner binaries. |
 
 ## Current Verdict
@@ -118,8 +118,10 @@ sh -n whoathere/helpers/macos-vm-helper/scripts/validate-local-vm.sh
 sh -n whoathere/helpers/macos-vm-helper/scripts/validate-project-detonation.sh
 sh -n whoathere/helpers/macos-vm-helper/scripts/validate-npm-uv-detonation.sh
 sh -n scripts/whoathere-package-macos-preview.sh
+sh -n scripts/whoathere-notarize-macos-release.sh
 scripts/whoathere-package-macos-preview.sh
 WHOATHERE_VM_HEALTH_INTERVAL_SECONDS=1 WHOATHERE_VM_HEALTH_ATTEMPTS=1 whoathere/helpers/macos-vm-helper/scripts/validate-npm-uv-detonation.sh
+scripts/whoathere-notarize-macos-release.sh --dry-run dist/whoathere-macos-arm64-preview-109dba7.tar.gz
 cc -O2 -Wall -Wextra -target arm64-apple-macos13 -fsyntax-only whoathere/helpers/macos-vm-helper/guest-agent/whoathere-guest-ready.c
 ```
 
@@ -168,6 +170,20 @@ Rust workspace, builds the release CLI, locally signs the CLI, runs Swift helper
 signs the release helper, runs the local red-team fixture gate, stages helper scripts and docs, and
 writes a tarball plus SHA-256 checksum under ignored `dist/`. It deliberately reports
 `notarization_status=not_performed`; final Developer ID/notarization work remains open.
+
+The release notarization-prep path now has `scripts/whoathere-notarize-macos-release.sh`. In dry-run
+mode it verifies the package checksum sidecar, extracts the archive, verifies CLI/helper codesign
+state, checks the packaged npm/uv validator is executable and shell-syntax-clean, writes a
+notarization zip, reports whether signatures are ad-hoc, and reports whether notary credentials are
+configured. On the current local preview archive it produced
+`dist/whoathere-macos-arm64-preview-109dba7-notarization.zip` and correctly reported
+`cli_signature_adhoc=true`, `helper_signature_adhoc=true`, `notary_credentials_configured=false`,
+and `notarization_submit_ready=false`. A submit-mode guard smoke on the same archive exited 64 with
+`notarization_blocker=adhoc_signature_present`, before any `xcrun notarytool` submission.
+Submission mode rejects ad-hoc signatures or missing credentials before calling `xcrun notarytool`,
+so the final
+`release_signature_notarization_not_complete` blocker remains honest until a Developer ID signed
+artifact is accepted by Apple notarization.
 
 The packaging script was rerun after the readiness UX changes and produced
 `dist/whoathere-macos-arm64-preview-6b4316b.tar.gz` plus a checksum. The checksum verified from the

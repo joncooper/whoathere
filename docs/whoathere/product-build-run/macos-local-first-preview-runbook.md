@@ -95,6 +95,30 @@ dist/whoathere-macos-arm64-preview-<git-sha>.tar.gz.sha256
 Set `WHOATHERE_CODESIGN_IDENTITY` to use a non-ad-hoc signing identity. The script does not perform
 Apple notarization, so final release signing/notarization remains a separate blocker.
 
+To prepare or submit a release artifact for Apple notarization, first build the preview package with
+a Developer ID signing identity, then run:
+
+```sh
+scripts/whoathere-notarize-macos-release.sh --dry-run dist/whoathere-macos-arm64-preview-<git-sha>.tar.gz
+```
+
+The dry run verifies the checksum sidecar when present, extracts the archive, verifies CLI/helper
+codesign state, checks the packaged npm/uv validator, and writes a notarization zip. It accepts
+ad-hoc signatures only as a diagnostic and reports `notarization_submit_ready=false` when the
+artifact is not submit-ready.
+
+Submit only after the dry run reports Developer ID signed binaries and notary credentials are
+configured:
+
+```sh
+WHOATHERE_NOTARY_PROFILE=whoathere-notary \
+  scripts/whoathere-notarize-macos-release.sh --submit dist/whoathere-macos-arm64-preview-<git-sha>.tar.gz
+```
+
+Alternatively set `WHOATHERE_NOTARY_APPLE_ID`, `WHOATHERE_NOTARY_TEAM_ID`, and
+`WHOATHERE_NOTARY_PASSWORD`. Zip archives are submitted for Apple notarization but are not stapled;
+the script records this explicitly as `stapling_supported_for_archive=false`.
+
 ## Initialize Or Reuse The VM
 
 Fetch and install Apple's latest supported restore image:
