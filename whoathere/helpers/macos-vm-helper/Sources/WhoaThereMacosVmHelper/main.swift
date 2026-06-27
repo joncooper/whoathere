@@ -1835,7 +1835,7 @@ struct WhoaThereMacosVmHelper {
                 exitCode: 20
             )
         }
-        guard !projectMode || tool == "pip" || tool == "npm" else {
+        guard !projectMode || tool == "pip" || tool == "npm" || tool == "uv" else {
             emit(
                 fields: failClosedFields(
                     layout: layout,
@@ -1902,7 +1902,9 @@ struct WhoaThereMacosVmHelper {
                     "pip_project_install",
                     "pip_requirements_install",
                     "npm_project_install",
-                    "npm_ci"
+                    "npm_ci",
+                    "uv_pip_project_install",
+                    "uv_pip_requirements_install"
                   ].contains(workflow) else {
                 emit(
                     fields: failClosedFields(

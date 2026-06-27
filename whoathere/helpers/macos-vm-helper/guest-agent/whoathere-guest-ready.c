@@ -743,11 +743,11 @@ static int run_detonation_job(int fd, const char *line) {
         }
         (void)extract_json_string(line, "project_import_module", project_import_module, sizeof(project_import_module));
         (void)extract_json_string(line, "project_requirements_path", project_requirements_path, sizeof(project_requirements_path));
-        if (strcmp(tool, "pip") == 0 && project_import_module[0] != '\0' && !safe_python_module(project_import_module)) {
+        if ((strcmp(tool, "pip") == 0 || strcmp(tool, "uv") == 0) && project_import_module[0] != '\0' && !safe_python_module(project_import_module)) {
             free(project_payload_hex);
             return write_detonation_response(fd, job_id, tool, command_class, fixture, "fail_closed", "fail_closed_runner_error", "\"project_import_module_rejected\"", 70, 70, 0, 0, 0, 0, 0);
         }
-        if (strcmp(tool, "pip") == 0 && project_requirements_path[0] != '\0' && !safe_relative_path(project_requirements_path)) {
+        if ((strcmp(tool, "pip") == 0 || strcmp(tool, "uv") == 0) && project_requirements_path[0] != '\0' && !safe_relative_path(project_requirements_path)) {
             free(project_payload_hex);
             return write_detonation_response(fd, job_id, tool, command_class, fixture, "fail_closed", "fail_closed_runner_error", "\"project_requirements_path_rejected\"", 70, 70, 0, 0, 0, 0, 0);
         }
@@ -909,10 +909,62 @@ static int run_detonation_job(int fd, const char *line) {
         }
     } else if (strcmp(tool, "uv") == 0) {
         tool_command = "uv";
-        if (write_python_fixture(workspace, fixture) != 0) {
+        if (project_mode) {
+            if (materialize_project_payload(workspace, project_payload_hex) != 0) {
+                free(project_payload_hex);
+                return write_detonation_response(fd, job_id, tool, command_class, fixture, "fail_closed", "fail_closed_runner_error", "\"project_payload_materialize_failed\"", 70, 70, 0, 0, 0, 0, 0);
+            }
+            free(project_payload_hex);
+            project_payload_hex = NULL;
+            const char *import_probe = "";
+            char import_probe_buffer[512];
+            if (project_import_module[0] != '\0') {
+                int import_length = snprintf(
+                    import_probe_buffer,
+                    sizeof(import_probe_buffer),
+                    " && PYTHONPATH=target $WHOATHERE_PYTHON -c 'import %s'",
+                    project_import_module
+                );
+                if (import_length < 0 || (size_t)import_length >= sizeof(import_probe_buffer)) {
+                    return write_detonation_response(fd, job_id, tool, command_class, fixture, "fail_closed", "fail_closed_runner_error", "\"project_import_probe_too_long\"", 70, 70, 0, 0, 0, 0, 0);
+                }
+                import_probe = import_probe_buffer;
+            }
+            const char *pth_probe = " && if ls *.pth >/dev/null 2>&1; then cp *.pth target/; fi && PYTHONPATH=target $WHOATHERE_PYTHON -c 'import site; site.addsitedir(\"target\")'";
+            if (strcmp(project_workflow, "uv_pip_project_install") == 0) {
+                int command_length = snprintf(
+                    shell_command_buffer,
+                    sizeof(shell_command_buffer),
+                    WHOATHERE_PIP_PREFIX "mkdir -p target && uv pip install --no-index . --target target%s%s",
+                    pth_probe,
+                    import_probe
+                );
+                if (command_length < 0 || (size_t)command_length >= sizeof(shell_command_buffer)) {
+                    return write_detonation_response(fd, job_id, tool, command_class, fixture, "fail_closed", "fail_closed_runner_error", "\"project_command_too_long\"", 70, 70, 0, 0, 0, 0, 0);
+                }
+                shell_command = shell_command_buffer;
+            } else if (strcmp(project_workflow, "uv_pip_requirements_install") == 0) {
+                if (project_requirements_path[0] == '\0') {
+                    return write_detonation_response(fd, job_id, tool, command_class, fixture, "fail_closed", "fail_closed_runner_error", "\"project_requirements_path_missing\"", 70, 70, 0, 0, 0, 0, 0);
+                }
+                int command_length = snprintf(
+                    shell_command_buffer,
+                    sizeof(shell_command_buffer),
+                    WHOATHERE_PIP_PREFIX "mkdir -p target && uv pip install --no-index -r %s --target target%s%s",
+                    project_requirements_path,
+                    pth_probe,
+                    import_probe
+                );
+                if (command_length < 0 || (size_t)command_length >= sizeof(shell_command_buffer)) {
+                    return write_detonation_response(fd, job_id, tool, command_class, fixture, "fail_closed", "fail_closed_runner_error", "\"project_command_too_long\"", 70, 70, 0, 0, 0, 0, 0);
+                }
+                shell_command = shell_command_buffer;
+            } else {
+                return write_detonation_response(fd, job_id, tool, command_class, fixture, "fail_closed", "fail_closed_unsupported_workflow", "\"project_workflow_unsupported\"", 20, 20, 0, 0, 0, 0, 0);
+            }
+        } else if (write_python_fixture(workspace, fixture) != 0) {
             return write_detonation_response(fd, job_id, tool, command_class, fixture, "fail_closed", "fail_closed_runner_error", "\"guest_fixture_prepare_failed\"", 70, 70, 0, 0, 0, 0, 0);
-        }
-        if (strcmp(fixture, "api_compatible_canary_theft") == 0) {
+        } else if (strcmp(fixture, "api_compatible_canary_theft") == 0) {
             shell_command = "uv pip install --no-index . --target target && PYTHONPATH=target python3 -c 'import whoathere_fixture; whoathere_fixture.run()'";
         } else {
             shell_command = "uv pip install --no-index . --target target";

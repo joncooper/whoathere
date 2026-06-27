@@ -41,7 +41,7 @@ The macOS local release is ready only when all of the following are true:
 | Secret exclusion | Strong for claimed pip paths | Sanitized mirror excludes known secret paths, credential files, symlink escapes, traversal, and large unsafe payloads. |
 | Python local project detonation | Implemented | Live validation covers clean project, local requirements, safe package data, setup.py canary, PEP 517 canary, import-time canary, and `.pth` canary cases. |
 | npm detonation | Host planner improved, not release-ready | The CLI now supports a narrow local npm project mirror plan for `npm install` and `npm ci` when `package.json` has no external dependency resolution and the workspace contains no native/risky artifacts. The Swift helper and guest agent accept that project payload path, but successful npm detonation is not claimed until the validation VM is reprovisioned with Node/npm and live npm fixture/project workflows pass. Public npm dependencies remain fail-closed. |
-| uv detonation | Not release-ready | Offline uv provisioning support has been added, but uv execution remains unclaimed until the validation VM is reprovisioned and live uv fixture/project workflows pass. |
+| uv detonation | Host planner improved, not release-ready | The CLI now supports a narrow local `uv pip install` project mirror plan by reusing the pip local-project safety rules, and the Swift helper/guest agent accept `uv_pip_project_install` and `uv_pip_requirements_install` payloads. `uv sync` remains deferred until lock/source policy is explicit. Live uv execution remains unclaimed until the validation VM is reprovisioned with uv and live fixture/project workflows pass. |
 | Public package acquisition | Not implemented | Public PyPI/npm resolver behavior remains blocked or deferred; there is no public fallback claim. |
 | Native and binary artifacts | Fail closed/manual review | Native markers, binary wheels, direct URLs, VCS, editable, and unknown classes are not auto-allowed. |
 | Network evidence | Partial | Controlled fixtures and reason codes exist, but robust DNS/HTTPS observation is still marker-based rather than a full network monitor. |
@@ -55,7 +55,7 @@ The macOS local release is ready only when all of the following are true:
 
 WhoaThere is not yet ready for the macOS-only local-first release target.
 
-The current tree is a credible VM-backed Python local project detonation prototype with strong fail-closed behavior for the workflows it claims, plus a newly implemented host-side local npm project planner for no-external-dependency workspaces. It is not yet a ready-to-use developer release because live npm proof, uv, public package acquisition, required scanner availability, release packaging, and signature/notarization are still incomplete. Sync-back is deliberately disabled for this preview rather than an unresolved release requirement.
+The current tree is a credible VM-backed Python local project detonation prototype with strong fail-closed behavior for the workflows it claims, plus newly implemented host-side local npm and uv project planners for no-external-dependency workspaces. It is not yet a ready-to-use developer release because live npm/uv proof, public package acquisition, required scanner availability, release packaging, and signature/notarization are still incomplete. Sync-back is deliberately disabled for this preview rather than an unresolved release requirement.
 
 ## Machine-Readable Gate
 
@@ -86,6 +86,7 @@ cargo run --quiet --manifest-path whoathere/Cargo.toml --bin whoathere -- doctor
 cargo run --quiet --manifest-path whoathere/Cargo.toml --bin whoathere -- doctor --json --state-dir /private/tmp/whoathere-doctor-state
 cargo run --quiet --manifest-path whoathere/Cargo.toml --bin whoathere -- vm red-team-gate --json
 cargo test --manifest-path whoathere/Cargo.toml -p whoathere-cli vm_detonate_npm_project
+cargo test --manifest-path whoathere/Cargo.toml -p whoathere-cli vm_detonate_uv
 swift test
 cc -O2 -Wall -Wextra -target arm64-apple-macos13 -fsyntax-only whoathere/helpers/macos-vm-helper/guest-agent/whoathere-guest-ready.c
 cargo build --manifest-path whoathere/Cargo.toml -p whoathere-cli --bin whoathere
@@ -106,7 +107,7 @@ The `doctor --json` smokes reported `release_ready=false`, `high_risk_allowed=fa
 
 The red-team fixture gate passed with `passed=true`, `case_count=18`, `public_network_used=false`, and `external_scanners_required=false`. The gate does not execute arbitrary packages and does not replace scanner adapters; it proves the local fixture-safe static/dynamic evidence paths and binding checks catch or reject representative attack shapes without leaking canaries or local paths.
 
-The npm local project planner tests passed for a no-dependency local package, helper payload forwarding, and public dependency fail-closed behavior. The helper build/tests and guest C syntax check passed after enabling npm project payload handling. This proves host-side npm project preparation and guest request plumbing, not live npm execution; live npm remains blocked until Node/npm is provisioned and the validation VM returns clean guest evidence.
+The npm local project planner tests passed for a no-dependency local package, helper payload forwarding, and public dependency fail-closed behavior. The uv local project planner tests passed for `uv pip install .`, helper payload forwarding, and `uv sync` fail-closed behavior. The helper build/tests and guest C syntax check passed after enabling npm and uv project payload handling. This proves host-side npm/uv project preparation and guest request plumbing, not live npm/uv execution; live npm/uv remains blocked until Node/npm and uv are provisioned and the validation VM returns clean guest evidence.
 
 The live validation VM smoke now reports `manifest_present=true`, `manifest_path=/Users/jdc/.whoathere/macos-vm-validation/bundle/image.manifest`, and `macos_vm_manifest_signature_not_verified`; it no longer reports `macos_vm_image_manifest_missing` for the prepared validation state directory.
 
@@ -142,4 +143,4 @@ Focus on VM lifecycle and onboarding UX before expanding package-manager coverag
 7. Make remaining failure messages actionable without exposing secrets or raw guest output.
 8. Run `whoathere vm red-team-gate --json` on every release candidate and keep the macOS local-first preview runbook updated as npm/uv, sync-back, scanner, and packaging claims change.
 
-After that, run live npm VM detonation for no-external-dependency local projects. If npm cannot be made reliable without extra guest provisioning, keep npm explicitly fail-closed and document the blocker instead of expanding the release claim.
+After that, run live npm and uv VM detonation for no-external-dependency local projects. If either cannot be made reliable without extra guest provisioning, keep that workflow explicitly fail-closed and document the blocker instead of expanding the release claim.

@@ -13,8 +13,9 @@ The current usable claim is:
 - Host secrets are not mirrored into the VM.
 - npm has a narrow local no-external-dependency project planner, but live npm remains fail-closed
   until Node/npm are provisioned into the validation VM and live fixture/project checks pass.
-- uv remains fail-closed until uv is provisioned into the validation VM and live fixture/project
-  checks pass.
+- uv has a narrow local `uv pip install` project planner, but live uv remains fail-closed until uv
+  is provisioned into the validation VM and live fixture/project checks pass. `uv sync` remains
+  deferred until lock/source policy is explicit.
 - Sync-back remains disabled. The current posture is detonation/admission evidence only.
 
 ## Prerequisites
@@ -165,6 +166,16 @@ $WHOATHERE vm detonate --workspace /absolute/path/to/npm-project --state-dir "$W
 This path is intentionally narrow. `package.json` dependency sections, package specs passed to
 `npm install`, public registry overrides, native markers, and lockfiles that imply external
 resolution remain fail-closed until a public package acquisition policy exists.
+
+Run a local uv project detonation only through `uv pip install` and only for local/no-public
+resolution projects:
+
+```sh
+$WHOATHERE vm detonate --workspace /absolute/path/to/python-project --state-dir "$WHOATHERE_STATE" --helper "$WHOATHERE_HELPER" --execute --json uv -- pip install .
+```
+
+`uv sync` is intentionally not a claimed live workflow yet; it remains fail-closed until lockfile
+and source policy are explicit and tested.
 
 Unsupported or unsafe inputs must fail before helper execution, including:
 

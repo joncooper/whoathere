@@ -2649,6 +2649,9 @@ fn build_project_detonation_plan(
     if tool == "npm" {
         return build_npm_project_detonation_plan(args, mirror_plan);
     }
+    if tool == "uv" {
+        return build_uv_project_detonation_plan(args, mirror_plan);
+    }
     if tool != "pip" {
         return ProjectDetonationPlan {
             project_mode: false,
@@ -2762,6 +2765,53 @@ fn build_project_detonation_plan(
         safe_to_execute: false,
         reason_codes,
     }
+}
+
+fn build_uv_project_detonation_plan(
+    args: &[String],
+    mirror_plan: &DetonationMirrorPlan,
+) -> ProjectDetonationPlan {
+    if args.iter().any(|arg| arg == "sync") {
+        return ProjectDetonationPlan {
+            project_mode: true,
+            workflow: Some("uv_sync".to_string()),
+            import_module: None,
+            requirements_path: None,
+            safe_to_execute: false,
+            reason_codes: vec!["project_uv_sync_deferred_until_lock_policy".to_string()],
+        };
+    }
+    if !args
+        .windows(2)
+        .any(|pair| pair[0] == "pip" && pair[1] == "install")
+    {
+        return ProjectDetonationPlan {
+            project_mode: true,
+            workflow: None,
+            import_module: None,
+            requirements_path: None,
+            safe_to_execute: false,
+            reason_codes: vec!["project_uv_pip_install_required".to_string()],
+        };
+    }
+
+    let mut plan = build_project_detonation_plan("pip", args, mirror_plan, None);
+    plan.workflow = plan.workflow.map(|workflow| match workflow.as_str() {
+        "pip_project_install" => "uv_pip_project_install".to_string(),
+        "pip_requirements_install" => "uv_pip_requirements_install".to_string(),
+        value => value.to_string(),
+    });
+    plan.reason_codes = plan
+        .reason_codes
+        .into_iter()
+        .map(|reason| match reason.as_str() {
+            "project_detonation_pip_install_required" => {
+                "project_uv_pip_install_required".to_string()
+            }
+            value => value.to_string(),
+        })
+        .collect();
+    plan
 }
 
 fn build_npm_project_detonation_plan(
@@ -4092,6 +4142,7 @@ fn macos_local_release_readiness(
             "pip.local_project.install",
             "pip.local_requirements.local_only",
             "npm.local_project.no_external_dependency_plan",
+            "uv.pip_install.local_project_plan",
             "host.sync_back.disabled_preview",
             "vm.fixture_detonation",
             "vm.release_plan.admission_model",
@@ -4101,8 +4152,8 @@ fn macos_local_release_readiness(
             "npm.ci.project.live_until_guest_toolchain_proven",
             "npm.public_dependency_resolution",
             "npm.exec_or_npx",
-            "uv.sync",
-            "uv.pip_install",
+            "uv.sync.deferred_until_lock_policy",
+            "uv.pip_install.live_until_guest_toolchain_proven",
             "pip.public_index_resolution",
             "host.sync_back",
         ]),
@@ -4118,7 +4169,7 @@ fn macos_local_release_readiness(
         next_actions: string_vec(&[
             "validate default VM image lifecycle without hidden sudo requirements",
             "reprovision the stopped VM with explicit Node/npm and uv tool sources until receipt and health prove toolchains",
-            "make npm detonation either work in VM or remain explicitly unclaimed",
+            "make npm and uv detonation either work in VM or remain explicitly unclaimed",
             "keep sync-back disabled for the preview unless a separately tested whitelist is implemented",
             "complete signed packaging and notarization docs for Apple Silicon users",
             "run whoathere vm red-team-gate on every release candidate",
@@ -9572,6 +9623,134 @@ mod tests {
         assert!(result
             .output
             .contains("project_npm_dependency_resolution_deferred"));
+        assert!(result.output.contains("helper_invoked=false"));
+        assert!(!result.output.contains("helper should not run"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vm_detonate_uv_pip_project_dry_run_plans_safe_project() {
+        let root = temp_root("whoathere-cli-vm-uv-project-dry-run");
+        std::fs::write(
+            root.join("setup.py"),
+            "from setuptools import setup\nsetup(name='whoathere-clean', version='0.0.1', py_modules=['whoathere_clean'])\n",
+        )
+        .expect("setup py");
+        std::fs::write(root.join("whoathere_clean.py"), "VALUE = 'clean'\n").expect("module");
+
+        let result = evaluate_command(Command::VmDetonate {
+            tool: "uv".to_string(),
+            args: vec!["pip".to_string(), "install".to_string(), ".".to_string()],
+            execute: false,
+            state_dir: Some(root.join("state").display().to_string()),
+            helper_path: Some("/tmp/nonexistent-helper".to_string()),
+            workspace: Some(root.display().to_string()),
+            fixture: None,
+            timeout_seconds: Some(30),
+            json: false,
+        });
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result.output.contains("project_mode=true"));
+        assert!(result
+            .output
+            .contains("project_workflow=uv_pip_project_install"));
+        assert!(result
+            .output
+            .contains("project_import_module=whoathere_clean"));
+        assert!(result.output.contains("project_safe_to_execute=true"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vm_detonate_uv_pip_project_execute_forwards_payload_to_helper() {
+        let root = temp_root("whoathere-cli-vm-uv-project-helper");
+        std::fs::write(
+            root.join("setup.py"),
+            "from setuptools import setup\nsetup(name='whoathere-clean', version='0.0.1', py_modules=['whoathere_clean'])\n",
+        )
+        .expect("setup py");
+        std::fs::write(root.join("whoathere_clean.py"), "VALUE = 'clean'\n").expect("module");
+        let helper = root.join("helper.sh");
+        write_new_file(
+            &helper,
+            b"#!/bin/sh\nprintf 'args='\nfor arg in \"$@\"; do printf '<%s>' \"$arg\"; done\nprintf '\\n'\nexit 0\n",
+        )
+        .expect("helper script");
+        set_executable(&helper).expect("executable helper");
+        let state_dir = root.join("state");
+
+        let result = evaluate_command(Command::VmDetonate {
+            tool: "uv".to_string(),
+            args: vec!["pip".to_string(), "install".to_string(), ".".to_string()],
+            execute: true,
+            state_dir: Some(state_dir.display().to_string()),
+            helper_path: Some(helper.display().to_string()),
+            workspace: Some(root.display().to_string()),
+            fixture: None,
+            timeout_seconds: Some(75),
+            json: false,
+        });
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result.output.contains("<--tool><uv>"));
+        assert!(result.output.contains("<--fixture><project_mirror>"));
+        assert!(result.output.contains("<--project-payload-path>"));
+        assert!(result
+            .output
+            .contains("<--project-workflow><uv_pip_project_install>"));
+        assert!(result
+            .output
+            .contains("<--project-import-module><whoathere_clean>"));
+        let payload_dir = state_dir.join("runs").join("project-payloads");
+        let payload_count = std::fs::read_dir(payload_dir)
+            .expect("payload dir")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".payload.hex")
+            })
+            .count();
+        assert_eq!(payload_count, 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vm_detonate_uv_sync_remains_fail_closed_before_helper() {
+        let root = temp_root("whoathere-cli-vm-uv-sync-deferred");
+        std::fs::write(
+            root.join("pyproject.toml"),
+            "[project]\nname = \"whoathere-clean\"\nversion = \"0.0.1\"\n",
+        )
+        .expect("pyproject");
+        let helper = root.join("helper.sh");
+        write_new_file(
+            &helper,
+            b"#!/bin/sh\nprintf 'helper should not run\\n'\nexit 0\n",
+        )
+        .expect("helper script");
+        set_executable(&helper).expect("executable helper");
+
+        let result = evaluate_command(Command::VmDetonate {
+            tool: "uv".to_string(),
+            args: vec!["sync".to_string()],
+            execute: true,
+            state_dir: Some(root.join("state").display().to_string()),
+            helper_path: Some(helper.display().to_string()),
+            workspace: Some(root.display().to_string()),
+            fixture: None,
+            timeout_seconds: Some(75),
+            json: false,
+        });
+
+        assert_eq!(result.exit_code, ExitCode::Deny.code());
+        assert!(result.output.contains("project_mode=true"));
+        assert!(result.output.contains("project_safe_to_execute=false"));
+        assert!(result
+            .output
+            .contains("project_uv_sync_deferred_until_lock_policy"));
         assert!(result.output.contains("helper_invoked=false"));
         assert!(!result.output.contains("helper should not run"));
         let _ = std::fs::remove_dir_all(&root);
