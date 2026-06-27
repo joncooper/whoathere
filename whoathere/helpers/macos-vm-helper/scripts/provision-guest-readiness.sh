@@ -235,6 +235,134 @@ copy_python_wheels() {
   WHEEL_PACKAGE_SHA256=$(shasum -a 256 "$WHEEL_PACKAGE_FILE" | awk '{print $1}')
 }
 
+node_runtime_dir_is_usable() {
+  NODE_RUNTIME_CHECK_DIR=$1
+  [ -x "$NODE_RUNTIME_CHECK_DIR/bin/node" ] && [ -x "$NODE_RUNTIME_CHECK_DIR/bin/npm" ]
+}
+
+detect_node_runtime_dir() {
+  if [ -n "${WHOATHERE_NODE_RUNTIME_DIR:-}" ] && node_runtime_dir_is_usable "$WHOATHERE_NODE_RUNTIME_DIR"; then
+    printf 'operator_supplied:%s\n' "$WHOATHERE_NODE_RUNTIME_DIR"
+    return
+  fi
+
+  REPO_NODE_DIR="$HELPER_ROOT/guest-tooling/node-runtime"
+  if [ -d "$REPO_NODE_DIR" ] && node_runtime_dir_is_usable "$REPO_NODE_DIR"; then
+    printf 'repo_guest_tooling:%s\n' "$REPO_NODE_DIR"
+    return
+  fi
+
+  SEARCH_USER_HOME=$(user_home_default)
+  FOUND_NODE_DIR="$BUILD_DIR/node-runtime-dir"
+  : > "$FOUND_NODE_DIR"
+  if [ -d "$SEARCH_USER_HOME/.nvm/versions/node" ]; then
+    find "$SEARCH_USER_HOME/.nvm/versions/node" -maxdepth 1 -type d -name 'v*' 2>/dev/null | sort | while IFS= read -r CANDIDATE_NODE_DIR; do
+      if [ ! -s "$FOUND_NODE_DIR" ] && node_runtime_dir_is_usable "$CANDIDATE_NODE_DIR"; then
+        printf 'host_nvm_node_runtime:%s\n' "$CANDIDATE_NODE_DIR" > "$FOUND_NODE_DIR"
+      fi
+    done
+  fi
+  if [ -s "$FOUND_NODE_DIR" ]; then
+    cat "$FOUND_NODE_DIR"
+    return
+  fi
+
+  NODE_BIN=$(command -v node 2>/dev/null || true)
+  if [ -n "$NODE_BIN" ]; then
+    CANDIDATE_NODE_DIR=$(CDPATH= cd -- "$(dirname -- "$NODE_BIN")/.." && pwd)
+    if node_runtime_dir_is_usable "$CANDIDATE_NODE_DIR"; then
+      printf 'host_path_node_runtime:%s\n' "$CANDIDATE_NODE_DIR"
+    fi
+  fi
+}
+
+copy_node_runtime() {
+  NODE_RUNTIME_STATUS="not_found"
+  NODE_RUNTIME_SOURCE_KIND="none"
+  NODE_RUNTIME_NAME=""
+  NODE_RUNTIME_NODE_SHA256=""
+  NODE_RUNTIME_FILE_COUNT="0"
+  NODE_RUNTIME_SIZE_KIB="0"
+  NODE_RUNTIME_NPM_VERSION=""
+
+  NODE_SELECTION=$(detect_node_runtime_dir || true)
+  if [ -z "$NODE_SELECTION" ]; then
+    return
+  fi
+
+  NODE_RUNTIME_SOURCE_KIND=${NODE_SELECTION%%:*}
+  NODE_RUNTIME_SOURCE_DIR=${NODE_SELECTION#*:}
+  NODE_RUNTIME_NAME=$(basename "$NODE_RUNTIME_SOURCE_DIR")
+  GUEST_NODE_DIR="$DATA_MOUNT/usr/local/whoathere/node"
+  rm -rf "$GUEST_NODE_DIR"
+  install -d -o root -g wheel -m 0755 "$GUEST_NODE_DIR"
+  if command -v ditto >/dev/null 2>&1; then
+    ditto --noqtn "$NODE_RUNTIME_SOURCE_DIR" "$GUEST_NODE_DIR"
+  else
+    cp -R "$NODE_RUNTIME_SOURCE_DIR"/. "$GUEST_NODE_DIR"/
+  fi
+  chown -hR root:wheel "$GUEST_NODE_DIR"
+  find "$GUEST_NODE_DIR" -type d -exec chmod 0755 {} +
+  find "$GUEST_NODE_DIR" -type f -exec chmod go-w {} +
+  NODE_RUNTIME_STATUS="installed"
+  NODE_RUNTIME_NODE_SHA256=$(shasum -a 256 "$NODE_RUNTIME_SOURCE_DIR/bin/node" | awk '{print $1}')
+  NODE_RUNTIME_FILE_COUNT=$(find "$NODE_RUNTIME_SOURCE_DIR" -type f 2>/dev/null | wc -l | awk '{print $1}')
+  NODE_RUNTIME_SIZE_KIB=$(du -sk "$NODE_RUNTIME_SOURCE_DIR" | awk '{print $1}')
+  NODE_RUNTIME_NPM_VERSION=$(PATH="$NODE_RUNTIME_SOURCE_DIR/bin:$PATH" "$NODE_RUNTIME_SOURCE_DIR/bin/npm" --version 2>/dev/null | head -n 1 || true)
+}
+
+uv_binary_is_usable() {
+  UV_BINARY_CHECK_PATH=$1
+  [ -x "$UV_BINARY_CHECK_PATH" ]
+}
+
+detect_uv_binary() {
+  if [ -n "${WHOATHERE_UV_BINARY:-}" ] && uv_binary_is_usable "$WHOATHERE_UV_BINARY"; then
+    printf 'operator_supplied:%s\n' "$WHOATHERE_UV_BINARY"
+    return
+  fi
+
+  REPO_UV_BINARY="$HELPER_ROOT/guest-tooling/uv/uv"
+  if [ -f "$REPO_UV_BINARY" ] && uv_binary_is_usable "$REPO_UV_BINARY"; then
+    printf 'repo_guest_tooling:%s\n' "$REPO_UV_BINARY"
+    return
+  fi
+
+  SEARCH_USER_HOME=$(user_home_default)
+  if [ -x "$SEARCH_USER_HOME/.local/bin/uv" ]; then
+    printf 'host_user_local_bin:%s\n' "$SEARCH_USER_HOME/.local/bin/uv"
+    return
+  fi
+
+  UV_BIN=$(command -v uv 2>/dev/null || true)
+  if [ -n "$UV_BIN" ] && uv_binary_is_usable "$UV_BIN"; then
+    printf 'host_path_uv_binary:%s\n' "$UV_BIN"
+  fi
+}
+
+copy_uv_binary() {
+  UV_BINARY_STATUS="not_found"
+  UV_BINARY_SOURCE_KIND="none"
+  UV_BINARY_NAME=""
+  UV_BINARY_SHA256=""
+  UV_BINARY_VERSION=""
+
+  UV_SELECTION=$(detect_uv_binary || true)
+  if [ -z "$UV_SELECTION" ]; then
+    return
+  fi
+
+  UV_BINARY_SOURCE_KIND=${UV_SELECTION%%:*}
+  UV_BINARY_SOURCE=${UV_SELECTION#*:}
+  UV_BINARY_NAME=$(basename "$UV_BINARY_SOURCE")
+  GUEST_UV_DIR="$DATA_MOUNT/usr/local/whoathere/uv/bin"
+  install -d -o root -g wheel -m 0755 "$GUEST_UV_DIR"
+  install -o root -g wheel -m 0755 "$UV_BINARY_SOURCE" "$GUEST_UV_DIR/uv"
+  UV_BINARY_STATUS="installed"
+  UV_BINARY_SHA256=$(shasum -a 256 "$UV_BINARY_SOURCE" | awk '{print $1}')
+  UV_BINARY_VERSION=$("$UV_BINARY_SOURCE" --version 2>/dev/null | head -n 1 || true)
+}
+
 STATE_DIR=${1:-$(state_dir_default)}
 BUNDLE_DIR="$STATE_DIR/bundle"
 DISK_IMAGE="$BUNDLE_DIR/disk.img"
@@ -340,6 +468,8 @@ install -o root -g wheel -m 0644 "$PLIST_TMP" "$DATA_MOUNT/Library/LaunchDaemons
 xattr -d com.apple.quarantine "$DATA_MOUNT/usr/local/whoathere/whoathere-guest-ready" >/dev/null 2>&1 || true
 copy_python_runtime
 copy_python_wheels
+copy_node_runtime
+copy_uv_binary
 
 cat > "$RECEIPT_PATH" <<EOF
 {
@@ -364,6 +494,18 @@ cat > "$RECEIPT_PATH" <<EOF
   "wheel_package_source_kind": "$WHEEL_PACKAGE_SOURCE_KIND",
   "wheel_package_name": "$WHEEL_PACKAGE_NAME",
   "wheel_package_sha256": "$WHEEL_PACKAGE_SHA256",
+  "offline_node_runtime_status": "$NODE_RUNTIME_STATUS",
+  "offline_node_runtime_source_kind": "$NODE_RUNTIME_SOURCE_KIND",
+  "offline_node_runtime_name": "$NODE_RUNTIME_NAME",
+  "offline_node_runtime_node_sha256": "$NODE_RUNTIME_NODE_SHA256",
+  "offline_node_runtime_file_count": $NODE_RUNTIME_FILE_COUNT,
+  "offline_node_runtime_size_kib": $NODE_RUNTIME_SIZE_KIB,
+  "offline_node_runtime_npm_version": "$NODE_RUNTIME_NPM_VERSION",
+  "offline_uv_binary_status": "$UV_BINARY_STATUS",
+  "offline_uv_binary_source_kind": "$UV_BINARY_SOURCE_KIND",
+  "offline_uv_binary_name": "$UV_BINARY_NAME",
+  "offline_uv_binary_sha256": "$UV_BINARY_SHA256",
+  "offline_uv_binary_version": "$UV_BINARY_VERSION",
   "high_risk_package_execution_enabled": false,
   "host_home_mounted": false,
   "host_secrets_mounted": false
@@ -381,4 +523,10 @@ echo "offline_python_wheels_status=$PYTHON_WHEEL_STATUS"
 echo "offline_python_wheels_source_kind=$PYTHON_WHEEL_SOURCE_KIND"
 echo "wheel_package_status=$WHEEL_PACKAGE_STATUS"
 echo "wheel_package_source_kind=$WHEEL_PACKAGE_SOURCE_KIND"
+echo "offline_node_runtime_status=$NODE_RUNTIME_STATUS"
+echo "offline_node_runtime_source_kind=$NODE_RUNTIME_SOURCE_KIND"
+echo "offline_node_runtime_name=$NODE_RUNTIME_NAME"
+echo "offline_uv_binary_status=$UV_BINARY_STATUS"
+echo "offline_uv_binary_source_kind=$UV_BINARY_SOURCE_KIND"
+echo "offline_uv_binary_name=$UV_BINARY_NAME"
 echo "next_start=$HELPER_ROOT/.build/arm64-apple-macosx/debug/whoathere-macos-vm-helper start --state-dir $STATE_DIR --execute --json"

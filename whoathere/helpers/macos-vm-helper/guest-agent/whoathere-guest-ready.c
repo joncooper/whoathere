@@ -20,9 +20,11 @@
 #define WHOATHERE_MAX_CHALLENGE 128
 #define WHOATHERE_MAX_FIELD 256
 #define WHOATHERE_WORK_ROOT "/private/var/tmp/whoathere-detonation"
+#define WHOATHERE_TOOL_PATH "/usr/local/whoathere/node/bin:/usr/local/whoathere/uv/bin:/usr/local/whoathere/python/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+#define WHOATHERE_PATH_PREFIX "PATH=" WHOATHERE_TOOL_PATH "; export PATH; "
 #define WHOATHERE_GUEST_PYTHON "/usr/local/whoathere/python/bin/python3"
 #define WHOATHERE_PIP_WHEEL_DIR "/usr/local/whoathere/python-wheels"
-#define WHOATHERE_PIP_PREFIX "WHOATHERE_PYTHON=" WHOATHERE_GUEST_PYTHON "; if [ ! -x \"$WHOATHERE_PYTHON\" ]; then WHOATHERE_PYTHON=python3; fi; PIP_WHEEL=$(ls " WHOATHERE_PIP_WHEEL_DIR "/pip-*.whl 2>/dev/null | head -n 1); SETUPTOOLS_WHEEL=$(ls " WHOATHERE_PIP_WHEEL_DIR "/setuptools-*.whl 2>/dev/null | head -n 1); WHEEL_WHEEL=$(ls " WHOATHERE_PIP_WHEEL_DIR "/wheel-*.whl 2>/dev/null | head -n 1); if [ -n \"$PIP_WHEEL\" ] && [ -n \"$SETUPTOOLS_WHEEL\" ] && [ -n \"$WHEEL_WHEEL\" ]; then export PYTHONPATH=\"$PIP_WHEEL:$SETUPTOOLS_WHEEL:$WHEEL_WHEEL\"; elif [ -n \"$PIP_WHEEL\" ] && [ -n \"$SETUPTOOLS_WHEEL\" ]; then export PYTHONPATH=\"$PIP_WHEEL:$SETUPTOOLS_WHEEL\"; fi; "
+#define WHOATHERE_PIP_PREFIX WHOATHERE_PATH_PREFIX "WHOATHERE_PYTHON=" WHOATHERE_GUEST_PYTHON "; if [ ! -x \"$WHOATHERE_PYTHON\" ]; then WHOATHERE_PYTHON=python3; fi; PIP_WHEEL=$(ls " WHOATHERE_PIP_WHEEL_DIR "/pip-*.whl 2>/dev/null | head -n 1); SETUPTOOLS_WHEEL=$(ls " WHOATHERE_PIP_WHEEL_DIR "/setuptools-*.whl 2>/dev/null | head -n 1); WHEEL_WHEEL=$(ls " WHOATHERE_PIP_WHEEL_DIR "/wheel-*.whl 2>/dev/null | head -n 1); if [ -n \"$PIP_WHEEL\" ] && [ -n \"$SETUPTOOLS_WHEEL\" ] && [ -n \"$WHEEL_WHEEL\" ]; then export PYTHONPATH=\"$PIP_WHEEL:$SETUPTOOLS_WHEEL:$WHEEL_WHEEL\"; elif [ -n \"$PIP_WHEEL\" ] && [ -n \"$SETUPTOOLS_WHEEL\" ]; then export PYTHONPATH=\"$PIP_WHEEL:$SETUPTOOLS_WHEEL\"; fi; "
 
 static int read_line(int fd, char *buffer, size_t capacity) {
     size_t used = 0;
@@ -397,7 +399,7 @@ static int materialize_project_payload(const char *workspace, const char *payloa
 
 static int command_exists(const char *command) {
     char check[512];
-    int length = snprintf(check, sizeof(check), "command -v %s >/dev/null 2>&1", command);
+    int length = snprintf(check, sizeof(check), WHOATHERE_PATH_PREFIX "command -v %s >/dev/null 2>&1", command);
     if (length < 0 || (size_t)length >= sizeof(check)) {
         return 0;
     }
@@ -445,6 +447,7 @@ static struct command_result run_shell_fixture(
         setenv("VAULT_TOKEN", "whoathere_fake_vault_token", 1);
         setenv("OPENAI_API_KEY", "whoathere_fake_openai_token", 1);
         setenv("CI", "true", 1);
+        setenv("PATH", WHOATHERE_TOOL_PATH, 1);
         freopen("stdout.log", "w", stdout);
         freopen("stderr.log", "w", stderr);
         execl("/bin/sh", "sh", "-c", command, (char *)NULL);

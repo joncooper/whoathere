@@ -40,8 +40,8 @@ The macOS local release is ready only when all of the following are true:
 | Host package-manager isolation | Strong for claimed pip paths | Goals 3 and 4 validate local pip project and local-only requirements detonation inside the guest without host package-manager execution. |
 | Secret exclusion | Strong for claimed pip paths | Sanitized mirror excludes known secret paths, credential files, symlink escapes, traversal, and large unsafe payloads. |
 | Python local project detonation | Implemented | Live validation covers clean project, local requirements, safe package data, setup.py canary, PEP 517 canary, import-time canary, and `.pth` canary cases. |
-| npm detonation | Not release-ready | npm fixtures and classification exist, but successful project npm detonation is not claimed because the validation VM does not yet prove npm tooling and project workflow success. |
-| uv detonation | Not release-ready | uv classification exists, but uv execution remains unclaimed until pip is fully release-ready and uv tooling is validated in the guest. |
+| npm detonation | Not release-ready | Offline Node/npm provisioning support has been added, but successful npm detonation is not claimed until the validation VM is reprovisioned and live npm fixture/project workflows pass. |
+| uv detonation | Not release-ready | Offline uv provisioning support has been added, but uv execution remains unclaimed until the validation VM is reprovisioned and live uv fixture/project workflows pass. |
 | Public package acquisition | Not implemented | Public PyPI/npm resolver behavior remains blocked or deferred; there is no public fallback claim. |
 | Native and binary artifacts | Fail closed/manual review | Native markers, binary wheels, direct URLs, VCS, editable, and unknown classes are not auto-allowed. |
 | Network evidence | Partial | Controlled fixtures and reason codes exist, but robust DNS/HTTPS observation is still marker-based rather than a full network monitor. |
@@ -93,6 +93,8 @@ whoathere/target/debug/whoathere vm start --state-dir /Users/jdc/.whoathere/maco
 whoathere/target/debug/whoathere vm health --state-dir /Users/jdc/.whoathere/macos-vm-validation --helper /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/.build/arm64-apple-macosx/debug/whoathere-macos-vm-helper
 whoathere/target/debug/whoathere vm suspend --state-dir /Users/jdc/.whoathere/macos-vm-validation --helper /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/.build/arm64-apple-macosx/debug/whoathere-macos-vm-helper --execute
 whoathere/target/debug/whoathere vm health --state-dir /Users/jdc/.whoathere/macos-vm-validation --helper /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/.build/arm64-apple-macosx/debug/whoathere-macos-vm-helper
+sh -n whoathere/helpers/macos-vm-helper/scripts/provision-guest-readiness.sh
+cc -O2 -Wall -Wextra -target arm64-apple-macos13 -fsyntax-only whoathere/helpers/macos-vm-helper/guest-agent/whoathere-guest-ready.c
 ```
 
 The `doctor --json` smokes reported `release_ready=false`, `high_risk_allowed=false`, `vm_ready=false`, the inspected VM state directory, implemented pip/local detonation workflows, fail-closed npm/uv/public-resolution/sync-back workflows, and release blockers for npm, uv, public package resolution, sync-back, packaging, comparator/red-team validation, scanner availability, VM runtime readiness, and signature/notarization.
@@ -101,6 +103,8 @@ The live validation VM smoke now reports `manifest_present=true`, `manifest_path
 
 The helper lifecycle smoke showed that `swift build` replaces the signed helper binary, so the helper must be re-signed before VM start. After re-signing, start returned `exit_code=0`, health returned `guest_health_proven=true`, `guest_toolchain_python3_available=true`, `guest_toolchain_pip_available=true`, `guest_toolchain_npm_available=false`, and `guest_toolchain_uv_available=false`. Updated suspend behavior returned `exit_code=0`, `runtime_stop_observed=true`, and `suspend_semantics=force_stop`. Final health returned fail-closed with `runtime_process_not_running`, confirming the VM was stopped.
 
+Offline provisioning now supports copying host or repo-provided Node/npm and uv tooling into the guest under `/usr/local/whoathere`. The guest agent uses a fixed WhoaThere-owned PATH for tool discovery and detonation. Static validation passed, but live npm/uv proof is still pending because `sudo ./scripts/provision-guest-readiness.sh /Users/jdc/.whoathere/macos-vm-validation` requires an interactive sudo password in this environment.
+
 Live VM validation is not required for this checkpoint because the implementation slice changes only readiness reporting and documentation. The next implementation slices that change VM behavior must include live VM checks for every claimed workflow.
 
 ## Next Recommended Slice
@@ -108,9 +112,11 @@ Live VM validation is not required for this checkpoint because the implementatio
 Focus on VM lifecycle and onboarding UX before expanding package-manager coverage:
 
 1. Run `doctor`, `vm status`, `vm init`, `vm start`, `vm health`, `vm suspend`, `vm reset`, and `vm prune` against the validation VM from a clean user perspective.
-2. Turn the helper signing requirement into first-run onboarding so users do not run an unsigned helper after `swift build`.
-3. Decide whether force-stop is acceptable release behavior for `vm suspend`, or whether guest-requested stop must be made reliable before release.
-4. Make remaining failure messages actionable without exposing secrets or raw guest output.
-5. Update onboarding docs with exact first-run commands, expected resource use, and known limitations.
+2. Reprovision the stopped validation VM with `sudo ./scripts/provision-guest-readiness.sh /Users/jdc/.whoathere/macos-vm-validation`, then rerun health to prove `guest_toolchain_npm_available=true` and `guest_toolchain_uv_available=true`.
+3. Run the npm and uv fixture suites. Keep npm/uv release claims fail-closed until those live checks pass.
+4. Turn the helper signing requirement into first-run onboarding so users do not run an unsigned helper after `swift build`.
+5. Decide whether force-stop is acceptable release behavior for `vm suspend`, or whether guest-requested stop must be made reliable before release.
+6. Make remaining failure messages actionable without exposing secrets or raw guest output.
+7. Update onboarding docs with exact first-run commands, expected resource use, and known limitations.
 
 After that, move to npm VM detonation. If npm cannot be made reliable without extra guest provisioning, keep npm explicitly fail-closed and document the blocker instead of expanding the release claim.
