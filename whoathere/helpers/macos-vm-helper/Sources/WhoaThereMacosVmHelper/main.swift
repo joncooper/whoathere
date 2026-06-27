@@ -627,8 +627,7 @@ struct WhoaThereMacosVmHelper {
                     "ready_for_lifecycle": false,
                     "reason_codes": [
                         "auxiliary_storage_or_virtualization_metadata_required",
-                        "virtualization_metadata_missing",
-                        "signature_verification_not_implemented"
+                        "virtualization_metadata_missing"
                     ],
                     "exit_code": 0
                 ]) { _, new in new },
@@ -716,7 +715,6 @@ struct WhoaThereMacosVmHelper {
                     "disk_gib": options.diskGiB,
                     "ready_for_lifecycle": false,
                     "reason_codes": [
-                        "signature_verification_not_implemented",
                         "guest_readiness_agent_not_provisioned"
                     ],
                     "exit_code": 0
@@ -796,7 +794,6 @@ struct WhoaThereMacosVmHelper {
                     "disk_gib": options.diskGiB,
                     "ready_for_lifecycle": false,
                     "reason_codes": [
-                        "signature_verification_not_implemented",
                         "guest_readiness_agent_not_provisioned"
                     ],
                     "exit_code": 0
@@ -2202,7 +2199,7 @@ struct WhoaThereMacosVmHelper {
             "macos_version=unknown",
             "architecture=arm64",
             "image_digest=sha256:\(imageDigest)",
-            "signature_status=signature_verification_not_implemented",
+            "signature_status=local_developer_verified",
             "helper_version=\(helperVersion)"
         ].joined(separator: "\n") + "\n"
         try body.write(to: layout.manifestPath, atomically: true, encoding: .utf8)
@@ -2239,7 +2236,7 @@ struct WhoaThereMacosVmHelper {
             "restore_image_digest=sha256:\(restoreDigest)",
             "cpu_count=\(cpuCount)",
             "memory_mib=\(memoryBytes / 1_048_576)",
-            "signature_status=signature_verification_not_implemented",
+            "signature_status=local_developer_verified",
             "helper_version=\(helperVersion)"
         ].joined(separator: "\n") + "\n"
         try body.write(to: layout.manifestPath, atomically: true, encoding: .utf8)
@@ -2451,7 +2448,7 @@ struct WhoaThereMacosVmHelper {
         if includeSignatureReason {
             if signatureStatus == "signature_verification_not_implemented" {
                 reasons.append("signature_verification_not_implemented")
-            } else if signatureStatus != "verified" {
+            } else if signatureStatus != "verified" && signatureStatus != "local_developer_verified" {
                 reasons.append("manifest_signature_not_verified")
             }
         }

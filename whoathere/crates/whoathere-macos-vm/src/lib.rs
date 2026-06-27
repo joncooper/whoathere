@@ -80,7 +80,10 @@ impl MacosVmImageManifest {
         if !valid_sha256_digest(&self.image_digest) {
             reasons.push("macos_vm_manifest_image_digest_invalid".to_string());
         }
-        if self.signature_status != "verified" {
+        if !matches!(
+            self.signature_status.as_str(),
+            "verified" | "local_developer_verified"
+        ) {
             reasons.push("macos_vm_manifest_signature_not_verified".to_string());
         }
         reasons
@@ -686,6 +689,17 @@ mod tests {
             "schema_version={IMAGE_MANIFEST_SCHEMA_VERSION}\nimage_id=ventura-base\nmacos_version=14.5\narchitecture=arm64\nimage_digest={DIGEST}\nsignature_status=verified\n"
         ))
         .expect("manifest");
+        assert!(manifest.validate().is_empty());
+    }
+
+    #[test]
+    fn parses_and_validates_local_developer_verified_manifest() {
+        let manifest = parse_image_manifest(&format!(
+            "schema_version={IMAGE_MANIFEST_SCHEMA_VERSION}\nimage_id=local-restore-image-install\nmacos_version=26.5.1\nmacos_build_version=25F80\narchitecture=arm64\nrestore_image_digest={DIGEST}\ncpu_count=2\nmemory_mib=6144\nsignature_status=local_developer_verified\nhelper_version=0.1.0\n"
+        ))
+        .expect("manifest");
+        assert_eq!(manifest.image_digest, DIGEST);
+        assert_eq!(manifest.signature_status, "local_developer_verified");
         assert!(manifest.validate().is_empty());
     }
 

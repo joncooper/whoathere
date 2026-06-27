@@ -94,7 +94,10 @@ Expected before release hardening is complete:
 
 - `release_ready=false`
 - `high_risk_allowed=false`
-- `macos_vm_manifest_signature_not_verified`
+- Existing validation bundles created before local developer manifest verification may still report
+  `macos_vm_manifest_signature_not_verified` until they are reinitialized or upgraded. New
+  helper-created preview bundles use `signature_status=local_developer_verified` for local
+  lifecycle gating.
 - scanner and packaging/red-team release blockers
 
 ## Provision Guest Readiness Tooling

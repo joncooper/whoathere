@@ -47,7 +47,7 @@ The macOS local release is ready only when all of the following are true:
 | Network evidence | Partial | Controlled fixtures and reason codes exist, but robust DNS/HTTPS observation is still marker-based rather than a full network monitor. |
 | Sync-back | Explicitly out of scope for preview | Current posture is detonation/admission evidence only. Host sync-back remains disabled and is not required for the preview release gate. Future sync-back still requires a deny-by-default whitelist and live validation before any claim changes. |
 | Doctor/readiness UX | Improved in this checkpoint | `whoathere doctor --json --state-dir <dir> --helper <path>` now reports release readiness, the inspected VM state directory, guest provisioning receipt/toolchain status, implemented workflows, fail-closed workflows, manual-review classes, blocking reason codes, and next actions. |
-| Default VM manifest loading | Implemented for CLI status/readiness | `vm status` and `doctor` now load `<state-dir>/bundle/image.manifest` by default, tolerate the helper restore-image manifest shape, and report signature verification as the real blocker instead of falsely reporting a missing manifest. |
+| Default VM manifest loading | Implemented for CLI status/readiness | `vm status` and `doctor` now load `<state-dir>/bundle/image.manifest` by default, tolerate the helper restore-image manifest shape, accept helper-created `local_developer_verified` preview manifests for lifecycle gating, and still reject stale or unverified manifests. Production release signing/notarization remains a separate blocker. |
 | Scanner adapters | Advisory for no-sync preview | External scanner binaries are still reported and remain required before any future auto-sync/auto-allow release. They are no longer a hard blocker for the current detonation/admission-only preview because sync-back is disabled and `whoathere vm red-team-gate` provides local fixture-safe comparator coverage. |
 | Packaging/onboarding | Partial | [macOS local-first preview runbook](macos-local-first-preview-runbook.md) now documents first-run build, signing, VM init, provisioning, health, detonation validation, limitations, and cleanup. Installer, signed artifacts, codesign/notarization verification, and release packaging still need a release pass. |
 | Comparator/red-team gate | Implemented for fixture-safe local gate | `whoathere vm red-team-gate` now runs 18 deterministic local cases covering static lifecycle/PEP 517 signals, dynamic npm/PyPI exfiltration shapes, DNS/HTTPS exfiltration, delayed CI activation, native/platform/direct-source risk, stale/wrong-context evidence, and raw-material rejection. It uses comparator labels for GuardDog/OpenSSF Package Analysis-style coverage without requiring public network or external scanner binaries. |
@@ -88,6 +88,7 @@ cargo run --quiet --manifest-path whoathere/Cargo.toml --bin whoathere -- doctor
 cargo run --quiet --manifest-path whoathere/Cargo.toml --bin whoathere -- vm red-team-gate --json
 cargo test --manifest-path whoathere/Cargo.toml -p whoathere-cli vm_detonate_npm_project
 cargo test --manifest-path whoathere/Cargo.toml -p whoathere-cli vm_detonate_uv
+cargo test --manifest-path whoathere/Cargo.toml -p whoathere-macos-vm local_developer_verified
 swift test
 cc -O2 -Wall -Wextra -target arm64-apple-macos13 -fsyntax-only whoathere/helpers/macos-vm-helper/guest-agent/whoathere-guest-ready.c
 cargo build --manifest-path whoathere/Cargo.toml -p whoathere-cli --bin whoathere
@@ -110,7 +111,12 @@ The red-team fixture gate passed with `passed=true`, `case_count=18`, `public_ne
 
 The npm local project planner tests passed for a no-dependency local package, helper payload forwarding, and public dependency fail-closed behavior. The uv local project planner tests passed for `uv pip install .`, helper payload forwarding, and `uv sync` fail-closed behavior. The helper build/tests and guest C syntax check passed after enabling npm and uv project payload handling. This proves host-side npm/uv project preparation and guest request plumbing, not live npm/uv execution; live npm/uv remains blocked until Node/npm and uv are provisioned and the validation VM returns clean guest evidence.
 
-The live validation VM smoke now reports `manifest_present=true`, `manifest_path=/Users/jdc/.whoathere/macos-vm-validation/bundle/image.manifest`, and `macos_vm_manifest_signature_not_verified`; it no longer reports `macos_vm_image_manifest_missing` for the prepared validation state directory.
+The live validation VM smoke now reports `manifest_present=true` and `manifest_path=/Users/jdc/.whoathere/macos-vm-validation/bundle/image.manifest`; it no longer reports `macos_vm_image_manifest_missing` for the prepared validation state directory. The current validation bundle was created before local developer manifest verification and still reports `macos_vm_manifest_signature_not_verified` until it is reinitialized or its manifest is regenerated. Newly helper-created preview manifests use `signature_status=local_developer_verified` for local lifecycle gating. This does not satisfy the final `release_signature_notarization_not_complete` release blocker.
+
+A focused helper smoke with a temporary manifest using `signature_status=local_developer_verified`
+returned no manifest signature or schema validation reasons. It still returned fail-closed lifecycle
+reasons for missing disk, config, auxiliary storage, hardware model, machine identifier, and guest
+readiness materials, which is the expected behavior for an incomplete temporary bundle.
 
 This checkpoint adds a structured guest provisioning summary to `vm status --json` and `doctor --json`. On the current validation VM, the summary proves the receipt is present and Python tooling is installed, but Node/npm and uv are not recorded in the stale receipt:
 

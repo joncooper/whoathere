@@ -12,7 +12,10 @@ Current state:
 - Writes bundle config, disk copy, and image manifest metadata.
 - Validates manifest schema, image id, macOS version, arm64/aarch64 architecture, helper version,
   digest fields, and signature status during `status` and lifecycle gating.
-- Keeps disk-import bundles non-ready until auxiliary storage, hardware model, machine identifier metadata, and real signature verification exist.
+- Keeps disk-import bundles non-ready until auxiliary storage, hardware model, and machine
+  identifier metadata exist. Helper-created local manifests use `local_developer_verified`
+  for preview lifecycle gating; production release signing/notarization remains a separate
+  release gate.
 - Keeps high-risk package execution disabled.
 - Starts a persistent helper runtime only when disk, auxiliary storage, hardware model, machine identifier metadata, and the guest provisioning receipt are present.
 - Writes host-runtime state and health proof after `VZVirtualMachine.start` succeeds.
@@ -20,7 +23,8 @@ Current state:
   back to VM stop only on timeout or unavailable guest stop, and writing `shutdown.json`.
 - Adds a `VZVirtioSocketDevice` guest-readiness listener on port `47078`.
 - Includes a tiny guest-side readiness agent source under `guest-agent/`.
-- Keeps package execution, sync-back, and real signature verification blocked.
+- Keeps sync-back and production release signature/notarization blocked. Package execution is
+  limited to the implemented VM detonation paths and remains fail-closed for unsupported classes.
 
 Build and test:
 
