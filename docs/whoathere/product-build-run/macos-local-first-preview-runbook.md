@@ -155,6 +155,45 @@ Alternatively set `WHOATHERE_NOTARY_APPLE_ID`, `WHOATHERE_NOTARY_TEAM_ID`, and
 release work. Zip archives are submitted for Apple notarization but are not stapled; the script
 records this explicitly as `stapling_supported_for_archive=false`.
 
+## Clean Install Qualification
+
+Goal 2 Track 1 validates the packaged artifact as an installed user product rather than a Cargo or
+Swift build tree. From the release-engineering repo root, the repeatable harness is:
+
+```sh
+scripts/whoathere-clean-install-qualification.sh --archive dist/whoathere-macos-arm64-preview-<git-sha>.tar.gz
+```
+
+The harness uses a fresh temporary `HOME`, a minimal system `PATH`, a user-level install prefix
+containing spaces and an apostrophe, an empty VM state directory, and the installed
+`bin/whoathere` wrapper only. It verifies the archive checksum, package layout, helper scripts,
+Developer ID signatures, `spctl -t execute` Gatekeeper acceptance, installer dry-run and install,
+installed wrapper `doctor --json`, `vm status --json`, fail-closed reprovision and npm/uv validation
+paths, shim materialization for npm/npx/pip/pip3 plus opt-in python/python3, and a dry-run
+`vm detonate --sync-back` command that syncs nothing without guest evidence. It also checks that
+installed command output does not leak the repo path.
+
+If a clean macOS VM driver is not available on the host, the harness records that gap in the
+receipt and runs the clean-room fallback. This is acceptable for Track 1 install/onboarding
+qualification, but it is not a substitute for full VM-backed detonation. Nested macOS VM detonation
+inside a guest is not required or claimed by this track.
+
+The receipt is written next to the archive by default:
+
+```text
+dist/whoathere-macos-arm64-preview-<git-sha>-clean-install-qualification.json
+```
+
+For diagnostic work before notarization, the harness can run the non-Gatekeeper portion:
+
+```sh
+scripts/whoathere-clean-install-qualification.sh --archive dist/whoathere-macos-arm64-preview-<git-sha>.tar.gz --skip-spctl
+```
+
+That mode exits 0 only for the clean-room install checks, writes `partial_clean_room_qualified=true`,
+and keeps `qualified=false`, `gatekeeper_qualified=false`, and `spctl_skipped=true` in the receipt.
+Do not use a `--skip-spctl` receipt as full clean-install release evidence.
+
 ## Initialize Or Reuse The VM
 
 Fetch and install Apple's latest supported restore image:
