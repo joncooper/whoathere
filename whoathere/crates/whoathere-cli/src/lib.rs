@@ -1663,19 +1663,25 @@ fn render_vm_status(
     );
     let effective_reason_codes = effective_vm_reason_codes(&status, &helper);
     let lifecycle_reason_codes = vm_lifecycle_reason_codes(&status, &helper);
+    let guest_reprovision_command = guest_reprovision_command(
+        helper.configured_path.as_deref(),
+        &config.state_dir,
+        &provisioning,
+    );
     if json {
-        return render_vm_status_json(
-            &status,
-            &effective_manifest_path,
-            manifest_load_reason.as_deref(),
-            &provisioning,
-            &helper,
-            &effective_reason_codes,
-            &lifecycle_reason_codes,
-        );
+        return render_vm_status_json(VmStatusJsonRenderArgs {
+            status: &status,
+            manifest_path: &effective_manifest_path,
+            manifest_load_reason: manifest_load_reason.as_deref(),
+            provisioning: &provisioning,
+            guest_reprovision_command: guest_reprovision_command.as_deref(),
+            helper: &helper,
+            effective_reason_codes: &effective_reason_codes,
+            lifecycle_reason_codes: &lifecycle_reason_codes,
+        });
     }
     let mut output = format!(
-        "whoathere vm status\nschema_version={}\nrelease_target={}\ntarget_arch={}\nvm_boundary={}\nnetwork_model={}\nsync_policy={}\nstate_dir={}\nhost_os={}\nhost_arch={}\nmemory_mib={}\ndisk_gib={}\nauto_suspend_minutes={}\nstate_dir_exists={}\nmanifest_path={}\nmanifest_present={}\nmanifest_valid={}\nhelper_ready_marker_present={}\nimage_ready_marker_present={}\nlifecycle_ready={}\nruntime_ready={}\nready={}\nreason_codes={:?}\nlifecycle_reason_codes={:?}\n{}\n{}",
+        "whoathere vm status\nschema_version={}\nrelease_target={}\ntarget_arch={}\nvm_boundary={}\nnetwork_model={}\nsync_policy={}\nstate_dir={}\nhost_os={}\nhost_arch={}\nmemory_mib={}\ndisk_gib={}\nauto_suspend_minutes={}\nstate_dir_exists={}\nmanifest_path={}\nmanifest_present={}\nmanifest_valid={}\nhelper_ready_marker_present={}\nimage_ready_marker_present={}\nlifecycle_ready={}\nruntime_ready={}\nready={}\nreason_codes={:?}\nlifecycle_reason_codes={:?}\n{}\nguest_reprovision_required={}\nguest_reprovision_admin_required={}\nguest_reprovision_operator_action={}\nguest_reprovision_command={}\n{}",
         status.schema_version,
         status.release_target,
         status.target_arch,
@@ -1700,6 +1706,10 @@ fn render_vm_status(
         effective_reason_codes,
         lifecycle_reason_codes,
         provisioning.render_text(),
+        guest_reprovision_required(&provisioning),
+        guest_reprovision_admin_required(&provisioning),
+        guest_reprovision_operator_action(&provisioning, guest_reprovision_command.as_deref()),
+        guest_reprovision_command.as_deref().unwrap_or("none"),
         helper.render_text()
     );
     if let Some(reason) = manifest_load_reason {
@@ -4055,6 +4065,27 @@ fn guest_reprovision_command(
     Some(parts.join(" "))
 }
 
+fn guest_reprovision_required(provisioning: &MacosVmGuestProvisioningSummary) -> bool {
+    !provisioning.reason_codes().is_empty()
+}
+
+fn guest_reprovision_admin_required(provisioning: &MacosVmGuestProvisioningSummary) -> bool {
+    guest_reprovision_required(provisioning)
+}
+
+fn guest_reprovision_operator_action(
+    provisioning: &MacosVmGuestProvisioningSummary,
+    command: Option<&str>,
+) -> &'static str {
+    if !guest_reprovision_required(provisioning) {
+        "none"
+    } else if command.is_some() {
+        "run_guest_reprovision_command_in_interactive_admin_terminal"
+    } else {
+        "configure_absolute_helper_path_then_run_guest_reprovisioning"
+    }
+}
+
 fn helper_root_from_helper_path(helper_path: &Path) -> Option<PathBuf> {
     for ancestor in helper_path.ancestors() {
         if ancestor.file_name().and_then(|name| name.to_str()) == Some(".build") {
@@ -4208,67 +4239,79 @@ fn vm_lifecycle_reason_codes(
     reasons
 }
 
-fn render_vm_status_json(
-    status: &whoathere_macos_vm::MacosVmStatus,
-    manifest_path: &str,
-    manifest_load_reason: Option<&str>,
-    provisioning: &MacosVmGuestProvisioningSummary,
-    helper: &MacosVmHelperOutput,
-    effective_reason_codes: &[String],
-    lifecycle_reason_codes: &[String],
-) -> String {
+struct VmStatusJsonRenderArgs<'a> {
+    status: &'a whoathere_macos_vm::MacosVmStatus,
+    manifest_path: &'a str,
+    manifest_load_reason: Option<&'a str>,
+    provisioning: &'a MacosVmGuestProvisioningSummary,
+    guest_reprovision_command: Option<&'a str>,
+    helper: &'a MacosVmHelperOutput,
+    effective_reason_codes: &'a [String],
+    lifecycle_reason_codes: &'a [String],
+}
+
+fn render_vm_status_json(args: VmStatusJsonRenderArgs<'_>) -> String {
     format!(
-        "{{\n  \"command\": \"whoathere vm status\",\n  \"schema_version\": {},\n  \"release_target\": {},\n  \"target_arch\": {},\n  \"vm_boundary\": {},\n  \"network_model\": {},\n  \"sync_policy\": {},\n  \"state_dir\": {},\n  \"host_os\": {},\n  \"host_arch\": {},\n  \"memory_mib\": {},\n  \"disk_gib\": {},\n  \"auto_suspend_minutes\": {},\n  \"state_dir_exists\": {},\n  \"manifest_path\": {},\n  \"manifest_present\": {},\n  \"manifest_valid\": {},\n  \"helper_ready_marker_present\": {},\n  \"image_ready_marker_present\": {},\n  \"lifecycle_ready\": {},\n  \"runtime_ready\": {},\n  \"ready\": {},\n  \"reason_codes\": [{}],\n  \"lifecycle_reason_codes\": [{}],\n  \"manifest_load_reason\": {},\n  \"guest_provisioning\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout_truncated\": {},\n  \"helper_stderr_truncated\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {}\n}}",
-        json_string(status.schema_version),
-        json_string(status.release_target),
-        json_string(status.target_arch),
-        json_string(status.vm_boundary),
-        json_string(status.network_model),
-        json_string(status.sync_policy),
-        json_string(&status.state_dir.display().to_string()),
-        json_string(&status.host.os),
-        json_string(&status.host.arch),
-        status.memory_mib,
-        status.disk_gib,
-        status.auto_suspend_minutes,
-        status.state_dir_exists,
-        json_string(manifest_path),
-        status.manifest_present,
-        status.manifest_valid,
-        status.helper_ready_marker_present,
-        status.image_ready_marker_present,
-        lifecycle_reason_codes.is_empty(),
-        effective_reason_codes.is_empty(),
-        effective_reason_codes.is_empty(),
-        effective_reason_codes
+        "{{\n  \"command\": \"whoathere vm status\",\n  \"schema_version\": {},\n  \"release_target\": {},\n  \"target_arch\": {},\n  \"vm_boundary\": {},\n  \"network_model\": {},\n  \"sync_policy\": {},\n  \"state_dir\": {},\n  \"host_os\": {},\n  \"host_arch\": {},\n  \"memory_mib\": {},\n  \"disk_gib\": {},\n  \"auto_suspend_minutes\": {},\n  \"state_dir_exists\": {},\n  \"manifest_path\": {},\n  \"manifest_present\": {},\n  \"manifest_valid\": {},\n  \"helper_ready_marker_present\": {},\n  \"image_ready_marker_present\": {},\n  \"lifecycle_ready\": {},\n  \"runtime_ready\": {},\n  \"ready\": {},\n  \"reason_codes\": [{}],\n  \"lifecycle_reason_codes\": [{}],\n  \"manifest_load_reason\": {},\n  \"guest_provisioning\": {},\n  \"guest_reprovision_required\": {},\n  \"guest_reprovision_admin_required\": {},\n  \"guest_reprovision_operator_action\": {},\n  \"guest_reprovision_command\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout_truncated\": {},\n  \"helper_stderr_truncated\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {}\n}}",
+        json_string(args.status.schema_version),
+        json_string(args.status.release_target),
+        json_string(args.status.target_arch),
+        json_string(args.status.vm_boundary),
+        json_string(args.status.network_model),
+        json_string(args.status.sync_policy),
+        json_string(&args.status.state_dir.display().to_string()),
+        json_string(&args.status.host.os),
+        json_string(&args.status.host.arch),
+        args.status.memory_mib,
+        args.status.disk_gib,
+        args.status.auto_suspend_minutes,
+        args.status.state_dir_exists,
+        json_string(args.manifest_path),
+        args.status.manifest_present,
+        args.status.manifest_valid,
+        args.status.helper_ready_marker_present,
+        args.status.image_ready_marker_present,
+        args.lifecycle_reason_codes.is_empty(),
+        args.effective_reason_codes.is_empty(),
+        args.effective_reason_codes.is_empty(),
+        args.effective_reason_codes
             .iter()
             .map(|reason| json_string(reason))
             .collect::<Vec<_>>()
             .join(", "),
-        lifecycle_reason_codes
+        args.lifecycle_reason_codes
             .iter()
             .map(|reason| json_string(reason))
             .collect::<Vec<_>>()
             .join(", "),
-        manifest_load_reason
+        args.manifest_load_reason
             .map(json_string)
             .unwrap_or_else(|| "null".to_string()),
-        render_guest_provisioning_json(provisioning),
-        helper
+        render_guest_provisioning_json(args.provisioning),
+        guest_reprovision_required(args.provisioning),
+        guest_reprovision_admin_required(args.provisioning),
+        json_string(guest_reprovision_operator_action(
+            args.provisioning,
+            args.guest_reprovision_command
+        )),
+        args.guest_reprovision_command
+            .map(json_string)
+            .unwrap_or_else(|| "null".to_string()),
+        args.helper
             .configured_path
             .as_deref()
             .map(json_string)
             .unwrap_or_else(|| "null".to_string()),
-        helper.available,
-        helper
+        args.helper.available,
+        args.helper
             .exit_code
             .map(|code| code.to_string())
             .unwrap_or_else(|| "null".to_string()),
-        json_string_array(&helper.reason_codes),
-        helper.stdout_truncated,
-        helper.stderr_truncated,
-        json_string(&single_line(&redacted_scalar(&helper.stdout))),
-        json_string(&single_line(&redacted_scalar(&helper.stderr)))
+        json_string_array(&args.helper.reason_codes),
+        args.helper.stdout_truncated,
+        args.helper.stderr_truncated,
+        json_string(&single_line(&redacted_scalar(&args.helper.stdout))),
+        json_string(&single_line(&redacted_scalar(&args.helper.stderr)))
     )
 }
 
@@ -4429,6 +4472,8 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
         &config.state_dir,
         &provisioning,
     );
+    let guest_reprovision_operator_action =
+        guest_reprovision_operator_action(&provisioning, guest_reprovision_command.as_deref());
     if json {
         let scanner_json = scanners
             .iter()
@@ -4444,7 +4489,7 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
             .collect::<Vec<_>>()
             .join(", ");
         return format!(
-            "{{\n  \"command\": \"whoathere doctor\",\n  \"status\": \"ok\",\n  \"release_target\": {},\n  \"release_claim\": {},\n  \"sandbox_label\": {},\n  \"high_risk_allowed\": {},\n  \"state_dir\": {},\n  \"vm_manifest_path\": {},\n  \"vm_manifest_load_reason\": {},\n  \"guest_provisioning\": {},\n  \"guest_reprovision_command\": {},\n  \"release_readiness_schema\": {},\n  \"release_stage\": {},\n  \"release_ready\": {},\n  \"release_blocking_reason_codes\": {},\n  \"scanner_release_blocking\": {},\n  \"scanner_release_scope\": {},\n  \"package_acquisition_policy\": {},\n  \"implemented_workflows\": {},\n  \"fail_closed_workflows\": {},\n  \"manual_review_classes\": {},\n  \"next_actions\": {},\n  \"vm_lifecycle_ready\": {},\n  \"vm_lifecycle_reason_codes\": {},\n  \"vm_runtime_ready\": {},\n  \"vm_ready\": {},\n  \"vm_reason_codes\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout_truncated\": {},\n  \"helper_stderr_truncated\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {},\n  \"scanner_available_count\": {},\n  \"scanner_required_count\": {},\n  \"scanners\": [{}]\n}}",
+            "{{\n  \"command\": \"whoathere doctor\",\n  \"status\": \"ok\",\n  \"release_target\": {},\n  \"release_claim\": {},\n  \"sandbox_label\": {},\n  \"high_risk_allowed\": {},\n  \"state_dir\": {},\n  \"vm_manifest_path\": {},\n  \"vm_manifest_load_reason\": {},\n  \"guest_provisioning\": {},\n  \"guest_reprovision_required\": {},\n  \"guest_reprovision_admin_required\": {},\n  \"guest_reprovision_operator_action\": {},\n  \"guest_reprovision_command\": {},\n  \"release_readiness_schema\": {},\n  \"release_stage\": {},\n  \"release_ready\": {},\n  \"release_blocking_reason_codes\": {},\n  \"scanner_release_blocking\": {},\n  \"scanner_release_scope\": {},\n  \"package_acquisition_policy\": {},\n  \"implemented_workflows\": {},\n  \"fail_closed_workflows\": {},\n  \"manual_review_classes\": {},\n  \"next_actions\": {},\n  \"vm_lifecycle_ready\": {},\n  \"vm_lifecycle_reason_codes\": {},\n  \"vm_runtime_ready\": {},\n  \"vm_ready\": {},\n  \"vm_reason_codes\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout_truncated\": {},\n  \"helper_stderr_truncated\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {},\n  \"scanner_available_count\": {},\n  \"scanner_required_count\": {},\n  \"scanners\": [{}]\n}}",
             json_string(RELEASE_TARGET),
             json_string(RELEASE_CLAIM),
             json_string(plan.label),
@@ -4456,6 +4501,9 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
                 .map(json_string)
                 .unwrap_or_else(|| "null".to_string()),
             render_guest_provisioning_json(&provisioning),
+            guest_reprovision_required(&provisioning),
+            guest_reprovision_admin_required(&provisioning),
+            json_string(guest_reprovision_operator_action),
             guest_reprovision_command
                 .as_deref()
                 .map(json_string)
@@ -4510,7 +4558,7 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "whoathere doctor\nstatus=ok\nrelease_target={}\nrelease_claim={}\nsandbox_label={}\nhigh_risk_allowed={}\nstate_dir={}\nvm_manifest_path={}\nvm_manifest_load_reason={}\n{}\nguest_reprovision_command={}\nrelease_readiness_schema={}\nrelease_stage={}\nrelease_ready={}\nrelease_blocking_reason_codes={:?}\nscanner_release_blocking={}\nscanner_release_scope={}\npackage_acquisition_policy={}\nimplemented_workflows={:?}\nfail_closed_workflows={:?}\nmanual_review_classes={:?}\nnext_actions={:?}\nvm_lifecycle_ready={}\nvm_lifecycle_reason_codes={:?}\nvm_runtime_ready={}\nvm_ready={}\nvm_reason_codes={:?}\n{}\nscanner_available_count={}\nscanner_required_count={}\n{}",
+        "whoathere doctor\nstatus=ok\nrelease_target={}\nrelease_claim={}\nsandbox_label={}\nhigh_risk_allowed={}\nstate_dir={}\nvm_manifest_path={}\nvm_manifest_load_reason={}\n{}\nguest_reprovision_required={}\nguest_reprovision_admin_required={}\nguest_reprovision_operator_action={}\nguest_reprovision_command={}\nrelease_readiness_schema={}\nrelease_stage={}\nrelease_ready={}\nrelease_blocking_reason_codes={:?}\nscanner_release_blocking={}\nscanner_release_scope={}\npackage_acquisition_policy={}\nimplemented_workflows={:?}\nfail_closed_workflows={:?}\nmanual_review_classes={:?}\nnext_actions={:?}\nvm_lifecycle_ready={}\nvm_lifecycle_reason_codes={:?}\nvm_runtime_ready={}\nvm_ready={}\nvm_reason_codes={:?}\n{}\nscanner_available_count={}\nscanner_required_count={}\n{}",
         RELEASE_TARGET,
         RELEASE_CLAIM,
         plan.label,
@@ -4519,6 +4567,9 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
         effective_manifest_path,
         manifest_load_reason.unwrap_or_else(|| "none".to_string()),
         provisioning.render_text(),
+        guest_reprovision_required(&provisioning),
+        guest_reprovision_admin_required(&provisioning),
+        guest_reprovision_operator_action,
         guest_reprovision_command
             .as_deref()
             .unwrap_or("none"),
@@ -10702,6 +10753,15 @@ exit 0
         assert_eq!(result.exit_code, 0);
         assert!(result
             .output
+            .contains("\"guest_reprovision_required\": true"));
+        assert!(result
+            .output
+            .contains("\"guest_reprovision_admin_required\": true"));
+        assert!(result.output.contains(
+            "\"guest_reprovision_operator_action\": \"run_guest_reprovision_command_in_interactive_admin_terminal\""
+        ));
+        assert!(result
+            .output
             .contains("\"guest_reprovision_command\": \"sudo "));
         assert!(result.output.contains("provision-guest-readiness.sh"));
         assert!(result
@@ -10793,6 +10853,14 @@ exit 0
             .output
             .contains("guest_provisioning_uv_binary_status=installed"));
         assert!(result.output.contains("guest_provisioning_reason_codes=[]"));
+        assert!(result.output.contains("guest_reprovision_required=false"));
+        assert!(result
+            .output
+            .contains("guest_reprovision_admin_required=false"));
+        assert!(result
+            .output
+            .contains("guest_reprovision_operator_action=none"));
+        assert!(result.output.contains("guest_reprovision_command=none"));
         assert!(!result
             .output
             .contains("macos_vm_guest_node_runtime_not_provisioned"));
@@ -10843,6 +10911,18 @@ exit 0
         assert!(result
             .output
             .contains("macos_vm_guest_uv_binary_not_provisioned"));
+        assert!(result
+            .output
+            .contains("\"guest_reprovision_required\": true"));
+        assert!(result
+            .output
+            .contains("\"guest_reprovision_admin_required\": true"));
+        assert!(result.output.contains(
+            "\"guest_reprovision_operator_action\": \"configure_absolute_helper_path_then_run_guest_reprovisioning\""
+        ));
+        assert!(result
+            .output
+            .contains("\"guest_reprovision_command\": null"));
         assert!(result.output.contains("\"release_ready\": false"));
         assert!(result.output.contains("\"high_risk_allowed\": false"));
 

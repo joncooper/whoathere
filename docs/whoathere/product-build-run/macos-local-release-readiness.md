@@ -76,6 +76,10 @@ The current tree is a credible VM-backed Python local project detonation prototy
 - `vm_lifecycle_ready`
 - `vm_lifecycle_reason_codes`
 - `vm_runtime_ready`
+- `guest_reprovision_required`
+- `guest_reprovision_admin_required`
+- `guest_reprovision_operator_action`
+- `guest_reprovision_command`
 
 For this checkpoint, `release_ready` must remain `false`. A future loop may flip it only after the release criteria above are implemented, validated, and documented.
 
@@ -148,8 +152,11 @@ The helper lifecycle smoke showed that `swift build` replaces the signed helper 
 Offline provisioning now supports copying host or repo-provided Node/npm and uv tooling into the guest under `/usr/local/whoathere`. The guest agent uses a fixed WhoaThere-owned PATH for tool discovery and detonation. Static validation passed, but live npm/uv proof is still pending because the emitted `sudo ... provision-guest-readiness.sh /Users/jdc/.whoathere/macos-vm-validation` command requires an interactive sudo password in this environment.
 
 The provisioning and project validation scripts now emit a concrete machine-specific reprovision
-command when root-owned guest tooling is missing or stale. On this workstation the non-root smoke
-printed `WHOATHERE_NODE_RUNTIME_DIR=/Users/jdc/.nvm/versions/node/v22.22.3` and
+command when root-owned guest tooling is missing or stale. `vm status` and `doctor` also report
+`guest_reprovision_required`, `guest_reprovision_admin_required`, and
+`guest_reprovision_operator_action`, so the admin boundary is explicit rather than hidden in a
+failing install path. On this workstation the non-root smoke printed
+`WHOATHERE_NODE_RUNTIME_DIR=/Users/jdc/.nvm/versions/node/v22.22.3` and
 `WHOATHERE_UV_BINARY=/Users/jdc/.local/bin/uv` in the suggested `sudo` command. A non-interactive
 attempt to run that command failed before mutation because sudo required a terminal/password:
 `sudo: a terminal is required to read the password`.
