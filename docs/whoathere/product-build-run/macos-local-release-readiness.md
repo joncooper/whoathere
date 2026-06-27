@@ -48,7 +48,7 @@ The macOS local release is ready only when all of the following are true:
 | Sync-back | Not implemented | Current posture is detonation/admission evidence only. Host sync-back remains disabled. |
 | Doctor/readiness UX | Improved in this checkpoint | `whoathere doctor --json --state-dir <dir> --helper <path>` now reports release readiness, the inspected VM state directory, guest provisioning receipt/toolchain status, implemented workflows, fail-closed workflows, manual-review classes, blocking reason codes, and next actions. |
 | Default VM manifest loading | Implemented for CLI status/readiness | `vm status` and `doctor` now load `<state-dir>/bundle/image.manifest` by default, tolerate the helper restore-image manifest shape, and report signature verification as the real blocker instead of falsely reporting a missing manifest. |
-| Packaging/onboarding | Not release-ready | Installer, signed artifacts, codesign/notarization verification, and user-facing first-run docs still need a release pass. |
+| Packaging/onboarding | Partial | [macOS local-first preview runbook](macos-local-first-preview-runbook.md) now documents first-run build, signing, VM init, provisioning, health, detonation validation, limitations, and cleanup. Installer, signed artifacts, codesign/notarization verification, and release packaging still need a release pass. |
 | Comparator/red-team gate | Not complete | Existing fixtures are useful, but the release still needs a deliberate comparator pass against GuardDog, OSV/pip-audit class tools, and recent npm/PyPI attack patterns. |
 
 ## Current Verdict
@@ -131,6 +131,6 @@ Focus on VM lifecycle and onboarding UX before expanding package-manager coverag
 4. Turn the helper signing requirement into first-run onboarding so users do not run an unsigned helper after `swift build`.
 5. Decide whether force-stop is acceptable release behavior for `vm suspend`, or whether guest-requested stop must be made reliable before release.
 6. Make remaining failure messages actionable without exposing secrets or raw guest output.
-7. Update onboarding docs with exact first-run commands, expected resource use, and known limitations.
+7. Use the macOS local-first preview runbook as the onboarding baseline and keep it updated as npm/uv, sync-back, scanner, and packaging claims change.
 
 After that, move to npm VM detonation. If npm cannot be made reliable without extra guest provisioning, keep npm explicitly fail-closed and document the blocker instead of expanding the release claim.
