@@ -3,6 +3,7 @@ set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 HELPER_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+. "$SCRIPT_DIR/provision-command-lib.sh"
 RESTORE_IMAGE=${1:-}
 STATE_DIR=${2:-"$HOME/.whoathere/macos-vm-validation"}
 HELPER_PATH="$HELPER_ROOT/.build/arm64-apple-macosx/debug/whoathere-macos-vm-helper"
@@ -72,7 +73,7 @@ require_guest_provisioning() {
   fi
 
   echo "guest_readiness_agent_not_provisioned=true" >&2
-  echo "provision_guest_first=sudo $HELPER_ROOT/scripts/provision-guest-readiness.sh $STATE_DIR" >&2
+  echo "provision_guest_first=$(whoathere_reprovision_command "$HELPER_ROOT" "$STATE_DIR")" >&2
   echo "rerun_validation_after_provisioning=$0 $RESTORE_IMAGE $STATE_DIR" >&2
   exit 20
 }

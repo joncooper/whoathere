@@ -102,6 +102,9 @@ whoathere/target/debug/whoathere vm health --state-dir /Users/jdc/.whoathere/mac
 whoathere/target/debug/whoathere vm suspend --state-dir /Users/jdc/.whoathere/macos-vm-validation --helper /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/.build/arm64-apple-macosx/debug/whoathere-macos-vm-helper --execute
 whoathere/target/debug/whoathere vm health --state-dir /Users/jdc/.whoathere/macos-vm-validation --helper /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/.build/arm64-apple-macosx/debug/whoathere-macos-vm-helper
 sh -n whoathere/helpers/macos-vm-helper/scripts/provision-guest-readiness.sh
+sh -n whoathere/helpers/macos-vm-helper/scripts/provision-command-lib.sh
+sh -n whoathere/helpers/macos-vm-helper/scripts/validate-local-vm.sh
+sh -n whoathere/helpers/macos-vm-helper/scripts/validate-project-detonation.sh
 cc -O2 -Wall -Wextra -target arm64-apple-macos13 -fsyntax-only whoathere/helpers/macos-vm-helper/guest-agent/whoathere-guest-ready.c
 ```
 
@@ -135,6 +138,12 @@ The helper lifecycle smoke showed that `swift build` replaces the signed helper 
 
 Offline provisioning now supports copying host or repo-provided Node/npm and uv tooling into the guest under `/usr/local/whoathere`. The guest agent uses a fixed WhoaThere-owned PATH for tool discovery and detonation. Static validation passed, but live npm/uv proof is still pending because `sudo ./scripts/provision-guest-readiness.sh /Users/jdc/.whoathere/macos-vm-validation` requires an interactive sudo password in this environment.
 
+The provisioning and project validation scripts now emit a concrete machine-specific reprovision
+command when root-owned guest tooling is missing or stale. On this workstation the non-root smoke
+printed `WHOATHERE_NODE_RUNTIME_DIR=/Users/jdc/.nvm/versions/node/v22.22.3` and
+`WHOATHERE_UV_BINARY=/Users/jdc/.local/bin/uv` in the suggested `sudo` command, then failed closed
+with exit 64 as expected.
+
 The latest npm/uv planner slices changed host planner, Swift helper, and guest-agent behavior. They were validated with unit tests, helper build/tests, guest C syntax checks, and live `doctor` fail-closed readiness output. Live npm/uv detonation is still not claimed because the stopped validation VM must first be reprovisioned with Node/npm and uv tooling through the interactive sudo step above.
 
 ## Next Recommended Slice
@@ -142,7 +151,7 @@ The latest npm/uv planner slices changed host planner, Swift helper, and guest-a
 Focus on live VM validation and packaging UX before expanding package-manager coverage:
 
 1. Run `doctor`, `vm status`, `vm init`, `vm start`, `vm health`, `vm suspend`, `vm reset`, and `vm prune` against the validation VM from a clean user perspective.
-2. Reprovision the stopped validation VM with `sudo WHOATHERE_NODE_RUNTIME_DIR=/Users/jdc/.nvm/versions/node/v22.22.3 WHOATHERE_UV_BINARY=/Users/jdc/.local/bin/uv /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/scripts/provision-guest-readiness.sh /Users/jdc/.whoathere/macos-vm-validation`, then rerun status and health to prove the receipt and live guest report `guest_toolchain_npm_available=true` and `guest_toolchain_uv_available=true`.
+2. Reprovision the stopped validation VM with the exact `sudo ... provision-guest-readiness.sh ...` command emitted by `provision-guest-readiness.sh` or `validate-project-detonation.sh`, then rerun status and health to prove the receipt and live guest report `guest_toolchain_npm_available=true` and `guest_toolchain_uv_available=true`.
 3. Run the npm and uv fixture suites. Keep npm/uv release claims fail-closed until those live checks pass.
 4. Turn the helper signing requirement into first-run onboarding so users do not run an unsigned helper after `swift build`.
 5. Keep sync-back disabled for the preview unless a separately tested deny-by-default whitelist is implemented.

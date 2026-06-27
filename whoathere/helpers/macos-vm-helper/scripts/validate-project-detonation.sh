@@ -4,6 +4,7 @@ set -eu
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 HELPER_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 REPO_ROOT=$(CDPATH= cd -- "$HELPER_ROOT/../../.." && pwd)
+. "$SCRIPT_DIR/provision-command-lib.sh"
 RUST_WORKSPACE="$REPO_ROOT/whoathere"
 
 if [ -x "$RUST_WORKSPACE/target/debug/whoathere" ]; then
@@ -57,7 +58,7 @@ require_current_guest_agent() {
   expected_digest=$(current_agent_digest)
   if [ -z "$provisioned_digest" ]; then
     echo "guest_agent_provisioning_receipt_missing=true" >&2
-    echo "reprovision_command=sudo $HELPER_ROOT/scripts/provision-guest-readiness.sh $STATE_DIR" >&2
+    echo "reprovision_command=$(whoathere_reprovision_command "$HELPER_ROOT" "$STATE_DIR")" >&2
     exit 64
   fi
   if [ "$provisioned_digest" != "$expected_digest" ]; then
@@ -65,7 +66,7 @@ require_current_guest_agent() {
     echo "provisioned_guest_agent_digest=$provisioned_digest" >&2
     echo "expected_guest_agent_digest=$expected_digest" >&2
     echo "vm_must_be_stopped_before_reprovision=true" >&2
-    echo "reprovision_command=sudo $HELPER_ROOT/scripts/provision-guest-readiness.sh $STATE_DIR" >&2
+    echo "reprovision_command=$(whoathere_reprovision_command "$HELPER_ROOT" "$STATE_DIR")" >&2
     exit 64
   fi
 }

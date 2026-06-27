@@ -117,6 +117,10 @@ For npm and uv validation, force explicit tool sources:
 sudo WHOATHERE_NODE_RUNTIME_DIR="$WHOATHERE_NODE_RUNTIME_DIR" WHOATHERE_UV_BINARY="$WHOATHERE_UV_BINARY" /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/scripts/provision-guest-readiness.sh "$WHOATHERE_STATE"
 ```
 
+If provisioning is missing or stale, `provision-guest-readiness.sh` and the validation scripts
+emit a machine-specific `sudo ... provision-guest-readiness.sh ...` command with detected
+`WHOATHERE_NODE_RUNTIME_DIR` and `WHOATHERE_UV_BINARY` values when they are available.
+
 Then verify the receipt and live guest state:
 
 ```sh

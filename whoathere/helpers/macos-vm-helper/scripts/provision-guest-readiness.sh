@@ -3,6 +3,7 @@ set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 HELPER_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+. "$SCRIPT_DIR/provision-command-lib.sh"
 
 state_dir_default() {
   if [ -n "${WHOATHERE_VM_STATE_DIR:-}" ]; then
@@ -384,7 +385,7 @@ trap cleanup EXIT HUP INT TERM
 if [ "$(id -u)" -ne 0 ]; then
   echo "admin_required=true" >&2
   echo "reason_code=guest_readiness_provisioning_requires_root_owned_launchdaemon" >&2
-  echo "rerun=sudo $0 $STATE_DIR" >&2
+  echo "rerun=$(whoathere_reprovision_command "$HELPER_ROOT" "$STATE_DIR")" >&2
   exit 64
 fi
 
