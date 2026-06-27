@@ -184,9 +184,10 @@ Do not call the macOS local-first preview ready until all of these are true:
 - Guest C compile check passes.
 - Shell syntax checks for touched scripts pass.
 - ASCII scan over touched docs/scripts/Rust/Swift/C files has no matches.
+- `whoathere vm red-team-gate --json` passes with `passed=true`.
 - Live VM validation passes for every workflow claimed in the release.
 - `doctor --json` still reports `release_ready=false` until packaging, signing/notarization,
-  scanner/comparator, and red-team gates are actually complete.
+  scanner availability, npm/uv proof, and public package policy gates are actually complete.
 
 ## Limitations
 

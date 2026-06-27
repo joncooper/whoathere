@@ -146,6 +146,9 @@ pub enum Command {
     VmSyncPolicy {
         json: bool,
     },
+    VmRedTeamGate {
+        json: bool,
+    },
     PolicyExplain {
         subject: String,
     },
@@ -621,6 +624,9 @@ pub fn parse_command(args: &[String]) -> Command {
         [cmd, sub, rest @ ..] if cmd == "vm" && sub == "sync-policy" => Command::VmSyncPolicy {
             json: rest.iter().any(|arg| arg == "--json"),
         },
+        [cmd, sub, rest @ ..] if cmd == "vm" && sub == "red-team-gate" => Command::VmRedTeamGate {
+            json: rest.iter().any(|arg| arg == "--json"),
+        },
         [cmd, rest @ ..] if cmd == "protect" => parse_protect(rest),
         _ => Command::Help,
     }
@@ -790,6 +796,7 @@ fn render_command_text(command: Command) -> String {
         }),
         Command::VmCanaries { json } => render_vm_canaries(json),
         Command::VmSyncPolicy { json } => render_vm_sync_policy(json),
+        Command::VmRedTeamGate { json } => render_vm_red_team_gate(json),
         Command::PolicyExplain { subject } => {
             format!(
                 "whoathere policy explain\nsubject={subject}\ndefault_ci_outage=deny\nunknown_source=manual_review_or_deny\nexit_deny={}",
@@ -1145,6 +1152,7 @@ fn command_help() -> String {
         "|vm release-plan [--class <class>|--ecosystem <name> --source <kind> --filename <name>] [--vm-ready --static-clean --dynamic-clean --egress-clean --no-canary-access --scanner-clean --diff-clean --freshness-allowed] [--json]",
         "|vm canaries [--json]",
         "|vm sync-policy [--json]",
+        "|vm red-team-gate [--json]",
         "|protect [--workspace <path> --vault-origin <url>] npm|pip|uv -- <args>",
         "|scan manifest npm-package-json <path>",
         "|scan manifest pyproject <path>",
@@ -3837,7 +3845,6 @@ fn macos_local_release_readiness(
         "release_uv_vm_detonation_not_verified",
         "release_public_package_resolution_policy_not_implemented",
         "release_packaging_and_onboarding_not_complete",
-        "release_comparator_red_team_gate_not_complete",
         "release_signature_notarization_not_complete",
     ]));
     blocking_reason_codes.sort();
@@ -3878,7 +3885,7 @@ fn macos_local_release_readiness(
             "make npm detonation either work in VM or remain explicitly unclaimed",
             "keep sync-back disabled for the preview unless a separately tested whitelist is implemented",
             "complete signed packaging and notarization docs for Apple Silicon users",
-            "run comparator and red-team fixture gate before release tagging",
+            "run whoathere vm red-team-gate on every release candidate",
         ]),
     }
 }
@@ -4198,6 +4205,360 @@ fn render_vm_sync_policy(json: bool) -> String {
         "whoathere vm sync-policy\nrelease_target={}\nsync_policy={}\nsync_back_enabled=false\npolicy_scope=future_allowlist_not_release_authorization\nauto_sync_classes=[\"npm.registry_tarball.v1\", \"pypi.pure_wheel.v1\"]\nmanual_review_classes=[\"pypi.sdist_pep517.v1\", \"pypi.binary_wheel.v1\", \"native_extension.v1\"]\ndeny_default_classes=[\"direct_vcs_editable.v1\", \"unsupported_unknown.v1\"]\nrequired_evidence={:?}\n{}\n{}",
         RELEASE_TARGET, SYNC_POLICY, evidence, rule_rows, scanner_rows
     )
+}
+
+#[derive(Debug, Clone)]
+struct RedTeamGateCase {
+    name: &'static str,
+    category: &'static str,
+    comparator: &'static str,
+    path: &'static str,
+    body: String,
+    expected_status: u16,
+    required_markers: Vec<&'static str>,
+    forbidden_markers: Vec<&'static str>,
+}
+
+#[derive(Debug, Clone)]
+struct RedTeamGateCaseResult {
+    name: &'static str,
+    category: &'static str,
+    comparator: &'static str,
+    expected_status: u16,
+    actual_status: u16,
+    passed: bool,
+    reason_codes: Vec<String>,
+}
+
+fn render_vm_red_team_gate(json: bool) -> String {
+    let cases = red_team_gate_cases();
+    let results = cases.iter().map(run_red_team_gate_case).collect::<Vec<_>>();
+    let passed = results.iter().all(|result| result.passed);
+    let exit_code = if passed {
+        ExitCode::Allow.code()
+    } else {
+        ExitCode::Deny.code()
+    };
+    let unavailable_scanners = scanner_adapters()
+        .into_iter()
+        .filter(|adapter| !command_on_path(adapter.name))
+        .map(|adapter| adapter.name.to_string())
+        .collect::<Vec<_>>();
+
+    if json {
+        let case_json = results
+            .iter()
+            .map(|result| {
+                format!(
+                    "{{\"name\": {}, \"category\": {}, \"comparator\": {}, \"expected_status\": {}, \"actual_status\": {}, \"passed\": {}, \"reason_codes\": {}}}",
+                    json_string(result.name),
+                    json_string(result.category),
+                    json_string(result.comparator),
+                    result.expected_status,
+                    result.actual_status,
+                    result.passed,
+                    json_string_array(&result.reason_codes)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        return format!(
+            "{{\n  \"command\": \"whoathere vm red-team-gate\",\n  \"release_target\": {},\n  \"release_claim\": {},\n  \"gate_scope\": \"fixture_safe_local_no_arbitrary_execution\",\n  \"public_network_used\": false,\n  \"external_scanners_required\": false,\n  \"external_scanners_unavailable\": {},\n  \"passed\": {},\n  \"case_count\": {},\n  \"cases\": [{}],\n  \"exit_code\": {}\n}}",
+            json_string(RELEASE_TARGET),
+            json_string(RELEASE_CLAIM),
+            json_string_array(&unavailable_scanners),
+            passed,
+            results.len(),
+            case_json,
+            exit_code
+        );
+    }
+
+    let case_lines = results
+        .iter()
+        .map(|result| {
+            format!(
+                "case name={} category={} comparator={} expected_status={} actual_status={} passed={} reason_codes={:?}",
+                result.name,
+                result.category,
+                result.comparator,
+                result.expected_status,
+                result.actual_status,
+                result.passed,
+                result.reason_codes
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "whoathere vm red-team-gate\nrelease_target={}\nrelease_claim={}\ngate_scope=fixture_safe_local_no_arbitrary_execution\npublic_network_used=false\nexternal_scanners_required=false\nexternal_scanners_unavailable={:?}\npassed={}\ncase_count={}\n{}\nexit_code={}",
+        RELEASE_TARGET,
+        RELEASE_CLAIM,
+        unavailable_scanners,
+        passed,
+        results.len(),
+        case_lines,
+        exit_code
+    )
+}
+
+fn red_team_gate_cases() -> Vec<RedTeamGateCase> {
+    const COMMON_FORBIDDEN: &[&str] = &[
+        "WHOATHERE_CANARY_TOKEN",
+        "proof-nonce-",
+        "/Users/",
+        "raw_material_captured\":true",
+        "arbitrary_execution_attempted\":true",
+        "network_attempted\":true",
+    ];
+    vec![
+        RedTeamGateCase {
+            name: "static_clean_npm_manifest",
+            category: "static_manifest",
+            comparator: "guarddog_lifecycle_baseline",
+            path: "/v1/static-manifest-job-simulations",
+            body: "manifest=clean_npm".to_string(),
+            expected_status: 200,
+            required_markers: vec![
+                "\"status\":\"ok\"",
+                "\"evidence_binding_ready\":true",
+                "\"execution_enabled\":false",
+                "\"detonation_attempted\":false",
+                "\"network_attempted\":false",
+            ],
+            forbidden_markers: COMMON_FORBIDDEN.to_vec(),
+        },
+        RedTeamGateCase {
+            name: "static_npm_postinstall_block",
+            category: "static_manifest",
+            comparator: "guarddog_lifecycle_script",
+            path: "/v1/static-manifest-job-simulations",
+            body: "manifest=malicious_npm".to_string(),
+            expected_status: 409,
+            required_markers: vec![
+                "\"status\":\"fail_closed\"",
+                "\"evidence_binding_ready\":false",
+                "npm_lifecycle_postinstall",
+            ],
+            forbidden_markers: COMMON_FORBIDDEN.to_vec(),
+        },
+        RedTeamGateCase {
+            name: "static_pypi_pep517_suspicion",
+            category: "static_manifest",
+            comparator: "guarddog_pypi_build_backend",
+            path: "/v1/static-manifest-job-simulations",
+            body: "manifest=pyproject".to_string(),
+            expected_status: 200,
+            required_markers: vec![
+                "\"status\":\"ok\"",
+                "\"evidence_binding_ready\":true",
+                "pypi_pep517_build_backend",
+                "\"execution_enabled\":false",
+            ],
+            forbidden_markers: COMMON_FORBIDDEN.to_vec(),
+        },
+        RedTeamGateCase {
+            name: "static_raw_log_rejected",
+            category: "gate_integrity",
+            comparator: "sanitization_contract",
+            path: "/v1/static-manifest-job-simulations",
+            body: "manifest=clean_npm&raw_log_captured=true".to_string(),
+            expected_status: 409,
+            required_markers: vec!["\"status\":\"fail_closed\"", "job_log_raw_log_captured"],
+            forbidden_markers: COMMON_FORBIDDEN.to_vec(),
+        },
+        RedTeamGateCase {
+            name: "static_tampered_log_rejected",
+            category: "gate_integrity",
+            comparator: "evidence_digest_binding",
+            path: "/v1/static-manifest-job-simulations",
+            body: "manifest=clean_npm&tamper_log_digest=true".to_string(),
+            expected_status: 409,
+            required_markers: vec!["\"status\":\"fail_closed\"", "job_log_digest_mismatch"],
+            forbidden_markers: COMMON_FORBIDDEN.to_vec(),
+        },
+        RedTeamGateCase {
+            name: "dynamic_clean_npm_lifecycle",
+            category: "dynamic_behavior",
+            comparator: "openssf_package_analysis_baseline",
+            path: "/v1/dynamic-behavior-job-simulations",
+            body: "fixture=clean_npm_lifecycle".to_string(),
+            expected_status: 200,
+            required_markers: vec![
+                "\"status\":\"ok\"",
+                "\"dynamic_behavior_binding_ready\":true",
+                "\"execution_enabled\":false",
+                "\"arbitrary_execution_attempted\":false",
+                "\"fixture_mode\":true",
+            ],
+            forbidden_markers: COMMON_FORBIDDEN.to_vec(),
+        },
+        dynamic_attack_case(
+            "dynamic_npm_postinstall_exfil",
+            "npm_postinstall_canary_exfil",
+            "guarddog_lifecycle_and_exfil",
+            "dynamic_behavior_canary_credential_access_observed",
+        ),
+        dynamic_attack_case(
+            "dynamic_pypi_pep517_backend_abuse",
+            "pypi_pep517_canary",
+            "guarddog_pypi_build_backend",
+            "dynamic_behavior_canary_credential_access_observed",
+        ),
+        dynamic_attack_case(
+            "dynamic_python_import_time_payload",
+            "pypi_import_time_canary",
+            "openssf_package_analysis_import_probe",
+            "dynamic_behavior_environment_access_observed",
+        ),
+        dynamic_attack_case(
+            "dynamic_dns_tunneling",
+            "dns_tunneling_canary",
+            "openssf_package_analysis_network",
+            "dynamic_behavior_dns_tunnel_attempt_observed",
+        ),
+        dynamic_attack_case(
+            "dynamic_https_exfiltration",
+            "https_exfil_canary",
+            "openssf_package_analysis_network",
+            "dynamic_behavior_https_exfil_attempt_observed",
+        ),
+        dynamic_attack_case(
+            "dynamic_delayed_ci_activation",
+            "delayed_ci_canary",
+            "recent_ci_targeted_campaigns",
+            "dynamic_behavior_delayed_execution_observed",
+        ),
+        dynamic_attack_case(
+            "dynamic_native_extension",
+            "native_extension_canary",
+            "binary_native_manual_review",
+            "dynamic_behavior_native_extension_observed",
+        ),
+        dynamic_attack_case(
+            "dynamic_platform_specific_payload",
+            "platform_specific_canary",
+            "platform_split_payloads",
+            "dynamic_behavior_platform_specific_observed",
+        ),
+        dynamic_attack_case(
+            "dynamic_direct_git_tarball",
+            "direct_git_tarball_canary",
+            "direct_source_policy",
+            "dynamic_behavior_direct_source_observed",
+        ),
+        RedTeamGateCase {
+            name: "dynamic_wrong_vault_rejected",
+            category: "gate_integrity",
+            comparator: "evidence_context_binding",
+            path: "/v1/dynamic-behavior-job-simulations",
+            body: "fixture=clean_npm_lifecycle&wrong_context=vault".to_string(),
+            expected_status: 409,
+            required_markers: vec![
+                "\"status\":\"fail_closed\"",
+                "dynamic_behavior_result_vault_host_mismatch",
+            ],
+            forbidden_markers: COMMON_FORBIDDEN.to_vec(),
+        },
+        RedTeamGateCase {
+            name: "dynamic_stale_result_rejected",
+            category: "gate_integrity",
+            comparator: "evidence_freshness_binding",
+            path: "/v1/dynamic-behavior-job-simulations",
+            body: "fixture=clean_npm_lifecycle&stale=true".to_string(),
+            expected_status: 409,
+            required_markers: vec![
+                "\"status\":\"fail_closed\"",
+                "dynamic_behavior_result_stale_or_not_yet_valid",
+            ],
+            forbidden_markers: COMMON_FORBIDDEN.to_vec(),
+        },
+        RedTeamGateCase {
+            name: "dynamic_raw_material_rejected",
+            category: "gate_integrity",
+            comparator: "sanitization_contract",
+            path: "/v1/dynamic-behavior-job-simulations",
+            body: "fixture=clean_npm_lifecycle&raw_material=true".to_string(),
+            expected_status: 409,
+            required_markers: vec![
+                "\"status\":\"fail_closed\"",
+                "dynamic_behavior_raw_or_local_material_captured",
+            ],
+            forbidden_markers: vec![
+                "WHOATHERE_CANARY_TOKEN",
+                "proof-nonce-",
+                "/Users/",
+                "arbitrary_execution_attempted\":true",
+                "network_attempted\":true",
+            ],
+        },
+    ]
+}
+
+fn dynamic_attack_case(
+    name: &'static str,
+    fixture: &'static str,
+    comparator: &'static str,
+    required_reason: &'static str,
+) -> RedTeamGateCase {
+    RedTeamGateCase {
+        name,
+        category: "dynamic_behavior",
+        comparator,
+        path: "/v1/dynamic-behavior-job-simulations",
+        body: format!("fixture={fixture}"),
+        expected_status: 409,
+        required_markers: vec![
+            "\"status\":\"fail_closed\"",
+            "\"dynamic_behavior_binding_ready\":false",
+            "dynamic_behavior_high_risk_signal_detected",
+            required_reason,
+        ],
+        forbidden_markers: vec![
+            "WHOATHERE_CANARY_TOKEN",
+            "proof-nonce-",
+            "/Users/",
+            "raw_material_captured\":true",
+            "arbitrary_execution_attempted\":true",
+            "network_attempted\":true",
+        ],
+    }
+}
+
+fn run_red_team_gate_case(case: &RedTeamGateCase) -> RedTeamGateCaseResult {
+    let request = format!(
+        "POST {} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\n\r\n{}",
+        case.path,
+        case.body.len(),
+        case.body
+    );
+    let response = handle_http_request(&request);
+    let mut reason_codes = Vec::new();
+    if response.status_code != case.expected_status {
+        reason_codes.push("red_team_gate_status_mismatch".to_string());
+    }
+    for marker in &case.required_markers {
+        if !response.body.contains(marker) {
+            reason_codes.push(format!("red_team_gate_required_marker_missing:{marker}"));
+        }
+    }
+    for marker in &case.forbidden_markers {
+        if response.body.contains(marker) {
+            reason_codes.push(format!("red_team_gate_forbidden_marker_present:{marker}"));
+        }
+    }
+    reason_codes.sort();
+    reason_codes.dedup();
+
+    RedTeamGateCaseResult {
+        name: case.name,
+        category: case.category,
+        comparator: case.comparator,
+        expected_status: case.expected_status,
+        actual_status: response.status_code,
+        passed: reason_codes.is_empty(),
+        reason_codes,
+    }
 }
 
 fn package_class_from_release_args(
@@ -9235,6 +9596,46 @@ exit 0
             "deny_default_classes=[\"direct_vcs_editable.v1\", \"unsupported_unknown.v1\"]"
         ));
         assert!(sync.output.contains("scanner_adapter=guarddog"));
+    }
+
+    #[test]
+    fn vm_red_team_gate_passes_fixture_safe_comparator_cases() {
+        let result = evaluate_command(Command::VmRedTeamGate { json: false });
+        assert_eq!(result.exit_code, 0);
+        assert!(result.output.contains("passed=true"));
+        assert!(result.output.contains("case_count=18"));
+        assert!(result.output.contains("public_network_used=false"));
+        assert!(result.output.contains("external_scanners_required=false"));
+        assert!(result.output.contains("static_npm_postinstall_block"));
+        assert!(result.output.contains("dynamic_npm_postinstall_exfil"));
+        assert!(result.output.contains("dynamic_pypi_pep517_backend_abuse"));
+        assert!(result.output.contains("dynamic_dns_tunneling"));
+        assert!(result.output.contains("dynamic_raw_material_rejected"));
+        assert!(result.output.contains("passed=true reason_codes=[]"));
+        assert!(!result.output.contains("WHOATHERE_CANARY_TOKEN"));
+        assert!(!result.output.contains("/Users/"));
+    }
+
+    #[test]
+    fn vm_red_team_gate_json_reports_release_gate_scope() {
+        let result = evaluate_command(Command::VmRedTeamGate { json: true });
+        assert_eq!(result.exit_code, 0);
+        assert!(result
+            .output
+            .contains("\"command\": \"whoathere vm red-team-gate\""));
+        assert!(result
+            .output
+            .contains("\"release_claim\": \"vm_detonation_admission_only_no_sync_back\""));
+        assert!(result.output.contains("\"passed\": true"));
+        assert!(result.output.contains("\"case_count\": 18"));
+        assert!(result.output.contains("\"public_network_used\": false"));
+        assert!(result
+            .output
+            .contains("\"external_scanners_required\": false"));
+        assert!(result
+            .output
+            .contains("\"name\": \"dynamic_stale_result_rejected\""));
+        assert!(!result.output.contains("WHOATHERE_CANARY_TOKEN"));
     }
 
     #[test]
