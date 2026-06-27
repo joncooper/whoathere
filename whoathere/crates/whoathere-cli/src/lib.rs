@@ -1856,6 +1856,8 @@ struct DetonationMirrorPlan {
     secret_exclusion_count: usize,
     symlink_escape_count: usize,
     large_file_exclusion_count: usize,
+    package_data_file_count: usize,
+    risky_file_exclusion_count: usize,
     total_allowed_bytes: u64,
     file_classes: Vec<String>,
     included_paths: Vec<String>,
@@ -1881,6 +1883,8 @@ impl DetonationMirrorPlan {
             secret_exclusion_count: 0,
             symlink_escape_count: 0,
             large_file_exclusion_count: 0,
+            package_data_file_count: 0,
+            risky_file_exclusion_count: 0,
             total_allowed_bytes: 0,
             file_classes: Vec::new(),
             included_paths: Vec::new(),
@@ -1905,6 +1909,38 @@ struct ProjectPayloadPreparation {
     payload_path: String,
     payload_bytes: usize,
     payload_hex_bytes: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GuestJobEvidence {
+    protocol: Option<String>,
+    schema_version: Option<String>,
+    agent_version: Option<String>,
+    job_id: Option<String>,
+    tool: Option<String>,
+    command_class: Option<String>,
+    fixture: Option<String>,
+    status: Option<String>,
+    verdict: Option<String>,
+    reason_codes: Vec<String>,
+    command_exit_code: Option<i32>,
+    timed_out: Option<bool>,
+    canary_access_detected: Option<bool>,
+    network_attempt_detected: Option<bool>,
+    filesystem_write_detected: Option<bool>,
+    toolchain_available: Option<bool>,
+    stdout_captured: Option<bool>,
+    stderr_captured: Option<bool>,
+    raw_canary_values_captured: Option<bool>,
+    sync_back_enabled: Option<bool>,
+    host_package_execution_enabled: Option<bool>,
+    high_risk_package_execution_enabled: Option<bool>,
+    project_mode: Option<bool>,
+    project_workflow: Option<String>,
+    project_import_module: Option<String>,
+    project_requirements_path: Option<String>,
+    vm_session_id: Option<String>,
+    exit_code: Option<i32>,
 }
 
 const MAX_DETONATION_PROJECT_FILES: usize = 128;
@@ -2040,8 +2076,10 @@ fn render_vm_detonate(args: VmDetonateRenderArgs<'_>) -> String {
             .as_ref()
             .map(render_vm_helper_json)
             .unwrap_or_else(|| "null".to_string());
+        let guest_job = parse_guest_job_evidence(helper.as_ref());
+        let guest_job_json = render_guest_job_evidence_json(guest_job.as_ref());
         return format!(
-            "{{\n  \"command\": \"whoathere vm detonate\",\n  \"schema_version\": \"whoathere.macos_vm.detonation.v1\",\n  \"release_target\": {},\n  \"vm_boundary\": {},\n  \"network_model\": {},\n  \"sync_back_enabled\": false,\n  \"host_package_execution_enabled\": false,\n  \"high_risk_package_execution_enabled\": false,\n  \"mutation_requested\": {},\n  \"state_dir\": {},\n  \"tool\": {},\n  \"command_class\": {},\n  \"argv\": {},\n  \"fixture\": {},\n  \"timeout_seconds\": {},\n  \"workspace\": {},\n  \"mirror_plan\": {},\n  \"project_plan\": {},\n  \"project_payload\": {},\n  \"canary_categories\": {},\n  \"verdict\": {},\n  \"reason_codes\": {},\n  \"helper\": {},\n  \"exit_code\": {}\n}}",
+            "{{\n  \"command\": \"whoathere vm detonate\",\n  \"schema_version\": \"whoathere.macos_vm.detonation.v1\",\n  \"release_target\": {},\n  \"vm_boundary\": {},\n  \"network_model\": {},\n  \"sync_back_enabled\": false,\n  \"host_package_execution_enabled\": false,\n  \"high_risk_package_execution_enabled\": false,\n  \"mutation_requested\": {},\n  \"state_dir\": {},\n  \"tool\": {},\n  \"command_class\": {},\n  \"argv\": {},\n  \"fixture\": {},\n  \"timeout_seconds\": {},\n  \"workspace\": {},\n  \"mirror_plan\": {},\n  \"project_plan\": {},\n  \"project_payload\": {},\n  \"canary_categories\": {},\n  \"verdict\": {},\n  \"reason_codes\": {},\n  \"guest_job\": {},\n  \"helper\": {},\n  \"exit_code\": {}\n}}",
             json_string(RELEASE_TARGET),
             json_string(VM_BOUNDARY),
             json_string(NETWORK_MODEL),
@@ -2070,6 +2108,7 @@ fn render_vm_detonate(args: VmDetonateRenderArgs<'_>) -> String {
             json_string_array(&canary_categories),
             json_string(verdict),
             json_string_array(&reason_codes),
+            guest_job_json,
             helper_json,
             final_exit_code
         );
@@ -2080,7 +2119,7 @@ fn render_vm_detonate(args: VmDetonateRenderArgs<'_>) -> String {
         .map(|helper| helper.render_text())
         .unwrap_or_else(|| "helper_invoked=false".to_string());
     format!(
-        "whoathere vm detonate\nschema_version=whoathere.macos_vm.detonation.v1\nrelease_target={}\nvm_boundary={}\nnetwork_model={}\nsync_back_enabled=false\nhost_package_execution_enabled=false\nhigh_risk_package_execution_enabled=false\nmutation_requested={}\nstate_dir={}\ntool={}\ncommand_class={}\nargv={:?}\nfixture={}\ntimeout_seconds={}\nworkspace={}\nmirror_workspace_configured={}\nmirror_allowed_file_count={}\nmirror_secret_exclusion_count={}\nmirror_symlink_escape_count={}\nmirror_large_file_exclusion_count={}\nmirror_total_allowed_bytes={}\nmirror_file_classes={:?}\nmirror_included_paths={:?}\nmirror_reason_codes={:?}\nproject_mode={}\nproject_workflow={}\nproject_import_module={}\nproject_requirements_path={}\nproject_safe_to_execute={}\nproject_payload_path={}\ncanary_categories={:?}\nverdict={}\nreason_codes={:?}\n{}\nexit_code={}",
+        "whoathere vm detonate\nschema_version=whoathere.macos_vm.detonation.v1\nrelease_target={}\nvm_boundary={}\nnetwork_model={}\nsync_back_enabled=false\nhost_package_execution_enabled=false\nhigh_risk_package_execution_enabled=false\nmutation_requested={}\nstate_dir={}\ntool={}\ncommand_class={}\nargv={:?}\nfixture={}\ntimeout_seconds={}\nworkspace={}\nmirror_workspace_configured={}\nmirror_allowed_file_count={}\nmirror_secret_exclusion_count={}\nmirror_symlink_escape_count={}\nmirror_large_file_exclusion_count={}\nmirror_package_data_file_count={}\nmirror_risky_file_exclusion_count={}\nmirror_total_allowed_bytes={}\nmirror_file_classes={:?}\nmirror_included_paths={:?}\nmirror_reason_codes={:?}\nproject_mode={}\nproject_workflow={}\nproject_import_module={}\nproject_requirements_path={}\nproject_safe_to_execute={}\nproject_payload_path={}\ncanary_categories={:?}\nverdict={}\nreason_codes={:?}\n{}\nexit_code={}",
         RELEASE_TARGET,
         VM_BOUNDARY,
         NETWORK_MODEL,
@@ -2100,6 +2139,8 @@ fn render_vm_detonate(args: VmDetonateRenderArgs<'_>) -> String {
         mirror_plan.secret_exclusion_count,
         mirror_plan.symlink_escape_count,
         mirror_plan.large_file_exclusion_count,
+        mirror_plan.package_data_file_count,
+        mirror_plan.risky_file_exclusion_count,
         mirror_plan.total_allowed_bytes,
         mirror_plan.file_classes,
         mirror_plan.included_paths,
@@ -2151,6 +2192,8 @@ fn build_detonation_mirror_plan(workspace: &str) -> DetonationMirrorPlan {
                 secret_exclusion_count: 0,
                 symlink_escape_count: 0,
                 large_file_exclusion_count: 0,
+                package_data_file_count: 0,
+                risky_file_exclusion_count: 0,
                 total_allowed_bytes: 0,
                 file_classes: Vec::new(),
                 included_paths: Vec::new(),
@@ -2168,6 +2211,8 @@ fn build_detonation_mirror_plan(workspace: &str) -> DetonationMirrorPlan {
             secret_exclusion_count: 0,
             symlink_escape_count: 0,
             large_file_exclusion_count: 0,
+            package_data_file_count: 0,
+            risky_file_exclusion_count: 0,
             total_allowed_bytes: 0,
             file_classes: Vec::new(),
             included_paths: Vec::new(),
@@ -2184,6 +2229,8 @@ fn build_detonation_mirror_plan(workspace: &str) -> DetonationMirrorPlan {
         secret_exclusion_count: 0,
         symlink_escape_count: 0,
         large_file_exclusion_count: 0,
+        package_data_file_count: 0,
+        risky_file_exclusion_count: 0,
         total_allowed_bytes: 0,
         file_classes: Vec::new(),
         included_paths: Vec::new(),
@@ -2251,7 +2298,7 @@ fn build_detonation_mirror_plan(workspace: &str) -> DetonationMirrorPlan {
             if !metadata.is_file() {
                 continue;
             }
-            if let Some(class) = allowed_mirror_input_class(&path) {
+            if let Some(class) = allowed_mirror_input_class(&path, &canonical) {
                 if metadata.len() > MAX_DETONATION_PROJECT_FILE_BYTES {
                     plan.large_file_exclusion_count += 1;
                     push_unique(
@@ -2307,6 +2354,9 @@ fn build_detonation_mirror_plan(workspace: &str) -> DetonationMirrorPlan {
                 }
                 plan.allowed_file_count += 1;
                 plan.total_allowed_bytes = next_total;
+                if class == "python_package_data" {
+                    plan.package_data_file_count += 1;
+                }
                 push_unique(&mut plan.file_classes, class);
                 plan.included_paths.push(relative_path.clone());
                 plan.files.push(DetonationMirrorFile {
@@ -2315,6 +2365,12 @@ fn build_detonation_mirror_plan(workspace: &str) -> DetonationMirrorPlan {
                     class: class.to_string(),
                     size_bytes: metadata.len(),
                 });
+            } else if is_risky_project_file(&path) {
+                plan.risky_file_exclusion_count += 1;
+                push_unique(
+                    &mut plan.reason_codes,
+                    "detonation_workspace_risky_file_excluded",
+                );
             }
         }
     }
@@ -2324,13 +2380,19 @@ fn build_detonation_mirror_plan(workspace: &str) -> DetonationMirrorPlan {
             "detonation_workspace_no_allowed_inputs",
         );
     }
+    if plan.package_data_file_count > 0 {
+        push_unique(
+            &mut plan.reason_codes,
+            "detonation_workspace_safe_package_data_included",
+        );
+    }
     plan.file_classes.sort();
     plan.included_paths.sort();
     plan.reason_codes.sort();
     plan
 }
 
-fn allowed_mirror_input_class(path: &Path) -> Option<&'static str> {
+fn allowed_mirror_input_class(path: &Path, workspace_root: &Path) -> Option<&'static str> {
     let file_name = path.file_name()?.to_string_lossy().to_ascii_lowercase();
     let extension = path
         .extension()
@@ -2347,16 +2409,129 @@ fn allowed_mirror_input_class(path: &Path) -> Option<&'static str> {
         "__init__.py" => Some("python_package_init"),
         _ if extension.as_deref() == Some("py") => Some("python_source"),
         _ if extension.as_deref() == Some("pth") => Some("python_startup_hook"),
+        _ if is_safe_python_package_data(path, workspace_root) => Some("python_package_data"),
         _ => None,
     }
+}
+
+fn is_safe_python_package_data(path: &Path, workspace_root: &Path) -> bool {
+    let Some(extension) = path
+        .extension()
+        .map(|extension| extension.to_string_lossy().to_ascii_lowercase())
+    else {
+        return false;
+    };
+    if !matches!(
+        extension.as_str(),
+        "txt" | "md" | "rst" | "json" | "toml" | "yaml" | "yml" | "csv"
+    ) {
+        return false;
+    }
+    if is_risky_project_file(path) || is_secret_or_credential_path(path) {
+        return false;
+    }
+    package_data_parent_is_python_package(path, workspace_root)
+}
+
+fn package_data_parent_is_python_package(path: &Path, workspace_root: &Path) -> bool {
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+    if parent == workspace_root {
+        return false;
+    }
+    let Ok(relative_parent) = parent.strip_prefix(workspace_root) else {
+        return false;
+    };
+    if relative_parent.components().next().is_none() {
+        return false;
+    }
+    let mut current = Some(parent);
+    while let Some(directory) = current {
+        if directory == workspace_root {
+            return false;
+        }
+        if directory.join("__init__.py").is_file() {
+            return true;
+        }
+        current = directory.parent();
+    }
+    false
+}
+
+fn is_risky_project_file(path: &Path) -> bool {
+    let file_name = path.file_name().map(|name| {
+        name.to_string_lossy()
+            .trim()
+            .to_ascii_lowercase()
+            .replace('\\', "/")
+    });
+    let file_name = file_name.as_deref().unwrap_or("");
+    if matches!(
+        file_name,
+        "binding.gyp"
+            | "cmakelists.txt"
+            | "makefile"
+            | "setup.cfg.native"
+            | "cargo.toml"
+            | "go.mod"
+    ) {
+        return true;
+    }
+    let normalized = path
+        .to_string_lossy()
+        .to_ascii_lowercase()
+        .replace('\\', "/");
+    if normalized.ends_with(".tar.gz")
+        || normalized.ends_with(".tar.bz2")
+        || normalized.ends_with(".tar.xz")
+    {
+        return true;
+    }
+    let Some(extension) = path
+        .extension()
+        .map(|extension| extension.to_string_lossy().to_ascii_lowercase())
+    else {
+        return false;
+    };
+    matches!(
+        extension.as_str(),
+        "so" | "dylib"
+            | "dll"
+            | "pyd"
+            | "o"
+            | "a"
+            | "lib"
+            | "exe"
+            | "bin"
+            | "whl"
+            | "zip"
+            | "gz"
+            | "bz2"
+            | "xz"
+            | "tgz"
+            | "c"
+            | "cc"
+            | "cpp"
+            | "cxx"
+            | "h"
+            | "hpp"
+            | "rs"
+            | "go"
+            | "swift"
+            | "m"
+            | "mm"
+    )
 }
 
 fn should_skip_mirror_directory(path: &Path) -> bool {
     path.file_name()
         .map(|name| {
+            let name = name.to_string_lossy().to_ascii_lowercase();
             matches!(
-                name.to_string_lossy().to_ascii_lowercase().as_str(),
+                name.as_str(),
                 ".git"
+                    | ".cache"
                     | "node_modules"
                     | ".venv"
                     | "venv"
@@ -2365,7 +2540,10 @@ fn should_skip_mirror_directory(path: &Path) -> bool {
                     | ".pytest_cache"
                     | "target"
                     | ".tox"
-            )
+                    | "build"
+                    | "dist"
+            ) || name.starts_with('.')
+                || name.ends_with(".egg-info")
         })
         .unwrap_or(false)
 }
@@ -2408,7 +2586,7 @@ fn push_unique(values: &mut Vec<String>, value: &str) {
 
 fn render_detonation_mirror_plan_json(plan: &DetonationMirrorPlan) -> String {
     format!(
-        "{{\"workspace_configured\": {}, \"workspace_path\": {}, \"allowed_file_count\": {}, \"secret_exclusion_count\": {}, \"symlink_escape_count\": {}, \"large_file_exclusion_count\": {}, \"total_allowed_bytes\": {}, \"file_classes\": {}, \"included_paths\": {}, \"reason_codes\": {}}}",
+        "{{\"workspace_configured\": {}, \"workspace_path\": {}, \"allowed_file_count\": {}, \"secret_exclusion_count\": {}, \"symlink_escape_count\": {}, \"large_file_exclusion_count\": {}, \"package_data_file_count\": {}, \"risky_file_exclusion_count\": {}, \"total_allowed_bytes\": {}, \"file_classes\": {}, \"included_paths\": {}, \"reason_codes\": {}}}",
         plan.workspace_configured,
         plan.workspace_path
             .as_deref()
@@ -2418,6 +2596,8 @@ fn render_detonation_mirror_plan_json(plan: &DetonationMirrorPlan) -> String {
         plan.secret_exclusion_count,
         plan.symlink_escape_count,
         plan.large_file_exclusion_count,
+        plan.package_data_file_count,
+        plan.risky_file_exclusion_count,
         plan.total_allowed_bytes,
         json_string_array(&plan.file_classes),
         json_string_array(&plan.included_paths),
@@ -2502,6 +2682,9 @@ fn build_project_detonation_plan(
         if !project_has_python_build_input(mirror_plan) {
             reason_codes.push("project_python_build_input_missing".to_string());
         }
+        if mirror_plan.risky_file_exclusion_count > 0 {
+            reason_codes.push("project_risky_file_requires_manual_review".to_string());
+        }
         if mirror_plan.symlink_escape_count > 0 {
             reason_codes.push("project_symlink_escape_blocked".to_string());
         }
@@ -2524,6 +2707,9 @@ fn build_project_detonation_plan(
         }
         if mirror_plan.symlink_escape_count > 0 {
             reason_codes.push("project_symlink_escape_blocked".to_string());
+        }
+        if mirror_plan.risky_file_exclusion_count > 0 {
+            reason_codes.push("project_risky_file_requires_manual_review".to_string());
         }
         reason_codes.sort();
         reason_codes.dedup();
@@ -2833,6 +3019,235 @@ fn render_vm_helper_json(helper: &MacosVmHelperOutput) -> String {
         json_string(&single_line(&redacted_scalar(&helper.stdout))),
         json_string(&single_line(&redacted_scalar(&helper.stderr)))
     )
+}
+
+fn parse_guest_job_evidence(helper: Option<&MacosVmHelperOutput>) -> Option<GuestJobEvidence> {
+    let helper = helper?;
+    if helper.stdout_truncated || !helper.stdout.contains("whoathere.guest_detonation.v1") {
+        return None;
+    }
+    Some(GuestJobEvidence {
+        protocol: json_extract_string_field(&helper.stdout, "protocol"),
+        schema_version: json_extract_string_field(&helper.stdout, "schema_version"),
+        agent_version: json_extract_string_field(&helper.stdout, "agent_version"),
+        job_id: json_extract_string_field(&helper.stdout, "job_id"),
+        tool: json_extract_string_field(&helper.stdout, "tool"),
+        command_class: json_extract_string_field(&helper.stdout, "command_class"),
+        fixture: json_extract_string_field(&helper.stdout, "fixture"),
+        status: json_extract_string_field(&helper.stdout, "status"),
+        verdict: json_extract_string_field(&helper.stdout, "verdict"),
+        reason_codes: json_extract_string_array_field(&helper.stdout, "reason_codes"),
+        command_exit_code: json_extract_i32_field(&helper.stdout, "command_exit_code"),
+        timed_out: json_extract_bool_field(&helper.stdout, "timed_out"),
+        canary_access_detected: json_extract_bool_field(&helper.stdout, "canary_access_detected"),
+        network_attempt_detected: json_extract_bool_field(
+            &helper.stdout,
+            "network_attempt_detected",
+        ),
+        filesystem_write_detected: json_extract_bool_field(
+            &helper.stdout,
+            "filesystem_write_detected",
+        ),
+        toolchain_available: json_extract_bool_field(&helper.stdout, "toolchain_available"),
+        stdout_captured: json_extract_bool_field(&helper.stdout, "stdout_captured"),
+        stderr_captured: json_extract_bool_field(&helper.stdout, "stderr_captured"),
+        raw_canary_values_captured: json_extract_bool_field(
+            &helper.stdout,
+            "raw_canary_values_captured",
+        ),
+        sync_back_enabled: json_extract_bool_field(&helper.stdout, "sync_back_enabled"),
+        host_package_execution_enabled: json_extract_bool_field(
+            &helper.stdout,
+            "host_package_execution_enabled",
+        ),
+        high_risk_package_execution_enabled: json_extract_bool_field(
+            &helper.stdout,
+            "high_risk_package_execution_enabled",
+        ),
+        project_mode: json_extract_bool_field(&helper.stdout, "project_mode"),
+        project_workflow: json_extract_string_field(&helper.stdout, "project_workflow"),
+        project_import_module: json_extract_string_field(&helper.stdout, "project_import_module"),
+        project_requirements_path: json_extract_string_field(
+            &helper.stdout,
+            "project_requirements_path",
+        ),
+        vm_session_id: json_extract_string_field(&helper.stdout, "vm_session_id"),
+        exit_code: json_extract_i32_field(&helper.stdout, "exit_code"),
+    })
+}
+
+fn render_guest_job_evidence_json(evidence: Option<&GuestJobEvidence>) -> String {
+    let Some(evidence) = evidence else {
+        return "null".to_string();
+    };
+    format!(
+        "{{\"protocol\": {}, \"schema_version\": {}, \"agent_version\": {}, \"job_id\": {}, \"tool\": {}, \"command_class\": {}, \"fixture\": {}, \"status\": {}, \"verdict\": {}, \"reason_codes\": {}, \"command_exit_code\": {}, \"timed_out\": {}, \"canary_access_detected\": {}, \"network_attempt_detected\": {}, \"filesystem_write_detected\": {}, \"toolchain_available\": {}, \"stdout_captured\": {}, \"stderr_captured\": {}, \"raw_canary_values_captured\": {}, \"sync_back_enabled\": {}, \"host_package_execution_enabled\": {}, \"high_risk_package_execution_enabled\": {}, \"project_mode\": {}, \"project_workflow\": {}, \"project_import_module\": {}, \"project_requirements_path\": {}, \"vm_session_id\": {}, \"exit_code\": {}}}",
+        json_option_string_redacted(evidence.protocol.as_deref()),
+        json_option_string_redacted(evidence.schema_version.as_deref()),
+        json_option_string_redacted(evidence.agent_version.as_deref()),
+        json_option_string_redacted(evidence.job_id.as_deref()),
+        json_option_string_redacted(evidence.tool.as_deref()),
+        json_option_string_redacted(evidence.command_class.as_deref()),
+        json_option_string_redacted(evidence.fixture.as_deref()),
+        json_option_string_redacted(evidence.status.as_deref()),
+        json_option_string_redacted(evidence.verdict.as_deref()),
+        json_string_array(
+            &evidence
+                .reason_codes
+                .iter()
+                .map(|reason| redacted_scalar(reason))
+                .collect::<Vec<_>>()
+        ),
+        json_option(evidence.command_exit_code),
+        json_option(evidence.timed_out),
+        json_option(evidence.canary_access_detected),
+        json_option(evidence.network_attempt_detected),
+        json_option(evidence.filesystem_write_detected),
+        json_option(evidence.toolchain_available),
+        json_option(evidence.stdout_captured),
+        json_option(evidence.stderr_captured),
+        json_option(evidence.raw_canary_values_captured),
+        json_option(evidence.sync_back_enabled),
+        json_option(evidence.host_package_execution_enabled),
+        json_option(evidence.high_risk_package_execution_enabled),
+        json_option(evidence.project_mode),
+        json_option_string_redacted(evidence.project_workflow.as_deref()),
+        json_option_string_redacted(evidence.project_import_module.as_deref()),
+        json_option_string_redacted(evidence.project_requirements_path.as_deref()),
+        json_option_string_redacted(evidence.vm_session_id.as_deref()),
+        json_option(evidence.exit_code)
+    )
+}
+
+fn json_extract_string_field(input: &str, field: &str) -> Option<String> {
+    let mut value = json_field_value(input, field)?.trim_start();
+    if !value.starts_with('"') {
+        return None;
+    }
+    value = &value[1..];
+    let mut output = String::new();
+    let mut escaped = false;
+    for character in value.chars() {
+        if escaped {
+            match character {
+                '"' => output.push('"'),
+                '\\' => output.push('\\'),
+                '/' => output.push('/'),
+                'n' => output.push('\n'),
+                'r' => output.push('\r'),
+                't' => output.push('\t'),
+                other => output.push(other),
+            }
+            escaped = false;
+            continue;
+        }
+        match character {
+            '\\' => escaped = true,
+            '"' => return Some(output),
+            other => output.push(other),
+        }
+    }
+    None
+}
+
+fn json_extract_string_array_field(input: &str, field: &str) -> Vec<String> {
+    let Some(value) = json_field_value(input, field).map(str::trim_start) else {
+        return Vec::new();
+    };
+    if !value.starts_with('[') {
+        return Vec::new();
+    }
+    let mut values = Vec::new();
+    let mut rest = &value[1..];
+    loop {
+        rest = rest.trim_start();
+        if rest.starts_with(']') {
+            return values;
+        }
+        if !rest.starts_with('"') {
+            return Vec::new();
+        }
+        let Some(parsed) = json_parse_leading_string(rest) else {
+            return Vec::new();
+        };
+        values.push(parsed.0);
+        rest = parsed.1.trim_start();
+        if rest.starts_with(',') {
+            rest = &rest[1..];
+            continue;
+        }
+        if rest.starts_with(']') {
+            return values;
+        }
+        return Vec::new();
+    }
+}
+
+fn json_parse_leading_string(input: &str) -> Option<(String, &str)> {
+    let mut output = String::new();
+    let mut escaped = false;
+    let mut started = false;
+    for (index, character) in input.char_indices() {
+        if !started {
+            if character != '"' {
+                return None;
+            }
+            started = true;
+            continue;
+        }
+        if escaped {
+            match character {
+                '"' => output.push('"'),
+                '\\' => output.push('\\'),
+                '/' => output.push('/'),
+                'n' => output.push('\n'),
+                'r' => output.push('\r'),
+                't' => output.push('\t'),
+                other => output.push(other),
+            }
+            escaped = false;
+            continue;
+        }
+        match character {
+            '\\' => escaped = true,
+            '"' => return Some((output, &input[index + 1..])),
+            other => output.push(other),
+        }
+    }
+    None
+}
+
+fn json_extract_bool_field(input: &str, field: &str) -> Option<bool> {
+    let value = json_field_value(input, field)?.trim_start();
+    if value.starts_with("true") {
+        Some(true)
+    } else if value.starts_with("false") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+fn json_extract_i32_field(input: &str, field: &str) -> Option<i32> {
+    let value = json_field_value(input, field)?.trim_start();
+    let end = value
+        .char_indices()
+        .take_while(|(_, character)| character.is_ascii_digit() || *character == '-')
+        .map(|(index, character)| index + character.len_utf8())
+        .last()
+        .unwrap_or(0);
+    if end == 0 {
+        return None;
+    }
+    value[..end].parse().ok()
+}
+
+fn json_field_value<'a>(input: &'a str, field: &str) -> Option<&'a str> {
+    let needle = format!("\"{field}\"");
+    let index = input.find(&needle)?;
+    let after_key = &input[index + needle.len()..];
+    let colon = after_key.find(':')?;
+    Some(&after_key[colon + 1..])
 }
 
 fn macos_vm_config(
@@ -7180,6 +7595,13 @@ fn json_option_string(value: Option<&str>) -> String {
     value.map(json_string).unwrap_or_else(|| "null".to_string())
 }
 
+fn json_option_string_redacted(value: Option<&str>) -> String {
+    value
+        .map(redacted_scalar)
+        .map(|value| json_string(&value))
+        .unwrap_or_else(|| "null".to_string())
+}
+
 fn json_string_array(values: &[String]) -> String {
     let elements = values
         .iter()
@@ -8012,6 +8434,158 @@ mod tests {
             })
             .count();
         assert_eq!(payload_count, 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vm_detonate_json_exposes_structured_guest_job_evidence() {
+        let root = temp_root("whoathere-cli-vm-project-json-evidence");
+        std::fs::write(
+            root.join("setup.py"),
+            "from setuptools import setup\nsetup(name='whoathere-clean', version='0.0.1', py_modules=['whoathere_clean'])\n",
+        )
+        .expect("setup py");
+        std::fs::write(root.join("whoathere_clean.py"), "VALUE = 'clean'\n").expect("module");
+        let helper = root.join("helper.sh");
+        write_new_file(
+            &helper,
+            br#"#!/bin/sh
+cat <<'JSON'
+{"protocol":"whoathere.guest_detonation.v1","schema_version":"whoathere.macos_vm.bundle.v1","agent_version":"0.2.0","job_id":"job-123","tool":"pip","command_class":"pip_install_detonation","fixture":"project_mirror","status":"ok","verdict":"allow_observed_clean","reason_codes":["token=supersecret"],"command_exit_code":0,"timed_out":false,"canary_access_detected":false,"network_attempt_detected":false,"filesystem_write_detected":false,"toolchain_available":true,"stdout_captured":false,"stderr_captured":false,"raw_canary_values_captured":false,"sync_back_enabled":false,"host_package_execution_enabled":false,"high_risk_package_execution_enabled":false,"project_mode":true,"project_workflow":"pip_project_install","project_import_module":"whoathere_clean","project_requirements_path":"none","vm_session_id":"session-123","exit_code":0}
+JSON
+exit 0
+"#,
+        )
+        .expect("helper script");
+        set_executable(&helper).expect("executable helper");
+
+        let result = evaluate_command(Command::VmDetonate {
+            tool: "pip".to_string(),
+            args: vec!["install".to_string(), ".".to_string()],
+            execute: true,
+            state_dir: Some(root.join("state").display().to_string()),
+            helper_path: Some(helper.display().to_string()),
+            workspace: Some(root.display().to_string()),
+            fixture: None,
+            timeout_seconds: Some(75),
+            json: true,
+        });
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result.output.contains("\"guest_job\": {"));
+        assert!(result
+            .output
+            .contains("\"protocol\": \"whoathere.guest_detonation.v1\""));
+        assert!(result
+            .output
+            .contains("\"verdict\": \"allow_observed_clean\""));
+        assert!(result
+            .output
+            .contains("\"project_workflow\": \"pip_project_install\""));
+        assert!(result
+            .output
+            .contains("\"raw_canary_values_captured\": false"));
+        assert!(result.output.contains("\"sync_back_enabled\": false"));
+        assert!(result
+            .output
+            .contains("\"host_package_execution_enabled\": false"));
+        assert!(!result.output.contains("supersecret"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vm_detonate_project_mirror_allows_narrow_package_data() {
+        let root = temp_root("whoathere-cli-vm-project-package-data");
+        std::fs::write(
+            root.join("setup.py"),
+            "from setuptools import setup\nsetup(name='whoathere-clean', version='0.0.1', packages=['whoathere_pkg'])\n",
+        )
+        .expect("setup py");
+        std::fs::create_dir_all(root.join("whoathere_pkg").join("data")).expect("data dir");
+        std::fs::write(
+            root.join("whoathere_pkg").join("__init__.py"),
+            "VALUE = 'clean'\n",
+        )
+        .expect("init");
+        std::fs::write(
+            root.join("whoathere_pkg").join("data").join("schema.json"),
+            r#"{"safe":true}"#,
+        )
+        .expect("schema");
+        std::fs::write(root.join("README.md"), "root readme omitted\n").expect("readme");
+
+        let result = evaluate_command(Command::VmDetonate {
+            tool: "pip".to_string(),
+            args: vec!["install".to_string(), ".".to_string()],
+            execute: false,
+            state_dir: Some(root.join("state").display().to_string()),
+            helper_path: Some("/tmp/nonexistent-helper".to_string()),
+            workspace: Some(root.display().to_string()),
+            fixture: None,
+            timeout_seconds: Some(30),
+            json: false,
+        });
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result.output.contains("project_safe_to_execute=true"));
+        assert!(result.output.contains("mirror_package_data_file_count=1"));
+        assert!(result.output.contains("python_package_data"));
+        assert!(result
+            .output
+            .contains("detonation_workspace_safe_package_data_included"));
+        assert!(result.output.contains("whoathere_pkg/data/schema.json"));
+        assert!(!result.output.contains("README.md"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vm_detonate_project_risky_package_files_fail_before_helper() {
+        let root = temp_root("whoathere-cli-vm-project-risky-data");
+        std::fs::write(
+            root.join("setup.py"),
+            "from setuptools import setup\nsetup(name='whoathere-clean', version='0.0.1', packages=['whoathere_pkg'])\n",
+        )
+        .expect("setup py");
+        std::fs::create_dir_all(root.join("whoathere_pkg")).expect("package dir");
+        std::fs::write(
+            root.join("whoathere_pkg").join("__init__.py"),
+            "VALUE = 'clean'\n",
+        )
+        .expect("init");
+        std::fs::write(root.join("whoathere_pkg").join("native.so"), "not real").expect("so");
+        let helper = root.join("helper.sh");
+        write_new_file(
+            &helper,
+            b"#!/bin/sh\nprintf 'helper should not run\\n'\nexit 0\n",
+        )
+        .expect("helper script");
+        set_executable(&helper).expect("executable helper");
+
+        let result = evaluate_command(Command::VmDetonate {
+            tool: "pip".to_string(),
+            args: vec!["install".to_string(), ".".to_string()],
+            execute: true,
+            state_dir: Some(root.join("state").display().to_string()),
+            helper_path: Some(helper.display().to_string()),
+            workspace: Some(root.display().to_string()),
+            fixture: None,
+            timeout_seconds: Some(75),
+            json: false,
+        });
+
+        assert_eq!(result.exit_code, ExitCode::Deny.code());
+        assert!(result.output.contains("project_safe_to_execute=false"));
+        assert!(result
+            .output
+            .contains("mirror_risky_file_exclusion_count=1"));
+        assert!(result
+            .output
+            .contains("detonation_workspace_risky_file_excluded"));
+        assert!(result
+            .output
+            .contains("project_risky_file_requires_manual_review"));
+        assert!(result.output.contains("helper_invoked=false"));
+        assert!(!result.output.contains("helper should not run"));
         let _ = std::fs::remove_dir_all(&root);
     }
 

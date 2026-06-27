@@ -173,6 +173,35 @@ import os,pathlib; pathlib.Path("pth-canary-read.marker").write_text("1") if os.
 EOF
 }
 
+write_package_data_project() {
+  project=$1
+  mkdir -p "$project/whoathere_pkg/data"
+  cat > "$project/setup.py" <<'EOF'
+from setuptools import setup
+setup(
+    name="whoathere-package-data",
+    version="0.0.1",
+    packages=["whoathere_pkg"],
+    package_data={"whoathere_pkg": ["data/schema.json"]},
+)
+EOF
+  cat > "$project/whoathere_pkg/__init__.py" <<'EOF'
+VALUE = "package-data"
+EOF
+  cat > "$project/whoathere_pkg/data/schema.json" <<'EOF'
+{"safe": true}
+EOF
+  cat > "$project/README.md" <<'EOF'
+root-level readme should not be mirrored as package data
+EOF
+}
+
+write_native_marker_project() {
+  project=$1
+  write_package_data_project "$project"
+  printf 'not-a-real-shared-object\n' > "$project/whoathere_pkg/native.so"
+}
+
 assert_no_host_markers() {
   project=$1
   if find "$project" \( -name 'canary-read.marker' -o -name 'import-canary-read.marker' -o -name 'pth-canary-read.marker' -o -name target \) -print | grep . >/dev/null; then
@@ -287,6 +316,11 @@ write_clean_project "$requirements_clean"
 printf '.\n' > "$requirements_clean/requirements.txt"
 run_project_case requirements_local_project 0 "$requirements_clean" install -r requirements.txt
 
+package_data="$WORK_ROOT/package-data"
+write_package_data_project "$package_data"
+run_dry_run_contains package_data_included "$package_data" "mirror_package_data_file_count=1" install .
+run_project_case package_data_project 0 "$package_data" install .
+
 setup_canary="$WORK_ROOT/setup-canary"
 write_setup_canary_project "$setup_canary"
 run_project_case setup_canary 20 "$setup_canary" install .
@@ -315,6 +349,10 @@ printf '%s\n' '-e .' > "$unsafe_requirements/requirements.txt"
 run_fail_closed_gate editable_requirement "$unsafe_requirements" install -r requirements.txt
 printf -- '-r ../outside.txt\n' > "$unsafe_requirements/requirements.txt"
 run_fail_closed_gate traversal_requirement "$unsafe_requirements" install -r requirements.txt
+
+native_marker="$WORK_ROOT/native-marker"
+write_native_marker_project "$native_marker"
+run_fail_closed_gate native_marker "$native_marker" install .
 
 secret_project="$WORK_ROOT/secret-project"
 write_clean_project "$secret_project"
