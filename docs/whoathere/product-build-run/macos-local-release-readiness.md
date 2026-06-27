@@ -177,7 +177,7 @@ empty temporary VM state directory while emitting a package-local `guest_reprovi
 `guest_reprovision_operator_action=run_guest_reprovision_command_in_interactive_admin_terminal`.
 Those extracted-artifact checks are now part of `scripts/whoathere-package-macos-preview.sh`, so
 future preview packages must pass the same smoke before the script reports success. The integrated
-script smoke was validated on this tree with
+script smoke for the npm/uv gate commit produced
 `dist/whoathere-macos-arm64-preview-109dba7.tar.gz` and printed `package_smoke_passed=true`. The
 package smoke now also verifies that the extracted npm/uv detonation validator is executable and
 passes shell syntax validation.
