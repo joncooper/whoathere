@@ -76,6 +76,7 @@ pub struct CommandResult {
 pub enum Command {
     Doctor {
         json: bool,
+        state_dir: Option<String>,
         helper_path: Option<String>,
     },
     Status,
@@ -436,6 +437,7 @@ pub fn parse_command(args: &[String]) -> Command {
         [] => Command::Help,
         [cmd, rest @ ..] if cmd == "doctor" => Command::Doctor {
             json: rest.iter().any(|arg| arg == "--json"),
+            state_dir: parse_flag_value(rest, "--state-dir"),
             helper_path: parse_helper_path(rest),
         },
         [cmd] if cmd == "status" => Command::Status,
@@ -636,7 +638,11 @@ pub fn evaluate_command(command: Command) -> CommandResult {
 
 fn render_command_text(command: Command) -> String {
     match command {
-        Command::Doctor { json, helper_path } => render_doctor(json, helper_path.as_deref()),
+        Command::Doctor {
+            json,
+            state_dir,
+            helper_path,
+        } => render_doctor(json, state_dir.as_deref(), helper_path.as_deref()),
         Command::Status => {
             let config = WhoaThereConfig::default();
             format!(
@@ -1123,7 +1129,7 @@ fn render_command_text(command: Command) -> String {
 fn command_help() -> String {
     concat!(
         "whoathere <",
-        "doctor [--json] [--helper <path>]",
+        "doctor [--json] [--state-dir <dir>] [--helper <path>]",
         "|status",
         "|config check <path>",
         "|policy check <path>",
@@ -3670,10 +3676,10 @@ fn string_vec(values: &[&str]) -> Vec<String> {
     values.iter().map(|value| (*value).to_string()).collect()
 }
 
-fn render_doctor(json: bool, helper_path: Option<&str>) -> String {
+fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>) -> String {
     let backend = UnsupportedBackend;
     let plan = backend.plan(ExecutionMode::Protected);
-    let config = macos_vm_config(None, None, None);
+    let config = macos_vm_config(state_dir, None, None);
     let status = status_from_config(&config, HostPlatform::current(), None);
     let helper = run_macos_vm_helper(
         helper_path,
@@ -3710,11 +3716,12 @@ fn render_doctor(json: bool, helper_path: Option<&str>) -> String {
             .collect::<Vec<_>>()
             .join(", ");
         return format!(
-            "{{\n  \"command\": \"whoathere doctor\",\n  \"status\": \"ok\",\n  \"release_target\": {},\n  \"release_claim\": {},\n  \"sandbox_label\": {},\n  \"high_risk_allowed\": {},\n  \"release_readiness_schema\": {},\n  \"release_stage\": {},\n  \"release_ready\": {},\n  \"release_blocking_reason_codes\": {},\n  \"implemented_workflows\": {},\n  \"fail_closed_workflows\": {},\n  \"manual_review_classes\": {},\n  \"next_actions\": {},\n  \"vm_ready\": {},\n  \"vm_reason_codes\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout_truncated\": {},\n  \"helper_stderr_truncated\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {},\n  \"scanner_available_count\": {},\n  \"scanner_required_count\": {},\n  \"scanners\": [{}]\n}}",
+            "{{\n  \"command\": \"whoathere doctor\",\n  \"status\": \"ok\",\n  \"release_target\": {},\n  \"release_claim\": {},\n  \"sandbox_label\": {},\n  \"high_risk_allowed\": {},\n  \"state_dir\": {},\n  \"release_readiness_schema\": {},\n  \"release_stage\": {},\n  \"release_ready\": {},\n  \"release_blocking_reason_codes\": {},\n  \"implemented_workflows\": {},\n  \"fail_closed_workflows\": {},\n  \"manual_review_classes\": {},\n  \"next_actions\": {},\n  \"vm_ready\": {},\n  \"vm_reason_codes\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout_truncated\": {},\n  \"helper_stderr_truncated\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {},\n  \"scanner_available_count\": {},\n  \"scanner_required_count\": {},\n  \"scanners\": [{}]\n}}",
             json_string(RELEASE_TARGET),
             json_string(RELEASE_CLAIM),
             json_string(plan.label),
             plan.high_risk_allowed,
+            json_string(&config.state_dir.display().to_string()),
             json_string(readiness.schema_version),
             json_string(readiness.release_stage),
             readiness.release_ready,
@@ -3759,11 +3766,12 @@ fn render_doctor(json: bool, helper_path: Option<&str>) -> String {
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "whoathere doctor\nstatus=ok\nrelease_target={}\nrelease_claim={}\nsandbox_label={}\nhigh_risk_allowed={}\nrelease_readiness_schema={}\nrelease_stage={}\nrelease_ready={}\nrelease_blocking_reason_codes={:?}\nimplemented_workflows={:?}\nfail_closed_workflows={:?}\nmanual_review_classes={:?}\nnext_actions={:?}\nvm_ready={}\nvm_reason_codes={:?}\n{}\nscanner_available_count={}\nscanner_required_count={}\n{}",
+        "whoathere doctor\nstatus=ok\nrelease_target={}\nrelease_claim={}\nsandbox_label={}\nhigh_risk_allowed={}\nstate_dir={}\nrelease_readiness_schema={}\nrelease_stage={}\nrelease_ready={}\nrelease_blocking_reason_codes={:?}\nimplemented_workflows={:?}\nfail_closed_workflows={:?}\nmanual_review_classes={:?}\nnext_actions={:?}\nvm_ready={}\nvm_reason_codes={:?}\n{}\nscanner_available_count={}\nscanner_required_count={}\n{}",
         RELEASE_TARGET,
         RELEASE_CLAIM,
         plan.label,
         plan.high_risk_allowed,
+        config.state_dir.display(),
         readiness.schema_version,
         readiness.release_stage,
         readiness.release_ready,
@@ -8107,6 +8115,26 @@ mod tests {
     }
 
     #[test]
+    fn parses_doctor_state_dir_and_helper() {
+        let args = vec![
+            "doctor".to_string(),
+            "--json".to_string(),
+            "--state-dir".to_string(),
+            "/tmp/whoathere-vm".to_string(),
+            "--helper".to_string(),
+            "/tmp/helper".to_string(),
+        ];
+        assert_eq!(
+            parse_command(&args),
+            Command::Doctor {
+                json: true,
+                state_dir: Some("/tmp/whoathere-vm".to_string()),
+                helper_path: Some("/tmp/helper".to_string()),
+            }
+        );
+    }
+
+    #[test]
     fn parses_vm_status_command() {
         let args = vec![
             "vm".to_string(),
@@ -8943,6 +8971,7 @@ exit 0
     fn doctor_json_reports_vm_release_readiness_without_enabling_runtime() {
         let result = evaluate_command(Command::Doctor {
             json: true,
+            state_dir: None,
             helper_path: None,
         });
         assert_eq!(result.exit_code, 0);
@@ -8956,6 +8985,7 @@ exit 0
             "\"release_readiness_schema\": \"whoathere.macos_local_release_readiness.v1\""
         ));
         assert!(result.output.contains("\"release_ready\": false"));
+        assert!(result.output.contains("\"state_dir\":"));
         assert!(result
             .output
             .contains("release_npm_vm_detonation_not_verified"));
@@ -8967,6 +8997,21 @@ exit 0
         assert!(result.output.contains("\"vm_ready\": false"));
         assert!(result.output.contains("\"helper_available\": false"));
         assert!(result.output.contains("macos_vm_runtime_not_verified"));
+        assert!(result.output.contains("\"high_risk_allowed\": false"));
+    }
+
+    #[test]
+    fn doctor_accepts_state_dir_for_release_readiness_targeting() {
+        let result = evaluate_command(Command::Doctor {
+            json: true,
+            state_dir: Some("/private/tmp/whoathere-doctor-state".to_string()),
+            helper_path: None,
+        });
+        assert_eq!(result.exit_code, 0);
+        assert!(result
+            .output
+            .contains("\"state_dir\": \"/private/tmp/whoathere-doctor-state\""));
+        assert!(result.output.contains("\"release_ready\": false"));
         assert!(result.output.contains("\"high_risk_allowed\": false"));
     }
 

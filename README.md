@@ -16,6 +16,7 @@ Useful local checks:
 ```sh
 cargo test --manifest-path whoathere/Cargo.toml
 cargo run --manifest-path whoathere/Cargo.toml -p whoathere-cli -- doctor
+cargo run --manifest-path whoathere/Cargo.toml -p whoathere-cli -- doctor --json --state-dir "$HOME/.whoathere/macos-vm-validation" --helper /absolute/path/to/whoathere-macos-vm-helper
 cargo run --manifest-path whoathere/Cargo.toml -p whoathere-cli -- endpoint setup --shim-dir /tmp/whoathere-shims --workspace "$PWD" --vault-origin http://127.0.0.1:4873 --replay-store /tmp/whoathere-replay-store.txt
 cargo run --manifest-path whoathere/Cargo.toml -p whoathere-cli -- evidence providers --json --require-ready
 cargo run --manifest-path whoathere/Cargo.toml -p whoathere-cli -- evidence providers --json --require-ready --scope current

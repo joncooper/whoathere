@@ -45,7 +45,7 @@ The macOS local release is ready only when all of the following are true:
 | Native and binary artifacts | Fail closed/manual review | Native markers, binary wheels, direct URLs, VCS, editable, and unknown classes are not auto-allowed. |
 | Network evidence | Partial | Controlled fixtures and reason codes exist, but robust DNS/HTTPS observation is still marker-based rather than a full network monitor. |
 | Sync-back | Not implemented | Current posture is detonation/admission evidence only. Host sync-back remains disabled. |
-| Doctor/readiness UX | Improved in this checkpoint | `whoathere doctor --json` now reports release readiness, implemented workflows, fail-closed workflows, manual-review classes, blocking reason codes, and next actions. |
+| Doctor/readiness UX | Improved in this checkpoint | `whoathere doctor --json --state-dir <dir> --helper <path>` now reports release readiness, the inspected VM state directory, implemented workflows, fail-closed workflows, manual-review classes, blocking reason codes, and next actions. |
 | Packaging/onboarding | Not release-ready | Installer, signed artifacts, codesign/notarization verification, and user-facing first-run docs still need a release pass. |
 | Comparator/red-team gate | Not complete | Existing fixtures are useful, but the release still needs a deliberate comparator pass against GuardDog, OSV/pip-audit class tools, and recent npm/PyPI attack patterns. |
 
@@ -80,9 +80,10 @@ cargo test --manifest-path whoathere/Cargo.toml
 cargo clippy --manifest-path whoathere/Cargo.toml --all-targets -- -D warnings
 rg -n "[^[:ascii:]]" docs/whoathere/product-build-run/macos-local-release-readiness.md whoathere/crates/whoathere-cli/src/lib.rs whoathere/crates/whoathere-macos-vm/src/lib.rs
 cargo run --quiet --manifest-path whoathere/Cargo.toml --bin whoathere -- doctor --json
+cargo run --quiet --manifest-path whoathere/Cargo.toml --bin whoathere -- doctor --json --state-dir /private/tmp/whoathere-doctor-state
 ```
 
-The `doctor --json` smoke reported `release_ready=false`, `high_risk_allowed=false`, `vm_ready=false`, implemented pip/local detonation workflows, fail-closed npm/uv/public-resolution/sync-back workflows, and release blockers for npm, uv, public package resolution, sync-back, packaging, comparator/red-team validation, scanner availability, VM runtime readiness, and signature/notarization.
+The `doctor --json` smokes reported `release_ready=false`, `high_risk_allowed=false`, `vm_ready=false`, the inspected VM state directory, implemented pip/local detonation workflows, fail-closed npm/uv/public-resolution/sync-back workflows, and release blockers for npm, uv, public package resolution, sync-back, packaging, comparator/red-team validation, scanner availability, VM runtime readiness, and signature/notarization.
 
 Live VM validation is not required for this checkpoint because the implementation slice changes only readiness reporting and documentation. The next implementation slices that change VM behavior must include live VM checks for every claimed workflow.
 
@@ -91,8 +92,9 @@ Live VM validation is not required for this checkpoint because the implementatio
 Focus on VM lifecycle and onboarding UX before expanding package-manager coverage:
 
 1. Run `doctor`, `vm status`, `vm init`, `vm start`, `vm health`, `vm suspend`, `vm reset`, and `vm prune` against the validation VM from a clean user perspective.
-2. Remove or document any hidden sudo, signing, provisioning, or state-directory assumptions.
-3. Make failure messages actionable without exposing secrets or raw guest output.
-4. Update onboarding docs with exact first-run commands, expected resource use, and known limitations.
+2. Use `doctor --json --state-dir "$HOME/.whoathere/macos-vm-validation" --helper <helper>` as the machine-readable preflight for that lifecycle pass.
+3. Remove or document any hidden sudo, signing, provisioning, or state-directory assumptions.
+4. Make failure messages actionable without exposing secrets or raw guest output.
+5. Update onboarding docs with exact first-run commands, expected resource use, and known limitations.
 
 After that, move to npm VM detonation. If npm cannot be made reliable without extra guest provisioning, keep npm explicitly fail-closed and document the blocker instead of expanding the release claim.

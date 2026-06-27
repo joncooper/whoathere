@@ -71,6 +71,7 @@ Still gated:
 ```sh
 cargo test --manifest-path whoathere/Cargo.toml
 cargo run --manifest-path whoathere/Cargo.toml -p whoathere-cli -- doctor
+cargo run --manifest-path whoathere/Cargo.toml -p whoathere-cli -- doctor --json --state-dir "$HOME/.whoathere/macos-vm-validation" --helper /absolute/path/to/whoathere-macos-vm-helper
 cargo run --manifest-path whoathere/Cargo.toml -p whoathere-cli -- status
 cargo run --manifest-path whoathere/Cargo.toml -p whoathere-cli -- vm status --helper /absolute/path/to/whoathere-macos-vm-helper --json
 cargo run --manifest-path whoathere/Cargo.toml -p whoathere-cli -- vm health --helper /absolute/path/to/whoathere-macos-vm-helper
