@@ -1662,6 +1662,7 @@ fn render_vm_status(
         ],
     );
     let effective_reason_codes = effective_vm_reason_codes(&status, &helper);
+    let lifecycle_reason_codes = vm_lifecycle_reason_codes(&status, &helper);
     if json {
         return render_vm_status_json(
             &status,
@@ -1670,10 +1671,11 @@ fn render_vm_status(
             &provisioning,
             &helper,
             &effective_reason_codes,
+            &lifecycle_reason_codes,
         );
     }
     let mut output = format!(
-        "whoathere vm status\nschema_version={}\nrelease_target={}\ntarget_arch={}\nvm_boundary={}\nnetwork_model={}\nsync_policy={}\nstate_dir={}\nhost_os={}\nhost_arch={}\nmemory_mib={}\ndisk_gib={}\nauto_suspend_minutes={}\nstate_dir_exists={}\nmanifest_path={}\nmanifest_present={}\nmanifest_valid={}\nhelper_ready_marker_present={}\nimage_ready_marker_present={}\nready={}\nreason_codes={:?}\n{}\n{}",
+        "whoathere vm status\nschema_version={}\nrelease_target={}\ntarget_arch={}\nvm_boundary={}\nnetwork_model={}\nsync_policy={}\nstate_dir={}\nhost_os={}\nhost_arch={}\nmemory_mib={}\ndisk_gib={}\nauto_suspend_minutes={}\nstate_dir_exists={}\nmanifest_path={}\nmanifest_present={}\nmanifest_valid={}\nhelper_ready_marker_present={}\nimage_ready_marker_present={}\nlifecycle_ready={}\nruntime_ready={}\nready={}\nreason_codes={:?}\nlifecycle_reason_codes={:?}\n{}\n{}",
         status.schema_version,
         status.release_target,
         status.target_arch,
@@ -1692,8 +1694,11 @@ fn render_vm_status(
         status.manifest_valid,
         status.helper_ready_marker_present,
         status.image_ready_marker_present,
+        lifecycle_reason_codes.is_empty(),
+        effective_reason_codes.is_empty(),
         effective_reason_codes.is_empty(),
         effective_reason_codes,
+        lifecycle_reason_codes,
         provisioning.render_text(),
         helper.render_text()
     );
@@ -4194,6 +4199,15 @@ fn effective_vm_reason_codes(
     reasons
 }
 
+fn vm_lifecycle_reason_codes(
+    status: &whoathere_macos_vm::MacosVmStatus,
+    helper: &MacosVmHelperOutput,
+) -> Vec<String> {
+    let mut reasons = effective_vm_reason_codes(status, helper);
+    reasons.retain(|reason| reason != "macos_vm_runtime_not_verified");
+    reasons
+}
+
 fn render_vm_status_json(
     status: &whoathere_macos_vm::MacosVmStatus,
     manifest_path: &str,
@@ -4201,9 +4215,10 @@ fn render_vm_status_json(
     provisioning: &MacosVmGuestProvisioningSummary,
     helper: &MacosVmHelperOutput,
     effective_reason_codes: &[String],
+    lifecycle_reason_codes: &[String],
 ) -> String {
     format!(
-        "{{\n  \"command\": \"whoathere vm status\",\n  \"schema_version\": {},\n  \"release_target\": {},\n  \"target_arch\": {},\n  \"vm_boundary\": {},\n  \"network_model\": {},\n  \"sync_policy\": {},\n  \"state_dir\": {},\n  \"host_os\": {},\n  \"host_arch\": {},\n  \"memory_mib\": {},\n  \"disk_gib\": {},\n  \"auto_suspend_minutes\": {},\n  \"state_dir_exists\": {},\n  \"manifest_path\": {},\n  \"manifest_present\": {},\n  \"manifest_valid\": {},\n  \"helper_ready_marker_present\": {},\n  \"image_ready_marker_present\": {},\n  \"ready\": {},\n  \"reason_codes\": [{}],\n  \"manifest_load_reason\": {},\n  \"guest_provisioning\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout_truncated\": {},\n  \"helper_stderr_truncated\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {}\n}}",
+        "{{\n  \"command\": \"whoathere vm status\",\n  \"schema_version\": {},\n  \"release_target\": {},\n  \"target_arch\": {},\n  \"vm_boundary\": {},\n  \"network_model\": {},\n  \"sync_policy\": {},\n  \"state_dir\": {},\n  \"host_os\": {},\n  \"host_arch\": {},\n  \"memory_mib\": {},\n  \"disk_gib\": {},\n  \"auto_suspend_minutes\": {},\n  \"state_dir_exists\": {},\n  \"manifest_path\": {},\n  \"manifest_present\": {},\n  \"manifest_valid\": {},\n  \"helper_ready_marker_present\": {},\n  \"image_ready_marker_present\": {},\n  \"lifecycle_ready\": {},\n  \"runtime_ready\": {},\n  \"ready\": {},\n  \"reason_codes\": [{}],\n  \"lifecycle_reason_codes\": [{}],\n  \"manifest_load_reason\": {},\n  \"guest_provisioning\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout_truncated\": {},\n  \"helper_stderr_truncated\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {}\n}}",
         json_string(status.schema_version),
         json_string(status.release_target),
         json_string(status.target_arch),
@@ -4222,8 +4237,15 @@ fn render_vm_status_json(
         status.manifest_valid,
         status.helper_ready_marker_present,
         status.image_ready_marker_present,
+        lifecycle_reason_codes.is_empty(),
+        effective_reason_codes.is_empty(),
         effective_reason_codes.is_empty(),
         effective_reason_codes
+            .iter()
+            .map(|reason| json_string(reason))
+            .collect::<Vec<_>>()
+            .join(", "),
+        lifecycle_reason_codes
             .iter()
             .map(|reason| json_string(reason))
             .collect::<Vec<_>>()
@@ -4289,7 +4311,7 @@ fn macos_local_release_readiness(
     scanner_available_count: usize,
     scanner_required_count: usize,
 ) -> MacosLocalReleaseReadiness {
-    let mut blocking_reason_codes = effective_vm_reason_codes(status, helper);
+    let mut blocking_reason_codes = vm_lifecycle_reason_codes(status, helper);
     blocking_reason_codes.extend(provisioning.reason_codes());
     blocking_reason_codes.extend(helper.reason_codes.iter().cloned());
 
@@ -4350,8 +4372,8 @@ fn macos_local_release_readiness(
         ]),
         blocking_reason_codes,
         next_actions: string_vec(&[
-            "validate default VM image lifecycle without hidden sudo requirements",
             "reprovision the stopped VM with explicit Node/npm and uv tool sources until receipt and health prove toolchains",
+            "start the VM only when collecting live runtime or detonation proof, then suspend it after validation",
             "make npm and uv detonation either work in VM or remain explicitly unclaimed",
             "keep public package resolution out of the preview unless a separate VM-only resolver policy is implemented",
             "keep sync-back disabled for the preview unless a separately tested whitelist is implemented",
@@ -4385,6 +4407,7 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
         ],
     );
     let effective_vm_reason_codes = effective_vm_reason_codes(&status, &helper);
+    let vm_lifecycle_reason_codes = vm_lifecycle_reason_codes(&status, &helper);
     let scanners = scanner_adapters();
     let scanner_available = scanners
         .iter()
@@ -4421,7 +4444,7 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
             .collect::<Vec<_>>()
             .join(", ");
         return format!(
-            "{{\n  \"command\": \"whoathere doctor\",\n  \"status\": \"ok\",\n  \"release_target\": {},\n  \"release_claim\": {},\n  \"sandbox_label\": {},\n  \"high_risk_allowed\": {},\n  \"state_dir\": {},\n  \"vm_manifest_path\": {},\n  \"vm_manifest_load_reason\": {},\n  \"guest_provisioning\": {},\n  \"guest_reprovision_command\": {},\n  \"release_readiness_schema\": {},\n  \"release_stage\": {},\n  \"release_ready\": {},\n  \"release_blocking_reason_codes\": {},\n  \"scanner_release_blocking\": {},\n  \"scanner_release_scope\": {},\n  \"package_acquisition_policy\": {},\n  \"implemented_workflows\": {},\n  \"fail_closed_workflows\": {},\n  \"manual_review_classes\": {},\n  \"next_actions\": {},\n  \"vm_ready\": {},\n  \"vm_reason_codes\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout_truncated\": {},\n  \"helper_stderr_truncated\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {},\n  \"scanner_available_count\": {},\n  \"scanner_required_count\": {},\n  \"scanners\": [{}]\n}}",
+            "{{\n  \"command\": \"whoathere doctor\",\n  \"status\": \"ok\",\n  \"release_target\": {},\n  \"release_claim\": {},\n  \"sandbox_label\": {},\n  \"high_risk_allowed\": {},\n  \"state_dir\": {},\n  \"vm_manifest_path\": {},\n  \"vm_manifest_load_reason\": {},\n  \"guest_provisioning\": {},\n  \"guest_reprovision_command\": {},\n  \"release_readiness_schema\": {},\n  \"release_stage\": {},\n  \"release_ready\": {},\n  \"release_blocking_reason_codes\": {},\n  \"scanner_release_blocking\": {},\n  \"scanner_release_scope\": {},\n  \"package_acquisition_policy\": {},\n  \"implemented_workflows\": {},\n  \"fail_closed_workflows\": {},\n  \"manual_review_classes\": {},\n  \"next_actions\": {},\n  \"vm_lifecycle_ready\": {},\n  \"vm_lifecycle_reason_codes\": {},\n  \"vm_runtime_ready\": {},\n  \"vm_ready\": {},\n  \"vm_reason_codes\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout_truncated\": {},\n  \"helper_stderr_truncated\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {},\n  \"scanner_available_count\": {},\n  \"scanner_required_count\": {},\n  \"scanners\": [{}]\n}}",
             json_string(RELEASE_TARGET),
             json_string(RELEASE_CLAIM),
             json_string(plan.label),
@@ -4448,6 +4471,9 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
             json_string_array(&readiness.fail_closed_workflows),
             json_string_array(&readiness.manual_review_classes),
             json_string_array(&readiness.next_actions),
+            vm_lifecycle_reason_codes.is_empty(),
+            json_string_array(&vm_lifecycle_reason_codes),
+            effective_vm_reason_codes.is_empty(),
             effective_vm_reason_codes.is_empty(),
             json_string_array(&effective_vm_reason_codes),
             helper
@@ -4484,7 +4510,7 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "whoathere doctor\nstatus=ok\nrelease_target={}\nrelease_claim={}\nsandbox_label={}\nhigh_risk_allowed={}\nstate_dir={}\nvm_manifest_path={}\nvm_manifest_load_reason={}\n{}\nguest_reprovision_command={}\nrelease_readiness_schema={}\nrelease_stage={}\nrelease_ready={}\nrelease_blocking_reason_codes={:?}\nscanner_release_blocking={}\nscanner_release_scope={}\npackage_acquisition_policy={}\nimplemented_workflows={:?}\nfail_closed_workflows={:?}\nmanual_review_classes={:?}\nnext_actions={:?}\nvm_ready={}\nvm_reason_codes={:?}\n{}\nscanner_available_count={}\nscanner_required_count={}\n{}",
+        "whoathere doctor\nstatus=ok\nrelease_target={}\nrelease_claim={}\nsandbox_label={}\nhigh_risk_allowed={}\nstate_dir={}\nvm_manifest_path={}\nvm_manifest_load_reason={}\n{}\nguest_reprovision_command={}\nrelease_readiness_schema={}\nrelease_stage={}\nrelease_ready={}\nrelease_blocking_reason_codes={:?}\nscanner_release_blocking={}\nscanner_release_scope={}\npackage_acquisition_policy={}\nimplemented_workflows={:?}\nfail_closed_workflows={:?}\nmanual_review_classes={:?}\nnext_actions={:?}\nvm_lifecycle_ready={}\nvm_lifecycle_reason_codes={:?}\nvm_runtime_ready={}\nvm_ready={}\nvm_reason_codes={:?}\n{}\nscanner_available_count={}\nscanner_required_count={}\n{}",
         RELEASE_TARGET,
         RELEASE_CLAIM,
         plan.label,
@@ -4507,6 +4533,9 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
         readiness.fail_closed_workflows,
         readiness.manual_review_classes,
         readiness.next_actions,
+        vm_lifecycle_reason_codes.is_empty(),
+        vm_lifecycle_reason_codes,
+        effective_vm_reason_codes.is_empty(),
         effective_vm_reason_codes.is_empty(),
         effective_vm_reason_codes,
         helper.render_text(),
@@ -9435,6 +9464,8 @@ mod tests {
         });
 
         assert_eq!(result.exit_code, 0);
+        assert!(result.output.contains("lifecycle_ready=true"));
+        assert!(result.output.contains("runtime_ready=false"));
         assert!(result.output.contains("macos_vm_runtime_not_verified"));
         assert!(!result.output.contains("macos_vm_helper_not_ready"));
         assert!(!result.output.contains("macos_vm_image_not_ready"));
@@ -9469,7 +9500,18 @@ mod tests {
         });
 
         assert_eq!(result.exit_code, 0);
-        assert!(result.output.contains("macos_vm_runtime_not_verified"));
+        let release_blockers = result
+            .output
+            .split("\"release_blocking_reason_codes\": [")
+            .nth(1)
+            .and_then(|value| value.split(']').next())
+            .expect("release blockers");
+        assert!(!release_blockers.contains("macos_vm_runtime_not_verified"));
+        assert!(result.output.contains("\"vm_lifecycle_ready\": true"));
+        assert!(result.output.contains("\"vm_runtime_ready\": false"));
+        assert!(result
+            .output
+            .contains("\"vm_reason_codes\": [\"macos_vm_runtime_not_verified\"]"));
         assert!(!result.output.contains("macos_vm_helper_not_ready"));
         assert!(!result.output.contains("macos_vm_image_not_ready"));
 
