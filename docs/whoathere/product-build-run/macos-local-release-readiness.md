@@ -224,8 +224,9 @@ The new `whoathere vm validate-npm-uv` wrapper prints the post-provision execute
 and delegates to `validate-npm-uv-detonation.sh` only with `--execute`. On the current stale
 validation VM, the wrapper exits 64 before VM start with
 `guest_tooling_not_ready_for_npm_uv_validation=true`, the provisioning preflight output, and
-`mutation=false`. This keeps npm/uv release proof fail-closed while making the post-provision gate a
-normal CLI workflow.
+`mutation=false`, without dumping the full doctor/helper JSON into the common stale-tooling failure
+path. This keeps npm/uv release proof fail-closed while making the post-provision gate a normal CLI
+workflow.
 
 The preview packaging path now has `scripts/whoathere-package-macos-preview.sh`. It validates the
 Rust workspace, builds the release CLI, locally signs the CLI, runs Swift helper tests, builds and

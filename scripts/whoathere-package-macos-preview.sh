@@ -171,6 +171,11 @@ smoke_package() {
   grep -q 'status=execute' "$CLI_NPM_UV_OUTPUT"
   grep -q 'guest_tooling_not_ready_for_npm_uv_validation=true' "$CLI_NPM_UV_OUTPUT"
   grep -q 'ready_for_sudo_provisioning=false' "$CLI_NPM_UV_OUTPUT"
+  grep -q '^script_stdout=$' "$CLI_NPM_UV_OUTPUT"
+  if grep -q 'whoathere doctor' "$CLI_NPM_UV_OUTPUT"; then
+    echo "packaged npm/uv validation should not dump doctor JSON on stale tooling" >&2
+    exit 1
+  fi
   /usr/bin/codesign --verify --strict --verbose=2 "$EXTRACTED_CLI" >/dev/null
   /usr/bin/codesign --verify --strict --verbose=2 "$EXTRACTED_HELPER" >/dev/null
   "$EXTRACTED_CLI" doctor --json --state-dir "$EXTRACTED_STATE" --helper "$EXTRACTED_HELPER" > "$DOCTOR_OUTPUT"

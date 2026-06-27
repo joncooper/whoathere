@@ -50,8 +50,8 @@ require_guest_tooling_receipt() {
   doctor_output=$("$WHOATHERE_BIN" doctor --json --state-dir "$STATE_DIR" --helper "$HELPER" 2>&1)
   doctor_status=$?
   set -e
-  printf '%s\n' "$doctor_output"
   if [ "$doctor_status" -ne 0 ]; then
+    printf '%s\n' "$doctor_output"
     echo "doctor_failed_before_npm_uv_validation=true" >&2
     exit "$doctor_status"
   fi
@@ -63,6 +63,7 @@ require_guest_tooling_receipt() {
       exit 64
       ;;
   esac
+  printf '%s\n' "$doctor_output"
 }
 
 poll_guest_health() {
