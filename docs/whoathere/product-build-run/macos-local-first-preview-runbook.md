@@ -134,13 +134,23 @@ Submit only after the dry run reports Developer ID Application signed binaries a
 credentials are configured:
 
 ```sh
+scripts/whoathere-store-notary-credentials.sh
+```
+
+This prompts through `xcrun notarytool` for the Apple app-specific password and stores the
+credential in macOS Keychain under the default profile `whoathere-notary`. Generate the
+app-specific password from the Apple ID account page; do not store it in `.env`, shell history, or
+the repository.
+
+```sh
 WHOATHERE_NOTARY_PROFILE=whoathere-notary \
   scripts/whoathere-notarize-macos-release.sh --submit dist/whoathere-macos-arm64-preview-<git-sha>.tar.gz
 ```
 
 Alternatively set `WHOATHERE_NOTARY_APPLE_ID`, `WHOATHERE_NOTARY_TEAM_ID`, and
-`WHOATHERE_NOTARY_PASSWORD`. Zip archives are submitted for Apple notarization but are not stapled;
-the script records this explicitly as `stapling_supported_for_archive=false`.
+`WHOATHERE_NOTARY_PASSWORD` for non-interactive automation. Prefer the Keychain profile for local
+release work. Zip archives are submitted for Apple notarization but are not stapled; the script
+records this explicitly as `stapling_supported_for_archive=false`.
 
 ## Initialize Or Reuse The VM
 
