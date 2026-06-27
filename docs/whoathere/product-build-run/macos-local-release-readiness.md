@@ -45,7 +45,7 @@ The macOS local release is ready only when all of the following are true:
 | Public package acquisition | Not implemented | Public PyPI/npm resolver behavior remains blocked or deferred; there is no public fallback claim. |
 | Native and binary artifacts | Fail closed/manual review | Native markers, binary wheels, direct URLs, VCS, editable, and unknown classes are not auto-allowed. |
 | Network evidence | Partial | Controlled fixtures and reason codes exist, but robust DNS/HTTPS observation is still marker-based rather than a full network monitor. |
-| Sync-back | Not implemented | Current posture is detonation/admission evidence only. Host sync-back remains disabled. |
+| Sync-back | Explicitly out of scope for preview | Current posture is detonation/admission evidence only. Host sync-back remains disabled and is not required for the preview release gate. Future sync-back still requires a deny-by-default whitelist and live validation before any claim changes. |
 | Doctor/readiness UX | Improved in this checkpoint | `whoathere doctor --json --state-dir <dir> --helper <path>` now reports release readiness, the inspected VM state directory, guest provisioning receipt/toolchain status, implemented workflows, fail-closed workflows, manual-review classes, blocking reason codes, and next actions. |
 | Default VM manifest loading | Implemented for CLI status/readiness | `vm status` and `doctor` now load `<state-dir>/bundle/image.manifest` by default, tolerate the helper restore-image manifest shape, and report signature verification as the real blocker instead of falsely reporting a missing manifest. |
 | Packaging/onboarding | Partial | [macOS local-first preview runbook](macos-local-first-preview-runbook.md) now documents first-run build, signing, VM init, provisioning, health, detonation validation, limitations, and cleanup. Installer, signed artifacts, codesign/notarization verification, and release packaging still need a release pass. |
@@ -55,7 +55,7 @@ The macOS local release is ready only when all of the following are true:
 
 WhoaThere is not yet ready for the macOS-only local-first release target.
 
-The current tree is a credible VM-backed Python local project detonation prototype with strong fail-closed behavior for the workflows it claims. It is not yet a ready-to-use developer release because npm, uv, public package acquisition, sync-back decision, release packaging, and comparator/red-team validation are still incomplete.
+The current tree is a credible VM-backed Python local project detonation prototype with strong fail-closed behavior for the workflows it claims. It is not yet a ready-to-use developer release because npm, uv, public package acquisition, release packaging, and comparator/red-team validation are still incomplete. Sync-back is deliberately disabled for this preview rather than an unresolved release requirement.
 
 ## Machine-Readable Gate
 
@@ -98,7 +98,7 @@ sh -n whoathere/helpers/macos-vm-helper/scripts/provision-guest-readiness.sh
 cc -O2 -Wall -Wextra -target arm64-apple-macos13 -fsyntax-only whoathere/helpers/macos-vm-helper/guest-agent/whoathere-guest-ready.c
 ```
 
-The `doctor --json` smokes reported `release_ready=false`, `high_risk_allowed=false`, `vm_ready=false`, the inspected VM state directory, implemented pip/local detonation workflows, fail-closed npm/uv/public-resolution/sync-back workflows, and release blockers for npm, uv, public package resolution, sync-back, packaging, comparator/red-team validation, scanner availability, VM runtime readiness, and signature/notarization.
+The `doctor --json` smokes reported `release_ready=false`, `high_risk_allowed=false`, `vm_ready=false`, the inspected VM state directory, implemented pip/local detonation workflows, fail-closed npm/uv/public-resolution/sync-back workflows, and release blockers for npm, uv, public package resolution, packaging, comparator/red-team validation, scanner availability, VM runtime readiness, and signature/notarization. Sync-back is reported as disabled for the preview rather than as a readiness blocker.
 
 The live validation VM smoke now reports `manifest_present=true`, `manifest_path=/Users/jdc/.whoathere/macos-vm-validation/bundle/image.manifest`, and `macos_vm_manifest_signature_not_verified`; it no longer reports `macos_vm_image_manifest_missing` for the prepared validation state directory.
 
@@ -129,8 +129,9 @@ Focus on VM lifecycle and onboarding UX before expanding package-manager coverag
 2. Reprovision the stopped validation VM with `sudo WHOATHERE_NODE_RUNTIME_DIR=/Users/jdc/.nvm/versions/node/v22.22.3 WHOATHERE_UV_BINARY=/Users/jdc/.local/bin/uv /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/scripts/provision-guest-readiness.sh /Users/jdc/.whoathere/macos-vm-validation`, then rerun status and health to prove the receipt and live guest report `guest_toolchain_npm_available=true` and `guest_toolchain_uv_available=true`.
 3. Run the npm and uv fixture suites. Keep npm/uv release claims fail-closed until those live checks pass.
 4. Turn the helper signing requirement into first-run onboarding so users do not run an unsigned helper after `swift build`.
-5. Decide whether force-stop is acceptable release behavior for `vm suspend`, or whether guest-requested stop must be made reliable before release.
-6. Make remaining failure messages actionable without exposing secrets or raw guest output.
-7. Use the macOS local-first preview runbook as the onboarding baseline and keep it updated as npm/uv, sync-back, scanner, and packaging claims change.
+5. Keep sync-back disabled for the preview unless a separately tested deny-by-default whitelist is implemented.
+6. Decide whether force-stop is acceptable release behavior for `vm suspend`, or whether guest-requested stop must be made reliable before release.
+7. Make remaining failure messages actionable without exposing secrets or raw guest output.
+8. Use the macOS local-first preview runbook as the onboarding baseline and keep it updated as npm/uv, sync-back, scanner, and packaging claims change.
 
 After that, move to npm VM detonation. If npm cannot be made reliable without extra guest provisioning, keep npm explicitly fail-closed and document the blocker instead of expanding the release claim.

@@ -58,9 +58,9 @@ Still gated:
 - Treating launch planning as permission to execute installs.
 - PATH mutation.
 - Linux namespace/seccomp/Landlock runner.
-- macOS VM package detonation and sync-back. The local lifecycle helper exists, but release use
-  still requires a booted Apple Silicon VM, guest readiness proof, signature verification, and
-  package-execution wiring.
+- macOS VM package detonation is preview-only and limited to claimed local workflows after live
+  guest proof. Sync-back is disabled for the macOS local preview. Broader release use still requires
+  signature verification, npm/uv live validation, scanner/comparator validation, and packaging.
 - Production Vault service persistence/full AWS deployment and public registry fetch.
 - Production dynamic detonation of arbitrary install/build/import paths.
 - Real isolated scanner/detonator worker execution, durable behavior logs, worker scheduling/auth, and production review queue.

@@ -3836,7 +3836,6 @@ fn macos_local_release_readiness(
         "release_npm_vm_detonation_not_verified",
         "release_uv_vm_detonation_not_verified",
         "release_public_package_resolution_policy_not_implemented",
-        "release_safe_sync_back_not_implemented",
         "release_packaging_and_onboarding_not_complete",
         "release_comparator_red_team_gate_not_complete",
         "release_signature_notarization_not_complete",
@@ -3851,6 +3850,7 @@ fn macos_local_release_readiness(
         implemented_workflows: string_vec(&[
             "pip.local_project.install",
             "pip.local_requirements.local_only",
+            "host.sync_back.disabled_preview",
             "vm.fixture_detonation",
             "vm.release_plan.admission_model",
         ]),
@@ -3876,8 +3876,8 @@ fn macos_local_release_readiness(
             "validate default VM image lifecycle without hidden sudo requirements",
             "reprovision the stopped VM with explicit Node/npm and uv tool sources until receipt and health prove toolchains",
             "make npm detonation either work in VM or remain explicitly unclaimed",
-            "decide detonation-only versus narrow tested sync-back for this release",
-            "write install/onboarding/troubleshooting docs for Apple Silicon users",
+            "keep sync-back disabled for the preview unless a separately tested whitelist is implemented",
+            "complete signed packaging and notarization docs for Apple Silicon users",
             "run comparator and red-team fixture gate before release tagging",
         ]),
     }
@@ -4166,7 +4166,7 @@ fn render_vm_sync_policy(json: bool) -> String {
             .collect::<Vec<_>>()
             .join(", ");
         return format!(
-            "{{\n  \"command\": \"whoathere vm sync-policy\",\n  \"release_target\": {},\n  \"sync_policy\": {},\n  \"auto_sync_classes\": [\"npm.registry_tarball.v1\", \"pypi.pure_wheel.v1\"],\n  \"deny_default_classes\": [\"direct_vcs_editable.v1\", \"unsupported_unknown.v1\"],\n  \"manual_review_classes\": [\"pypi.sdist_pep517.v1\", \"pypi.binary_wheel.v1\", \"native_extension.v1\"],\n  \"sync_allowlist\": [{}],\n  \"required_evidence\": {},\n  \"scanner_adapters\": [{}]\n}}",
+            "{{\n  \"command\": \"whoathere vm sync-policy\",\n  \"release_target\": {},\n  \"sync_policy\": {},\n  \"sync_back_enabled\": false,\n  \"policy_scope\": \"future_allowlist_not_release_authorization\",\n  \"auto_sync_classes\": [\"npm.registry_tarball.v1\", \"pypi.pure_wheel.v1\"],\n  \"deny_default_classes\": [\"direct_vcs_editable.v1\", \"unsupported_unknown.v1\"],\n  \"manual_review_classes\": [\"pypi.sdist_pep517.v1\", \"pypi.binary_wheel.v1\", \"native_extension.v1\"],\n  \"sync_allowlist\": [{}],\n  \"required_evidence\": {},\n  \"scanner_adapters\": [{}]\n}}",
             json_string(RELEASE_TARGET),
             json_string(SYNC_POLICY),
             rule_json,
@@ -4195,7 +4195,7 @@ fn render_vm_sync_policy(json: bool) -> String {
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "whoathere vm sync-policy\nrelease_target={}\nsync_policy={}\nauto_sync_classes=[\"npm.registry_tarball.v1\", \"pypi.pure_wheel.v1\"]\nmanual_review_classes=[\"pypi.sdist_pep517.v1\", \"pypi.binary_wheel.v1\", \"native_extension.v1\"]\ndeny_default_classes=[\"direct_vcs_editable.v1\", \"unsupported_unknown.v1\"]\nrequired_evidence={:?}\n{}\n{}",
+        "whoathere vm sync-policy\nrelease_target={}\nsync_policy={}\nsync_back_enabled=false\npolicy_scope=future_allowlist_not_release_authorization\nauto_sync_classes=[\"npm.registry_tarball.v1\", \"pypi.pure_wheel.v1\"]\nmanual_review_classes=[\"pypi.sdist_pep517.v1\", \"pypi.binary_wheel.v1\", \"native_extension.v1\"]\ndeny_default_classes=[\"direct_vcs_editable.v1\", \"unsupported_unknown.v1\"]\nrequired_evidence={:?}\n{}\n{}",
         RELEASE_TARGET, SYNC_POLICY, evidence, rule_rows, scanner_rows
     )
 }
@@ -8423,7 +8423,9 @@ mod tests {
             .output
             .contains("vm_boundary=apple_virtualization_macos_guest"));
         assert!(result.output.contains("network_model=recorded_egress"));
-        assert!(result.output.contains("sync_policy=pure_safe_only"));
+        assert!(result
+            .output
+            .contains("sync_policy=sync_back_disabled_preview"));
         assert!(result.output.contains("ready=false"));
         assert!(result.output.contains("macos_vm_runtime_not_verified"));
     }
@@ -9222,6 +9224,10 @@ exit 0
 
         let sync = evaluate_command(Command::VmSyncPolicy { json: false });
         assert_eq!(sync.exit_code, 0);
+        assert!(sync.output.contains("sync_back_enabled=false"));
+        assert!(sync
+            .output
+            .contains("policy_scope=future_allowlist_not_release_authorization"));
         assert!(sync
             .output
             .contains("auto_sync_classes=[\"npm.registry_tarball.v1\", \"pypi.pure_wheel.v1\"]"));
@@ -9244,7 +9250,7 @@ exit 0
             .contains("\"release_target\": \"macos_apple_silicon_local_vm\""));
         assert!(result
             .output
-            .contains("\"release_claim\": \"vm_detonate_then_sync_safe_outputs\""));
+            .contains("\"release_claim\": \"vm_detonation_admission_only_no_sync_back\""));
         assert!(result.output.contains(
             "\"release_readiness_schema\": \"whoathere.macos_local_release_readiness.v1\""
         ));
@@ -9253,7 +9259,8 @@ exit 0
         assert!(result
             .output
             .contains("release_npm_vm_detonation_not_verified"));
-        assert!(result
+        assert!(result.output.contains("host.sync_back.disabled_preview"));
+        assert!(!result
             .output
             .contains("release_safe_sync_back_not_implemented"));
         assert!(result.output.contains("pip.local_project.install"));
