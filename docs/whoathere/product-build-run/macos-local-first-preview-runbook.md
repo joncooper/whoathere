@@ -85,7 +85,9 @@ The script runs Rust validation, builds the release CLI, locally signs the CLI, 
 tests, builds and signs the release helper, runs the local red-team fixture gate, writes the
 archive and checksum, then extracts the archive and smoke-tests the packaged CLI/helper. The smoke
 verifies the checksum, `bin/whoathere --help`, packaged codesign state, and packaged
-`doctor --json` fail-closed output with a package-local guest reprovision command.
+`doctor --json` fail-closed output with a package-local guest reprovision command. The package
+smoke also verifies that the packaged doctor output includes the release-validation gate and keeps
+the npm/uv release blockers present when no current validation receipt exists.
 
 ```text
 dist/whoathere-macos-arm64-preview-<git-sha>.tar.gz

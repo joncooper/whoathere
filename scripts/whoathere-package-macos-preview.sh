@@ -107,6 +107,9 @@ Included:
 
 This package is locally code-signed with WHOATHERE_CODESIGN_IDENTITY=${SIGN_IDENTITY}.
 Notarization is not performed by this script.
+The packaged doctor command is expected to report release_ready=false until a validation VM has a
+current release-validation receipt for npm/uv and the artifact has passed Developer ID
+notarization.
 
 Use docs/macos-local-first-preview-runbook.md for setup, provisioning, validation, and limitations.
 EOF
@@ -141,6 +144,12 @@ smoke_package() {
   "$EXTRACTED_CLI" doctor --json --state-dir "$EXTRACTED_STATE" --helper "$EXTRACTED_HELPER" > "$DOCTOR_OUTPUT"
 
   grep -q '"release_ready": false' "$DOCTOR_OUTPUT"
+  grep -q '"release_claim": "vm_detonation_admission_only_no_sync_back"' "$DOCTOR_OUTPUT"
+  grep -q '"package_acquisition_policy": "local_only_no_public_resolver"' "$DOCTOR_OUTPUT"
+  grep -q '"release_validation": {' "$DOCTOR_OUTPUT"
+  grep -q '"release_validation_receipt_missing"' "$DOCTOR_OUTPUT"
+  grep -q '"release_npm_vm_detonation_not_verified"' "$DOCTOR_OUTPUT"
+  grep -q '"release_uv_vm_detonation_not_verified"' "$DOCTOR_OUTPUT"
   grep -q '"guest_reprovision_required": true' "$DOCTOR_OUTPUT"
   grep -q '"guest_reprovision_admin_required": true' "$DOCTOR_OUTPUT"
   grep -q '"guest_reprovision_operator_action": "run_guest_reprovision_command_in_interactive_admin_terminal"' "$DOCTOR_OUTPUT"
