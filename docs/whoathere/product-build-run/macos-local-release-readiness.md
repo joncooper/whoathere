@@ -178,7 +178,9 @@ empty temporary VM state directory while emitting a package-local `guest_reprovi
 Those extracted-artifact checks are now part of `scripts/whoathere-package-macos-preview.sh`, so
 future preview packages must pass the same smoke before the script reports success. The integrated
 script smoke was validated on this tree with
-`dist/whoathere-macos-arm64-preview-aacd93f.tar.gz` and printed `package_smoke_passed=true`.
+`dist/whoathere-macos-arm64-preview-109dba7.tar.gz` and printed `package_smoke_passed=true`. The
+package smoke now also verifies that the extracted npm/uv detonation validator is executable and
+passes shell syntax validation.
 
 The latest npm/uv planner slices changed host planner, Swift helper, and guest-agent behavior. They were validated with unit tests, helper build/tests, guest C syntax checks, and live `doctor` fail-closed readiness output. Live npm/uv detonation is still not claimed because the stopped validation VM must first be reprovisioned with Node/npm and uv tooling through the interactive sudo step above.
 
