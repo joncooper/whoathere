@@ -82,7 +82,10 @@ scripts/whoathere-package-macos-preview.sh
 ```
 
 The script runs Rust validation, builds the release CLI, locally signs the CLI, runs Swift helper
-tests, builds and signs the release helper, runs the local red-team fixture gate, and writes:
+tests, builds and signs the release helper, runs the local red-team fixture gate, writes the
+archive and checksum, then extracts the archive and smoke-tests the packaged CLI/helper. The smoke
+verifies the checksum, `bin/whoathere --help`, packaged codesign state, and packaged
+`doctor --json` fail-closed output with a package-local guest reprovision command.
 
 ```text
 dist/whoathere-macos-arm64-preview-<git-sha>.tar.gz

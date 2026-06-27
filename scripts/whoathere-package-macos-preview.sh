@@ -16,9 +16,13 @@ CLI_BIN="$RUST_WORKSPACE/target/release/whoathere"
 HELPER_BIN="$HELPER_ROOT/.build/arm64-apple-macosx/release/whoathere-macos-vm-helper"
 ARCHIVE_PATH="$DIST_DIR/$PACKAGE_NAME.tar.gz"
 CHECKSUM_PATH="$ARCHIVE_PATH.sha256"
+SMOKE_ROOT=""
 
 cleanup() {
   rm -rf "$STAGE_ROOT"
+  if [ -n "$SMOKE_ROOT" ]; then
+    rm -rf "$SMOKE_ROOT"
+  fi
 }
 trap cleanup EXIT HUP INT TERM
 
@@ -117,12 +121,38 @@ write_archive() {
   shasum -a 256 "$ARCHIVE_PATH" > "$CHECKSUM_PATH"
 }
 
+smoke_package() {
+  SMOKE_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/whoathere-package-smoke.XXXXXX")
+  shasum -a 256 -c "$CHECKSUM_PATH"
+  tar -xzf "$ARCHIVE_PATH" -C "$SMOKE_ROOT"
+
+  EXTRACTED_ROOT="$SMOKE_ROOT/$PACKAGE_NAME"
+  EXTRACTED_CLI="$EXTRACTED_ROOT/bin/whoathere"
+  EXTRACTED_HELPER="$EXTRACTED_ROOT/helpers/macos-vm-helper/.build/arm64-apple-macosx/release/whoathere-macos-vm-helper"
+  EXTRACTED_STATE="$SMOKE_ROOT/state"
+  DOCTOR_OUTPUT="$SMOKE_ROOT/doctor.json"
+
+  "$EXTRACTED_CLI" --help >/dev/null
+  /usr/bin/codesign --verify --strict --verbose=2 "$EXTRACTED_CLI" >/dev/null
+  /usr/bin/codesign --verify --strict --verbose=2 "$EXTRACTED_HELPER" >/dev/null
+  "$EXTRACTED_CLI" doctor --json --state-dir "$EXTRACTED_STATE" --helper "$EXTRACTED_HELPER" > "$DOCTOR_OUTPUT"
+
+  grep -q '"release_ready": false' "$DOCTOR_OUTPUT"
+  grep -q '"guest_reprovision_required": true' "$DOCTOR_OUTPUT"
+  grep -q '"guest_reprovision_admin_required": true' "$DOCTOR_OUTPUT"
+  grep -q '"guest_reprovision_operator_action": "run_guest_reprovision_command_in_interactive_admin_terminal"' "$DOCTOR_OUTPUT"
+  grep -q 'helpers/macos-vm-helper/scripts/provision-guest-readiness.sh' "$DOCTOR_OUTPUT"
+
+  echo "package_smoke_passed=true"
+}
+
 require_host
 run_validation
 build_artifacts
 run_release_gate
 stage_package
 write_archive
+smoke_package
 
 echo "package_created=$ARCHIVE_PATH"
 echo "checksum_created=$CHECKSUM_PATH"
