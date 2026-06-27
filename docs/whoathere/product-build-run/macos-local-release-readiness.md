@@ -192,14 +192,15 @@ evidence, and printed this interactive admin command:
 sudo WHOATHERE_NODE_RUNTIME_DIR='/Users/jdc/.nvm/versions/node/v22.22.3' WHOATHERE_UV_BINARY='/Users/jdc/.local/bin/uv' '/Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/scripts/provision-guest-readiness.sh' '/Users/jdc/.whoathere/macos-vm-validation'
 ```
 
-After commit `21c70a0`, `scripts/whoathere-package-macos-preview.sh` passed. The package script ran
-the full Rust test suite, clippy with `-D warnings`, release CLI build, Swift helper tests/build,
-local code signing, the fixture-safe red-team gate, archive checksum verification, and extracted
-package smoke tests. It produced:
+`scripts/whoathere-package-macos-preview.sh` passed for this slice. The package script ran the full
+Rust test suite, clippy with `-D warnings`, release CLI build, Swift helper tests/build, local code
+signing, the fixture-safe red-team gate, archive checksum verification, and extracted package smoke
+tests. The package name is derived from the current git short SHA and should be regenerated after
+any later commit:
 
 ```text
-package_created=/Users/jdc/src/whoathere/dist/whoathere-macos-arm64-preview-21c70a0.tar.gz
-checksum_created=/Users/jdc/src/whoathere/dist/whoathere-macos-arm64-preview-21c70a0.tar.gz.sha256
+package_created=/Users/jdc/src/whoathere/dist/whoathere-macos-arm64-preview-<git-short-sha>.tar.gz
+checksum_created=/Users/jdc/src/whoathere/dist/whoathere-macos-arm64-preview-<git-short-sha>.tar.gz.sha256
 notarization_status=not_performed
 ```
 
