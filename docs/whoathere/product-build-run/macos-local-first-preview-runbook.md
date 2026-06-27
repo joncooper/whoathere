@@ -109,12 +109,13 @@ scripts/whoathere-notarize-macos-release.sh --dry-run dist/whoathere-macos-arm64
 ```
 
 The dry run verifies the checksum sidecar when present, extracts the archive, verifies CLI/helper
-codesign state, checks the packaged npm/uv validator, and writes a notarization zip. It accepts
-ad-hoc signatures only as a diagnostic and reports `notarization_submit_ready=false` when the
-artifact is not submit-ready.
+codesign state, checks the packaged npm/uv validator, and writes a notarization zip. It reports
+`cli_signature_kind` and `helper_signature_kind`; submit-readiness requires both to be
+`developer_id_application`. Ad-hoc, Apple Development, and unknown signatures are accepted only as
+diagnostics and report `notarization_submit_ready=false`.
 
-Submit only after the dry run reports Developer ID signed binaries and notary credentials are
-configured:
+Submit only after the dry run reports Developer ID Application signed binaries and notary
+credentials are configured:
 
 ```sh
 WHOATHERE_NOTARY_PROFILE=whoathere-notary \

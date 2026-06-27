@@ -82,6 +82,19 @@ codesign_is_adhoc() {
   codesign_summary "$1" | grep -q 'Signature=adhoc'
 }
 
+codesign_signature_kind() {
+  SUMMARY=$(codesign_summary "$1")
+  if printf '%s\n' "$SUMMARY" | grep -q 'Signature=adhoc'; then
+    echo "adhoc"
+  elif printf '%s\n' "$SUMMARY" | grep -q '^Authority=Developer ID Application:'; then
+    echo "developer_id_application"
+  elif printf '%s\n' "$SUMMARY" | grep -q '^Authority=Apple Development:'; then
+    echo "apple_development"
+  else
+    echo "signed_unknown"
+  fi
+}
+
 require_extracted_artifacts() {
   PACKAGE_NAME=$(basename "$ARCHIVE" .tar.gz)
   EXTRACTED_ROOT="$WORK_ROOT/$PACKAGE_NAME"
@@ -108,10 +121,12 @@ require_extracted_artifacts() {
 
   CLI_ADHOC=false
   HELPER_ADHOC=false
-  if codesign_is_adhoc "$CLI"; then
+  CLI_SIGNATURE_KIND=$(codesign_signature_kind "$CLI")
+  HELPER_SIGNATURE_KIND=$(codesign_signature_kind "$HELPER")
+  if [ "$CLI_SIGNATURE_KIND" = "adhoc" ]; then
     CLI_ADHOC=true
   fi
-  if codesign_is_adhoc "$HELPER"; then
+  if [ "$HELPER_SIGNATURE_KIND" = "adhoc" ]; then
     HELPER_ADHOC=true
   fi
 }
@@ -144,6 +159,11 @@ submit_notarization() {
     echo "notarization_blocker=adhoc_signature_present"
     exit 64
   fi
+  if [ "$CLI_SIGNATURE_KIND" != "developer_id_application" ] || [ "$HELPER_SIGNATURE_KIND" != "developer_id_application" ]; then
+    echo "notarization_submit_ready=false"
+    echo "notarization_blocker=developer_id_application_signature_required"
+    exit 64
+  fi
   if ! notary_credentials_ready; then
     echo "notarization_submit_ready=false"
     echo "notarization_blocker=notary_credentials_missing"
@@ -172,12 +192,17 @@ SUBMIT_READY=true
 if [ "$CLI_ADHOC" = "true" ] || [ "$HELPER_ADHOC" = "true" ]; then
   SUBMIT_READY=false
 fi
+if [ "$CLI_SIGNATURE_KIND" != "developer_id_application" ] || [ "$HELPER_SIGNATURE_KIND" != "developer_id_application" ]; then
+  SUBMIT_READY=false
+fi
 if ! notary_credentials_ready; then
   SUBMIT_READY=false
 fi
 
 echo "notarization_archive=$ARCHIVE"
 echo "notarization_zip=$NOTARY_ZIP"
+echo "cli_signature_kind=$CLI_SIGNATURE_KIND"
+echo "helper_signature_kind=$HELPER_SIGNATURE_KIND"
 echo "cli_signature_adhoc=$CLI_ADHOC"
 echo "helper_signature_adhoc=$HELPER_ADHOC"
 echo "notary_credentials_configured=$(notary_credentials_ready && echo true || echo false)"

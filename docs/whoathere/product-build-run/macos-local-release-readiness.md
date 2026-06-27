@@ -290,14 +290,17 @@ writes a tarball plus SHA-256 checksum under ignored `dist/`. It deliberately re
 The release notarization-prep path now has `scripts/whoathere-notarize-macos-release.sh`. In dry-run
 mode it verifies the package checksum sidecar, extracts the archive, verifies CLI/helper codesign
 state, checks the packaged npm/uv validator is executable and shell-syntax-clean, writes a
-notarization zip, reports whether signatures are ad-hoc, and reports whether notary credentials are
-configured. On the current local preview archive it produced
+notarization zip, reports signature kinds, and reports whether notary credentials are configured.
+Submit-readiness now requires both packaged binaries to report
+`developer_id_application`; ad-hoc, Apple Development, and unknown signatures remain diagnostics
+only. On the current local preview archive it produced
 `dist/whoathere-macos-arm64-preview-<git-short-sha>-notarization.zip` and correctly reported
-`cli_signature_adhoc=true`, `helper_signature_adhoc=true`, `notary_credentials_configured=false`,
-and `notarization_submit_ready=false`. A submit-mode guard smoke on the same archive exited 64 with
+`cli_signature_kind=adhoc`, `helper_signature_kind=adhoc`, `cli_signature_adhoc=true`,
+`helper_signature_adhoc=true`, `notary_credentials_configured=false`, and
+`notarization_submit_ready=false`. A submit-mode guard smoke on the same archive exited 64 with
 `notarization_blocker=adhoc_signature_present`, before any `xcrun notarytool` submission.
-Submission mode rejects ad-hoc signatures or missing credentials before calling `xcrun notarytool`,
-so the final
+Submission mode rejects ad-hoc signatures, non-Developer-ID signatures, or missing credentials
+before calling `xcrun notarytool`, so the final
 `release_signature_notarization_not_complete` blocker remains honest until a Developer ID signed
 artifact is accepted by Apple notarization.
 
