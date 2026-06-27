@@ -3827,6 +3827,13 @@ fn default_macos_vm_release_validation_path(config: &MacosVmConfig) -> PathBuf {
         .join("release-validation.json")
 }
 
+fn default_macos_vm_release_notarization_path(config: &MacosVmConfig) -> PathBuf {
+    config
+        .state_dir
+        .join("bundle")
+        .join("release-notarization.json")
+}
+
 fn load_macos_vm_manifest(
     manifest_path: Option<&str>,
     default_manifest_path: &Path,
@@ -4292,6 +4299,189 @@ fn load_macos_vm_release_validation(path: &Path) -> MacosVmReleaseValidationSumm
     }
 }
 
+const MACOS_VM_RELEASE_NOTARIZATION_SCHEMA_VERSION: &str =
+    "whoathere.macos_vm.release_notarization.v1";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MacosVmReleaseNotarizationSummary {
+    path: PathBuf,
+    present: bool,
+    load_reason: Option<String>,
+    schema_version: Option<String>,
+    artifact_name: Option<String>,
+    archive_sha256: Option<String>,
+    notarization_zip_sha256: Option<String>,
+    cli_sha256: Option<String>,
+    helper_sha256: Option<String>,
+    current_cli_sha256: Option<String>,
+    current_helper_sha256: Option<String>,
+    notarytool_status: Option<String>,
+    notarytool_id: Option<String>,
+    cli_signature_kind: Option<String>,
+    helper_signature_kind: Option<String>,
+    stapling_supported_for_archive: Option<bool>,
+}
+
+impl MacosVmReleaseNotarizationSummary {
+    fn missing(path: PathBuf, load_reason: String) -> Self {
+        Self {
+            path,
+            present: false,
+            load_reason: Some(load_reason),
+            schema_version: None,
+            artifact_name: None,
+            archive_sha256: None,
+            notarization_zip_sha256: None,
+            cli_sha256: None,
+            helper_sha256: None,
+            current_cli_sha256: None,
+            current_helper_sha256: None,
+            notarytool_status: None,
+            notarytool_id: None,
+            cli_signature_kind: None,
+            helper_signature_kind: None,
+            stapling_supported_for_archive: None,
+        }
+    }
+
+    fn from_contents(path: PathBuf, contents: &str) -> Self {
+        Self {
+            path,
+            present: true,
+            load_reason: None,
+            schema_version: json_extract_string_field(contents, "schema_version"),
+            artifact_name: json_extract_string_field(contents, "artifact_name"),
+            archive_sha256: json_extract_string_field(contents, "archive_sha256"),
+            notarization_zip_sha256: json_extract_string_field(contents, "notarization_zip_sha256"),
+            cli_sha256: json_extract_string_field(contents, "cli_sha256"),
+            helper_sha256: json_extract_string_field(contents, "helper_sha256"),
+            current_cli_sha256: None,
+            current_helper_sha256: None,
+            notarytool_status: json_extract_string_field(contents, "notarytool_status"),
+            notarytool_id: json_extract_string_field(contents, "notarytool_id"),
+            cli_signature_kind: json_extract_string_field(contents, "cli_signature_kind"),
+            helper_signature_kind: json_extract_string_field(contents, "helper_signature_kind"),
+            stapling_supported_for_archive: json_extract_bool_field(
+                contents,
+                "stapling_supported_for_archive",
+            ),
+        }
+    }
+
+    fn with_runtime_artifacts(mut self, helper_path: Option<&str>) -> Self {
+        self.current_cli_sha256 = std::env::current_exe()
+            .ok()
+            .and_then(|path| file_sha256_digest(&path));
+        self.current_helper_sha256 = configured_macos_vm_helper_path(helper_path)
+            .as_deref()
+            .and_then(file_sha256_digest);
+        self
+    }
+
+    fn reason_codes(&self) -> Vec<String> {
+        let mut reasons = Vec::new();
+        if !self.present {
+            reasons.push("release_notarization_receipt_missing".to_string());
+        }
+        if self.schema_version.as_deref() != Some(MACOS_VM_RELEASE_NOTARIZATION_SCHEMA_VERSION) {
+            reasons.push("release_notarization_schema_invalid".to_string());
+        }
+        if self.notarytool_status.as_deref() != Some("Accepted") {
+            reasons.push("release_notarization_status_not_accepted".to_string());
+        }
+        if self.notarytool_id.as_deref().unwrap_or("").is_empty() {
+            reasons.push("release_notarization_id_missing".to_string());
+        }
+        if self.cli_signature_kind.as_deref() != Some("developer_id_application") {
+            reasons.push("release_notarization_cli_signature_invalid".to_string());
+        }
+        if self.helper_signature_kind.as_deref() != Some("developer_id_application") {
+            reasons.push("release_notarization_helper_signature_invalid".to_string());
+        }
+        if !self
+            .archive_sha256
+            .as_deref()
+            .unwrap_or("")
+            .starts_with("sha256:")
+        {
+            reasons.push("release_notarization_archive_digest_missing".to_string());
+        }
+        if !self
+            .notarization_zip_sha256
+            .as_deref()
+            .unwrap_or("")
+            .starts_with("sha256:")
+        {
+            reasons.push("release_notarization_zip_digest_missing".to_string());
+        }
+        if !self
+            .cli_sha256
+            .as_deref()
+            .unwrap_or("")
+            .starts_with("sha256:")
+        {
+            reasons.push("release_notarization_cli_digest_missing".to_string());
+        }
+        if !self
+            .helper_sha256
+            .as_deref()
+            .unwrap_or("")
+            .starts_with("sha256:")
+        {
+            reasons.push("release_notarization_helper_digest_missing".to_string());
+        }
+        if self.present {
+            if !self
+                .current_cli_sha256
+                .as_deref()
+                .unwrap_or("")
+                .starts_with("sha256:")
+            {
+                reasons.push("release_notarization_current_cli_digest_missing".to_string());
+            }
+            if !self
+                .current_helper_sha256
+                .as_deref()
+                .unwrap_or("")
+                .starts_with("sha256:")
+            {
+                reasons.push("release_notarization_current_helper_digest_missing".to_string());
+            }
+            if self.cli_sha256.is_some()
+                && self.current_cli_sha256.is_some()
+                && self.cli_sha256 != self.current_cli_sha256
+            {
+                reasons.push("release_notarization_cli_digest_mismatch".to_string());
+            }
+            if self.helper_sha256.is_some()
+                && self.current_helper_sha256.is_some()
+                && self.helper_sha256 != self.current_helper_sha256
+            {
+                reasons.push("release_notarization_helper_digest_mismatch".to_string());
+            }
+        }
+        reasons.sort();
+        reasons.dedup();
+        reasons
+    }
+
+    fn verified(&self) -> bool {
+        self.reason_codes().is_empty()
+    }
+}
+
+fn load_macos_vm_release_notarization(path: &Path) -> MacosVmReleaseNotarizationSummary {
+    match std::fs::read_to_string(path) {
+        Ok(contents) => {
+            MacosVmReleaseNotarizationSummary::from_contents(path.to_path_buf(), &contents)
+        }
+        Err(error) => MacosVmReleaseNotarizationSummary::missing(
+            path.to_path_buf(),
+            redacted_scalar(&error.to_string()),
+        ),
+    }
+}
+
 fn file_sha256_digest(path: &Path) -> Option<String> {
     std::fs::read(path)
         .ok()
@@ -4449,6 +4639,58 @@ fn render_release_validation_text(
         option_bool_text(summary.sync_back_enabled),
         option_bool_text(summary.high_risk_package_execution_enabled),
         option_string_text(summary.package_acquisition_policy.as_deref()),
+    )
+}
+
+fn render_release_notarization_json(summary: &MacosVmReleaseNotarizationSummary) -> String {
+    format!(
+        "{{\"receipt_path\": {}, \"receipt_present\": {}, \"load_reason\": {}, \"reason_codes\": {}, \"schema_version\": {}, \"artifact_name\": {}, \"archive_sha256\": {}, \"notarization_zip_sha256\": {}, \"cli_sha256\": {}, \"helper_sha256\": {}, \"current_cli_sha256\": {}, \"current_helper_sha256\": {}, \"notarytool_status\": {}, \"notarytool_id\": {}, \"cli_signature_kind\": {}, \"helper_signature_kind\": {}, \"stapling_supported_for_archive\": {}, \"verified\": {}}}",
+        json_string(&summary.path.display().to_string()),
+        summary.present,
+        json_option_string_redacted(summary.load_reason.as_deref()),
+        json_string_array(&summary.reason_codes()),
+        json_option_string_redacted(summary.schema_version.as_deref()),
+        json_option_string_redacted(summary.artifact_name.as_deref()),
+        json_option_string_redacted(summary.archive_sha256.as_deref()),
+        json_option_string_redacted(summary.notarization_zip_sha256.as_deref()),
+        json_option_string_redacted(summary.cli_sha256.as_deref()),
+        json_option_string_redacted(summary.helper_sha256.as_deref()),
+        json_option_string_redacted(summary.current_cli_sha256.as_deref()),
+        json_option_string_redacted(summary.current_helper_sha256.as_deref()),
+        json_option_string_redacted(summary.notarytool_status.as_deref()),
+        json_option_string_redacted(summary.notarytool_id.as_deref()),
+        json_option_string_redacted(summary.cli_signature_kind.as_deref()),
+        json_option_string_redacted(summary.helper_signature_kind.as_deref()),
+        json_option(summary.stapling_supported_for_archive),
+        summary.verified(),
+    )
+}
+
+fn render_release_notarization_text(summary: &MacosVmReleaseNotarizationSummary) -> String {
+    format!(
+        "release_notarization_receipt_path={}\nrelease_notarization_receipt_present={}\nrelease_notarization_load_reason={}\nrelease_notarization_reason_codes={:?}\nrelease_notarization_schema_version={}\nrelease_notarization_artifact_name={}\nrelease_notarization_archive_sha256={}\nrelease_notarization_zip_sha256={}\nrelease_notarization_cli_sha256={}\nrelease_notarization_helper_sha256={}\nrelease_notarization_current_cli_sha256={}\nrelease_notarization_current_helper_sha256={}\nrelease_notarization_notarytool_status={}\nrelease_notarization_notarytool_id={}\nrelease_notarization_cli_signature_kind={}\nrelease_notarization_helper_signature_kind={}\nrelease_notarization_stapling_supported_for_archive={}\nrelease_notarization_verified={}",
+        summary.path.display(),
+        summary.present,
+        summary
+            .load_reason
+            .as_deref()
+            .map(redacted_scalar)
+            .unwrap_or_else(|| "none".to_string()),
+        summary.reason_codes(),
+        option_string_text(summary.schema_version.as_deref()),
+        option_string_text(summary.artifact_name.as_deref()),
+        option_string_text(summary.archive_sha256.as_deref()),
+        option_string_text(summary.notarization_zip_sha256.as_deref()),
+        option_string_text(summary.cli_sha256.as_deref()),
+        option_string_text(summary.helper_sha256.as_deref()),
+        option_string_text(summary.current_cli_sha256.as_deref()),
+        option_string_text(summary.current_helper_sha256.as_deref()),
+        option_string_text(summary.notarytool_status.as_deref()),
+        option_string_text(summary.notarytool_id.as_deref()),
+        option_string_text(summary.cli_signature_kind.as_deref()),
+        option_string_text(summary.helper_signature_kind.as_deref()),
+        option_bool_text(summary.stapling_supported_for_archive),
+        summary.verified(),
     )
 }
 
@@ -5189,17 +5431,22 @@ struct MacosLocalReleaseReadiness {
     next_actions: Vec<String>,
 }
 
+struct MacosLocalReleaseEvidence<'a> {
+    provisioning: &'a MacosVmGuestProvisioningSummary,
+    release_validation: &'a MacosVmReleaseValidationSummary,
+    release_notarization: &'a MacosVmReleaseNotarizationSummary,
+    expected_provisioning_digest: Option<&'a str>,
+}
+
 fn macos_local_release_readiness(
     status: &whoathere_macos_vm::MacosVmStatus,
-    provisioning: &MacosVmGuestProvisioningSummary,
-    release_validation: &MacosVmReleaseValidationSummary,
-    expected_provisioning_digest: Option<&str>,
+    evidence: MacosLocalReleaseEvidence<'_>,
     helper: &MacosVmHelperOutput,
     scanner_available_count: usize,
     scanner_required_count: usize,
 ) -> MacosLocalReleaseReadiness {
     let mut blocking_reason_codes = vm_lifecycle_reason_codes(status, helper);
-    blocking_reason_codes.extend(provisioning.reason_codes());
+    blocking_reason_codes.extend(evidence.provisioning.reason_codes());
     blocking_reason_codes.extend(helper.reason_codes.iter().cloned());
 
     if !helper.available {
@@ -5214,20 +5461,67 @@ fn macos_local_release_readiness(
         blocking_reason_codes.push("release_required_scanners_missing".to_string());
     }
 
-    if !release_validation.npm_verified(expected_provisioning_digest) {
+    if !evidence
+        .release_validation
+        .npm_verified(evidence.expected_provisioning_digest)
+    {
         blocking_reason_codes.push("release_npm_vm_detonation_not_verified".to_string());
     }
-    if !release_validation.uv_verified(expected_provisioning_digest) {
+    if !evidence
+        .release_validation
+        .uv_verified(evidence.expected_provisioning_digest)
+    {
         blocking_reason_codes.push("release_uv_vm_detonation_not_verified".to_string());
     }
-    blocking_reason_codes.push("release_signature_notarization_not_complete".to_string());
+    if !evidence.release_notarization.verified() {
+        blocking_reason_codes.push("release_signature_notarization_not_complete".to_string());
+    }
     blocking_reason_codes.sort();
     blocking_reason_codes.dedup();
+    let mut next_actions = Vec::new();
+    if blocking_reason_codes
+        .iter()
+        .any(|reason| reason.starts_with("macos_vm_guest"))
+    {
+        next_actions.push(
+            "reprovision the stopped VM with explicit Node/npm and uv tool sources until receipt and health prove toolchains"
+                .to_string(),
+        );
+    }
+    if blocking_reason_codes.iter().any(|reason| {
+        reason == "release_npm_vm_detonation_not_verified"
+            || reason == "release_uv_vm_detonation_not_verified"
+    }) {
+        next_actions.push(
+            "run live npm and uv VM detonation validation, then suspend the VM after validation"
+                .to_string(),
+        );
+    }
+    if blocking_reason_codes
+        .iter()
+        .any(|reason| reason == "release_signature_notarization_not_complete")
+    {
+        next_actions.push(
+            "complete Developer ID signing and Apple notarization for the preview artifact"
+                .to_string(),
+        );
+    }
+    if blocking_reason_codes.is_empty() {
+        next_actions.push(
+            "release candidate is ready for clean-host Apple Silicon install smoke testing"
+                .to_string(),
+        );
+    }
+    next_actions.push("run whoathere vm red-team-gate on every release candidate".to_string());
 
     MacosLocalReleaseReadiness {
         schema_version: MACOS_LOCAL_RELEASE_READINESS_SCHEMA_VERSION,
         release_ready: blocking_reason_codes.is_empty(),
-        release_stage: "pre_release_checkpoint",
+        release_stage: if blocking_reason_codes.is_empty() {
+            "release_candidate"
+        } else {
+            "pre_release_checkpoint"
+        },
         scanner_release_blocking,
         scanner_release_scope: "required_before_auto_sync_not_no_sync_preview",
         package_acquisition_policy: "local_only_no_public_resolver",
@@ -5260,15 +5554,7 @@ fn macos_local_release_readiness(
             "unsupported_unknown_artifacts",
         ]),
         blocking_reason_codes,
-        next_actions: string_vec(&[
-            "reprovision the stopped VM with explicit Node/npm and uv tool sources until receipt and health prove toolchains",
-            "start the VM only when collecting live runtime or detonation proof, then suspend it after validation",
-            "make npm and uv detonation either work in VM or remain explicitly unclaimed",
-            "keep public package resolution out of the preview unless a separate VM-only resolver policy is implemented",
-            "keep sync-back disabled for the preview unless a separately tested whitelist is implemented",
-            "complete Developer ID signing and notarization for Apple Silicon users",
-            "run whoathere vm red-team-gate on every release candidate",
-        ]),
+        next_actions,
     }
 }
 
@@ -5284,12 +5570,15 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
     let provisioning_path = default_macos_vm_guest_provisioning_path(&config);
     let shutdown_path = default_macos_vm_runtime_shutdown_path(&config);
     let release_validation_path = default_macos_vm_release_validation_path(&config);
+    let release_notarization_path = default_macos_vm_release_notarization_path(&config);
     let (manifest, manifest_load_reason, effective_manifest_path) =
         load_macos_vm_manifest(None, &default_manifest_path);
     let provisioning = load_macos_vm_guest_provisioning(&provisioning_path, helper_path);
     let shutdown = load_macos_vm_runtime_shutdown(&shutdown_path);
     let provisioning_digest = file_sha256_digest(&provisioning_path);
     let release_validation = load_macos_vm_release_validation(&release_validation_path);
+    let release_notarization = load_macos_vm_release_notarization(&release_notarization_path)
+        .with_runtime_artifacts(helper_path);
     let status = status_from_config(&config, HostPlatform::current(), manifest.as_ref());
     let helper = run_macos_vm_helper(
         helper_path,
@@ -5313,9 +5602,12 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
         .count();
     let readiness = macos_local_release_readiness(
         &status,
-        &provisioning,
-        &release_validation,
-        provisioning_digest.as_deref(),
+        MacosLocalReleaseEvidence {
+            provisioning: &provisioning,
+            release_validation: &release_validation,
+            release_notarization: &release_notarization,
+            expected_provisioning_digest: provisioning_digest.as_deref(),
+        },
         &helper,
         scanner_available,
         scanner_required,
@@ -5342,7 +5634,7 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
             .collect::<Vec<_>>()
             .join(", ");
         return format!(
-            "{{\n  \"command\": \"whoathere doctor\",\n  \"status\": \"ok\",\n  \"release_target\": {},\n  \"release_claim\": {},\n  \"sandbox_label\": {},\n  \"high_risk_allowed\": {},\n  \"state_dir\": {},\n  \"vm_manifest_path\": {},\n  \"vm_manifest_load_reason\": {},\n  \"guest_provisioning\": {},\n  \"runtime_shutdown\": {},\n  \"release_validation\": {},\n  \"guest_reprovision_required\": {},\n  \"guest_reprovision_admin_required\": {},\n  \"guest_reprovision_operator_action\": {},\n  \"guest_reprovision_command\": {},\n  \"release_readiness_schema\": {},\n  \"release_stage\": {},\n  \"release_ready\": {},\n  \"release_blocking_reason_codes\": {},\n  \"scanner_release_blocking\": {},\n  \"scanner_release_scope\": {},\n  \"package_acquisition_policy\": {},\n  \"implemented_workflows\": {},\n  \"fail_closed_workflows\": {},\n  \"manual_review_classes\": {},\n  \"next_actions\": {},\n  \"vm_lifecycle_ready\": {},\n  \"vm_lifecycle_reason_codes\": {},\n  \"vm_runtime_ready\": {},\n  \"vm_ready\": {},\n  \"vm_reason_codes\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout_truncated\": {},\n  \"helper_stderr_truncated\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {},\n  \"scanner_available_count\": {},\n  \"scanner_required_count\": {},\n  \"scanners\": [{}]\n}}",
+            "{{\n  \"command\": \"whoathere doctor\",\n  \"status\": \"ok\",\n  \"release_target\": {},\n  \"release_claim\": {},\n  \"sandbox_label\": {},\n  \"high_risk_allowed\": {},\n  \"state_dir\": {},\n  \"vm_manifest_path\": {},\n  \"vm_manifest_load_reason\": {},\n  \"guest_provisioning\": {},\n  \"runtime_shutdown\": {},\n  \"release_validation\": {},\n  \"release_notarization\": {},\n  \"guest_reprovision_required\": {},\n  \"guest_reprovision_admin_required\": {},\n  \"guest_reprovision_operator_action\": {},\n  \"guest_reprovision_command\": {},\n  \"release_readiness_schema\": {},\n  \"release_stage\": {},\n  \"release_ready\": {},\n  \"release_blocking_reason_codes\": {},\n  \"scanner_release_blocking\": {},\n  \"scanner_release_scope\": {},\n  \"package_acquisition_policy\": {},\n  \"implemented_workflows\": {},\n  \"fail_closed_workflows\": {},\n  \"manual_review_classes\": {},\n  \"next_actions\": {},\n  \"vm_lifecycle_ready\": {},\n  \"vm_lifecycle_reason_codes\": {},\n  \"vm_runtime_ready\": {},\n  \"vm_ready\": {},\n  \"vm_reason_codes\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout_truncated\": {},\n  \"helper_stderr_truncated\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {},\n  \"scanner_available_count\": {},\n  \"scanner_required_count\": {},\n  \"scanners\": [{}]\n}}",
             json_string(RELEASE_TARGET),
             json_string(RELEASE_CLAIM),
             json_string(plan.label),
@@ -5356,6 +5648,7 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
             render_guest_provisioning_json(&provisioning),
             render_runtime_shutdown_json(&shutdown),
             render_release_validation_json(&release_validation, provisioning_digest.as_deref()),
+            render_release_notarization_json(&release_notarization),
             guest_reprovision_required(&provisioning),
             guest_reprovision_admin_required(&provisioning),
             json_string(guest_reprovision_operator_action),
@@ -5413,7 +5706,7 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "whoathere doctor\nstatus=ok\nrelease_target={}\nrelease_claim={}\nsandbox_label={}\nhigh_risk_allowed={}\nstate_dir={}\nvm_manifest_path={}\nvm_manifest_load_reason={}\n{}\n{}\n{}\nguest_reprovision_required={}\nguest_reprovision_admin_required={}\nguest_reprovision_operator_action={}\nguest_reprovision_command={}\nrelease_readiness_schema={}\nrelease_stage={}\nrelease_ready={}\nrelease_blocking_reason_codes={:?}\nscanner_release_blocking={}\nscanner_release_scope={}\npackage_acquisition_policy={}\nimplemented_workflows={:?}\nfail_closed_workflows={:?}\nmanual_review_classes={:?}\nnext_actions={:?}\nvm_lifecycle_ready={}\nvm_lifecycle_reason_codes={:?}\nvm_runtime_ready={}\nvm_ready={}\nvm_reason_codes={:?}\n{}\nscanner_available_count={}\nscanner_required_count={}\n{}",
+        "whoathere doctor\nstatus=ok\nrelease_target={}\nrelease_claim={}\nsandbox_label={}\nhigh_risk_allowed={}\nstate_dir={}\nvm_manifest_path={}\nvm_manifest_load_reason={}\n{}\n{}\n{}\n{}\nguest_reprovision_required={}\nguest_reprovision_admin_required={}\nguest_reprovision_operator_action={}\nguest_reprovision_command={}\nrelease_readiness_schema={}\nrelease_stage={}\nrelease_ready={}\nrelease_blocking_reason_codes={:?}\nscanner_release_blocking={}\nscanner_release_scope={}\npackage_acquisition_policy={}\nimplemented_workflows={:?}\nfail_closed_workflows={:?}\nmanual_review_classes={:?}\nnext_actions={:?}\nvm_lifecycle_ready={}\nvm_lifecycle_reason_codes={:?}\nvm_runtime_ready={}\nvm_ready={}\nvm_reason_codes={:?}\n{}\nscanner_available_count={}\nscanner_required_count={}\n{}",
         RELEASE_TARGET,
         RELEASE_CLAIM,
         plan.label,
@@ -5424,6 +5717,7 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
         provisioning.render_text(),
         render_runtime_shutdown_text(&shutdown),
         render_release_validation_text(&release_validation, provisioning_digest.as_deref()),
+        render_release_notarization_text(&release_notarization),
         guest_reprovision_required(&provisioning),
         guest_reprovision_admin_required(&provisioning),
         guest_reprovision_operator_action,
@@ -10710,6 +11004,150 @@ mod tests {
     }
 
     #[test]
+    fn doctor_accepts_release_notarization_receipt() {
+        let root = temp_root("whoathere-cli-doctor-release-notarization-ready");
+        let _ = std::fs::remove_dir_all(&root);
+        let state_dir = root.join("state");
+        let bundle_dir = state_dir.join("bundle");
+        std::fs::create_dir_all(&bundle_dir).expect("bundle dir");
+        std::fs::write(
+            bundle_dir.join("image.manifest"),
+            "schema_version=whoathere.macos_vm_image.v1\nimage_id=local-restore-image-install\nmacos_version=26.5.1\nmacos_build_version=25F80\narchitecture=arm64\nrestore_image_digest=sha256:1111111111111111111111111111111111111111111111111111111111111111\ncpu_count=2\nmemory_mib=6144\nsignature_status=local_developer_verified\nhelper_version=0.1.0\n",
+        )
+        .expect("manifest");
+        write_complete_guest_provisioning_receipt(&state_dir);
+        write_release_validation_receipt(&state_dir, None);
+        let helper = root.join("helper.sh");
+        write_new_file(
+            &helper,
+            b"#!/bin/sh\nprintf '{\"status\":\"ok\",\"exit_code\":0,\"ready_for_lifecycle\":true,\"reason_codes\":[]}\\n'\nexit 0\n",
+        )
+        .expect("helper script");
+        set_executable(&helper).expect("executable helper");
+        write_release_notarization_receipt(
+            &state_dir,
+            "Accepted",
+            "developer_id_application",
+            "developer_id_application",
+            &helper,
+        );
+
+        let result = evaluate_command(Command::Doctor {
+            json: true,
+            state_dir: Some(state_dir.display().to_string()),
+            helper_path: Some(helper.display().to_string()),
+        });
+
+        assert_eq!(result.exit_code, 0);
+        let release_blockers = result
+            .output
+            .split("\"release_blocking_reason_codes\": [")
+            .nth(1)
+            .and_then(|value| value.split(']').next())
+            .expect("release blockers");
+        assert!(!release_blockers.contains("release_npm_vm_detonation_not_verified"));
+        assert!(!release_blockers.contains("release_uv_vm_detonation_not_verified"));
+        assert!(!release_blockers.contains("release_signature_notarization_not_complete"));
+        assert!(result.output.contains("\"release_ready\": true"));
+        assert!(result.output.contains("\"release_notarization\": {"));
+        assert!(result.output.contains("\"verified\": true"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn doctor_rejects_notarization_receipt_without_developer_id_signatures() {
+        let root = temp_root("whoathere-cli-doctor-release-notarization-bad-signature");
+        let _ = std::fs::remove_dir_all(&root);
+        let state_dir = root.join("state");
+        let bundle_dir = state_dir.join("bundle");
+        std::fs::create_dir_all(&bundle_dir).expect("bundle dir");
+        write_complete_guest_provisioning_receipt(&state_dir);
+        write_release_validation_receipt(&state_dir, None);
+        let helper = root.join("helper.sh");
+        write_new_file(
+            &helper,
+            b"#!/bin/sh\nprintf '{\"status\":\"ok\",\"exit_code\":0,\"ready_for_lifecycle\":true,\"reason_codes\":[]}\\n'\nexit 0\n",
+        )
+        .expect("helper script");
+        set_executable(&helper).expect("executable helper");
+        write_release_notarization_receipt(
+            &state_dir,
+            "Accepted",
+            "adhoc",
+            "developer_id_application",
+            &helper,
+        );
+
+        let result = evaluate_command(Command::Doctor {
+            json: true,
+            state_dir: Some(state_dir.display().to_string()),
+            helper_path: Some(helper.display().to_string()),
+        });
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result
+            .output
+            .contains("release_notarization_cli_signature_invalid"));
+        assert!(result
+            .output
+            .contains("release_signature_notarization_not_complete"));
+        assert!(result.output.contains("\"verified\": false"));
+        assert!(result.output.contains("\"release_ready\": false"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn doctor_rejects_notarization_receipt_for_different_helper() {
+        let root = temp_root("whoathere-cli-doctor-release-notarization-stale-helper");
+        let _ = std::fs::remove_dir_all(&root);
+        let state_dir = root.join("state");
+        let bundle_dir = state_dir.join("bundle");
+        std::fs::create_dir_all(&bundle_dir).expect("bundle dir");
+        write_complete_guest_provisioning_receipt(&state_dir);
+        write_release_validation_receipt(&state_dir, None);
+        let helper = root.join("helper.sh");
+        write_new_file(
+            &helper,
+            b"#!/bin/sh\nprintf '{\"status\":\"ok\",\"exit_code\":0,\"ready_for_lifecycle\":true,\"reason_codes\":[]}\\n'\nexit 0\n",
+        )
+        .expect("helper script");
+        set_executable(&helper).expect("executable helper");
+        write_release_notarization_receipt(
+            &state_dir,
+            "Accepted",
+            "developer_id_application",
+            "developer_id_application",
+            &helper,
+        );
+        std::fs::write(
+            &helper,
+            b"#!/bin/sh\nprintf '{\"status\":\"ok\",\"exit_code\":0,\"ready_for_lifecycle\":true,\"reason_codes\":[],\"changed\":true}\\n'\nexit 0\n",
+        )
+        .expect("mutate helper script");
+        set_executable(&helper).expect("executable helper");
+
+        let result = evaluate_command(Command::Doctor {
+            json: true,
+            state_dir: Some(state_dir.display().to_string()),
+            helper_path: Some(helper.display().to_string()),
+        });
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result
+            .output
+            .contains("release_notarization_helper_digest_mismatch"));
+        assert!(result
+            .output
+            .contains("release_signature_notarization_not_complete"));
+        assert!(result.output.contains("\"verified\": false"));
+        assert!(result.output.contains("\"release_ready\": false"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn doctor_rejects_stale_npm_uv_release_validation_receipt() {
         let root = temp_root("whoathere-cli-doctor-release-validation-stale");
         let _ = std::fs::remove_dir_all(&root);
@@ -15401,6 +15839,41 @@ exit 0
             ),
         )
         .expect("write release validation receipt");
+    }
+
+    fn write_release_notarization_receipt(
+        state_dir: &std::path::Path,
+        status: &str,
+        cli_signature_kind: &str,
+        helper_signature_kind: &str,
+        helper_path: &std::path::Path,
+    ) {
+        let bundle_dir = state_dir.join("bundle");
+        std::fs::create_dir_all(&bundle_dir).expect("create bundle dir");
+        let cli_sha256 = std::env::current_exe()
+            .ok()
+            .and_then(|path| file_sha256_digest(&path))
+            .expect("current test executable digest");
+        let helper_sha256 = file_sha256_digest(helper_path).expect("helper digest");
+        std::fs::write(
+            bundle_dir.join("release-notarization.json"),
+            format!(
+                r#"{{
+  "schema_version": "whoathere.macos_vm.release_notarization.v1",
+  "artifact_name": "whoathere-macos-arm64-preview-test",
+  "archive_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "notarization_zip_sha256": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+  "cli_sha256": "{cli_sha256}",
+  "helper_sha256": "{helper_sha256}",
+  "notarytool_status": "{status}",
+  "notarytool_id": "9850b087-ee2b-43e9-96ea-d0c6b0c04cec",
+  "cli_signature_kind": "{cli_signature_kind}",
+  "helper_signature_kind": "{helper_signature_kind}",
+  "stapling_supported_for_archive": false
+}}"#
+            ),
+        )
+        .expect("write release notarization receipt");
     }
 
     fn write_cleanup_manifest_fixture(runtime: &std::path::Path) -> std::path::PathBuf {

@@ -9,6 +9,8 @@ NOTARY_PROFILE=${WHOATHERE_NOTARY_PROFILE:-}
 NOTARY_APPLE_ID=${WHOATHERE_NOTARY_APPLE_ID:-}
 NOTARY_TEAM_ID=${WHOATHERE_NOTARY_TEAM_ID:-}
 NOTARY_PASSWORD=${WHOATHERE_NOTARY_PASSWORD:-}
+RELEASE_STATE_DIR=${WHOATHERE_RELEASE_STATE_DIR:-${WHOATHERE_STATE_DIR:-"$HOME/.whoathere/macos-vm-validation"}}
+RELEASE_NOTARIZATION_RECEIPT=${WHOATHERE_RELEASE_NOTARIZATION_RECEIPT:-"$RELEASE_STATE_DIR/bundle/release-notarization.json"}
 WORK_ROOT=""
 
 usage() {
@@ -143,6 +145,65 @@ write_notarization_zip() {
   test -s "$NOTARY_ZIP"
 }
 
+sha256_file() {
+  shasum -a 256 "$1" | awk '{print "sha256:" $1}'
+}
+
+json_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+json_field() {
+  /usr/bin/plutil -extract "$1" raw -o - "$RESULT_PATH" 2>/dev/null || true
+}
+
+write_release_notarization_receipt() {
+  NOTARY_STATUS=$(json_field status)
+  NOTARY_ID=$(json_field id)
+  NOTARY_MESSAGE=$(json_field message)
+
+  if [ "$NOTARY_STATUS" != "Accepted" ]; then
+    echo "notarization_receipt_written=false"
+    echo "notarization_blocker=notarytool_status_not_accepted"
+    exit 70
+  fi
+  if [ -z "$NOTARY_ID" ]; then
+    echo "notarization_receipt_written=false"
+    echo "notarization_blocker=notarytool_id_missing"
+    exit 70
+  fi
+
+  RECEIPT_DIR=$(dirname "$RELEASE_NOTARIZATION_RECEIPT")
+  mkdir -p "$RECEIPT_DIR"
+  RECEIPT_TMP="$RELEASE_NOTARIZATION_RECEIPT.$$"
+  CREATED_AT=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+  ARCHIVE_DIGEST=$(sha256_file "$ARCHIVE")
+  NOTARY_ZIP_DIGEST=$(sha256_file "$NOTARY_ZIP")
+  CLI_DIGEST=$(sha256_file "$CLI")
+  HELPER_DIGEST=$(sha256_file "$HELPER")
+  PACKAGE_NAME=$(basename "$ARCHIVE" .tar.gz)
+  cat > "$RECEIPT_TMP" <<EOF
+{
+  "schema_version": "whoathere.macos_vm.release_notarization.v1",
+  "artifact_name": "$(json_escape "$PACKAGE_NAME")",
+  "archive_sha256": "$(json_escape "$ARCHIVE_DIGEST")",
+  "notarization_zip_sha256": "$(json_escape "$NOTARY_ZIP_DIGEST")",
+  "cli_sha256": "$(json_escape "$CLI_DIGEST")",
+  "helper_sha256": "$(json_escape "$HELPER_DIGEST")",
+  "notarytool_status": "$(json_escape "$NOTARY_STATUS")",
+  "notarytool_id": "$(json_escape "$NOTARY_ID")",
+  "notarytool_message": "$(json_escape "$NOTARY_MESSAGE")",
+  "cli_signature_kind": "$(json_escape "$CLI_SIGNATURE_KIND")",
+  "helper_signature_kind": "$(json_escape "$HELPER_SIGNATURE_KIND")",
+  "stapling_supported_for_archive": false,
+  "created_at": "$(json_escape "$CREATED_AT")"
+}
+EOF
+  mv "$RECEIPT_TMP" "$RELEASE_NOTARIZATION_RECEIPT"
+  echo "notarization_receipt=$RELEASE_NOTARIZATION_RECEIPT"
+  echo "notarization_receipt_written=true"
+}
+
 notary_credentials_ready() {
   if [ -n "$NOTARY_PROFILE" ]; then
     return 0
@@ -177,6 +238,7 @@ submit_notarization() {
     xcrun notarytool submit "$NOTARY_ZIP" --wait --output-format json --apple-id "$NOTARY_APPLE_ID" --team-id "$NOTARY_TEAM_ID" --password "$NOTARY_PASSWORD" > "$RESULT_PATH"
   fi
   echo "notarization_result=$RESULT_PATH"
+  write_release_notarization_receipt
   echo "notarization_status=submitted"
 }
 
