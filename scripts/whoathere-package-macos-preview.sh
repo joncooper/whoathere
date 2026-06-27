@@ -129,10 +129,13 @@ smoke_package() {
   EXTRACTED_ROOT="$SMOKE_ROOT/$PACKAGE_NAME"
   EXTRACTED_CLI="$EXTRACTED_ROOT/bin/whoathere"
   EXTRACTED_HELPER="$EXTRACTED_ROOT/helpers/macos-vm-helper/.build/arm64-apple-macosx/release/whoathere-macos-vm-helper"
+  EXTRACTED_NPM_UV_VALIDATOR="$EXTRACTED_ROOT/helpers/macos-vm-helper/scripts/validate-npm-uv-detonation.sh"
   EXTRACTED_STATE="$SMOKE_ROOT/state"
   DOCTOR_OUTPUT="$SMOKE_ROOT/doctor.json"
 
   "$EXTRACTED_CLI" --help >/dev/null
+  test -x "$EXTRACTED_NPM_UV_VALIDATOR"
+  sh -n "$EXTRACTED_NPM_UV_VALIDATOR"
   /usr/bin/codesign --verify --strict --verbose=2 "$EXTRACTED_CLI" >/dev/null
   /usr/bin/codesign --verify --strict --verbose=2 "$EXTRACTED_HELPER" >/dev/null
   "$EXTRACTED_CLI" doctor --json --state-dir "$EXTRACTED_STATE" --helper "$EXTRACTED_HELPER" > "$DOCTOR_OUTPUT"

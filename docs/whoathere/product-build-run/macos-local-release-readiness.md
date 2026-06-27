@@ -116,8 +116,10 @@ sh -n whoathere/helpers/macos-vm-helper/scripts/provision-guest-readiness.sh
 sh -n whoathere/helpers/macos-vm-helper/scripts/provision-command-lib.sh
 sh -n whoathere/helpers/macos-vm-helper/scripts/validate-local-vm.sh
 sh -n whoathere/helpers/macos-vm-helper/scripts/validate-project-detonation.sh
+sh -n whoathere/helpers/macos-vm-helper/scripts/validate-npm-uv-detonation.sh
 sh -n scripts/whoathere-package-macos-preview.sh
 scripts/whoathere-package-macos-preview.sh
+WHOATHERE_VM_HEALTH_INTERVAL_SECONDS=1 WHOATHERE_VM_HEALTH_ATTEMPTS=1 whoathere/helpers/macos-vm-helper/scripts/validate-npm-uv-detonation.sh
 cc -O2 -Wall -Wextra -target arm64-apple-macos13 -fsyntax-only whoathere/helpers/macos-vm-helper/guest-agent/whoathere-guest-ready.c
 ```
 
@@ -189,12 +191,22 @@ live npm and uv smokes returned `helper=null`, `project_payload=null`,
 `verdict=preflight_security_outcome`, and tool-specific blockers
 `macos_vm_guest_node_runtime_not_provisioned` and `macos_vm_guest_uv_binary_not_provisioned`.
 
+The post-provision npm/uv release gate now lives at
+`whoathere/helpers/macos-vm-helper/scripts/validate-npm-uv-detonation.sh`. It checks the provisioning
+receipt before VM start, starts the VM only when the receipt is ready, requires live guest health to
+prove `python3`, `pip`, `npm`, and `uv`, runs clean local npm install/ci and uv pip project cases,
+runs canary-reading npm lifecycle/API-use and uv import-time cases, verifies public npm/uv
+resolution and `uv sync` remain fail-closed before helper execution, rejects raw canary value
+leakage, checks the host project was not mutated, and suspends the VM if it started it. In the
+current stale validation state it exits with `guest_tooling_not_ready_for_npm_uv_validation=true`
+and prints the exact `sudo ... provision-guest-readiness.sh ...` command before starting the VM.
+
 ## Next Recommended Slice
 
 Focus on live VM validation and packaging UX before expanding package-manager coverage:
 
 1. Reprovision the stopped validation VM with the exact `sudo ... provision-guest-readiness.sh ...` command emitted by `doctor`, `provision-guest-readiness.sh`, or `validate-project-detonation.sh`, then rerun status and health to prove the receipt and live guest report `guest_toolchain_npm_available=true` and `guest_toolchain_uv_available=true`.
-2. Run the npm and uv fixture suites. Keep npm/uv release claims fail-closed until those live checks pass.
+2. Run `WHOATHERE_VM_STATE_DIR=/Users/jdc/.whoathere/macos-vm-validation whoathere/helpers/macos-vm-helper/scripts/validate-npm-uv-detonation.sh`. Keep npm/uv release claims fail-closed until that live gate passes.
 3. Exercise `scripts/whoathere-package-macos-preview.sh` as the release candidate build path, then add Developer ID signing/notarization or keep the artifact clearly labeled as a local preview.
 4. Keep sync-back disabled for the preview unless a separately tested deny-by-default whitelist is implemented.
 5. Decide whether force-stop is acceptable release behavior for `vm suspend`, or whether guest-requested stop must be made reliable before release.

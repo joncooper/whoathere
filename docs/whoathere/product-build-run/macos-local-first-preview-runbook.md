@@ -192,6 +192,7 @@ Run fixture validation:
 ```sh
 WHOATHERE_VM_STATE_DIR="$WHOATHERE_STATE" /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/scripts/validate-detonation-fixtures.sh
 WHOATHERE_VM_STATE_DIR="$WHOATHERE_STATE" /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/scripts/validate-project-detonation.sh
+WHOATHERE_VM_STATE_DIR="$WHOATHERE_STATE" /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/scripts/validate-npm-uv-detonation.sh
 ```
 
 Run a local Python project detonation:
@@ -225,6 +226,12 @@ $WHOATHERE vm detonate --workspace /absolute/path/to/python-project --state-dir 
 
 `uv sync` is intentionally not a claimed live workflow yet; it remains fail-closed until lockfile
 and source policy are explicit and tested.
+
+The npm/uv validation script starts the VM when needed, requires live guest health to prove
+`python3`, `pip`, `npm`, and `uv`, runs clean local npm and uv project cases, runs canary-reading
+npm lifecycle/API-use and uv import-time cases, verifies public npm/uv resolution fails before
+helper execution, checks `uv sync` remains deferred, and suspends the VM if it started it. If guest
+tooling is missing, it prints the exact reprovision command and exits before VM start.
 
 Unsupported or unsafe inputs must fail before helper execution, including:
 
