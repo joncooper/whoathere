@@ -210,7 +210,9 @@ Do not call the macOS local-first preview ready until all of these are true:
 - `whoathere vm red-team-gate --json` passes with `passed=true`.
 - Live VM validation passes for every workflow claimed in the release.
 - `doctor --json` still reports `release_ready=false` until packaging, signing/notarization,
-  scanner availability, npm/uv proof, and public package policy gates are actually complete.
+  npm/uv proof, and public package policy gates are actually complete.
+- Missing scanner binaries are acceptable only while sync-back remains disabled; they must be
+  installed or otherwise replaced by explicit evidence before any auto-sync or auto-allow claim.
 
 ## Limitations
 

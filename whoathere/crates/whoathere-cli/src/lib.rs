@@ -4096,6 +4096,8 @@ struct MacosLocalReleaseReadiness {
     schema_version: &'static str,
     release_ready: bool,
     release_stage: &'static str,
+    scanner_release_blocking: bool,
+    scanner_release_scope: &'static str,
     implemented_workflows: Vec<String>,
     fail_closed_workflows: Vec<String>,
     manual_review_classes: Vec<String>,
@@ -4120,7 +4122,9 @@ fn macos_local_release_readiness(
     if helper.available && helper.exit_code != Some(0) {
         blocking_reason_codes.push("macos_vm_helper_status_not_clean".to_string());
     }
-    if scanner_available_count < scanner_required_count {
+    let scanner_release_blocking = scanner_available_count < scanner_required_count
+        && SYNC_POLICY != "sync_back_disabled_preview";
+    if scanner_release_blocking {
         blocking_reason_codes.push("release_required_scanners_missing".to_string());
     }
 
@@ -4138,6 +4142,8 @@ fn macos_local_release_readiness(
         schema_version: MACOS_LOCAL_RELEASE_READINESS_SCHEMA_VERSION,
         release_ready: blocking_reason_codes.is_empty(),
         release_stage: "pre_release_checkpoint",
+        scanner_release_blocking,
+        scanner_release_scope: "required_before_auto_sync_not_no_sync_preview",
         implemented_workflows: string_vec(&[
             "pip.local_project.install",
             "pip.local_requirements.local_only",
@@ -4231,7 +4237,7 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
             .collect::<Vec<_>>()
             .join(", ");
         return format!(
-            "{{\n  \"command\": \"whoathere doctor\",\n  \"status\": \"ok\",\n  \"release_target\": {},\n  \"release_claim\": {},\n  \"sandbox_label\": {},\n  \"high_risk_allowed\": {},\n  \"state_dir\": {},\n  \"vm_manifest_path\": {},\n  \"vm_manifest_load_reason\": {},\n  \"guest_provisioning\": {},\n  \"release_readiness_schema\": {},\n  \"release_stage\": {},\n  \"release_ready\": {},\n  \"release_blocking_reason_codes\": {},\n  \"implemented_workflows\": {},\n  \"fail_closed_workflows\": {},\n  \"manual_review_classes\": {},\n  \"next_actions\": {},\n  \"vm_ready\": {},\n  \"vm_reason_codes\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout_truncated\": {},\n  \"helper_stderr_truncated\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {},\n  \"scanner_available_count\": {},\n  \"scanner_required_count\": {},\n  \"scanners\": [{}]\n}}",
+            "{{\n  \"command\": \"whoathere doctor\",\n  \"status\": \"ok\",\n  \"release_target\": {},\n  \"release_claim\": {},\n  \"sandbox_label\": {},\n  \"high_risk_allowed\": {},\n  \"state_dir\": {},\n  \"vm_manifest_path\": {},\n  \"vm_manifest_load_reason\": {},\n  \"guest_provisioning\": {},\n  \"release_readiness_schema\": {},\n  \"release_stage\": {},\n  \"release_ready\": {},\n  \"release_blocking_reason_codes\": {},\n  \"scanner_release_blocking\": {},\n  \"scanner_release_scope\": {},\n  \"implemented_workflows\": {},\n  \"fail_closed_workflows\": {},\n  \"manual_review_classes\": {},\n  \"next_actions\": {},\n  \"vm_ready\": {},\n  \"vm_reason_codes\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout_truncated\": {},\n  \"helper_stderr_truncated\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {},\n  \"scanner_available_count\": {},\n  \"scanner_required_count\": {},\n  \"scanners\": [{}]\n}}",
             json_string(RELEASE_TARGET),
             json_string(RELEASE_CLAIM),
             json_string(plan.label),
@@ -4247,6 +4253,8 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
             json_string(readiness.release_stage),
             readiness.release_ready,
             json_string_array(&readiness.blocking_reason_codes),
+            readiness.scanner_release_blocking,
+            json_string(readiness.scanner_release_scope),
             json_string_array(&readiness.implemented_workflows),
             json_string_array(&readiness.fail_closed_workflows),
             json_string_array(&readiness.manual_review_classes),
@@ -4287,7 +4295,7 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "whoathere doctor\nstatus=ok\nrelease_target={}\nrelease_claim={}\nsandbox_label={}\nhigh_risk_allowed={}\nstate_dir={}\nvm_manifest_path={}\nvm_manifest_load_reason={}\n{}\nrelease_readiness_schema={}\nrelease_stage={}\nrelease_ready={}\nrelease_blocking_reason_codes={:?}\nimplemented_workflows={:?}\nfail_closed_workflows={:?}\nmanual_review_classes={:?}\nnext_actions={:?}\nvm_ready={}\nvm_reason_codes={:?}\n{}\nscanner_available_count={}\nscanner_required_count={}\n{}",
+        "whoathere doctor\nstatus=ok\nrelease_target={}\nrelease_claim={}\nsandbox_label={}\nhigh_risk_allowed={}\nstate_dir={}\nvm_manifest_path={}\nvm_manifest_load_reason={}\n{}\nrelease_readiness_schema={}\nrelease_stage={}\nrelease_ready={}\nrelease_blocking_reason_codes={:?}\nscanner_release_blocking={}\nscanner_release_scope={}\nimplemented_workflows={:?}\nfail_closed_workflows={:?}\nmanual_review_classes={:?}\nnext_actions={:?}\nvm_ready={}\nvm_reason_codes={:?}\n{}\nscanner_available_count={}\nscanner_required_count={}\n{}",
         RELEASE_TARGET,
         RELEASE_CLAIM,
         plan.label,
@@ -4300,6 +4308,8 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
         readiness.release_stage,
         readiness.release_ready,
         readiness.blocking_reason_codes,
+        readiness.scanner_release_blocking,
+        readiness.scanner_release_scope,
         readiness.implemented_workflows,
         readiness.fail_closed_workflows,
         readiness.manual_review_classes,
@@ -10222,6 +10232,13 @@ exit 0
             .contains("release_safe_sync_back_not_implemented"));
         assert!(result.output.contains("pip.local_project.install"));
         assert!(result.output.contains("npm.install.project"));
+        assert!(result
+            .output
+            .contains("\"scanner_release_blocking\": false"));
+        assert!(result.output.contains(
+            "\"scanner_release_scope\": \"required_before_auto_sync_not_no_sync_preview\""
+        ));
+        assert!(!result.output.contains("release_required_scanners_missing"));
         assert!(result.output.contains("\"vm_ready\": false"));
         assert!(result.output.contains("\"helper_available\": false"));
         assert!(result.output.contains("macos_vm_runtime_not_verified"));
