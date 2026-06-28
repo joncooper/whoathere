@@ -75,6 +75,59 @@ export WHOATHERE_STATE=/Users/jdc/.whoathere/macos-vm-validation
 export WHOATHERE_HELPER=/Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/.build/arm64-apple-macosx/debug/whoathere-macos-vm-helper
 ```
 
+## Scanner Setup
+
+Scanners add useful signals about known vulnerabilities, suspicious package behavior, SBOM
+contents, and repository quality. They do not replace the macOS VM and they cannot authorize
+package execution or file copy-back by themselves.
+
+Bootstrap or locate scanners from the repo root:
+
+```sh
+scripts/whoathere-bootstrap-scanners.sh
+```
+
+The bootstrap script prefers the ignored local cache at `.whoathere/scanners/`, may use Homebrew,
+`uv tool`, `uvx`, or GitHub release downloads, and writes:
+
+```text
+.whoathere/scanners/scanner-bootstrap.json
+```
+
+Inspect scanner readiness:
+
+```sh
+$WHOATHERE scanners list --json
+$WHOATHERE scanners bootstrap-plan --json
+```
+
+Run scanner evidence against a workspace:
+
+```sh
+$WHOATHERE scanners run --workspace /path/to/project --ecosystem auto --execute --json
+```
+
+The output uses schema `whoathere.external_scanner_run.v1`. It reports normalized scanner status,
+finding counts where cheaply available, stdout/stderr digests, and reason codes. It does not include
+raw scanner output, package contents, tokens, canaries, or raw host secret paths.
+
+For the current local-only beta, scanner availability is visible in `doctor --json` but remains
+advisory: `scanner_release_blocking=false`. Missing scanners must block future public-package
+auto-trust, but they do not block the current local-only VM beta because public package acquisition
+is still disabled.
+
+Run the deterministic scanner contract smoke:
+
+```sh
+scripts/whoathere-scanner-integration-smoke.sh
+```
+
+To add a best-effort real-tool pass after bootstrap:
+
+```sh
+WHOATHERE_SCANNER_REAL_SMOKE=1 scripts/whoathere-scanner-integration-smoke.sh
+```
+
 ## Package A Preview Artifact
 
 To build a repeatable Apple Silicon preview tarball with the release CLI, signed release helper,

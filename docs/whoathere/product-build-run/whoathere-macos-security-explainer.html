@@ -449,6 +449,7 @@
           <li><a href="#can-do">What It Can Do</a></li>
           <li><a href="#cannot-do">What It Cannot Do</a></li>
           <li><a href="#validation">Validation</a></li>
+          <li><a href="#scanner-signals">Scanner Signals</a></li>
           <li><a href="#before-using">Before Using It</a></li>
           <li><a href="#next">What Comes Next</a></li>
           <li><a href="#sources">Local Sources Used</a></li>
@@ -794,11 +795,42 @@
             </tr>
             <tr>
               <td>External scanner integration</td>
-              <td><span class="status warn">Advisory/deferred</span></td>
-              <td>Local comparison tests exist, but full integration with GuardDog, OSV, Syft/Grype/Trivy, pip-audit, and Scorecard is future work.</td>
+              <td><span class="status info">Functional evidence layer</span></td>
+              <td>WhoaThere can list, bootstrap, and run scanner checks, then report normalized status without raw scanner output.</td>
             </tr>
           </tbody>
         </table>
+      </section>
+
+      <section id="scanner-signals">
+        <h2>Scanner Signals</h2>
+        <p>
+          WhoaThere now has a scanner layer for extra checks. It can use tools such as GuardDog,
+          OSV-Scanner, pip-audit, Syft, and Grype to look for suspicious package behavior, known
+          vulnerabilities, and package contents. Trivy and Scorecard are detected and reported for
+          follow-up use.
+        </p>
+        <p>
+          These scanner results are useful, but they are not proof that a package is safe. A clean
+          scanner result does not let a package skip the VM, does not allow unsafe files to copy
+          back to your Mac, and does not make binary or native packages automatically trusted.
+        </p>
+        <div class="grid">
+          <div class="card">
+            <h3>What scanners add</h3>
+            <p>
+              They can catch known bad patterns, known vulnerable versions, suspicious metadata,
+              and unexpected package contents before a developer trusts a package.
+            </p>
+          </div>
+          <div class="card">
+            <h3>What scanners do not add</h3>
+            <p>
+              They do not replace VM isolation, fake-secret checks, strict file copy-back rules, or
+              manual review for risky package types.
+            </p>
+          </div>
+        </div>
       </section>
 
       <section id="before-using">
@@ -833,7 +865,7 @@
         </p>
         <ul>
           <li>Install testing on another Mac, or in the cleanest available VM-like environment, for more release confidence.</li>
-          <li>External scanner integrations: GuardDog, OSV-Scanner, pip-audit, Syft, Grype or Trivy, and repository reputation signals.</li>
+          <li>Deeper scanner pressure testing with real public packages and stronger repository reputation signals.</li>
           <li>Known-good package history and diffs against the last approved version.</li>
           <li>Fresh-release cooldowns and package reputation scoring for public packages.</li>
           <li>VM runs that execute project tests or generated package-use checks to catch packages that are malicious only when their APIs are used.</li>

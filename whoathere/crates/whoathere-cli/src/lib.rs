@@ -15,7 +15,12 @@ use whoathere_core::{
     CommandKind, ContainmentBackend, ExecutionMode, ExitCode, OutageBehavior, WhoaThereConfig,
     WorkflowRisk,
 };
-use whoathere_detector::{scan_npm_package_json, scan_pyproject_toml};
+use whoathere_detector::{
+    external_scanner_specs, plan_external_scanner_run, run_external_scanners,
+    scan_npm_package_json, scan_pyproject_toml, scanner_bootstrap_receipt_path,
+    scanner_bootstrap_receipt_present, scanner_inventory, ExternalScannerRunRecord,
+    ExternalScannerRunSummary, ScannerEcosystem, ScannerExecutionRole, EXTERNAL_SCANNER_RUN_SCHEMA,
+};
 use whoathere_evidence::{
     minimum_profiles, EvidenceBundle, EvidenceJobBinding, EvidenceJobResult, EvidenceProfile,
     JobState,
@@ -160,6 +165,19 @@ pub enum Command {
         json: bool,
     },
     VmRedTeamGate {
+        json: bool,
+    },
+    ScannersList {
+        json: bool,
+    },
+    ScannersBootstrapPlan {
+        json: bool,
+    },
+    ScannersRun {
+        workspace: Option<String>,
+        ecosystem: Option<String>,
+        timeout_seconds: Option<u64>,
+        execute: bool,
         json: bool,
     },
     PolicyExplain {
@@ -478,6 +496,21 @@ pub fn parse_command(args: &[String]) -> Command {
         [cmd, sub, kind, path] if cmd == "scan" && sub == "manifest" => Command::ScanManifest {
             kind: kind.clone(),
             path: path.clone(),
+        },
+        [cmd, sub, rest @ ..] if cmd == "scanners" && sub == "list" => Command::ScannersList {
+            json: rest.iter().any(|arg| arg == "--json"),
+        },
+        [cmd, sub, rest @ ..] if cmd == "scanners" && sub == "bootstrap-plan" => {
+            Command::ScannersBootstrapPlan {
+                json: rest.iter().any(|arg| arg == "--json"),
+            }
+        }
+        [cmd, sub, rest @ ..] if cmd == "scanners" && sub == "run" => Command::ScannersRun {
+            workspace: parse_flag_value(rest, "--workspace"),
+            ecosystem: parse_flag_value(rest, "--ecosystem"),
+            timeout_seconds: parse_u64_flag(rest, "--timeout-seconds"),
+            execute: rest.iter().any(|arg| arg == "--execute"),
+            json: rest.iter().any(|arg| arg == "--json"),
         },
         [cmd, sub, kind, path, rest @ ..] if cmd == "source" && sub == "scan" => {
             Command::SourceScan {
@@ -863,6 +896,21 @@ fn render_command_text(command: Command) -> String {
         ),
         Command::ConfigCheck { path } => render_config_check(&path),
         Command::ScanManifest { kind, path } => render_manifest_scan(&kind, &path),
+        Command::ScannersList { json } => render_scanners_list(json),
+        Command::ScannersBootstrapPlan { json } => render_scanners_bootstrap_plan(json),
+        Command::ScannersRun {
+            workspace,
+            ecosystem,
+            timeout_seconds,
+            execute,
+            json,
+        } => render_scanners_run(
+            workspace.as_deref(),
+            ecosystem.as_deref(),
+            timeout_seconds,
+            execute,
+            json,
+        ),
         Command::SourceScan {
             kind,
             path,
@@ -1204,6 +1252,9 @@ fn command_help() -> String {
         "|protect [--workspace <path> --vault-origin <url>] npm|pip|uv -- <args>",
         "|scan manifest npm-package-json <path>",
         "|scan manifest pyproject <path>",
+        "|scanners list [--json]",
+        "|scanners bootstrap-plan [--json]",
+        "|scanners run --workspace <path> [--ecosystem auto|npm|pypi] [--timeout-seconds <n>] [--execute] [--json]",
         "|source scan <kind> <path> --vault-origin <url>",
         "|source scan-workspace <path> --vault-origin <url>",
         "|source context <tool> --vault-origin <url>",
@@ -6935,15 +6986,16 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
     );
     let effective_vm_reason_codes = effective_vm_reason_codes(&status, &helper);
     let vm_lifecycle_reason_codes = vm_lifecycle_reason_codes(&status, &helper);
-    let scanners = scanner_adapters();
-    let scanner_available = scanners
+    let scanner_inventory = scanner_inventory();
+    let scanner_available = scanner_inventory
         .iter()
-        .filter(|adapter| command_on_path(adapter.name))
+        .filter(|item| item.spec.role == ScannerExecutionRole::Core && item.available)
         .count();
-    let scanner_required = scanners
+    let scanner_required = scanner_inventory
         .iter()
-        .filter(|adapter| adapter.required_for_auto_sync)
+        .filter(|item| item.spec.role == ScannerExecutionRole::Core)
         .count();
+    let scanner_public_package_auto_trust_ready = scanner_available == scanner_required;
     let readiness = macos_local_release_readiness(
         &status,
         MacosLocalReleaseEvidence {
@@ -6965,21 +7017,30 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
     let guest_reprovision_operator_action =
         guest_reprovision_operator_action(&provisioning, guest_reprovision_command.as_deref());
     if json {
-        let scanner_json = scanners
+        let scanner_json = scanner_inventory
             .iter()
-            .map(|adapter| {
+            .map(|item| {
                 format!(
-                    "{{\"name\": {}, \"available\": {}, \"required_for_auto_sync\": {}, \"evidence_role\": {}}}",
-                    json_string(adapter.name),
-                    command_on_path(adapter.name),
-                    adapter.required_for_auto_sync,
-                    json_string(adapter.evidence_role)
+                    "{{\"name\": {}, \"available\": {}, \"role\": {}, \"required_for_auto_sync\": {}, \"path\": {}, \"version\": {}, \"evidence_role\": {}}}",
+                    json_string(item.spec.name),
+                    item.available,
+                    json_string(item.spec.role.as_str()),
+                    item.spec.role == ScannerExecutionRole::Core,
+                    item.display_path
+                        .as_deref()
+                        .map(json_string)
+                        .unwrap_or_else(|| "null".to_string()),
+                    item.version
+                        .as_deref()
+                        .map(json_string)
+                        .unwrap_or_else(|| "null".to_string()),
+                    json_string(item.spec.evidence_role)
                 )
             })
             .collect::<Vec<_>>()
             .join(", ");
         return format!(
-            "{{\n  \"command\": \"whoathere doctor\",\n  \"status\": \"ok\",\n  \"release_target\": {},\n  \"release_claim\": {},\n  \"sandbox_label\": {},\n  \"high_risk_allowed\": {},\n  \"state_dir\": {},\n  \"vm_manifest_path\": {},\n  \"vm_manifest_load_reason\": {},\n  \"guest_provisioning\": {},\n  \"runtime_shutdown\": {},\n  \"release_validation\": {},\n  \"sync_validation\": {},\n  \"release_notarization\": {},\n  \"guest_reprovision_required\": {},\n  \"guest_reprovision_admin_required\": {},\n  \"guest_reprovision_operator_action\": {},\n  \"guest_reprovision_command\": {},\n  \"release_readiness_schema\": {},\n  \"release_stage\": {},\n  \"release_ready\": {},\n  \"release_blocking_reason_codes\": {},\n  \"scanner_release_blocking\": {},\n  \"scanner_release_scope\": {},\n  \"package_acquisition_policy\": {},\n  \"implemented_workflows\": {},\n  \"fail_closed_workflows\": {},\n  \"manual_review_classes\": {},\n  \"next_actions\": {},\n  \"vm_lifecycle_ready\": {},\n  \"vm_lifecycle_reason_codes\": {},\n  \"vm_runtime_ready\": {},\n  \"vm_ready\": {},\n  \"vm_reason_codes\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout_truncated\": {},\n  \"helper_stderr_truncated\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {},\n  \"scanner_available_count\": {},\n  \"scanner_required_count\": {},\n  \"scanners\": [{}]\n}}",
+            "{{\n  \"command\": \"whoathere doctor\",\n  \"status\": \"ok\",\n  \"release_target\": {},\n  \"release_claim\": {},\n  \"sandbox_label\": {},\n  \"high_risk_allowed\": {},\n  \"state_dir\": {},\n  \"vm_manifest_path\": {},\n  \"vm_manifest_load_reason\": {},\n  \"guest_provisioning\": {},\n  \"runtime_shutdown\": {},\n  \"release_validation\": {},\n  \"sync_validation\": {},\n  \"release_notarization\": {},\n  \"guest_reprovision_required\": {},\n  \"guest_reprovision_admin_required\": {},\n  \"guest_reprovision_operator_action\": {},\n  \"guest_reprovision_command\": {},\n  \"release_readiness_schema\": {},\n  \"release_stage\": {},\n  \"release_ready\": {},\n  \"release_blocking_reason_codes\": {},\n  \"scanner_release_blocking\": {},\n  \"scanner_release_scope\": {},\n  \"scanner_bootstrap_receipt_present\": {},\n  \"scanner_bootstrap_receipt_path\": {},\n  \"scanner_public_package_auto_trust_ready\": {},\n  \"package_acquisition_policy\": {},\n  \"implemented_workflows\": {},\n  \"fail_closed_workflows\": {},\n  \"manual_review_classes\": {},\n  \"next_actions\": {},\n  \"vm_lifecycle_ready\": {},\n  \"vm_lifecycle_reason_codes\": {},\n  \"vm_runtime_ready\": {},\n  \"vm_ready\": {},\n  \"vm_reason_codes\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout_truncated\": {},\n  \"helper_stderr_truncated\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {},\n  \"scanner_available_count\": {},\n  \"scanner_required_count\": {},\n  \"scanners\": [{}]\n}}",
             json_string(RELEASE_TARGET),
             json_string(RELEASE_CLAIM),
             json_string(plan.label),
@@ -7008,6 +7069,9 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
             json_string_array(&readiness.blocking_reason_codes),
             readiness.scanner_release_blocking,
             json_string(readiness.scanner_release_scope),
+            scanner_bootstrap_receipt_present(),
+            json_string(&redacted_path_string(&scanner_bootstrap_receipt_path())),
+            scanner_public_package_auto_trust_ready,
             json_string(readiness.package_acquisition_policy),
             json_string_array(&readiness.implemented_workflows),
             json_string_array(&readiness.fail_closed_workflows),
@@ -7038,21 +7102,24 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
             scanner_json
         );
     }
-    let scanner_lines = scanners
+    let scanner_lines = scanner_inventory
         .iter()
-        .map(|adapter| {
+        .map(|item| {
             format!(
-                "scanner_adapter={} available={} required_for_auto_sync={} evidence_role=\"{}\"",
-                adapter.name,
-                command_on_path(adapter.name),
-                adapter.required_for_auto_sync,
-                adapter.evidence_role
+                "scanner_adapter={} available={} role={} required_for_auto_sync={} path={} version={} evidence_role=\"{}\"",
+                item.spec.name,
+                item.available,
+                item.spec.role.as_str(),
+                item.spec.role == ScannerExecutionRole::Core,
+                item.display_path.as_deref().unwrap_or("none"),
+                item.version.as_deref().unwrap_or("unknown"),
+                item.spec.evidence_role
             )
         })
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "whoathere doctor\nstatus=ok\nrelease_target={}\nrelease_claim={}\nsandbox_label={}\nhigh_risk_allowed={}\nstate_dir={}\nvm_manifest_path={}\nvm_manifest_load_reason={}\n{}\n{}\n{}\n{}\n{}\nguest_reprovision_required={}\nguest_reprovision_admin_required={}\nguest_reprovision_operator_action={}\nguest_reprovision_command={}\nrelease_readiness_schema={}\nrelease_stage={}\nrelease_ready={}\nrelease_blocking_reason_codes={:?}\nscanner_release_blocking={}\nscanner_release_scope={}\npackage_acquisition_policy={}\nimplemented_workflows={:?}\nfail_closed_workflows={:?}\nmanual_review_classes={:?}\nnext_actions={:?}\nvm_lifecycle_ready={}\nvm_lifecycle_reason_codes={:?}\nvm_runtime_ready={}\nvm_ready={}\nvm_reason_codes={:?}\n{}\nscanner_available_count={}\nscanner_required_count={}\n{}",
+        "whoathere doctor\nstatus=ok\nrelease_target={}\nrelease_claim={}\nsandbox_label={}\nhigh_risk_allowed={}\nstate_dir={}\nvm_manifest_path={}\nvm_manifest_load_reason={}\n{}\n{}\n{}\n{}\n{}\nguest_reprovision_required={}\nguest_reprovision_admin_required={}\nguest_reprovision_operator_action={}\nguest_reprovision_command={}\nrelease_readiness_schema={}\nrelease_stage={}\nrelease_ready={}\nrelease_blocking_reason_codes={:?}\nscanner_release_blocking={}\nscanner_release_scope={}\nscanner_bootstrap_receipt_present={}\nscanner_bootstrap_receipt_path={}\nscanner_public_package_auto_trust_ready={}\npackage_acquisition_policy={}\nimplemented_workflows={:?}\nfail_closed_workflows={:?}\nmanual_review_classes={:?}\nnext_actions={:?}\nvm_lifecycle_ready={}\nvm_lifecycle_reason_codes={:?}\nvm_runtime_ready={}\nvm_ready={}\nvm_reason_codes={:?}\n{}\nscanner_available_count={}\nscanner_required_count={}\n{}",
         RELEASE_TARGET,
         RELEASE_CLAIM,
         plan.label,
@@ -7077,6 +7144,9 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
         readiness.blocking_reason_codes,
         readiness.scanner_release_blocking,
         readiness.scanner_release_scope,
+        scanner_bootstrap_receipt_present(),
+        redacted_path_string(&scanner_bootstrap_receipt_path()),
+        scanner_public_package_auto_trust_ready,
         readiness.package_acquisition_policy,
         readiness.implemented_workflows,
         readiness.fail_closed_workflows,
@@ -9208,6 +9278,303 @@ fn render_manifest_scan(kind: &str, path: &str) -> String {
         report.findings.len(),
         finding_lines
     )
+}
+
+fn render_scanners_list(json: bool) -> String {
+    let inventory = scanner_inventory();
+    let core_count = inventory
+        .iter()
+        .filter(|item| item.spec.role == ScannerExecutionRole::Core)
+        .count();
+    let core_available_count = inventory
+        .iter()
+        .filter(|item| item.spec.role == ScannerExecutionRole::Core && item.available)
+        .count();
+    if json {
+        let scanners_json = inventory
+            .iter()
+            .map(|item| {
+                format!(
+                    "{{\"name\": {}, \"role\": {}, \"available\": {}, \"path\": {}, \"version\": {}, \"evidence_role\": {}}}",
+                    json_string(item.spec.name),
+                    json_string(item.spec.role.as_str()),
+                    item.available,
+                    item.display_path
+                        .as_deref()
+                        .map(json_string)
+                        .unwrap_or_else(|| "null".to_string()),
+                    item.version
+                        .as_deref()
+                        .map(json_string)
+                        .unwrap_or_else(|| "null".to_string()),
+                    json_string(item.spec.evidence_role)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        return format!(
+            "{{\n  \"command\": \"whoathere scanners list\",\n  \"schema_version\": {},\n  \"core_scanner_count\": {},\n  \"core_scanner_available_count\": {},\n  \"bootstrap_receipt_present\": {},\n  \"bootstrap_receipt_path\": {},\n  \"scanner_public_package_auto_trust_ready\": {},\n  \"scanners\": [{}],\n  \"exit_code\": 0\n}}",
+            json_string(EXTERNAL_SCANNER_RUN_SCHEMA),
+            core_count,
+            core_available_count,
+            scanner_bootstrap_receipt_present(),
+            json_string(&redacted_path_string(&scanner_bootstrap_receipt_path())),
+            core_available_count == core_count,
+            scanners_json
+        );
+    }
+    let rows = inventory
+        .iter()
+        .map(|item| {
+            format!(
+                "scanner={} role={} available={} path={} version={} evidence_role=\"{}\"",
+                item.spec.name,
+                item.spec.role.as_str(),
+                item.available,
+                item.display_path.as_deref().unwrap_or("none"),
+                item.version.as_deref().unwrap_or("unknown"),
+                item.spec.evidence_role
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "whoathere scanners list\nschema_version={}\ncore_scanner_count={}\ncore_scanner_available_count={}\nbootstrap_receipt_present={}\nbootstrap_receipt_path={}\nscanner_public_package_auto_trust_ready={}\n{}\nexit_code=0",
+        EXTERNAL_SCANNER_RUN_SCHEMA,
+        core_count,
+        core_available_count,
+        scanner_bootstrap_receipt_present(),
+        redacted_path_string(&scanner_bootstrap_receipt_path()),
+        core_available_count == core_count,
+        rows
+    )
+}
+
+fn render_scanners_bootstrap_plan(json: bool) -> String {
+    let specs = external_scanner_specs();
+    let cache_dir = scanner_bootstrap_receipt_path()
+        .parent()
+        .map(redacted_path_string)
+        .unwrap_or_else(|| "<whoathere-scanner-cache>".to_string());
+    if json {
+        let scanner_json = specs
+            .iter()
+            .map(|spec| {
+                let install = scanner_install_hint(spec.name);
+                format!(
+                    "{{\"name\": {}, \"role\": {}, \"install_hint\": {}, \"evidence_role\": {}}}",
+                    json_string(spec.name),
+                    json_string(spec.role.as_str()),
+                    json_string(install),
+                    json_string(spec.evidence_role)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        return format!(
+            "{{\n  \"command\": \"whoathere scanners bootstrap-plan\",\n  \"schema_version\": {},\n  \"cache_dir\": {},\n  \"bootstrap_script\": \"scripts/whoathere-bootstrap-scanners.sh\",\n  \"mutation\": false,\n  \"scanners\": [{}],\n  \"exit_code\": 0\n}}",
+            json_string(EXTERNAL_SCANNER_RUN_SCHEMA),
+            json_string(&cache_dir),
+            scanner_json
+        );
+    }
+    let rows = specs
+        .iter()
+        .map(|spec| {
+            format!(
+                "scanner={} role={} install_hint=\"{}\" evidence_role=\"{}\"",
+                spec.name,
+                spec.role.as_str(),
+                scanner_install_hint(spec.name),
+                spec.evidence_role
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "whoathere scanners bootstrap-plan\nschema_version={}\ncache_dir={}\nbootstrap_script=scripts/whoathere-bootstrap-scanners.sh\nmutation=false\n{}\nexit_code=0",
+        EXTERNAL_SCANNER_RUN_SCHEMA,
+        cache_dir,
+        rows
+    )
+}
+
+fn render_scanners_run(
+    workspace: Option<&str>,
+    ecosystem: Option<&str>,
+    timeout_seconds: Option<u64>,
+    execute: bool,
+    json: bool,
+) -> String {
+    let Some(workspace) = workspace else {
+        return scanner_misuse("scanner_workspace_required", json);
+    };
+    let ecosystem_value = ecosystem.unwrap_or("auto");
+    let ecosystem = match ScannerEcosystem::parse(ecosystem_value) {
+        Some(parsed) => parsed,
+        None => return scanner_misuse("scanner_ecosystem_invalid", json),
+    };
+    let timeout = timeout_seconds.unwrap_or(120).clamp(1, 300);
+    let workspace_path = Path::new(workspace);
+    let summary = if execute {
+        run_external_scanners(workspace_path, ecosystem, timeout, true)
+    } else {
+        plan_external_scanner_run(workspace_path, ecosystem)
+    };
+    render_scanner_run_summary(&summary, json)
+}
+
+fn scanner_misuse(reason_code: &str, json: bool) -> String {
+    if json {
+        return format!(
+            "{{\n  \"command\": \"whoathere scanners run\",\n  \"schema_version\": {},\n  \"status\": \"error\",\n  \"reason_code\": {},\n  \"exit_code\": {}\n}}",
+            json_string(EXTERNAL_SCANNER_RUN_SCHEMA),
+            json_string(reason_code),
+            ExitCode::Misuse.code()
+        );
+    }
+    format!(
+        "whoathere scanners run\nschema_version={}\nstatus=error\nreason_code={reason_code}\nexit_code={}",
+        EXTERNAL_SCANNER_RUN_SCHEMA,
+        ExitCode::Misuse.code()
+    )
+}
+
+fn render_scanner_run_summary(summary: &ExternalScannerRunSummary, json: bool) -> String {
+    let exit_code = if !summary.execute_requested || summary.scanner_clean {
+        ExitCode::Allow.code()
+    } else {
+        ExitCode::Deny.code()
+    };
+    if json {
+        let records_json = summary
+            .records
+            .iter()
+            .map(render_scanner_record_json)
+            .collect::<Vec<_>>()
+            .join(", ");
+        return format!(
+            "{{\n  \"command\": \"whoathere scanners run\",\n  \"schema_version\": {},\n  \"workspace\": \"<workspace>\",\n  \"workspace_kind\": {},\n  \"requested_ecosystem\": {},\n  \"effective_ecosystem\": {},\n  \"execute_requested\": {},\n  \"timeout_seconds\": {},\n  \"scanner_clean\": {},\n  \"core_scanner_count\": {},\n  \"core_scanner_runnable_count\": {},\n  \"reason_codes\": {},\n  \"records\": [{}],\n  \"exit_code\": {}\n}}",
+            json_string(summary.schema_version),
+            json_string(&summary.workspace_kind),
+            json_string(summary.requested_ecosystem.as_str()),
+            json_string(summary.effective_ecosystem.as_str()),
+            summary.execute_requested,
+            summary.timeout_seconds,
+            summary.scanner_clean,
+            summary.core_scanner_count,
+            summary.core_scanner_runnable_count,
+            json_string_array(&summary.reason_codes),
+            records_json,
+            exit_code
+        );
+    }
+    let records = summary
+        .records
+        .iter()
+        .map(render_scanner_record_text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "whoathere scanners run\nschema_version={}\nworkspace=<workspace>\nworkspace_kind={}\nrequested_ecosystem={}\neffective_ecosystem={}\nexecute_requested={}\ntimeout_seconds={}\nscanner_clean={}\ncore_scanner_count={}\ncore_scanner_runnable_count={}\nreason_codes={:?}\n{}\nexit_code={}",
+        summary.schema_version,
+        summary.workspace_kind,
+        summary.requested_ecosystem.as_str(),
+        summary.effective_ecosystem.as_str(),
+        summary.execute_requested,
+        summary.timeout_seconds,
+        summary.scanner_clean,
+        summary.core_scanner_count,
+        summary.core_scanner_runnable_count,
+        summary.reason_codes,
+        records,
+        exit_code
+    )
+}
+
+fn render_scanner_record_json(record: &ExternalScannerRunRecord) -> String {
+    format!(
+        "{{\"schema_version\": {}, \"scanner\": {}, \"role\": {}, \"ecosystem\": {}, \"status\": {}, \"path\": {}, \"argv\": {}, \"exit_code\": {}, \"elapsed_ms\": {}, \"timed_out\": {}, \"stdout_sha256\": {}, \"stderr_sha256\": {}, \"stdout_bytes\": {}, \"stderr_bytes\": {}, \"finding_count\": {}, \"reason_codes\": {}}}",
+        json_string(record.schema_version),
+        json_string(&record.scanner),
+        json_string(record.role.as_str()),
+        json_string(record.ecosystem.as_str()),
+        json_string(record.status.as_str()),
+        record
+            .display_path
+            .as_deref()
+            .map(json_string)
+            .unwrap_or_else(|| "null".to_string()),
+        json_string_array(&record.argv),
+        record
+            .exit_code
+            .map(|code| code.to_string())
+            .unwrap_or_else(|| "null".to_string()),
+        record.elapsed_ms,
+        record.timed_out,
+        record
+            .stdout_sha256
+            .as_deref()
+            .map(json_string)
+            .unwrap_or_else(|| "null".to_string()),
+        record
+            .stderr_sha256
+            .as_deref()
+            .map(json_string)
+            .unwrap_or_else(|| "null".to_string()),
+        record.stdout_bytes,
+        record.stderr_bytes,
+        record.finding_count,
+        json_string_array(&record.reason_codes)
+    )
+}
+
+fn render_scanner_record_text(record: &ExternalScannerRunRecord) -> String {
+    format!(
+        "scanner_result scanner={} role={} ecosystem={} status={} path={} argv={:?} exit_code={} elapsed_ms={} timed_out={} stdout_sha256={} stderr_sha256={} stdout_bytes={} stderr_bytes={} finding_count={} reason_codes={:?}",
+        record.scanner,
+        record.role.as_str(),
+        record.ecosystem.as_str(),
+        record.status.as_str(),
+        record.display_path.as_deref().unwrap_or("none"),
+        record.argv,
+        record
+            .exit_code
+            .map(|code| code.to_string())
+            .unwrap_or_else(|| "null".to_string()),
+        record.elapsed_ms,
+        record.timed_out,
+        record.stdout_sha256.as_deref().unwrap_or("none"),
+        record.stderr_sha256.as_deref().unwrap_or("none"),
+        record.stdout_bytes,
+        record.stderr_bytes,
+        record.finding_count,
+        record.reason_codes
+    )
+}
+
+fn scanner_install_hint(name: &str) -> &'static str {
+    match name {
+        "guarddog" => "uv tool install guarddog, or use uvx guarddog",
+        "pip-audit" => "uv tool install pip-audit, or use uvx pip-audit",
+        "osv-scanner" => "brew install osv-scanner, or download GitHub release",
+        "syft" => "brew install syft, or download GitHub release",
+        "grype" => "brew install grype, or download GitHub release",
+        "trivy" => "brew install trivy, or download GitHub release",
+        "scorecard" => "brew install scorecard, or download GitHub release",
+        _ => "install scanner on PATH",
+    }
+}
+
+fn redacted_path_string(path: &Path) -> String {
+    let value = path.display().to_string();
+    if value.contains(".whoathere/scanners") {
+        return "<whoathere-scanner-cache>".to_string();
+    }
+    if value.contains("/Users/") {
+        return "<redacted-path>".to_string();
+    }
+    value
 }
 
 fn render_evidence_profiles() -> String {
@@ -14546,6 +14913,99 @@ exit 0
     }
 
     #[test]
+    fn scanners_list_and_bootstrap_plan_render_json_contracts() {
+        let list = evaluate_command(Command::ScannersList { json: true });
+        assert_eq!(list.exit_code, 0);
+        assert!(list
+            .output
+            .contains("\"command\": \"whoathere scanners list\""));
+        assert!(list
+            .output
+            .contains("\"schema_version\": \"whoathere.external_scanner_run.v1\""));
+        assert!(list
+            .output
+            .contains("\"scanner_public_package_auto_trust_ready\""));
+
+        let plan = evaluate_command(Command::ScannersBootstrapPlan { json: true });
+        assert_eq!(plan.exit_code, 0);
+        assert!(plan
+            .output
+            .contains("\"command\": \"whoathere scanners bootstrap-plan\""));
+        assert!(plan
+            .output
+            .contains("scripts/whoathere-bootstrap-scanners.sh"));
+        assert!(plan.output.contains("\"name\": \"guarddog\""));
+    }
+
+    #[test]
+    fn scanners_run_dry_run_requires_execute_without_raw_workspace_path() {
+        let root = temp_root("whoathere-cli-scanners-dry-run");
+        write_clean_npm_project(&root);
+        let result = evaluate_command(Command::ScannersRun {
+            workspace: Some(root.display().to_string()),
+            ecosystem: Some("npm".to_string()),
+            timeout_seconds: Some(5),
+            execute: false,
+            json: true,
+        });
+        assert_eq!(result.exit_code, 0);
+        assert!(result
+            .output
+            .contains("\"command\": \"whoathere scanners run\""));
+        assert!(result.output.contains("\"execute_requested\": false"));
+        assert!(result.output.contains("scanner_execution_requires_execute"));
+        assert!(!result.output.contains(&root.display().to_string()));
+        assert!(!result.output.contains("/Users/"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn scanners_run_executes_fake_clean_and_finding_adapters() {
+        let root = temp_root("whoathere-cli-scanners-fake");
+        let bin = root.join("bin");
+        let clean = root.join("clean-npm");
+        let bad = root.join("bad-npm");
+        std::fs::create_dir_all(&bin).expect("bin");
+        std::fs::create_dir_all(&clean).expect("clean");
+        std::fs::create_dir_all(&bad).expect("bad");
+        write_clean_npm_project(&clean);
+        write_clean_npm_project(&bad);
+        for scanner in ["guarddog", "osv-scanner", "syft", "grype", "pip-audit"] {
+            write_fake_scanner(&bin.join(scanner));
+        }
+        let path = bin.display().to_string();
+        with_reprovision_env(&[("PATH", path)], || {
+            let clean_result = evaluate_command(Command::ScannersRun {
+                workspace: Some(clean.display().to_string()),
+                ecosystem: Some("npm".to_string()),
+                timeout_seconds: Some(5),
+                execute: true,
+                json: true,
+            });
+            assert_eq!(clean_result.exit_code, 0);
+            assert!(clean_result.output.contains("\"scanner_clean\": true"));
+            assert!(clean_result.output.contains("\"status\": \"passed\""));
+            assert!(!clean_result.output.contains("WHOATHERE_CANARY_TOKEN"));
+            assert!(!clean_result.output.contains(&root.display().to_string()));
+
+            let bad_result = evaluate_command(Command::ScannersRun {
+                workspace: Some(bad.display().to_string()),
+                ecosystem: Some("npm".to_string()),
+                timeout_seconds: Some(5),
+                execute: true,
+                json: true,
+            });
+            assert_eq!(bad_result.exit_code, ExitCode::Deny.code());
+            assert!(bad_result.output.contains("\"scanner_clean\": false"));
+            assert!(bad_result.output.contains("\"status\": \"findings\""));
+            assert!(bad_result.output.contains("scanner_findings_observed"));
+            assert!(!bad_result.output.contains("WHOATHERE_CANARY_TOKEN"));
+            assert!(!bad_result.output.contains(&root.display().to_string()));
+        });
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn doctor_json_reports_vm_release_readiness_without_enabling_runtime() {
         let result = evaluate_command(Command::Doctor {
             json: true,
@@ -14593,6 +15053,12 @@ exit 0
         assert!(result.output.contains(
             "\"scanner_release_scope\": \"advisory_for_local_beta_required_before_public_package_auto_sync\""
         ));
+        assert!(result
+            .output
+            .contains("\"scanner_bootstrap_receipt_present\""));
+        assert!(result
+            .output
+            .contains("\"scanner_public_package_auto_trust_ready\""));
         assert!(!result.output.contains("release_required_scanners_missing"));
         assert!(result.output.contains("\"vm_ready\": false"));
         assert!(result.output.contains("\"helper_available\": false"));
@@ -17946,6 +18412,21 @@ exit 0
         )
         .expect("package json");
         std::fs::write(root.join("index.js"), "module.exports = 'clean';\n").expect("index js");
+    }
+
+    fn write_fake_scanner(path: &std::path::Path) {
+        write_new_file(
+            path,
+            br#"#!/bin/sh
+case "$*" in
+  *bad-npm*) printf '{"findings":[{"whoathere_fake_finding":true}]}\n' ;;
+  *) printf '{"findings":[]}\n' ;;
+esac
+exit 0
+"#,
+        )
+        .expect("fake scanner");
+        set_executable(path).expect("fake scanner executable");
     }
 
     fn temp_root(prefix: &str) -> std::path::PathBuf {
