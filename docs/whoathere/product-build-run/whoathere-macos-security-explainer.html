@@ -1,0 +1,860 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WhoaThere macOS Security Explainer</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f5f7f8;
+      --panel: #ffffff;
+      --panel-soft: #eef4f5;
+      --ink: #162027;
+      --muted: #596872;
+      --line: #d7e0e5;
+      --accent: #146c75;
+      --accent-dark: #0d545c;
+      --good: #17613a;
+      --warn: #8a6100;
+      --bad: #942b2b;
+      --info: #255d93;
+      --shadow: 0 1px 2px rgba(22, 32, 39, 0.06), 0 10px 28px rgba(22, 32, 39, 0.06);
+      --radius: 8px;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: var(--sans);
+      font-size: 16px;
+      line-height: 1.55;
+    }
+
+    a {
+      color: var(--accent-dark);
+      text-decoration-thickness: 1px;
+      text-underline-offset: 3px;
+    }
+
+    code {
+      padding: 0.08rem 0.28rem;
+      border: 1px solid #d8e1e6;
+      border-radius: 5px;
+      background: #edf2f5;
+      font-family: var(--mono);
+      font-size: 0.92em;
+    }
+
+    .page {
+      display: grid;
+      grid-template-columns: 280px minmax(0, 1fr);
+      min-height: 100vh;
+    }
+
+    .sidebar {
+      position: sticky;
+      top: 0;
+      align-self: start;
+      height: 100vh;
+      padding: 28px 20px;
+      border-right: 1px solid var(--line);
+      background: #ffffff;
+      overflow: auto;
+    }
+
+    .brand {
+      margin-bottom: 24px;
+    }
+
+    .eyebrow {
+      color: var(--accent);
+      font-size: 0.78rem;
+      font-weight: 750;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+
+    .brand h1 {
+      margin: 5px 0 9px;
+      font-size: 1.22rem;
+      line-height: 1.2;
+    }
+
+    .brand p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
+    .toc {
+      display: grid;
+      gap: 4px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .toc a {
+      display: block;
+      padding: 7px 9px;
+      border-radius: 6px;
+      color: #31414b;
+      font-size: 0.92rem;
+      text-decoration: none;
+    }
+
+    .toc a:hover {
+      background: var(--panel-soft);
+    }
+
+    main {
+      min-width: 0;
+      padding: 34px clamp(20px, 4vw, 56px) 72px;
+    }
+
+    .hero,
+    section {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+
+    .hero {
+      padding: 34px;
+    }
+
+    .hero h2 {
+      max-width: 980px;
+      margin: 0 0 14px;
+      font-size: clamp(2rem, 4vw, 3.25rem);
+      line-height: 1.05;
+      letter-spacing: 0;
+    }
+
+    .hero p {
+      max-width: 960px;
+      margin: 0;
+      color: #33434c;
+      font-size: 1.05rem;
+    }
+
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 22px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 30px;
+      padding: 4px 9px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #f8fafb;
+      color: #303d46;
+      font-size: 0.86rem;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .pill.good {
+      border-color: #b7d9c3;
+      background: #edf8f1;
+      color: var(--good);
+    }
+
+    .pill.warn {
+      border-color: #e1d1a6;
+      background: #fff8e6;
+      color: var(--warn);
+    }
+
+    .pill.bad {
+      border-color: #e3b6b6;
+      background: #fff0f0;
+      color: var(--bad);
+    }
+
+    .pill.info {
+      border-color: #bbd1e8;
+      background: #eef6ff;
+      color: var(--info);
+    }
+
+    section {
+      margin-top: 26px;
+      padding: 28px;
+    }
+
+    section h2 {
+      margin: 0 0 14px;
+      font-size: 1.55rem;
+      line-height: 1.2;
+      letter-spacing: 0;
+    }
+
+    section h3 {
+      margin: 24px 0 8px;
+      font-size: 1.05rem;
+      letter-spacing: 0;
+    }
+
+    section p {
+      margin: 0 0 14px;
+      color: #33434c;
+    }
+
+    ul,
+    ol {
+      margin: 10px 0 0;
+      padding-left: 1.25rem;
+      color: #33434c;
+    }
+
+    li + li {
+      margin-top: 7px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 14px;
+    }
+
+    .three {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .card {
+      min-width: 0;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #fbfcfd;
+    }
+
+    .card h3 {
+      margin-top: 0;
+    }
+
+    .card p:last-child,
+    .card ul:last-child {
+      margin-bottom: 0;
+    }
+
+    .callout {
+      margin-top: 16px;
+      padding: 15px 16px;
+      border-left: 4px solid var(--accent);
+      border-radius: 6px;
+      background: #edf6f7;
+      color: #2e4249;
+    }
+
+    .callout.warn {
+      border-left-color: var(--warn);
+      background: #fff8e6;
+    }
+
+    .callout.bad {
+      border-left-color: var(--bad);
+      background: #fff1f1;
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    .step {
+      position: relative;
+      min-height: 140px;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #fbfcfd;
+    }
+
+    .step strong {
+      display: block;
+      margin-bottom: 7px;
+      color: var(--ink);
+    }
+
+    .step span {
+      color: var(--muted);
+      font-size: 0.94rem;
+    }
+
+    table {
+      width: 100%;
+      margin-top: 14px;
+      border-collapse: collapse;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      font-size: 0.95rem;
+    }
+
+    th,
+    td {
+      padding: 11px 12px;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+      text-align: left;
+    }
+
+    th {
+      background: #eef3f5;
+      color: #273843;
+      font-size: 0.88rem;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .status {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      padding: 2px 7px;
+      border-radius: 999px;
+      font-size: 0.78rem;
+      font-weight: 750;
+      white-space: nowrap;
+    }
+
+    .status.good {
+      background: #edf8f1;
+      color: var(--good);
+    }
+
+    .status.warn {
+      background: #fff8e6;
+      color: var(--warn);
+    }
+
+    .status.bad {
+      background: #fff1f1;
+      color: var(--bad);
+    }
+
+    .status.info {
+      background: #eef6ff;
+      color: var(--info);
+    }
+
+    .compare {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 14px;
+    }
+
+    .yes,
+    .no {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #fbfcfd;
+      overflow: hidden;
+    }
+
+    .yes h3,
+    .no h3 {
+      margin: 0;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .yes h3 {
+      background: #edf8f1;
+      color: var(--good);
+    }
+
+    .no h3 {
+      background: #fff1f1;
+      color: var(--bad);
+    }
+
+    .yes ul,
+    .no ul {
+      margin: 0;
+      padding: 14px 18px 16px 32px;
+    }
+
+    .source-list {
+      margin-top: 14px;
+    }
+
+    @media (max-width: 960px) {
+      .page {
+        display: block;
+      }
+
+      .sidebar {
+        position: static;
+        height: auto;
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .grid,
+      .three,
+      .flow,
+      .compare {
+        grid-template-columns: 1fr;
+      }
+
+      .hero,
+      section {
+        padding: 22px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="eyebrow">WhoaThere</div>
+        <h1>macOS Security Explainer</h1>
+        <p>How the current local beta works, what it improves, and where its limits are.</p>
+      </div>
+      <nav aria-label="Table of contents">
+        <ul class="toc">
+          <li><a href="#summary">Summary</a></li>
+          <li><a href="#problem">Problem</a></li>
+          <li><a href="#how-it-works">How It Works</a></li>
+          <li><a href="#security-improvement">Security Improvement</a></li>
+          <li><a href="#supported-workflows">Supported Commands</a></li>
+          <li><a href="#can-do">What It Can Do</a></li>
+          <li><a href="#cannot-do">What It Cannot Do</a></li>
+          <li><a href="#validation">Validation</a></li>
+          <li><a href="#before-using">Before Using It</a></li>
+          <li><a href="#next">What Comes Next</a></li>
+          <li><a href="#sources">Local Sources Used</a></li>
+        </ul>
+      </nav>
+    </aside>
+
+    <main>
+      <div class="hero" id="summary">
+        <h2>The current WhoaThere build helps you try risky package installs inside a VM first.</h2>
+        <p>
+          It is designed to make supported npm, pip, and uv installs safer by running risky
+          install and build behavior inside a separate macOS virtual machine. Your real Mac's
+          secrets are not copied into that VM. WhoaThere records what happened and copies files
+          back to your project only when the run looks clean and the files are on a short list of
+          expected outputs.
+        </p>
+        <div class="meta" aria-label="Current release posture">
+          <span class="pill good">Tested on Apple Silicon</span>
+          <span class="pill good">Signed and notarized release file tested</span>
+          <span class="pill info">Local-first CLI</span>
+          <span class="pill warn">Does not auto-trust public packages</span>
+          <span class="pill bad">Does not protect apps after install</span>
+        </div>
+      </div>
+
+      <section id="problem">
+        <h2>The Problem It Addresses</h2>
+        <p>
+          npm, pip, and uv sometimes run code from a package while installing it. In npm this can
+          happen through install scripts such as <code>postinstall</code> and <code>prepare</code>.
+          In Python this can happen through <code>setup.py</code>, modern build hooks, import-time
+          code, <code>.pth</code> startup files, native extensions, and binary wheels. Without extra
+          protection, that code runs on your developer machine with access to environment
+          variables, dotfiles, package-manager tokens, SSH keys, cloud credentials, project
+          secrets, and the network.
+        </p>
+        <p>
+          WhoaThere changes that default. Instead of running package-controlled code directly on
+          your Mac, the current macOS beta checks the requested install, runs supported risky parts
+          in a VM, reviews the recorded results, and only then decides whether files should be
+          copied back to your project.
+        </p>
+      </section>
+
+      <section id="how-it-works">
+        <h2>How The Current Version Works</h2>
+        <p>
+          The current release path is Apple Silicon macOS only. The main pieces are a Rust command
+          line tool, a Swift helper that starts and talks to the macOS VM, a small program inside
+          the VM that runs package-manager commands, and repeatable test scripts for the release.
+        </p>
+
+        <div class="flow" aria-label="WhoaThere execution flow">
+          <div class="step">
+            <strong>1. Check The Request</strong>
+            <span>
+              WhoaThere inspects the requested npm, pip, or uv command and rejects unsupported or
+              unsafe forms before the package manager runs.
+            </span>
+          </div>
+          <div class="step">
+            <strong>2. Copy A Safe Project View</strong>
+            <span>
+              It builds a temporary copy of the project without your secrets, credential files,
+              symlink escapes, path escapes, risky binaries, or unsupported dependency forms.
+            </span>
+          </div>
+          <div class="step">
+            <strong>3. Run It In The VM</strong>
+            <span>
+              The install, build, import, or command check runs inside the macOS VM with fake test
+              credentials instead of your real secrets.
+            </span>
+          </div>
+          <div class="step">
+            <strong>4. Copy Back Or Block</strong>
+            <span>
+              Clean recorded results can allow a narrow file copy back. Suspicious behavior,
+              unsafe package types, stale checks, or missing checks cause WhoaThere to block.
+            </span>
+          </div>
+        </div>
+
+        <h3>What The VM Gets</h3>
+        <ul>
+          <li>A cleaned-up copy of the relevant project files.</li>
+          <li>The npm, pip, Python, or uv tools needed for the checked command.</li>
+          <li>Fake test credentials in places where stolen secrets often live.</li>
+          <li>No real home directory, SSH keys, npm/PyPI tokens, cloud credentials, Kubernetes config, or project <code>.env</code> secrets from your Mac.</li>
+        </ul>
+
+        <h3>What Comes Back</h3>
+        <ul>
+          <li>A structured summary: allowed or blocked, reasons, fake-secret access, file activity, tool readiness, command type, and sanitized status.</li>
+          <li>Optional file copy-back only for clean runs and only for approved output paths.</li>
+          <li>No raw fake-secret values, raw real secrets, or raw package-manager output in the structured summary.</li>
+        </ul>
+      </section>
+
+      <section id="security-improvement">
+        <h2>How This Improves Security</h2>
+        <div class="grid three">
+          <div class="card">
+            <h3>Blast radius is smaller</h3>
+            <p>
+              Malicious install or build code runs in the VM instead of your normal shell. The VM
+              does not receive your normal developer secrets.
+            </p>
+          </div>
+          <div class="card">
+            <h3>Secret theft becomes visible</h3>
+            <p>
+              The VM gets fake tokens and credential files. If a package tries to read them or send
+              them out, WhoaThere records that and blocks file copy-back.
+            </p>
+          </div>
+          <div class="card">
+            <h3>Copy-back is strict</h3>
+            <p>
+              Your Mac does not blindly copy VM output back. Path escapes, symlinks, native or
+              binary outputs, fake-secret paths, and unsupported locations are rejected.
+            </p>
+          </div>
+          <div class="card">
+            <h3>Risky package types are blocked</h3>
+            <p>
+              Native extensions, binary wheels, VCS dependencies, direct URLs, editable installs,
+              and unknown package types are not automatically trusted in the current beta.
+            </p>
+          </div>
+          <div class="card">
+            <h3>Readiness is checkable</h3>
+            <p>
+              <code>whoathere doctor --json</code> reports whether the VM setup, release checks,
+              copy-back checks, notarization, and VM start/stop checks are current.
+            </p>
+          </div>
+          <div class="card">
+            <h3>Claims are intentionally narrow</h3>
+            <p>
+              WhoaThere does not say "a scanner passed, so this is safe." It requires the VM run,
+              recorded results, and copy-back rules to line up.
+            </p>
+          </div>
+        </div>
+
+        <div class="callout">
+          <strong>Security improvement:</strong>
+          for supported local macOS commands, using WhoaThere is meaningfully safer than running
+          raw <code>npm</code>, <code>pip</code>, or <code>uv</code> directly on your Mac because
+          untrusted package-controlled code does not get normal access to your secrets and files.
+        </div>
+      </section>
+
+      <section id="supported-workflows">
+        <h2>Supported Commands And Current Behavior</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Command or package type</th>
+              <th>Current behavior</th>
+              <th>Plain-English meaning</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Local Python project installs</td>
+              <td><span class="status good">Supported in VM</span></td>
+              <td>Clean local pip project installs can be copied into the VM, run there, and copied back if clean.</td>
+            </tr>
+            <tr>
+              <td>Local-only Python requirements</td>
+              <td><span class="status good">Supported in VM</span></td>
+              <td>Requirements that use only safe local inputs can run in the VM without falling back to public PyPI.</td>
+            </tr>
+            <tr>
+              <td>Local npm project with no external dependencies</td>
+              <td><span class="status good">Supported in VM</span></td>
+              <td>Clean <code>npm install</code> and <code>npm ci</code> cases are tested for projects that do not fetch external packages.</td>
+            </tr>
+            <tr>
+              <td>Local <code>uv pip install .</code></td>
+              <td><span class="status good">Supported in VM</span></td>
+              <td>Clean local uv pip project installs can run inside the VM.</td>
+            </tr>
+            <tr>
+              <td>Public npm/PyPI dependency resolution</td>
+              <td><span class="status warn">Blocked for automatic trust</span></td>
+              <td>The current local beta does not claim it can safely fetch and trust arbitrary public packages.</td>
+            </tr>
+            <tr>
+              <td><code>npx</code>, <code>npm exec</code>, and broad CLI execution</td>
+              <td><span class="status warn">Deferred</span></td>
+              <td>Arbitrary commands shipped by packages are outside the current automatic-trust claim.</td>
+            </tr>
+            <tr>
+              <td><code>uv sync</code></td>
+              <td><span class="status warn">Deferred</span></td>
+              <td>WhoaThere still needs clearer rules for lockfiles and package sources before this is supported.</td>
+            </tr>
+            <tr>
+              <td>Native extensions, binary wheels, platform-specific binaries</td>
+              <td><span class="status bad">Manual review or deny</span></td>
+              <td>Compiled code is not automatically trusted.</td>
+            </tr>
+            <tr>
+              <td>Direct URLs, Git/VCS dependencies, editable installs, local path escapes</td>
+              <td><span class="status bad">Manual review or deny</span></td>
+              <td>These inputs are harder to identify and reproduce, so the current beta blocks or downgrades them.</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="can-do">
+        <h2>What It Can Do Today</h2>
+        <div class="compare">
+          <div class="yes">
+            <h3>Current strengths</h3>
+            <ul>
+              <li>Run supported install, build, import, and command checks inside a macOS VM.</li>
+              <li>Keep your Mac's secrets out of the VM project copy.</li>
+              <li>Use fake secrets to detect credential access and attempts to send credentials out.</li>
+              <li>Detect or block malicious npm install-script test cases.</li>
+              <li>Detect or block Python <code>setup.py</code>, modern build-hook, import-time, and <code>.pth</code> startup-file abuse test cases.</li>
+              <li>Block rather than guess when required setup checks, release checks, notarization, or copy-back proof files are missing or stale.</li>
+              <li>Prevent unsafe VM output from being copied back to your Mac.</li>
+              <li>Give a machine-readable readiness view through <code>doctor --json</code>.</li>
+            </ul>
+          </div>
+          <div class="no">
+            <h3>Current hard boundaries</h3>
+            <ul>
+              <li>No universal malware detection claim.</li>
+              <li>No broad protection after your application imports and uses a package later.</li>
+              <li>No automatic trust for arbitrary public packages.</li>
+              <li>No automatic trust for binary wheels or native extensions.</li>
+              <li>No team-wide server, shared cache, central policy, central audit log, or team override process yet.</li>
+              <li>No Windows support and no current Linux release claim.</li>
+              <li>No complete DNS/HTTPS network monitor yet; current network checks are strong for the test cases but not complete monitoring.</li>
+              <li>No guarantee that API-compatible malicious behavior will be triggered unless probes or tests exercise it.</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section id="cannot-do">
+        <h2>What This Means In Practice</h2>
+        <p>
+          WhoaThere is best understood as a safer way to try a package install before giving it
+          access to your real workstation. It is not a magic proof that a dependency is harmless
+          forever.
+        </p>
+
+        <div class="grid">
+          <div class="card">
+            <h3>If a package is malicious during install</h3>
+            <p>
+              This is the current beta's strongest case. Install scripts, build hooks, setup
+              hooks, import-time behavior, and fake-secret theft attempts are pushed into the VM
+              and can block file copy-back.
+            </p>
+          </div>
+          <div class="card">
+            <h3>If a package is malicious only when used later</h3>
+            <p>
+              WhoaThere can help only if its checks or your project tests exercise that path inside
+              the VM. Broad protection after the package is installed and used by an app remains
+              future work.
+            </p>
+          </div>
+          <div class="card">
+            <h3>If a package contains native or binary code</h3>
+            <p>
+              The current safe behavior is to deny or require manual review. That is the right
+              security choice for the beta, but it means some legitimate packages will be blocked.
+            </p>
+          </div>
+          <div class="card">
+            <h3>If a package comes from a public registry</h3>
+            <p>
+              The current local-only release does not claim it can safely accept arbitrary public
+              packages. That belongs in the next layer: package reputation, history of known-good
+              versions, scanner integrations, and eventually a shared package cache.
+            </p>
+          </div>
+        </div>
+
+        <div class="callout warn">
+          <strong>Expected friction:</strong>
+          a security-useful beta should sometimes say no. Blocking native, binary, direct, VCS,
+          editable, unknown, or public registry cases is not a bug in the current release. It is
+          how the tool avoids claiming safety before it has enough proof to allow those cases.
+        </div>
+      </section>
+
+      <section id="validation">
+        <h2>What Has Been Validated</h2>
+        <p>
+          The current package has been tested on the same Apple Silicon Mac that built and ran the
+          VM checks. The tested release file was:
+          <code>dist/whoathere-macos-arm64-preview-a58e91f.tar.gz</code>.
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th>Validation area</th>
+              <th>Result</th>
+              <th>What proved it</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Signing and Apple notarization</td>
+              <td><span class="status good">Passed</span></td>
+              <td>CLI and helper were Developer ID signed, submitted to Apple, and accepted by notarytool.</td>
+            </tr>
+            <tr>
+              <td>Real VM run</td>
+              <td><span class="status good">Passed</span></td>
+              <td>The installed wrapper started the VM, checked that the VM was healthy, ran the test suite, and wrote a proof file tied to that release.</td>
+            </tr>
+            <tr>
+              <td>npm and uv test cases</td>
+              <td><span class="status good">Passed</span></td>
+              <td>Clean local cases passed; install-script, fake-secret, API, public dependency, and unsupported cases were blocked when expected.</td>
+            </tr>
+            <tr>
+              <td>Python test cases</td>
+              <td><span class="status good">Passed</span></td>
+              <td>Clean project cases passed; setup, modern build-hook, import-time, <code>.pth</code>, direct URL, Git/VCS, binary, and fake-secret cases were blocked or denied.</td>
+            </tr>
+            <tr>
+              <td>Copying files back to the project</td>
+              <td><span class="status good">Passed</span></td>
+              <td>Clean output copied back only approved files; malicious fake-secret output did not copy back.</td>
+            </tr>
+            <tr>
+              <td>Clean install on another Mac</td>
+              <td><span class="status warn">Partially covered</span></td>
+              <td>A clean temporary-home install test passed. A true second physical Mac test remains useful.</td>
+            </tr>
+            <tr>
+              <td>External scanner integration</td>
+              <td><span class="status warn">Advisory/deferred</span></td>
+              <td>Local comparison tests exist, but full integration with GuardDog, OSV, Syft/Grype/Trivy, pip-audit, and Scorecard is future work.</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="before-using">
+        <h2>What To Check Before Using It</h2>
+        <p>
+          Before treating the local beta as ready, ask the tool for its current status instead of
+          relying on memory of an earlier test run.
+        </p>
+        <ul>
+          <li><code>whoathere doctor --json</code> should report <code>release_ready: true</code>.</li>
+          <li><code>release_blocking_reason_codes</code> should be empty, meaning the tool sees no current release blockers.</li>
+          <li>The VM setup should be current and tied to the helper code that will run commands inside the VM.</li>
+          <li>Release test, file-copy test, VM shutdown, and Apple notarization proof files should be present and current.</li>
+          <li><code>high_risk_allowed</code> should remain <code>false</code> for this beta.</li>
+          <li>Unsupported commands should block instead of quietly running npm, pip, or uv directly on your Mac.</li>
+        </ul>
+
+        <div class="callout bad">
+          <strong>Do not bypass the gate:</strong>
+          if the VM is stale, VM setup is stale, a proof file is missing, or <code>doctor</code>
+          reports blockers, the safe answer is to rerun setup or validation. WhoaThere should not
+          silently run the package manager directly on your Mac.
+        </div>
+      </section>
+
+      <section id="next">
+        <h2>What Comes Next</h2>
+        <p>
+          The next work should expand what WhoaThere can safely handle without weakening the core
+          rule: try risky package behavior somewhere isolated first, then copy back only what is
+          safe. The highest-value additions are:
+        </p>
+        <ul>
+          <li>Install testing on another Mac, or in the cleanest available VM-like environment, for more release confidence.</li>
+          <li>External scanner integrations: GuardDog, OSV-Scanner, pip-audit, Syft, Grype or Trivy, and repository reputation signals.</li>
+          <li>Known-good package history and diffs against the last approved version.</li>
+          <li>Fresh-release cooldowns and package reputation scoring for public packages.</li>
+          <li>VM runs that execute project tests or generated package-use checks to catch packages that are malicious only when their APIs are used.</li>
+          <li>A team server: shared package cache, central rules, audit log, review flow, and no silent fallback to public registries.</li>
+        </ul>
+      </section>
+
+      <section id="sources">
+        <h2>Local Sources Used</h2>
+        <p>
+          This document summarizes the current local repository state and release-readiness
+          status. It is based on these project files:
+        </p>
+        <ul class="source-list">
+          <li><a href="macos-local-release-readiness.md">macOS local release readiness</a></li>
+          <li><a href="macos-local-first-preview-runbook.md">macOS local-first preview runbook</a></li>
+          <li><a href="macos-vm-goal-4-project-hardening-checkpoint.md">macOS VM Goal 4 project hardening checkpoint</a></li>
+          <li><a href="whoathere-current-state-report.html">WhoaThere current state report</a></li>
+        </ul>
+      </section>
+    </main>
+  </div>
+</body>
+</html>
