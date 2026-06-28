@@ -116,6 +116,22 @@ require_contains() {
   fi
 }
 
+require_health_contains() {
+  JSON_FIELD=$1
+  LEGACY_FIELD=$2
+  FILE=$3
+  REASON=$4
+  if grep -q "$LEGACY_FIELD=true" "$FILE"; then
+    return
+  fi
+  if grep -q "\"$JSON_FIELD\" : true" "$FILE"; then
+    return
+  fi
+  echo "runtime_qualification_output_file=$FILE" >&2
+  cat "$FILE" >&2
+  fail "$REASON"
+}
+
 require_host() {
   if [ "$(uname -s)" != "Darwin" ]; then
     echo "macos_host_required=true" >&2
@@ -363,11 +379,11 @@ start_and_health() {
     set -e
     if [ "$status" -eq 0 ]; then
       cat "$WORK_ROOT/vm-health.txt"
-      require_contains 'guest_health_proven=true' "$WORK_ROOT/vm-health.txt" health_guest_not_proven
-      require_contains 'guest_toolchain_python3_available=true' "$WORK_ROOT/vm-health.txt" health_python_missing
-      require_contains 'guest_toolchain_pip_available=true' "$WORK_ROOT/vm-health.txt" health_pip_missing
-      require_contains 'guest_toolchain_npm_available=true' "$WORK_ROOT/vm-health.txt" health_npm_missing
-      require_contains 'guest_toolchain_uv_available=true' "$WORK_ROOT/vm-health.txt" health_uv_missing
+      require_health_contains 'guest_health_proven' 'guest_health_proven' "$WORK_ROOT/vm-health.txt" health_guest_not_proven
+      require_health_contains 'guest_toolchain_python3_available' 'guest_toolchain_python3_available' "$WORK_ROOT/vm-health.txt" health_python_missing
+      require_health_contains 'guest_toolchain_pip_available' 'guest_toolchain_pip_available' "$WORK_ROOT/vm-health.txt" health_pip_missing
+      require_health_contains 'guest_toolchain_npm_available' 'guest_toolchain_npm_available' "$WORK_ROOT/vm-health.txt" health_npm_missing
+      require_health_contains 'guest_toolchain_uv_available' 'guest_toolchain_uv_available' "$WORK_ROOT/vm-health.txt" health_uv_missing
       return
     fi
     sleep 10
@@ -486,6 +502,17 @@ run_sync_back_cases() {
   fi
 }
 
+suspend_and_verify() {
+  run_clean "$WRAPPER" vm suspend --state-dir "$STATE_DIR" --execute > "$WORK_ROOT/vm-suspend.txt" 2>&1
+  STARTED_VM=false
+  test -f "$STATE_DIR/bundle/shutdown.json" || fail shutdown_receipt_missing_after_suspend
+  run_clean "$WRAPPER" vm status --json --state-dir "$STATE_DIR" > "$WORK_ROOT/vm-status-after-suspend.json"
+  require_contains '"runtime_ready": false' "$WORK_ROOT/vm-status-after-suspend.json" suspend_runtime_still_ready
+  require_contains '"receipt_present": true' "$WORK_ROOT/vm-status-after-suspend.json" suspend_shutdown_receipt_not_reported
+  require_contains '"receipt_acceptable_for_no_sync_preview": true' "$WORK_ROOT/vm-status-after-suspend.json" suspend_shutdown_receipt_not_acceptable
+  require_contains '"high_risk_package_execution_enabled": false' "$WORK_ROOT/vm-status-after-suspend.json" suspend_high_risk_enabled_unexpectedly
+}
+
 final_doctor() {
   run_clean "$WRAPPER" doctor --json --state-dir "$STATE_DIR" > "$WORK_ROOT/doctor-final.json"
   require_contains '"release_ready": true' "$WORK_ROOT/doctor-final.json" final_doctor_release_not_ready
@@ -507,6 +534,7 @@ write_receipt() {
   sync_digest=$(sha256_file "$STATE_DIR/bundle/sync-validation.json")
   release_digest=$(sha256_file "$STATE_DIR/bundle/release-validation.json")
   provisioning_digest=$(sha256_file "$STATE_DIR/bundle/guest-provisioning.json")
+  shutdown_digest=$(sha256_file "$STATE_DIR/bundle/shutdown.json")
   cat > "$temp_receipt" <<EOF
 {
   "schema_version": "whoathere.macos_runtime_qualification.v1",
@@ -525,7 +553,9 @@ write_receipt() {
   "guest_provisioning_receipt_sha256": "$(json_escape "$provisioning_digest")",
   "release_validation_receipt_sha256": "$(json_escape "$release_digest")",
   "sync_validation_receipt_sha256": "$(json_escape "$sync_digest")",
+  "shutdown_receipt_sha256": "$(json_escape "$shutdown_digest")",
   "vm_health_verified": true,
+  "vm_suspend_verified": true,
   "project_validation_verified": true,
   "npm_uv_validation_verified": true,
   "fixture_validation_verified": true,
@@ -552,6 +582,7 @@ check_reprovisioning
 start_and_health
 run_packaged_validators
 run_sync_back_cases
+suspend_and_verify
 final_doctor
 write_receipt
 

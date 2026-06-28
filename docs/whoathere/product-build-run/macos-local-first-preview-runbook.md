@@ -197,6 +197,29 @@ and keeps `qualified=false`, `notarization_requirement_bypassed=true`, and
 `gatekeeper_distribution_qualified=false` in the receipt. Do not use an `--allow-unnotarized`
 receipt as full clean-install release evidence.
 
+## Same-Host Runtime Qualification
+
+Goal 2 Track 2 validates the notarized package against the physical Apple Silicon host VM runtime
+using the installed wrapper only. Run it after the package is notarized and the validation VM has
+been provisioned with the current guest agent and offline Python, npm, and uv tooling:
+
+```sh
+scripts/whoathere-runtime-qualification.sh --archive dist/whoathere-macos-arm64-preview-<git-sha>.tar.gz --state-dir "$WHOATHERE_STATE"
+```
+
+The harness installs the package into a temporary user prefix with a clean `HOME` and minimal
+`PATH`, starts the VM, proves guest health and toolchains, runs the packaged project/npm/uv/fixture
+detonation validators, exercises clean sync-back and malicious no-sync cases, explicitly suspends
+the VM, verifies the shutdown receipt, and requires final `doctor --json` release readiness. It
+writes a receipt next to the archive:
+
+```text
+dist/whoathere-macos-arm64-preview-<git-sha>-runtime-qualification.json
+```
+
+If guest provisioning is stale, the harness prints the exact interactive `sudo ... provision-guest-readiness.sh`
+command and exits before claiming runtime qualification.
+
 ## Initialize Or Reuse The VM
 
 Fetch and install Apple's latest supported restore image:
