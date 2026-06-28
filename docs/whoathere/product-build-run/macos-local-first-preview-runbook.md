@@ -167,11 +167,13 @@ scripts/whoathere-clean-install-qualification.sh --archive dist/whoathere-macos-
 The harness uses a fresh temporary `HOME`, a minimal system `PATH`, a user-level install prefix
 containing spaces and an apostrophe, an empty VM state directory, and the installed
 `bin/whoathere` wrapper only. It verifies the archive checksum, package layout, helper scripts,
-Developer ID signatures, `spctl -t execute` Gatekeeper acceptance, installer dry-run and install,
-installed wrapper `doctor --json`, `vm status --json`, fail-closed reprovision and npm/uv validation
-paths, shim materialization for npm/npx/pip/pip3 plus opt-in python/python3, and a dry-run
-`vm detonate --sync-back` command that syncs nothing without guest evidence. It also checks that
-installed command output does not leak the repo path.
+Developer ID signatures, an Accepted Apple notarization receipt bound to the archive/CLI/helper
+digests, installer dry-run and install, installed wrapper `doctor --json`, `vm status --json`,
+fail-closed reprovision and npm/uv validation paths, shim materialization for npm/npx/pip/pip3 plus
+opt-in python/python3, and a dry-run `vm detonate --sync-back` command that syncs nothing without
+guest evidence. It also checks that installed command output does not leak the repo path. The
+harness deliberately does not use `spctl -t execute` on the bare CLI/helper Mach-O files; that
+assessment mode is app-bundle oriented and can reject valid command-line tools as "not an app".
 
 If a clean macOS VM driver is not available on the host, the harness records that gap in the
 receipt and runs the clean-room fallback. This is acceptable for Track 1 install/onboarding
@@ -184,15 +186,16 @@ The receipt is written next to the archive by default:
 dist/whoathere-macos-arm64-preview-<git-sha>-clean-install-qualification.json
 ```
 
-For diagnostic work before notarization, the harness can run the non-Gatekeeper portion:
+For diagnostic work before notarization, the harness can run the non-notarized portion:
 
 ```sh
-scripts/whoathere-clean-install-qualification.sh --archive dist/whoathere-macos-arm64-preview-<git-sha>.tar.gz --skip-spctl
+scripts/whoathere-clean-install-qualification.sh --archive dist/whoathere-macos-arm64-preview-<git-sha>.tar.gz --allow-unnotarized
 ```
 
 That mode exits 0 only for the clean-room install checks, writes `partial_clean_room_qualified=true`,
-and keeps `qualified=false`, `gatekeeper_qualified=false`, and `spctl_skipped=true` in the receipt.
-Do not use a `--skip-spctl` receipt as full clean-install release evidence.
+and keeps `qualified=false`, `notarization_requirement_bypassed=true`, and
+`gatekeeper_distribution_qualified=false` in the receipt. Do not use an `--allow-unnotarized`
+receipt as full clean-install release evidence.
 
 ## Initialize Or Reuse The VM
 

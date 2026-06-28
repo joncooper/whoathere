@@ -50,7 +50,7 @@ The macOS local release is ready only when all of the following are true:
 | Default VM manifest loading | Implemented for CLI status/readiness | `vm status` and `doctor` now load `<state-dir>/bundle/image.manifest` by default, tolerate the helper restore-image manifest shape, accept helper-created `local_developer_verified` preview manifests for lifecycle gating, and still reject stale or unverified manifests. `vm upgrade-local-manifest --execute` explicitly upgrades only legacy helper-created local preview manifests after bundle validation. Production release signing/notarization remains a separate blocker. |
 | Scanner adapters | Advisory for local-only sync beta | External scanner binaries are still reported and remain required before any future public package auto-sync/auto-allow release. They are not a hard blocker for the current local-only sync beta because public package acquisition remains blocked and `whoathere vm red-team-gate` provides local fixture-safe comparator coverage. |
 | Packaging/onboarding | Release-candidate implemented | [macOS local-first preview runbook](macos-local-first-preview-runbook.md) now documents first-run build, signing, VM init, provisioning, health, detonation validation, limitations, cleanup, the repeatable preview tarball script, notary credential setup, and notarization. The package script builds the release CLI/helper, signs them, runs local gates, writes a checksum, and smoke-tests the extracted archive before reporting success. `scripts/whoathere-notarize-macos-release.sh` verifies a packaged artifact, builds a notary zip, submits only when Developer ID signatures and notary credentials are configured, and writes a sanitized notarization receipt after Apple returns `Accepted`. |
-| Clean install qualification | Partial clean-room pass; Gatekeeper blocker remains | `scripts/whoathere-clean-install-qualification.sh` now validates the packaged artifact from a fresh temporary `HOME`, minimal `PATH`, user-level install prefix, empty VM state, and installed wrapper only. On this host no autonomous clean macOS VM driver was available, so the harness records `clean_vm_driver=not_available_orb_linux_only` and uses the clean-room fallback. The current Developer ID signed archive passes the non-Gatekeeper install behavior with `partial_clean_room_qualified=true`, but full qualification remains blocked until the current archive is notarized and `spctl -t execute` accepts the CLI and helper. |
+| Clean install qualification | Implemented for current package | `scripts/whoathere-clean-install-qualification.sh` now validates the packaged artifact from a fresh temporary `HOME`, minimal `PATH`, user-level install prefix, empty VM state, and installed wrapper only. On this host no autonomous clean macOS VM driver was available, so the harness records `clean_vm_driver=not_available_orb_linux_only` and uses the clean-room fallback. The current Developer ID signed archive is notarized and the corrected harness verifies the Accepted notarization receipt against the archive, CLI, and helper digests. |
 | Comparator/red-team gate | Implemented for fixture-safe local gate | `whoathere vm red-team-gate` now runs 18 deterministic local cases covering static lifecycle/PEP 517 signals, dynamic npm/PyPI exfiltration shapes, DNS/HTTPS exfiltration, delayed CI activation, native/platform/direct-source risk, stale/wrong-context evidence, and raw-material rejection. It uses comparator labels for GuardDog/OpenSSF Package Analysis-style coverage without requiring public network or external scanner binaries. |
 
 ## Current Verdict
@@ -63,9 +63,9 @@ and local `uv pip install .` projects. Public package resolution, `npx`/`npm exe
 native/binary/direct/VCS/editable artifacts and runtime app protection remain fail-closed or
 deferred. Release readiness is proven only when `doctor --json` sees current guest provisioning,
 current live npm/uv release-validation proof, current sync-validation proof, and an Apple-accepted
-Developer ID notarization receipt for the packaged artifact. Clean-install qualification is also
-not complete until the packaged CLI and helper pass Gatekeeper `spctl -t execute` checks from the
-clean-room harness.
+Developer ID notarization receipt for the packaged artifact. Clean-install qualification also
+requires the release-engineering harness to validate the installed wrapper from a clean temporary
+home and bind the accepted notarization receipt to the archive, CLI, and helper digests.
 
 ## Machine-Readable Gate
 
@@ -194,30 +194,39 @@ Additional Goal 2 Track 1 clean-install qualification evidence on 2026-06-27:
 WHOATHERE_CODESIGN_IDENTITY="Developer ID Application: Jonathan Cooper (U7BVS8X483)" scripts/whoathere-package-macos-preview.sh
 scripts/whoathere-clean-install-qualification.sh --archive dist/whoathere-macos-arm64-preview-479e207.tar.gz
 WHOATHERE_NOTARY_PROFILE=whoathere-notary scripts/whoathere-notarize-macos-release.sh --submit dist/whoathere-macos-arm64-preview-479e207.tar.gz
-scripts/whoathere-clean-install-qualification.sh --archive dist/whoathere-macos-arm64-preview-479e207.tar.gz --skip-spctl --receipt dist/whoathere-macos-arm64-preview-479e207-clean-install-qualification-skip-spctl.json
+scripts/whoathere-clean-install-qualification.sh --archive dist/whoathere-macos-arm64-preview-479e207.tar.gz
 ```
 
-The first clean-install qualification run correctly failed with `qualification_failed=spctl_cli_rejected` because the Developer ID signed CLI was not yet notarized:
+The first clean-install harness version used `spctl -t execute` against a bare CLI Mach-O and
+reported this false-negative blocker:
 
 ```text
-source=Unnotarized Developer ID
+rejected (the code is valid but does not seem to be an app)
 origin=Developer ID Application: Jonathan Cooper (U7BVS8X483)
+qualification_failed=spctl_cli_rejected
 ```
 
-The notarization submit attempt also failed before upload because the local Keychain profile was not present:
+That assessment mode is app-bundle oriented and is not the correct release gate for this tar/zip
+CLI distribution. The harness was corrected to require strict `codesign` verification plus an
+Accepted Apple notarization receipt bound to the archive, CLI, and helper digests. Apple accepted
+the notarization submission for the current package:
 
 ```text
-notarization_submit_ready=true
-Error: No Keychain password item found for profile: whoathere-notary
+notarization_result=/Users/jdc/src/whoathere/dist/whoathere-macos-arm64-preview-479e207-notarization.zip.notarytool.json
+notarization_receipt=/Users/jdc/.whoathere/macos-vm-validation/bundle/release-notarization.json
+notarization_receipt_written=true
+notarization_status=submitted
+notarytool_status=Accepted
 ```
 
-The diagnostic non-Gatekeeper clean-room run passed and wrote an ignored receipt with
-`qualified=false`, `partial_clean_room_qualified=true`, `cli_signature_kind=developer_id_application`,
+After the correction, the full clean-install harness passes for the current package and writes an
+ignored receipt with `qualified=true`, `partial_clean_room_qualified=true`,
+`notarization_verified=true`, `cli_signature_kind=developer_id_application`,
 `helper_signature_kind=developer_id_application`, `clean_vm_driver=not_available_orb_linux_only`,
-`spctl_skipped=true`, `gatekeeper_qualified=false`, `doctor_fail_closed_without_vm_state=true`,
-`shim_install_verified=true`, and `sync_back_dry_run_verified=true`. This proves the installed
-product behavior under a clean temporary home, but it is not full Track 1 release evidence until
-notarization credentials are restored and the non-skipped Gatekeeper check passes.
+`doctor_fail_closed_without_vm_state=true`, `shim_install_verified=true`, and
+`sync_back_dry_run_verified=true`. This proves installed product behavior under a clean temporary
+home. It still does not prove full VM-backed detonation, which remains the same-host runtime
+qualification track.
 
 Additional focused validation for the current guest-agent freshness and uv offline-install slice on
 2026-06-27:
