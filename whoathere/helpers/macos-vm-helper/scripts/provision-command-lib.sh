@@ -33,6 +33,100 @@ whoathere_user_home_default() {
   printf '%s\n' "$HOME"
 }
 
+whoathere_python_runtime_dir_is_usable() {
+  PYTHON_RUNTIME_CHECK_DIR=$1
+  [ -x "$PYTHON_RUNTIME_CHECK_DIR/bin/python3" ]
+}
+
+whoathere_detect_python_runtime_dir() {
+  if [ -n "${WHOATHERE_PYTHON_RUNTIME_DIR:-}" ] && whoathere_python_runtime_dir_is_usable "$WHOATHERE_PYTHON_RUNTIME_DIR"; then
+    printf '%s\n' "$WHOATHERE_PYTHON_RUNTIME_DIR"
+    return
+  fi
+
+  SEARCH_USER_HOME=$(whoathere_user_home_default)
+  for CANDIDATE_RUNTIME_DIR in \
+    "$SEARCH_USER_HOME/.local/share/uv/python/cpython-3.11.11-macos-aarch64-none" \
+    "$SEARCH_USER_HOME/.local/share/uv/python/cpython-3.12.11-macos-aarch64-none" \
+    "$SEARCH_USER_HOME/.local/share/uv/python/cpython-3.13.2-macos-aarch64-none" \
+    "$SEARCH_USER_HOME/.local/share/uv/python/cpython-3.10.20-macos-aarch64-none"; do
+    if [ -d "$CANDIDATE_RUNTIME_DIR" ] && whoathere_python_runtime_dir_is_usable "$CANDIDATE_RUNTIME_DIR"; then
+      printf '%s\n' "$CANDIDATE_RUNTIME_DIR"
+      return
+    fi
+  done
+}
+
+whoathere_python_wheel_dir_is_usable() {
+  PYTHON_WHEEL_CHECK_DIR=$1
+  [ -n "$(find "$PYTHON_WHEEL_CHECK_DIR" -maxdepth 1 -name 'pip-*.whl' -type f -print -quit 2>/dev/null)" ] \
+    && [ -n "$(find "$PYTHON_WHEEL_CHECK_DIR" -maxdepth 1 -name 'setuptools-*.whl' -type f -print -quit 2>/dev/null)" ]
+}
+
+whoathere_detect_python_wheel_dir() {
+  if [ -n "${WHOATHERE_PYTHON_WHEEL_DIR:-}" ] && whoathere_python_wheel_dir_is_usable "$WHOATHERE_PYTHON_WHEEL_DIR"; then
+    printf '%s\n' "$WHOATHERE_PYTHON_WHEEL_DIR"
+    return
+  fi
+
+  SEARCH_USER_HOME=$(whoathere_user_home_default)
+  FOUND_WHEEL_DIR="${TMPDIR:-/tmp}/whoathere-python-wheel-dir.$$"
+  : > "$FOUND_WHEEL_DIR"
+  if [ -d "$SEARCH_USER_HOME/.local/share/uv/python" ]; then
+    find "$SEARCH_USER_HOME/.local/share/uv/python" -path '*/ensurepip/_bundled' -type d 2>/dev/null | while IFS= read -r CANDIDATE_WHEEL_DIR; do
+      if [ ! -s "$FOUND_WHEEL_DIR" ] && whoathere_python_wheel_dir_is_usable "$CANDIDATE_WHEEL_DIR"; then
+        printf '%s\n' "$CANDIDATE_WHEEL_DIR" > "$FOUND_WHEEL_DIR"
+      fi
+    done
+  fi
+  if [ -s "$FOUND_WHEEL_DIR" ]; then
+    cat "$FOUND_WHEEL_DIR"
+    rm -f "$FOUND_WHEEL_DIR"
+    return
+  fi
+  rm -f "$FOUND_WHEEL_DIR"
+}
+
+whoathere_detect_wheel_package_file() {
+  if [ -n "${WHOATHERE_WHEEL_PACKAGE_FILE:-}" ] && [ -f "$WHOATHERE_WHEEL_PACKAGE_FILE" ]; then
+    printf '%s\n' "$WHOATHERE_WHEEL_PACKAGE_FILE"
+    return
+  fi
+
+  SEARCH_USER_HOME=$(whoathere_user_home_default)
+  FOUND_WHEEL_FILE="${TMPDIR:-/tmp}/whoathere-wheel-package-file.$$"
+  : > "$FOUND_WHEEL_FILE"
+  if [ -d "$SEARCH_USER_HOME/Library/Caches/pypoetry/artifacts" ]; then
+    find "$SEARCH_USER_HOME/Library/Caches/pypoetry/artifacts" -name 'wheel-*.whl' -type f 2>/dev/null | sort | while IFS= read -r CANDIDATE_WHEEL_FILE; do
+      if [ ! -s "$FOUND_WHEEL_FILE" ]; then
+        printf '%s\n' "$CANDIDATE_WHEEL_FILE" > "$FOUND_WHEEL_FILE"
+      fi
+    done
+  fi
+  if [ -s "$FOUND_WHEEL_FILE" ]; then
+    cat "$FOUND_WHEEL_FILE"
+    rm -f "$FOUND_WHEEL_FILE"
+    return
+  fi
+  rm -f "$FOUND_WHEEL_FILE"
+
+  FOUND_WHEEL_FILE="${TMPDIR:-/tmp}/whoathere-wheel-package-file.$$"
+  : > "$FOUND_WHEEL_FILE"
+  if [ -d "$SEARCH_USER_HOME/.cache/codex-runtimes" ]; then
+    find "$SEARCH_USER_HOME/.cache/codex-runtimes" -name 'wheel-*.whl' -type f 2>/dev/null | sort | while IFS= read -r CANDIDATE_WHEEL_FILE; do
+      if [ ! -s "$FOUND_WHEEL_FILE" ]; then
+        printf '%s\n' "$CANDIDATE_WHEEL_FILE" > "$FOUND_WHEEL_FILE"
+      fi
+    done
+  fi
+  if [ -s "$FOUND_WHEEL_FILE" ]; then
+    cat "$FOUND_WHEEL_FILE"
+    rm -f "$FOUND_WHEEL_FILE"
+    return
+  fi
+  rm -f "$FOUND_WHEEL_FILE"
+}
+
 whoathere_node_runtime_dir_is_usable() {
   NODE_RUNTIME_CHECK_DIR=$1
   [ -x "$NODE_RUNTIME_CHECK_DIR/bin/node" ] && [ -x "$NODE_RUNTIME_CHECK_DIR/bin/npm" ]
@@ -96,10 +190,22 @@ whoathere_detect_uv_binary() {
 whoathere_reprovision_command() {
   HELPER_ROOT_FOR_COMMAND=$1
   STATE_DIR_FOR_COMMAND=$2
+  PYTHON_RUNTIME_DIR_FOR_COMMAND=$(whoathere_detect_python_runtime_dir || true)
+  PYTHON_WHEEL_DIR_FOR_COMMAND=$(whoathere_detect_python_wheel_dir || true)
+  WHEEL_PACKAGE_FILE_FOR_COMMAND=$(whoathere_detect_wheel_package_file || true)
   NODE_RUNTIME_DIR_FOR_COMMAND=$(whoathere_detect_node_runtime_dir || true)
   UV_BINARY_FOR_COMMAND=$(whoathere_detect_uv_binary || true)
 
   printf 'sudo'
+  if [ -n "$PYTHON_RUNTIME_DIR_FOR_COMMAND" ]; then
+    printf ' WHOATHERE_PYTHON_RUNTIME_DIR=%s' "$(whoathere_shell_quote "$PYTHON_RUNTIME_DIR_FOR_COMMAND")"
+  fi
+  if [ -n "$PYTHON_WHEEL_DIR_FOR_COMMAND" ]; then
+    printf ' WHOATHERE_PYTHON_WHEEL_DIR=%s' "$(whoathere_shell_quote "$PYTHON_WHEEL_DIR_FOR_COMMAND")"
+  fi
+  if [ -n "$WHEEL_PACKAGE_FILE_FOR_COMMAND" ]; then
+    printf ' WHOATHERE_WHEEL_PACKAGE_FILE=%s' "$(whoathere_shell_quote "$WHEEL_PACKAGE_FILE_FOR_COMMAND")"
+  fi
   if [ -n "$NODE_RUNTIME_DIR_FOR_COMMAND" ]; then
     printf ' WHOATHERE_NODE_RUNTIME_DIR=%s' "$(whoathere_shell_quote "$NODE_RUNTIME_DIR_FOR_COMMAND")"
   fi

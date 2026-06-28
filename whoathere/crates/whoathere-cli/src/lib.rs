@@ -5908,6 +5908,15 @@ fn run_macos_vm_script(
             command.env(env_name, value);
         }
     }
+    if let Some(python_runtime_dir) = detect_python_runtime_dir_for_reprovision() {
+        command.env("WHOATHERE_PYTHON_RUNTIME_DIR", python_runtime_dir);
+    }
+    if let Some(python_wheel_dir) = detect_python_wheel_dir_for_reprovision() {
+        command.env("WHOATHERE_PYTHON_WHEEL_DIR", python_wheel_dir);
+    }
+    if let Some(wheel_package_file) = detect_wheel_package_file_for_reprovision() {
+        command.env("WHOATHERE_WHEEL_PACKAGE_FILE", wheel_package_file);
+    }
     if let Some(node_runtime_dir) = detect_node_runtime_dir_for_reprovision() {
         command.env("WHOATHERE_NODE_RUNTIME_DIR", node_runtime_dir);
     }
@@ -6261,6 +6270,24 @@ fn guest_reprovision_command(
 
 fn reprovision_command_for_script(script_path: &Path, state_dir: &Path) -> String {
     let mut parts = vec!["sudo".to_string()];
+    if let Some(python_runtime_dir) = detect_python_runtime_dir_for_reprovision() {
+        parts.push(format!(
+            "WHOATHERE_PYTHON_RUNTIME_DIR={}",
+            shell_quote(&python_runtime_dir.display().to_string())
+        ));
+    }
+    if let Some(python_wheel_dir) = detect_python_wheel_dir_for_reprovision() {
+        parts.push(format!(
+            "WHOATHERE_PYTHON_WHEEL_DIR={}",
+            shell_quote(&python_wheel_dir.display().to_string())
+        ));
+    }
+    if let Some(wheel_package_file) = detect_wheel_package_file_for_reprovision() {
+        parts.push(format!(
+            "WHOATHERE_WHEEL_PACKAGE_FILE={}",
+            shell_quote(&wheel_package_file.display().to_string())
+        ));
+    }
     if let Some(node_runtime_dir) = detect_node_runtime_dir_for_reprovision() {
         parts.push(format!(
             "WHOATHERE_NODE_RUNTIME_DIR={}",
@@ -6345,6 +6372,130 @@ fn helper_root_from_helper_path(helper_path: &Path) -> Option<PathBuf> {
         }
     }
     None
+}
+
+fn detect_python_runtime_dir_for_reprovision() -> Option<PathBuf> {
+    if let Ok(value) = std::env::var("WHOATHERE_PYTHON_RUNTIME_DIR") {
+        let path = PathBuf::from(value);
+        if python_runtime_dir_is_usable(&path) {
+            return Some(path);
+        }
+    }
+
+    let home = home_dir_from_env()?;
+    let python_root = home.join(".local").join("share").join("uv").join("python");
+    let mut candidates = [
+        "cpython-3.11.11-macos-aarch64-none",
+        "cpython-3.12.11-macos-aarch64-none",
+        "cpython-3.13.2-macos-aarch64-none",
+        "cpython-3.10.20-macos-aarch64-none",
+    ]
+    .into_iter()
+    .map(|name| python_root.join(name))
+    .filter(|path| python_runtime_dir_is_usable(path))
+    .collect::<Vec<_>>();
+    candidates.sort();
+    candidates.into_iter().next()
+}
+
+fn python_runtime_dir_is_usable(path: &Path) -> bool {
+    path.join("bin").join("python3").is_file()
+}
+
+fn detect_python_wheel_dir_for_reprovision() -> Option<PathBuf> {
+    if let Ok(value) = std::env::var("WHOATHERE_PYTHON_WHEEL_DIR") {
+        let path = PathBuf::from(value);
+        if python_wheel_dir_is_usable(&path) {
+            return Some(path);
+        }
+    }
+
+    let runtime = detect_python_runtime_dir_for_reprovision()?;
+    let lib_dir = runtime.join("lib");
+    let entries = std::fs::read_dir(lib_dir).ok()?;
+    let mut candidates = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path().join("ensurepip").join("_bundled"))
+        .filter(|path| python_wheel_dir_is_usable(path))
+        .collect::<Vec<_>>();
+    candidates.sort();
+    candidates.into_iter().next()
+}
+
+fn python_wheel_dir_is_usable(path: &Path) -> bool {
+    path.is_dir()
+        && dir_has_file_with_prefix_and_suffix(path, "pip-", ".whl")
+        && dir_has_file_with_prefix_and_suffix(path, "setuptools-", ".whl")
+}
+
+fn detect_wheel_package_file_for_reprovision() -> Option<PathBuf> {
+    if let Ok(value) = std::env::var("WHOATHERE_WHEEL_PACKAGE_FILE") {
+        let path = PathBuf::from(value);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+
+    let home = home_dir_from_env()?;
+    let mut candidates = Vec::new();
+    collect_matching_files_recursively(
+        &home
+            .join("Library")
+            .join("Caches")
+            .join("pypoetry")
+            .join("artifacts"),
+        "wheel-",
+        ".whl",
+        &mut candidates,
+    );
+    collect_matching_files_recursively(
+        &home.join(".cache").join("codex-runtimes"),
+        "wheel-",
+        ".whl",
+        &mut candidates,
+    );
+    candidates.sort();
+    candidates.into_iter().next()
+}
+
+fn dir_has_file_with_prefix_and_suffix(path: &Path, prefix: &str, suffix: &str) -> bool {
+    std::fs::read_dir(path)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .any(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .map(|name| name.starts_with(prefix) && name.ends_with(suffix))
+                .unwrap_or(false)
+                && entry.path().is_file()
+        })
+}
+
+fn collect_matching_files_recursively(
+    root: &Path,
+    prefix: &str,
+    suffix: &str,
+    matches: &mut Vec<PathBuf>,
+) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_matching_files_recursively(&path, prefix, suffix, matches);
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if name.starts_with(prefix) && name.ends_with(suffix) {
+            matches.push(path);
+        }
+    }
 }
 
 fn detect_node_runtime_dir_for_reprovision() -> Option<PathBuf> {
@@ -11605,6 +11756,47 @@ fn option_bool_text(value: Option<bool>) -> &'static str {
 mod tests {
     use super::*;
 
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn with_reprovision_env<T>(vars: &[(&str, String)], action: impl FnOnce() -> T) -> T {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let keys = [
+            "WHOATHERE_PYTHON_RUNTIME_DIR",
+            "WHOATHERE_PYTHON_WHEEL_DIR",
+            "WHOATHERE_WHEEL_PACKAGE_FILE",
+            "WHOATHERE_NODE_RUNTIME_DIR",
+            "WHOATHERE_UV_BINARY",
+            "HOME",
+            "PATH",
+        ];
+        let previous = keys
+            .iter()
+            .map(|key| (*key, std::env::var(key).ok()))
+            .collect::<Vec<_>>();
+        for key in keys {
+            std::env::remove_var(key);
+        }
+        for (key, value) in vars {
+            std::env::set_var(key, value);
+        }
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(action));
+
+        for key in keys {
+            std::env::remove_var(key);
+        }
+        for (key, value) in previous {
+            if let Some(value) = value {
+                std::env::set_var(key, value);
+            }
+        }
+
+        match result {
+            Ok(value) => value,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    }
+
     #[test]
     fn parses_dry_run_shim() {
         let args = vec![
@@ -11771,6 +11963,78 @@ mod tests {
     }
 
     #[test]
+    fn vm_reprovision_command_includes_python_guest_tool_sources() {
+        let root = temp_root("whoathere-cli-vm-reprovision-python-command");
+        let script = root.join("helpers/macos-vm-helper/scripts/provision-guest-readiness.sh");
+        let state_dir = root.join("state");
+        let python_runtime = root.join("python-runtime");
+        let python_bin = python_runtime.join("bin").join("python3");
+        let python_wheels = root.join("python-wheels");
+        let wheel_package = root.join("wheel-0.45.1-py3-none-any.whl");
+        let node_runtime = root.join("node-runtime");
+        let node_bin = node_runtime.join("bin").join("node");
+        let npm_bin = node_runtime.join("bin").join("npm");
+        let uv = root.join("uv");
+
+        std::fs::create_dir_all(python_bin.parent().expect("python bin parent"))
+            .expect("python bin dir");
+        write_new_file(&python_bin, b"#!/bin/sh\nexit 0\n").expect("python bin");
+        set_executable(&python_bin).expect("python executable");
+        std::fs::create_dir_all(&python_wheels).expect("python wheels");
+        write_new_file(&python_wheels.join("pip-25.0-py3-none-any.whl"), b"pip")
+            .expect("pip wheel");
+        write_new_file(
+            &python_wheels.join("setuptools-80.0-py3-none-any.whl"),
+            b"setuptools",
+        )
+        .expect("setuptools wheel");
+        write_new_file(&wheel_package, b"wheel").expect("wheel package");
+        std::fs::create_dir_all(node_bin.parent().expect("node bin parent")).expect("node bin dir");
+        write_new_file(&node_bin, b"#!/bin/sh\nexit 0\n").expect("node bin");
+        write_new_file(&npm_bin, b"#!/bin/sh\nexit 0\n").expect("npm bin");
+        set_executable(&node_bin).expect("node executable");
+        set_executable(&npm_bin).expect("npm executable");
+        write_new_file(&uv, b"#!/bin/sh\nexit 0\n").expect("uv bin");
+        set_executable(&uv).expect("uv executable");
+
+        with_reprovision_env(
+            &[
+                (
+                    "WHOATHERE_PYTHON_RUNTIME_DIR",
+                    python_runtime.display().to_string(),
+                ),
+                (
+                    "WHOATHERE_PYTHON_WHEEL_DIR",
+                    python_wheels.display().to_string(),
+                ),
+                (
+                    "WHOATHERE_WHEEL_PACKAGE_FILE",
+                    wheel_package.display().to_string(),
+                ),
+                (
+                    "WHOATHERE_NODE_RUNTIME_DIR",
+                    node_runtime.display().to_string(),
+                ),
+                ("WHOATHERE_UV_BINARY", uv.display().to_string()),
+            ],
+            || {
+                let command = reprovision_command_for_script(&script, &state_dir);
+
+                assert!(command.contains("WHOATHERE_PYTHON_RUNTIME_DIR="));
+                assert!(command.contains(&shell_quote(&python_runtime.display().to_string())));
+                assert!(command.contains("WHOATHERE_PYTHON_WHEEL_DIR="));
+                assert!(command.contains(&shell_quote(&python_wheels.display().to_string())));
+                assert!(command.contains("WHOATHERE_WHEEL_PACKAGE_FILE="));
+                assert!(command.contains(&shell_quote(&wheel_package.display().to_string())));
+                assert!(command.contains("WHOATHERE_NODE_RUNTIME_DIR="));
+                assert!(command.contains("WHOATHERE_UV_BINARY="));
+            },
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn vm_reprovision_preflight_runs_packaged_script_without_mutation() {
         let root = temp_root("whoathere-cli-vm-reprovision-preflight");
         let helper_root = root.join("helpers").join("macos-vm-helper");
@@ -11808,6 +12072,90 @@ mod tests {
         assert!(result.output.contains("script_exit_code=0"));
         assert!(result.output.contains("guest_readiness_preflight=true"));
         assert!(result.output.contains("ready_for_sudo_provisioning=true"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vm_reprovision_preflight_forwards_python_guest_tool_sources() {
+        let root = temp_root("whoathere-cli-vm-reprovision-preflight-python-env");
+        let helper_root = root.join("helpers").join("macos-vm-helper");
+        let helper_dir = helper_root
+            .join(".build")
+            .join("arm64-apple-macosx")
+            .join("release");
+        let helper = helper_dir.join("whoathere-macos-vm-helper");
+        let script = helper_root
+            .join("scripts")
+            .join("provision-guest-readiness.sh");
+        let state_dir = root.join("state");
+        let python_runtime = root.join("python-runtime");
+        let python_bin = python_runtime.join("bin").join("python3");
+        let python_wheels = root.join("python-wheels");
+        let wheel_package = root.join("wheel-0.45.1-py3-none-any.whl");
+
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&helper_dir).expect("helper dir");
+        std::fs::create_dir_all(script.parent().expect("script parent")).expect("script dir");
+        std::fs::create_dir_all(python_bin.parent().expect("python bin parent"))
+            .expect("python bin dir");
+        std::fs::create_dir_all(&python_wheels).expect("python wheels");
+        write_new_file(&helper, b"#!/bin/sh\nexit 0\n").expect("helper");
+        set_executable(&helper).expect("executable helper");
+        write_new_file(&python_bin, b"#!/bin/sh\nexit 0\n").expect("python bin");
+        set_executable(&python_bin).expect("python executable");
+        write_new_file(&python_wheels.join("pip-25.0-py3-none-any.whl"), b"pip")
+            .expect("pip wheel");
+        write_new_file(
+            &python_wheels.join("setuptools-80.0-py3-none-any.whl"),
+            b"setuptools",
+        )
+        .expect("setuptools wheel");
+        write_new_file(&wheel_package, b"wheel").expect("wheel package");
+        write_new_file(
+            &script,
+            b"#!/bin/sh\nif [ \"$1\" = \"--preflight\" ]; then echo guest_readiness_preflight=true; echo ready_for_sudo_provisioning=true; echo python_runtime=$WHOATHERE_PYTHON_RUNTIME_DIR; echo python_wheels=$WHOATHERE_PYTHON_WHEEL_DIR; echo wheel_package=$WHOATHERE_WHEEL_PACKAGE_FILE; exit 0; fi\nexit 64\n",
+        )
+        .expect("provision script");
+        set_executable(&script).expect("executable provision script");
+
+        with_reprovision_env(
+            &[
+                (
+                    "WHOATHERE_PYTHON_RUNTIME_DIR",
+                    python_runtime.display().to_string(),
+                ),
+                (
+                    "WHOATHERE_PYTHON_WHEEL_DIR",
+                    python_wheels.display().to_string(),
+                ),
+                (
+                    "WHOATHERE_WHEEL_PACKAGE_FILE",
+                    wheel_package.display().to_string(),
+                ),
+            ],
+            || {
+                let result = evaluate_command(Command::VmReprovision {
+                    state_dir: Some(state_dir.display().to_string()),
+                    helper_path: Some(helper.display().to_string()),
+                    preflight: true,
+                    execute: false,
+                });
+
+                assert_eq!(result.exit_code, 0);
+                assert!(result.output.contains("status=preflight"));
+                assert!(result.output.contains("script_exit_code=0"));
+                assert!(result
+                    .output
+                    .contains(&format!("python_runtime={}", python_runtime.display())));
+                assert!(result
+                    .output
+                    .contains(&format!("python_wheels={}", python_wheels.display())));
+                assert!(result
+                    .output
+                    .contains(&format!("wheel_package={}", wheel_package.display())));
+            },
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }
