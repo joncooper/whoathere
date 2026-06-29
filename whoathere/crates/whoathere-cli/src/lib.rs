@@ -143,6 +143,7 @@ pub enum Command {
         state_dir: Option<String>,
         helper_path: Option<String>,
         workspace: Option<String>,
+        package_risk_receipt: Option<String>,
         fixture: Option<String>,
         timeout_seconds: Option<u64>,
         json: bool,
@@ -890,6 +891,7 @@ fn render_command_text(command: Command) -> String {
             state_dir,
             helper_path,
             workspace,
+            package_risk_receipt,
             fixture,
             timeout_seconds,
             json,
@@ -901,6 +903,7 @@ fn render_command_text(command: Command) -> String {
             state_dir: state_dir.as_deref(),
             helper_path: helper_path.as_deref(),
             workspace: workspace.as_deref(),
+            package_risk_receipt: package_risk_receipt.as_deref(),
             fixture: fixture.as_deref(),
             timeout_seconds,
             json,
@@ -1344,7 +1347,7 @@ fn command_help() -> String {
         "|vm validate-npm-uv [--state-dir <dir>] [--helper <path>] [--execute]",
         "|vm start|suspend|reset|prune|upgrade-local-manifest [--state-dir <dir>] [--helper <path>] [--execute]",
         "|vm health [--state-dir <dir>] [--helper <path>]",
-        "|vm detonate [--workspace <path>] [--state-dir <dir>] [--helper <path>] [--fixture <name>] [--timeout-seconds <n>] [--execute] [--json] npm|pip|uv -- <args>",
+        "|vm detonate [--workspace <path>] [--package-risk-receipt <path>] [--state-dir <dir>] [--helper <path>] [--fixture <name>] [--timeout-seconds <n>] [--execute] [--sync-back] [--json] npm|pip|uv -- <args>",
         "|vm release-plan [--class <class>|--ecosystem <name> --source <kind> --filename <name>] [--vm-ready --static-clean --dynamic-clean --egress-clean --no-canary-access --scanner-clean --diff-clean --freshness-allowed] [--package-risk-receipt <path>] [--json]",
         "|vm canaries [--json]",
         "|vm sync-policy [--json]",
@@ -1519,6 +1522,7 @@ fn parse_vm_detonate(args: &[String]) -> Command {
     let mut state_dir = None;
     let mut helper_path = None;
     let mut workspace = None;
+    let mut package_risk_receipt = None;
     let mut fixture = None;
     let mut timeout_seconds = None;
     let mut index = 0;
@@ -1558,6 +1562,18 @@ fn parse_vm_detonate(args: &[String]) -> Command {
             }
             value if value.starts_with("--workspace=") => {
                 workspace = Some(value.trim_start_matches("--workspace=").to_string());
+                index += 1;
+            }
+            "--package-risk-receipt" => {
+                package_risk_receipt = args.get(index + 1).cloned();
+                index += 2;
+            }
+            value if value.starts_with("--package-risk-receipt=") => {
+                package_risk_receipt = Some(
+                    value
+                        .trim_start_matches("--package-risk-receipt=")
+                        .to_string(),
+                );
                 index += 1;
             }
             "--fixture" => {
@@ -1602,6 +1618,7 @@ fn parse_vm_detonate(args: &[String]) -> Command {
         state_dir,
         helper_path,
         workspace,
+        package_risk_receipt,
         fixture,
         timeout_seconds,
         json,
@@ -2235,6 +2252,7 @@ struct VmDetonateRenderArgs<'a> {
     state_dir: Option<&'a str>,
     helper_path: Option<&'a str>,
     workspace: Option<&'a str>,
+    package_risk_receipt: Option<&'a str>,
     fixture: Option<&'a str>,
     timeout_seconds: Option<u64>,
     json: bool,
@@ -2472,6 +2490,7 @@ fn render_vm_detonate(args: VmDetonateRenderArgs<'_>) -> String {
         expected_command_class: command_class,
         project_plan: &project_plan,
         guest_job: guest_job.as_ref(),
+        package_risk_receipt: args.package_risk_receipt,
         requested: args.sync_back,
         execute: args.execute,
     });
@@ -3924,6 +3943,7 @@ struct SyncBackEvaluationArgs<'a> {
     expected_command_class: &'a str,
     project_plan: &'a ProjectDetonationPlan,
     guest_job: Option<&'a GuestJobEvidence>,
+    package_risk_receipt: Option<&'a str>,
     requested: bool,
     execute: bool,
 }
@@ -4053,6 +4073,58 @@ fn evaluate_sync_back(args: SyncBackEvaluationArgs<'_>) -> SyncBackOutcome {
             outcome,
         );
     }
+    if let Some(package_class) = package_class_for_sync_back_workflow(workflow) {
+        let (mut package_risk_evidence, mut package_risk_receipt) =
+            apply_package_risk_receipt(LocalEvidenceFlags::clean(true), args.package_risk_receipt);
+        let package_risk_gate_reasons = enforce_public_package_receipt_requirements(
+            package_class,
+            &mut package_risk_evidence,
+            &mut package_risk_receipt,
+        );
+        let package_risk_workspace_reasons = enforce_package_risk_receipt_workspace(
+            &workspace_root,
+            &mut package_risk_evidence,
+            &package_risk_receipt,
+        );
+        let package_risk_decision = decide_local_sync(package_class, &package_risk_evidence);
+        if package_risk_decision.verdict.as_str() != "auto_sync" {
+            outcome
+                .reason_codes
+                .push("sync_back_package_risk_receipt_not_clean".to_string());
+            outcome
+                .reason_codes
+                .extend(package_risk_receipt.reason_codes.iter().cloned());
+            outcome
+                .reason_codes
+                .extend(package_risk_gate_reasons.iter().cloned());
+            outcome
+                .reason_codes
+                .extend(package_risk_workspace_reasons.iter().cloned());
+            outcome
+                .reason_codes
+                .extend(package_risk_decision.reason_codes.iter().cloned());
+            outcome.reason_codes.sort();
+            outcome.reason_codes.dedup();
+            return denied_sync_back_with_receipt(
+                args.config,
+                args.helper_path,
+                workflow,
+                guest_job,
+                outcome,
+            );
+        }
+    } else {
+        outcome
+            .reason_codes
+            .push("sync_back_package_risk_workflow_unsupported".to_string());
+        return denied_sync_back_with_receipt(
+            args.config,
+            args.helper_path,
+            workflow,
+            guest_job,
+            outcome,
+        );
+    }
     let Some(archive_hex) = guest_job.sync_output_archive_hex.as_deref() else {
         outcome
             .reason_codes
@@ -4161,6 +4233,42 @@ fn evaluate_sync_back(args: SyncBackEvaluationArgs<'_>) -> SyncBackOutcome {
     result.reason_codes.sort();
     result.reason_codes.dedup();
     result
+}
+
+fn enforce_package_risk_receipt_workspace(
+    workspace_root: &Path,
+    evidence: &mut LocalEvidenceFlags,
+    receipt: &PackageRiskReceiptApplication,
+) -> Vec<String> {
+    if !receipt.applied {
+        return Vec::new();
+    }
+    let mut reasons = Vec::new();
+    let expected = scanner_workspace_digest(workspace_root);
+    match receipt.workspace_sha256.as_deref() {
+        Some(value) if value == expected => {}
+        Some(_) => {
+            reasons.push("package_risk_receipt_workspace_mismatch".to_string());
+            evidence.scanner_clean = false;
+            evidence.diff_clean_or_baseline_absent = false;
+            evidence.freshness_allowed = false;
+        }
+        None => {
+            reasons.push("package_risk_receipt_workspace_missing".to_string());
+            evidence.scanner_clean = false;
+            evidence.diff_clean_or_baseline_absent = false;
+            evidence.freshness_allowed = false;
+        }
+    }
+    reasons
+}
+
+fn package_class_for_sync_back_workflow(workflow: &str) -> Option<PackageClass> {
+    match workflow {
+        "npm_project_install" => Some(PackageClass::NpmRegistryTarball),
+        "pip_project_install" | "uv_pip_project_install" => Some(PackageClass::PypiPureWheel),
+        _ => None,
+    }
 }
 
 fn denied_sync_back_with_receipt(
@@ -7390,8 +7498,13 @@ fn render_vm_release_plan(args: VmReleasePlanArgs<'_>) -> String {
 struct PackageRiskReceiptApplication {
     receipt_path: Option<String>,
     applied: bool,
+    receipt_id: Option<String>,
+    workspace_sha256: Option<String>,
     overall_verdict: Option<String>,
     scanner_clean: Option<bool>,
+    scanner_evidence_applied: Option<bool>,
+    scanner_evidence_status: Option<String>,
+    artifact_review_status: Option<String>,
     package_classes: Vec<String>,
     package_verdicts: Vec<String>,
     artifact_review_statuses: Vec<String>,
@@ -7408,8 +7521,13 @@ fn apply_package_risk_receipt(
             PackageRiskReceiptApplication {
                 receipt_path: None,
                 applied: false,
+                receipt_id: None,
+                workspace_sha256: None,
                 overall_verdict: None,
                 scanner_clean: None,
+                scanner_evidence_applied: None,
+                scanner_evidence_status: None,
+                artifact_review_status: None,
                 package_classes: Vec::new(),
                 package_verdicts: Vec::new(),
                 artifact_review_statuses: Vec::new(),
@@ -7429,8 +7547,13 @@ fn apply_package_risk_receipt(
                 PackageRiskReceiptApplication {
                     receipt_path: Some(redacted_path),
                     applied: false,
+                    receipt_id: None,
+                    workspace_sha256: None,
                     overall_verdict: None,
                     scanner_clean: None,
+                    scanner_evidence_applied: None,
+                    scanner_evidence_status: None,
+                    artifact_review_status: None,
                     package_classes: Vec::new(),
                     package_verdicts: Vec::new(),
                     artifact_review_statuses: Vec::new(),
@@ -7450,8 +7573,13 @@ fn apply_package_risk_receipt(
             PackageRiskReceiptApplication {
                 receipt_path: Some(redacted_path),
                 applied: false,
+                receipt_id: None,
+                workspace_sha256: None,
                 overall_verdict: None,
                 scanner_clean: None,
+                scanner_evidence_applied: None,
+                scanner_evidence_status: None,
+                artifact_review_status: None,
                 package_classes: Vec::new(),
                 package_verdicts: Vec::new(),
                 artifact_review_statuses: Vec::new(),
@@ -7459,12 +7587,25 @@ fn apply_package_risk_receipt(
             },
         );
     }
+    let receipt_id = json_extract_string_field(&contents, "receipt_id");
+    let workspace_sha256 = json_extract_string_field(&contents, "workspace_sha256");
     let overall_verdict = json_extract_string_field(&contents, "overall_verdict");
     let diff_clean =
         json_extract_bool_field(&contents, "all_diff_clean_or_baseline_absent").unwrap_or(false);
     let freshness_allowed =
         json_extract_bool_field(&contents, "all_freshness_allowed").unwrap_or(false);
     let scanner_clean = json_extract_bool_field(&contents, "all_scanner_clean");
+    let scanner_evidence = json_extract_object_field(&contents, "scanner_evidence");
+    let scanner_evidence_applied = scanner_evidence
+        .as_deref()
+        .and_then(|object| json_extract_bool_field(object, "applied"));
+    let scanner_evidence_status = scanner_evidence
+        .as_deref()
+        .and_then(|object| json_extract_string_field(object, "status"));
+    let artifact_review = json_extract_object_field(&contents, "artifact_review");
+    let artifact_review_status = artifact_review
+        .as_deref()
+        .and_then(|object| json_extract_string_field(object, "status"));
     let package_objects = json_extract_object_array(&contents, "packages");
     let package_classes = package_objects
         .iter()
@@ -7508,8 +7649,13 @@ fn apply_package_risk_receipt(
         PackageRiskReceiptApplication {
             receipt_path: Some(redacted_path),
             applied: true,
+            receipt_id,
+            workspace_sha256,
             overall_verdict,
             scanner_clean,
+            scanner_evidence_applied,
+            scanner_evidence_status,
+            artifact_review_status,
             package_classes,
             package_verdicts,
             artifact_review_statuses,
@@ -7542,6 +7688,16 @@ fn enforce_public_package_receipt_requirements(
         evidence.diff_clean_or_baseline_absent = false;
         evidence.freshness_allowed = false;
     } else {
+        if receipt
+            .receipt_id
+            .as_deref()
+            .is_none_or(|receipt_id| receipt_id.trim().is_empty())
+        {
+            reasons.push("package_risk_receipt_id_missing".to_string());
+            evidence.scanner_clean = false;
+            evidence.diff_clean_or_baseline_absent = false;
+            evidence.freshness_allowed = false;
+        }
         if receipt.overall_verdict.as_deref() != Some("auto_sync_candidate") {
             reasons.push("package_risk_receipt_verdict_not_auto_sync_candidate".to_string());
             evidence.scanner_clean = false;
@@ -7579,6 +7735,33 @@ fn enforce_public_package_receipt_requirements(
                     .push("operator_scanner_flag_ignored_for_public_package_auto_sync".to_string());
             }
             evidence.scanner_clean = false;
+        }
+        if receipt.scanner_evidence_applied != Some(true) {
+            reasons.push("package_risk_receipt_scanner_evidence_not_applied".to_string());
+            evidence.scanner_clean = false;
+            evidence.diff_clean_or_baseline_absent = false;
+            evidence.freshness_allowed = false;
+        }
+        if receipt.scanner_evidence_status.as_deref() != Some("clean") {
+            reasons.push("package_risk_receipt_scanner_evidence_not_clean".to_string());
+            evidence.scanner_clean = false;
+            evidence.diff_clean_or_baseline_absent = false;
+            evidence.freshness_allowed = false;
+        }
+        match receipt.artifact_review_status.as_deref() {
+            Some(status) if artifact_review_status_allows_auto_sync(status) => {}
+            Some(_) => {
+                reasons.push("package_risk_receipt_artifact_review_blocking".to_string());
+                evidence.scanner_clean = false;
+                evidence.diff_clean_or_baseline_absent = false;
+                evidence.freshness_allowed = false;
+            }
+            None => {
+                reasons.push("package_risk_receipt_artifact_review_missing".to_string());
+                evidence.scanner_clean = false;
+                evidence.diff_clean_or_baseline_absent = false;
+                evidence.freshness_allowed = false;
+            }
         }
         if !receipt
             .package_classes
@@ -7671,7 +7854,7 @@ fn render_vm_sync_policy(json: bool) -> String {
             .collect::<Vec<_>>()
             .join(", ");
         return format!(
-            "{{\n  \"command\": \"whoathere vm sync-policy\",\n  \"release_target\": {},\n  \"sync_policy\": {},\n  \"sync_back_enabled\": true,\n  \"policy_scope\": \"local_beta_allowlist_requires_clean_vm_evidence_and_current_sync_receipt\",\n  \"auto_sync_classes\": [\"npm.local_project.no_external_dependency\", \"pypi.local_project.pure_python\", \"uv.local_project.pure_python\"],\n  \"deny_default_classes\": [\"direct_vcs_editable.v1\", \"unsupported_unknown.v1\"],\n  \"manual_review_classes\": [\"pypi.sdist_pep517.v1\", \"pypi.binary_wheel.v1\", \"native_extension.v1\"],\n  \"package_risk_required_for_public_auto_sync\": true,\n  \"package_age_gate_days\": {},\n  \"package_risk_receipt_fields\": [\"overall_verdict\", \"all_freshness_allowed\", \"all_diff_clean_or_baseline_absent\", \"all_scanner_clean\", \"packages[].package_class\", \"packages[].verdict\", \"packages[].artifact_review_status\"],\n  \"sync_allowlist\": [{}],\n  \"required_evidence\": {},\n  \"scanner_adapters\": [{}]\n}}",
+            "{{\n  \"command\": \"whoathere vm sync-policy\",\n  \"release_target\": {},\n  \"sync_policy\": {},\n  \"sync_back_enabled\": true,\n  \"policy_scope\": \"local_beta_allowlist_requires_clean_vm_evidence_and_current_sync_receipt\",\n  \"auto_sync_classes\": [\"npm.local_project.no_external_dependency\", \"pypi.local_project.pure_python\", \"uv.local_project.pure_python\"],\n  \"deny_default_classes\": [\"direct_vcs_editable.v1\", \"unsupported_unknown.v1\"],\n  \"manual_review_classes\": [\"pypi.sdist_pep517.v1\", \"pypi.binary_wheel.v1\", \"native_extension.v1\"],\n  \"package_risk_required_for_public_auto_sync\": true,\n  \"package_age_gate_days\": {},\n  \"package_risk_receipt_fields\": [\"receipt_id\", \"workspace_sha256\", \"overall_verdict\", \"all_freshness_allowed\", \"all_diff_clean_or_baseline_absent\", \"all_scanner_clean\", \"scanner_evidence.applied\", \"scanner_evidence.status\", \"artifact_review.status\", \"packages[].package_class\", \"packages[].verdict\", \"packages[].artifact_review_status\"],\n  \"sync_allowlist\": [{}],\n  \"required_evidence\": {},\n  \"scanner_adapters\": [{}]\n}}",
             json_string(RELEASE_TARGET),
             json_string(SYNC_POLICY),
             PACKAGE_RISK_COOLDOWN_DAYS,
@@ -7701,7 +7884,7 @@ fn render_vm_sync_policy(json: bool) -> String {
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "whoathere vm sync-policy\nrelease_target={}\nsync_policy={}\nsync_back_enabled=true\npolicy_scope=local_beta_allowlist_requires_clean_vm_evidence_and_current_sync_receipt\nauto_sync_classes=[\"npm.local_project.no_external_dependency\", \"pypi.local_project.pure_python\", \"uv.local_project.pure_python\"]\nmanual_review_classes=[\"pypi.sdist_pep517.v1\", \"pypi.binary_wheel.v1\", \"native_extension.v1\"]\ndeny_default_classes=[\"direct_vcs_editable.v1\", \"unsupported_unknown.v1\"]\npackage_risk_required_for_public_auto_sync=true\npackage_age_gate_days={}\npackage_risk_receipt_fields=[\"overall_verdict\", \"all_freshness_allowed\", \"all_diff_clean_or_baseline_absent\", \"all_scanner_clean\", \"packages[].package_class\", \"packages[].verdict\", \"packages[].artifact_review_status\"]\nrequired_evidence={:?}\n{}\n{}",
+        "whoathere vm sync-policy\nrelease_target={}\nsync_policy={}\nsync_back_enabled=true\npolicy_scope=local_beta_allowlist_requires_clean_vm_evidence_and_current_sync_receipt\nauto_sync_classes=[\"npm.local_project.no_external_dependency\", \"pypi.local_project.pure_python\", \"uv.local_project.pure_python\"]\nmanual_review_classes=[\"pypi.sdist_pep517.v1\", \"pypi.binary_wheel.v1\", \"native_extension.v1\"]\ndeny_default_classes=[\"direct_vcs_editable.v1\", \"unsupported_unknown.v1\"]\npackage_risk_required_for_public_auto_sync=true\npackage_age_gate_days={}\npackage_risk_receipt_fields=[\"receipt_id\", \"workspace_sha256\", \"overall_verdict\", \"all_freshness_allowed\", \"all_diff_clean_or_baseline_absent\", \"all_scanner_clean\", \"scanner_evidence.applied\", \"scanner_evidence.status\", \"artifact_review.status\", \"packages[].package_class\", \"packages[].verdict\", \"packages[].artifact_review_status\"]\nrequired_evidence={:?}\n{}\n{}",
         RELEASE_TARGET, SYNC_POLICY, PACKAGE_RISK_COOLDOWN_DAYS, evidence, rule_rows, scanner_rows
     )
 }
@@ -10223,6 +10406,7 @@ fn render_package_risk_assess(args: PackageRiskAssessArgs<'_>) -> String {
     let receipt_write_status = write_package_risk_receipt(PackageRiskReceiptWrite {
         path: &receipt_path,
         receipt_id: &receipt_id,
+        workspace_sha256: &workspace_sha256,
         requested_ecosystem,
         assessments: &assessments,
         scanner_evidence: &scanner_evidence,
@@ -10250,6 +10434,7 @@ fn render_package_risk_assess(args: PackageRiskAssessArgs<'_>) -> String {
         state_dir: &config.state_dir,
         receipt_path: &receipt_path,
         receipt_id: &receipt_id,
+        workspace_sha256: &workspace_sha256,
         assessments: &assessments,
         all_freshness_allowed,
         all_diff_clean_or_baseline_absent,
@@ -10419,6 +10604,7 @@ struct PackageRiskSummaryRender<'a> {
     state_dir: &'a Path,
     receipt_path: &'a Path,
     receipt_id: &'a str,
+    workspace_sha256: &'a str,
     assessments: &'a [PackageRiskAssessment],
     all_freshness_allowed: bool,
     all_diff_clean_or_baseline_absent: bool,
@@ -10441,9 +10627,10 @@ fn render_package_risk_assessment_summary(view: PackageRiskSummaryRender<'_>) ->
             .collect::<Vec<_>>()
             .join(", ");
         return format!(
-            "{{\n  \"command\": \"whoathere package-risk assess\",\n  \"schema_version\": {},\n  \"requested_ecosystem\": {},\n  \"cooldown_days\": {},\n  \"store_path\": {},\n  \"receipt_path\": {},\n  \"receipt_id\": {},\n  \"receipt_write_status\": {},\n  \"store_status\": {},\n  \"package_count\": {},\n  \"overall_verdict\": {},\n  \"all_freshness_allowed\": {},\n  \"all_diff_clean_or_baseline_absent\": {},\n  \"all_scanner_clean\": {},\n  \"scanner_evidence\": {},\n  \"artifact_review\": {},\n  \"reason_codes\": {},\n  \"packages\": [{}],\n  \"exit_code\": {}\n}}",
+            "{{\n  \"command\": \"whoathere package-risk assess\",\n  \"schema_version\": {},\n  \"requested_ecosystem\": {},\n  \"workspace_sha256\": {},\n  \"cooldown_days\": {},\n  \"store_path\": {},\n  \"receipt_path\": {},\n  \"receipt_id\": {},\n  \"receipt_write_status\": {},\n  \"store_status\": {},\n  \"package_count\": {},\n  \"overall_verdict\": {},\n  \"all_freshness_allowed\": {},\n  \"all_diff_clean_or_baseline_absent\": {},\n  \"all_scanner_clean\": {},\n  \"scanner_evidence\": {},\n  \"artifact_review\": {},\n  \"reason_codes\": {},\n  \"packages\": [{}],\n  \"exit_code\": {}\n}}",
             json_string(PACKAGE_RISK_ASSESSMENT_SCHEMA),
             json_string(view.requested_ecosystem.as_str()),
+            json_string(view.workspace_sha256),
             PACKAGE_RISK_COOLDOWN_DAYS,
             json_string(&redacted_package_risk_path(&package_risk_store_path(view.state_dir))),
             json_string(&redacted_package_risk_path(view.receipt_path)),
@@ -10469,9 +10656,10 @@ fn render_package_risk_assessment_summary(view: PackageRiskSummaryRender<'_>) ->
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "whoathere package-risk assess\nschema_version={}\nrequested_ecosystem={}\ncooldown_days={}\nstore_path={}\nreceipt_path={}\nreceipt_id={}\nreceipt_write_status={}\nstore_status={}\npackage_count={}\noverall_verdict={}\nall_freshness_allowed={}\nall_diff_clean_or_baseline_absent={}\nall_scanner_clean={}\n{}\n{}\nreason_codes={:?}\n{}\nexit_code={}",
+        "whoathere package-risk assess\nschema_version={}\nrequested_ecosystem={}\nworkspace_sha256={}\ncooldown_days={}\nstore_path={}\nreceipt_path={}\nreceipt_id={}\nreceipt_write_status={}\nstore_status={}\npackage_count={}\noverall_verdict={}\nall_freshness_allowed={}\nall_diff_clean_or_baseline_absent={}\nall_scanner_clean={}\n{}\n{}\nreason_codes={:?}\n{}\nexit_code={}",
         PACKAGE_RISK_ASSESSMENT_SCHEMA,
         view.requested_ecosystem.as_str(),
+        view.workspace_sha256,
         PACKAGE_RISK_COOLDOWN_DAYS,
         redacted_package_risk_path(&package_risk_store_path(view.state_dir)),
         redacted_package_risk_path(view.receipt_path),
@@ -12172,6 +12360,14 @@ fn json_extract_object_string_pairs(input: &str, field: &str) -> Vec<(String, St
     pairs
 }
 
+fn json_extract_object_field(input: &str, field: &str) -> Option<String> {
+    let value = json_field_value(input, field)?.trim_start();
+    if !value.starts_with('{') {
+        return None;
+    }
+    extract_balanced_json(value, '{', '}').map(ToString::to_string)
+}
+
 fn json_extract_object_array(input: &str, field: &str) -> Vec<String> {
     let Some(value) = json_field_value(input, field).map(str::trim_start) else {
         return Vec::new();
@@ -12263,6 +12459,7 @@ fn package_risk_memory_ready(state_dir: &Path) -> bool {
 struct PackageRiskReceiptWrite<'a> {
     path: &'a Path,
     receipt_id: &'a str,
+    workspace_sha256: &'a str,
     requested_ecosystem: PackageRiskEcosystem,
     assessments: &'a [PackageRiskAssessment],
     scanner_evidence: &'a PackageRiskScannerEvidence,
@@ -12287,9 +12484,10 @@ fn write_package_risk_receipt(write: PackageRiskReceiptWrite<'_>) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     let contents = format!(
-        "{{\n  \"schema_version\": {},\n  \"receipt_id\": {},\n  \"created_at_unix_seconds\": {},\n  \"requested_ecosystem\": {},\n  \"cooldown_days\": {},\n  \"overall_verdict\": {},\n  \"all_freshness_allowed\": {},\n  \"all_diff_clean_or_baseline_absent\": {},\n  \"all_scanner_clean\": {},\n  \"scanner_evidence\": {},\n  \"artifact_review\": {},\n  \"reason_codes\": {},\n  \"packages\": [{}]\n}}\n",
+        "{{\n  \"schema_version\": {},\n  \"receipt_id\": {},\n  \"workspace_sha256\": {},\n  \"created_at_unix_seconds\": {},\n  \"requested_ecosystem\": {},\n  \"cooldown_days\": {},\n  \"overall_verdict\": {},\n  \"all_freshness_allowed\": {},\n  \"all_diff_clean_or_baseline_absent\": {},\n  \"all_scanner_clean\": {},\n  \"scanner_evidence\": {},\n  \"artifact_review\": {},\n  \"reason_codes\": {},\n  \"packages\": [{}]\n}}\n",
         json_string(PACKAGE_RISK_ASSESSMENT_SCHEMA),
         json_string(write.receipt_id),
+        json_string(write.workspace_sha256),
         current_unix_seconds(),
         json_string(write.requested_ecosystem.as_str()),
         PACKAGE_RISK_COOLDOWN_DAYS,
@@ -16305,6 +16503,7 @@ mod tests {
                 state_dir: Some("/tmp/whoathere-vm".to_string()),
                 helper_path: Some("/tmp/helper".to_string()),
                 workspace: Some("/work".to_string()),
+                package_risk_receipt: None,
                 fixture: Some("clean_npm_lifecycle".to_string()),
                 timeout_seconds: Some(45),
                 json: true,
@@ -16333,6 +16532,7 @@ mod tests {
                 state_dir: None,
                 helper_path: None,
                 workspace: None,
+                package_risk_receipt: None,
                 fixture: None,
                 timeout_seconds: None,
                 json: false,
@@ -16353,6 +16553,7 @@ mod tests {
             state_dir: Some(root.join("state").display().to_string()),
             helper_path: Some("/tmp/nonexistent-helper".to_string()),
             workspace: Some(root.display().to_string()),
+            package_risk_receipt: None,
             fixture: Some("clean_npm_lifecycle".to_string()),
             timeout_seconds: Some(30),
             json: false,
@@ -16387,7 +16588,8 @@ mod tests {
         )
         .expect("helper script");
         set_executable(&helper).expect("executable helper");
-        let state_dir = root.join("state");
+        let state_dir = root.with_extension("state");
+        let _ = std::fs::remove_dir_all(&state_dir);
         write_complete_guest_provisioning_receipt(&state_dir);
         let result = evaluate_command(Command::VmDetonate {
             tool: "pip".to_string(),
@@ -16401,6 +16603,7 @@ mod tests {
             state_dir: Some(state_dir.display().to_string()),
             helper_path: Some(helper.display().to_string()),
             workspace: None,
+            package_risk_receipt: None,
             fixture: Some("pypi_pep517_canary".to_string()),
             timeout_seconds: Some(75),
             json: false,
@@ -16415,6 +16618,7 @@ mod tests {
             state_dir.display()
         )));
         assert!(result.output.contains("verdict=helper_security_outcome"));
+        let _ = std::fs::remove_dir_all(&state_dir);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -16437,6 +16641,7 @@ mod tests {
             state_dir: Some(root.join("state").display().to_string()),
             helper_path: Some("/tmp/nonexistent-helper".to_string()),
             workspace: Some(root.display().to_string()),
+            package_risk_receipt: None,
             fixture: None,
             timeout_seconds: Some(30),
             json: false,
@@ -16472,7 +16677,8 @@ mod tests {
         )
         .expect("helper script");
         set_executable(&helper).expect("executable helper");
-        let state_dir = root.join("state");
+        let state_dir = root.with_extension("state");
+        let _ = std::fs::remove_dir_all(&state_dir);
         write_complete_guest_provisioning_receipt(&state_dir);
 
         let result = evaluate_command(Command::VmDetonate {
@@ -16483,6 +16689,7 @@ mod tests {
             state_dir: Some(state_dir.display().to_string()),
             helper_path: Some(helper.display().to_string()),
             workspace: Some(root.display().to_string()),
+            package_risk_receipt: None,
             fixture: None,
             timeout_seconds: Some(75),
             json: false,
@@ -16510,6 +16717,7 @@ mod tests {
             })
             .count();
         assert_eq!(payload_count, 1);
+        let _ = std::fs::remove_dir_all(&state_dir);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -16540,6 +16748,7 @@ mod tests {
             state_dir: Some(root.join("state").display().to_string()),
             helper_path: Some("/tmp/nonexistent-helper".to_string()),
             workspace: Some(root.display().to_string()),
+            package_risk_receipt: None,
             fixture: None,
             timeout_seconds: Some(30),
             json: false,
@@ -16578,7 +16787,8 @@ mod tests {
         )
         .expect("helper script");
         set_executable(&helper).expect("executable helper");
-        let state_dir = root.join("state");
+        let state_dir = root.with_extension("state");
+        let _ = std::fs::remove_dir_all(&state_dir);
         write_complete_guest_provisioning_receipt(&state_dir);
 
         let result = evaluate_command(Command::VmDetonate {
@@ -16589,6 +16799,7 @@ mod tests {
             state_dir: Some(state_dir.display().to_string()),
             helper_path: Some(helper.display().to_string()),
             workspace: Some(root.display().to_string()),
+            package_risk_receipt: None,
             fixture: None,
             timeout_seconds: Some(75),
             json: false,
@@ -16614,6 +16825,7 @@ mod tests {
             })
             .count();
         assert_eq!(payload_count, 1);
+        let _ = std::fs::remove_dir_all(&state_dir);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -16642,6 +16854,7 @@ mod tests {
             state_dir: Some(root.join("state").display().to_string()),
             helper_path: Some(helper.display().to_string()),
             workspace: Some(root.display().to_string()),
+            package_risk_receipt: None,
             fixture: None,
             timeout_seconds: Some(75),
             json: false,
@@ -16686,6 +16899,7 @@ mod tests {
             state_dir: Some(root.join("state").display().to_string()),
             helper_path: Some(helper.display().to_string()),
             workspace: Some(root.display().to_string()),
+            package_risk_receipt: None,
             fixture: None,
             timeout_seconds: Some(75),
             json: false,
@@ -16720,6 +16934,7 @@ mod tests {
             state_dir: Some(root.join("state").display().to_string()),
             helper_path: Some("/tmp/nonexistent-helper".to_string()),
             workspace: Some(root.display().to_string()),
+            package_risk_receipt: None,
             fixture: None,
             timeout_seconds: Some(30),
             json: false,
@@ -16756,7 +16971,8 @@ mod tests {
         )
         .expect("helper script");
         set_executable(&helper).expect("executable helper");
-        let state_dir = root.join("state");
+        let state_dir = root.with_extension("state");
+        let _ = std::fs::remove_dir_all(&state_dir);
         write_complete_guest_provisioning_receipt(&state_dir);
 
         let result = evaluate_command(Command::VmDetonate {
@@ -16767,6 +16983,7 @@ mod tests {
             state_dir: Some(state_dir.display().to_string()),
             helper_path: Some(helper.display().to_string()),
             workspace: Some(root.display().to_string()),
+            package_risk_receipt: None,
             fixture: None,
             timeout_seconds: Some(75),
             json: false,
@@ -16797,6 +17014,7 @@ mod tests {
             })
             .count();
         assert_eq!(payload_count, 1);
+        let _ = std::fs::remove_dir_all(&state_dir);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -16825,6 +17043,7 @@ mod tests {
             state_dir: Some(root.join("state").display().to_string()),
             helper_path: Some(helper.display().to_string()),
             workspace: Some(root.display().to_string()),
+            package_risk_receipt: None,
             fixture: None,
             timeout_seconds: Some(75),
             json: false,
@@ -16872,6 +17091,7 @@ mod tests {
             state_dir: Some(state_dir.display().to_string()),
             helper_path: Some(helper.display().to_string()),
             workspace: Some(root.display().to_string()),
+            package_risk_receipt: None,
             fixture: None,
             timeout_seconds: Some(75),
             json: false,
@@ -16920,6 +17140,7 @@ mod tests {
             state_dir: Some(root.join("state").display().to_string()),
             helper_path: Some(helper.display().to_string()),
             workspace: Some(root.display().to_string()),
+            package_risk_receipt: None,
             fixture: None,
             timeout_seconds: Some(75),
             json: false,
@@ -16967,6 +17188,7 @@ exit 0
             state_dir: Some(root.join("state").display().to_string()),
             helper_path: Some(helper.display().to_string()),
             workspace: Some(root.display().to_string()),
+            package_risk_receipt: None,
             fixture: None,
             timeout_seconds: Some(75),
             json: true,
@@ -17021,8 +17243,11 @@ exit 0
             }),
             0,
         );
-        let state_dir = root.join("state");
+        let state_dir = root.with_extension("state");
+        let _ = std::fs::remove_dir_all(&state_dir);
         write_complete_guest_provisioning_receipt(&state_dir);
+        let package_risk_receipt = state_dir.join("package-risk-clean.json");
+        write_clean_package_risk_receipt(&package_risk_receipt, "pypi.pure_wheel.v1", &root);
 
         let result = evaluate_command(Command::VmDetonate {
             tool: "pip".to_string(),
@@ -17032,6 +17257,7 @@ exit 0
             state_dir: Some(state_dir.display().to_string()),
             helper_path: Some(helper.display().to_string()),
             workspace: Some(root.display().to_string()),
+            package_risk_receipt: Some(package_risk_receipt.display().to_string()),
             fixture: None,
             timeout_seconds: Some(75),
             json: false,
@@ -17068,6 +17294,129 @@ exit 0
     }
 
     #[test]
+    fn vm_detonate_sync_back_requires_clean_package_risk_receipt() {
+        let root = temp_root("whoathere-cli-sync-risk-receipt-required");
+        write_clean_python_project(&root);
+        let helper = root.join("helper.sh");
+        let (archive_hex, archive_sha256, file_count, total_bytes) = sync_archive_hex(&[(
+            ".venv/lib/python3.11/site-packages/whoathere_clean.py",
+            b"VALUE = 'should-not-sync'\n",
+        )]);
+        write_guest_sync_helper(
+            &helper,
+            &guest_sync_evidence_json(GuestSyncEvidenceArgs {
+                tool: "pip",
+                command_class: "pip_install_detonation",
+                workflow: "pip_project_install",
+                status: "ok",
+                verdict: "allow_observed_clean",
+                reason_codes_json: "",
+                command_exit_code: 0,
+                exit_code: 0,
+                canary_access: false,
+                network_attempt: false,
+                sync_back_enabled: true,
+                archive: Some((&archive_hex, &archive_sha256, file_count, total_bytes)),
+            }),
+            0,
+        );
+        let state_dir = root.with_extension("state");
+        let _ = std::fs::remove_dir_all(&state_dir);
+        write_complete_guest_provisioning_receipt(&state_dir);
+
+        let result = evaluate_command(Command::VmDetonate {
+            tool: "pip".to_string(),
+            args: vec!["install".to_string(), ".".to_string()],
+            execute: true,
+            sync_back: true,
+            state_dir: Some(state_dir.display().to_string()),
+            helper_path: Some(helper.display().to_string()),
+            workspace: Some(root.display().to_string()),
+            package_risk_receipt: None,
+            fixture: None,
+            timeout_seconds: Some(75),
+            json: false,
+        });
+
+        assert_eq!(result.exit_code, ExitCode::Deny.code());
+        assert!(result
+            .output
+            .contains("sync_back_package_risk_receipt_not_clean"));
+        assert!(result
+            .output
+            .contains("package_risk_receipt_required_for_public_package_auto_sync"));
+        assert!(result.output.contains("sync_back_applied=false"));
+        assert!(!root.join(".venv").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vm_detonate_sync_back_rejects_package_risk_receipt_for_wrong_workspace() {
+        let root = temp_root("whoathere-cli-sync-risk-receipt-wrong-workspace");
+        write_clean_python_project(&root);
+        let other_workspace = root.with_extension("other-workspace");
+        let _ = std::fs::remove_dir_all(&other_workspace);
+        std::fs::create_dir_all(&other_workspace).expect("other workspace");
+        std::fs::write(other_workspace.join("marker.txt"), "not this workspace\n")
+            .expect("other marker");
+        let helper = root.join("helper.sh");
+        let (archive_hex, archive_sha256, file_count, total_bytes) = sync_archive_hex(&[(
+            ".venv/lib/python3.11/site-packages/whoathere_clean.py",
+            b"VALUE = 'should-not-sync'\n",
+        )]);
+        write_guest_sync_helper(
+            &helper,
+            &guest_sync_evidence_json(GuestSyncEvidenceArgs {
+                tool: "pip",
+                command_class: "pip_install_detonation",
+                workflow: "pip_project_install",
+                status: "ok",
+                verdict: "allow_observed_clean",
+                reason_codes_json: "",
+                command_exit_code: 0,
+                exit_code: 0,
+                canary_access: false,
+                network_attempt: false,
+                sync_back_enabled: true,
+                archive: Some((&archive_hex, &archive_sha256, file_count, total_bytes)),
+            }),
+            0,
+        );
+        let state_dir = root.with_extension("state");
+        let _ = std::fs::remove_dir_all(&state_dir);
+        write_complete_guest_provisioning_receipt(&state_dir);
+        let package_risk_receipt = state_dir.join("package-risk-clean-wrong-workspace.json");
+        write_clean_package_risk_receipt(
+            &package_risk_receipt,
+            "pypi.pure_wheel.v1",
+            &other_workspace,
+        );
+
+        let result = evaluate_command(Command::VmDetonate {
+            tool: "pip".to_string(),
+            args: vec!["install".to_string(), ".".to_string()],
+            execute: true,
+            sync_back: true,
+            state_dir: Some(state_dir.display().to_string()),
+            helper_path: Some(helper.display().to_string()),
+            workspace: Some(root.display().to_string()),
+            package_risk_receipt: Some(package_risk_receipt.display().to_string()),
+            fixture: None,
+            timeout_seconds: Some(75),
+            json: false,
+        });
+
+        assert_eq!(result.exit_code, ExitCode::Deny.code());
+        assert!(result
+            .output
+            .contains("package_risk_receipt_workspace_mismatch"));
+        assert!(result.output.contains("sync_back_applied=false"));
+        assert!(!root.join(".venv").exists());
+        let _ = std::fs::remove_dir_all(&other_workspace);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn vm_detonate_sync_back_clean_uv_project_applies_only_allowed_venv_files() {
         let root = temp_root("whoathere-cli-sync-clean-uv");
         write_clean_python_project(&root);
@@ -17094,8 +17443,11 @@ exit 0
             }),
             0,
         );
-        let state_dir = root.join("state");
+        let state_dir = root.with_extension("state");
+        let _ = std::fs::remove_dir_all(&state_dir);
         write_complete_guest_provisioning_receipt(&state_dir);
+        let package_risk_receipt = state_dir.join("package-risk-clean.json");
+        write_clean_package_risk_receipt(&package_risk_receipt, "pypi.pure_wheel.v1", &root);
 
         let result = evaluate_command(Command::VmDetonate {
             tool: "uv".to_string(),
@@ -17105,6 +17457,7 @@ exit 0
             state_dir: Some(state_dir.display().to_string()),
             helper_path: Some(helper.display().to_string()),
             workspace: Some(root.display().to_string()),
+            package_risk_receipt: Some(package_risk_receipt.display().to_string()),
             fixture: None,
             timeout_seconds: Some(75),
             json: false,
@@ -17156,8 +17509,11 @@ exit 0
             }),
             0,
         );
-        let state_dir = root.join("state");
+        let state_dir = root.with_extension("state");
+        let _ = std::fs::remove_dir_all(&state_dir);
         write_complete_guest_provisioning_receipt(&state_dir);
+        let package_risk_receipt = state_dir.join("package-risk-clean.json");
+        write_clean_package_risk_receipt(&package_risk_receipt, "npm.registry_tarball.v1", &root);
 
         let result = evaluate_command(Command::VmDetonate {
             tool: "npm".to_string(),
@@ -17167,6 +17523,7 @@ exit 0
             state_dir: Some(state_dir.display().to_string()),
             helper_path: Some(helper.display().to_string()),
             workspace: Some(root.display().to_string()),
+            package_risk_receipt: Some(package_risk_receipt.display().to_string()),
             fixture: None,
             timeout_seconds: Some(75),
             json: false,
@@ -17210,8 +17567,11 @@ exit 0
             }),
             ExitCode::Deny.code(),
         );
-        let state_dir = root.join("state");
+        let state_dir = root.with_extension("state");
+        let _ = std::fs::remove_dir_all(&state_dir);
         write_complete_guest_provisioning_receipt(&state_dir);
+        let package_risk_receipt = state_dir.join("package-risk-clean.json");
+        write_clean_package_risk_receipt(&package_risk_receipt, "pypi.pure_wheel.v1", &root);
 
         let result = evaluate_command(Command::VmDetonate {
             tool: "pip".to_string(),
@@ -17221,6 +17581,7 @@ exit 0
             state_dir: Some(state_dir.display().to_string()),
             helper_path: Some(helper.display().to_string()),
             workspace: Some(root.display().to_string()),
+            package_risk_receipt: Some(package_risk_receipt.display().to_string()),
             fixture: None,
             timeout_seconds: Some(75),
             json: false,
@@ -17261,8 +17622,11 @@ exit 0
             }),
             0,
         );
-        let state_dir = root.join("state");
+        let state_dir = root.with_extension("state");
+        let _ = std::fs::remove_dir_all(&state_dir);
         write_complete_guest_provisioning_receipt(&state_dir);
+        let package_risk_receipt = state_dir.join("package-risk-clean.json");
+        write_clean_package_risk_receipt(&package_risk_receipt, "pypi.pure_wheel.v1", &root);
 
         let result = evaluate_command(Command::VmDetonate {
             tool: "pip".to_string(),
@@ -17272,6 +17636,7 @@ exit 0
             state_dir: Some(state_dir.display().to_string()),
             helper_path: Some(helper.display().to_string()),
             workspace: Some(root.display().to_string()),
+            package_risk_receipt: Some(package_risk_receipt.display().to_string()),
             fixture: None,
             timeout_seconds: Some(75),
             json: false,
@@ -17314,8 +17679,11 @@ exit 0
             }),
             0,
         );
-        let state_dir = root.join("state");
+        let state_dir = root.with_extension("state");
+        let _ = std::fs::remove_dir_all(&state_dir);
         write_complete_guest_provisioning_receipt(&state_dir);
+        let package_risk_receipt = state_dir.join("package-risk-clean.json");
+        write_clean_package_risk_receipt(&package_risk_receipt, "pypi.pure_wheel.v1", &root);
 
         let result = evaluate_command(Command::VmDetonate {
             tool: "pip".to_string(),
@@ -17325,6 +17693,7 @@ exit 0
             state_dir: Some(state_dir.display().to_string()),
             helper_path: Some(helper.display().to_string()),
             workspace: Some(root.display().to_string()),
+            package_risk_receipt: Some(package_risk_receipt.display().to_string()),
             fixture: None,
             timeout_seconds: Some(75),
             json: false,
@@ -17347,39 +17716,34 @@ exit 0
             .join(format!("whoathere-outside-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&outside);
         std::fs::create_dir_all(&outside).expect("outside dir");
+        std::os::unix::fs::symlink(&outside, root.join(".venv")).expect("venv symlink");
         let helper = root.join("helper.sh");
         let (archive_hex, archive_sha256, file_count, total_bytes) = sync_archive_hex(&[(
             ".venv/lib/python3.11/site-packages/whoathere_clean.py",
             b"VALUE = 'escape'\n",
         )]);
-        let evidence = guest_sync_evidence_json(GuestSyncEvidenceArgs {
-            tool: "pip",
-            command_class: "pip_install_detonation",
-            workflow: "pip_project_install",
-            status: "ok",
-            verdict: "allow_observed_clean",
-            reason_codes_json: "",
-            command_exit_code: 0,
-            exit_code: 0,
-            canary_access: false,
-            network_attempt: false,
-            sync_back_enabled: true,
-            archive: Some((&archive_hex, &archive_sha256, file_count, total_bytes)),
-        });
-        write_new_file(
+        write_guest_sync_helper(
             &helper,
-            format!(
-                "#!/bin/sh\nln -s {} {}\ncat <<'JSON'\n{}\nJSON\nexit 0\n",
-                shell_quote(&outside.display().to_string()),
-                shell_quote(&root.join(".venv").display().to_string()),
-                evidence
-            )
-            .as_bytes(),
-        )
-        .expect("helper script");
-        set_executable(&helper).expect("executable helper");
+            &guest_sync_evidence_json(GuestSyncEvidenceArgs {
+                tool: "pip",
+                command_class: "pip_install_detonation",
+                workflow: "pip_project_install",
+                status: "ok",
+                verdict: "allow_observed_clean",
+                reason_codes_json: "",
+                command_exit_code: 0,
+                exit_code: 0,
+                canary_access: false,
+                network_attempt: false,
+                sync_back_enabled: true,
+                archive: Some((&archive_hex, &archive_sha256, file_count, total_bytes)),
+            }),
+            0,
+        );
         let state_dir = root.join("state");
         write_complete_guest_provisioning_receipt(&state_dir);
+        let package_risk_receipt = state_dir.join("package-risk-clean.json");
+        write_clean_package_risk_receipt(&package_risk_receipt, "pypi.pure_wheel.v1", &root);
 
         let result = evaluate_command(Command::VmDetonate {
             tool: "pip".to_string(),
@@ -17389,6 +17753,7 @@ exit 0
             state_dir: Some(state_dir.display().to_string()),
             helper_path: Some(helper.display().to_string()),
             workspace: Some(root.display().to_string()),
+            package_risk_receipt: Some(package_risk_receipt.display().to_string()),
             fixture: None,
             timeout_seconds: Some(75),
             json: false,
@@ -17397,8 +17762,21 @@ exit 0
         assert_eq!(result.exit_code, ExitCode::Deny.code());
         assert!(result
             .output
-            .contains("sync_back_destination_symlink_blocked"));
+            .contains("detonation_workspace_symlink_escape_blocked"));
+        assert!(result.output.contains("sync_back_project_plan_not_safe"));
+        let destination_check = validate_sync_destinations(
+            &root,
+            &[SyncBackFile {
+                relative_path: ".venv/lib/python3.11/site-packages/whoathere_clean.py".to_string(),
+                contents: b"VALUE = 'escape'\n".to_vec(),
+            }],
+        );
+        assert_eq!(
+            destination_check,
+            Err("sync_back_destination_symlink_blocked".to_string())
+        );
         assert!(!outside.join("lib").exists());
+        let _ = std::fs::remove_dir_all(&state_dir);
         let _ = std::fs::remove_dir_all(&outside);
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -17449,8 +17827,11 @@ exit 0
             }),
             0,
         );
-        let state_dir = root.join("state");
+        let state_dir = root.with_extension("state");
+        let _ = std::fs::remove_dir_all(&state_dir);
         write_complete_guest_provisioning_receipt(&state_dir);
+        let package_risk_receipt = state_dir.join("package-risk-clean.json");
+        write_clean_package_risk_receipt(&package_risk_receipt, "pypi.pure_wheel.v1", &root);
 
         let result = evaluate_command(Command::VmDetonate {
             tool: "pip".to_string(),
@@ -17460,6 +17841,7 @@ exit 0
             state_dir: Some(state_dir.display().to_string()),
             helper_path: Some(helper.display().to_string()),
             workspace: Some(root.display().to_string()),
+            package_risk_receipt: Some(package_risk_receipt.display().to_string()),
             fixture: None,
             timeout_seconds: Some(75),
             json: false,
@@ -17469,6 +17851,7 @@ exit 0
         assert_eq!(result.exit_code, ExitCode::InternalError.code());
         assert!(result.output.contains("sync_back_rollback_performed=true"));
         assert!(!root.join(first_path).exists());
+        let _ = std::fs::remove_dir_all(&state_dir);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -17501,6 +17884,7 @@ exit 0
             state_dir: Some(root.join("state").display().to_string()),
             helper_path: Some("/tmp/nonexistent-helper".to_string()),
             workspace: Some(root.display().to_string()),
+            package_risk_receipt: None,
             fixture: None,
             timeout_seconds: Some(30),
             json: false,
@@ -17549,6 +17933,7 @@ exit 0
             state_dir: Some(root.join("state").display().to_string()),
             helper_path: Some(helper.display().to_string()),
             workspace: Some(root.display().to_string()),
+            package_risk_receipt: None,
             fixture: None,
             timeout_seconds: Some(75),
             json: false,
@@ -17600,6 +17985,7 @@ exit 0
             state_dir: Some(root.join("state").display().to_string()),
             helper_path: Some(helper.display().to_string()),
             workspace: Some(root.display().to_string()),
+            package_risk_receipt: None,
             fixture: None,
             timeout_seconds: Some(75),
             json: false,
@@ -18214,6 +18600,7 @@ exit 0
         let invalid_schema = root.join("invalid-schema.json");
         let manual_verdict = root.join("manual-verdict.json");
         let wrong_class = root.join("wrong-class.json");
+        let forged_minimal = root.join("forged-minimal.json");
         std::fs::create_dir_all(&root).expect("root");
         write_new_file(
             &invalid_schema,
@@ -18260,6 +18647,22 @@ exit 0
             .as_bytes(),
         )
         .expect("wrong class receipt");
+        write_new_file(
+            &forged_minimal,
+            format!(
+                r#"{{
+  "schema_version": "{PACKAGE_RISK_ASSESSMENT_SCHEMA}",
+  "overall_verdict": "auto_sync_candidate",
+  "all_freshness_allowed": true,
+  "all_diff_clean_or_baseline_absent": true,
+  "all_scanner_clean": true,
+  "packages": [{{"package_class": "pypi.pure_wheel.v1", "verdict": "auto_sync_candidate", "artifact_review_status": "not_requested"}}]
+}}
+"#
+            )
+            .as_bytes(),
+        )
+        .expect("forged minimal receipt");
 
         for (receipt, reason) in [
             (&invalid_schema, "package_risk_receipt_schema_invalid"),
@@ -18270,6 +18673,10 @@ exit 0
             (
                 &wrong_class,
                 "package_risk_receipt_package_class_unbound_for_public_package_auto_sync",
+            ),
+            (
+                &forged_minimal,
+                "package_risk_receipt_scanner_evidence_not_applied",
             ),
         ] {
             let result = evaluate_command(Command::VmReleasePlan {
@@ -22156,6 +22563,24 @@ exit 0
         receipts.sort();
         assert_eq!(receipts.len(), 1);
         receipts.remove(0)
+    }
+
+    fn write_clean_package_risk_receipt(
+        path: &std::path::Path,
+        package_class: &str,
+        workspace: &std::path::Path,
+    ) {
+        write_new_file(
+            path,
+            format!(
+                "{{\"schema_version\": {}, \"receipt_id\": \"test-clean-receipt\", \"workspace_sha256\": {}, \"overall_verdict\": \"auto_sync_candidate\", \"all_freshness_allowed\": true, \"all_diff_clean_or_baseline_absent\": true, \"all_scanner_clean\": true, \"scanner_evidence\": {{\"requested\": true, \"applied\": true, \"scanner_clean\": true, \"status\": \"clean\", \"reason_codes\": []}}, \"artifact_review\": {{\"requested\": false, \"status\": \"not_requested\", \"reason_codes\": []}}, \"reason_codes\": [], \"packages\": [{{\"package_class\": {}, \"verdict\": \"auto_sync_candidate\", \"artifact_review_status\": \"not_requested\"}}]}}\n",
+                json_string(PACKAGE_RISK_ASSESSMENT_SCHEMA),
+                json_string(&scanner_workspace_digest(workspace)),
+                json_string(package_class)
+            )
+            .as_bytes(),
+        )
+        .expect("package risk receipt");
     }
 
     fn write_scanner_run_receipt(

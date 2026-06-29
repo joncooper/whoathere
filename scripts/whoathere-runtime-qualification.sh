@@ -151,6 +151,12 @@ json_escape() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
+json_string_field() {
+  field=$1
+  file=$2
+  sed -n "s/.*\"$field\": \"\\([^\"]*\\)\".*/\\1/p" "$file" | head -n 1
+}
+
 run_clean() {
   env -i \
     HOME="$CLEAN_HOME" \
@@ -435,6 +441,15 @@ run_packaged_validators() {
 write_sync_project() {
   project=$1
   mkdir -p "$project"
+  cat > "$project/pyproject.toml" <<'EOF'
+[project]
+name = "whoathere-sync-clean"
+version = "0.0.1"
+whoathere-published-at = 1700000000
+
+[project.urls]
+Repository = "https://example.invalid/whoathere-sync-clean"
+EOF
   cat > "$project/setup.py" <<'EOF'
 from setuptools import setup
 setup(name="whoathere-sync-clean", version="0.0.1", py_modules=["whoathere_sync_clean"])
@@ -447,6 +462,15 @@ EOF
 write_sync_canary_project() {
   project=$1
   mkdir -p "$project"
+  cat > "$project/pyproject.toml" <<'EOF'
+[project]
+name = "whoathere-sync-canary"
+version = "0.0.1"
+whoathere-published-at = 1700000000
+
+[project.urls]
+Repository = "https://example.invalid/whoathere-sync-canary"
+EOF
   cat > "$project/setup.py" <<'EOF'
 from setuptools import setup
 import os
@@ -460,13 +484,92 @@ VALUE = "sync-canary"
 EOF
 }
 
+write_clean_package_risk_receipt_for_workspace() {
+  workspace=$1
+  receipt=$2
+  package_name=$3
+  digest_plan="$receipt.workspace.json"
+  run_clean "$WRAPPER" scanners run --workspace "$workspace" --ecosystem pypi --json > "$digest_plan"
+  workspace_sha256=$(json_string_field workspace_sha256 "$digest_plan")
+  if [ -z "$workspace_sha256" ]; then
+    cat "$digest_plan" >&2
+    fail package_risk_receipt_workspace_digest_missing
+  fi
+  receipt_dir=$(dirname "$receipt")
+  mkdir -p "$receipt_dir"
+  escaped_workspace_sha256=$(json_escape "$workspace_sha256")
+  escaped_package_name=$(json_escape "$package_name")
+  cat > "$receipt" <<EOF
+{
+  "schema_version": "whoathere.package_risk.assessment.v1",
+  "receipt_id": "runtime-qualification-$escaped_package_name",
+  "workspace_sha256": "$escaped_workspace_sha256",
+  "created_at_unix_seconds": 1700000000,
+  "requested_ecosystem": "pypi",
+  "cooldown_days": 7,
+  "overall_verdict": "auto_sync_candidate",
+  "all_freshness_allowed": true,
+  "all_diff_clean_or_baseline_absent": true,
+  "all_scanner_clean": true,
+  "scanner_evidence": {
+    "requested": true,
+    "applied": true,
+    "scanner_clean": true,
+    "status": "clean",
+    "reason_codes": []
+  },
+  "artifact_review": {
+    "requested": false,
+    "status": "not_requested",
+    "reason_codes": []
+  },
+  "reason_codes": [],
+  "packages": [
+    {
+      "ecosystem": "pypi",
+      "package_name": "$escaped_package_name",
+      "requested_spec": ".",
+      "resolved_version": "0.0.1",
+      "selected_version": "0.0.1",
+      "source_kind": "registry",
+      "package_class": "pypi.pure_wheel.v1",
+      "artifact_hash": "sha256:runtime-qualification",
+      "pinned": true,
+      "last_known_good_version": null,
+      "last_known_good_hash": null,
+      "last_known_good_used": false,
+      "publish_age_days": 365,
+      "freshness_allowed": true,
+      "diff_clean_or_baseline_absent": true,
+      "reputation_status": "ok",
+      "scanner_evidence_status": "clean",
+      "scanner_clean": true,
+      "scanner_evidence_reason_codes": [],
+      "artifact_review_status": "not_requested",
+      "artifact_review_reason_codes": [],
+      "artifact_review_output_sha256": null,
+      "indicators": [],
+      "verdict": "auto_sync_candidate",
+      "reason_codes": []
+    }
+  ]
+}
+EOF
+}
+
 run_sync_back_cases() {
   clean_project="$WORK_ROOT/sync-clean"
   write_sync_project "$clean_project"
+  clean_package_risk_receipt="$WORK_ROOT/package-risk/sync-clean-package-risk.json"
+  write_clean_package_risk_receipt_for_workspace \
+    "$clean_project" \
+    "$clean_package_risk_receipt" \
+    whoathere-sync-clean
   set +e
   run_clean "$WRAPPER" vm detonate \
     --workspace "$clean_project" \
     --state-dir "$STATE_DIR" \
+    --package-risk-receipt "$clean_package_risk_receipt" \
     --timeout-seconds 180 \
     --execute \
     --sync-back \
@@ -484,10 +587,16 @@ run_sync_back_cases() {
 
   canary_project="$WORK_ROOT/sync-canary"
   write_sync_canary_project "$canary_project"
+  canary_package_risk_receipt="$WORK_ROOT/package-risk/sync-canary-package-risk.json"
+  write_clean_package_risk_receipt_for_workspace \
+    "$canary_project" \
+    "$canary_package_risk_receipt" \
+    whoathere-sync-canary
   set +e
   run_clean "$WRAPPER" vm detonate \
     --workspace "$canary_project" \
     --state-dir "$STATE_DIR" \
+    --package-risk-receipt "$canary_package_risk_receipt" \
     --timeout-seconds 180 \
     --execute \
     --sync-back \

@@ -16,10 +16,11 @@ The current usable claim is:
 - uv has a narrow local `uv pip install` project planner, but live uv remains fail-closed until uv
   is provisioned into the validation VM and live fixture/project checks pass. `uv sync` remains
   deferred until lock/source policy is explicit.
-- Sync-back is an explicit beta path. It requires `--sync-back`, clean VM evidence, a bounded guest
-  output archive, a deny-by-default host allowlist, and a current `sync-validation.json` receipt.
-  Unsupported, suspicious, native, binary, direct/VCS/editable, traversal, symlink, canary, or
-  network-signaling outputs sync nothing.
+- Sync-back is an explicit beta path. It requires `--sync-back`, clean VM evidence, a package-risk
+  receipt bound to the same workspace digest, clean scanner/diff/freshness evidence, a bounded
+  guest output archive, a deny-by-default host allowlist, and a current `sync-validation.json`
+  receipt. Unsupported, suspicious, native, binary, direct/VCS/editable, traversal, symlink,
+  canary, or network-signaling outputs sync nothing.
 - Package acquisition is local-only for this preview: `doctor` reports
   `package_acquisition_policy=local_only_no_public_resolver`. Public npm/PyPI resolution remains
   fail-closed unless a separate VM-only resolver policy is implemented and tested.
@@ -192,6 +193,15 @@ Use a package-risk receipt with the release-plan model:
 $WHOATHERE vm release-plan --class pypi.pure_wheel.v1 \
   --vm-ready --static-clean --dynamic-clean --egress-clean --no-canary-access \
   --package-risk-receipt /path/to/package-risk-receipt.json --json
+```
+
+Use a package-risk receipt with live beta sync-back:
+
+```sh
+$WHOATHERE vm detonate --workspace /absolute/path/to/python-project \
+  --state-dir "$WHOATHERE_STATE" --helper "$WHOATHERE_HELPER" \
+  --package-risk-receipt /path/to/package-risk-receipt.json \
+  --execute --sync-back --json pip -- install .
 ```
 
 Run the deterministic package-risk and attack harnesses:
@@ -472,7 +482,10 @@ $WHOATHERE vm detonate --workspace /absolute/path/to/python-project --state-dir 
 Run the same workflow with beta sync-back enabled:
 
 ```sh
-$WHOATHERE vm detonate --workspace /absolute/path/to/python-project --state-dir "$WHOATHERE_STATE" --helper "$WHOATHERE_HELPER" --execute --sync-back --json pip -- install .
+$WHOATHERE vm detonate --workspace /absolute/path/to/python-project \
+  --state-dir "$WHOATHERE_STATE" --helper "$WHOATHERE_HELPER" \
+  --package-risk-receipt /path/to/package-risk-receipt.json \
+  --execute --sync-back --json pip -- install .
 ```
 
 Run local-only requirements detonation:
@@ -487,9 +500,9 @@ Run a local npm project detonation only for a package with no external dependenc
 $WHOATHERE vm detonate --workspace /absolute/path/to/npm-project --state-dir "$WHOATHERE_STATE" --helper "$WHOATHERE_HELPER" --execute --json npm -- install
 ```
 
-To sync approved npm outputs, add `--sync-back`. The host accepts only `package-lock.json` and
-`node_modules` files that pass the sync planner. `node_modules/.bin`, native outputs, and suspicious
-paths remain blocked.
+To sync approved npm outputs, add `--sync-back` and a package-risk receipt for the same workspace.
+The host accepts only `package-lock.json` and `node_modules` files that pass the sync planner.
+`node_modules/.bin`, native outputs, and suspicious paths remain blocked.
 
 This path is intentionally narrow. `package.json` dependency sections, package specs passed to
 `npm install`, public registry overrides, native markers, and lockfiles that imply external
@@ -502,8 +515,9 @@ resolution projects:
 $WHOATHERE vm detonate --workspace /absolute/path/to/python-project --state-dir "$WHOATHERE_STATE" --helper "$WHOATHERE_HELPER" --execute --json uv -- pip install .
 ```
 
-To sync approved uv outputs, add `--sync-back`. The host accepts only project-local Python
-environment files under the approved `.venv/lib/...` output shape.
+To sync approved uv outputs, add `--sync-back` and a package-risk receipt for the same workspace.
+The host accepts only project-local Python environment files under the approved `.venv/lib/...`
+output shape.
 
 `uv sync` is intentionally not a claimed live workflow yet; it remains fail-closed until lockfile
 and source policy are explicit and tested.
@@ -519,11 +533,13 @@ uses that receipt as npm/uv release proof only when it is bound to the current
 disabled high-risk execution, and `package_acquisition_policy=local_only_no_public_resolver`.
 Missing, stale, or mismatched release-validation receipts keep npm/uv release blockers in place.
 
-A successful `--sync-back` run writes `$WHOATHERE_STATE/bundle/sync-validation.json`. `doctor --json`
-uses that receipt as sync-back release proof only when it is bound to the current CLI digest, current
-helper digest, current `guest-provisioning.json` digest, and
-`whoathere.sync_policy.local_beta.v1`. Missing or stale sync-validation receipts keep
-`release_sync_back_validation_not_verified` in place.
+A successful `--sync-back` run writes `$WHOATHERE_STATE/bundle/sync-validation.json`. The command
+must also receive a clean package-risk receipt with a receipt id, matching `workspace_sha256`, clean
+nested `scanner_evidence`, acceptable artifact-review status, allowed package class, and clean
+freshness/diff verdicts. `doctor --json` uses the sync-validation receipt as sync-back release proof
+only when it is bound to the current CLI digest, current helper digest, current
+`guest-provisioning.json` digest, and `whoathere.sync_policy.local_beta.v1`. Missing or stale
+sync-validation receipts keep `release_sync_back_validation_not_verified` in place.
 
 Unsupported or unsafe inputs must fail before helper execution, including:
 

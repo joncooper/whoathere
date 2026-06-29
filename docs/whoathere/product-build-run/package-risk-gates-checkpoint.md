@@ -8,7 +8,7 @@ WhoaThere now has local package risk gates for the macOS beta. The gates remembe
 package evidence, prefer last-known-good versions for unpinned npm/pip/uv specs when possible,
 apply a 7 day fresh-release cooldown, require clean scanner evidence for public auto-sync
 candidates, flag suspicious package diffs, and feed package-risk receipts into the VM release-plan
-model.
+model and live VM sync-back gate.
 
 This does not claim comprehensive package safety. Package risk gates are evidence. They do not
 replace the macOS VM, scanners, canary checks, strict sync-back rules, or manual review.
@@ -23,6 +23,8 @@ replace the macOS VM, scanners, canary checks, strict sync-back rules, or manual
 - Added append-only local package memory under `<state-dir>/package-risk/package-risk-evidence.jsonl`.
 - Added per-assessment receipts under `<state-dir>/package-risk/receipts/`.
 - Added `vm release-plan --package-risk-receipt <path>` to derive scanner, freshness, and diff gates from package-risk evidence.
+- Added `vm detonate --sync-back --package-risk-receipt <path>` enforcement so live host copy-back
+  requires package-risk evidence bound to the same workspace digest.
 - Added `doctor --json` package-risk readiness fields.
 - Added deterministic package-risk and real-world-inspired attack harness scripts.
 - Added `WHOATHERE_SCANNER_CACHE_DIR` for deterministic scanner outage/timeout tests.
@@ -31,6 +33,10 @@ replace the macOS VM, scanners, canary checks, strict sync-back rules, or manual
 
 - Package-risk JSON does not include raw package source, raw scanner output, canaries, tokens, or
   host secret paths.
+- Live VM sync-back requires a package-risk receipt with a receipt id, matching `workspace_sha256`,
+  clean nested scanner evidence, acceptable artifact-review status, allowed package class, clean
+  freshness/diff verdicts, and clean package verdicts. Top-level clean booleans or operator flags
+  are not enough.
 - Local model review is advisory evidence only. It runs through a local Ollama command when
   requested, receives bounded redacted snippets, and records only status, reason codes, timing, and
   prompt/output hashes. Raw prompts and model output are not stored.
