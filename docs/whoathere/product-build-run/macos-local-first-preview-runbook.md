@@ -105,12 +105,16 @@ $WHOATHERE scanners bootstrap-plan --json
 Run scanner evidence against a workspace:
 
 ```sh
-$WHOATHERE scanners run --workspace /path/to/project --ecosystem auto --execute --json
+$WHOATHERE scanners run --workspace /path/to/project --ecosystem auto \
+  --state-dir "$WHOATHERE_STATE" --execute --json
 ```
 
 The output uses schema `whoathere.external_scanner_run.v1`. It reports normalized scanner status,
 finding counts where cheaply available, stdout/stderr digests, and reason codes. It does not include
 raw scanner output, package contents, tokens, canaries, or raw host secret paths.
+When `--state-dir` is provided, executed scanner receipts include a state-local
+`scanner_receipt_auth` tag and executable digests. Clean scanner receipts without that auth tag are
+report-only and cannot satisfy package-risk auto-sync evidence.
 
 For the current local-only beta, scanner availability is visible in `doctor --json` but remains
 advisory: `scanner_release_blocking=false`. Missing scanners must block future public-package
@@ -129,8 +133,10 @@ To add a best-effort real-tool pass after bootstrap:
 WHOATHERE_SCANNER_REAL_SMOKE=1 scripts/whoathere-scanner-integration-smoke.sh
 ```
 
-The scanner cache can be overridden for deterministic tests with
-`WHOATHERE_SCANNER_CACHE_DIR=/path/to/cache`.
+By default, scanner binaries are loaded from `$HOME/.whoathere/scanners/bin` or trusted system
+binary directories. The scanner cache can be overridden for deterministic tests with
+`WHOATHERE_SCANNER_CACHE_DIR=/path/to/cache`, but scanner binaries inside the assessed workspace are
+refused.
 
 ## Package Risk Gates
 
@@ -140,7 +146,8 @@ still evidence, not a proof that a package is safe.
 Assess a workspace:
 
 ```sh
-$WHOATHERE scanners run --workspace /path/to/project --ecosystem auto --execute --json > scanner-receipt.json
+$WHOATHERE scanners run --workspace /path/to/project --ecosystem auto \
+  --state-dir "$WHOATHERE_STATE" --execute --json > scanner-receipt.json
 $WHOATHERE package-risk assess --workspace /path/to/project --ecosystem auto \
   --state-dir "$WHOATHERE_STATE" --scanner-receipt scanner-receipt.json --json
 ```
@@ -192,7 +199,8 @@ Use a package-risk receipt with the release-plan model. The receipt must be prod
 state-local receipt authentication tag before applying it:
 
 ```sh
-$WHOATHERE vm release-plan --state-dir "$WHOATHERE_STATE" --class pypi.pure_wheel.v1 \
+$WHOATHERE vm release-plan --state-dir "$WHOATHERE_STATE" --workspace /path/to/project \
+  --class pypi.pure_wheel.v1 \
   --vm-ready --static-clean --dynamic-clean --egress-clean --no-canary-access \
   --package-risk-receipt /path/to/package-risk-receipt.json --json
 ```

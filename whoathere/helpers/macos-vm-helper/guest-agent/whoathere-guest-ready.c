@@ -31,6 +31,9 @@
 #define WHOATHERE_PIP_WHEEL_DIR "/usr/local/whoathere/python-wheels"
 #define WHOATHERE_PIP_PREFIX WHOATHERE_PATH_PREFIX "WHOATHERE_PYTHON=" WHOATHERE_GUEST_PYTHON "; if [ ! -x \"$WHOATHERE_PYTHON\" ]; then WHOATHERE_PYTHON=python3; fi; PIP_WHEEL=$(ls " WHOATHERE_PIP_WHEEL_DIR "/pip-*.whl 2>/dev/null | head -n 1); SETUPTOOLS_WHEEL=$(ls " WHOATHERE_PIP_WHEEL_DIR "/setuptools-*.whl 2>/dev/null | head -n 1); WHEEL_WHEEL=$(ls " WHOATHERE_PIP_WHEEL_DIR "/wheel-*.whl 2>/dev/null | head -n 1); if [ -n \"$PIP_WHEEL\" ] && [ -n \"$SETUPTOOLS_WHEEL\" ] && [ -n \"$WHEEL_WHEEL\" ]; then export PYTHONPATH=\"$PIP_WHEEL:$SETUPTOOLS_WHEEL:$WHEEL_WHEEL\"; elif [ -n \"$PIP_WHEEL\" ] && [ -n \"$SETUPTOOLS_WHEEL\" ]; then export PYTHONPATH=\"$PIP_WHEEL:$SETUPTOOLS_WHEEL\"; fi; "
 
+static char current_request_nonce[WHOATHERE_MAX_FIELD] = "";
+static char current_project_workflow[WHOATHERE_MAX_FIELD] = "";
+
 static int path_exists(const char *path);
 static int safe_relative_path(const char *path);
 
@@ -993,11 +996,13 @@ static int write_detonation_response_ex(
     int length = snprintf(
         response,
         sizeof(response),
-        "{\"protocol\":\"whoathere.guest_detonation.v1\",\"schema_version\":\"whoathere.macos_vm.bundle.v1\",\"agent_version\":\"0.2.0\",\"job_id\":\"%s\",\"tool\":\"%s\",\"command_class\":\"%s\",\"fixture\":\"%s\",\"status\":\"%s\",\"verdict\":\"%s\",\"reason_codes\":[%s],\"command_exit_code\":%d,\"timed_out\":%s,\"canary_access_detected\":%s,\"network_attempt_detected\":%s,\"filesystem_write_detected\":%s,\"toolchain_available\":%s,\"stdout_captured\":false,\"stderr_captured\":false,\"raw_canary_values_captured\":false,\"sync_back_enabled\":%s,\"host_package_execution_enabled\":false,\"high_risk_package_execution_enabled\":false",
+        "{\"protocol\":\"whoathere.guest_detonation.v1\",\"schema_version\":\"whoathere.macos_vm.bundle.v1\",\"agent_version\":\"0.2.0\",\"job_id\":\"%s\",\"request_nonce\":\"%s\",\"tool\":\"%s\",\"command_class\":\"%s\",\"fixture\":\"%s\",\"project_workflow\":\"%s\",\"status\":\"%s\",\"verdict\":\"%s\",\"reason_codes\":[%s],\"command_exit_code\":%d,\"timed_out\":%s,\"canary_access_detected\":%s,\"network_attempt_detected\":%s,\"filesystem_write_detected\":%s,\"toolchain_available\":%s,\"stdout_captured\":false,\"stderr_captured\":false,\"raw_canary_values_captured\":false,\"sync_back_enabled\":%s,\"host_package_execution_enabled\":false,\"high_risk_package_execution_enabled\":false",
         job_id,
+        current_request_nonce,
         tool,
         command_class,
         fixture,
+        current_project_workflow,
         status,
         verdict,
         reason_codes_json,
@@ -1096,10 +1101,13 @@ static int run_detonation_job(int fd, const char *line) {
     char tool[WHOATHERE_MAX_FIELD];
     char command_class[WHOATHERE_MAX_FIELD];
     char fixture[WHOATHERE_MAX_FIELD];
+    char request_nonce[WHOATHERE_MAX_FIELD];
     if (extract_json_string(line, "job_id", job_id, sizeof(job_id)) != 0
         || extract_json_string(line, "tool", tool, sizeof(tool)) != 0
         || extract_json_string(line, "command_class", command_class, sizeof(command_class)) != 0
-        || extract_json_string(line, "fixture", fixture, sizeof(fixture)) != 0) {
+        || extract_json_string(line, "fixture", fixture, sizeof(fixture)) != 0
+        || extract_json_string(line, "request_nonce", request_nonce, sizeof(request_nonce)) != 0) {
+        current_request_nonce[0] = '\0';
         return write_detonation_response(
             fd,
             "unknown",
@@ -1118,6 +1126,8 @@ static int run_detonation_job(int fd, const char *line) {
             0
         );
     }
+    snprintf(current_request_nonce, sizeof(current_request_nonce), "%s", request_nonce);
+    current_project_workflow[0] = '\0';
     unsigned int timeout_seconds = extract_json_uint(line, "timeout_seconds", 120);
     if (timeout_seconds < 5) {
         timeout_seconds = 5;
@@ -1138,6 +1148,7 @@ static int run_detonation_job(int fd, const char *line) {
             free(project_payload_hex);
             return write_detonation_response(fd, job_id, tool, command_class, fixture, "fail_closed", "fail_closed_runner_error", "\"project_payload_or_workflow_missing\"", 70, 70, 0, 0, 0, 0, 0);
         }
+        snprintf(current_project_workflow, sizeof(current_project_workflow), "%s", project_workflow);
         (void)extract_json_string(line, "project_import_module", project_import_module, sizeof(project_import_module));
         (void)extract_json_string(line, "project_requirements_path", project_requirements_path, sizeof(project_requirements_path));
         if ((strcmp(tool, "pip") == 0 || strcmp(tool, "uv") == 0) && project_import_module[0] != '\0' && !safe_python_module(project_import_module)) {

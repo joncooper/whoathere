@@ -154,6 +154,7 @@ pub enum Command {
         source: Option<String>,
         filename: Option<String>,
         state_dir: Option<String>,
+        workspace: Option<String>,
         lifecycle_script: bool,
         pep517_backend: bool,
         native_marker: bool,
@@ -180,6 +181,7 @@ pub enum Command {
     ScannersRun {
         workspace: Option<String>,
         ecosystem: Option<String>,
+        state_dir: Option<String>,
         timeout_seconds: Option<u64>,
         execute: bool,
         json: bool,
@@ -535,6 +537,7 @@ pub fn parse_command(args: &[String]) -> Command {
         [cmd, sub, rest @ ..] if cmd == "scanners" && sub == "run" => Command::ScannersRun {
             workspace: parse_flag_value(rest, "--workspace"),
             ecosystem: parse_flag_value(rest, "--ecosystem"),
+            state_dir: parse_flag_value(rest, "--state-dir"),
             timeout_seconds: parse_u64_flag(rest, "--timeout-seconds"),
             execute: rest.iter().any(|arg| arg == "--execute"),
             json: rest.iter().any(|arg| arg == "--json"),
@@ -700,6 +703,7 @@ pub fn parse_command(args: &[String]) -> Command {
             source: parse_flag_value(rest, "--source"),
             filename: parse_flag_value(rest, "--filename"),
             state_dir: parse_flag_value(rest, "--state-dir"),
+            workspace: parse_flag_value(rest, "--workspace"),
             lifecycle_script: rest.iter().any(|arg| arg == "--lifecycle-script"),
             pep517_backend: rest.iter().any(|arg| arg == "--pep517-backend"),
             native_marker: rest.iter().any(|arg| arg == "--native-marker"),
@@ -916,6 +920,7 @@ fn render_command_text(command: Command) -> String {
             source,
             filename,
             state_dir,
+            workspace,
             lifecycle_script,
             pep517_backend,
             native_marker,
@@ -929,6 +934,7 @@ fn render_command_text(command: Command) -> String {
             source: source.as_deref(),
             filename: filename.as_deref(),
             state_dir: state_dir.as_deref(),
+            workspace: workspace.as_deref(),
             lifecycle_script,
             pep517_backend,
             native_marker,
@@ -965,12 +971,14 @@ fn render_command_text(command: Command) -> String {
         Command::ScannersRun {
             workspace,
             ecosystem,
+            state_dir,
             timeout_seconds,
             execute,
             json,
         } => render_scanners_run(
             workspace.as_deref(),
             ecosystem.as_deref(),
+            state_dir.as_deref(),
             timeout_seconds,
             execute,
             json,
@@ -1352,7 +1360,7 @@ fn command_help() -> String {
         "|vm start|suspend|reset|prune|upgrade-local-manifest [--state-dir <dir>] [--helper <path>] [--execute]",
         "|vm health [--state-dir <dir>] [--helper <path>]",
         "|vm detonate [--workspace <path>] [--package-risk-receipt <path>] [--state-dir <dir>] [--helper <path>] [--fixture <name>] [--timeout-seconds <n>] [--execute] [--sync-back] [--json] npm|pip|uv -- <args>",
-        "|vm release-plan [--state-dir <dir>] [--class <class>|--ecosystem <name> --source <kind> --filename <name>] [--vm-ready --static-clean --dynamic-clean --egress-clean --no-canary-access --scanner-clean --diff-clean --freshness-allowed] [--package-risk-receipt <path>] [--json]",
+        "|vm release-plan [--state-dir <dir>] [--workspace <path>] [--class <class>|--ecosystem <name> --source <kind> --filename <name>] [--vm-ready --static-clean --dynamic-clean --egress-clean --no-canary-access --scanner-clean --diff-clean --freshness-allowed] [--package-risk-receipt <path>] [--json]",
         "|vm canaries [--json]",
         "|vm sync-policy [--json]",
         "|vm red-team-gate [--json]",
@@ -1361,7 +1369,7 @@ fn command_help() -> String {
         "|scan manifest pyproject <path>",
         "|scanners list [--json]",
         "|scanners bootstrap-plan [--json]",
-        "|scanners run --workspace <path> [--ecosystem auto|npm|pypi] [--timeout-seconds <n>] [--execute] [--json]",
+        "|scanners run --workspace <path> [--ecosystem auto|npm|pypi] [--state-dir <dir>] [--timeout-seconds <n>] [--execute] [--json]",
         "|package-risk assess --workspace <path> [--ecosystem auto|npm|pypi|uv] [--state-dir <dir>] [--scanner-receipt <path>] [--ai-review --ai-provider ollama --ai-model <model> --ai-timeout-seconds <n>] [--json]",
         "|package-risk history --package <name> --ecosystem <npm|pypi|uv> [--state-dir <dir>] [--json]",
         "|package-risk approve --receipt <path> --reason <text> [--state-dir <dir>] [--json]",
@@ -4284,6 +4292,33 @@ fn enforce_package_risk_receipt_workspace(
     reasons
 }
 
+fn enforce_release_plan_package_risk_workspace(
+    workspace: Option<&str>,
+    evidence: &mut LocalEvidenceFlags,
+    receipt: &PackageRiskReceiptApplication,
+) -> Vec<String> {
+    if !receipt.applied {
+        return Vec::new();
+    }
+    let Some(workspace) = workspace else {
+        evidence.scanner_clean = false;
+        evidence.diff_clean_or_baseline_absent = false;
+        evidence.freshness_allowed = false;
+        return vec!["package_risk_receipt_workspace_required_for_release_plan".to_string()];
+    };
+    match std::fs::canonicalize(workspace) {
+        Ok(path) if path.is_dir() => {
+            enforce_package_risk_receipt_workspace(&path, evidence, receipt)
+        }
+        _ => {
+            evidence.scanner_clean = false;
+            evidence.diff_clean_or_baseline_absent = false;
+            evidence.freshness_allowed = false;
+            vec!["package_risk_receipt_workspace_not_found_for_release_plan".to_string()]
+        }
+    }
+}
+
 fn package_class_for_sync_back_workflow(workflow: &str) -> Option<PackageClass> {
     match workflow {
         "npm_project_install" => Some(PackageClass::NpmRegistryTarball),
@@ -7081,6 +7116,7 @@ struct VmReleasePlanArgs<'a> {
     source: Option<&'a str>,
     filename: Option<&'a str>,
     state_dir: Option<&'a str>,
+    workspace: Option<&'a str>,
     lifecycle_script: bool,
     pep517_backend: bool,
     native_marker: bool,
@@ -7515,10 +7551,18 @@ fn render_vm_release_plan(args: VmReleasePlanArgs<'_>) -> String {
         &mut effective_evidence,
         &mut package_risk_receipt,
     );
+    let workspace_gate_reasons = enforce_release_plan_package_risk_workspace(
+        args.workspace,
+        &mut effective_evidence,
+        &package_risk_receipt,
+    );
     let mut decision = decide_local_sync(package_class, &effective_evidence);
     decision
         .reason_codes
         .extend(public_package_gate_reasons.iter().cloned());
+    decision
+        .reason_codes
+        .extend(workspace_gate_reasons.iter().cloned());
     decision.reason_codes.sort();
     decision.reason_codes.dedup();
     let exit_code = local_admission_exit_code(decision.verdict);
@@ -10082,6 +10126,7 @@ fn render_scanners_bootstrap_plan(json: bool) -> String {
 fn render_scanners_run(
     workspace: Option<&str>,
     ecosystem: Option<&str>,
+    state_dir: Option<&str>,
     timeout_seconds: Option<u64>,
     execute: bool,
     json: bool,
@@ -10101,7 +10146,12 @@ fn render_scanners_run(
     } else {
         plan_external_scanner_run(workspace_path, ecosystem)
     };
-    render_scanner_run_summary(&summary, json)
+    let config = state_dir.map(|state_dir| macos_vm_config(Some(state_dir), None, None));
+    render_scanner_run_summary(
+        &summary,
+        json,
+        config.as_ref().map(|config| config.state_dir.as_path()),
+    )
 }
 
 fn scanner_misuse(reason_code: &str, json: bool) -> String {
@@ -10120,12 +10170,17 @@ fn scanner_misuse(reason_code: &str, json: bool) -> String {
     )
 }
 
-fn render_scanner_run_summary(summary: &ExternalScannerRunSummary, json: bool) -> String {
+fn render_scanner_run_summary(
+    summary: &ExternalScannerRunSummary,
+    json: bool,
+    state_dir: Option<&Path>,
+) -> String {
     let exit_code = if !summary.execute_requested || summary.scanner_clean {
         ExitCode::Allow.code()
     } else {
         ExitCode::Deny.code()
     };
+    let created_at_unix_seconds = current_unix_seconds();
     if json {
         let records_json = summary
             .records
@@ -10133,9 +10188,10 @@ fn render_scanner_run_summary(summary: &ExternalScannerRunSummary, json: bool) -
             .map(render_scanner_record_json)
             .collect::<Vec<_>>()
             .join(", ");
-        return format!(
-            "{{\n  \"command\": \"whoathere scanners run\",\n  \"schema_version\": {},\n  \"workspace\": \"<workspace>\",\n  \"workspace_sha256\": {},\n  \"workspace_kind\": {},\n  \"requested_ecosystem\": {},\n  \"effective_ecosystem\": {},\n  \"execute_requested\": {},\n  \"timeout_seconds\": {},\n  \"scanner_clean\": {},\n  \"core_scanner_count\": {},\n  \"core_scanner_runnable_count\": {},\n  \"reason_codes\": {},\n  \"records\": [{}],\n  \"exit_code\": {}\n}}",
+        let unsigned = format!(
+            "{{\n  \"command\": \"whoathere scanners run\",\n  \"schema_version\": {},\n  \"created_at_unix_seconds\": {},\n  \"workspace\": \"<workspace>\",\n  \"workspace_sha256\": {},\n  \"workspace_kind\": {},\n  \"requested_ecosystem\": {},\n  \"effective_ecosystem\": {},\n  \"execute_requested\": {},\n  \"timeout_seconds\": {},\n  \"scanner_clean\": {},\n  \"core_scanner_count\": {},\n  \"core_scanner_runnable_count\": {},\n  \"reason_codes\": {},\n  \"records\": [{}],\n  \"exit_code\": {}\n}}",
             json_string(summary.schema_version),
+            created_at_unix_seconds,
             json_string(&summary.workspace_sha256),
             json_string(&summary.workspace_kind),
             json_string(summary.requested_ecosystem.as_str()),
@@ -10149,6 +10205,14 @@ fn render_scanner_run_summary(summary: &ExternalScannerRunSummary, json: bool) -
             records_json,
             exit_code
         );
+        if summary.execute_requested {
+            if let Some(state_dir) = state_dir {
+                if let Ok(signed) = sign_scanner_receipt_contents(state_dir, &unsigned) {
+                    return signed;
+                }
+            }
+        }
+        return unsigned;
     }
     let records = summary
         .records
@@ -10157,8 +10221,9 @@ fn render_scanner_run_summary(summary: &ExternalScannerRunSummary, json: bool) -
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "whoathere scanners run\nschema_version={}\nworkspace=<workspace>\nworkspace_sha256={}\nworkspace_kind={}\nrequested_ecosystem={}\neffective_ecosystem={}\nexecute_requested={}\ntimeout_seconds={}\nscanner_clean={}\ncore_scanner_count={}\ncore_scanner_runnable_count={}\nreason_codes={:?}\n{}\nexit_code={}",
+        "whoathere scanners run\nschema_version={}\ncreated_at_unix_seconds={}\nworkspace=<workspace>\nworkspace_sha256={}\nworkspace_kind={}\nrequested_ecosystem={}\neffective_ecosystem={}\nexecute_requested={}\ntimeout_seconds={}\nscanner_clean={}\ncore_scanner_count={}\ncore_scanner_runnable_count={}\nreason_codes={:?}\n{}\nexit_code={}",
         summary.schema_version,
+        created_at_unix_seconds,
         summary.workspace_sha256,
         summary.workspace_kind,
         summary.requested_ecosystem.as_str(),
@@ -10176,7 +10241,7 @@ fn render_scanner_run_summary(summary: &ExternalScannerRunSummary, json: bool) -
 
 fn render_scanner_record_json(record: &ExternalScannerRunRecord) -> String {
     format!(
-        "{{\"schema_version\": {}, \"scanner\": {}, \"role\": {}, \"ecosystem\": {}, \"status\": {}, \"path\": {}, \"argv\": {}, \"exit_code\": {}, \"elapsed_ms\": {}, \"timed_out\": {}, \"stdout_sha256\": {}, \"stderr_sha256\": {}, \"stdout_bytes\": {}, \"stderr_bytes\": {}, \"finding_count\": {}, \"reason_codes\": {}}}",
+        "{{\"schema_version\": {}, \"scanner\": {}, \"role\": {}, \"ecosystem\": {}, \"status\": {}, \"path\": {}, \"executable_sha256\": {}, \"argv\": {}, \"exit_code\": {}, \"elapsed_ms\": {}, \"timed_out\": {}, \"stdout_sha256\": {}, \"stderr_sha256\": {}, \"stdout_bytes\": {}, \"stderr_bytes\": {}, \"finding_count\": {}, \"reason_codes\": {}}}",
         json_string(record.schema_version),
         json_string(&record.scanner),
         json_string(record.role.as_str()),
@@ -10187,6 +10252,7 @@ fn render_scanner_record_json(record: &ExternalScannerRunRecord) -> String {
             .as_deref()
             .map(json_string)
             .unwrap_or_else(|| "null".to_string()),
+        json_option_string(record.executable_sha256.as_deref()),
         json_string_array(&record.argv),
         record
             .exit_code
@@ -10213,12 +10279,13 @@ fn render_scanner_record_json(record: &ExternalScannerRunRecord) -> String {
 
 fn render_scanner_record_text(record: &ExternalScannerRunRecord) -> String {
     format!(
-        "scanner_result scanner={} role={} ecosystem={} status={} path={} argv={:?} exit_code={} elapsed_ms={} timed_out={} stdout_sha256={} stderr_sha256={} stdout_bytes={} stderr_bytes={} finding_count={} reason_codes={:?}",
+        "scanner_result scanner={} role={} ecosystem={} status={} path={} executable_sha256={} argv={:?} exit_code={} elapsed_ms={} timed_out={} stdout_sha256={} stderr_sha256={} stdout_bytes={} stderr_bytes={} finding_count={} reason_codes={:?}",
         record.scanner,
         record.role.as_str(),
         record.ecosystem.as_str(),
         record.status.as_str(),
         record.display_path.as_deref().unwrap_or("none"),
+        record.executable_sha256.as_deref().unwrap_or("none"),
         record.argv,
         record
             .exit_code
@@ -10262,6 +10329,7 @@ fn redacted_path_string(path: &Path) -> String {
 const PACKAGE_RISK_ASSESSMENT_SCHEMA: &str = "whoathere.package_risk_assessment.v1";
 const PACKAGE_RISK_STORE_SCHEMA: &str = "whoathere.package_risk_store_record.v1";
 const PACKAGE_RISK_RECEIPT_AUTH_SCHEMA: &str = "whoathere.package_risk_receipt_auth.v1";
+const SCANNER_RECEIPT_AUTH_SCHEMA: &str = "whoathere.scanner_receipt_auth.v1";
 const PACKAGE_ARTIFACT_REVIEW_SCHEMA: &str = "whoathere.local_artifact_review.v1";
 const PACKAGE_RISK_COOLDOWN_DAYS: u64 = 7;
 const PACKAGE_RISK_RECEIPT_MAX_AGE_SECONDS: u64 = 24 * 60 * 60;
@@ -10506,8 +10574,11 @@ fn render_package_risk_assess(args: PackageRiskAssessArgs<'_>) -> String {
     let memory = load_package_risk_memory(&config.state_dir);
     let subjects = discover_package_risk_subjects(workspace_path, requested_ecosystem);
     let workspace_sha256 = scanner_workspace_digest(workspace_path);
-    let scanner_evidence =
-        load_package_risk_scanner_evidence(args.scanner_receipt, &workspace_sha256);
+    let scanner_evidence = load_package_risk_scanner_evidence(
+        args.scanner_receipt,
+        &workspace_sha256,
+        &config.state_dir,
+    );
     let review_request = local_artifact_review_request(
         args.ai_review,
         args.ai_provider,
@@ -10902,6 +10973,7 @@ fn render_package_risk_package_text(assessment: &PackageRiskAssessment) -> Strin
 fn load_package_risk_scanner_evidence(
     scanner_receipt: Option<&str>,
     expected_workspace_sha256: &str,
+    state_dir: &Path,
 ) -> PackageRiskScannerEvidence {
     let Some(scanner_receipt) = scanner_receipt else {
         return PackageRiskScannerEvidence::not_requested();
@@ -10974,6 +11046,18 @@ fn load_package_risk_scanner_evidence(
     }
     let scanner_clean = json_extract_bool_field(&contents, "scanner_clean").unwrap_or(false);
     if scanner_clean {
+        let auth_reasons = verify_scanner_receipt_auth(Some(state_dir), &contents);
+        if !auth_reasons.is_empty() {
+            reason_codes.extend(auth_reasons);
+            return PackageRiskScannerEvidence {
+                requested: true,
+                applied: false,
+                receipt_path: Some(redacted_path),
+                scanner_clean: Some(false),
+                status: "invalid".to_string(),
+                reason_codes: sorted_unique(reason_codes),
+            };
+        }
         if let Some(reason) = validate_clean_scanner_receipt_records(&contents) {
             reason_codes.push(reason.to_string());
             return PackageRiskScannerEvidence {
@@ -11029,6 +11113,14 @@ fn validate_clean_scanner_receipt_records(contents: &str) -> Option<&'static str
         }) {
             return Some("scanner_receipt_core_record_missing_expected_scanner");
         }
+    }
+    if core_records.iter().any(|record| {
+        !json_extract_string_field(record, "executable_sha256")
+            .as_deref()
+            .unwrap_or("")
+            .starts_with("sha256:")
+    }) {
+        return Some("scanner_receipt_core_record_executable_digest_missing");
     }
     if core_records.iter().any(|record| {
         !matches!(
@@ -11362,8 +11454,7 @@ fn artifact_review_output_size(stdout_path: &Path, stderr_path: &Path) -> u64 {
 fn create_private_artifact_review_temp_file(path: &Path) -> std::io::Result<std::fs::File> {
     let file = std::fs::OpenOptions::new()
         .write(true)
-        .create(true)
-        .truncate(true)
+        .create_new(true)
         .open(path)?;
     #[cfg(unix)]
     {
@@ -11383,8 +11474,18 @@ fn configure_artifact_review_environment(command: &mut ProcessCommand) {
     command.env("PATH", safe_artifact_review_path());
     command.env("TMPDIR", std::env::temp_dir());
     if let Ok(ollama_host) = std::env::var("OLLAMA_HOST") {
-        command.env("OLLAMA_HOST", ollama_host);
+        if ollama_host_is_local(&ollama_host) {
+            command.env("OLLAMA_HOST", ollama_host);
+        }
     }
+}
+
+fn ollama_host_is_local(value: &str) -> bool {
+    let trimmed = value.trim().to_ascii_lowercase();
+    trimmed.starts_with("http://127.0.0.1")
+        || trimmed.starts_with("http://localhost")
+        || trimmed.starts_with("http://[::1]")
+        || trimmed.starts_with("unix://")
 }
 
 fn safe_artifact_review_path() -> String {
@@ -12911,6 +13012,113 @@ fn verify_package_risk_receipt_auth(
     let mac_sha256 = hmac_sha256_digest(&key, payload.as_bytes());
     if json_extract_string_field(&auth, "mac_sha256").as_deref() != Some(mac_sha256.as_str()) {
         reasons.push("package_risk_receipt_auth_mac_mismatch".to_string());
+    }
+    sorted_unique(reasons)
+}
+
+fn scanner_receipt_auth_payload(contents: &str) -> Option<String> {
+    let schema = json_extract_string_field(contents, "schema_version")?;
+    let created_at = json_extract_u64_field(contents, "created_at_unix_seconds")?;
+    let workspace_sha256 = json_extract_string_field(contents, "workspace_sha256")?;
+    let workspace_kind = json_extract_string_field(contents, "workspace_kind")?;
+    let requested_ecosystem = json_extract_string_field(contents, "requested_ecosystem")?;
+    let effective_ecosystem = json_extract_string_field(contents, "effective_ecosystem")?;
+    let execute_requested = json_extract_bool_field(contents, "execute_requested")?;
+    let timeout_seconds = json_extract_u64_field(contents, "timeout_seconds")?;
+    let scanner_clean = json_extract_bool_field(contents, "scanner_clean")?;
+    let core_scanner_count = json_extract_u64_field(contents, "core_scanner_count")?;
+    let core_scanner_runnable_count =
+        json_extract_u64_field(contents, "core_scanner_runnable_count")?;
+    let reason_codes = json_extract_string_array_field(contents, "reason_codes").join("\n");
+    let records = json_extract_object_array(contents, "records");
+    if records.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "schema_version={schema}\ncreated_at_unix_seconds={created_at}\nworkspace_sha256={workspace_sha256}\nworkspace_kind={workspace_kind}\nrequested_ecosystem={requested_ecosystem}\neffective_ecosystem={effective_ecosystem}\nexecute_requested={execute_requested}\ntimeout_seconds={timeout_seconds}\nscanner_clean={scanner_clean}\ncore_scanner_count={core_scanner_count}\ncore_scanner_runnable_count={core_scanner_runnable_count}\nreason_codes_sha256={}\nrecords_sha256={}\n",
+        sha256_digest(reason_codes.as_bytes()),
+        sha256_digest(records.join("\n").as_bytes())
+    ))
+}
+
+fn sign_scanner_receipt_contents(
+    state_dir: &Path,
+    unsigned_contents: &str,
+) -> std::io::Result<String> {
+    let key = load_or_create_package_risk_auth_key(state_dir)?;
+    let Some(payload) = scanner_receipt_auth_payload(unsigned_contents) else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "scanner receipt auth payload invalid",
+        ));
+    };
+    let payload_sha256 = sha256_digest(payload.as_bytes());
+    let mac_sha256 = hmac_sha256_digest(&key, payload.as_bytes());
+    let key_id = package_risk_receipt_key_id(&key);
+    let trimmed = unsigned_contents.trim_end();
+    let without_closing = trimmed.strip_suffix('}').ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, "scanner receipt invalid")
+    })?;
+    Ok(format!(
+        "{},\n  \"scanner_receipt_auth\": {{\"schema_version\": {}, \"key_id\": {}, \"payload_sha256\": {}, \"mac_sha256\": {}}}\n}}\n",
+        without_closing.trim_end(),
+        json_string(SCANNER_RECEIPT_AUTH_SCHEMA),
+        json_string(&key_id),
+        json_string(&payload_sha256),
+        json_string(&mac_sha256)
+    ))
+}
+
+fn verify_scanner_receipt_auth(state_dir: Option<&Path>, contents: &str) -> Vec<String> {
+    let mut reasons = Vec::new();
+    let Some(state_dir) = state_dir else {
+        return vec!["scanner_receipt_auth_state_dir_missing".to_string()];
+    };
+    let Some(created_at) = json_extract_u64_field(contents, "created_at_unix_seconds") else {
+        reasons.push("scanner_receipt_created_at_missing".to_string());
+        return sorted_unique(reasons);
+    };
+    let now = current_unix_seconds();
+    if created_at > now.saturating_add(PACKAGE_RISK_RECEIPT_FUTURE_SKEW_SECONDS) {
+        reasons.push("scanner_receipt_created_at_in_future".to_string());
+    }
+    if now.saturating_sub(created_at) > PACKAGE_RISK_RECEIPT_MAX_AGE_SECONDS {
+        reasons.push("scanner_receipt_stale".to_string());
+    }
+
+    let Some(auth) = json_extract_object_field(contents, "scanner_receipt_auth") else {
+        reasons.push("scanner_receipt_auth_missing".to_string());
+        return sorted_unique(reasons);
+    };
+    if json_extract_string_field(&auth, "schema_version").as_deref()
+        != Some(SCANNER_RECEIPT_AUTH_SCHEMA)
+    {
+        reasons.push("scanner_receipt_auth_schema_invalid".to_string());
+    }
+    let key = match load_package_risk_auth_key(state_dir) {
+        Ok(key) => key,
+        Err(_) => {
+            reasons.push("scanner_receipt_auth_key_unavailable".to_string());
+            return sorted_unique(reasons);
+        }
+    };
+    let expected_key_id = package_risk_receipt_key_id(&key);
+    if json_extract_string_field(&auth, "key_id").as_deref() != Some(expected_key_id.as_str()) {
+        reasons.push("scanner_receipt_auth_key_mismatch".to_string());
+    }
+    let Some(payload) = scanner_receipt_auth_payload(contents) else {
+        reasons.push("scanner_receipt_auth_payload_invalid".to_string());
+        return sorted_unique(reasons);
+    };
+    let payload_sha256 = sha256_digest(payload.as_bytes());
+    if json_extract_string_field(&auth, "payload_sha256").as_deref()
+        != Some(payload_sha256.as_str())
+    {
+        reasons.push("scanner_receipt_auth_payload_mismatch".to_string());
+    }
+    let mac_sha256 = hmac_sha256_digest(&key, payload.as_bytes());
+    if json_extract_string_field(&auth, "mac_sha256").as_deref() != Some(mac_sha256.as_str()) {
+        reasons.push("scanner_receipt_auth_mac_mismatch".to_string());
     }
     sorted_unique(reasons)
 }
@@ -18801,6 +19009,7 @@ exit 0
             source: None,
             filename: None,
             state_dir: None,
+            workspace: None,
             lifecycle_script: false,
             pep517_backend: false,
             native_marker: false,
@@ -18835,6 +19044,7 @@ exit 0
             source: None,
             filename: None,
             state_dir: None,
+            workspace: None,
             lifecycle_script: false,
             pep517_backend: false,
             native_marker: false,
@@ -18855,6 +19065,7 @@ exit 0
             source: None,
             filename: None,
             state_dir: None,
+            workspace: None,
             lifecycle_script: false,
             pep517_backend: false,
             native_marker: false,
@@ -18878,6 +19089,7 @@ exit 0
             source: Some("registry".to_string()),
             filename: Some("pkg-1.0.0-py3-none-any.whl".to_string()),
             state_dir: None,
+            workspace: None,
             lifecycle_script: false,
             pep517_backend: false,
             native_marker: false,
@@ -18908,7 +19120,13 @@ exit 0
             b"safe-pkg==1.2.3 # whoathere-published-at=1700000000\n",
         )
         .expect("requirements");
-        write_scanner_run_receipt(&pinned_scanner_receipt, &pinned, true, &[]);
+        write_scanner_run_receipt(
+            &pinned_scanner_receipt,
+            Some(&state_dir),
+            &pinned,
+            true,
+            &[],
+        );
 
         let assessed = evaluate_command(Command::PackageRiskAssess {
             workspace: Some(pinned.display().to_string()),
@@ -18943,7 +19161,13 @@ exit 0
         std::fs::create_dir_all(&unpinned).expect("unpinned");
         write_new_file(&unpinned.join("requirements.txt"), b"safe-pkg>=1.0\n")
             .expect("requirements");
-        write_scanner_run_receipt(&unpinned_scanner_receipt, &unpinned, true, &[]);
+        write_scanner_run_receipt(
+            &unpinned_scanner_receipt,
+            Some(&state_dir),
+            &unpinned,
+            true,
+            &[],
+        );
         let assessed_unpinned = evaluate_command(Command::PackageRiskAssess {
             workspace: Some(unpinned.display().to_string()),
             ecosystem: Some("pypi".to_string()),
@@ -19180,6 +19404,7 @@ exit 0
         .expect("requirements");
         write_scanner_run_receipt(
             &scanner_receipt,
+            Some(&state_dir),
             &workspace,
             false,
             &["scanner_findings_observed"],
@@ -19210,6 +19435,7 @@ exit 0
             source: None,
             filename: None,
             state_dir: Some(state_dir.display().to_string()),
+            workspace: Some(workspace.display().to_string()),
             lifecycle_script: false,
             pep517_backend: false,
             native_marker: false,
@@ -19239,7 +19465,7 @@ exit 0
             b"safe-pkg==1.2.3 # whoathere-published-at=1700000000\n",
         )
         .expect("requirements");
-        write_scanner_run_receipt(&scanner_receipt, &workspace, true, &[]);
+        write_scanner_run_receipt(&scanner_receipt, Some(&state_dir), &workspace, true, &[]);
 
         let assessed = evaluate_command(Command::PackageRiskAssess {
             workspace: Some(workspace.display().to_string()),
@@ -19267,6 +19493,7 @@ exit 0
             source: None,
             filename: None,
             state_dir: Some(state_dir.display().to_string()),
+            workspace: Some(workspace.display().to_string()),
             lifecycle_script: false,
             pep517_backend: false,
             native_marker: false,
@@ -19284,6 +19511,42 @@ exit 0
     }
 
     #[test]
+    fn package_risk_rejects_unsigned_clean_scanner_receipt() {
+        let root = temp_root("whoathere-cli-package-risk-scanner-unsigned-clean");
+        let state_dir = root.join("state");
+        let scanner_receipt = root.join("scanner-unsigned-clean.json");
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        write_new_file(
+            &workspace.join("requirements.txt"),
+            b"safe-pkg==1.2.3 # whoathere-published-at=1700000000\n",
+        )
+        .expect("requirements");
+        write_scanner_run_receipt(&scanner_receipt, None, &workspace, true, &[]);
+
+        let assessed = evaluate_command(Command::PackageRiskAssess {
+            workspace: Some(workspace.display().to_string()),
+            ecosystem: Some("pypi".to_string()),
+            state_dir: Some(state_dir.display().to_string()),
+            scanner_receipt: Some(scanner_receipt.display().to_string()),
+            ai_review: false,
+            ai_provider: None,
+            ai_model: None,
+            ai_timeout_seconds: None,
+            json: true,
+        });
+
+        assert_eq!(assessed.exit_code, ExitCode::ManualReview.code());
+        assert!(assessed.output.contains("\"all_scanner_clean\": false"));
+        assert!(assessed.output.contains("scanner_receipt_auth_missing"));
+        assert!(assessed
+            .output
+            .contains("\"scanner_evidence_status\": \"invalid\""));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn package_risk_clean_scanner_receipt_requires_core_records() {
         let root = temp_root("whoathere-cli-package-risk-scanner-minimal");
         let state_dir = root.join("state");
@@ -19295,16 +19558,16 @@ exit 0
             b"safe-pkg==1.2.3 # whoathere-published-at=1700000000\n",
         )
         .expect("requirements");
-        write_new_file(
-            &scanner_receipt,
-            format!(
-                "{{\"schema_version\": {}, \"workspace_sha256\": {}, \"execute_requested\": true, \"scanner_clean\": true, \"core_scanner_count\": 5, \"core_scanner_runnable_count\": 5, \"reason_codes\": []}}\n",
-                json_string(EXTERNAL_SCANNER_RUN_SCHEMA),
-                json_string(&scanner_workspace_digest(&workspace))
-            )
-            .as_bytes(),
-        )
-        .expect("minimal scanner receipt");
+        let minimal_unsigned = format!(
+            "{{\"schema_version\": {}, \"created_at_unix_seconds\": {}, \"workspace_sha256\": {}, \"workspace_kind\": \"python\", \"requested_ecosystem\": \"pypi\", \"effective_ecosystem\": \"pypi\", \"execute_requested\": true, \"timeout_seconds\": 120, \"scanner_clean\": true, \"core_scanner_count\": 5, \"core_scanner_runnable_count\": 5, \"reason_codes\": [], \"records\": [{{\"scanner\": \"guarddog\", \"role\": \"core\", \"status\": \"passed\"}}]}}\n",
+            json_string(EXTERNAL_SCANNER_RUN_SCHEMA),
+            current_unix_seconds(),
+            json_string(&scanner_workspace_digest(&workspace))
+        );
+        let minimal_signed = sign_scanner_receipt_contents(&state_dir, &minimal_unsigned)
+            .expect("signed minimal scanner receipt");
+        write_new_file(&scanner_receipt, minimal_signed.as_bytes())
+            .expect("minimal scanner receipt");
 
         let assessed = evaluate_command(Command::PackageRiskAssess {
             workspace: Some(workspace.display().to_string()),
@@ -19320,7 +19583,7 @@ exit 0
         assert_eq!(assessed.exit_code, 22);
         assert!(assessed
             .output
-            .contains("scanner_receipt_core_records_missing"));
+            .contains("scanner_receipt_core_record_count_mismatch"));
         assert!(assessed
             .output
             .contains("\"scanner_evidence_status\": \"invalid\""));
@@ -19420,6 +19683,7 @@ exit 0
                 source: None,
                 filename: None,
                 state_dir: None,
+                workspace: None,
                 lifecycle_script: false,
                 pep517_backend: false,
                 native_marker: false,
@@ -19655,7 +19919,7 @@ exit 0
             b"safe-pkg==1.2.3 # whoathere-published-at=1700000000\n",
         )
         .expect("requirements");
-        write_scanner_run_receipt(&scanner_receipt, &workspace, true, &[]);
+        write_scanner_run_receipt(&scanner_receipt, Some(&state_dir), &workspace, true, &[]);
         let assessed = evaluate_command(Command::PackageRiskAssess {
             workspace: Some(workspace.display().to_string()),
             ecosystem: Some("pypi".to_string()),
@@ -19678,6 +19942,7 @@ exit 0
             source: None,
             filename: None,
             state_dir: Some(state_dir.display().to_string()),
+            workspace: Some(workspace.display().to_string()),
             lifecycle_script: false,
             pep517_backend: false,
             native_marker: false,
@@ -19797,6 +20062,7 @@ exit 0
         let result = evaluate_command(Command::ScannersRun {
             workspace: Some(root.display().to_string()),
             ecosystem: Some("npm".to_string()),
+            state_dir: None,
             timeout_seconds: Some(5),
             execute: false,
             json: true,
@@ -19815,9 +20081,11 @@ exit 0
     #[test]
     fn scanners_run_executes_fake_clean_and_finding_adapters() {
         let root = temp_root("whoathere-cli-scanners-fake");
-        let bin = root.join("bin");
+        let scanner_cache = root.join("scanners");
+        let bin = scanner_cache.join("bin");
         let clean = root.join("clean-npm");
         let bad = root.join("bad-npm");
+        let state_dir = root.join("state");
         std::fs::create_dir_all(&bin).expect("bin");
         std::fs::create_dir_all(&clean).expect("clean");
         std::fs::create_dir_all(&bad).expect("bad");
@@ -19826,35 +20094,43 @@ exit 0
         for scanner in ["guarddog", "osv-scanner", "syft", "grype", "pip-audit"] {
             write_fake_scanner(&bin.join(scanner));
         }
-        let path = bin.display().to_string();
-        with_reprovision_env(&[("PATH", path)], || {
-            let clean_result = evaluate_command(Command::ScannersRun {
-                workspace: Some(clean.display().to_string()),
-                ecosystem: Some("npm".to_string()),
-                timeout_seconds: Some(5),
-                execute: true,
-                json: true,
-            });
-            assert_eq!(clean_result.exit_code, 0);
-            assert!(clean_result.output.contains("\"scanner_clean\": true"));
-            assert!(clean_result.output.contains("\"status\": \"passed\""));
-            assert!(!clean_result.output.contains("WHOATHERE_CANARY_TOKEN"));
-            assert!(!clean_result.output.contains(&root.display().to_string()));
+        with_reprovision_env(
+            &[(
+                "WHOATHERE_SCANNER_CACHE_DIR",
+                scanner_cache.display().to_string(),
+            )],
+            || {
+                let clean_result = evaluate_command(Command::ScannersRun {
+                    workspace: Some(clean.display().to_string()),
+                    ecosystem: Some("npm".to_string()),
+                    state_dir: Some(state_dir.display().to_string()),
+                    timeout_seconds: Some(5),
+                    execute: true,
+                    json: true,
+                });
+                assert_eq!(clean_result.exit_code, 0);
+                assert!(clean_result.output.contains("\"scanner_clean\": true"));
+                assert!(clean_result.output.contains("\"status\": \"passed\""));
+                assert!(clean_result.output.contains("\"scanner_receipt_auth\""));
+                assert!(!clean_result.output.contains("WHOATHERE_CANARY_TOKEN"));
+                assert!(!clean_result.output.contains(&root.display().to_string()));
 
-            let bad_result = evaluate_command(Command::ScannersRun {
-                workspace: Some(bad.display().to_string()),
-                ecosystem: Some("npm".to_string()),
-                timeout_seconds: Some(5),
-                execute: true,
-                json: true,
-            });
-            assert_eq!(bad_result.exit_code, ExitCode::Deny.code());
-            assert!(bad_result.output.contains("\"scanner_clean\": false"));
-            assert!(bad_result.output.contains("\"status\": \"findings\""));
-            assert!(bad_result.output.contains("scanner_findings_observed"));
-            assert!(!bad_result.output.contains("WHOATHERE_CANARY_TOKEN"));
-            assert!(!bad_result.output.contains(&root.display().to_string()));
-        });
+                let bad_result = evaluate_command(Command::ScannersRun {
+                    workspace: Some(bad.display().to_string()),
+                    ecosystem: Some("npm".to_string()),
+                    state_dir: Some(state_dir.display().to_string()),
+                    timeout_seconds: Some(5),
+                    execute: true,
+                    json: true,
+                });
+                assert_eq!(bad_result.exit_code, ExitCode::Deny.code());
+                assert!(bad_result.output.contains("\"scanner_clean\": false"));
+                assert!(bad_result.output.contains("\"status\": \"findings\""));
+                assert!(bad_result.output.contains("scanner_findings_observed"));
+                assert!(!bad_result.output.contains("WHOATHERE_CANARY_TOKEN"));
+                assert!(!bad_result.output.contains(&root.display().to_string()));
+            },
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -23341,6 +23617,7 @@ exit 0
 
     fn write_scanner_run_receipt(
         path: &std::path::Path,
+        state_dir: Option<&std::path::Path>,
         workspace: &std::path::Path,
         scanner_clean: bool,
         reasons: &[&str],
@@ -23351,18 +23628,18 @@ exit 0
             .collect::<Vec<_>>()
             .join(", ");
         let workspace_sha256 = scanner_workspace_digest(workspace);
-        write_new_file(
-            path,
-            format!(
-                "{{\"schema_version\": {}, \"workspace_sha256\": {}, \"execute_requested\": true, \"scanner_clean\": {}, \"core_scanner_count\": 5, \"core_scanner_runnable_count\": 5, \"reason_codes\": [{}], \"records\": [{{\"scanner\": \"guarddog\", \"role\": \"core\", \"status\": \"passed\"}}, {{\"scanner\": \"osv-scanner\", \"role\": \"core\", \"status\": \"passed\"}}, {{\"scanner\": \"pip-audit\", \"role\": \"core\", \"status\": \"passed\"}}, {{\"scanner\": \"syft\", \"role\": \"core\", \"status\": \"passed\"}}, {{\"scanner\": \"grype\", \"role\": \"core\", \"status\": \"passed\"}}]}}\n",
-                json_string(EXTERNAL_SCANNER_RUN_SCHEMA),
-                json_string(&workspace_sha256),
-                scanner_clean,
-                reasons_json
-            )
-            .as_bytes(),
-        )
-        .expect("scanner receipt");
+        let unsigned = format!(
+            "{{\"schema_version\": {}, \"created_at_unix_seconds\": {}, \"workspace_sha256\": {}, \"workspace_kind\": \"python\", \"requested_ecosystem\": \"pypi\", \"effective_ecosystem\": \"pypi\", \"execute_requested\": true, \"timeout_seconds\": 120, \"scanner_clean\": {}, \"core_scanner_count\": 5, \"core_scanner_runnable_count\": 5, \"reason_codes\": [{}], \"records\": [{{\"scanner\": \"guarddog\", \"role\": \"core\", \"status\": \"passed\", \"executable_sha256\": \"sha256:1111111111111111111111111111111111111111111111111111111111111111\"}}, {{\"scanner\": \"osv-scanner\", \"role\": \"core\", \"status\": \"passed\", \"executable_sha256\": \"sha256:2222222222222222222222222222222222222222222222222222222222222222\"}}, {{\"scanner\": \"pip-audit\", \"role\": \"core\", \"status\": \"passed\", \"executable_sha256\": \"sha256:3333333333333333333333333333333333333333333333333333333333333333\"}}, {{\"scanner\": \"syft\", \"role\": \"core\", \"status\": \"passed\", \"executable_sha256\": \"sha256:4444444444444444444444444444444444444444444444444444444444444444\"}}, {{\"scanner\": \"grype\", \"role\": \"core\", \"status\": \"passed\", \"executable_sha256\": \"sha256:5555555555555555555555555555555555555555555555555555555555555555\"}}]}}\n",
+            json_string(EXTERNAL_SCANNER_RUN_SCHEMA),
+            current_unix_seconds(),
+            json_string(&workspace_sha256),
+            scanner_clean,
+            reasons_json
+        );
+        let contents = state_dir
+            .and_then(|state_dir| sign_scanner_receipt_contents(state_dir, &unsigned).ok())
+            .unwrap_or(unsigned);
+        write_new_file(path, contents.as_bytes()).expect("scanner receipt");
     }
 
     fn write_complete_guest_provisioning_receipt(state_dir: &std::path::Path) {

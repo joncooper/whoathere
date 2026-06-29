@@ -487,19 +487,15 @@ EOF
 write_scanner_receipt_for_workspace() {
   workspace=$1
   receipt=$2
-  digest_plan="$receipt.workspace.json"
-  run_clean "$WRAPPER" scanners run --workspace "$workspace" --ecosystem pypi --json > "$digest_plan"
-  workspace_sha256=$(json_string_field workspace_sha256 "$digest_plan")
-  if [ -z "$workspace_sha256" ]; then
-    cat "$digest_plan" >&2
-    fail package_risk_receipt_workspace_digest_missing
-  fi
   receipt_dir=$(dirname "$receipt")
   mkdir -p "$receipt_dir"
-  escaped_workspace_sha256=$(json_escape "$workspace_sha256")
-  cat > "$receipt" <<EOF
-{"schema_version":"whoathere.external_scanner_run.v1","workspace_sha256":"$escaped_workspace_sha256","execute_requested":true,"scanner_clean":true,"core_scanner_count":5,"core_scanner_runnable_count":5,"reason_codes":[],"records":[{"scanner":"guarddog","role":"core","status":"passed"},{"scanner":"osv-scanner","role":"core","status":"passed"},{"scanner":"pip-audit","role":"core","status":"passed"},{"scanner":"syft","role":"core","status":"passed"},{"scanner":"grype","role":"core","status":"passed"}]}
-EOF
+  run_clean "$WRAPPER" scanners run \
+    --workspace "$workspace" \
+    --ecosystem pypi \
+    --state-dir "$STATE_DIR" \
+    --execute \
+    --json > "$receipt"
+  require_contains '"scanner_receipt_auth"' "$receipt" scanner_receipt_auth_missing
 }
 
 latest_package_risk_receipt() {

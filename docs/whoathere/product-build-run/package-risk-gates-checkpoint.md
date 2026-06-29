@@ -16,13 +16,15 @@ replace the macOS VM, scanners, canary checks, strict sync-back rules, or manual
 ## Implemented Behavior
 
 - Added `whoathere package-risk assess --workspace <path> [--ecosystem auto|npm|pypi|uv] [--state-dir <dir>] [--json]`.
-- Added `package-risk assess --scanner-receipt <path>` to consume normalized `scanners run --execute --json` evidence.
+- Added `package-risk assess --scanner-receipt <path>` to consume normalized
+  `scanners run --state-dir <dir> --execute --json` evidence.
 - Added opt-in local model review through `package-risk assess --ai-review --ai-provider ollama --ai-model <model>`.
 - Added `whoathere package-risk history --package <name> --ecosystem <npm|pypi|uv> [--state-dir <dir>] [--json]`.
 - Added `whoathere package-risk approve --receipt <path> --reason <text> [--state-dir <dir>] [--json]`.
 - Added append-only local package memory under `<state-dir>/package-risk/package-risk-evidence.jsonl`.
 - Added per-assessment receipts under `<state-dir>/package-risk/receipts/`.
-- Added `vm release-plan --package-risk-receipt <path>` to derive scanner, freshness, and diff gates from package-risk evidence.
+- Added `vm release-plan --workspace <path> --package-risk-receipt <path>` to derive scanner,
+  freshness, and diff gates from package-risk evidence bound to the same workspace digest.
 - Added `vm detonate --sync-back --package-risk-receipt <path>` enforcement so live host copy-back
   requires package-risk evidence bound to the same workspace digest.
 - Added state-local package-risk receipt authentication. Runtime sync-back, release-plan receipt
@@ -48,9 +50,10 @@ replace the macOS VM, scanners, canary checks, strict sync-back rules, or manual
   scanner, VM, or package-class gates. Requested model findings, timeout, error, or provider
   unavailability force manual review.
 - Scanner receipts are normalized evidence. Clean scanner receipts must be executed scanner runs
-  bound to the assessed workspace digest and include clean core scanner records. Dirty, unreadable,
-  invalid, not-executed, missing, no-record, or wrong-workspace scanner receipts force manual review
-  and override operator-provided `--scanner-clean`.
+  bound to the assessed workspace digest, include clean core scanner records, carry executable
+  digests, and include a valid state-local `scanner_receipt_auth` tag. Dirty, unreadable, invalid,
+  not-executed, missing, unsigned, no-record, or wrong-workspace scanner receipts force manual
+  review and override operator-provided `--scanner-clean`.
 - Public npm/PyPI auto-sync candidates require clean scanner evidence. Missing scanner evidence is
   manual review, not a clean result.
 - Local approval only accepts package-risk receipts that were already clean auto-sync candidates;

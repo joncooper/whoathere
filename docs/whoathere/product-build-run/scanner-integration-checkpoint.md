@@ -15,7 +15,7 @@ execution or file copy-back by itself.
 
 - Added `whoathere scanners list [--json]`.
 - Added `whoathere scanners bootstrap-plan [--json]`.
-- Added `whoathere scanners run --workspace <path> [--ecosystem auto|npm|pypi] [--timeout-seconds <n>] [--execute] [--json]`.
+- Added `whoathere scanners run --workspace <path> [--ecosystem auto|npm|pypi] [--state-dir <dir>] [--timeout-seconds <n>] [--execute] [--json]`.
 - Added schema `whoathere.external_scanner_run.v1`.
 - Added normalized statuses: `passed`, `findings`, `unavailable`, `not_applicable`, `error`, and `timed_out`.
 - Added scanner bootstrap script: `scripts/whoathere-bootstrap-scanners.sh`.
@@ -40,6 +40,11 @@ Report-only adapters:
 ## Security Boundaries
 
 - Scanner output is summarized and digested; raw stdout/stderr is not included in JSON.
+- Executed scanner receipts include state-local `scanner_receipt_auth` when `--state-dir` is
+  supplied. Clean scanner receipts without this auth tag are report-only and cannot satisfy
+  package-risk auto-sync evidence.
+- Scanner binaries are resolved from the WhoaThere scanner cache or trusted system binary
+  directories. Scanner binaries inside the assessed workspace are refused.
 - Workspace paths, canaries, and token-like material must not appear in scanner JSON output.
 - pip-audit skips unpinned, direct URL, VCS, editable, nested, and otherwise resolution-dependent
   requirements instead of resolving on the host.

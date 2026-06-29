@@ -10,7 +10,9 @@ cargo build --manifest-path "$ROOT_DIR/whoathere/Cargo.toml" -p whoathere-cli --
 WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/whoathere-scanner-smoke.XXXXXX")
 trap 'rm -rf "$WORK_DIR"' EXIT INT TERM
 
-FAKE_BIN="$WORK_DIR/fake-bin"
+STATE_DIR="$WORK_DIR/state"
+SCANNER_CACHE="$WORK_DIR/scanners"
+FAKE_BIN="$SCANNER_CACHE/bin"
 ENV_LEAK_MARKER="$WORK_DIR/scanner-env-leak.marker"
 mkdir -p "$FAKE_BIN"
 
@@ -80,8 +82,8 @@ require_not_contains() {
   fi
 }
 
-PATH="$FAKE_BIN:$ORIGINAL_PATH"
-export PATH
+WHOATHERE_SCANNER_CACHE_DIR="$SCANNER_CACHE"
+export WHOATHERE_SCANNER_CACHE_DIR
 NPM_TOKEN=npm_secret_token_value
 OPENAI_API_KEY=openai_secret_token_value
 export NPM_TOKEN OPENAI_API_KEY
@@ -103,8 +105,9 @@ write_clean_npm "$BAD_NPM"
 write_clean_npm "$TIMEOUT_NPM"
 write_python_requirements "$UNPINNED_PY" "requests"
 
-"$WHOATHERE_BIN" scanners run --workspace "$CLEAN_NPM" --ecosystem npm --execute --json > "$WORK_DIR/clean.json"
+"$WHOATHERE_BIN" scanners run --workspace "$CLEAN_NPM" --ecosystem npm --state-dir "$STATE_DIR" --execute --json > "$WORK_DIR/clean.json"
 require_contains '"scanner_clean": true' "$WORK_DIR/clean.json" clean_not_clean
+require_contains '"scanner_receipt_auth"' "$WORK_DIR/clean.json" clean_auth_missing
 require_contains '"workspace_sha256": "sha256:' "$WORK_DIR/clean.json" clean_workspace_digest_missing
 require_contains '"status": "passed"' "$WORK_DIR/clean.json" clean_pass_status_missing
 require_not_contains "$WORK_DIR" "$WORK_DIR/clean.json" clean_leaked_workspace_path
@@ -118,7 +121,7 @@ if [ -e "$ENV_LEAK_MARKER" ]; then
   exit 1
 fi
 
-if "$WHOATHERE_BIN" scanners run --workspace "$BAD_NPM" --ecosystem npm --execute --json > "$WORK_DIR/bad.json"; then
+if "$WHOATHERE_BIN" scanners run --workspace "$BAD_NPM" --ecosystem npm --state-dir "$STATE_DIR" --execute --json > "$WORK_DIR/bad.json"; then
   printf 'scanner_smoke_failed=bad_fixture_unexpected_success\n' >&2
   cat "$WORK_DIR/bad.json" >&2
   exit 1
@@ -128,10 +131,10 @@ require_contains '"status": "findings"' "$WORK_DIR/bad.json" bad_findings_missin
 require_contains 'scanner_findings_observed' "$WORK_DIR/bad.json" bad_reason_missing
 require_not_contains "$WORK_DIR" "$WORK_DIR/bad.json" bad_leaked_workspace_path
 
-"$WHOATHERE_BIN" scanners run --workspace "$UNPINNED_PY" --ecosystem pypi --execute --json > "$WORK_DIR/unpinned.json" || true
+"$WHOATHERE_BIN" scanners run --workspace "$UNPINNED_PY" --ecosystem pypi --state-dir "$STATE_DIR" --execute --json > "$WORK_DIR/unpinned.json" || true
 require_contains 'pip_audit_unpinned_requirement_skipped' "$WORK_DIR/unpinned.json" unpinned_skip_missing
 
-if "$WHOATHERE_BIN" scanners run --workspace "$TIMEOUT_NPM" --ecosystem npm --timeout-seconds 1 --execute --json > "$WORK_DIR/timeout.json"; then
+if "$WHOATHERE_BIN" scanners run --workspace "$TIMEOUT_NPM" --ecosystem npm --state-dir "$STATE_DIR" --timeout-seconds 1 --execute --json > "$WORK_DIR/timeout.json"; then
   printf 'scanner_smoke_failed=timeout_fixture_unexpected_success\n' >&2
   cat "$WORK_DIR/timeout.json" >&2
   exit 1
@@ -141,7 +144,7 @@ require_contains 'scanner_process_timed_out' "$WORK_DIR/timeout.json" timeout_re
 
 if [ "${WHOATHERE_SCANNER_REAL_SMOKE:-0}" = "1" ]; then
   REAL_PATH="$ROOT_DIR/.whoathere/scanners/bin:$ORIGINAL_PATH"
-  PATH="$REAL_PATH" "$WHOATHERE_BIN" scanners run --workspace "$CLEAN_NPM" --ecosystem npm --execute --json > "$WORK_DIR/real-clean.json" || true
+  PATH="$REAL_PATH" "$WHOATHERE_BIN" scanners run --workspace "$CLEAN_NPM" --ecosystem npm --state-dir "$STATE_DIR" --execute --json > "$WORK_DIR/real-clean.json" || true
   require_contains '"command": "whoathere scanners run"' "$WORK_DIR/real-clean.json" real_smoke_no_output
 fi
 

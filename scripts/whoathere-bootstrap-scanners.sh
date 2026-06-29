@@ -2,7 +2,7 @@
 set -eu
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-CACHE_DIR=${WHOATHERE_SCANNER_CACHE:-"$ROOT_DIR/.whoathere/scanners"}
+CACHE_DIR=${WHOATHERE_SCANNER_CACHE_DIR:-${WHOATHERE_SCANNER_CACHE:-"$HOME/.whoathere/scanners"}}
 BIN_DIR="$CACHE_DIR/bin"
 TMP_DIR="$CACHE_DIR/tmp"
 RECEIPT="$CACHE_DIR/scanner-bootstrap.json"

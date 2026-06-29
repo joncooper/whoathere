@@ -215,7 +215,19 @@ private final class GuestReadinessListener: NSObject, VZVirtioSocketListenerDele
                     try? FileManager.default.removeItem(at: activeURL)
                     continue
                 }
-                response["job_id"] = response["job_id"] as? String ?? jobID
+                let mismatchReasons = detonationResultMismatchReasons(response, request: requestFields)
+                if !mismatchReasons.isEmpty {
+                    writeDetonationResult(
+                        to: resultURL,
+                        fields: detonationFailureResult(
+                            jobID: jobID,
+                            reasons: ["guest_detonation_result_context_mismatch"] + mismatchReasons,
+                            exitCode: 20
+                        )
+                    )
+                    try? FileManager.default.removeItem(at: activeURL)
+                    continue
+                }
                 response["vm_session_id"] = sessionID
                 let guestSyncBackEnabled = response["sync_back_enabled"] as? Bool ?? false
                 response["sync_back_enabled"] = syncBackRequested && guestSyncBackEnabled
@@ -299,6 +311,25 @@ private func detonationFailureResult(jobID: String, reasons: [String], exitCode:
         "high_risk_package_execution_enabled": false,
         "exit_code": exitCode
     ]
+}
+
+private func detonationResultMismatchReasons(_ result: [String: Any], request: [String: Any]) -> [String] {
+    var reasons: [String] = []
+    for key in ["job_id", "request_nonce", "tool", "command_class", "fixture"] {
+        let expected = request[key] as? String ?? ""
+        let actual = result[key] as? String ?? ""
+        if actual != expected {
+            reasons.append("guest_detonation_result_\(key)_mismatch")
+        }
+    }
+    if request["project_mode"] as? Bool == true {
+        let expectedWorkflow = request["project_workflow"] as? String ?? ""
+        let actualWorkflow = result["project_workflow"] as? String ?? ""
+        if actualWorkflow != expectedWorkflow {
+            reasons.append("guest_detonation_result_project_workflow_mismatch")
+        }
+    }
+    return reasons.sorted()
 }
 
 private func writeDetonationResult(to url: URL, fields: [String: Any]) {
@@ -2210,12 +2241,16 @@ struct WhoaThereMacosVmHelper {
                 attributes: [.posixPermissions: 0o700]
             )
             let jobID = try randomHex(byteCount: 16)
+            let requestNonce = try randomHex(byteCount: 16)
             let requestURL = detonationJobsDir(layout).appendingPathComponent("\(jobID).request.json")
             let resultURL = detonationJobsDir(layout).appendingPathComponent("\(jobID).result.json")
+            try? FileManager.default.removeItem(at: requestURL)
+            try? FileManager.default.removeItem(at: resultURL)
             var request: [String: Any] = [
                 "schema_version": bundleSchemaVersion,
                 "protocol": guestDetonationProtocol,
                 "job_id": jobID,
+                "request_nonce": requestNonce,
                 "tool": tool,
                 "command_class": commandClass,
                 "fixture": fixture,
@@ -2240,6 +2275,7 @@ struct WhoaThereMacosVmHelper {
             try requestData.write(to: requestURL, options: [.atomic])
             guard let result = waitForDetonationResult(
                 resultURL: resultURL,
+                expectedRequest: request,
                 timeoutSeconds: TimeInterval(min(930, max(20, options.detonationTimeoutSeconds + 20)))
             ) else {
                 emit(
@@ -2373,10 +2409,22 @@ struct WhoaThereMacosVmHelper {
         return payloadHex
     }
 
-    private static func waitForDetonationResult(resultURL: URL, timeoutSeconds: TimeInterval) -> [String: Any]? {
+    private static func waitForDetonationResult(
+        resultURL: URL,
+        expectedRequest: [String: Any],
+        timeoutSeconds: TimeInterval
+    ) -> [String: Any]? {
         let deadline = Date().addingTimeInterval(timeoutSeconds)
         while Date() < deadline {
             if let result = readJSONObject(resultURL) {
+                let mismatchReasons = detonationResultMismatchReasons(result, request: expectedRequest)
+                if !mismatchReasons.isEmpty {
+                    return detonationFailureResult(
+                        jobID: expectedRequest["job_id"] as? String ?? "unknown",
+                        reasons: ["guest_detonation_result_context_mismatch"] + mismatchReasons,
+                        exitCode: 20
+                    )
+                }
                 return result
             }
             Thread.sleep(forTimeInterval: 0.2)

@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread::sleep;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use whoathere_evidence::{EvidenceJobKind, EvidenceJobResult, JobState};
 use whoathere_hash::sha256_digest;
@@ -357,6 +357,7 @@ pub struct ExternalScannerRunRecord {
     pub ecosystem: ScannerEcosystem,
     pub status: ScannerRunStatus,
     pub display_path: Option<String>,
+    pub executable_sha256: Option<String>,
     pub argv: Vec<String>,
     pub exit_code: Option<i32>,
     pub elapsed_ms: u128,
@@ -483,8 +484,12 @@ pub fn scanner_bootstrap_cache_dir() -> PathBuf {
     if let Some(path) = std::env::var_os("WHOATHERE_SCANNER_CACHE_DIR") {
         return PathBuf::from(path);
     }
-    std::env::current_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
+    if let Some(path) = std::env::var_os("WHOATHERE_SCANNER_CACHE") {
+        return PathBuf::from(path);
+    }
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
         .join(".whoathere")
         .join("scanners")
 }
@@ -581,9 +586,9 @@ fn build_external_scanner_summary(
 }
 
 pub fn scanner_workspace_digest(workspace: &Path) -> String {
-    const MAX_FILES: usize = 512;
-    const MAX_FILE_BYTES: u64 = 1024 * 1024;
-    const MAX_TOTAL_BYTES: u64 = 8 * 1024 * 1024;
+    const MAX_FILES: usize = usize::MAX;
+    const MAX_FILE_BYTES: u64 = u64::MAX;
+    const MAX_TOTAL_BYTES: u64 = u64::MAX;
 
     let root = workspace
         .canonicalize()
@@ -658,7 +663,7 @@ fn collect_workspace_digest_files(
                 max_total_bytes,
             );
         } else if metadata.is_file() && metadata.len() <= max_file_bytes {
-            if *total_bytes + metadata.len() > max_total_bytes {
+            if *total_bytes > max_total_bytes.saturating_sub(metadata.len()) {
                 return;
             }
             let Ok(contents) = std::fs::read(&path) else {
@@ -716,6 +721,12 @@ fn plan_external_scanner(
             "scanner_{}_unavailable",
             spec.name.replace('-', "_")
         ));
+        return plan;
+    }
+    if scanner_executable_is_under_workspace(plan.executable.as_deref(), workspace) {
+        plan.status = ScannerRunStatus::Unavailable;
+        plan.reason_codes
+            .push("scanner_executable_inside_workspace_refused".to_string());
         return plan;
     }
     match spec.name {
@@ -959,20 +970,23 @@ fn execute_scanner_plan(
 }
 
 fn scanner_temp_path(scanner: &str, stream: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
     std::env::temp_dir().join(format!(
         "whoathere-scanner-{}-{}-{}-{}.tmp",
         scanner,
         stream,
         std::process::id(),
-        Instant::now().elapsed().as_nanos()
+        nanos
     ))
 }
 
 fn create_private_temp_file(path: &Path) -> std::io::Result<std::fs::File> {
     let file = std::fs::OpenOptions::new()
         .write(true)
-        .create(true)
-        .truncate(true)
+        .create_new(true)
         .open(path)?;
     #[cfg(unix)]
     {
@@ -994,17 +1008,7 @@ fn configure_scanner_process_environment(command: &mut Command) {
 }
 
 fn safe_scanner_path() -> String {
-    let mut paths = vec![
-        scanner_bootstrap_cache_dir().join("bin"),
-        PathBuf::from("/opt/homebrew/bin"),
-        PathBuf::from("/usr/local/bin"),
-        PathBuf::from("/usr/bin"),
-        PathBuf::from("/bin"),
-        PathBuf::from("/usr/sbin"),
-        PathBuf::from("/sbin"),
-    ];
-    paths.retain(|path| path.is_dir());
-    std::env::join_paths(paths)
+    std::env::join_paths(trusted_scanner_search_dirs())
         .ok()
         .and_then(|paths| paths.into_string().ok())
         .unwrap_or_else(|| "/usr/bin:/bin:/usr/sbin:/sbin".to_string())
@@ -1040,6 +1044,7 @@ fn record_from_plan(
         ecosystem: plan.ecosystem,
         status: plan.status,
         display_path: plan.display_path,
+        executable_sha256: plan.executable.as_deref().and_then(file_sha256_digest),
         argv: redact_scanner_argv(&plan.argv),
         exit_code: observation.exit_code,
         elapsed_ms: observation.elapsed_ms,
@@ -1054,29 +1059,57 @@ fn record_from_plan(
 }
 
 fn resolve_scanner_executable(name: &str) -> Option<PathBuf> {
-    let cache_candidate = scanner_bootstrap_cache_dir().join("bin").join(name);
-    if cache_candidate.is_file() {
-        return Some(cache_candidate);
-    }
-    command_path_on_path(name).or_else(|| match name {
-        "guarddog" | "pip-audit" => command_path_on_path("uvx"),
+    command_path_on_trusted_scanner_path(name).or_else(|| match name {
+        "guarddog" | "pip-audit" => command_path_on_trusted_scanner_path("uvx"),
         _ => None,
     })
 }
 
-fn command_path_on_path(command: &str) -> Option<PathBuf> {
+fn command_path_on_trusted_scanner_path(command: &str) -> Option<PathBuf> {
     let candidate = PathBuf::from(command);
     if candidate.components().count() > 1 && candidate.is_file() {
-        return Some(candidate);
+        return candidate.canonicalize().ok();
     }
-    let path_var = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path_var) {
+    for dir in trusted_scanner_search_dirs() {
         let path = dir.join(command);
         if path.is_file() {
-            return Some(path);
+            return path.canonicalize().ok();
         }
     }
     None
+}
+
+fn trusted_scanner_search_dirs() -> Vec<PathBuf> {
+    let mut paths = vec![
+        scanner_bootstrap_cache_dir().join("bin"),
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/usr/local/bin"),
+        PathBuf::from("/usr/bin"),
+        PathBuf::from("/bin"),
+        PathBuf::from("/usr/sbin"),
+        PathBuf::from("/sbin"),
+    ];
+    paths.retain(|path| path.is_dir());
+    paths
+}
+
+fn scanner_executable_is_under_workspace(executable: Option<&Path>, workspace: &Path) -> bool {
+    let Some(executable) = executable else {
+        return false;
+    };
+    let Ok(executable) = executable.canonicalize() else {
+        return true;
+    };
+    let Ok(workspace) = workspace.canonicalize() else {
+        return false;
+    };
+    executable.starts_with(workspace)
+}
+
+fn file_sha256_digest(path: &Path) -> Option<String> {
+    std::fs::read(path)
+        .ok()
+        .map(|contents| sha256_digest(&contents))
 }
 
 fn scanner_version(name: &str, executable: &Path) -> Option<String> {

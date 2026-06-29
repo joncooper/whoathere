@@ -5,10 +5,13 @@ ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 CLI="$ROOT_DIR/whoathere/target/debug/whoathere"
 WORK_DIR="${TMPDIR:-/tmp}/whoathere-package-risk-smoke.$$"
 STATE_DIR="$WORK_DIR/state"
+SCANNER_CACHE="$WORK_DIR/scanners"
+SCANNER_BIN="$SCANNER_CACHE/bin"
 ENV_LEAK_MARKER="$WORK_DIR/artifact-review-env-leak.marker"
 NPM_TOKEN=npm_secret_token_value
 OPENAI_API_KEY=openai_secret_token_value
-export NPM_TOKEN OPENAI_API_KEY
+WHOATHERE_SCANNER_CACHE_DIR="$SCANNER_CACHE"
+export NPM_TOKEN OPENAI_API_KEY WHOATHERE_SCANNER_CACHE_DIR
 
 cleanup() {
   rm -rf "$WORK_DIR"
@@ -60,23 +63,38 @@ write_scanner_receipt() {
   workspace=$1
   ecosystem=$2
   output=$3
-  scanner_clean=$4
-  reason_codes=$5
-  plan="$output.plan.json"
-  "$CLI" scanners run --workspace "$workspace" --ecosystem "$ecosystem" --json > "$plan"
-  workspace_sha256=$(sed -n 's/.*"workspace_sha256": "\([^"]*\)".*/\1/p' "$plan" | head -n 1)
-  if [ -z "$workspace_sha256" ]; then
-    echo "missing_workspace_sha256" >&2
-    cat "$plan" >&2
+  set +e
+  "$CLI" scanners run --workspace "$workspace" --ecosystem "$ecosystem" --state-dir "$STATE_DIR" --execute --json > "$output" 2>&1
+  status=$?
+  set -e
+  case "$status" in
+    0|20) ;;
+    *)
+      echo "unexpected_scanner_exit=$status" >&2
+      cat "$output" >&2
+      exit 1
+      ;;
+  esac
+  if ! grep -Fq '"scanner_receipt_auth"' "$output"; then
+    echo "missing_scanner_receipt_auth" >&2
+    cat "$output" >&2
     exit 1
   fi
-  cat > "$output" <<JSON
-{"schema_version":"whoathere.external_scanner_run.v1","workspace_sha256":"$workspace_sha256","execute_requested":true,"scanner_clean":$scanner_clean,"core_scanner_count":5,"core_scanner_runnable_count":5,"reason_codes":[$reason_codes],"records":[{"scanner":"guarddog","role":"core","status":"passed"},{"scanner":"osv-scanner","role":"core","status":"passed"},{"scanner":"pip-audit","role":"core","status":"passed"},{"scanner":"syft","role":"core","status":"passed"},{"scanner":"grype","role":"core","status":"passed"}]}
-JSON
 }
 
 cargo build --manifest-path "$ROOT_DIR/whoathere/Cargo.toml" -p whoathere-cli --bin whoathere >/dev/null
-mkdir -p "$WORK_DIR"
+mkdir -p "$WORK_DIR" "$SCANNER_BIN"
+for scanner in guarddog osv-scanner pip-audit syft grype trivy scorecard; do
+  cat > "$SCANNER_BIN/$scanner" <<'SH'
+#!/bin/sh
+case "$*" in
+  *scanner-dirty*|*bad-npm*) printf '{"findings":[{"whoathere_fake_finding":true}]}\n' ;;
+  *) printf '{"findings":[]}\n' ;;
+esac
+exit 0
+SH
+  chmod +x "$SCANNER_BIN/$scanner"
+done
 
 PINNED="$WORK_DIR/pinned"
 mkdir -p "$PINNED"
@@ -86,7 +104,7 @@ REQ
 run_capture 22 "$WORK_DIR/pinned-no-scanner.json" "$CLI" package-risk assess --workspace "$PINNED" --ecosystem pypi --state-dir "$STATE_DIR" --json
 require_contains '"overall_verdict": "manual_review"' "$WORK_DIR/pinned-no-scanner.json" pinned_no_scanner_manual
 require_contains 'scanner_receipt_not_requested' "$WORK_DIR/pinned-no-scanner.json" pinned_no_scanner_reason
-write_scanner_receipt "$PINNED" pypi "$WORK_DIR/scanner-clean-pinned.json" true ''
+write_scanner_receipt "$PINNED" pypi "$WORK_DIR/scanner-clean-pinned.json"
 run_capture 0 "$WORK_DIR/pinned.json" "$CLI" package-risk assess --workspace "$PINNED" --ecosystem pypi --state-dir "$STATE_DIR" --scanner-receipt "$WORK_DIR/scanner-clean-pinned.json" --json
 require_contains '"overall_verdict": "auto_sync_candidate"' "$WORK_DIR/pinned.json" pinned_auto_candidate
 require_contains '"all_freshness_allowed": true' "$WORK_DIR/pinned.json" pinned_freshness
@@ -99,7 +117,7 @@ mkdir -p "$UNPINNED"
 cat >"$UNPINNED/requirements.txt" <<'REQ'
 safe-pkg>=1.0
 REQ
-write_scanner_receipt "$UNPINNED" pypi "$WORK_DIR/scanner-clean-unpinned.json" true ''
+write_scanner_receipt "$UNPINNED" pypi "$WORK_DIR/scanner-clean-unpinned.json"
 run_capture 0 "$WORK_DIR/unpinned.json" "$CLI" package-risk assess --workspace "$UNPINNED" --ecosystem pypi --state-dir "$STATE_DIR" --scanner-receipt "$WORK_DIR/scanner-clean-unpinned.json" --json
 require_contains 'last_known_good_substitution_selected' "$WORK_DIR/unpinned.json" lkg_reason
 require_contains '"selected_version": "1.2.3"' "$WORK_DIR/unpinned.json" lkg_version
@@ -134,7 +152,7 @@ mkdir -p "$SCANNER_DIRTY"
 cat >"$SCANNER_DIRTY/requirements.txt" <<'REQ'
 safe-pkg==1.2.3 # whoathere-published-at=1700000000
 REQ
-write_scanner_receipt "$SCANNER_DIRTY" pypi "$WORK_DIR/scanner-dirty.json" false '"scanner_findings_observed"'
+write_scanner_receipt "$SCANNER_DIRTY" pypi "$WORK_DIR/scanner-dirty.json"
 run_capture 22 "$WORK_DIR/scanner-dirty-assess.json" "$CLI" package-risk assess --workspace "$SCANNER_DIRTY" --ecosystem pypi --state-dir "$STATE_DIR" --scanner-receipt "$WORK_DIR/scanner-dirty.json" --json
 require_contains '"all_scanner_clean": false' "$WORK_DIR/scanner-dirty-assess.json" scanner_dirty_clean
 require_contains 'scanner_receipt_not_clean' "$WORK_DIR/scanner-dirty-assess.json" scanner_dirty_reason
@@ -217,7 +235,7 @@ require_contains 'artifact_review_output_limit_exceeded' "$WORK_DIR/ai-output-li
 require_contains '"raw_output_included": false' "$WORK_DIR/ai-output-limit.json" ai_output_not_included
 
 RELEASE_RECEIPT=$PINNED_RECEIPT
-run_capture 0 "$WORK_DIR/release-plan.json" "$CLI" vm release-plan --state-dir "$STATE_DIR" --class pypi.pure_wheel.v1 --vm-ready --static-clean --dynamic-clean --egress-clean --no-canary-access --package-risk-receipt "$RELEASE_RECEIPT" --json
+run_capture 0 "$WORK_DIR/release-plan.json" "$CLI" vm release-plan --state-dir "$STATE_DIR" --workspace "$PINNED" --class pypi.pure_wheel.v1 --vm-ready --static-clean --dynamic-clean --egress-clean --no-canary-access --package-risk-receipt "$RELEASE_RECEIPT" --json
 require_contains '"package_risk_receipt_applied": true' "$WORK_DIR/release-plan.json" release_receipt
 require_contains '"verdict": "auto_sync"' "$WORK_DIR/release-plan.json" release_auto
 
