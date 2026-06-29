@@ -850,6 +850,13 @@
           files, direct URLs, Git dependencies, platform-specific payloads, and code that appears to
           read credentials or make network calls.
         </p>
+        <p>
+          There is also an optional local model review path using Ollama. When you request it,
+          WhoaThere sends only bounded, redacted snippets and gives priority to the files most
+          likely to matter: package manifests, install and build files, Python startup hooks,
+          lockfiles, and dependency files. A suspicious model result can force manual review, but a
+          clean model result cannot make a package trusted by itself.
+        </p>
         <div class="grid">
           <div class="card">
             <h3>What this helps with</h3>

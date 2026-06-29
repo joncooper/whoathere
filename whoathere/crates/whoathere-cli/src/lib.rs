@@ -7383,6 +7383,7 @@ fn macos_local_release_readiness(
             "package_risk.local_memory",
             "package_risk.last_known_good",
             "package_risk.cooldown_and_diff_gates",
+            "package_risk.local_artifact_review_optional",
         ]),
         fail_closed_workflows: string_vec(&[
             "npm.install.project.live_until_guest_toolchain_proven",
@@ -7503,7 +7504,7 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
             .collect::<Vec<_>>()
             .join(", ");
         return format!(
-            "{{\n  \"command\": \"whoathere doctor\",\n  \"status\": \"ok\",\n  \"release_target\": {},\n  \"release_claim\": {},\n  \"sandbox_label\": {},\n  \"high_risk_allowed\": {},\n  \"state_dir\": {},\n  \"vm_manifest_path\": {},\n  \"vm_manifest_load_reason\": {},\n  \"guest_provisioning\": {},\n  \"runtime_shutdown\": {},\n  \"release_validation\": {},\n  \"sync_validation\": {},\n  \"release_notarization\": {},\n  \"guest_reprovision_required\": {},\n  \"guest_reprovision_admin_required\": {},\n  \"guest_reprovision_operator_action\": {},\n  \"guest_reprovision_command\": {},\n  \"release_readiness_schema\": {},\n  \"release_stage\": {},\n  \"release_ready\": {},\n  \"release_blocking_reason_codes\": {},\n  \"scanner_release_blocking\": {},\n  \"scanner_release_scope\": {},\n  \"scanner_bootstrap_receipt_present\": {},\n  \"scanner_bootstrap_receipt_path\": {},\n  \"scanner_bootstrap_receipt_valid\": {},\n  \"scanner_bootstrap_receipt_reason_codes\": {},\n  \"scanner_public_package_auto_trust_ready\": {},\n  \"package_memory_ready\": {},\n  \"package_memory_path\": {},\n  \"package_risk_gate_ready\": {},\n  \"package_age_gate_days\": {},\n  \"package_diff_supported\": {},\n  \"package_reputation_support\": {},\n  \"package_acquisition_policy\": {},\n  \"implemented_workflows\": {},\n  \"fail_closed_workflows\": {},\n  \"manual_review_classes\": {},\n  \"next_actions\": {},\n  \"vm_lifecycle_ready\": {},\n  \"vm_lifecycle_reason_codes\": {},\n  \"vm_runtime_ready\": {},\n  \"vm_ready\": {},\n  \"vm_reason_codes\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout_truncated\": {},\n  \"helper_stderr_truncated\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {},\n  \"scanner_available_count\": {},\n  \"scanner_required_count\": {},\n  \"scanners\": [{}]\n}}",
+            "{{\n  \"command\": \"whoathere doctor\",\n  \"status\": \"ok\",\n  \"release_target\": {},\n  \"release_claim\": {},\n  \"sandbox_label\": {},\n  \"high_risk_allowed\": {},\n  \"state_dir\": {},\n  \"vm_manifest_path\": {},\n  \"vm_manifest_load_reason\": {},\n  \"guest_provisioning\": {},\n  \"runtime_shutdown\": {},\n  \"release_validation\": {},\n  \"sync_validation\": {},\n  \"release_notarization\": {},\n  \"guest_reprovision_required\": {},\n  \"guest_reprovision_admin_required\": {},\n  \"guest_reprovision_operator_action\": {},\n  \"guest_reprovision_command\": {},\n  \"release_readiness_schema\": {},\n  \"release_stage\": {},\n  \"release_ready\": {},\n  \"release_blocking_reason_codes\": {},\n  \"scanner_release_blocking\": {},\n  \"scanner_release_scope\": {},\n  \"scanner_bootstrap_receipt_present\": {},\n  \"scanner_bootstrap_receipt_path\": {},\n  \"scanner_bootstrap_receipt_valid\": {},\n  \"scanner_bootstrap_receipt_reason_codes\": {},\n  \"scanner_public_package_auto_trust_ready\": {},\n  \"package_memory_ready\": {},\n  \"package_memory_path\": {},\n  \"package_risk_gate_ready\": {},\n  \"package_age_gate_days\": {},\n  \"package_diff_supported\": {},\n  \"package_reputation_support\": {},\n  \"artifact_review_support\": \"optional_local_ollama_findings_only\",\n  \"artifact_review_auto_allow_authority\": false,\n  \"package_acquisition_policy\": {},\n  \"implemented_workflows\": {},\n  \"fail_closed_workflows\": {},\n  \"manual_review_classes\": {},\n  \"next_actions\": {},\n  \"vm_lifecycle_ready\": {},\n  \"vm_lifecycle_reason_codes\": {},\n  \"vm_runtime_ready\": {},\n  \"vm_ready\": {},\n  \"vm_reason_codes\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout_truncated\": {},\n  \"helper_stderr_truncated\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {},\n  \"scanner_available_count\": {},\n  \"scanner_required_count\": {},\n  \"scanners\": [{}]\n}}",
             json_string(RELEASE_TARGET),
             json_string(RELEASE_CLAIM),
             json_string(plan.label),
@@ -7590,7 +7591,7 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "whoathere doctor\nstatus=ok\nrelease_target={}\nrelease_claim={}\nsandbox_label={}\nhigh_risk_allowed={}\nstate_dir={}\nvm_manifest_path={}\nvm_manifest_load_reason={}\n{}\n{}\n{}\n{}\n{}\nguest_reprovision_required={}\nguest_reprovision_admin_required={}\nguest_reprovision_operator_action={}\nguest_reprovision_command={}\nrelease_readiness_schema={}\nrelease_stage={}\nrelease_ready={}\nrelease_blocking_reason_codes={:?}\nscanner_release_blocking={}\nscanner_release_scope={}\nscanner_bootstrap_receipt_present={}\nscanner_bootstrap_receipt_path={}\nscanner_bootstrap_receipt_valid={}\nscanner_bootstrap_receipt_reason_codes={:?}\nscanner_public_package_auto_trust_ready={}\npackage_memory_ready={}\npackage_memory_path={}\npackage_risk_gate_ready={}\npackage_age_gate_days={}\npackage_diff_supported=true\npackage_reputation_support={}\npackage_acquisition_policy={}\nimplemented_workflows={:?}\nfail_closed_workflows={:?}\nmanual_review_classes={:?}\nnext_actions={:?}\nvm_lifecycle_ready={}\nvm_lifecycle_reason_codes={:?}\nvm_runtime_ready={}\nvm_ready={}\nvm_reason_codes={:?}\n{}\nscanner_available_count={}\nscanner_required_count={}\n{}",
+        "whoathere doctor\nstatus=ok\nrelease_target={}\nrelease_claim={}\nsandbox_label={}\nhigh_risk_allowed={}\nstate_dir={}\nvm_manifest_path={}\nvm_manifest_load_reason={}\n{}\n{}\n{}\n{}\n{}\nguest_reprovision_required={}\nguest_reprovision_admin_required={}\nguest_reprovision_operator_action={}\nguest_reprovision_command={}\nrelease_readiness_schema={}\nrelease_stage={}\nrelease_ready={}\nrelease_blocking_reason_codes={:?}\nscanner_release_blocking={}\nscanner_release_scope={}\nscanner_bootstrap_receipt_present={}\nscanner_bootstrap_receipt_path={}\nscanner_bootstrap_receipt_valid={}\nscanner_bootstrap_receipt_reason_codes={:?}\nscanner_public_package_auto_trust_ready={}\npackage_memory_ready={}\npackage_memory_path={}\npackage_risk_gate_ready={}\npackage_age_gate_days={}\npackage_diff_supported=true\npackage_reputation_support={}\nartifact_review_support=optional_local_ollama_findings_only\nartifact_review_auto_allow_authority=false\npackage_acquisition_policy={}\nimplemented_workflows={:?}\nfail_closed_workflows={:?}\nmanual_review_classes={:?}\nnext_actions={:?}\nvm_lifecycle_ready={}\nvm_lifecycle_reason_codes={:?}\nvm_runtime_ready={}\nvm_ready={}\nvm_reason_codes={:?}\n{}\nscanner_available_count={}\nscanner_required_count={}\n{}",
         RELEASE_TARGET,
         RELEASE_CLAIM,
         plan.label,
@@ -8147,7 +8148,7 @@ fn render_vm_sync_policy(json: bool) -> String {
             .collect::<Vec<_>>()
             .join(", ");
         return format!(
-            "{{\n  \"command\": \"whoathere vm sync-policy\",\n  \"release_target\": {},\n  \"sync_policy\": {},\n  \"sync_back_enabled\": true,\n  \"policy_scope\": \"local_beta_allowlist_requires_clean_vm_evidence_and_current_sync_receipt\",\n  \"auto_sync_classes\": [\"npm.local_project.no_external_dependency\", \"pypi.local_project.pure_python\", \"uv.local_project.pure_python\"],\n  \"deny_default_classes\": [\"direct_vcs_editable.v1\", \"unsupported_unknown.v1\"],\n  \"manual_review_classes\": [\"pypi.sdist_pep517.v1\", \"pypi.binary_wheel.v1\", \"native_extension.v1\"],\n  \"package_risk_required_for_public_auto_sync\": true,\n  \"package_age_gate_days\": {},\n  \"package_risk_receipt_max_age_seconds\": {},\n  \"package_risk_receipt_fields\": [\"receipt_id\", \"workspace_sha256\", \"created_at_unix_seconds\", \"overall_verdict\", \"all_freshness_allowed\", \"all_diff_clean_or_baseline_absent\", \"all_scanner_clean\", \"scanner_evidence.applied\", \"scanner_evidence.status\", \"artifact_review.status\", \"packages[].package_class\", \"packages[].verdict\", \"packages[].artifact_review_status\", \"receipt_auth.schema_version\", \"receipt_auth.payload_sha256\", \"receipt_auth.mac_sha256\"],\n  \"sync_allowlist\": [{}],\n  \"required_evidence\": {},\n  \"scanner_adapters\": [{}]\n}}",
+            "{{\n  \"command\": \"whoathere vm sync-policy\",\n  \"release_target\": {},\n  \"sync_policy\": {},\n  \"sync_back_enabled\": true,\n  \"policy_scope\": \"local_beta_allowlist_requires_clean_vm_evidence_and_current_sync_receipt\",\n  \"auto_sync_classes\": [\"npm.local_project.no_external_dependency\", \"pypi.local_project.pure_python\", \"uv.local_project.pure_python\"],\n  \"deny_default_classes\": [\"direct_vcs_editable.v1\", \"unsupported_unknown.v1\"],\n  \"manual_review_classes\": [\"pypi.sdist_pep517.v1\", \"pypi.binary_wheel.v1\", \"native_extension.v1\"],\n  \"package_risk_required_for_public_auto_sync\": true,\n  \"package_age_gate_days\": {},\n  \"package_risk_receipt_max_age_seconds\": {},\n  \"artifact_review_policy\": \"optional_local_model_findings_block_auto_sync_no_allow_authority\",\n  \"artifact_review_auto_allow_authority\": false,\n  \"package_risk_receipt_fields\": [\"receipt_id\", \"workspace_sha256\", \"created_at_unix_seconds\", \"overall_verdict\", \"all_freshness_allowed\", \"all_diff_clean_or_baseline_absent\", \"all_scanner_clean\", \"scanner_evidence.applied\", \"scanner_evidence.status\", \"artifact_review.status\", \"packages[].package_class\", \"packages[].verdict\", \"packages[].artifact_review_status\", \"receipt_auth.schema_version\", \"receipt_auth.payload_sha256\", \"receipt_auth.mac_sha256\"],\n  \"sync_allowlist\": [{}],\n  \"required_evidence\": {},\n  \"scanner_adapters\": [{}]\n}}",
             json_string(RELEASE_TARGET),
             json_string(SYNC_POLICY),
             PACKAGE_RISK_COOLDOWN_DAYS,
@@ -8178,7 +8179,7 @@ fn render_vm_sync_policy(json: bool) -> String {
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "whoathere vm sync-policy\nrelease_target={}\nsync_policy={}\nsync_back_enabled=true\npolicy_scope=local_beta_allowlist_requires_clean_vm_evidence_and_current_sync_receipt\nauto_sync_classes=[\"npm.local_project.no_external_dependency\", \"pypi.local_project.pure_python\", \"uv.local_project.pure_python\"]\nmanual_review_classes=[\"pypi.sdist_pep517.v1\", \"pypi.binary_wheel.v1\", \"native_extension.v1\"]\ndeny_default_classes=[\"direct_vcs_editable.v1\", \"unsupported_unknown.v1\"]\npackage_risk_required_for_public_auto_sync=true\npackage_age_gate_days={}\npackage_risk_receipt_max_age_seconds={}\npackage_risk_receipt_fields=[\"receipt_id\", \"workspace_sha256\", \"created_at_unix_seconds\", \"overall_verdict\", \"all_freshness_allowed\", \"all_diff_clean_or_baseline_absent\", \"all_scanner_clean\", \"scanner_evidence.applied\", \"scanner_evidence.status\", \"artifact_review.status\", \"packages[].package_class\", \"packages[].verdict\", \"packages[].artifact_review_status\", \"receipt_auth.schema_version\", \"receipt_auth.payload_sha256\", \"receipt_auth.mac_sha256\"]\nrequired_evidence={:?}\n{}\n{}",
+        "whoathere vm sync-policy\nrelease_target={}\nsync_policy={}\nsync_back_enabled=true\npolicy_scope=local_beta_allowlist_requires_clean_vm_evidence_and_current_sync_receipt\nauto_sync_classes=[\"npm.local_project.no_external_dependency\", \"pypi.local_project.pure_python\", \"uv.local_project.pure_python\"]\nmanual_review_classes=[\"pypi.sdist_pep517.v1\", \"pypi.binary_wheel.v1\", \"native_extension.v1\"]\ndeny_default_classes=[\"direct_vcs_editable.v1\", \"unsupported_unknown.v1\"]\npackage_risk_required_for_public_auto_sync=true\npackage_age_gate_days={}\npackage_risk_receipt_max_age_seconds={}\nartifact_review_policy=optional_local_model_findings_block_auto_sync_no_allow_authority\nartifact_review_auto_allow_authority=false\npackage_risk_receipt_fields=[\"receipt_id\", \"workspace_sha256\", \"created_at_unix_seconds\", \"overall_verdict\", \"all_freshness_allowed\", \"all_diff_clean_or_baseline_absent\", \"all_scanner_clean\", \"scanner_evidence.applied\", \"scanner_evidence.status\", \"artifact_review.status\", \"packages[].package_class\", \"packages[].verdict\", \"packages[].artifact_review_status\", \"receipt_auth.schema_version\", \"receipt_auth.payload_sha256\", \"receipt_auth.mac_sha256\"]\nrequired_evidence={:?}\n{}\n{}",
         RELEASE_TARGET,
         SYNC_POLICY,
         PACKAGE_RISK_COOLDOWN_DAYS,
@@ -12029,7 +12030,11 @@ Bounded redacted evidence snippets:\n{}\n",
 fn collect_artifact_review_snippets(workspace: &Path) -> Vec<(String, String)> {
     let mut files = Vec::new();
     collect_artifact_review_snippets_inner(workspace, workspace, &mut files, 0);
-    files.sort_by(|left, right| left.0.cmp(&right.0));
+    files.sort_by(|left, right| {
+        artifact_review_file_priority(&left.0)
+            .cmp(&artifact_review_file_priority(&right.0))
+            .then(left.0.cmp(&right.0))
+    });
     let mut total_bytes = 0usize;
     let mut selected = Vec::new();
     for (path, contents) in files {
@@ -12093,9 +12098,15 @@ fn artifact_review_file_allowed(path: &Path) -> bool {
     if matches!(
         name.as_str(),
         "package.json"
+            | "package-lock.json"
+            | "npm-shrinkwrap.json"
             | "pyproject.toml"
             | "setup.py"
             | "setup.cfg"
+            | "uv.lock"
+            | "poetry.lock"
+            | "pipfile"
+            | "pipfile.lock"
             | "requirements.txt"
             | "constraints.txt"
     ) || name.starts_with("requirements")
@@ -12108,8 +12119,56 @@ fn artifact_review_file_allowed(path: &Path) -> bool {
             .unwrap_or("")
             .to_ascii_lowercase()
             .as_str(),
-        "js" | "mjs" | "cjs" | "ts" | "py" | "json" | "toml" | "cfg" | "txt"
+        "js" | "mjs"
+            | "cjs"
+            | "ts"
+            | "py"
+            | "json"
+            | "toml"
+            | "cfg"
+            | "txt"
+            | "pth"
+            | "yaml"
+            | "yml"
     )
+}
+
+fn artifact_review_file_priority(relative_path: &str) -> u8 {
+    let lowered = relative_path.to_ascii_lowercase();
+    let file_name = lowered.rsplit('/').next().unwrap_or(lowered.as_str());
+    if matches!(
+        file_name,
+        "package.json" | "pyproject.toml" | "setup.py" | "setup.cfg"
+    ) || file_name.ends_with(".pth")
+    {
+        return 0;
+    }
+    if matches!(
+        file_name,
+        "package-lock.json"
+            | "npm-shrinkwrap.json"
+            | "requirements.txt"
+            | "constraints.txt"
+            | "uv.lock"
+            | "poetry.lock"
+            | "pipfile"
+            | "pipfile.lock"
+    ) || file_name.starts_with("requirements")
+    {
+        return 1;
+    }
+    if matches!(
+        lowered
+            .rsplit('.')
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase()
+            .as_str(),
+        "js" | "mjs" | "cjs" | "ts" | "py"
+    ) {
+        return 2;
+    }
+    3
 }
 
 fn artifact_review_redact_text(contents: &str) -> String {
@@ -20699,6 +20758,84 @@ exit 64
     }
 
     #[test]
+    fn package_risk_ai_review_prioritizes_high_risk_artifact_files() {
+        let root = temp_root("whoathere-cli-package-risk-ai-priority");
+        let state_dir = root.join("state");
+        let workspace = root.join("workspace");
+        let risky_dir = workspace.join("zzz");
+        let tools_dir = root.join("tools");
+        let fake_ollama = tools_dir.join("ollama");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        std::fs::create_dir_all(&risky_dir).expect("risky dir");
+        std::fs::create_dir_all(&tools_dir).expect("tools");
+        write_new_file(
+            &fake_ollama,
+            br#"#!/bin/sh
+prompt=$(cat)
+case "$prompt" in
+  *"FILE: zzz/setup.py"*)
+    printf '{"risk":"suspicious","reason_codes":["prioritized_setup_py"],"summary":"setup.py reviewed"}\n'
+    ;;
+  *)
+    printf '{"risk":"clean","reason_codes":["missed_setup_py"],"summary":"setup.py not reviewed"}\n'
+    ;;
+esac
+exit 0
+"#,
+        )
+        .expect("fake ollama");
+        set_executable(&fake_ollama).expect("fake executable");
+        for index in 0..20 {
+            write_new_file(
+                &workspace.join(format!("aaa{index:02}.txt")),
+                b"benign filler for artifact review budget\n",
+            )
+            .expect("filler");
+        }
+        write_new_file(
+            &workspace.join("requirements.txt"),
+            b"safe-pkg==1.2.3 # whoathere-published-at=1700000000\n",
+        )
+        .expect("requirements");
+        write_new_file(
+            &risky_dir.join("setup.py"),
+            b"import os\nTOKEN = os.environ.get('WHOATHERE_CANARY_TOKEN')\n",
+        )
+        .expect("setup py");
+
+        let result = with_reprovision_env(
+            &[(
+                "WHOATHERE_ARTIFACT_REVIEW_TEST_BIN",
+                fake_ollama.display().to_string(),
+            )],
+            || {
+                evaluate_command(Command::PackageRiskAssess {
+                    workspace: Some(workspace.display().to_string()),
+                    ecosystem: Some("pypi".to_string()),
+                    state_dir: Some(state_dir.display().to_string()),
+                    scanner_receipt: None,
+                    ai_review: true,
+                    ai_provider: Some("ollama".to_string()),
+                    ai_model: Some("fake-review-model".to_string()),
+                    ai_timeout_seconds: Some(5),
+                    json: true,
+                })
+            },
+        );
+
+        assert_eq!(result.exit_code, 22);
+        assert!(result
+            .output
+            .contains("\"artifact_review_status\": \"findings\""));
+        assert!(result
+            .output
+            .contains("artifact_review_model_prioritized_setup_py"));
+        assert!(!result.output.contains("missed_setup_py"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn package_risk_ai_review_clean_cannot_override_freshness_gate() {
         let root = temp_root("whoathere-cli-package-risk-ai-clean-fresh");
         let state_dir = root.join("state");
@@ -21058,6 +21195,12 @@ exit 0
         assert!(sync
             .output
             .contains("package_risk_required_for_public_auto_sync=true"));
+        assert!(sync.output.contains(
+            "artifact_review_policy=optional_local_model_findings_block_auto_sync_no_allow_authority"
+        ));
+        assert!(sync
+            .output
+            .contains("artifact_review_auto_allow_authority=false"));
     }
 
     #[test]

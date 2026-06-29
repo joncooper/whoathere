@@ -19,6 +19,9 @@ replace the macOS VM, scanners, canary checks, strict sync-back rules, or manual
 - Added `package-risk assess --scanner-receipt <path>` to consume normalized
   `scanners run --state-dir <dir> --execute --json` evidence.
 - Added opt-in local model review through `package-risk assess --ai-review --ai-provider ollama --ai-model <model>`.
+  The review input prioritizes package manifests, install/build files, Python `.pth` startup hooks,
+  lockfiles, and dependency files before generic source snippets so the small review budget is
+  spent on the files most likely to carry supply-chain behavior.
 - Added `whoathere package-risk history --package <name> --ecosystem <npm|pypi|uv> [--state-dir <dir>] [--json]`.
 - Added `whoathere package-risk approve --receipt <path> --reason <text> [--state-dir <dir>] [--json]`.
 - Added append-only local package memory under `<state-dir>/package-risk/package-risk-evidence.jsonl`.
@@ -30,7 +33,8 @@ replace the macOS VM, scanners, canary checks, strict sync-back rules, or manual
 - Added state-local package-risk receipt authentication. Runtime sync-back, release-plan receipt
   application, and local approval now reject forged, stale, wrong-state, or unauthenticated
   package-risk receipts.
-- Added `doctor --json` package-risk readiness fields.
+- Added `doctor --json` package-risk readiness fields, including explicit local artifact-review
+  support and `artifact_review_auto_allow_authority=false`.
 - Added deterministic package-risk and real-world-inspired attack harness scripts.
 - Added `WHOATHERE_SCANNER_CACHE_DIR` for deterministic scanner outage/timeout tests.
 
@@ -48,7 +52,8 @@ replace the macOS VM, scanners, canary checks, strict sync-back rules, or manual
   prompt/output hashes. Raw prompts and model output are not stored.
 - A clean local model result cannot authorize execution, copy-back, or bypass freshness, diff,
   scanner, VM, or package-class gates. Requested model findings, timeout, error, or provider
-  unavailability force manual review.
+  unavailability force manual review. `vm sync-policy` reports this as
+  `optional_local_model_findings_block_auto_sync_no_allow_authority`.
 - Scanner receipts are normalized evidence. Clean scanner receipts must be executed scanner runs
   bound to the assessed workspace digest, include clean core scanner records, carry executable
   digests, and include a valid state-local `scanner_receipt_auth` tag. Dirty, unreadable, invalid,
