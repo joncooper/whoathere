@@ -12,6 +12,7 @@ ATTEMPT_SUDO=false
 WORK_ROOT=""
 PRESERVE_WORK=false
 STARTED_VM=false
+SCANNER_CACHE_DIR=${WHOATHERE_SCANNER_CACHE_DIR:-${WHOATHERE_SCANNER_CACHE:-"$HOME/.whoathere/scanners"}}
 
 usage() {
   cat >&2 <<'EOF'
@@ -163,6 +164,7 @@ run_clean() {
     HOME="$CLEAN_HOME" \
     TMPDIR="$CLEAN_TMP/" \
     PATH="/usr/bin:/bin:/usr/sbin:/sbin" \
+    WHOATHERE_SCANNER_CACHE_DIR="$SCANNER_CACHE_DIR" \
     "$@"
 }
 
@@ -171,6 +173,7 @@ run_clean_with_sources() {
     HOME="$CLEAN_HOME" \
     TMPDIR="$CLEAN_TMP/" \
     PATH="/usr/bin:/bin:/usr/sbin:/sbin" \
+    WHOATHERE_SCANNER_CACHE_DIR="$SCANNER_CACHE_DIR" \
     WHOATHERE_PYTHON_RUNTIME_DIR="$PYTHON_RUNTIME_DIR" \
     WHOATHERE_PYTHON_WHEEL_DIR="$PYTHON_WHEEL_DIR" \
     WHOATHERE_WHEEL_PACKAGE_FILE="$WHEEL_PACKAGE_FILE" \

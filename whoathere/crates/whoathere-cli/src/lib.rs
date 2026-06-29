@@ -21451,6 +21451,60 @@ esac
     }
 
     #[test]
+    fn scanners_run_treats_osv_no_sources_as_not_applicable() {
+        let root = temp_root("whoathere-cli-scanners-osv-no-sources");
+        let scanner_cache = root.join("scanners");
+        let bin = scanner_cache.join("bin");
+        let workspace = root.join("python-project");
+        let state_dir = root.join("state");
+        std::fs::create_dir_all(&bin).expect("bin");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        std::fs::write(
+            workspace.join("pyproject.toml"),
+            "[project]\nname = \"no-source-fixture\"\nversion = \"0.0.1\"\n",
+        )
+        .expect("pyproject");
+        for scanner in ["guarddog", "syft", "grype"] {
+            write_fake_scanner(&bin.join(scanner));
+        }
+        write_new_file(
+            &bin.join("osv-scanner"),
+            br#"#!/bin/sh
+printf 'No package sources found, --help for usage information.\n' >&2
+exit 128
+"#,
+        )
+        .expect("osv fake");
+        set_executable(&bin.join("osv-scanner")).expect("osv executable");
+        write_fake_scanner(&bin.join("pip-audit"));
+
+        with_reprovision_env(
+            &[(
+                "WHOATHERE_SCANNER_CACHE_DIR",
+                scanner_cache.display().to_string(),
+            )],
+            || {
+                let result = evaluate_command(Command::ScannersRun {
+                    workspace: Some(workspace.display().to_string()),
+                    ecosystem: Some("pypi".to_string()),
+                    state_dir: Some(state_dir.display().to_string()),
+                    timeout_seconds: Some(5),
+                    execute: true,
+                    json: true,
+                });
+                assert_eq!(result.exit_code, 0);
+                assert!(result.output.contains("\"scanner_clean\": true"));
+                assert!(result.output.contains("\"scanner\": \"osv-scanner\""));
+                assert!(result.output.contains("\"status\": \"not_applicable\""));
+                assert!(result.output.contains("scanner_osv_no_package_sources"));
+                assert!(!result.output.contains(&root.display().to_string()));
+            },
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn scanners_run_dry_run_requires_execute_without_raw_workspace_path() {
         let root = temp_root("whoathere-cli-scanners-dry-run");
         write_clean_npm_project(&root);

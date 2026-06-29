@@ -28,6 +28,12 @@ execution or file copy-back by itself.
   public-package readiness.
 - Fixed GuardDog and pip-audit `uvx` fallback execution so fallback runs as `uvx guarddog ...`
   or `uvx pip-audit ...` instead of treating `uvx` as if it were the scanner binary.
+- Scanner bootstrap now materializes stable entries under `~/.whoathere/scanners/bin` for
+  discovered scanner tools. Clean validation environments pass `WHOATHERE_SCANNER_CACHE_DIR` so the
+  CLI does not depend on an ambient developer shell `PATH` to find core scanners.
+- OSV-Scanner exit 128 with `No package sources found` is classified as `not_applicable` rather
+  than `error`. This keeps tiny local packages with no dependency source from being marked dirty
+  while still failing closed on real scanner errors or findings.
 
 ## Adapter Scope
 

@@ -881,6 +881,10 @@ fn scanner_executable_is_uvx(executable: Option<&Path>) -> bool {
         == Some("uvx")
 }
 
+fn scanner_output_contains(output: &[u8], needle: &str) -> bool {
+    String::from_utf8_lossy(output).contains(needle)
+}
+
 fn execute_scanner_plan(
     plan: ExternalScannerCommandPlan,
     timeout_seconds: u64,
@@ -969,11 +973,20 @@ fn execute_scanner_plan(
     let stderr_sha256 = Some(sha256_digest(&stderr));
     let finding_count = estimate_scanner_findings(&stdout, &stderr);
     let mut completed = plan;
+    let scanner_not_applicable = completed.scanner == "osv-scanner"
+        && exit_code == Some(128)
+        && (scanner_output_contains(&stdout, "No package sources found")
+            || scanner_output_contains(&stderr, "No package sources found"));
     if timed_out {
         completed.status = ScannerRunStatus::TimedOut;
         completed
             .reason_codes
             .push("scanner_process_timed_out".to_string());
+    } else if scanner_not_applicable {
+        completed.status = ScannerRunStatus::NotApplicable;
+        completed
+            .reason_codes
+            .push("scanner_osv_no_package_sources".to_string());
     } else if finding_count > 0 {
         completed.status = ScannerRunStatus::Findings;
         completed

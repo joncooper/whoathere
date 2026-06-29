@@ -19,6 +19,43 @@ json_string() {
   printf '"%s"' "$(json_escape "$1")"
 }
 
+shell_quote() {
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
+materialize_scanner_path() {
+  name=$1
+  path_value=$2
+  case "$path_value" in
+    "$BIN_DIR/$name")
+      printf '%s\n' "$path_value"
+      return 0
+      ;;
+    /*)
+      if [ -x "$path_value" ]; then
+        ln -sf "$path_value" "$BIN_DIR/$name" 2>/dev/null || return 1
+        printf '%s\n' "$BIN_DIR/$name"
+        return 0
+      fi
+      ;;
+  esac
+  return 1
+}
+
+materialize_uvx_wrapper() {
+  name=$1
+  uvx_path=$2
+  target="$BIN_DIR/$name"
+  temp_target="$target.$$"
+  {
+    printf '%s\n' '#!/bin/sh'
+    printf 'exec %s %s "$@"\n' "$(shell_quote "$uvx_path")" "$(shell_quote "$name")"
+  } > "$temp_target"
+  chmod 0755 "$temp_target"
+  mv "$temp_target" "$target"
+  printf '%s\n' "$target"
+}
+
 append_record() {
   name=$1
   role=$2
@@ -135,7 +172,8 @@ bootstrap_scanner() {
 
   path_value=$(command_path "$name")
   if [ -n "$path_value" ]; then
-    append_record "$name" "$role" "available" "$path_value" "$(scanner_version "$path_value")" "existing" ""
+    cache_path=$(materialize_scanner_path "$name" "$path_value" || printf '%s\n' "$path_value")
+    append_record "$name" "$role" "available" "$cache_path" "$(scanner_version "$cache_path")" "existing" ""
     return 0
   fi
 
@@ -144,11 +182,14 @@ bootstrap_scanner() {
       if install_uv_tool "$name" "$package"; then
         path_value=$(command_path "$name")
         if [ -n "$path_value" ]; then
-          append_record "$name" "$role" "installed" "$path_value" "$(scanner_version "$path_value")" "uv_tool" ""
+          cache_path=$(materialize_scanner_path "$name" "$path_value" || printf '%s\n' "$path_value")
+          append_record "$name" "$role" "installed" "$cache_path" "$(scanner_version "$cache_path")" "uv_tool" ""
           return 0
         fi
-        if command -v uvx >/dev/null 2>&1; then
-          append_record "$name" "$role" "uvx_available" "uvx $name" "unknown" "uvx" ""
+        uvx_path=$(command -v uvx 2>/dev/null || true)
+        if [ -n "$uvx_path" ]; then
+          cache_path=$(materialize_uvx_wrapper "$name" "$uvx_path")
+          append_record "$name" "$role" "uvx_available" "$cache_path" "$(scanner_version "$cache_path")" "uvx" ""
           return 0
         fi
       fi
@@ -158,13 +199,15 @@ bootstrap_scanner() {
       if install_brew_formula "$formula"; then
         path_value=$(command_path "$name")
         if [ -n "$path_value" ]; then
-          append_record "$name" "$role" "installed" "$path_value" "$(scanner_version "$path_value")" "homebrew" ""
+          cache_path=$(materialize_scanner_path "$name" "$path_value" || printf '%s\n' "$path_value")
+          append_record "$name" "$role" "installed" "$cache_path" "$(scanner_version "$cache_path")" "homebrew" ""
           return 0
         fi
       fi
       if install_github_release "$name" "$repo" "$pattern"; then
         path_value=$(command_path "$name")
-        append_record "$name" "$role" "installed" "$path_value" "$(scanner_version "$path_value")" "github_release" ""
+        cache_path=$(materialize_scanner_path "$name" "$path_value" || printf '%s\n' "$path_value")
+        append_record "$name" "$role" "installed" "$cache_path" "$(scanner_version "$cache_path")" "github_release" ""
         return 0
       fi
       append_record "$name" "$role" "missing" "" "" "homebrew_or_github_release" "install failed or no supported installer available"
