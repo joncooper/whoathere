@@ -14,6 +14,7 @@ STATE_DIR="$WORK_DIR/state"
 SCANNER_CACHE="$WORK_DIR/scanners"
 FAKE_BIN="$SCANNER_CACHE/bin"
 ENV_LEAK_MARKER="$WORK_DIR/scanner-env-leak.marker"
+ORPHAN_MARKER="$WORK_DIR/scanner-timeout-orphan.marker"
 mkdir -p "$FAKE_BIN"
 
 write_fake_scanner() {
@@ -29,7 +30,7 @@ if [ -n "\${OPENAI_API_KEY:-}" ]; then
   printf 'env_leak_openai_key=%s\n' "\$OPENAI_API_KEY"
 fi
 case "\$*" in
-  *timeout-npm*) sleep 3; printf '{"findings":[]}\n' ;;
+  *timeout-npm*) (sleep 2; printf 'scanner_timeout_orphan\n' > "$ORPHAN_MARKER") & sleep 3; printf '{"findings":[]}\n' ;;
   *bad-npm*) printf '{"findings":[{"whoathere_fake_finding":true}]}\n' ;;
   *) printf '{"findings":[]}\n' ;;
 esac
@@ -141,6 +142,12 @@ if "$WHOATHERE_BIN" scanners run --workspace "$TIMEOUT_NPM" --ecosystem npm --st
 fi
 require_contains '"status": "timed_out"' "$WORK_DIR/timeout.json" timeout_status_missing
 require_contains 'scanner_process_timed_out' "$WORK_DIR/timeout.json" timeout_reason_missing
+sleep 3
+if [ -e "$ORPHAN_MARKER" ]; then
+  printf 'scanner_smoke_failed=timeout_process_group_child_survived\n' >&2
+  cat "$ORPHAN_MARKER" >&2
+  exit 1
+fi
 
 if [ "${WHOATHERE_SCANNER_REAL_SMOKE:-0}" = "1" ]; then
   REAL_PATH="$ROOT_DIR/.whoathere/scanners/bin:$ORIGINAL_PATH"

@@ -1,6 +1,6 @@
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command as ProcessCommand, Stdio};
+use std::process::{Child as ProcessChild, Command as ProcessCommand, Stdio};
 use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -11409,6 +11409,7 @@ fn run_local_artifact_review(
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file));
     configure_artifact_review_environment(&mut command);
+    configure_artifact_review_process_group(&mut command);
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
@@ -11454,8 +11455,7 @@ fn run_local_artifact_review(
             > PACKAGE_ARTIFACT_REVIEW_OUTPUT_LIMIT_BYTES
         {
             output_limit_exceeded = true;
-            let _ = child.kill();
-            let _ = child.wait();
+            terminate_artifact_review_process_tree(&mut child);
             break None;
         }
         match child.try_wait() {
@@ -11463,8 +11463,7 @@ fn run_local_artifact_review(
             Ok(None) => {
                 if start.elapsed() >= timeout {
                     timed_out = true;
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    terminate_artifact_review_process_tree(&mut child);
                     break None;
                 }
                 sleep(Duration::from_millis(50));
@@ -11595,6 +11594,43 @@ fn configure_artifact_review_environment(command: &mut ProcessCommand) {
         }
     }
 }
+
+#[cfg(unix)]
+fn configure_artifact_review_process_group(command: &mut ProcessCommand) {
+    use std::os::unix::process::CommandExt;
+    command.process_group(0);
+}
+
+#[cfg(not(unix))]
+fn configure_artifact_review_process_group(_command: &mut ProcessCommand) {}
+
+fn terminate_artifact_review_process_tree(child: &mut ProcessChild) {
+    terminate_artifact_review_process_group(child.id());
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[cfg(unix)]
+fn terminate_artifact_review_process_group(child_id: u32) {
+    const SIGTERM: i32 = 15;
+    const SIGKILL: i32 = 9;
+    unsafe extern "C" {
+        fn kill(pid: i32, sig: i32) -> i32;
+    }
+    let Ok(pid) = i32::try_from(child_id) else {
+        return;
+    };
+    unsafe {
+        let _ = kill(-pid, SIGTERM);
+    }
+    sleep(Duration::from_millis(100));
+    unsafe {
+        let _ = kill(-pid, SIGKILL);
+    }
+}
+
+#[cfg(not(unix))]
+fn terminate_artifact_review_process_group(_child_id: u32) {}
 
 fn ollama_host_is_local(value: &str) -> bool {
     let trimmed = value.trim().to_ascii_lowercase();

@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -889,6 +889,7 @@ fn execute_scanner_plan(
     let mut command = Command::new(&executable);
     command.args(&plan.argv);
     configure_scanner_process_environment(&mut command);
+    configure_child_process_group(&mut command);
     command.stdout(Stdio::from(stdout_file));
     command.stderr(Stdio::from(stderr_file));
     let spawn_result = command.spawn();
@@ -911,8 +912,7 @@ fn execute_scanner_plan(
             Ok(None) => {
                 if start.elapsed() >= timeout {
                     timed_out = true;
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    terminate_child_process_tree(&mut child);
                     break None;
                 }
                 sleep(Duration::from_millis(25));
@@ -968,6 +968,43 @@ fn execute_scanner_plan(
         },
     )
 }
+
+#[cfg(unix)]
+fn configure_child_process_group(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    command.process_group(0);
+}
+
+#[cfg(not(unix))]
+fn configure_child_process_group(_command: &mut Command) {}
+
+fn terminate_child_process_tree(child: &mut Child) {
+    terminate_child_process_group(child.id());
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[cfg(unix)]
+fn terminate_child_process_group(child_id: u32) {
+    const SIGTERM: i32 = 15;
+    const SIGKILL: i32 = 9;
+    unsafe extern "C" {
+        fn kill(pid: i32, sig: i32) -> i32;
+    }
+    let Ok(pid) = i32::try_from(child_id) else {
+        return;
+    };
+    unsafe {
+        let _ = kill(-pid, SIGTERM);
+    }
+    sleep(Duration::from_millis(100));
+    unsafe {
+        let _ = kill(-pid, SIGKILL);
+    }
+}
+
+#[cfg(not(unix))]
+fn terminate_child_process_group(_child_id: u32) {}
 
 fn scanner_temp_path(scanner: &str, stream: &str) -> PathBuf {
     let nanos = SystemTime::now()
@@ -1122,7 +1159,26 @@ fn scanner_version(name: &str, executable: &Path) -> Option<String> {
     let mut command = Command::new(executable);
     command.args(args);
     configure_scanner_process_environment(&mut command);
-    let output = command.output().ok()?;
+    configure_child_process_group(&mut command);
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::piped());
+    let mut child = command.spawn().ok()?;
+    let start = Instant::now();
+    let timeout = Duration::from_secs(3);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {
+                if start.elapsed() >= timeout {
+                    terminate_child_process_tree(&mut child);
+                    return None;
+                }
+                sleep(Duration::from_millis(25));
+            }
+            Err(_) => return None,
+        }
+    }
+    let output = child.wait_with_output().ok()?;
     let text = if output.stdout.is_empty() {
         String::from_utf8_lossy(&output.stderr).to_string()
     } else {
