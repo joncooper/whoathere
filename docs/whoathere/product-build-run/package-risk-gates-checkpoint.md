@@ -38,9 +38,9 @@ replace the macOS VM, scanners, canary checks, strict sync-back rules, or manual
   scanner, VM, or package-class gates. Requested model findings, timeout, error, or provider
   unavailability force manual review.
 - Scanner receipts are normalized evidence. Clean scanner receipts must be executed scanner runs
-  bound to the assessed workspace digest. Dirty, unreadable, invalid, not-executed, missing, or
-  wrong-workspace scanner receipts force manual review and override operator-provided
-  `--scanner-clean`.
+  bound to the assessed workspace digest and include clean core scanner records. Dirty, unreadable,
+  invalid, not-executed, missing, no-record, or wrong-workspace scanner receipts force manual review
+  and override operator-provided `--scanner-clean`.
 - Public npm/PyPI auto-sync candidates require clean scanner evidence. Missing scanner evidence is
   manual review, not a clean result.
 - Local approval only accepts package-risk receipts that were already clean auto-sync candidates;

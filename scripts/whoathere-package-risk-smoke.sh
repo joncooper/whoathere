@@ -67,7 +67,7 @@ write_scanner_receipt() {
     exit 1
   fi
   cat > "$output" <<JSON
-{"schema_version":"whoathere.external_scanner_run.v1","workspace_sha256":"$workspace_sha256","execute_requested":true,"scanner_clean":$scanner_clean,"reason_codes":[$reason_codes]}
+{"schema_version":"whoathere.external_scanner_run.v1","workspace_sha256":"$workspace_sha256","execute_requested":true,"scanner_clean":$scanner_clean,"core_scanner_count":5,"core_scanner_runnable_count":5,"reason_codes":[$reason_codes],"records":[{"scanner":"guarddog","role":"core","status":"passed"},{"scanner":"osv-scanner","role":"core","status":"passed"},{"scanner":"pip-audit","role":"core","status":"passed"},{"scanner":"syft","role":"core","status":"passed"},{"scanner":"grype","role":"core","status":"passed"}]}
 JSON
 }
 

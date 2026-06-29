@@ -10632,6 +10632,18 @@ fn load_package_risk_scanner_evidence(
     }
     let scanner_clean = json_extract_bool_field(&contents, "scanner_clean").unwrap_or(false);
     if scanner_clean {
+        if let Some(reason) = validate_clean_scanner_receipt_records(&contents) {
+            reason_codes.push(reason.to_string());
+            return PackageRiskScannerEvidence {
+                requested: true,
+                applied: false,
+                receipt_path: Some(redacted_path),
+                scanner_clean: Some(false),
+                status: "invalid".to_string(),
+                reason_codes: sorted_unique(reason_codes),
+            };
+        }
+        reason_codes.push("scanner_receipt_core_records_clean".to_string());
         reason_codes.push("scanner_receipt_clean_advisory".to_string());
     } else {
         reason_codes.push("scanner_receipt_not_clean".to_string());
@@ -10644,6 +10656,31 @@ fn load_package_risk_scanner_evidence(
         status: if scanner_clean { "clean" } else { "not_clean" }.to_string(),
         reason_codes: sorted_unique(reason_codes),
     }
+}
+
+fn validate_clean_scanner_receipt_records(contents: &str) -> Option<&'static str> {
+    let records = json_extract_object_array(contents, "records");
+    let core_records = records
+        .iter()
+        .filter(|record| json_extract_string_field(record, "role").as_deref() == Some("core"))
+        .collect::<Vec<_>>();
+    if core_records.is_empty() {
+        return Some("scanner_receipt_core_records_missing");
+    }
+    if let Some(core_count) = json_extract_u64_field(contents, "core_scanner_count") {
+        if core_count == 0 || core_count as usize != core_records.len() {
+            return Some("scanner_receipt_core_record_count_mismatch");
+        }
+    }
+    if core_records.iter().any(|record| {
+        !matches!(
+            json_extract_string_field(record, "status").as_deref(),
+            Some("passed" | "not_applicable")
+        )
+    }) {
+        return Some("scanner_receipt_core_record_not_clean");
+    }
+    None
 }
 
 fn render_package_risk_scanner_evidence_json(evidence: &PackageRiskScannerEvidence) -> String {
@@ -18110,6 +18147,52 @@ exit 0
     }
 
     #[test]
+    fn package_risk_clean_scanner_receipt_requires_core_records() {
+        let root = temp_root("whoathere-cli-package-risk-scanner-minimal");
+        let state_dir = root.join("state");
+        let scanner_receipt = root.join("scanner-minimal.json");
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        write_new_file(
+            &workspace.join("requirements.txt"),
+            b"safe-pkg==1.2.3 # whoathere-published-at=1700000000\n",
+        )
+        .expect("requirements");
+        write_new_file(
+            &scanner_receipt,
+            format!(
+                "{{\"schema_version\": {}, \"workspace_sha256\": {}, \"execute_requested\": true, \"scanner_clean\": true, \"reason_codes\": []}}\n",
+                json_string(EXTERNAL_SCANNER_RUN_SCHEMA),
+                json_string(&scanner_workspace_digest(&workspace))
+            )
+            .as_bytes(),
+        )
+        .expect("minimal scanner receipt");
+
+        let assessed = evaluate_command(Command::PackageRiskAssess {
+            workspace: Some(workspace.display().to_string()),
+            ecosystem: Some("pypi".to_string()),
+            state_dir: Some(state_dir.display().to_string()),
+            scanner_receipt: Some(scanner_receipt.display().to_string()),
+            ai_review: false,
+            ai_provider: None,
+            ai_model: None,
+            ai_timeout_seconds: None,
+            json: true,
+        });
+        assert_eq!(assessed.exit_code, 22);
+        assert!(assessed
+            .output
+            .contains("scanner_receipt_core_records_missing"));
+        assert!(assessed
+            .output
+            .contains("\"scanner_evidence_status\": \"invalid\""));
+        assert!(assessed.output.contains("\"all_scanner_clean\": false"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn vm_release_plan_rejects_invalid_or_unbound_package_risk_receipts() {
         let root = temp_root("whoathere-cli-package-risk-bad-release-receipts");
         let invalid_schema = root.join("invalid-schema.json");
@@ -22074,7 +22157,7 @@ exit 0
         write_new_file(
             path,
             format!(
-                "{{\"schema_version\": {}, \"workspace_sha256\": {}, \"execute_requested\": true, \"scanner_clean\": {}, \"reason_codes\": [{}]}}\n",
+                "{{\"schema_version\": {}, \"workspace_sha256\": {}, \"execute_requested\": true, \"scanner_clean\": {}, \"core_scanner_count\": 5, \"core_scanner_runnable_count\": 5, \"reason_codes\": [{}], \"records\": [{{\"scanner\": \"guarddog\", \"role\": \"core\", \"status\": \"passed\"}}, {{\"scanner\": \"osv-scanner\", \"role\": \"core\", \"status\": \"passed\"}}, {{\"scanner\": \"pip-audit\", \"role\": \"core\", \"status\": \"passed\"}}, {{\"scanner\": \"syft\", \"role\": \"core\", \"status\": \"passed\"}}, {{\"scanner\": \"grype\", \"role\": \"core\", \"status\": \"passed\"}}]}}\n",
                 json_string(EXTERNAL_SCANNER_RUN_SCHEMA),
                 json_string(&workspace_sha256),
                 scanner_clean,
