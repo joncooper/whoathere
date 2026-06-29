@@ -381,6 +381,7 @@ write_release_validation_receipt() {
   fi
   provisioning_digest=sha256:$(shasum -a 256 "$provisioning_receipt" | awk '{print $1}')
   created_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+  created_at_unix=$(date -u '+%s')
   mkdir -p "$(dirname -- "$RELEASE_VALIDATION_RECEIPT")"
   temp_receipt="$RELEASE_VALIDATION_RECEIPT.$$"
   cat > "$temp_receipt" <<EOF
@@ -388,6 +389,7 @@ write_release_validation_receipt() {
   "schema_version": "whoathere.macos_vm.release_validation.v1",
   "validator": "validate-npm-uv-detonation.sh",
   "created_at_utc": "$created_at",
+  "created_at_unix_seconds": $created_at_unix,
   "guest_provisioning_receipt_digest": "$provisioning_digest",
   "npm_vm_detonation_verified": true,
   "uv_vm_detonation_verified": true,
@@ -399,6 +401,10 @@ write_release_validation_receipt() {
 }
 EOF
   mv "$temp_receipt" "$RELEASE_VALIDATION_RECEIPT"
+  "$WHOATHERE_BIN" vm attest-receipt \
+    --state-dir "$STATE_DIR" \
+    --receipt "$RELEASE_VALIDATION_RECEIPT" \
+    --kind release-validation >/dev/null
   echo "release_validation_receipt=$RELEASE_VALIDATION_RECEIPT"
   echo "release_validation_guest_provisioning_receipt_digest=$provisioning_digest"
 }

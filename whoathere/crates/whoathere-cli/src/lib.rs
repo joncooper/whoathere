@@ -163,6 +163,12 @@ pub enum Command {
         package_risk_receipt: Option<String>,
         json: bool,
     },
+    VmAttestReceipt {
+        state_dir: Option<String>,
+        receipt: Option<String>,
+        kind: Option<String>,
+        json: bool,
+    },
     VmCanaries {
         json: bool,
     },
@@ -712,6 +718,14 @@ pub fn parse_command(args: &[String]) -> Command {
             package_risk_receipt: parse_flag_value(rest, "--package-risk-receipt"),
             json: rest.iter().any(|arg| arg == "--json"),
         },
+        [cmd, sub, rest @ ..] if cmd == "vm" && sub == "attest-receipt" => {
+            Command::VmAttestReceipt {
+                state_dir: parse_flag_value(rest, "--state-dir"),
+                receipt: parse_flag_value(rest, "--receipt"),
+                kind: parse_flag_value(rest, "--kind"),
+                json: rest.iter().any(|arg| arg == "--json"),
+            }
+        }
         [cmd, sub, rest @ ..] if cmd == "vm" && sub == "canaries" => Command::VmCanaries {
             json: rest.iter().any(|arg| arg == "--json"),
         },
@@ -943,6 +957,17 @@ fn render_command_text(command: Command) -> String {
             package_risk_receipt: package_risk_receipt.as_deref(),
             json,
         }),
+        Command::VmAttestReceipt {
+            state_dir,
+            receipt,
+            kind,
+            json,
+        } => render_vm_attest_receipt(
+            state_dir.as_deref(),
+            receipt.as_deref(),
+            kind.as_deref(),
+            json,
+        ),
         Command::VmCanaries { json } => render_vm_canaries(json),
         Command::VmSyncPolicy { json } => render_vm_sync_policy(json),
         Command::VmRedTeamGate { json } => render_vm_red_team_gate(json),
@@ -1361,6 +1386,7 @@ fn command_help() -> String {
         "|vm health [--state-dir <dir>] [--helper <path>]",
         "|vm detonate [--workspace <path>] [--package-risk-receipt <path>] [--state-dir <dir>] [--helper <path>] [--fixture <name>] [--timeout-seconds <n>] [--execute] [--sync-back] [--json] npm|pip|uv -- <args>",
         "|vm release-plan [--state-dir <dir>] [--workspace <path>] [--class <class>|--ecosystem <name> --source <kind> --filename <name>] [--vm-ready --static-clean --dynamic-clean --egress-clean --no-canary-access --scanner-clean --diff-clean --freshness-allowed] [--package-risk-receipt <path>] [--json]",
+        "|vm attest-receipt --state-dir <dir> --receipt <path> --kind release-validation|sync-validation|release-notarization [--json]",
         "|vm canaries [--json]",
         "|vm sync-policy [--json]",
         "|vm red-team-gate [--json]",
@@ -4872,9 +4898,10 @@ fn write_sync_back_receipt(
         .and_then(|path| file_sha256_digest(&path));
     let provisioning_path = default_macos_vm_guest_provisioning_path(config);
     let provisioning_digest = file_sha256_digest(&provisioning_path);
-    let receipt = format!(
-        "{{\n  \"schema_version\": {},\n  \"sync_policy_version\": {},\n  \"workflow\": {},\n  \"job_id\": {},\n  \"vm_session_id\": {},\n  \"applied\": {},\n  \"rollback_performed\": {},\n  \"file_count\": {},\n  \"total_bytes\": {},\n  \"files\": {},\n  \"reason_codes\": {},\n  \"cli_sha256\": {},\n  \"helper_sha256\": {},\n  \"guest_provisioning_receipt_digest\": {}\n}}\n",
+    let unsigned_receipt = format!(
+        "{{\n  \"schema_version\": {},\n  \"created_at_unix_seconds\": {},\n  \"sync_policy_version\": {},\n  \"workflow\": {},\n  \"job_id\": {},\n  \"vm_session_id\": {},\n  \"applied\": {},\n  \"rollback_performed\": {},\n  \"file_count\": {},\n  \"total_bytes\": {},\n  \"files\": {},\n  \"reason_codes\": {},\n  \"cli_sha256\": {},\n  \"helper_sha256\": {},\n  \"guest_provisioning_receipt_digest\": {}\n}}\n",
         json_string(SYNC_BACK_SCHEMA_VERSION),
+        current_unix_seconds(),
         json_string(SYNC_BACK_POLICY_VERSION),
         json_string(workflow),
         json_option_string_redacted(guest_job.job_id.as_deref()),
@@ -4889,6 +4916,11 @@ fn write_sync_back_receipt(
         json_option_string_redacted(helper_sha256.as_deref()),
         json_option_string_redacted(provisioning_digest.as_deref()),
     );
+    let receipt = sign_macos_vm_receipt_contents(
+        &config.state_dir,
+        MacosVmReceiptKind::SyncValidation,
+        &unsigned_receipt,
+    )?;
     std::fs::write(&receipt_path, receipt.as_bytes())?;
     if outcome.applied {
         let validation_path = config.state_dir.join("bundle").join("sync-validation.json");
@@ -5082,6 +5114,47 @@ fn default_macos_vm_release_notarization_path(config: &MacosVmConfig) -> PathBuf
         .join("bundle")
         .join("release-notarization.json")
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MacosVmReceiptKind {
+    ReleaseValidation,
+    SyncValidation,
+    ReleaseNotarization,
+}
+
+impl MacosVmReceiptKind {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "release-validation" => Some(Self::ReleaseValidation),
+            "sync-validation" => Some(Self::SyncValidation),
+            "release-notarization" => Some(Self::ReleaseNotarization),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ReleaseValidation => "release-validation",
+            Self::SyncValidation => "sync-validation",
+            Self::ReleaseNotarization => "release-notarization",
+        }
+    }
+
+    fn reason_prefix(self) -> &'static str {
+        match self {
+            Self::ReleaseValidation => "release_validation",
+            Self::SyncValidation => "sync_validation",
+            Self::ReleaseNotarization => "release_notarization",
+        }
+    }
+
+    fn freshness_required(self) -> bool {
+        matches!(self, Self::ReleaseValidation | Self::SyncValidation)
+    }
+}
+
+const MACOS_VM_RECEIPT_AUTH_SCHEMA: &str = "whoathere.macos_vm.receipt_auth.v1";
+const MACOS_VM_RECEIPT_MAX_AGE_SECONDS: u64 = 24 * 60 * 60;
 
 fn load_macos_vm_manifest(
     manifest_path: Option<&str>,
@@ -5414,6 +5487,7 @@ struct MacosVmReleaseValidationSummary {
     path: PathBuf,
     present: bool,
     load_reason: Option<String>,
+    auth_reason_codes: Vec<String>,
     schema_version: Option<String>,
     validator: Option<String>,
     guest_provisioning_receipt_digest: Option<String>,
@@ -5432,6 +5506,7 @@ impl MacosVmReleaseValidationSummary {
             path,
             present: false,
             load_reason: Some(load_reason),
+            auth_reason_codes: Vec::new(),
             schema_version: None,
             validator: None,
             guest_provisioning_receipt_digest: None,
@@ -5445,11 +5520,16 @@ impl MacosVmReleaseValidationSummary {
         }
     }
 
-    fn from_contents(path: PathBuf, contents: &str) -> Self {
+    fn from_contents(path: PathBuf, contents: &str, state_dir: &Path) -> Self {
         Self {
             path,
             present: true,
             load_reason: None,
+            auth_reason_codes: verify_macos_vm_receipt_auth(
+                state_dir,
+                MacosVmReceiptKind::ReleaseValidation,
+                contents,
+            ),
             schema_version: json_extract_string_field(contents, "schema_version"),
             validator: json_extract_string_field(contents, "validator"),
             guest_provisioning_receipt_digest: json_extract_string_field(
@@ -5489,6 +5569,7 @@ impl MacosVmReleaseValidationSummary {
         if !self.present {
             reasons.push("release_validation_receipt_missing".to_string());
         }
+        reasons.extend(self.auth_reason_codes.iter().cloned());
         if self.schema_version.as_deref() != Some(MACOS_VM_RELEASE_VALIDATION_SCHEMA_VERSION) {
             reasons.push("release_validation_schema_invalid".to_string());
         }
@@ -5536,10 +5617,13 @@ impl MacosVmReleaseValidationSummary {
     }
 }
 
-fn load_macos_vm_release_validation(path: &Path) -> MacosVmReleaseValidationSummary {
+fn load_macos_vm_release_validation(
+    path: &Path,
+    state_dir: &Path,
+) -> MacosVmReleaseValidationSummary {
     match std::fs::read_to_string(path) {
         Ok(contents) => {
-            MacosVmReleaseValidationSummary::from_contents(path.to_path_buf(), &contents)
+            MacosVmReleaseValidationSummary::from_contents(path.to_path_buf(), &contents, state_dir)
         }
         Err(error) => MacosVmReleaseValidationSummary::missing(
             path.to_path_buf(),
@@ -5553,6 +5637,7 @@ struct MacosVmSyncValidationSummary {
     path: PathBuf,
     present: bool,
     load_reason: Option<String>,
+    auth_reason_codes: Vec<String>,
     schema_version: Option<String>,
     sync_policy_version: Option<String>,
     workflow: Option<String>,
@@ -5575,6 +5660,7 @@ impl MacosVmSyncValidationSummary {
             path,
             present: false,
             load_reason: Some(load_reason),
+            auth_reason_codes: Vec::new(),
             schema_version: None,
             sync_policy_version: None,
             workflow: None,
@@ -5592,11 +5678,16 @@ impl MacosVmSyncValidationSummary {
         }
     }
 
-    fn from_contents(path: PathBuf, contents: &str) -> Self {
+    fn from_contents(path: PathBuf, contents: &str, state_dir: &Path) -> Self {
         Self {
             path,
             present: true,
             load_reason: None,
+            auth_reason_codes: verify_macos_vm_receipt_auth(
+                state_dir,
+                MacosVmReceiptKind::SyncValidation,
+                contents,
+            ),
             schema_version: json_extract_string_field(contents, "schema_version"),
             sync_policy_version: json_extract_string_field(contents, "sync_policy_version"),
             workflow: json_extract_string_field(contents, "workflow"),
@@ -5632,6 +5723,7 @@ impl MacosVmSyncValidationSummary {
         if !self.present {
             reasons.push("sync_validation_receipt_missing".to_string());
         }
+        reasons.extend(self.auth_reason_codes.iter().cloned());
         if self.schema_version.as_deref() != Some(SYNC_BACK_SCHEMA_VERSION) {
             reasons.push("sync_validation_schema_invalid".to_string());
         }
@@ -5702,9 +5794,11 @@ impl MacosVmSyncValidationSummary {
     }
 }
 
-fn load_macos_vm_sync_validation(path: &Path) -> MacosVmSyncValidationSummary {
+fn load_macos_vm_sync_validation(path: &Path, state_dir: &Path) -> MacosVmSyncValidationSummary {
     match std::fs::read_to_string(path) {
-        Ok(contents) => MacosVmSyncValidationSummary::from_contents(path.to_path_buf(), &contents),
+        Ok(contents) => {
+            MacosVmSyncValidationSummary::from_contents(path.to_path_buf(), &contents, state_dir)
+        }
         Err(error) => MacosVmSyncValidationSummary::missing(
             path.to_path_buf(),
             redacted_scalar(&error.to_string()),
@@ -5720,6 +5814,7 @@ struct MacosVmReleaseNotarizationSummary {
     path: PathBuf,
     present: bool,
     load_reason: Option<String>,
+    auth_reason_codes: Vec<String>,
     schema_version: Option<String>,
     artifact_name: Option<String>,
     archive_sha256: Option<String>,
@@ -5741,6 +5836,7 @@ impl MacosVmReleaseNotarizationSummary {
             path,
             present: false,
             load_reason: Some(load_reason),
+            auth_reason_codes: Vec::new(),
             schema_version: None,
             artifact_name: None,
             archive_sha256: None,
@@ -5757,11 +5853,16 @@ impl MacosVmReleaseNotarizationSummary {
         }
     }
 
-    fn from_contents(path: PathBuf, contents: &str) -> Self {
+    fn from_contents(path: PathBuf, contents: &str, state_dir: &Path) -> Self {
         Self {
             path,
             present: true,
             load_reason: None,
+            auth_reason_codes: verify_macos_vm_receipt_auth(
+                state_dir,
+                MacosVmReceiptKind::ReleaseNotarization,
+                contents,
+            ),
             schema_version: json_extract_string_field(contents, "schema_version"),
             artifact_name: json_extract_string_field(contents, "artifact_name"),
             archive_sha256: json_extract_string_field(contents, "archive_sha256"),
@@ -5796,6 +5897,7 @@ impl MacosVmReleaseNotarizationSummary {
         if !self.present {
             reasons.push("release_notarization_receipt_missing".to_string());
         }
+        reasons.extend(self.auth_reason_codes.iter().cloned());
         if self.schema_version.as_deref() != Some(MACOS_VM_RELEASE_NOTARIZATION_SCHEMA_VERSION) {
             reasons.push("release_notarization_schema_invalid".to_string());
         }
@@ -5883,11 +5985,16 @@ impl MacosVmReleaseNotarizationSummary {
     }
 }
 
-fn load_macos_vm_release_notarization(path: &Path) -> MacosVmReleaseNotarizationSummary {
+fn load_macos_vm_release_notarization(
+    path: &Path,
+    state_dir: &Path,
+) -> MacosVmReleaseNotarizationSummary {
     match std::fs::read_to_string(path) {
-        Ok(contents) => {
-            MacosVmReleaseNotarizationSummary::from_contents(path.to_path_buf(), &contents)
-        }
+        Ok(contents) => MacosVmReleaseNotarizationSummary::from_contents(
+            path.to_path_buf(),
+            &contents,
+            state_dir,
+        ),
         Err(error) => MacosVmReleaseNotarizationSummary::missing(
             path.to_path_buf(),
             redacted_scalar(&error.to_string()),
@@ -6008,10 +6115,11 @@ fn render_release_validation_json(
     expected_provisioning_digest: Option<&str>,
 ) -> String {
     format!(
-        "{{\"receipt_path\": {}, \"receipt_present\": {}, \"load_reason\": {}, \"reason_codes\": {}, \"schema_version\": {}, \"validator\": {}, \"guest_provisioning_receipt_digest\": {}, \"current_guest_provisioning_receipt_digest\": {}, \"npm_vm_detonation_verified\": {}, \"uv_vm_detonation_verified\": {}, \"live_guest_toolchains_verified\": {}, \"host_package_execution_enabled\": {}, \"sync_back_enabled\": {}, \"high_risk_package_execution_enabled\": {}, \"package_acquisition_policy\": {}}}",
+        "{{\"receipt_path\": {}, \"receipt_present\": {}, \"load_reason\": {}, \"receipt_auth_verified\": {}, \"reason_codes\": {}, \"schema_version\": {}, \"validator\": {}, \"guest_provisioning_receipt_digest\": {}, \"current_guest_provisioning_receipt_digest\": {}, \"npm_vm_detonation_verified\": {}, \"uv_vm_detonation_verified\": {}, \"live_guest_toolchains_verified\": {}, \"host_package_execution_enabled\": {}, \"sync_back_enabled\": {}, \"high_risk_package_execution_enabled\": {}, \"package_acquisition_policy\": {}}}",
         json_string(&summary.path.display().to_string()),
         summary.present,
         json_option_string_redacted(summary.load_reason.as_deref()),
+        summary.present && summary.auth_reason_codes.is_empty(),
         json_string_array(&summary.reason_codes(expected_provisioning_digest)),
         json_option_string_redacted(summary.schema_version.as_deref()),
         json_option_string_redacted(summary.validator.as_deref()),
@@ -6032,7 +6140,7 @@ fn render_release_validation_text(
     expected_provisioning_digest: Option<&str>,
 ) -> String {
     format!(
-        "release_validation_receipt_path={}\nrelease_validation_receipt_present={}\nrelease_validation_load_reason={}\nrelease_validation_reason_codes={:?}\nrelease_validation_schema_version={}\nrelease_validation_validator={}\nrelease_validation_guest_provisioning_receipt_digest={}\nrelease_validation_current_guest_provisioning_receipt_digest={}\nrelease_validation_npm_vm_detonation_verified={}\nrelease_validation_uv_vm_detonation_verified={}\nrelease_validation_live_guest_toolchains_verified={}\nrelease_validation_host_package_execution_enabled={}\nrelease_validation_sync_back_enabled={}\nrelease_validation_high_risk_package_execution_enabled={}\nrelease_validation_package_acquisition_policy={}",
+        "release_validation_receipt_path={}\nrelease_validation_receipt_present={}\nrelease_validation_load_reason={}\nrelease_validation_receipt_auth_verified={}\nrelease_validation_reason_codes={:?}\nrelease_validation_schema_version={}\nrelease_validation_validator={}\nrelease_validation_guest_provisioning_receipt_digest={}\nrelease_validation_current_guest_provisioning_receipt_digest={}\nrelease_validation_npm_vm_detonation_verified={}\nrelease_validation_uv_vm_detonation_verified={}\nrelease_validation_live_guest_toolchains_verified={}\nrelease_validation_host_package_execution_enabled={}\nrelease_validation_sync_back_enabled={}\nrelease_validation_high_risk_package_execution_enabled={}\nrelease_validation_package_acquisition_policy={}",
         summary.path.display(),
         summary.present,
         summary
@@ -6040,6 +6148,7 @@ fn render_release_validation_text(
             .as_deref()
             .map(redacted_scalar)
             .unwrap_or_else(|| "none".to_string()),
+        summary.present && summary.auth_reason_codes.is_empty(),
         summary.reason_codes(expected_provisioning_digest),
         option_string_text(summary.schema_version.as_deref()),
         option_string_text(summary.validator.as_deref()),
@@ -6060,10 +6169,11 @@ fn render_sync_validation_json(
     expected_provisioning_digest: Option<&str>,
 ) -> String {
     format!(
-        "{{\"receipt_path\": {}, \"receipt_present\": {}, \"load_reason\": {}, \"reason_codes\": {}, \"schema_version\": {}, \"sync_policy_version\": {}, \"workflow\": {}, \"job_id\": {}, \"vm_session_id\": {}, \"applied\": {}, \"rollback_performed\": {}, \"file_count\": {}, \"total_bytes\": {}, \"cli_sha256\": {}, \"helper_sha256\": {}, \"current_cli_sha256\": {}, \"current_helper_sha256\": {}, \"guest_provisioning_receipt_digest\": {}, \"current_guest_provisioning_receipt_digest\": {}, \"verified\": {}}}",
+        "{{\"receipt_path\": {}, \"receipt_present\": {}, \"load_reason\": {}, \"receipt_auth_verified\": {}, \"reason_codes\": {}, \"schema_version\": {}, \"sync_policy_version\": {}, \"workflow\": {}, \"job_id\": {}, \"vm_session_id\": {}, \"applied\": {}, \"rollback_performed\": {}, \"file_count\": {}, \"total_bytes\": {}, \"cli_sha256\": {}, \"helper_sha256\": {}, \"current_cli_sha256\": {}, \"current_helper_sha256\": {}, \"guest_provisioning_receipt_digest\": {}, \"current_guest_provisioning_receipt_digest\": {}, \"verified\": {}}}",
         json_string(&summary.path.display().to_string()),
         summary.present,
         json_option_string_redacted(summary.load_reason.as_deref()),
+        summary.present && summary.auth_reason_codes.is_empty(),
         json_string_array(&summary.reason_codes(expected_provisioning_digest)),
         json_option_string_redacted(summary.schema_version.as_deref()),
         json_option_string_redacted(summary.sync_policy_version.as_deref()),
@@ -6089,7 +6199,7 @@ fn render_sync_validation_text(
     expected_provisioning_digest: Option<&str>,
 ) -> String {
     format!(
-        "sync_validation_receipt_path={}\nsync_validation_receipt_present={}\nsync_validation_load_reason={}\nsync_validation_reason_codes={:?}\nsync_validation_schema_version={}\nsync_validation_policy_version={}\nsync_validation_workflow={}\nsync_validation_job_id={}\nsync_validation_vm_session_id={}\nsync_validation_applied={}\nsync_validation_rollback_performed={}\nsync_validation_file_count={}\nsync_validation_total_bytes={}\nsync_validation_cli_sha256={}\nsync_validation_helper_sha256={}\nsync_validation_current_cli_sha256={}\nsync_validation_current_helper_sha256={}\nsync_validation_guest_provisioning_receipt_digest={}\nsync_validation_current_guest_provisioning_receipt_digest={}\nsync_validation_verified={}",
+        "sync_validation_receipt_path={}\nsync_validation_receipt_present={}\nsync_validation_load_reason={}\nsync_validation_receipt_auth_verified={}\nsync_validation_reason_codes={:?}\nsync_validation_schema_version={}\nsync_validation_policy_version={}\nsync_validation_workflow={}\nsync_validation_job_id={}\nsync_validation_vm_session_id={}\nsync_validation_applied={}\nsync_validation_rollback_performed={}\nsync_validation_file_count={}\nsync_validation_total_bytes={}\nsync_validation_cli_sha256={}\nsync_validation_helper_sha256={}\nsync_validation_current_cli_sha256={}\nsync_validation_current_helper_sha256={}\nsync_validation_guest_provisioning_receipt_digest={}\nsync_validation_current_guest_provisioning_receipt_digest={}\nsync_validation_verified={}",
         summary.path.display(),
         summary.present,
         summary
@@ -6097,6 +6207,7 @@ fn render_sync_validation_text(
             .as_deref()
             .map(redacted_scalar)
             .unwrap_or_else(|| "none".to_string()),
+        summary.present && summary.auth_reason_codes.is_empty(),
         summary.reason_codes(expected_provisioning_digest),
         option_string_text(summary.schema_version.as_deref()),
         option_string_text(summary.sync_policy_version.as_deref()),
@@ -6125,10 +6236,11 @@ fn render_sync_validation_text(
 
 fn render_release_notarization_json(summary: &MacosVmReleaseNotarizationSummary) -> String {
     format!(
-        "{{\"receipt_path\": {}, \"receipt_present\": {}, \"load_reason\": {}, \"reason_codes\": {}, \"schema_version\": {}, \"artifact_name\": {}, \"archive_sha256\": {}, \"notarization_zip_sha256\": {}, \"cli_sha256\": {}, \"helper_sha256\": {}, \"current_cli_sha256\": {}, \"current_helper_sha256\": {}, \"notarytool_status\": {}, \"notarytool_id\": {}, \"cli_signature_kind\": {}, \"helper_signature_kind\": {}, \"stapling_supported_for_archive\": {}, \"verified\": {}}}",
+        "{{\"receipt_path\": {}, \"receipt_present\": {}, \"load_reason\": {}, \"receipt_auth_verified\": {}, \"reason_codes\": {}, \"schema_version\": {}, \"artifact_name\": {}, \"archive_sha256\": {}, \"notarization_zip_sha256\": {}, \"cli_sha256\": {}, \"helper_sha256\": {}, \"current_cli_sha256\": {}, \"current_helper_sha256\": {}, \"notarytool_status\": {}, \"notarytool_id\": {}, \"cli_signature_kind\": {}, \"helper_signature_kind\": {}, \"stapling_supported_for_archive\": {}, \"verified\": {}}}",
         json_string(&summary.path.display().to_string()),
         summary.present,
         json_option_string_redacted(summary.load_reason.as_deref()),
+        summary.present && summary.auth_reason_codes.is_empty(),
         json_string_array(&summary.reason_codes()),
         json_option_string_redacted(summary.schema_version.as_deref()),
         json_option_string_redacted(summary.artifact_name.as_deref()),
@@ -6149,7 +6261,7 @@ fn render_release_notarization_json(summary: &MacosVmReleaseNotarizationSummary)
 
 fn render_release_notarization_text(summary: &MacosVmReleaseNotarizationSummary) -> String {
     format!(
-        "release_notarization_receipt_path={}\nrelease_notarization_receipt_present={}\nrelease_notarization_load_reason={}\nrelease_notarization_reason_codes={:?}\nrelease_notarization_schema_version={}\nrelease_notarization_artifact_name={}\nrelease_notarization_archive_sha256={}\nrelease_notarization_zip_sha256={}\nrelease_notarization_cli_sha256={}\nrelease_notarization_helper_sha256={}\nrelease_notarization_current_cli_sha256={}\nrelease_notarization_current_helper_sha256={}\nrelease_notarization_notarytool_status={}\nrelease_notarization_notarytool_id={}\nrelease_notarization_cli_signature_kind={}\nrelease_notarization_helper_signature_kind={}\nrelease_notarization_stapling_supported_for_archive={}\nrelease_notarization_verified={}",
+        "release_notarization_receipt_path={}\nrelease_notarization_receipt_present={}\nrelease_notarization_load_reason={}\nrelease_notarization_receipt_auth_verified={}\nrelease_notarization_reason_codes={:?}\nrelease_notarization_schema_version={}\nrelease_notarization_artifact_name={}\nrelease_notarization_archive_sha256={}\nrelease_notarization_zip_sha256={}\nrelease_notarization_cli_sha256={}\nrelease_notarization_helper_sha256={}\nrelease_notarization_current_cli_sha256={}\nrelease_notarization_current_helper_sha256={}\nrelease_notarization_notarytool_status={}\nrelease_notarization_notarytool_id={}\nrelease_notarization_cli_signature_kind={}\nrelease_notarization_helper_signature_kind={}\nrelease_notarization_stapling_supported_for_archive={}\nrelease_notarization_verified={}",
         summary.path.display(),
         summary.present,
         summary
@@ -6157,6 +6269,7 @@ fn render_release_notarization_text(summary: &MacosVmReleaseNotarizationSummary)
             .as_deref()
             .map(redacted_scalar)
             .unwrap_or_else(|| "none".to_string()),
+        summary.present && summary.auth_reason_codes.is_empty(),
         summary.reason_codes(),
         option_string_text(summary.schema_version.as_deref()),
         option_string_text(summary.artifact_name.as_deref()),
@@ -6722,8 +6835,9 @@ fn sync_back_helper_identity_reasons(
 
     let notarization_path = default_macos_vm_release_notarization_path(config);
     if notarization_path.is_file() {
-        let notarization = load_macos_vm_release_notarization(&notarization_path)
-            .with_runtime_artifacts(helper_path);
+        let notarization =
+            load_macos_vm_release_notarization(&notarization_path, &config.state_dir)
+                .with_runtime_artifacts(helper_path);
         let notarization_reasons = notarization.reason_codes();
         if !notarization_reasons.is_empty() {
             reasons.push("sync_back_helper_release_notarization_invalid".to_string());
@@ -7313,11 +7427,13 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
     let provisioning = load_macos_vm_guest_provisioning(&provisioning_path, helper_path);
     let shutdown = load_macos_vm_runtime_shutdown(&shutdown_path);
     let provisioning_digest = file_sha256_digest(&provisioning_path);
-    let release_validation = load_macos_vm_release_validation(&release_validation_path);
-    let sync_validation =
-        load_macos_vm_sync_validation(&sync_validation_path).with_runtime_artifacts(helper_path);
-    let release_notarization = load_macos_vm_release_notarization(&release_notarization_path)
+    let release_validation =
+        load_macos_vm_release_validation(&release_validation_path, &config.state_dir);
+    let sync_validation = load_macos_vm_sync_validation(&sync_validation_path, &config.state_dir)
         .with_runtime_artifacts(helper_path);
+    let release_notarization =
+        load_macos_vm_release_notarization(&release_notarization_path, &config.state_dir)
+            .with_runtime_artifacts(helper_path);
     let status = status_from_config(&config, HostPlatform::current(), manifest.as_ref());
     let helper = run_macos_vm_helper(
         helper_path,
@@ -13123,6 +13239,250 @@ fn verify_scanner_receipt_auth(state_dir: Option<&Path>, contents: &str) -> Vec<
     sorted_unique(reasons)
 }
 
+fn macos_vm_receipt_auth_payload(kind: MacosVmReceiptKind, contents: &str) -> Option<String> {
+    let schema = json_extract_string_field(contents, "schema_version")?;
+    let created_at = json_extract_u64_field(contents, "created_at_unix_seconds")?;
+    match kind {
+        MacosVmReceiptKind::ReleaseValidation => {
+            let validator = json_extract_string_field(contents, "validator")?;
+            let guest_provisioning_receipt_digest =
+                json_extract_string_field(contents, "guest_provisioning_receipt_digest")?;
+            let npm_vm_detonation_verified =
+                json_extract_bool_field(contents, "npm_vm_detonation_verified")?;
+            let uv_vm_detonation_verified =
+                json_extract_bool_field(contents, "uv_vm_detonation_verified")?;
+            let live_guest_toolchains_verified =
+                json_extract_bool_field(contents, "live_guest_toolchains_verified")?;
+            let host_package_execution_enabled =
+                json_extract_bool_field(contents, "host_package_execution_enabled")?;
+            let sync_back_enabled = json_extract_bool_field(contents, "sync_back_enabled")?;
+            let high_risk_package_execution_enabled =
+                json_extract_bool_field(contents, "high_risk_package_execution_enabled")?;
+            let package_acquisition_policy =
+                json_extract_string_field(contents, "package_acquisition_policy")?;
+            Some(format!(
+                "kind={}\nschema_version={schema}\ncreated_at_unix_seconds={created_at}\nvalidator={validator}\nguest_provisioning_receipt_digest={guest_provisioning_receipt_digest}\nnpm_vm_detonation_verified={npm_vm_detonation_verified}\nuv_vm_detonation_verified={uv_vm_detonation_verified}\nlive_guest_toolchains_verified={live_guest_toolchains_verified}\nhost_package_execution_enabled={host_package_execution_enabled}\nsync_back_enabled={sync_back_enabled}\nhigh_risk_package_execution_enabled={high_risk_package_execution_enabled}\npackage_acquisition_policy={package_acquisition_policy}\n",
+                kind.as_str()
+            ))
+        }
+        MacosVmReceiptKind::SyncValidation => {
+            let sync_policy_version = json_extract_string_field(contents, "sync_policy_version")?;
+            let workflow = json_extract_string_field(contents, "workflow")?;
+            let job_id = json_extract_string_field(contents, "job_id")?;
+            let vm_session_id = json_extract_string_field(contents, "vm_session_id")?;
+            let applied = json_extract_bool_field(contents, "applied")?;
+            let rollback_performed = json_extract_bool_field(contents, "rollback_performed")?;
+            let file_count = json_extract_i32_field(contents, "file_count")?;
+            let total_bytes = json_extract_i32_field(contents, "total_bytes")?;
+            let cli_sha256 = json_extract_string_field(contents, "cli_sha256")?;
+            let helper_sha256 = json_extract_string_field(contents, "helper_sha256")?;
+            let guest_provisioning_receipt_digest =
+                json_extract_string_field(contents, "guest_provisioning_receipt_digest")?;
+            let files = json_extract_string_array_field(contents, "files").join("\n");
+            let reason_codes = json_extract_string_array_field(contents, "reason_codes").join("\n");
+            Some(format!(
+                "kind={}\nschema_version={schema}\ncreated_at_unix_seconds={created_at}\nsync_policy_version={sync_policy_version}\nworkflow={workflow}\njob_id={job_id}\nvm_session_id={vm_session_id}\napplied={applied}\nrollback_performed={rollback_performed}\nfile_count={file_count}\ntotal_bytes={total_bytes}\ncli_sha256={cli_sha256}\nhelper_sha256={helper_sha256}\nguest_provisioning_receipt_digest={guest_provisioning_receipt_digest}\nfiles_sha256={}\nreason_codes_sha256={}\n",
+                kind.as_str(),
+                sha256_digest(files.as_bytes()),
+                sha256_digest(reason_codes.as_bytes())
+            ))
+        }
+        MacosVmReceiptKind::ReleaseNotarization => {
+            let artifact_name = json_extract_string_field(contents, "artifact_name")?;
+            let archive_sha256 = json_extract_string_field(contents, "archive_sha256")?;
+            let notarization_zip_sha256 =
+                json_extract_string_field(contents, "notarization_zip_sha256")?;
+            let cli_sha256 = json_extract_string_field(contents, "cli_sha256")?;
+            let helper_sha256 = json_extract_string_field(contents, "helper_sha256")?;
+            let notarytool_status = json_extract_string_field(contents, "notarytool_status")?;
+            let notarytool_id = json_extract_string_field(contents, "notarytool_id")?;
+            let cli_signature_kind = json_extract_string_field(contents, "cli_signature_kind")?;
+            let helper_signature_kind =
+                json_extract_string_field(contents, "helper_signature_kind")?;
+            let stapling_supported_for_archive =
+                json_extract_bool_field(contents, "stapling_supported_for_archive")?;
+            Some(format!(
+                "kind={}\nschema_version={schema}\ncreated_at_unix_seconds={created_at}\nartifact_name={artifact_name}\narchive_sha256={archive_sha256}\nnotarization_zip_sha256={notarization_zip_sha256}\ncli_sha256={cli_sha256}\nhelper_sha256={helper_sha256}\nnotarytool_status={notarytool_status}\nnotarytool_id={notarytool_id}\ncli_signature_kind={cli_signature_kind}\nhelper_signature_kind={helper_signature_kind}\nstapling_supported_for_archive={stapling_supported_for_archive}\n",
+                kind.as_str()
+            ))
+        }
+    }
+}
+
+fn sign_macos_vm_receipt_contents(
+    state_dir: &Path,
+    kind: MacosVmReceiptKind,
+    unsigned_contents: &str,
+) -> std::io::Result<String> {
+    if json_extract_object_field(unsigned_contents, "receipt_auth").is_some() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "receipt already has auth",
+        ));
+    }
+    let key = load_or_create_package_risk_auth_key(state_dir)?;
+    let Some(payload) = macos_vm_receipt_auth_payload(kind, unsigned_contents) else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "macos vm receipt auth payload invalid",
+        ));
+    };
+    let payload_sha256 = sha256_digest(payload.as_bytes());
+    let mac_sha256 = hmac_sha256_digest(&key, payload.as_bytes());
+    let key_id = package_risk_receipt_key_id(&key);
+    let trimmed = unsigned_contents.trim_end();
+    let without_closing = trimmed.strip_suffix('}').ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, "macos vm receipt invalid")
+    })?;
+    Ok(format!(
+        "{},\n  \"receipt_auth\": {{\"schema_version\": {}, \"kind\": {}, \"key_id\": {}, \"payload_sha256\": {}, \"mac_sha256\": {}}}\n}}\n",
+        without_closing.trim_end(),
+        json_string(MACOS_VM_RECEIPT_AUTH_SCHEMA),
+        json_string(kind.as_str()),
+        json_string(&key_id),
+        json_string(&payload_sha256),
+        json_string(&mac_sha256)
+    ))
+}
+
+fn verify_macos_vm_receipt_auth(
+    state_dir: &Path,
+    kind: MacosVmReceiptKind,
+    contents: &str,
+) -> Vec<String> {
+    let mut reasons = Vec::new();
+    let prefix = kind.reason_prefix();
+    let Some(created_at) = json_extract_u64_field(contents, "created_at_unix_seconds") else {
+        return vec![format!("{prefix}_receipt_created_at_missing")];
+    };
+    let now = current_unix_seconds();
+    if created_at > now.saturating_add(PACKAGE_RISK_RECEIPT_FUTURE_SKEW_SECONDS) {
+        reasons.push(format!("{prefix}_receipt_created_at_in_future"));
+    }
+    if kind.freshness_required()
+        && now.saturating_sub(created_at) > MACOS_VM_RECEIPT_MAX_AGE_SECONDS
+    {
+        reasons.push(format!("{prefix}_receipt_stale"));
+    }
+    let Some(auth) = json_extract_object_field(contents, "receipt_auth") else {
+        reasons.push(format!("{prefix}_receipt_auth_missing"));
+        return sorted_unique(reasons);
+    };
+    if json_extract_string_field(&auth, "schema_version").as_deref()
+        != Some(MACOS_VM_RECEIPT_AUTH_SCHEMA)
+    {
+        reasons.push(format!("{prefix}_receipt_auth_schema_invalid"));
+    }
+    if json_extract_string_field(&auth, "kind").as_deref() != Some(kind.as_str()) {
+        reasons.push(format!("{prefix}_receipt_auth_kind_mismatch"));
+    }
+    let key = match load_package_risk_auth_key(state_dir) {
+        Ok(key) => key,
+        Err(_) => {
+            reasons.push(format!("{prefix}_receipt_auth_key_unavailable"));
+            return sorted_unique(reasons);
+        }
+    };
+    let expected_key_id = package_risk_receipt_key_id(&key);
+    if json_extract_string_field(&auth, "key_id").as_deref() != Some(expected_key_id.as_str()) {
+        reasons.push(format!("{prefix}_receipt_auth_key_mismatch"));
+    }
+    let Some(payload) = macos_vm_receipt_auth_payload(kind, contents) else {
+        reasons.push(format!("{prefix}_receipt_auth_payload_invalid"));
+        return sorted_unique(reasons);
+    };
+    let payload_sha256 = sha256_digest(payload.as_bytes());
+    if json_extract_string_field(&auth, "payload_sha256").as_deref()
+        != Some(payload_sha256.as_str())
+    {
+        reasons.push(format!("{prefix}_receipt_auth_payload_mismatch"));
+    }
+    let mac_sha256 = hmac_sha256_digest(&key, payload.as_bytes());
+    if json_extract_string_field(&auth, "mac_sha256").as_deref() != Some(mac_sha256.as_str()) {
+        reasons.push(format!("{prefix}_receipt_auth_mac_mismatch"));
+    }
+    sorted_unique(reasons)
+}
+
+fn render_vm_attest_receipt(
+    state_dir: Option<&str>,
+    receipt: Option<&str>,
+    kind: Option<&str>,
+    json: bool,
+) -> String {
+    let Some(receipt) = receipt else {
+        return vm_attest_receipt_error("receipt_missing", json);
+    };
+    let Some(kind_value) = kind else {
+        return vm_attest_receipt_error("kind_missing", json);
+    };
+    let Some(kind) = MacosVmReceiptKind::parse(kind_value) else {
+        return vm_attest_receipt_error("kind_unsupported", json);
+    };
+    let config = macos_vm_config(state_dir, None, None);
+    let path = PathBuf::from(receipt);
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(error) => {
+            return vm_attest_receipt_error(&redacted_scalar(&error.to_string()), json);
+        }
+    };
+    let signed = match sign_macos_vm_receipt_contents(&config.state_dir, kind, &contents) {
+        Ok(signed) => signed,
+        Err(error) => {
+            return vm_attest_receipt_error(&redacted_scalar(&error.to_string()), json);
+        }
+    };
+    let tmp = path.with_extension(format!(
+        "tmp.{}.{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0)
+    ));
+    if let Err(error) = std::fs::write(&tmp, signed.as_bytes()) {
+        return vm_attest_receipt_error(&redacted_scalar(&error.to_string()), json);
+    }
+    if let Err(error) = std::fs::rename(&tmp, &path) {
+        let _ = std::fs::remove_file(&tmp);
+        return vm_attest_receipt_error(&redacted_scalar(&error.to_string()), json);
+    }
+    if json {
+        format!(
+            "{{\n  \"command\": \"whoathere vm attest-receipt\",\n  \"schema_version\": {},\n  \"state_dir\": {},\n  \"receipt\": {},\n  \"kind\": {},\n  \"attested\": true,\n  \"exit_code\": 0\n}}",
+            json_string(MACOS_VM_RECEIPT_AUTH_SCHEMA),
+            json_string(&redacted_path_string(&config.state_dir)),
+            json_string(&redacted_path_string(&path)),
+            json_string(kind.as_str())
+        )
+    } else {
+        format!(
+            "whoathere vm attest-receipt\nschema_version={}\nstate_dir={}\nreceipt={}\nkind={}\nattested=true\nexit_code=0",
+            MACOS_VM_RECEIPT_AUTH_SCHEMA,
+            redacted_path_string(&config.state_dir),
+            redacted_path_string(&path),
+            kind.as_str()
+        )
+    }
+}
+
+fn vm_attest_receipt_error(reason_code: &str, json: bool) -> String {
+    let reason_code = redacted_scalar(reason_code);
+    if json {
+        return format!(
+            "{{\n  \"command\": \"whoathere vm attest-receipt\",\n  \"attested\": false,\n  \"reason_codes\": [{}],\n  \"exit_code\": {}\n}}",
+            json_string(&reason_code),
+            ExitCode::Deny.code()
+        );
+    }
+    format!(
+        "whoathere vm attest-receipt\nattested=false\nreason_codes={:?}\nexit_code={}",
+        vec![reason_code],
+        ExitCode::Deny.code()
+    )
+}
+
 fn package_risk_memory_ready(state_dir: &Path) -> bool {
     package_risk_store_path(state_dir).is_file()
 }
@@ -16734,6 +17094,64 @@ mod tests {
     }
 
     #[test]
+    fn doctor_rejects_unsigned_release_validation_receipt() {
+        let root = temp_root("whoathere-cli-doctor-release-validation-unsigned");
+        let _ = std::fs::remove_dir_all(&root);
+        let state_dir = root.join("state");
+        let bundle_dir = state_dir.join("bundle");
+        std::fs::create_dir_all(&bundle_dir).expect("bundle dir");
+        write_complete_guest_provisioning_receipt(&state_dir);
+        let provisioning_digest = sha256_digest(
+            &std::fs::read(bundle_dir.join("guest-provisioning.json"))
+                .expect("read provisioning receipt"),
+        );
+        std::fs::write(
+            bundle_dir.join("release-validation.json"),
+            format!(
+                r#"{{
+  "schema_version": "whoathere.macos_vm.release_validation.v1",
+  "created_at_unix_seconds": {},
+  "validator": "forged-local-json",
+  "guest_provisioning_receipt_digest": "{provisioning_digest}",
+  "npm_vm_detonation_verified": true,
+  "uv_vm_detonation_verified": true,
+  "live_guest_toolchains_verified": true,
+  "host_package_execution_enabled": false,
+  "sync_back_enabled": false,
+  "high_risk_package_execution_enabled": false,
+  "package_acquisition_policy": "local_only_no_public_resolver"
+}}"#,
+                current_unix_seconds()
+            ),
+        )
+        .expect("write unsigned release validation receipt");
+        let helper = root.join("helper.sh");
+        write_new_file(
+            &helper,
+            b"#!/bin/sh\nprintf '{\"status\":\"ok\",\"exit_code\":0,\"ready_for_lifecycle\":true,\"reason_codes\":[]}\\n'\nexit 0\n",
+        )
+        .expect("helper script");
+        set_executable(&helper).expect("executable helper");
+
+        let result = evaluate_command(Command::Doctor {
+            json: true,
+            state_dir: Some(state_dir.display().to_string()),
+            helper_path: Some(helper.display().to_string()),
+        });
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result.output.contains("\"release_ready\": false"));
+        assert!(result
+            .output
+            .contains("release_validation_receipt_auth_missing"));
+        assert!(result
+            .output
+            .contains("release_npm_vm_detonation_not_verified"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn doctor_accepts_release_notarization_receipt() {
         let root = temp_root("whoathere-cli-doctor-release-notarization-ready");
         let _ = std::fs::remove_dir_all(&root);
@@ -16787,6 +17205,143 @@ mod tests {
             .contains("\"sync_policy_version\": \"whoathere.sync_policy.local_beta.v1\""));
         assert!(result.output.contains("\"release_notarization\": {"));
         assert!(result.output.contains("\"verified\": true"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn doctor_rejects_unsigned_sync_validation_receipt() {
+        let root = temp_root("whoathere-cli-doctor-sync-validation-unsigned");
+        let _ = std::fs::remove_dir_all(&root);
+        let state_dir = root.join("state");
+        let bundle_dir = state_dir.join("bundle");
+        std::fs::create_dir_all(&bundle_dir).expect("bundle dir");
+        write_complete_guest_provisioning_receipt(&state_dir);
+        write_release_validation_receipt(&state_dir, None);
+        let helper = root.join("helper.sh");
+        write_new_file(
+            &helper,
+            b"#!/bin/sh\nprintf '{\"status\":\"ok\",\"exit_code\":0,\"ready_for_lifecycle\":true,\"reason_codes\":[]}\\n'\nexit 0\n",
+        )
+        .expect("helper script");
+        set_executable(&helper).expect("executable helper");
+        write_release_notarization_receipt(
+            &state_dir,
+            "Accepted",
+            "developer_id_application",
+            "developer_id_application",
+            &helper,
+        );
+        let provisioning_digest = sha256_digest(
+            &std::fs::read(bundle_dir.join("guest-provisioning.json"))
+                .expect("read provisioning receipt"),
+        );
+        let cli_sha256 = std::env::current_exe()
+            .ok()
+            .and_then(|path| file_sha256_digest(&path))
+            .expect("cli digest");
+        let helper_sha256 = file_sha256_digest(&helper).expect("helper digest");
+        std::fs::write(
+            bundle_dir.join("sync-validation.json"),
+            format!(
+                r#"{{
+  "schema_version": "{SYNC_BACK_SCHEMA_VERSION}",
+  "created_at_unix_seconds": {},
+  "sync_policy_version": "{SYNC_BACK_POLICY_VERSION}",
+  "workflow": "pip_project_install",
+  "job_id": "job-sync-test",
+  "vm_session_id": "session-sync-test",
+  "applied": true,
+  "rollback_performed": false,
+  "file_count": 1,
+  "total_bytes": 17,
+  "files": [".venv/lib/python3.11/site-packages/whoathere_clean.py"],
+  "reason_codes": [],
+  "cli_sha256": "{cli_sha256}",
+  "helper_sha256": "{helper_sha256}",
+  "guest_provisioning_receipt_digest": "{provisioning_digest}"
+}}"#,
+                current_unix_seconds()
+            ),
+        )
+        .expect("write unsigned sync validation receipt");
+
+        let result = evaluate_command(Command::Doctor {
+            json: true,
+            state_dir: Some(state_dir.display().to_string()),
+            helper_path: Some(helper.display().to_string()),
+        });
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result.output.contains("\"release_ready\": false"));
+        assert!(result
+            .output
+            .contains("sync_validation_receipt_auth_missing"));
+        assert!(result
+            .output
+            .contains("release_sync_back_validation_not_verified"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn doctor_rejects_unsigned_release_notarization_receipt() {
+        let root = temp_root("whoathere-cli-doctor-release-notarization-unsigned");
+        let _ = std::fs::remove_dir_all(&root);
+        let state_dir = root.join("state");
+        let bundle_dir = state_dir.join("bundle");
+        std::fs::create_dir_all(&bundle_dir).expect("bundle dir");
+        write_complete_guest_provisioning_receipt(&state_dir);
+        write_release_validation_receipt(&state_dir, None);
+        let helper = root.join("helper.sh");
+        write_new_file(
+            &helper,
+            b"#!/bin/sh\nprintf '{\"status\":\"ok\",\"exit_code\":0,\"ready_for_lifecycle\":true,\"reason_codes\":[]}\\n'\nexit 0\n",
+        )
+        .expect("helper script");
+        set_executable(&helper).expect("executable helper");
+        let cli_sha256 = std::env::current_exe()
+            .ok()
+            .and_then(|path| file_sha256_digest(&path))
+            .expect("cli digest");
+        let helper_sha256 = file_sha256_digest(&helper).expect("helper digest");
+        std::fs::write(
+            bundle_dir.join("release-notarization.json"),
+            format!(
+                r#"{{
+  "schema_version": "whoathere.macos_vm.release_notarization.v1",
+  "created_at_unix_seconds": {},
+  "artifact_name": "whoathere-macos-arm64-preview-test",
+  "archive_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "notarization_zip_sha256": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+  "cli_sha256": "{cli_sha256}",
+  "helper_sha256": "{helper_sha256}",
+  "notarytool_status": "Accepted",
+  "notarytool_id": "9850b087-ee2b-43e9-96ea-d0c6b0c04cec",
+  "cli_signature_kind": "developer_id_application",
+  "helper_signature_kind": "developer_id_application",
+  "stapling_supported_for_archive": false
+}}"#,
+                current_unix_seconds()
+            ),
+        )
+        .expect("write unsigned release notarization receipt");
+        write_sync_validation_receipt(&state_dir, &helper, None);
+
+        let result = evaluate_command(Command::Doctor {
+            json: true,
+            state_dir: Some(state_dir.display().to_string()),
+            helper_path: Some(helper.display().to_string()),
+        });
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result.output.contains("\"release_ready\": false"));
+        assert!(result
+            .output
+            .contains("release_notarization_receipt_auth_missing"));
+        assert!(result
+            .output
+            .contains("release_signature_notarization_not_complete"));
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -23725,11 +24280,10 @@ exit 0
                         .expect("read guest provisioning receipt for digest"),
                 )
             });
-        std::fs::write(
-            bundle_dir.join("release-validation.json"),
-            format!(
-                r#"{{
+        let receipt = format!(
+            r#"{{
   "schema_version": "whoathere.macos_vm.release_validation.v1",
+  "created_at_unix_seconds": {},
   "validator": "validate-npm-uv-detonation.sh",
   "guest_provisioning_receipt_digest": "{provisioning_digest}",
   "npm_vm_detonation_verified": true,
@@ -23739,10 +24293,17 @@ exit 0
   "sync_back_enabled": false,
   "high_risk_package_execution_enabled": false,
   "package_acquisition_policy": "local_only_no_public_resolver"
-}}"#
-            ),
+}}"#,
+            current_unix_seconds()
+        );
+        let signed = sign_macos_vm_receipt_contents(
+            state_dir,
+            MacosVmReceiptKind::ReleaseValidation,
+            &receipt,
         )
-        .expect("write release validation receipt");
+        .expect("sign release validation receipt");
+        std::fs::write(bundle_dir.join("release-validation.json"), signed)
+            .expect("write release validation receipt");
     }
 
     fn write_sync_validation_receipt(
@@ -23763,11 +24324,10 @@ exit 0
         let helper_sha256 = override_helper_digest
             .map(ToString::to_string)
             .unwrap_or_else(|| file_sha256_digest(helper_path).expect("helper digest"));
-        std::fs::write(
-            bundle_dir.join("sync-validation.json"),
-            format!(
-                r#"{{
+        let receipt = format!(
+            r#"{{
   "schema_version": "{SYNC_BACK_SCHEMA_VERSION}",
+  "created_at_unix_seconds": {},
   "sync_policy_version": "{SYNC_BACK_POLICY_VERSION}",
   "workflow": "pip_project_install",
   "job_id": "job-sync-test",
@@ -23781,10 +24341,14 @@ exit 0
   "cli_sha256": "{cli_sha256}",
   "helper_sha256": "{helper_sha256}",
   "guest_provisioning_receipt_digest": "{provisioning_digest}"
-}}"#
-            ),
-        )
-        .expect("write sync validation receipt");
+}}"#,
+            current_unix_seconds()
+        );
+        let signed =
+            sign_macos_vm_receipt_contents(state_dir, MacosVmReceiptKind::SyncValidation, &receipt)
+                .expect("sign sync validation receipt");
+        std::fs::write(bundle_dir.join("sync-validation.json"), signed)
+            .expect("write sync validation receipt");
     }
 
     fn write_release_notarization_receipt(
@@ -23801,11 +24365,10 @@ exit 0
             .and_then(|path| file_sha256_digest(&path))
             .expect("current test executable digest");
         let helper_sha256 = file_sha256_digest(helper_path).expect("helper digest");
-        std::fs::write(
-            bundle_dir.join("release-notarization.json"),
-            format!(
-                r#"{{
+        let receipt = format!(
+            r#"{{
   "schema_version": "whoathere.macos_vm.release_notarization.v1",
+  "created_at_unix_seconds": {},
   "artifact_name": "whoathere-macos-arm64-preview-test",
   "archive_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
   "notarization_zip_sha256": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
@@ -23816,10 +24379,17 @@ exit 0
   "cli_signature_kind": "{cli_signature_kind}",
   "helper_signature_kind": "{helper_signature_kind}",
   "stapling_supported_for_archive": false
-}}"#
-            ),
+}}"#,
+            current_unix_seconds()
+        );
+        let signed = sign_macos_vm_receipt_contents(
+            state_dir,
+            MacosVmReceiptKind::ReleaseNotarization,
+            &receipt,
         )
-        .expect("write release notarization receipt");
+        .expect("sign release notarization receipt");
+        std::fs::write(bundle_dir.join("release-notarization.json"), signed)
+            .expect("write release notarization receipt");
     }
 
     fn write_cleanup_manifest_fixture(runtime: &std::path::Path) -> std::path::PathBuf {

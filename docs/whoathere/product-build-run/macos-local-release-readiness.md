@@ -26,7 +26,7 @@ The macOS local release is ready only when all of the following are true:
 4. Supported workflows execute package-manager behavior only inside the guest VM.
 5. The host mirror excludes secrets, symlink/traversal escapes, unsafe dependency forms, and unsupported native/binary artifacts before guest execution.
 6. Guest execution returns structured evidence for install/build/import or CLI probes, canary access, filesystem signals, network or egress signals, verdict, and reason codes.
-7. Sync-back is implemented only with a narrow tested whitelist, clean VM evidence, and a current sync-validation receipt.
+7. Sync-back is implemented only with a narrow tested whitelist, clean VM evidence, and a current authenticated sync-validation receipt.
 8. External scanner/comparator adapters are integrated as evidence sources where practical, while WhoaThere remains authoritative for verdicts.
 9. Non-destructive red-team fixtures prove that known malicious npm/PyPI patterns are detected or blocked before unsafe host impact.
 10. Local package memory, last-known-good selection, fresh-release cooldowns, and suspicious-diff checks are implemented as pre-beta risk gates.
@@ -36,7 +36,7 @@ The macOS local release is ready only when all of the following are true:
 
 | Area | Status | Evidence |
 | --- | --- | --- |
-| Apple Silicon macOS VM boundary | Release-candidate gate implemented | VM lifecycle, helper, provisioning, guest-health, detonation commands, local-only package policy, preview packaging, live npm/uv validation receipts, and Developer ID notarization receipts are now part of the machine-readable release gate. |
+| Apple Silicon macOS VM boundary | Release-candidate gate implemented | VM lifecycle, helper, provisioning, guest-health, detonation commands, local-only package policy, preview packaging, authenticated live npm/uv validation receipts, and authenticated Developer ID notarization receipts are now part of the machine-readable release gate. |
 | VM start/health/suspend lifecycle | Strong for current preview VM | Live validation starts the entitlement-signed helper VM, proves guest health over vsock, reports offline Python/pip, Node/npm, and uv toolchains available in the current provisioning receipt, reports `vm_ready=true` while host and guest health proofs are present, suspends with observed runtime stop, and confirms final stopped state. `vm status` and `doctor` now summarize the last shutdown proof from `bundle/shutdown.json`, including `stop_method`, reason codes, and whether that stop is acceptable for the no-sync preview. |
 | Host package-manager isolation | Strong for claimed pip paths | Goals 3 and 4 validate local pip project and local-only requirements detonation inside the guest without host package-manager execution. |
 | Secret exclusion | Strong for claimed pip paths | Sanitized mirror excludes known secret paths, credential files, symlink escapes, traversal, and large unsafe payloads. |
@@ -46,8 +46,8 @@ The macOS local release is ready only when all of the following are true:
 | Package acquisition policy | Implemented local-only preview policy | Public PyPI/npm resolver behavior remains blocked and there is no public fallback claim. The preview policy is `local_only_no_public_resolver`: supported workflows use local projects, local requirements, and no-external-dependency npm project plans only. |
 | Native and binary artifacts | Fail closed/manual review | Native markers, binary wheels, direct URLs, VCS, editable, and unknown classes are not auto-allowed. |
 | Network evidence | Partial | Controlled fixtures and reason codes exist, but robust DNS/HTTPS observation is still marker-based rather than a full network monitor. |
-| Sync-back | Beta allowlist implemented | Host sync-back is available only through `whoathere vm detonate --sync-back --package-risk-receipt <path>` after clean VM evidence and clean authenticated package-risk evidence from the same state directory, bound to the same workspace digest. The host validates a bounded guest archive, rejects traversal, symlink escapes, native/binary outputs, canary/secret material, wrong context, stale evidence, and unsupported paths, stages approved files, rolls back failed applies, and writes `bundle/sync-validation.json` only after successful sync. |
-| Doctor/readiness UX | Improved in this checkpoint | `whoathere doctor --json --state-dir <dir> --helper <path>` now reports release readiness, the inspected VM state directory, guest provisioning receipt/toolchain status, release-validation receipt status, package acquisition policy, implemented workflows, fail-closed workflows, manual-review classes, blocking reason codes, next actions, separate VM lifecycle/runtime readiness, and a derived `guest_reprovision_command` when guest provisioning is missing or stale and the helper script path can be resolved. Text-mode `doctor` and `vm status` keep large helper payloads summarized with byte counts instead of dumping nested JSON. A stopped VM is visible as `vm_runtime_ready=false` but is not a release blocker when lifecycle readiness is otherwise proven. |
+| Sync-back | Beta allowlist implemented | Host sync-back is available only through `whoathere vm detonate --sync-back --package-risk-receipt <path>` after clean VM evidence and clean authenticated package-risk evidence from the same state directory, bound to the same workspace digest. The host validates a bounded guest archive, rejects traversal, symlink escapes, native/binary outputs, canary/secret material, wrong context, stale evidence, and unsupported paths, stages approved files, rolls back failed applies, and writes a state-authenticated `bundle/sync-validation.json` only after successful sync. |
+| Doctor/readiness UX | Improved in this checkpoint | `whoathere doctor --json --state-dir <dir> --helper <path>` now reports release readiness, the inspected VM state directory, guest provisioning receipt/toolchain status, release-validation receipt status, package acquisition policy, implemented workflows, fail-closed workflows, manual-review classes, blocking reason codes, next actions, separate VM lifecycle/runtime readiness, and a derived `guest_reprovision_command` when guest provisioning is missing or stale and the helper script path can be resolved. Release-validation, sync-validation, and notarization receipts must include state-local `receipt_auth` before they can clear release blockers; present but unsigned JSON is reported as untrusted. Text-mode `doctor` and `vm status` keep large helper payloads summarized with byte counts instead of dumping nested JSON. A stopped VM is visible as `vm_runtime_ready=false` but is not a release blocker when lifecycle readiness is otherwise proven. |
 | Default VM manifest loading | Implemented for CLI status/readiness | `vm status` and `doctor` now load `<state-dir>/bundle/image.manifest` by default, tolerate the helper restore-image manifest shape, accept helper-created `local_developer_verified` preview manifests for lifecycle gating, and still reject stale or unverified manifests. `vm upgrade-local-manifest --execute` explicitly upgrades only legacy helper-created local preview manifests after bundle validation. Production release signing/notarization remains a separate blocker. |
 | Scanner adapters | Functional advisory evidence layer | `whoathere scanners list`, `scanners bootstrap-plan`, and `scanners run` now provide scanner availability, bootstrap, dry-run, and normalized execution evidence for GuardDog, OSV-Scanner, pip-audit, Syft, and Grype, with Trivy and Scorecard report-only. Executed scanner receipts can be state-authenticated with `--state-dir`; clean scanner evidence without state-local auth is report-only for package-risk decisions. Scanner availability is still not a hard blocker for the current local-only sync beta because public package acquisition remains blocked. Missing or dirty scanner evidence must block any future public package auto-sync/auto-allow release. |
 | Package risk gates | Functional local beta evidence layer | `whoathere package-risk assess`, `package-risk approve`, and `package-risk history` now provide local package memory, last-known-good selection for unpinned npm/pip/uv specs, a 7 day fresh-release cooldown, suspicious diff/reputation reason codes, and authenticated local approval receipts. `vm release-plan --state-dir <dir> --workspace <path> --package-risk-receipt` and live `vm detonate --sync-back --package-risk-receipt` use receipt-backed scanner, freshness, diff, class, artifact-review, workspace-binding, and state-local auth gates. These gates do not prove packages safe, do not bypass the VM, and do not allow native/binary/direct/VCS/editable artifacts to auto-sync. |
@@ -65,8 +65,9 @@ local pip projects, local-only requirements, local no-external-dependency npm in
 and local `uv pip install .` projects. Public package resolution, `npx`/`npm exec`, `uv sync`,
 native/binary/direct/VCS/editable artifacts and runtime app protection remain fail-closed or
 deferred. Release readiness is proven only when `doctor --json` sees current guest provisioning,
-current live npm/uv release-validation proof, current sync-validation proof, and an Apple-accepted
-Developer ID notarization receipt for the packaged artifact. Clean-install qualification also
+current authenticated live npm/uv release-validation proof, current authenticated sync-validation
+proof, and an authenticated Apple-accepted Developer ID notarization receipt for the packaged
+artifact. Clean-install qualification also
 requires the release-engineering harness to validate the installed wrapper from a clean temporary
 home and bind the accepted notarization receipt to the archive, CLI, and helper digests.
 Same-host runtime qualification additionally requires the installed-wrapper harness to prove live
@@ -106,8 +107,9 @@ verified stopped VM shutdown receipt.
 - `guest_reprovision_command`
 
 For this checkpoint, `release_ready` may be `true` only when guest provisioning, live npm/uv
-validation, and notarization receipts are all present, current, and clean. Missing, stale, rejected,
-or non-Developer-ID notarization evidence keeps
+validation, sync-validation, and notarization receipts are all present, current where required,
+state-authenticated, and clean. Missing, unsigned, stale, rejected, or non-Developer-ID
+notarization evidence keeps
 `release_signature_notarization_not_complete` in `release_blocking_reason_codes`.
 
 The `runtime_shutdown` object summarizes the last VM stop proof, if present. For this
@@ -122,8 +124,9 @@ and uv fixture cases pass, canary output remains sanitized, host project mutatio
 public resolver/`uv sync` cases remain fail-closed before helper execution. `doctor` accepts npm and
 uv release proof only when that receipt uses schema
 `whoathere.macos_vm.release_validation.v1`, records disabled host execution/sync/high-risk states,
-uses `package_acquisition_policy=local_only_no_public_resolver`, and binds to the SHA-256 digest of
-the current guest-provisioning receipt. Missing, stale, or mismatched receipts keep
+uses `package_acquisition_policy=local_only_no_public_resolver`, has a current state-local
+`receipt_auth` tag, and binds to the SHA-256 digest of the current guest-provisioning receipt.
+Missing, unsigned, stale, or mismatched receipts keep
 `release_npm_vm_detonation_not_verified` and `release_uv_vm_detonation_not_verified` in
 `release_blocking_reason_codes`.
 
@@ -134,9 +137,10 @@ packaged helper SHA-256, Apple notary submission ID, signature kinds for the CLI
 the fact that archive stapling is unsupported. `doctor` clears
 `release_signature_notarization_not_complete` only when that receipt uses schema
 `whoathere.macos_vm.release_notarization.v1`, records `notarytool_status=Accepted`, includes a
-notary submission ID, proves both packaged binaries used `developer_id_application` signatures, and
-matches the digest of the running CLI plus the configured VM helper. A stale receipt for an older
-package, or a receipt used with a different helper, remains fail-closed.
+notary submission ID, has a state-local `receipt_auth` tag, proves both packaged binaries used
+`developer_id_application` signatures, and matches the digest of the running CLI plus the configured
+VM helper. An unsigned receipt, a stale receipt for an older package, or a receipt used with a
+different helper remains fail-closed.
 
 The `guest_provisioning` object now includes `agent_sha256`, `agent_source_sha256`, and
 `current_agent_source_sha256` when a helper path can resolve the local helper root. Missing or
@@ -465,13 +469,14 @@ guest health to prove `python3`, `pip`, `npm`, and `uv`, runs clean local npm in
 project cases, runs canary-reading npm lifecycle/API-use and uv import-time cases, verifies public npm/uv
 resolution and `uv sync` remain fail-closed before helper execution, rejects raw canary value
 leakage, checks the host project was not mutated, writes
-`<state-dir>/bundle/release-validation.json` after success, and suspends the VM if it started it. In
+`<state-dir>/bundle/release-validation.json` after success, signs it through
+`whoathere vm attest-receipt`, and suspends the VM if it started it. In
 the current validation state it exits with `guest_tooling_not_ready_for_npm_uv_validation=true`,
 prints the provisioning preflight output, and prints the exact
 `sudo ... provision-guest-readiness.sh ...` command before starting the VM. The focused
 release-validation unit tests prove `doctor` removes the npm/uv release blockers only for a receipt
-bound to the current guest-provisioning digest and rejects a stale digest with
-`release_validation_provisioning_digest_mismatch`.
+with current state-local auth bound to the current guest-provisioning digest, and rejects unsigned
+or stale-digest receipts with fail-closed reason codes.
 
 ## Next Recommended Slice
 

@@ -177,6 +177,7 @@ write_release_notarization_receipt() {
   mkdir -p "$RECEIPT_DIR"
   RECEIPT_TMP="$RELEASE_NOTARIZATION_RECEIPT.$$"
   CREATED_AT=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+  CREATED_AT_UNIX=$(date -u '+%s')
   ARCHIVE_DIGEST=$(sha256_file "$ARCHIVE")
   NOTARY_ZIP_DIGEST=$(sha256_file "$NOTARY_ZIP")
   CLI_DIGEST=$(sha256_file "$CLI")
@@ -196,10 +197,15 @@ write_release_notarization_receipt() {
   "cli_signature_kind": "$(json_escape "$CLI_SIGNATURE_KIND")",
   "helper_signature_kind": "$(json_escape "$HELPER_SIGNATURE_KIND")",
   "stapling_supported_for_archive": false,
-  "created_at": "$(json_escape "$CREATED_AT")"
+  "created_at": "$(json_escape "$CREATED_AT")",
+  "created_at_unix_seconds": $CREATED_AT_UNIX
 }
 EOF
   mv "$RECEIPT_TMP" "$RELEASE_NOTARIZATION_RECEIPT"
+  "$CLI" vm attest-receipt \
+    --state-dir "$RELEASE_STATE_DIR" \
+    --receipt "$RELEASE_NOTARIZATION_RECEIPT" \
+    --kind release-notarization >/dev/null
   echo "notarization_receipt=$RELEASE_NOTARIZATION_RECEIPT"
   echo "notarization_receipt_written=true"
 }

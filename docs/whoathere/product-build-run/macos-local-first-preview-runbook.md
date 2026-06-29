@@ -538,19 +538,22 @@ npm lifecycle/API-use and uv import-time cases, verifies public npm/uv resolutio
 helper execution, checks `uv sync` remains deferred, and suspends the VM if it started it. If guest
 tooling is missing, it prints the exact reprovision command and exits before VM start. After a
 complete successful run it writes `$WHOATHERE_STATE/bundle/release-validation.json`. `doctor --json`
-uses that receipt as npm/uv release proof only when it is bound to the current
-`guest-provisioning.json` SHA-256 digest and records disabled host execution,
-disabled high-risk execution, and `package_acquisition_policy=local_only_no_public_resolver`.
-Missing, stale, or mismatched release-validation receipts keep npm/uv release blockers in place.
+uses that receipt as npm/uv release proof only when it has a current state-local
+`receipt_auth` tag, is bound to the current `guest-provisioning.json` SHA-256 digest, and records
+disabled host execution, disabled high-risk execution, and
+`package_acquisition_policy=local_only_no_public_resolver`. Present but unsigned local JSON is
+reported, but it is not trusted. Missing, unsigned, stale, or mismatched release-validation
+receipts keep npm/uv release blockers in place.
 
 A successful `--sync-back` run writes `$WHOATHERE_STATE/bundle/sync-validation.json`. The command
 must also receive a clean package-risk receipt from `$WHOATHERE_STATE/package-risk/receipts/` with a
 receipt id, matching `workspace_sha256`, recent `created_at_unix_seconds`, clean nested
 `scanner_evidence`, acceptable artifact-review status, allowed package class, clean freshness/diff
 verdicts, and a valid state-local `receipt_auth` tag. `doctor --json` uses the sync-validation
-receipt as sync-back release proof only when it is bound to the current CLI digest, current helper
-digest, current `guest-provisioning.json` digest, and `whoathere.sync_policy.local_beta.v1`.
-Missing or stale sync-validation receipts keep `release_sync_back_validation_not_verified` in place.
+receipt as sync-back release proof only when it has a current state-local `receipt_auth` tag and is
+bound to the current CLI digest, current helper digest, current `guest-provisioning.json` digest,
+and `whoathere.sync_policy.local_beta.v1`. Missing, unsigned, or stale sync-validation receipts keep
+`release_sync_back_validation_not_verified` in place.
 
 Unsupported or unsafe inputs must fail before helper execution, including:
 
@@ -592,10 +595,10 @@ Do not call the macOS local-first preview ready until all of these are true:
 - `scripts/whoathere-real-world-attack-harness.sh` passes.
 - Live VM validation passes for every workflow claimed in the release.
 - For npm/uv claims, `validate-npm-uv-detonation.sh` has written a current
-  `release-validation.json` receipt and `doctor --json` no longer reports
+  state-authenticated `release-validation.json` receipt and `doctor --json` no longer reports
   `release_npm_vm_detonation_not_verified` or `release_uv_vm_detonation_not_verified`.
 - For sync-back claims, at least one supported clean `--sync-back` run has written a current
-  `sync-validation.json` receipt and `doctor --json` no longer reports
+  state-authenticated `sync-validation.json` receipt and `doctor --json` no longer reports
   `release_sync_back_validation_not_verified`.
 - `doctor --json` still reports `release_ready=false` until packaging, signing/notarization,
   npm/uv proof, sync-validation proof, and public package policy gates are actually complete.
