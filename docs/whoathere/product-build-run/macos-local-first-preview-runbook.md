@@ -380,8 +380,11 @@ writes a receipt next to the archive:
 dist/whoathere-macos-arm64-preview-<git-sha>-runtime-qualification.json
 ```
 
-If guest provisioning is stale, the harness prints the exact interactive `sudo ... provision-guest-readiness.sh`
-command and exits before claiming runtime qualification.
+If guest provisioning is stale, the harness prints the exact interactive
+`sudo ... provision-guest-readiness.sh` command, writes
+`dist/whoathere-macos-arm64-preview-<git-sha>-runtime-reprovision.sh`, and exits before claiming
+runtime qualification. Run that generated handoff script in an admin-capable terminal; it performs
+the sudo provisioning step and then resumes runtime qualification for the same archive.
 
 ## Initialize Or Reuse The VM
 

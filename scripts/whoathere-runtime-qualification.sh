@@ -6,6 +6,7 @@ REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 ARCHIVE=""
 STATE_DIR=${WHOATHERE_RUNTIME_STATE_DIR:-"$HOME/.whoathere/macos-vm-validation"}
 RECEIPT_PATH=""
+HANDOFF_PATH=${WHOATHERE_RUNTIME_REPROVISION_HANDOFF:-}
 KEEP_WORK=false
 ATTEMPT_SUDO=false
 WORK_ROOT=""
@@ -195,6 +196,9 @@ require_archive() {
   if [ -z "$RECEIPT_PATH" ]; then
     RECEIPT_PATH="$REPO_ROOT/dist/$PACKAGE_NAME-runtime-qualification.json"
   fi
+  if [ -z "$HANDOFF_PATH" ]; then
+    HANDOFF_PATH="$REPO_ROOT/dist/$PACKAGE_NAME-runtime-reprovision.sh"
+  fi
 }
 
 verify_checksum() {
@@ -321,6 +325,26 @@ sudo_command() {
   printf ' %s %s\n' "$(shell_quote "$PROVISIONER")" "$(shell_quote "$STATE_DIR")"
 }
 
+write_reprovision_handoff() {
+  command_text=$1
+  handoff_dir=$(dirname "$HANDOFF_PATH")
+  mkdir -p "$handoff_dir"
+  temp_handoff="$HANDOFF_PATH.$$"
+  {
+    printf '%s\n' '#!/bin/sh'
+    printf '%s\n' 'set -eu'
+    printf 'cd %s\n' "$(shell_quote "$REPO_ROOT")"
+    printf '%s\n' "$command_text"
+    printf '%s\n' 'echo "runtime_reprovision_handoff_sudo=ok"'
+    printf 'exec %s --archive %s --state-dir %s --attempt-sudo\n' \
+      "$(shell_quote "$REPO_ROOT/scripts/whoathere-runtime-qualification.sh")" \
+      "$(shell_quote "$ARCHIVE")" \
+      "$(shell_quote "$STATE_DIR")"
+  } > "$temp_handoff"
+  chmod 0700 "$temp_handoff"
+  mv "$temp_handoff" "$HANDOFF_PATH"
+}
+
 attempt_sudo_provision() {
   sudo -n env \
     WHOATHERE_PYTHON_RUNTIME_DIR="$PYTHON_RUNTIME_DIR" \
@@ -348,8 +372,10 @@ check_reprovisioning() {
   require_contains 'ready_for_sudo_provisioning=true' "$PREFLIGHT_OUTPUT" reprovision_preflight_not_ready
 
   command_text=$(sudo_command)
+  write_reprovision_handoff "$command_text"
   echo "runtime_reprovision_required=true" >&2
   echo "runtime_reprovision_command=$command_text" >&2
+  echo "runtime_reprovision_handoff=$HANDOFF_PATH" >&2
 
   if [ "$ATTEMPT_SUDO" != "true" ]; then
     PRESERVE_WORK=true
