@@ -10664,12 +10664,28 @@ fn validate_clean_scanner_receipt_records(contents: &str) -> Option<&'static str
         .iter()
         .filter(|record| json_extract_string_field(record, "role").as_deref() == Some("core"))
         .collect::<Vec<_>>();
+    let expected_core_scanners = external_scanner_specs()
+        .into_iter()
+        .filter(|spec| spec.role == ScannerExecutionRole::Core)
+        .map(|spec| spec.name.to_string())
+        .collect::<Vec<_>>();
+    let Some(core_count) = json_extract_u64_field(contents, "core_scanner_count") else {
+        return Some("scanner_receipt_core_record_count_missing");
+    };
+    if core_count as usize != expected_core_scanners.len() {
+        return Some("scanner_receipt_core_record_count_mismatch");
+    }
     if core_records.is_empty() {
         return Some("scanner_receipt_core_records_missing");
     }
-    if let Some(core_count) = json_extract_u64_field(contents, "core_scanner_count") {
-        if core_count == 0 || core_count as usize != core_records.len() {
-            return Some("scanner_receipt_core_record_count_mismatch");
+    if core_records.len() != expected_core_scanners.len() {
+        return Some("scanner_receipt_core_record_count_mismatch");
+    }
+    for expected in expected_core_scanners {
+        if !core_records.iter().any(|record| {
+            json_extract_string_field(record, "scanner").as_deref() == Some(expected.as_str())
+        }) {
+            return Some("scanner_receipt_core_record_missing_expected_scanner");
         }
     }
     if core_records.iter().any(|record| {
@@ -18161,7 +18177,7 @@ exit 0
         write_new_file(
             &scanner_receipt,
             format!(
-                "{{\"schema_version\": {}, \"workspace_sha256\": {}, \"execute_requested\": true, \"scanner_clean\": true, \"reason_codes\": []}}\n",
+                "{{\"schema_version\": {}, \"workspace_sha256\": {}, \"execute_requested\": true, \"scanner_clean\": true, \"core_scanner_count\": 5, \"core_scanner_runnable_count\": 5, \"reason_codes\": []}}\n",
                 json_string(EXTERNAL_SCANNER_RUN_SCHEMA),
                 json_string(&scanner_workspace_digest(&workspace))
             )
