@@ -18,8 +18,8 @@ use whoathere_core::{
 use whoathere_detector::{
     external_scanner_specs, plan_external_scanner_run, run_external_scanners,
     scan_npm_package_json, scan_pyproject_toml, scanner_bootstrap_receipt_path, scanner_inventory,
-    scanner_workspace_digest, ExternalScannerRunRecord, ExternalScannerRunSummary,
-    ScannerEcosystem, ScannerExecutionRole, EXTERNAL_SCANNER_RUN_SCHEMA,
+    scanner_workspace_digest, ExternalScannerInventoryItem, ExternalScannerRunRecord,
+    ExternalScannerRunSummary, ScannerEcosystem, ScannerExecutionRole, EXTERNAL_SCANNER_RUN_SCHEMA,
 };
 use whoathere_evidence::{
     minimum_profiles, EvidenceBundle, EvidenceJobBinding, EvidenceJobResult, EvidenceProfile,
@@ -7454,8 +7454,7 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
         .iter()
         .filter(|item| item.spec.role == ScannerExecutionRole::Core)
         .count();
-    let scanner_bootstrap =
-        scanner_bootstrap_receipt_readiness(scanner_available, scanner_required);
+    let scanner_bootstrap = scanner_bootstrap_receipt_readiness(&scanner_inventory);
     let scanner_public_package_auto_trust_ready = scanner_bootstrap.public_auto_trust_ready;
     let package_memory_ready = package_risk_memory_ready(&config.state_dir);
     let package_risk_gate_ready = true;
@@ -10128,7 +10127,7 @@ fn render_scanners_list(json: bool) -> String {
         .iter()
         .filter(|item| item.spec.role == ScannerExecutionRole::Core && item.available)
         .count();
-    let bootstrap = scanner_bootstrap_receipt_readiness(core_available_count, core_count);
+    let bootstrap = scanner_bootstrap_receipt_readiness(&inventory);
     let public_auto_trust_ready = bootstrap.public_auto_trust_ready;
     if json {
         let scanners_json = inventory
@@ -10202,9 +10201,16 @@ struct ScannerBootstrapReceiptReadiness {
 }
 
 fn scanner_bootstrap_receipt_readiness(
-    core_available_count: usize,
-    core_count: usize,
+    inventory: &[ExternalScannerInventoryItem],
 ) -> ScannerBootstrapReceiptReadiness {
+    let core_count = inventory
+        .iter()
+        .filter(|item| item.spec.role == ScannerExecutionRole::Core)
+        .count();
+    let core_available_count = inventory
+        .iter()
+        .filter(|item| item.spec.role == ScannerExecutionRole::Core && item.available)
+        .count();
     let path = scanner_bootstrap_receipt_path();
     if !path.is_file() {
         return ScannerBootstrapReceiptReadiness {
@@ -10225,7 +10231,7 @@ fn scanner_bootstrap_receipt_readiness(
             };
         }
     };
-    let mut reason_codes = validate_scanner_bootstrap_receipt(&contents, core_count);
+    let mut reason_codes = validate_scanner_bootstrap_receipt(&contents, inventory);
     if core_available_count != core_count {
         reason_codes.push("scanner_bootstrap_current_core_scanners_missing".to_string());
     }
@@ -10240,12 +10246,27 @@ fn scanner_bootstrap_receipt_readiness(
     }
 }
 
-fn validate_scanner_bootstrap_receipt(contents: &str, expected_core_count: usize) -> Vec<String> {
+fn validate_scanner_bootstrap_receipt(
+    contents: &str,
+    inventory: &[ExternalScannerInventoryItem],
+) -> Vec<String> {
     let mut reason_codes = Vec::new();
+    let expected_core_count = inventory
+        .iter()
+        .filter(|item| item.spec.role == ScannerExecutionRole::Core)
+        .count();
     if json_extract_string_field(contents, "schema_version").as_deref()
         != Some("whoathere.scanner_bootstrap.v1")
     {
         reason_codes.push("scanner_bootstrap_receipt_schema_invalid".to_string());
+    }
+    if json_extract_string_field(contents, "created_at")
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .is_empty()
+    {
+        reason_codes.push("scanner_bootstrap_created_at_missing".to_string());
     }
     match json_extract_u64_field(contents, "core_scanner_count") {
         Some(count) if count as usize == expected_core_count => {}
@@ -10261,18 +10282,21 @@ fn validate_scanner_bootstrap_receipt(contents: &str, expected_core_count: usize
         reason_codes.push("scanner_bootstrap_ready_flag_not_true".to_string());
     }
     let records = json_extract_object_array(contents, "scanners");
-    let expected_core_scanners = external_scanner_specs()
-        .into_iter()
-        .filter(|spec| spec.role == ScannerExecutionRole::Core)
-        .map(|spec| spec.name.to_string())
-        .collect::<Vec<_>>();
-    for expected in expected_core_scanners {
-        let Some(record) = records.iter().find(|record| {
-            json_extract_string_field(record, "name").as_deref() == Some(expected.as_str())
-        }) else {
+    for item in inventory
+        .iter()
+        .filter(|item| item.spec.role == ScannerExecutionRole::Core)
+    {
+        let expected = item.spec.name;
+        let Some(record) = records
+            .iter()
+            .find(|record| json_extract_string_field(record, "name").as_deref() == Some(expected))
+        else {
             reason_codes.push("scanner_bootstrap_core_record_missing".to_string());
             continue;
         };
+        if !item.available {
+            reason_codes.push("scanner_bootstrap_current_core_scanner_unavailable".to_string());
+        }
         if json_extract_string_field(record, "role").as_deref() != Some("core") {
             reason_codes.push("scanner_bootstrap_core_record_role_invalid".to_string());
         }
@@ -10281,6 +10305,20 @@ fn validate_scanner_bootstrap_receipt(contents: &str, expected_core_count: usize
             Some("available" | "installed" | "uvx_available")
         ) {
             reason_codes.push("scanner_bootstrap_core_record_not_ready".to_string());
+        }
+        match (
+            json_extract_string_field(record, "version"),
+            item.version.as_deref(),
+        ) {
+            (Some(record_version), Some(current_version))
+                if record_version.trim() == current_version.trim() => {}
+            (Some(_), Some(_)) => {
+                reason_codes.push("scanner_bootstrap_core_record_version_mismatch".to_string())
+            }
+            (None, _) => {
+                reason_codes.push("scanner_bootstrap_core_record_version_missing".to_string())
+            }
+            _ => {}
         }
     }
     reason_codes
@@ -21082,6 +21120,40 @@ exit 0
     }
 
     #[test]
+    fn scanners_list_rejects_stale_bootstrap_scanner_versions() {
+        let root = temp_root("whoathere-cli-scanners-stale-bootstrap");
+        let scanner_cache = root.join("scanner-cache");
+        let bin = scanner_cache.join("bin");
+        std::fs::create_dir_all(&bin).expect("scanner cache bin");
+        for scanner in ["guarddog", "osv-scanner", "syft", "grype", "pip-audit"] {
+            write_versioned_fake_scanner(&bin.join(scanner), "2.0.0");
+        }
+        write_valid_scanner_bootstrap_receipt(&scanner_cache);
+
+        let result = with_reprovision_env(
+            &[(
+                "WHOATHERE_SCANNER_CACHE_DIR",
+                scanner_cache.display().to_string(),
+            )],
+            || evaluate_command(Command::ScannersList { json: true }),
+        );
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result
+            .output
+            .contains("\"bootstrap_receipt_present\": true"));
+        assert!(result.output.contains("\"bootstrap_receipt_valid\": false"));
+        assert!(result
+            .output
+            .contains("scanner_bootstrap_core_record_version_mismatch"));
+        assert!(result
+            .output
+            .contains("\"scanner_public_package_auto_trust_ready\": false"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn scanners_run_uvx_fallback_invokes_target_scanner_command() {
         let root = temp_root("whoathere-cli-scanners-uvx-fallback");
         let scanner_cache = root.join("scanners");
@@ -24689,6 +24761,15 @@ exit 0
         set_executable(path).expect("fake scanner executable");
     }
 
+    fn write_versioned_fake_scanner(path: &std::path::Path, version: &str) {
+        let script = format!(
+            "#!/bin/sh\nif [ \"${{1:-}}\" = \"--version\" ]; then printf '{}\\n'; exit 0; fi\nprintf '{{\"findings\":[]}}\\n'\nexit 0\n",
+            version
+        );
+        write_new_file(path, script.as_bytes()).expect("versioned fake scanner");
+        set_executable(path).expect("versioned fake scanner executable");
+    }
+
     fn write_valid_scanner_bootstrap_receipt(scanner_cache: &std::path::Path) {
         let path = scanner_cache.join("scanner-bootstrap.json");
         let _ = std::fs::remove_file(&path);
@@ -24703,11 +24784,11 @@ exit 0
   "core_scanner_ready_count": 5,
   "scanner_public_package_auto_trust_ready": true,
   "scanners": [
-    {"name": "guarddog", "role": "core", "status": "available", "path": "guarddog", "version": "test", "install_method": "test", "failure": null},
-    {"name": "pip-audit", "role": "core", "status": "available", "path": "pip-audit", "version": "test", "install_method": "test", "failure": null},
-    {"name": "osv-scanner", "role": "core", "status": "available", "path": "osv-scanner", "version": "test", "install_method": "test", "failure": null},
-    {"name": "syft", "role": "core", "status": "available", "path": "syft", "version": "test", "install_method": "test", "failure": null},
-    {"name": "grype", "role": "core", "status": "available", "path": "grype", "version": "test", "install_method": "test", "failure": null},
+    {"name": "guarddog", "role": "core", "status": "available", "path": "guarddog", "version": "{\"findings\":[]}", "install_method": "test", "failure": null},
+    {"name": "pip-audit", "role": "core", "status": "available", "path": "pip-audit", "version": "{\"findings\":[]}", "install_method": "test", "failure": null},
+    {"name": "osv-scanner", "role": "core", "status": "available", "path": "osv-scanner", "version": "{\"findings\":[]}", "install_method": "test", "failure": null},
+    {"name": "syft", "role": "core", "status": "available", "path": "syft", "version": "{\"findings\":[]}", "install_method": "test", "failure": null},
+    {"name": "grype", "role": "core", "status": "available", "path": "grype", "version": "{\"findings\":[]}", "install_method": "test", "failure": null},
     {"name": "trivy", "role": "report_only", "status": "available", "path": "trivy", "version": "test", "install_method": "test", "failure": null},
     {"name": "scorecard", "role": "report_only", "status": "available", "path": "scorecard", "version": "test", "install_method": "test", "failure": null}
   ]
