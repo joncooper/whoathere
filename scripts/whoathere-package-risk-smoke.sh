@@ -175,7 +175,9 @@ mkdir -p "$AI_SAFE"
 cat >"$AI_SAFE/package.json" <<'JSON'
 {"name":"ai-safe-looking","version":"1.0.0","whoatherePublishedAtUnixSeconds":1700000000,"repository":"https://example.invalid/repo"}
 JSON
-FAKE_OLLAMA_FINDINGS="$WORK_DIR/fake-ollama-findings"
+FAKE_OLLAMA_FINDINGS_DIR="$WORK_DIR/fake-ollama-findings"
+mkdir -p "$FAKE_OLLAMA_FINDINGS_DIR"
+FAKE_OLLAMA_FINDINGS="$FAKE_OLLAMA_FINDINGS_DIR/ollama"
 cat >"$FAKE_OLLAMA_FINDINGS" <<'SH'
 #!/bin/sh
 if [ -n "${NPM_TOKEN:-}" ]; then
@@ -190,12 +192,14 @@ exit 0
 SH
 perl -pi -e "s#__ENV_LEAK_MARKER__#$ENV_LEAK_MARKER#g" "$FAKE_OLLAMA_FINDINGS"
 chmod +x "$FAKE_OLLAMA_FINDINGS"
-run_capture 22 "$WORK_DIR/ai-findings.json" env WHOATHERE_OLLAMA_BIN="$FAKE_OLLAMA_FINDINGS" "$CLI" package-risk assess --workspace "$AI_SAFE" --ecosystem npm --state-dir "$STATE_DIR" --ai-review --ai-model fake-review-model --ai-timeout-seconds 5 --json
+run_capture 22 "$WORK_DIR/ai-findings.json" env WHOATHERE_ARTIFACT_REVIEW_TEST_BIN="$FAKE_OLLAMA_FINDINGS" "$CLI" package-risk assess --workspace "$AI_SAFE" --ecosystem npm --state-dir "$STATE_DIR" --ai-review --ai-model fake-review-model --ai-timeout-seconds 5 --json
 require_contains '"artifact_review_status": "findings"' "$WORK_DIR/ai-findings.json" ai_findings_status
 require_contains 'artifact_review_model_credential_exfil' "$WORK_DIR/ai-findings.json" ai_findings_reason
 require_not_contains 'WHOATHERE_CANARY_TOKEN_VALUE' "$WORK_DIR/ai-findings.json" ai_raw_output
 
-FAKE_OLLAMA_CLEAN="$WORK_DIR/fake-ollama-clean"
+FAKE_OLLAMA_CLEAN_DIR="$WORK_DIR/fake-ollama-clean"
+mkdir -p "$FAKE_OLLAMA_CLEAN_DIR"
+FAKE_OLLAMA_CLEAN="$FAKE_OLLAMA_CLEAN_DIR/ollama"
 cat >"$FAKE_OLLAMA_CLEAN" <<'SH'
 #!/bin/sh
 if [ -n "${NPM_TOKEN:-}" ]; then
@@ -210,12 +214,14 @@ exit 0
 SH
 perl -pi -e "s#__ENV_LEAK_MARKER__#$ENV_LEAK_MARKER#g" "$FAKE_OLLAMA_CLEAN"
 chmod +x "$FAKE_OLLAMA_CLEAN"
-run_capture 22 "$WORK_DIR/ai-clean-fresh.json" env WHOATHERE_OLLAMA_BIN="$FAKE_OLLAMA_CLEAN" "$CLI" package-risk assess --workspace "$FRESH" --ecosystem pypi --state-dir "$STATE_DIR" --ai-review --ai-model fake-review-model --ai-timeout-seconds 5 --json
+run_capture 22 "$WORK_DIR/ai-clean-fresh.json" env WHOATHERE_ARTIFACT_REVIEW_TEST_BIN="$FAKE_OLLAMA_CLEAN" "$CLI" package-risk assess --workspace "$FRESH" --ecosystem pypi --state-dir "$STATE_DIR" --ai-review --ai-model fake-review-model --ai-timeout-seconds 5 --json
 require_contains '"artifact_review_status": "passed"' "$WORK_DIR/ai-clean-fresh.json" ai_clean_status
 require_contains 'artifact_review_clean_advisory' "$WORK_DIR/ai-clean-fresh.json" ai_clean_reason
 require_contains 'fresh_release_cooldown_active' "$WORK_DIR/ai-clean-fresh.json" ai_clean_no_fresh_bypass
 
-FAKE_OLLAMA_NOISY="$WORK_DIR/fake-ollama-noisy"
+FAKE_OLLAMA_NOISY_DIR="$WORK_DIR/fake-ollama-noisy"
+mkdir -p "$FAKE_OLLAMA_NOISY_DIR"
+FAKE_OLLAMA_NOISY="$FAKE_OLLAMA_NOISY_DIR/ollama"
 cat >"$FAKE_OLLAMA_NOISY" <<'SH'
 #!/bin/sh
 if [ -n "${NPM_TOKEN:-}" ]; then
@@ -230,7 +236,7 @@ exit 0
 SH
 perl -pi -e "s#__ENV_LEAK_MARKER__#$ENV_LEAK_MARKER#g" "$FAKE_OLLAMA_NOISY"
 chmod +x "$FAKE_OLLAMA_NOISY"
-run_capture 22 "$WORK_DIR/ai-output-limit.json" env WHOATHERE_OLLAMA_BIN="$FAKE_OLLAMA_NOISY" "$CLI" package-risk assess --workspace "$AI_SAFE" --ecosystem npm --state-dir "$STATE_DIR" --ai-review --ai-model fake-review-model --ai-timeout-seconds 5 --json
+run_capture 22 "$WORK_DIR/ai-output-limit.json" env WHOATHERE_ARTIFACT_REVIEW_TEST_BIN="$FAKE_OLLAMA_NOISY" "$CLI" package-risk assess --workspace "$AI_SAFE" --ecosystem npm --state-dir "$STATE_DIR" --ai-review --ai-model fake-review-model --ai-timeout-seconds 5 --json
 require_contains 'artifact_review_output_limit_exceeded' "$WORK_DIR/ai-output-limit.json" ai_output_limit
 require_contains '"raw_output_included": false' "$WORK_DIR/ai-output-limit.json" ai_output_not_included
 

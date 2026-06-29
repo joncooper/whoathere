@@ -11361,8 +11361,18 @@ fn run_local_artifact_review(
 
     let prompt = build_local_artifact_review_prompt(workspace, ecosystem, subjects);
     let prompt_sha256 = sha256_digest(prompt.as_bytes());
-    let executable = std::env::var("WHOATHERE_OLLAMA_BIN").unwrap_or_else(|_| "ollama".to_string());
     let start = Instant::now();
+    let Some(executable) = resolve_artifact_review_executable(workspace, &mut base_reasons) else {
+        return local_artifact_review_failure(
+            request.provider,
+            Some(model),
+            LocalArtifactReviewStatus::Unavailable,
+            Some(prompt_sha256),
+            None,
+            Some(start.elapsed().as_millis()),
+            base_reasons,
+        );
+    };
     let stdout_path = std::env::temp_dir().join(format!(
         "whoathere-artifact-review-{}-{}-stdout.txt",
         std::process::id(),
@@ -11566,6 +11576,98 @@ fn artifact_review_output_size(stdout_path: &Path, stderr_path: &Path) -> u64 {
         )
 }
 
+fn resolve_artifact_review_executable(
+    workspace: &Path,
+    reason_codes: &mut Vec<String>,
+) -> Option<PathBuf> {
+    if let Ok(configured) = std::env::var("WHOATHERE_OLLAMA_BIN") {
+        let candidate = PathBuf::from(configured);
+        let requested_from_safe_dir = artifact_review_candidate_is_in_safe_dir(&candidate);
+        return resolve_configured_artifact_review_executable(&candidate, workspace, reason_codes)
+            .and_then(|canonical| {
+                if requested_from_safe_dir
+                    || artifact_review_executable_is_under_safe_dir(&canonical)
+                {
+                    Some(canonical)
+                } else {
+                    reason_codes.push("artifact_review_provider_path_untrusted".to_string());
+                    None
+                }
+            });
+    }
+    if cfg!(debug_assertions) {
+        if let Ok(configured) = std::env::var("WHOATHERE_ARTIFACT_REVIEW_TEST_BIN") {
+            let candidate = PathBuf::from(configured);
+            return resolve_configured_artifact_review_executable(
+                &candidate,
+                workspace,
+                reason_codes,
+            );
+        }
+    }
+    artifact_review_command_on_safe_path("ollama").or_else(|| {
+        reason_codes.push("artifact_review_provider_unavailable".to_string());
+        None
+    })
+}
+
+fn resolve_configured_artifact_review_executable(
+    candidate: &Path,
+    workspace: &Path,
+    reason_codes: &mut Vec<String>,
+) -> Option<PathBuf> {
+    if !candidate.is_absolute() {
+        reason_codes.push("artifact_review_provider_path_not_absolute".to_string());
+        return None;
+    }
+    let Ok(canonical) = candidate.canonicalize() else {
+        reason_codes.push("artifact_review_provider_unavailable".to_string());
+        return None;
+    };
+    if canonical.file_name().and_then(|name| name.to_str()) != Some("ollama") {
+        reason_codes.push("artifact_review_provider_binary_name_invalid".to_string());
+        return None;
+    }
+    if artifact_review_executable_is_under_workspace(&canonical, workspace) {
+        reason_codes.push("artifact_review_provider_inside_workspace_refused".to_string());
+        return None;
+    }
+    Some(canonical)
+}
+
+fn artifact_review_command_on_safe_path(command: &str) -> Option<PathBuf> {
+    for dir in safe_artifact_review_dirs() {
+        let candidate = dir.join(command);
+        if candidate.is_file() {
+            return candidate.canonicalize().ok();
+        }
+    }
+    None
+}
+
+fn artifact_review_executable_is_under_workspace(executable: &Path, workspace: &Path) -> bool {
+    let Ok(workspace) = workspace.canonicalize() else {
+        return false;
+    };
+    executable.starts_with(workspace)
+}
+
+fn artifact_review_executable_is_under_safe_dir(executable: &Path) -> bool {
+    safe_artifact_review_dirs()
+        .iter()
+        .any(|dir| executable.starts_with(dir))
+}
+
+fn artifact_review_candidate_is_in_safe_dir(candidate: &Path) -> bool {
+    let Some(parent) = candidate.parent() else {
+        return false;
+    };
+    let Ok(parent) = parent.canonicalize() else {
+        return false;
+    };
+    safe_artifact_review_dirs().contains(&parent)
+}
+
 fn create_private_artifact_review_temp_file(path: &Path) -> std::io::Result<std::fs::File> {
     let file = std::fs::OpenOptions::new()
         .write(true)
@@ -11641,7 +11743,14 @@ fn ollama_host_is_local(value: &str) -> bool {
 }
 
 fn safe_artifact_review_path() -> String {
-    let paths = [
+    std::env::join_paths(safe_artifact_review_dirs())
+        .ok()
+        .and_then(|paths| paths.into_string().ok())
+        .unwrap_or_else(|| "/usr/bin:/bin:/usr/sbin:/sbin".to_string())
+}
+
+fn safe_artifact_review_dirs() -> Vec<PathBuf> {
+    [
         PathBuf::from("/opt/homebrew/bin"),
         PathBuf::from("/usr/local/bin"),
         PathBuf::from("/usr/bin"),
@@ -11651,11 +11760,7 @@ fn safe_artifact_review_path() -> String {
     ]
     .into_iter()
     .filter(|path| path.is_dir())
-    .collect::<Vec<_>>();
-    std::env::join_paths(paths)
-        .ok()
-        .and_then(|paths| paths.into_string().ok())
-        .unwrap_or_else(|| "/usr/bin:/bin:/usr/sbin:/sbin".to_string())
+    .collect::<Vec<_>>()
 }
 
 fn classify_local_artifact_review_output(output: &str) -> (LocalArtifactReviewStatus, Vec<String>) {
@@ -16347,6 +16452,7 @@ mod tests {
             "WHOATHERE_NODE_RUNTIME_DIR",
             "WHOATHERE_UV_BINARY",
             "WHOATHERE_OLLAMA_BIN",
+            "WHOATHERE_ARTIFACT_REVIEW_TEST_BIN",
             "WHOATHERE_ARTIFACT_REVIEW_MODEL",
             "HOME",
             "PATH",
@@ -20296,7 +20402,11 @@ exit 0
     fn package_risk_ai_review_findings_force_manual_review_without_raw_output() {
         let root = temp_root("whoathere-cli-package-risk-ai-findings");
         let state_dir = root.join("state");
-        let fake_ollama = root.join("ollama");
+        let workspace = root.join("workspace");
+        let tools_dir = root.join("tools");
+        let fake_ollama = tools_dir.join("ollama");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        std::fs::create_dir_all(&tools_dir).expect("tools");
         write_new_file(
             &fake_ollama,
             br#"#!/bin/sh
@@ -20311,16 +20421,19 @@ exit 64
         .expect("fake ollama");
         set_executable(&fake_ollama).expect("fake executable");
         write_new_file(
-            &root.join("package.json"),
+            &workspace.join("package.json"),
             br#"{"name":"ai-review-clean-looking","version":"1.0.0","whoatherePublishedAtUnixSeconds":1700000000,"repository":"https://example.invalid/repo"}"#,
         )
         .expect("package json");
 
         let result = with_reprovision_env(
-            &[("WHOATHERE_OLLAMA_BIN", fake_ollama.display().to_string())],
+            &[(
+                "WHOATHERE_ARTIFACT_REVIEW_TEST_BIN",
+                fake_ollama.display().to_string(),
+            )],
             || {
                 evaluate_command(Command::PackageRiskAssess {
-                    workspace: Some(root.display().to_string()),
+                    workspace: Some(workspace.display().to_string()),
                     ecosystem: Some("npm".to_string()),
                     state_dir: Some(state_dir.display().to_string()),
                     scanner_receipt: None,
@@ -20354,7 +20467,11 @@ exit 64
     fn package_risk_ai_review_clean_cannot_override_freshness_gate() {
         let root = temp_root("whoathere-cli-package-risk-ai-clean-fresh");
         let state_dir = root.join("state");
-        let fake_ollama = root.join("ollama");
+        let workspace = root.join("workspace");
+        let tools_dir = root.join("tools");
+        let fake_ollama = tools_dir.join("ollama");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        std::fs::create_dir_all(&tools_dir).expect("tools");
         write_new_file(
             &fake_ollama,
             br#"#!/bin/sh
@@ -20366,7 +20483,7 @@ exit 0
         .expect("fake ollama");
         set_executable(&fake_ollama).expect("fake executable");
         write_new_file(
-            &root.join("requirements.txt"),
+            &workspace.join("requirements.txt"),
             format!(
                 "fresh-pkg==2.0.0 # whoathere-published-at={}\n",
                 current_unix_seconds()
@@ -20376,10 +20493,13 @@ exit 0
         .expect("requirements");
 
         let result = with_reprovision_env(
-            &[("WHOATHERE_OLLAMA_BIN", fake_ollama.display().to_string())],
+            &[(
+                "WHOATHERE_ARTIFACT_REVIEW_TEST_BIN",
+                fake_ollama.display().to_string(),
+            )],
             || {
                 evaluate_command(Command::PackageRiskAssess {
-                    workspace: Some(root.display().to_string()),
+                    workspace: Some(workspace.display().to_string()),
                     ecosystem: Some("pypi".to_string()),
                     state_dir: Some(state_dir.display().to_string()),
                     scanner_receipt: None,
@@ -20409,18 +20529,20 @@ exit 0
     fn package_risk_requested_ai_review_unavailable_fails_closed() {
         let root = temp_root("whoathere-cli-package-risk-ai-unavailable");
         let state_dir = root.join("state");
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace");
         write_new_file(
-            &root.join("requirements.txt"),
+            &workspace.join("requirements.txt"),
             b"safe-pkg==1.2.3 # whoathere-published-at=1700000000\n",
         )
         .expect("requirements");
 
-        let missing_ollama = root.join("missing-ollama");
+        let missing_ollama = root.join("tools").join("ollama");
         let result = with_reprovision_env(
             &[("WHOATHERE_OLLAMA_BIN", missing_ollama.display().to_string())],
             || {
                 evaluate_command(Command::PackageRiskAssess {
-                    workspace: Some(root.display().to_string()),
+                    workspace: Some(workspace.display().to_string()),
                     ecosystem: Some("pypi".to_string()),
                     state_dir: Some(state_dir.display().to_string()),
                     scanner_receipt: None,
@@ -20448,10 +20570,129 @@ exit 0
     }
 
     #[test]
+    fn package_risk_ai_review_refuses_workspace_controlled_provider() {
+        let root = temp_root("whoathere-cli-package-risk-ai-workspace-provider");
+        let state_dir = root.join("state");
+        let workspace = root.join("workspace");
+        let workspace_ollama = workspace.join("ollama");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        write_new_file(
+            &workspace.join("requirements.txt"),
+            b"safe-pkg==1.2.3 # whoathere-published-at=1700000000\n",
+        )
+        .expect("requirements");
+        write_new_file(
+            &workspace_ollama,
+            br#"#!/bin/sh
+cat >/dev/null
+printf '{"risk":"clean","reason_codes":["workspace_controlled"],"summary":"clean"}\n'
+exit 0
+"#,
+        )
+        .expect("workspace ollama");
+        set_executable(&workspace_ollama).expect("workspace executable");
+
+        let result = with_reprovision_env(
+            &[(
+                "WHOATHERE_OLLAMA_BIN",
+                workspace_ollama.display().to_string(),
+            )],
+            || {
+                evaluate_command(Command::PackageRiskAssess {
+                    workspace: Some(workspace.display().to_string()),
+                    ecosystem: Some("pypi".to_string()),
+                    state_dir: Some(state_dir.display().to_string()),
+                    scanner_receipt: None,
+                    ai_review: true,
+                    ai_provider: Some("ollama".to_string()),
+                    ai_model: Some("fake-review-model".to_string()),
+                    ai_timeout_seconds: Some(5),
+                    json: true,
+                })
+            },
+        );
+
+        assert_eq!(result.exit_code, 22);
+        assert!(result
+            .output
+            .contains("\"artifact_review_status\": \"unavailable\""));
+        assert!(result
+            .output
+            .contains("artifact_review_provider_inside_workspace_refused"));
+        assert!(result
+            .output
+            .contains("\"overall_verdict\": \"manual_review\""));
+        assert!(!result.output.contains("workspace_controlled"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn package_risk_ai_review_refuses_untrusted_provider_path() {
+        let root = temp_root("whoathere-cli-package-risk-ai-untrusted-provider");
+        let state_dir = root.join("state");
+        let workspace = root.join("workspace");
+        let tools_dir = root.join("tools");
+        let fake_ollama = tools_dir.join("ollama");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        std::fs::create_dir_all(&tools_dir).expect("tools");
+        write_new_file(
+            &workspace.join("requirements.txt"),
+            b"safe-pkg==1.2.3 # whoathere-published-at=1700000000\n",
+        )
+        .expect("requirements");
+        write_new_file(
+            &fake_ollama,
+            br#"#!/bin/sh
+cat >/dev/null
+printf '{"risk":"clean","reason_codes":["untrusted_path"],"summary":"clean"}\n'
+exit 0
+"#,
+        )
+        .expect("fake ollama");
+        set_executable(&fake_ollama).expect("fake executable");
+
+        let result = with_reprovision_env(
+            &[("WHOATHERE_OLLAMA_BIN", fake_ollama.display().to_string())],
+            || {
+                evaluate_command(Command::PackageRiskAssess {
+                    workspace: Some(workspace.display().to_string()),
+                    ecosystem: Some("pypi".to_string()),
+                    state_dir: Some(state_dir.display().to_string()),
+                    scanner_receipt: None,
+                    ai_review: true,
+                    ai_provider: Some("ollama".to_string()),
+                    ai_model: Some("fake-review-model".to_string()),
+                    ai_timeout_seconds: Some(5),
+                    json: true,
+                })
+            },
+        );
+
+        assert_eq!(result.exit_code, 22);
+        assert!(result
+            .output
+            .contains("\"artifact_review_status\": \"unavailable\""));
+        assert!(result
+            .output
+            .contains("artifact_review_provider_path_untrusted"));
+        assert!(result
+            .output
+            .contains("\"overall_verdict\": \"manual_review\""));
+        assert!(!result.output.contains("untrusted_path"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn package_risk_requested_ai_review_output_limit_fails_closed() {
         let root = temp_root("whoathere-cli-package-risk-ai-output-limit");
         let state_dir = root.join("state");
-        let fake_ollama = root.join("ollama");
+        let workspace = root.join("workspace");
+        let tools_dir = root.join("tools");
+        let fake_ollama = tools_dir.join("ollama");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        std::fs::create_dir_all(&tools_dir).expect("tools");
         write_new_file(
             &fake_ollama,
             br#"#!/bin/sh
@@ -20463,16 +20704,19 @@ exit 0
         .expect("fake ollama");
         set_executable(&fake_ollama).expect("fake executable");
         write_new_file(
-            &root.join("requirements.txt"),
+            &workspace.join("requirements.txt"),
             b"safe-pkg==1.2.3 # whoathere-published-at=1700000000\n",
         )
         .expect("requirements");
 
         let result = with_reprovision_env(
-            &[("WHOATHERE_OLLAMA_BIN", fake_ollama.display().to_string())],
+            &[(
+                "WHOATHERE_ARTIFACT_REVIEW_TEST_BIN",
+                fake_ollama.display().to_string(),
+            )],
             || {
                 evaluate_command(Command::PackageRiskAssess {
-                    workspace: Some(root.display().to_string()),
+                    workspace: Some(workspace.display().to_string()),
                     ecosystem: Some("pypi".to_string()),
                     state_dir: Some(state_dir.display().to_string()),
                     scanner_receipt: None,
