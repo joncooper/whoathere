@@ -8217,10 +8217,10 @@ fn render_vm_red_team_gate(json: bool) -> String {
     } else {
         ExitCode::Deny.code()
     };
-    let unavailable_scanners = scanner_adapters()
+    let unavailable_scanners = scanner_inventory()
         .into_iter()
-        .filter(|adapter| !command_on_path(adapter.name))
-        .map(|adapter| adapter.name.to_string())
+        .filter(|item| !item.available)
+        .map(|item| item.spec.name.to_string())
         .collect::<Vec<_>>();
 
     if json {
@@ -8568,13 +8568,6 @@ fn local_admission_exit_code(verdict: whoathere_macos_vm::LocalAdmissionVerdict)
         whoathere_macos_vm::LocalAdmissionVerdict::ManualReview => ExitCode::ManualReview.code(),
         whoathere_macos_vm::LocalAdmissionVerdict::Deny => ExitCode::Deny.code(),
     }
-}
-
-fn command_on_path(command: &str) -> bool {
-    let Some(paths) = std::env::var_os("PATH") else {
-        return false;
-    };
-    std::env::split_paths(&paths).any(|path| path.join(command).is_file())
 }
 
 fn nonempty_env_default(env_lookup: &impl Fn(&str) -> Option<String>, key: &str) -> Option<String> {
@@ -20888,6 +20881,42 @@ exit 0
             .output
             .contains("scripts/whoathere-bootstrap-scanners.sh"));
         assert!(plan.output.contains("\"name\": \"guarddog\""));
+    }
+
+    #[test]
+    fn scanners_list_uses_user_local_uv_tool_bin_without_path_trust() {
+        let root = temp_root("whoathere-cli-scanners-user-local-bin");
+        let home = root.join("home");
+        let local_bin = home.join(".local").join("bin");
+        let scanner_cache = root.join("scanner-cache");
+        std::fs::create_dir_all(&local_bin).expect("local bin");
+        for scanner in ["guarddog", "osv-scanner", "syft", "grype", "pip-audit"] {
+            write_fake_scanner(&local_bin.join(scanner));
+        }
+
+        let result = with_reprovision_env(
+            &[
+                ("HOME", home.display().to_string()),
+                (
+                    "WHOATHERE_SCANNER_CACHE_DIR",
+                    scanner_cache.display().to_string(),
+                ),
+            ],
+            || evaluate_command(Command::ScannersList { json: true }),
+        );
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result
+            .output
+            .contains("\"core_scanner_available_count\": 5"));
+        assert!(result
+            .output
+            .contains("\"scanner_public_package_auto_trust_ready\": true"));
+        assert!(result.output.contains("\"name\": \"guarddog\""));
+        assert!(result.output.contains("\"name\": \"pip-audit\""));
+        assert!(!result.output.contains("/Users/"));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

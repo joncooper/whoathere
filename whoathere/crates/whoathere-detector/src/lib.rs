@@ -1117,8 +1117,9 @@ fn command_path_on_trusted_scanner_path(command: &str) -> Option<PathBuf> {
 }
 
 fn trusted_scanner_search_dirs() -> Vec<PathBuf> {
-    let mut paths = vec![
+    let paths = vec![
         scanner_bootstrap_cache_dir().join("bin"),
+        scanner_user_tool_bin_dir(),
         PathBuf::from("/opt/homebrew/bin"),
         PathBuf::from("/usr/local/bin"),
         PathBuf::from("/usr/bin"),
@@ -1126,8 +1127,21 @@ fn trusted_scanner_search_dirs() -> Vec<PathBuf> {
         PathBuf::from("/usr/sbin"),
         PathBuf::from("/sbin"),
     ];
-    paths.retain(|path| path.is_dir());
-    paths
+    let mut unique = Vec::new();
+    for path in paths {
+        if path.is_dir() && !unique.contains(&path) {
+            unique.push(path);
+        }
+    }
+    unique
+}
+
+fn scanner_user_tool_bin_dir() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".local")
+        .join("bin")
 }
 
 fn scanner_executable_is_under_workspace(executable: Option<&Path>, workspace: &Path) -> bool {
