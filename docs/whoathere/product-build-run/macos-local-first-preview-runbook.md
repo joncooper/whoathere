@@ -187,10 +187,12 @@ Policy for the macOS beta:
   code block auto-sync.
 - Reputation is a warning/reason-code signal. It never authorizes a package by itself.
 
-Use a package-risk receipt with the release-plan model:
+Use a package-risk receipt with the release-plan model. The receipt must be produced by
+`package-risk assess` under the same WhoaThere state directory because WhoaThere verifies a
+state-local receipt authentication tag before applying it:
 
 ```sh
-$WHOATHERE vm release-plan --class pypi.pure_wheel.v1 \
+$WHOATHERE vm release-plan --state-dir "$WHOATHERE_STATE" --class pypi.pure_wheel.v1 \
   --vm-ready --static-clean --dynamic-clean --egress-clean --no-canary-access \
   --package-risk-receipt /path/to/package-risk-receipt.json --json
 ```
@@ -534,12 +536,13 @@ disabled high-risk execution, and `package_acquisition_policy=local_only_no_publ
 Missing, stale, or mismatched release-validation receipts keep npm/uv release blockers in place.
 
 A successful `--sync-back` run writes `$WHOATHERE_STATE/bundle/sync-validation.json`. The command
-must also receive a clean package-risk receipt with a receipt id, matching `workspace_sha256`, clean
-nested `scanner_evidence`, acceptable artifact-review status, allowed package class, and clean
-freshness/diff verdicts. `doctor --json` uses the sync-validation receipt as sync-back release proof
-only when it is bound to the current CLI digest, current helper digest, current
-`guest-provisioning.json` digest, and `whoathere.sync_policy.local_beta.v1`. Missing or stale
-sync-validation receipts keep `release_sync_back_validation_not_verified` in place.
+must also receive a clean package-risk receipt from `$WHOATHERE_STATE/package-risk/receipts/` with a
+receipt id, matching `workspace_sha256`, recent `created_at_unix_seconds`, clean nested
+`scanner_evidence`, acceptable artifact-review status, allowed package class, clean freshness/diff
+verdicts, and a valid state-local `receipt_auth` tag. `doctor --json` uses the sync-validation
+receipt as sync-back release proof only when it is bound to the current CLI digest, current helper
+digest, current `guest-provisioning.json` digest, and `whoathere.sync_policy.local_beta.v1`.
+Missing or stale sync-validation receipts keep `release_sync_back_validation_not_verified` in place.
 
 Unsupported or unsafe inputs must fail before helper execution, including:
 
@@ -590,8 +593,8 @@ Do not call the macOS local-first preview ready until all of these are true:
   npm/uv proof, sync-validation proof, and public package policy gates are actually complete.
 - Missing scanner binaries are advisory for the local-only sync beta; they must be installed or
   otherwise replaced by explicit evidence before any public package auto-sync or auto-allow claim.
-- Package-risk receipts must show clean freshness and diff gates before `vm release-plan` can model
-  public package auto-sync eligibility.
+- Package-risk receipts must be state-local, authenticated, recent, and show clean freshness and
+  diff gates before `vm release-plan` can model public package auto-sync eligibility.
 
 ## Limitations
 

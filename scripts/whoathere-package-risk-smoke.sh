@@ -5,6 +5,10 @@ ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 CLI="$ROOT_DIR/whoathere/target/debug/whoathere"
 WORK_DIR="${TMPDIR:-/tmp}/whoathere-package-risk-smoke.$$"
 STATE_DIR="$WORK_DIR/state"
+ENV_LEAK_MARKER="$WORK_DIR/artifact-review-env-leak.marker"
+NPM_TOKEN=npm_secret_token_value
+OPENAI_API_KEY=openai_secret_token_value
+export NPM_TOKEN OPENAI_API_KEY
 
 cleanup() {
   rm -rf "$WORK_DIR"
@@ -156,10 +160,17 @@ JSON
 FAKE_OLLAMA_FINDINGS="$WORK_DIR/fake-ollama-findings"
 cat >"$FAKE_OLLAMA_FINDINGS" <<'SH'
 #!/bin/sh
+if [ -n "${NPM_TOKEN:-}" ]; then
+  printf 'artifact_review_env_leak\n' > "__ENV_LEAK_MARKER__"
+fi
+if [ -n "${OPENAI_API_KEY:-}" ]; then
+  printf 'artifact_review_env_leak\n' > "__ENV_LEAK_MARKER__"
+fi
 cat >/dev/null
 printf '{"risk":"suspicious","reason_codes":["credential_exfil"],"summary":"WHOATHERE_CANARY_TOKEN_VALUE"}\n'
 exit 0
 SH
+perl -pi -e "s#__ENV_LEAK_MARKER__#$ENV_LEAK_MARKER#g" "$FAKE_OLLAMA_FINDINGS"
 chmod +x "$FAKE_OLLAMA_FINDINGS"
 run_capture 22 "$WORK_DIR/ai-findings.json" env WHOATHERE_OLLAMA_BIN="$FAKE_OLLAMA_FINDINGS" "$CLI" package-risk assess --workspace "$AI_SAFE" --ecosystem npm --state-dir "$STATE_DIR" --ai-review --ai-model fake-review-model --ai-timeout-seconds 5 --json
 require_contains '"artifact_review_status": "findings"' "$WORK_DIR/ai-findings.json" ai_findings_status
@@ -169,10 +180,17 @@ require_not_contains 'WHOATHERE_CANARY_TOKEN_VALUE' "$WORK_DIR/ai-findings.json"
 FAKE_OLLAMA_CLEAN="$WORK_DIR/fake-ollama-clean"
 cat >"$FAKE_OLLAMA_CLEAN" <<'SH'
 #!/bin/sh
+if [ -n "${NPM_TOKEN:-}" ]; then
+  printf 'artifact_review_env_leak\n' > "__ENV_LEAK_MARKER__"
+fi
+if [ -n "${OPENAI_API_KEY:-}" ]; then
+  printf 'artifact_review_env_leak\n' > "__ENV_LEAK_MARKER__"
+fi
 cat >/dev/null
 printf '{"risk":"clean","reason_codes":["no_issue_seen"],"summary":"clean"}\n'
 exit 0
 SH
+perl -pi -e "s#__ENV_LEAK_MARKER__#$ENV_LEAK_MARKER#g" "$FAKE_OLLAMA_CLEAN"
 chmod +x "$FAKE_OLLAMA_CLEAN"
 run_capture 22 "$WORK_DIR/ai-clean-fresh.json" env WHOATHERE_OLLAMA_BIN="$FAKE_OLLAMA_CLEAN" "$CLI" package-risk assess --workspace "$FRESH" --ecosystem pypi --state-dir "$STATE_DIR" --ai-review --ai-model fake-review-model --ai-timeout-seconds 5 --json
 require_contains '"artifact_review_status": "passed"' "$WORK_DIR/ai-clean-fresh.json" ai_clean_status
@@ -182,17 +200,24 @@ require_contains 'fresh_release_cooldown_active' "$WORK_DIR/ai-clean-fresh.json"
 FAKE_OLLAMA_NOISY="$WORK_DIR/fake-ollama-noisy"
 cat >"$FAKE_OLLAMA_NOISY" <<'SH'
 #!/bin/sh
+if [ -n "${NPM_TOKEN:-}" ]; then
+  printf 'artifact_review_env_leak\n' > "__ENV_LEAK_MARKER__"
+fi
+if [ -n "${OPENAI_API_KEY:-}" ]; then
+  printf 'artifact_review_env_leak\n' > "__ENV_LEAK_MARKER__"
+fi
 cat >/dev/null
 awk 'BEGIN { for (i = 0; i < 600000; i++) printf "A" }'
 exit 0
 SH
+perl -pi -e "s#__ENV_LEAK_MARKER__#$ENV_LEAK_MARKER#g" "$FAKE_OLLAMA_NOISY"
 chmod +x "$FAKE_OLLAMA_NOISY"
 run_capture 22 "$WORK_DIR/ai-output-limit.json" env WHOATHERE_OLLAMA_BIN="$FAKE_OLLAMA_NOISY" "$CLI" package-risk assess --workspace "$AI_SAFE" --ecosystem npm --state-dir "$STATE_DIR" --ai-review --ai-model fake-review-model --ai-timeout-seconds 5 --json
 require_contains 'artifact_review_output_limit_exceeded' "$WORK_DIR/ai-output-limit.json" ai_output_limit
 require_contains '"raw_output_included": false' "$WORK_DIR/ai-output-limit.json" ai_output_not_included
 
 RELEASE_RECEIPT=$PINNED_RECEIPT
-run_capture 0 "$WORK_DIR/release-plan.json" "$CLI" vm release-plan --class pypi.pure_wheel.v1 --vm-ready --static-clean --dynamic-clean --egress-clean --no-canary-access --package-risk-receipt "$RELEASE_RECEIPT" --json
+run_capture 0 "$WORK_DIR/release-plan.json" "$CLI" vm release-plan --state-dir "$STATE_DIR" --class pypi.pure_wheel.v1 --vm-ready --static-clean --dynamic-clean --egress-clean --no-canary-access --package-risk-receipt "$RELEASE_RECEIPT" --json
 require_contains '"package_risk_receipt_applied": true' "$WORK_DIR/release-plan.json" release_receipt
 require_contains '"verdict": "auto_sync"' "$WORK_DIR/release-plan.json" release_auto
 
@@ -201,5 +226,10 @@ for file in "$WORK_DIR"/*.json; do
   require_not_contains 'npm_secret_token_value' "$file" raw_token
   require_not_contains '/Users/' "$file" host_path
 done
+if [ -e "$ENV_LEAK_MARKER" ]; then
+  echo "package_risk_smoke_failed=artifact_review_subprocess_inherited_secret_env" >&2
+  cat "$ENV_LEAK_MARKER" >&2
+  exit 1
+fi
 
 echo "package_risk_smoke=ok"

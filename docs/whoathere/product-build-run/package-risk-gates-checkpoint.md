@@ -25,6 +25,9 @@ replace the macOS VM, scanners, canary checks, strict sync-back rules, or manual
 - Added `vm release-plan --package-risk-receipt <path>` to derive scanner, freshness, and diff gates from package-risk evidence.
 - Added `vm detonate --sync-back --package-risk-receipt <path>` enforcement so live host copy-back
   requires package-risk evidence bound to the same workspace digest.
+- Added state-local package-risk receipt authentication. Runtime sync-back, release-plan receipt
+  application, and local approval now reject forged, stale, wrong-state, or unauthenticated
+  package-risk receipts.
 - Added `doctor --json` package-risk readiness fields.
 - Added deterministic package-risk and real-world-inspired attack harness scripts.
 - Added `WHOATHERE_SCANNER_CACHE_DIR` for deterministic scanner outage/timeout tests.
@@ -33,10 +36,11 @@ replace the macOS VM, scanners, canary checks, strict sync-back rules, or manual
 
 - Package-risk JSON does not include raw package source, raw scanner output, canaries, tokens, or
   host secret paths.
-- Live VM sync-back requires a package-risk receipt with a receipt id, matching `workspace_sha256`,
-  clean nested scanner evidence, acceptable artifact-review status, allowed package class, clean
-  freshness/diff verdicts, and clean package verdicts. Top-level clean booleans or operator flags
-  are not enough.
+- Live VM sync-back requires a package-risk receipt from the configured state directory with a
+  receipt id, matching `workspace_sha256`, recent `created_at_unix_seconds`, clean nested scanner
+  evidence, acceptable artifact-review status, allowed package class, clean freshness/diff verdicts,
+  clean package verdicts, and a valid state-local `receipt_auth` tag. Top-level clean booleans,
+  forged JSON, stale receipts, wrong-state receipts, or operator flags are not enough.
 - Local model review is advisory evidence only. It runs through a local Ollama command when
   requested, receives bounded redacted snippets, and records only status, reason codes, timing, and
   prompt/output hashes. Raw prompts and model output are not stored.

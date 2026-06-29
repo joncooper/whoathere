@@ -153,6 +153,7 @@ pub enum Command {
         ecosystem: Option<String>,
         source: Option<String>,
         filename: Option<String>,
+        state_dir: Option<String>,
         lifecycle_script: bool,
         pep517_backend: bool,
         native_marker: bool,
@@ -698,6 +699,7 @@ pub fn parse_command(args: &[String]) -> Command {
             ecosystem: parse_flag_value(rest, "--ecosystem"),
             source: parse_flag_value(rest, "--source"),
             filename: parse_flag_value(rest, "--filename"),
+            state_dir: parse_flag_value(rest, "--state-dir"),
             lifecycle_script: rest.iter().any(|arg| arg == "--lifecycle-script"),
             pep517_backend: rest.iter().any(|arg| arg == "--pep517-backend"),
             native_marker: rest.iter().any(|arg| arg == "--native-marker"),
@@ -913,6 +915,7 @@ fn render_command_text(command: Command) -> String {
             ecosystem,
             source,
             filename,
+            state_dir,
             lifecycle_script,
             pep517_backend,
             native_marker,
@@ -925,6 +928,7 @@ fn render_command_text(command: Command) -> String {
             ecosystem: ecosystem.as_deref(),
             source: source.as_deref(),
             filename: filename.as_deref(),
+            state_dir: state_dir.as_deref(),
             lifecycle_script,
             pep517_backend,
             native_marker,
@@ -1348,7 +1352,7 @@ fn command_help() -> String {
         "|vm start|suspend|reset|prune|upgrade-local-manifest [--state-dir <dir>] [--helper <path>] [--execute]",
         "|vm health [--state-dir <dir>] [--helper <path>]",
         "|vm detonate [--workspace <path>] [--package-risk-receipt <path>] [--state-dir <dir>] [--helper <path>] [--fixture <name>] [--timeout-seconds <n>] [--execute] [--sync-back] [--json] npm|pip|uv -- <args>",
-        "|vm release-plan [--class <class>|--ecosystem <name> --source <kind> --filename <name>] [--vm-ready --static-clean --dynamic-clean --egress-clean --no-canary-access --scanner-clean --diff-clean --freshness-allowed] [--package-risk-receipt <path>] [--json]",
+        "|vm release-plan [--state-dir <dir>] [--class <class>|--ecosystem <name> --source <kind> --filename <name>] [--vm-ready --static-clean --dynamic-clean --egress-clean --no-canary-access --scanner-clean --diff-clean --freshness-allowed] [--package-risk-receipt <path>] [--json]",
         "|vm canaries [--json]",
         "|vm sync-policy [--json]",
         "|vm red-team-gate [--json]",
@@ -4073,9 +4077,26 @@ fn evaluate_sync_back(args: SyncBackEvaluationArgs<'_>) -> SyncBackOutcome {
             outcome,
         );
     }
+    let helper_identity_reasons = sync_back_helper_identity_reasons(args.config, args.helper_path);
+    if !helper_identity_reasons.is_empty() {
+        outcome.reason_codes.extend(helper_identity_reasons);
+        outcome.reason_codes.sort();
+        outcome.reason_codes.dedup();
+        return denied_sync_back_with_receipt(
+            args.config,
+            args.helper_path,
+            workflow,
+            guest_job,
+            outcome,
+        );
+    }
     if let Some(package_class) = package_class_for_sync_back_workflow(workflow) {
-        let (mut package_risk_evidence, mut package_risk_receipt) =
-            apply_package_risk_receipt(LocalEvidenceFlags::clean(true), args.package_risk_receipt);
+        let (mut package_risk_evidence, mut package_risk_receipt) = apply_package_risk_receipt(
+            LocalEvidenceFlags::clean(true),
+            args.package_risk_receipt,
+            Some(&args.config.state_dir),
+            true,
+        );
         let package_risk_gate_reasons = enforce_public_package_receipt_requirements(
             package_class,
             &mut package_risk_evidence,
@@ -6636,6 +6657,77 @@ fn helper_root_from_helper_path(helper_path: &Path) -> Option<PathBuf> {
     None
 }
 
+fn sync_back_helper_identity_reasons(
+    config: &MacosVmConfig,
+    helper_path: Option<&str>,
+) -> Vec<String> {
+    let mut reasons = Vec::new();
+    let Some(path) = configured_macos_vm_helper_path(helper_path) else {
+        return vec!["sync_back_helper_path_not_configured".to_string()];
+    };
+    if !path.is_absolute() {
+        return vec!["sync_back_helper_path_not_absolute".to_string()];
+    }
+    let Ok(canonical_helper) = path.canonicalize() else {
+        return vec!["sync_back_helper_not_found".to_string()];
+    };
+    if !canonical_helper.is_file() {
+        return vec!["sync_back_helper_not_file".to_string()];
+    }
+    if canonical_helper.file_name().and_then(|name| name.to_str())
+        != Some("whoathere-macos-vm-helper")
+    {
+        reasons.push("sync_back_helper_filename_untrusted".to_string());
+    }
+    if helper_root_from_helper_path(&canonical_helper).is_none()
+        || !sync_back_helper_build_layout_trusted(&canonical_helper)
+    {
+        reasons.push("sync_back_helper_layout_untrusted".to_string());
+    }
+
+    let notarization_path = default_macos_vm_release_notarization_path(config);
+    if notarization_path.is_file() {
+        let notarization = load_macos_vm_release_notarization(&notarization_path)
+            .with_runtime_artifacts(helper_path);
+        let notarization_reasons = notarization.reason_codes();
+        if !notarization_reasons.is_empty() {
+            reasons.push("sync_back_helper_release_notarization_invalid".to_string());
+            reasons.extend(
+                notarization_reasons
+                    .into_iter()
+                    .map(|reason| format!("sync_back_{reason}")),
+            );
+        }
+    }
+
+    reasons.sort();
+    reasons.dedup();
+    reasons
+}
+
+fn sync_back_helper_build_layout_trusted(helper_path: &Path) -> bool {
+    if helper_path.file_name().and_then(|name| name.to_str()) != Some("whoathere-macos-vm-helper") {
+        return false;
+    }
+    let Some(profile_dir) = helper_path.parent() else {
+        return false;
+    };
+    match profile_dir.file_name().and_then(|name| name.to_str()) {
+        Some("debug") | Some("release") => {}
+        _ => return false,
+    }
+    let Some(triple_dir) = profile_dir.parent() else {
+        return false;
+    };
+    if triple_dir.file_name().and_then(|name| name.to_str()) != Some("arm64-apple-macosx") {
+        return false;
+    }
+    let Some(build_dir) = triple_dir.parent() else {
+        return false;
+    };
+    build_dir.file_name().and_then(|name| name.to_str()) == Some(".build")
+}
+
 fn detect_python_runtime_dir_for_reprovision() -> Option<PathBuf> {
     if let Ok(value) = std::env::var("WHOATHERE_PYTHON_RUNTIME_DIR") {
         let path = PathBuf::from(value);
@@ -6988,6 +7080,7 @@ struct VmReleasePlanArgs<'a> {
     ecosystem: Option<&'a str>,
     source: Option<&'a str>,
     filename: Option<&'a str>,
+    state_dir: Option<&'a str>,
     lifecycle_script: bool,
     pep517_backend: bool,
     native_marker: bool,
@@ -7394,6 +7487,7 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
 }
 
 fn render_vm_release_plan(args: VmReleasePlanArgs<'_>) -> String {
+    let config = macos_vm_config(args.state_dir, None, None);
     let package_class = match package_class_from_release_args(&args) {
         Ok(package_class) => package_class,
         Err(reason) => {
@@ -7410,8 +7504,12 @@ fn render_vm_release_plan(args: VmReleasePlanArgs<'_>) -> String {
             );
         }
     };
-    let (mut effective_evidence, mut package_risk_receipt) =
-        apply_package_risk_receipt(args.evidence.clone(), args.package_risk_receipt);
+    let (mut effective_evidence, mut package_risk_receipt) = apply_package_risk_receipt(
+        args.evidence.clone(),
+        args.package_risk_receipt,
+        Some(&config.state_dir),
+        args.package_risk_receipt.is_some(),
+    );
     let public_package_gate_reasons = enforce_public_package_receipt_requirements(
         package_class,
         &mut effective_evidence,
@@ -7498,8 +7596,10 @@ fn render_vm_release_plan(args: VmReleasePlanArgs<'_>) -> String {
 struct PackageRiskReceiptApplication {
     receipt_path: Option<String>,
     applied: bool,
+    authenticated: bool,
     receipt_id: Option<String>,
     workspace_sha256: Option<String>,
+    created_at_unix_seconds: Option<u64>,
     overall_verdict: Option<String>,
     scanner_clean: Option<bool>,
     scanner_evidence_applied: Option<bool>,
@@ -7514,6 +7614,8 @@ struct PackageRiskReceiptApplication {
 fn apply_package_risk_receipt(
     mut evidence: LocalEvidenceFlags,
     receipt_path: Option<&str>,
+    state_dir: Option<&Path>,
+    require_auth: bool,
 ) -> (LocalEvidenceFlags, PackageRiskReceiptApplication) {
     let Some(receipt_path) = receipt_path else {
         return (
@@ -7521,8 +7623,10 @@ fn apply_package_risk_receipt(
             PackageRiskReceiptApplication {
                 receipt_path: None,
                 applied: false,
+                authenticated: false,
                 receipt_id: None,
                 workspace_sha256: None,
+                created_at_unix_seconds: None,
                 overall_verdict: None,
                 scanner_clean: None,
                 scanner_evidence_applied: None,
@@ -7547,8 +7651,10 @@ fn apply_package_risk_receipt(
                 PackageRiskReceiptApplication {
                     receipt_path: Some(redacted_path),
                     applied: false,
+                    authenticated: false,
                     receipt_id: None,
                     workspace_sha256: None,
+                    created_at_unix_seconds: None,
                     overall_verdict: None,
                     scanner_clean: None,
                     scanner_evidence_applied: None,
@@ -7573,8 +7679,10 @@ fn apply_package_risk_receipt(
             PackageRiskReceiptApplication {
                 receipt_path: Some(redacted_path),
                 applied: false,
+                authenticated: false,
                 receipt_id: None,
                 workspace_sha256: None,
+                created_at_unix_seconds: None,
                 overall_verdict: None,
                 scanner_clean: None,
                 scanner_evidence_applied: None,
@@ -7589,6 +7697,7 @@ fn apply_package_risk_receipt(
     }
     let receipt_id = json_extract_string_field(&contents, "receipt_id");
     let workspace_sha256 = json_extract_string_field(&contents, "workspace_sha256");
+    let created_at_unix_seconds = json_extract_u64_field(&contents, "created_at_unix_seconds");
     let overall_verdict = json_extract_string_field(&contents, "overall_verdict");
     let diff_clean =
         json_extract_bool_field(&contents, "all_diff_clean_or_baseline_absent").unwrap_or(false);
@@ -7642,6 +7751,18 @@ fn apply_package_risk_receipt(
             reason_codes.push("package_risk_scanner_receipt_not_clean".to_string());
         }
     }
+    let mut authenticated = !require_auth;
+    if require_auth {
+        let auth_reasons =
+            verify_package_risk_receipt_auth(state_dir, Path::new(receipt_path), &contents);
+        authenticated = auth_reasons.is_empty();
+        reason_codes.extend(auth_reasons);
+        if !authenticated {
+            evidence.diff_clean_or_baseline_absent = false;
+            evidence.freshness_allowed = false;
+            evidence.scanner_clean = false;
+        }
+    }
     reason_codes.sort();
     reason_codes.dedup();
     (
@@ -7649,8 +7770,10 @@ fn apply_package_risk_receipt(
         PackageRiskReceiptApplication {
             receipt_path: Some(redacted_path),
             applied: true,
+            authenticated,
             receipt_id,
             workspace_sha256,
+            created_at_unix_seconds,
             overall_verdict,
             scanner_clean,
             scanner_evidence_applied,
@@ -7688,6 +7811,12 @@ fn enforce_public_package_receipt_requirements(
         evidence.diff_clean_or_baseline_absent = false;
         evidence.freshness_allowed = false;
     } else {
+        if !receipt.authenticated {
+            reasons.push("package_risk_receipt_auth_invalid".to_string());
+            evidence.scanner_clean = false;
+            evidence.diff_clean_or_baseline_absent = false;
+            evidence.freshness_allowed = false;
+        }
         if receipt
             .receipt_id
             .as_deref()
@@ -7854,10 +7983,11 @@ fn render_vm_sync_policy(json: bool) -> String {
             .collect::<Vec<_>>()
             .join(", ");
         return format!(
-            "{{\n  \"command\": \"whoathere vm sync-policy\",\n  \"release_target\": {},\n  \"sync_policy\": {},\n  \"sync_back_enabled\": true,\n  \"policy_scope\": \"local_beta_allowlist_requires_clean_vm_evidence_and_current_sync_receipt\",\n  \"auto_sync_classes\": [\"npm.local_project.no_external_dependency\", \"pypi.local_project.pure_python\", \"uv.local_project.pure_python\"],\n  \"deny_default_classes\": [\"direct_vcs_editable.v1\", \"unsupported_unknown.v1\"],\n  \"manual_review_classes\": [\"pypi.sdist_pep517.v1\", \"pypi.binary_wheel.v1\", \"native_extension.v1\"],\n  \"package_risk_required_for_public_auto_sync\": true,\n  \"package_age_gate_days\": {},\n  \"package_risk_receipt_fields\": [\"receipt_id\", \"workspace_sha256\", \"overall_verdict\", \"all_freshness_allowed\", \"all_diff_clean_or_baseline_absent\", \"all_scanner_clean\", \"scanner_evidence.applied\", \"scanner_evidence.status\", \"artifact_review.status\", \"packages[].package_class\", \"packages[].verdict\", \"packages[].artifact_review_status\"],\n  \"sync_allowlist\": [{}],\n  \"required_evidence\": {},\n  \"scanner_adapters\": [{}]\n}}",
+            "{{\n  \"command\": \"whoathere vm sync-policy\",\n  \"release_target\": {},\n  \"sync_policy\": {},\n  \"sync_back_enabled\": true,\n  \"policy_scope\": \"local_beta_allowlist_requires_clean_vm_evidence_and_current_sync_receipt\",\n  \"auto_sync_classes\": [\"npm.local_project.no_external_dependency\", \"pypi.local_project.pure_python\", \"uv.local_project.pure_python\"],\n  \"deny_default_classes\": [\"direct_vcs_editable.v1\", \"unsupported_unknown.v1\"],\n  \"manual_review_classes\": [\"pypi.sdist_pep517.v1\", \"pypi.binary_wheel.v1\", \"native_extension.v1\"],\n  \"package_risk_required_for_public_auto_sync\": true,\n  \"package_age_gate_days\": {},\n  \"package_risk_receipt_max_age_seconds\": {},\n  \"package_risk_receipt_fields\": [\"receipt_id\", \"workspace_sha256\", \"created_at_unix_seconds\", \"overall_verdict\", \"all_freshness_allowed\", \"all_diff_clean_or_baseline_absent\", \"all_scanner_clean\", \"scanner_evidence.applied\", \"scanner_evidence.status\", \"artifact_review.status\", \"packages[].package_class\", \"packages[].verdict\", \"packages[].artifact_review_status\", \"receipt_auth.schema_version\", \"receipt_auth.payload_sha256\", \"receipt_auth.mac_sha256\"],\n  \"sync_allowlist\": [{}],\n  \"required_evidence\": {},\n  \"scanner_adapters\": [{}]\n}}",
             json_string(RELEASE_TARGET),
             json_string(SYNC_POLICY),
             PACKAGE_RISK_COOLDOWN_DAYS,
+            PACKAGE_RISK_RECEIPT_MAX_AGE_SECONDS,
             rule_json,
             json_string_array(&evidence.iter().map(|item| (*item).to_string()).collect::<Vec<_>>()),
             scanner_json
@@ -7884,8 +8014,14 @@ fn render_vm_sync_policy(json: bool) -> String {
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "whoathere vm sync-policy\nrelease_target={}\nsync_policy={}\nsync_back_enabled=true\npolicy_scope=local_beta_allowlist_requires_clean_vm_evidence_and_current_sync_receipt\nauto_sync_classes=[\"npm.local_project.no_external_dependency\", \"pypi.local_project.pure_python\", \"uv.local_project.pure_python\"]\nmanual_review_classes=[\"pypi.sdist_pep517.v1\", \"pypi.binary_wheel.v1\", \"native_extension.v1\"]\ndeny_default_classes=[\"direct_vcs_editable.v1\", \"unsupported_unknown.v1\"]\npackage_risk_required_for_public_auto_sync=true\npackage_age_gate_days={}\npackage_risk_receipt_fields=[\"receipt_id\", \"workspace_sha256\", \"overall_verdict\", \"all_freshness_allowed\", \"all_diff_clean_or_baseline_absent\", \"all_scanner_clean\", \"scanner_evidence.applied\", \"scanner_evidence.status\", \"artifact_review.status\", \"packages[].package_class\", \"packages[].verdict\", \"packages[].artifact_review_status\"]\nrequired_evidence={:?}\n{}\n{}",
-        RELEASE_TARGET, SYNC_POLICY, PACKAGE_RISK_COOLDOWN_DAYS, evidence, rule_rows, scanner_rows
+        "whoathere vm sync-policy\nrelease_target={}\nsync_policy={}\nsync_back_enabled=true\npolicy_scope=local_beta_allowlist_requires_clean_vm_evidence_and_current_sync_receipt\nauto_sync_classes=[\"npm.local_project.no_external_dependency\", \"pypi.local_project.pure_python\", \"uv.local_project.pure_python\"]\nmanual_review_classes=[\"pypi.sdist_pep517.v1\", \"pypi.binary_wheel.v1\", \"native_extension.v1\"]\ndeny_default_classes=[\"direct_vcs_editable.v1\", \"unsupported_unknown.v1\"]\npackage_risk_required_for_public_auto_sync=true\npackage_age_gate_days={}\npackage_risk_receipt_max_age_seconds={}\npackage_risk_receipt_fields=[\"receipt_id\", \"workspace_sha256\", \"created_at_unix_seconds\", \"overall_verdict\", \"all_freshness_allowed\", \"all_diff_clean_or_baseline_absent\", \"all_scanner_clean\", \"scanner_evidence.applied\", \"scanner_evidence.status\", \"artifact_review.status\", \"packages[].package_class\", \"packages[].verdict\", \"packages[].artifact_review_status\", \"receipt_auth.schema_version\", \"receipt_auth.payload_sha256\", \"receipt_auth.mac_sha256\"]\nrequired_evidence={:?}\n{}\n{}",
+        RELEASE_TARGET,
+        SYNC_POLICY,
+        PACKAGE_RISK_COOLDOWN_DAYS,
+        PACKAGE_RISK_RECEIPT_MAX_AGE_SECONDS,
+        evidence,
+        rule_rows,
+        scanner_rows
     )
 }
 
@@ -10125,8 +10261,11 @@ fn redacted_path_string(path: &Path) -> String {
 
 const PACKAGE_RISK_ASSESSMENT_SCHEMA: &str = "whoathere.package_risk_assessment.v1";
 const PACKAGE_RISK_STORE_SCHEMA: &str = "whoathere.package_risk_store_record.v1";
+const PACKAGE_RISK_RECEIPT_AUTH_SCHEMA: &str = "whoathere.package_risk_receipt_auth.v1";
 const PACKAGE_ARTIFACT_REVIEW_SCHEMA: &str = "whoathere.local_artifact_review.v1";
 const PACKAGE_RISK_COOLDOWN_DAYS: u64 = 7;
+const PACKAGE_RISK_RECEIPT_MAX_AGE_SECONDS: u64 = 24 * 60 * 60;
+const PACKAGE_RISK_RECEIPT_FUTURE_SKEW_SECONDS: u64 = 5 * 60;
 const PACKAGE_ARTIFACT_REVIEW_OUTPUT_LIMIT_BYTES: u64 = 512 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -10404,6 +10543,7 @@ fn render_package_risk_assess(args: PackageRiskAssessArgs<'_>) -> String {
 
     let receipt_path = package_risk_receipt_path(&config.state_dir, &receipt_id);
     let receipt_write_status = write_package_risk_receipt(PackageRiskReceiptWrite {
+        state_dir: &config.state_dir,
         path: &receipt_path,
         receipt_id: &receipt_id,
         workspace_sha256: &workspace_sha256,
@@ -10520,10 +10660,16 @@ fn render_package_risk_approve(
         Ok(contents) => contents,
         Err(_) => return package_risk_error("package_risk_receipt_unreadable", json),
     };
+    let config = macos_vm_config(state_dir, None, None);
     if json_extract_string_field(&contents, "schema_version").as_deref()
         != Some(PACKAGE_RISK_ASSESSMENT_SCHEMA)
     {
         return package_risk_error("package_risk_receipt_schema_invalid", json);
+    }
+    let auth_reasons =
+        verify_package_risk_receipt_auth(Some(&config.state_dir), receipt_path, &contents);
+    if !auth_reasons.is_empty() {
+        return package_risk_error("package_risk_receipt_auth_invalid", json);
     }
     if json_extract_string_field(&contents, "overall_verdict").as_deref()
         != Some(PackageRiskVerdict::AutoSyncCandidate.as_str())
@@ -10533,6 +10679,15 @@ fn render_package_risk_approve(
     if json_extract_bool_field(&contents, "all_freshness_allowed") != Some(true)
         || json_extract_bool_field(&contents, "all_diff_clean_or_baseline_absent") != Some(true)
         || json_extract_bool_field(&contents, "all_scanner_clean") != Some(true)
+        || json_extract_object_field(&contents, "scanner_evidence")
+            .as_deref()
+            .and_then(|object| json_extract_bool_field(object, "applied"))
+            != Some(true)
+        || json_extract_object_field(&contents, "scanner_evidence")
+            .as_deref()
+            .and_then(|object| json_extract_string_field(object, "status"))
+            .as_deref()
+            != Some("clean")
     {
         return package_risk_error("package_risk_approve_incomplete_evidence_refused", json);
     }
@@ -10540,7 +10695,6 @@ fn render_package_risk_approve(
     if package_objects.is_empty() {
         return package_risk_error("package_risk_receipt_has_no_packages", json);
     }
-    let config = macos_vm_config(state_dir, None, None);
     let receipt_id = json_extract_string_field(&contents, "receipt_id")
         .unwrap_or_else(|| package_risk_receipt_id(receipt_path, current_unix_seconds()));
     let mut approved_records = Vec::new();
@@ -11007,7 +11161,7 @@ fn run_local_artifact_review(
         current_unix_seconds()
     ));
     let stderr_path = stdout_path.with_extension("stderr.txt");
-    let stdout_file = match std::fs::File::create(&stdout_path) {
+    let stdout_file = match create_private_artifact_review_temp_file(&stdout_path) {
         Ok(file) => file,
         Err(_) => {
             base_reasons.push("artifact_review_stdout_tempfile_failed".to_string());
@@ -11022,7 +11176,7 @@ fn run_local_artifact_review(
             );
         }
     };
-    let stderr_file = match std::fs::File::create(&stderr_path) {
+    let stderr_file = match create_private_artifact_review_temp_file(&stderr_path) {
         Ok(file) => file,
         Err(_) => {
             let _ = std::fs::remove_file(&stdout_path);
@@ -11046,6 +11200,7 @@ fn run_local_artifact_review(
         .stdin(Stdio::piped())
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file));
+    configure_artifact_review_environment(&mut command);
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
@@ -11202,6 +11357,52 @@ fn artifact_review_output_size(stdout_path: &Path, stderr_path: &Path) -> u64 {
                 .map(|metadata| metadata.len())
                 .unwrap_or(0),
         )
+}
+
+fn create_private_artifact_review_temp_file(path: &Path) -> std::io::Result<std::fs::File> {
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = file.metadata()?.permissions();
+        permissions.set_mode(0o600);
+        std::fs::set_permissions(path, permissions)?;
+    }
+    Ok(file)
+}
+
+fn configure_artifact_review_environment(command: &mut ProcessCommand) {
+    let home = std::env::temp_dir().join("whoathere-artifact-review-home");
+    let _ = std::fs::create_dir_all(&home);
+    command.env_clear();
+    command.env("HOME", home);
+    command.env("PATH", safe_artifact_review_path());
+    command.env("TMPDIR", std::env::temp_dir());
+    if let Ok(ollama_host) = std::env::var("OLLAMA_HOST") {
+        command.env("OLLAMA_HOST", ollama_host);
+    }
+}
+
+fn safe_artifact_review_path() -> String {
+    let paths = [
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/usr/local/bin"),
+        PathBuf::from("/usr/bin"),
+        PathBuf::from("/bin"),
+        PathBuf::from("/usr/sbin"),
+        PathBuf::from("/sbin"),
+    ]
+    .into_iter()
+    .filter(|path| path.is_dir())
+    .collect::<Vec<_>>();
+    std::env::join_paths(paths)
+        .ok()
+        .and_then(|paths| paths.into_string().ok())
+        .unwrap_or_else(|| "/usr/bin:/bin:/usr/sbin:/sbin".to_string())
 }
 
 fn classify_local_artifact_review_output(output: &str) -> (LocalArtifactReviewStatus, Vec<String>) {
@@ -12452,11 +12653,274 @@ fn package_risk_receipt_id(path: &Path, now: u64) -> String {
     format!("pkg-risk-{now}-{}", &digest[..12])
 }
 
+fn package_risk_auth_key_path(state_dir: &Path) -> PathBuf {
+    package_risk_state_dir(state_dir).join("receipt-auth.key")
+}
+
+fn package_risk_receipt_key_id(key: &[u8]) -> String {
+    let digest = sha256_digest(key);
+    digest
+        .strip_prefix("sha256:")
+        .unwrap_or(&digest)
+        .chars()
+        .take(16)
+        .collect()
+}
+
+fn load_or_create_package_risk_auth_key(state_dir: &Path) -> std::io::Result<Vec<u8>> {
+    let path = package_risk_auth_key_path(state_dir);
+    if let Ok(contents) = std::fs::read_to_string(&path) {
+        if let Some(bytes) = hex_to_bytes(contents.trim()) {
+            if bytes.len() >= 32 {
+                return Ok(bytes);
+            }
+        }
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let key = generate_package_risk_auth_key();
+    let hex = bytes_to_hex(&key);
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&path)?;
+    file.write_all(hex.as_bytes())?;
+    file.write_all(b"\n")?;
+    file.flush()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = std::fs::metadata(&path)?.permissions();
+        permissions.set_mode(0o600);
+        std::fs::set_permissions(&path, permissions)?;
+    }
+    Ok(key)
+}
+
+fn load_package_risk_auth_key(state_dir: &Path) -> std::io::Result<Vec<u8>> {
+    let contents = std::fs::read_to_string(package_risk_auth_key_path(state_dir))?;
+    hex_to_bytes(contents.trim())
+        .filter(|bytes| bytes.len() >= 32)
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid auth key"))
+}
+
+fn generate_package_risk_auth_key() -> Vec<u8> {
+    let mut key = vec![0u8; 32];
+    if let Ok(mut random) = std::fs::File::open("/dev/urandom") {
+        if random.read_exact(&mut key).is_ok() {
+            return key;
+        }
+    }
+    sha256_digest(
+        format!(
+            "{}:{}:{}",
+            current_unix_seconds(),
+            std::process::id(),
+            std::env::current_exe()
+                .ok()
+                .map(|path| path.display().to_string())
+                .unwrap_or_default()
+        )
+        .as_bytes(),
+    )
+    .into_bytes()
+}
+
+fn bytes_to_hex(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+fn hex_to_bytes(hex: &str) -> Option<Vec<u8>> {
+    if !hex.len().is_multiple_of(2) || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    (0..hex.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&hex[index..index + 2], 16).ok())
+        .collect()
+}
+
+fn hmac_sha256_digest(key: &[u8], message: &[u8]) -> String {
+    let mut key_block = if key.len() > 64 {
+        hex_to_bytes(
+            sha256_digest(key)
+                .strip_prefix("sha256:")
+                .unwrap_or_default(),
+        )
+        .unwrap_or_default()
+    } else {
+        key.to_vec()
+    };
+    key_block.resize(64, 0);
+    let mut outer = vec![0x5c; 64];
+    let mut inner = vec![0x36; 64];
+    for index in 0..64 {
+        outer[index] ^= key_block[index];
+        inner[index] ^= key_block[index];
+    }
+    inner.extend_from_slice(message);
+    let inner_hash = hex_to_bytes(
+        sha256_digest(&inner)
+            .strip_prefix("sha256:")
+            .unwrap_or_default(),
+    )
+    .unwrap_or_default();
+    outer.extend_from_slice(&inner_hash);
+    sha256_digest(&outer)
+}
+
+fn package_risk_receipt_auth_payload(contents: &str) -> Option<String> {
+    let schema = json_extract_string_field(contents, "schema_version")?;
+    let receipt_id = json_extract_string_field(contents, "receipt_id")?;
+    let workspace_sha256 = json_extract_string_field(contents, "workspace_sha256")?;
+    let created_at = json_extract_u64_field(contents, "created_at_unix_seconds")?;
+    let requested_ecosystem = json_extract_string_field(contents, "requested_ecosystem")?;
+    let cooldown_days = json_extract_u64_field(contents, "cooldown_days")?;
+    let overall_verdict = json_extract_string_field(contents, "overall_verdict")?;
+    let all_freshness_allowed = json_extract_bool_field(contents, "all_freshness_allowed")?;
+    let all_diff_clean = json_extract_bool_field(contents, "all_diff_clean_or_baseline_absent")?;
+    let all_scanner_clean = json_extract_bool_field(contents, "all_scanner_clean")?;
+    let scanner_evidence = json_extract_object_field(contents, "scanner_evidence")?;
+    let artifact_review = json_extract_object_field(contents, "artifact_review")?;
+    let reason_codes = json_extract_string_array_field(contents, "reason_codes").join("\n");
+    let package_objects = json_extract_object_array(contents, "packages");
+    if package_objects.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "schema_version={schema}\nreceipt_id={receipt_id}\nworkspace_sha256={workspace_sha256}\ncreated_at_unix_seconds={created_at}\nrequested_ecosystem={requested_ecosystem}\ncooldown_days={cooldown_days}\noverall_verdict={overall_verdict}\nall_freshness_allowed={all_freshness_allowed}\nall_diff_clean_or_baseline_absent={all_diff_clean}\nall_scanner_clean={all_scanner_clean}\nscanner_evidence_sha256={}\nartifact_review_sha256={}\nreason_codes_sha256={}\npackages_sha256={}\n",
+        sha256_digest(scanner_evidence.as_bytes()),
+        sha256_digest(artifact_review.as_bytes()),
+        sha256_digest(reason_codes.as_bytes()),
+        sha256_digest(package_objects.join("\n").as_bytes())
+    ))
+}
+
+fn sign_package_risk_receipt_contents(
+    state_dir: &Path,
+    unsigned_contents: &str,
+) -> std::io::Result<String> {
+    let key = load_or_create_package_risk_auth_key(state_dir)?;
+    let Some(payload) = package_risk_receipt_auth_payload(unsigned_contents) else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "receipt auth payload invalid",
+        ));
+    };
+    let payload_sha256 = sha256_digest(payload.as_bytes());
+    let mac_sha256 = hmac_sha256_digest(&key, payload.as_bytes());
+    let key_id = package_risk_receipt_key_id(&key);
+    let trimmed = unsigned_contents.trim_end();
+    let without_closing = trimmed
+        .strip_suffix('}')
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "receipt invalid"))?;
+    Ok(format!(
+        "{},\n  \"receipt_auth\": {{\"schema_version\": {}, \"key_id\": {}, \"payload_sha256\": {}, \"mac_sha256\": {}}}\n}}\n",
+        without_closing.trim_end(),
+        json_string(PACKAGE_RISK_RECEIPT_AUTH_SCHEMA),
+        json_string(&key_id),
+        json_string(&payload_sha256),
+        json_string(&mac_sha256)
+    ))
+}
+
+fn verify_package_risk_receipt_auth(
+    state_dir: Option<&Path>,
+    receipt_path: &Path,
+    contents: &str,
+) -> Vec<String> {
+    let mut reasons = Vec::new();
+    let Some(state_dir) = state_dir else {
+        return vec!["package_risk_receipt_auth_state_dir_missing".to_string()];
+    };
+    let receipt_id = json_extract_string_field(contents, "receipt_id").unwrap_or_default();
+    let expected_path = if receipt_id.is_empty() {
+        None
+    } else {
+        Some(package_risk_receipt_path(state_dir, &receipt_id))
+    };
+    match (
+        std::fs::canonicalize(receipt_path),
+        expected_path
+            .as_ref()
+            .and_then(|path| std::fs::canonicalize(path).ok()),
+    ) {
+        (Ok(actual), Some(expected)) if actual == expected => {}
+        (Ok(actual), _) => {
+            let receipts_dir = package_risk_receipts_dir(state_dir);
+            if std::fs::canonicalize(receipts_dir)
+                .ok()
+                .is_none_or(|dir| !actual.starts_with(dir))
+            {
+                reasons.push("package_risk_receipt_not_from_state_dir".to_string());
+            } else {
+                reasons.push("package_risk_receipt_filename_id_mismatch".to_string());
+            }
+        }
+        _ => reasons.push("package_risk_receipt_path_unverified".to_string()),
+    }
+
+    let Some(created_at) = json_extract_u64_field(contents, "created_at_unix_seconds") else {
+        reasons.push("package_risk_receipt_created_at_missing".to_string());
+        return sorted_unique(reasons);
+    };
+    let now = current_unix_seconds();
+    if created_at > now.saturating_add(PACKAGE_RISK_RECEIPT_FUTURE_SKEW_SECONDS) {
+        reasons.push("package_risk_receipt_created_at_in_future".to_string());
+    }
+    if now.saturating_sub(created_at) > PACKAGE_RISK_RECEIPT_MAX_AGE_SECONDS {
+        reasons.push("package_risk_receipt_stale".to_string());
+    }
+
+    let Some(auth) = json_extract_object_field(contents, "receipt_auth") else {
+        reasons.push("package_risk_receipt_auth_missing".to_string());
+        return sorted_unique(reasons);
+    };
+    if json_extract_string_field(&auth, "schema_version").as_deref()
+        != Some(PACKAGE_RISK_RECEIPT_AUTH_SCHEMA)
+    {
+        reasons.push("package_risk_receipt_auth_schema_invalid".to_string());
+    }
+    let key = match load_package_risk_auth_key(state_dir) {
+        Ok(key) => key,
+        Err(_) => {
+            reasons.push("package_risk_receipt_auth_key_unavailable".to_string());
+            return sorted_unique(reasons);
+        }
+    };
+    let expected_key_id = package_risk_receipt_key_id(&key);
+    if json_extract_string_field(&auth, "key_id").as_deref() != Some(expected_key_id.as_str()) {
+        reasons.push("package_risk_receipt_auth_key_mismatch".to_string());
+    }
+    let Some(payload) = package_risk_receipt_auth_payload(contents) else {
+        reasons.push("package_risk_receipt_auth_payload_invalid".to_string());
+        return sorted_unique(reasons);
+    };
+    let payload_sha256 = sha256_digest(payload.as_bytes());
+    if json_extract_string_field(&auth, "payload_sha256").as_deref()
+        != Some(payload_sha256.as_str())
+    {
+        reasons.push("package_risk_receipt_auth_payload_mismatch".to_string());
+    }
+    let mac_sha256 = hmac_sha256_digest(&key, payload.as_bytes());
+    if json_extract_string_field(&auth, "mac_sha256").as_deref() != Some(mac_sha256.as_str()) {
+        reasons.push("package_risk_receipt_auth_mac_mismatch".to_string());
+    }
+    sorted_unique(reasons)
+}
+
 fn package_risk_memory_ready(state_dir: &Path) -> bool {
     package_risk_store_path(state_dir).is_file()
 }
 
 struct PackageRiskReceiptWrite<'a> {
+    state_dir: &'a Path,
     path: &'a Path,
     receipt_id: &'a str,
     workspace_sha256: &'a str,
@@ -12483,7 +12947,7 @@ fn write_package_risk_receipt(write: PackageRiskReceiptWrite<'_>) -> String {
         .map(render_package_risk_package_json)
         .collect::<Vec<_>>()
         .join(", ");
-    let contents = format!(
+    let unsigned_contents = format!(
         "{{\n  \"schema_version\": {},\n  \"receipt_id\": {},\n  \"workspace_sha256\": {},\n  \"created_at_unix_seconds\": {},\n  \"requested_ecosystem\": {},\n  \"cooldown_days\": {},\n  \"overall_verdict\": {},\n  \"all_freshness_allowed\": {},\n  \"all_diff_clean_or_baseline_absent\": {},\n  \"all_scanner_clean\": {},\n  \"scanner_evidence\": {},\n  \"artifact_review\": {},\n  \"reason_codes\": {},\n  \"packages\": [{}]\n}}\n",
         json_string(PACKAGE_RISK_ASSESSMENT_SCHEMA),
         json_string(write.receipt_id),
@@ -12500,6 +12964,10 @@ fn write_package_risk_receipt(write: PackageRiskReceiptWrite<'_>) -> String {
         json_string_array(write.reason_codes),
         packages
     );
+    let contents = match sign_package_risk_receipt_contents(write.state_dir, &unsigned_contents) {
+        Ok(contents) => contents,
+        Err(error) => return format!("error:{error}"),
+    };
     match std::fs::write(write.path, contents.as_bytes()) {
         Ok(()) => "ok".to_string(),
         Err(error) => format!("error:{error}"),
@@ -17220,7 +17688,7 @@ exit 0
     fn vm_detonate_sync_back_clean_pip_project_applies_only_allowed_venv_files() {
         let root = temp_root("whoathere-cli-sync-clean-pip");
         write_clean_python_project(&root);
-        let helper = root.join("helper.sh");
+        let helper = sync_test_helper_path(&root);
         let (archive_hex, archive_sha256, file_count, total_bytes) = sync_archive_hex(&[(
             ".venv/lib/python3.11/site-packages/whoathere_clean.py",
             b"VALUE = 'synced'\n",
@@ -17246,8 +17714,12 @@ exit 0
         let state_dir = root.with_extension("state");
         let _ = std::fs::remove_dir_all(&state_dir);
         write_complete_guest_provisioning_receipt(&state_dir);
-        let package_risk_receipt = state_dir.join("package-risk-clean.json");
-        write_clean_package_risk_receipt(&package_risk_receipt, "pypi.pure_wheel.v1", &root);
+        let package_risk_receipt = write_clean_package_risk_receipt(
+            &state_dir,
+            "test-clean-receipt",
+            "pypi.pure_wheel.v1",
+            &root,
+        );
 
         let result = evaluate_command(Command::VmDetonate {
             tool: "pip".to_string(),
@@ -17297,7 +17769,7 @@ exit 0
     fn vm_detonate_sync_back_requires_clean_package_risk_receipt() {
         let root = temp_root("whoathere-cli-sync-risk-receipt-required");
         write_clean_python_project(&root);
-        let helper = root.join("helper.sh");
+        let helper = sync_test_helper_path(&root);
         let (archive_hex, archive_sha256, file_count, total_bytes) = sync_archive_hex(&[(
             ".venv/lib/python3.11/site-packages/whoathere_clean.py",
             b"VALUE = 'should-not-sync'\n",
@@ -17351,14 +17823,9 @@ exit 0
     }
 
     #[test]
-    fn vm_detonate_sync_back_rejects_package_risk_receipt_for_wrong_workspace() {
-        let root = temp_root("whoathere-cli-sync-risk-receipt-wrong-workspace");
+    fn vm_detonate_sync_back_rejects_untrusted_helper_layout() {
+        let root = temp_root("whoathere-cli-sync-untrusted-helper-layout");
         write_clean_python_project(&root);
-        let other_workspace = root.with_extension("other-workspace");
-        let _ = std::fs::remove_dir_all(&other_workspace);
-        std::fs::create_dir_all(&other_workspace).expect("other workspace");
-        std::fs::write(other_workspace.join("marker.txt"), "not this workspace\n")
-            .expect("other marker");
         let helper = root.join("helper.sh");
         let (archive_hex, archive_sha256, file_count, total_bytes) = sync_archive_hex(&[(
             ".venv/lib/python3.11/site-packages/whoathere_clean.py",
@@ -17385,9 +17852,208 @@ exit 0
         let state_dir = root.with_extension("state");
         let _ = std::fs::remove_dir_all(&state_dir);
         write_complete_guest_provisioning_receipt(&state_dir);
-        let package_risk_receipt = state_dir.join("package-risk-clean-wrong-workspace.json");
-        write_clean_package_risk_receipt(
+        let package_risk_receipt = write_clean_package_risk_receipt(
+            &state_dir,
+            "test-clean-untrusted-helper",
+            "pypi.pure_wheel.v1",
+            &root,
+        );
+
+        let result = evaluate_command(Command::VmDetonate {
+            tool: "pip".to_string(),
+            args: vec!["install".to_string(), ".".to_string()],
+            execute: true,
+            sync_back: true,
+            state_dir: Some(state_dir.display().to_string()),
+            helper_path: Some(helper.display().to_string()),
+            workspace: Some(root.display().to_string()),
+            package_risk_receipt: Some(package_risk_receipt.display().to_string()),
+            fixture: None,
+            timeout_seconds: Some(75),
+            json: false,
+        });
+
+        assert_eq!(result.exit_code, ExitCode::Deny.code());
+        assert!(result
+            .output
+            .contains("sync_back_helper_filename_untrusted"));
+        assert!(result.output.contains("sync_back_helper_layout_untrusted"));
+        assert!(result.output.contains("sync_back_applied=false"));
+        assert!(!root.join(".venv").exists());
+        let _ = std::fs::remove_dir_all(&state_dir);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vm_detonate_sync_back_rejects_forged_clean_package_risk_receipt() {
+        let root = temp_root("whoathere-cli-sync-risk-receipt-forged-clean");
+        write_clean_python_project(&root);
+        let helper = sync_test_helper_path(&root);
+        let (archive_hex, archive_sha256, file_count, total_bytes) = sync_archive_hex(&[(
+            ".venv/lib/python3.11/site-packages/whoathere_clean.py",
+            b"VALUE = 'should-not-sync'\n",
+        )]);
+        write_guest_sync_helper(
+            &helper,
+            &guest_sync_evidence_json(GuestSyncEvidenceArgs {
+                tool: "pip",
+                command_class: "pip_install_detonation",
+                workflow: "pip_project_install",
+                status: "ok",
+                verdict: "allow_observed_clean",
+                reason_codes_json: "",
+                command_exit_code: 0,
+                exit_code: 0,
+                canary_access: false,
+                network_attempt: false,
+                sync_back_enabled: true,
+                archive: Some((&archive_hex, &archive_sha256, file_count, total_bytes)),
+            }),
+            0,
+        );
+        let state_dir = root.with_extension("state");
+        let _ = std::fs::remove_dir_all(&state_dir);
+        write_complete_guest_provisioning_receipt(&state_dir);
+        let receipt_id = "forged-clean-receipt";
+        let package_risk_receipt = package_risk_receipt_path(&state_dir, receipt_id);
+        std::fs::create_dir_all(package_risk_receipt.parent().expect("receipt parent"))
+            .expect("receipt dir");
+        write_new_file(
             &package_risk_receipt,
+            format!(
+                "{{\n  \"schema_version\": {},\n  \"receipt_id\": {},\n  \"workspace_sha256\": {},\n  \"created_at_unix_seconds\": {},\n  \"requested_ecosystem\": \"pypi\",\n  \"cooldown_days\": {},\n  \"overall_verdict\": \"auto_sync_candidate\",\n  \"all_freshness_allowed\": true,\n  \"all_diff_clean_or_baseline_absent\": true,\n  \"all_scanner_clean\": true,\n  \"scanner_evidence\": {{\"requested\": true, \"applied\": true, \"scanner_clean\": true, \"status\": \"clean\", \"reason_codes\": []}},\n  \"artifact_review\": {{\"requested\": false, \"status\": \"not_requested\", \"reason_codes\": []}},\n  \"reason_codes\": [],\n  \"packages\": [{{\"ecosystem\": \"pypi\", \"package_name\": \"forged-clean\", \"requested_spec\": \".\", \"resolved_version\": \"0.0.1\", \"selected_version\": \"0.0.1\", \"source_kind\": \"registry\", \"package_class\": \"pypi.pure_wheel.v1\", \"artifact_hash\": \"sha256:forged\", \"pinned\": true, \"last_known_good_version\": null, \"last_known_good_hash\": null, \"last_known_good_used\": false, \"publish_age_days\": 365, \"freshness_allowed\": true, \"diff_clean_or_baseline_absent\": true, \"reputation_status\": \"ok\", \"scanner_evidence_status\": \"clean\", \"scanner_clean\": true, \"scanner_evidence_reason_codes\": [], \"artifact_review_status\": \"not_requested\", \"artifact_review_reason_codes\": [], \"artifact_review_output_sha256\": null, \"indicators\": [], \"verdict\": \"auto_sync_candidate\", \"reason_codes\": []}}]\n}}\n",
+                json_string(PACKAGE_RISK_ASSESSMENT_SCHEMA),
+                json_string(receipt_id),
+                json_string(&scanner_workspace_digest(&root)),
+                current_unix_seconds(),
+                PACKAGE_RISK_COOLDOWN_DAYS
+            )
+            .as_bytes(),
+        )
+        .expect("forged package risk receipt");
+
+        let result = evaluate_command(Command::VmDetonate {
+            tool: "pip".to_string(),
+            args: vec!["install".to_string(), ".".to_string()],
+            execute: true,
+            sync_back: true,
+            state_dir: Some(state_dir.display().to_string()),
+            helper_path: Some(helper.display().to_string()),
+            workspace: Some(root.display().to_string()),
+            package_risk_receipt: Some(package_risk_receipt.display().to_string()),
+            fixture: None,
+            timeout_seconds: Some(75),
+            json: false,
+        });
+
+        assert_eq!(result.exit_code, ExitCode::Deny.code());
+        assert!(result.output.contains("package_risk_receipt_auth_missing"));
+        assert!(result.output.contains("package_risk_receipt_auth_invalid"));
+        assert!(result.output.contains("sync_back_applied=false"));
+        assert!(!root.join(".venv").exists());
+        let _ = std::fs::remove_dir_all(&state_dir);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vm_detonate_sync_back_rejects_package_risk_receipt_for_wrong_class() {
+        let root = temp_root("whoathere-cli-sync-risk-receipt-wrong-class");
+        write_clean_python_project(&root);
+        let helper = sync_test_helper_path(&root);
+        let (archive_hex, archive_sha256, file_count, total_bytes) = sync_archive_hex(&[(
+            ".venv/lib/python3.11/site-packages/whoathere_clean.py",
+            b"VALUE = 'should-not-sync'\n",
+        )]);
+        write_guest_sync_helper(
+            &helper,
+            &guest_sync_evidence_json(GuestSyncEvidenceArgs {
+                tool: "pip",
+                command_class: "pip_install_detonation",
+                workflow: "pip_project_install",
+                status: "ok",
+                verdict: "allow_observed_clean",
+                reason_codes_json: "",
+                command_exit_code: 0,
+                exit_code: 0,
+                canary_access: false,
+                network_attempt: false,
+                sync_back_enabled: true,
+                archive: Some((&archive_hex, &archive_sha256, file_count, total_bytes)),
+            }),
+            0,
+        );
+        let state_dir = root.with_extension("state");
+        let _ = std::fs::remove_dir_all(&state_dir);
+        write_complete_guest_provisioning_receipt(&state_dir);
+        let package_risk_receipt = write_clean_package_risk_receipt(
+            &state_dir,
+            "test-clean-wrong-class",
+            "npm.registry_tarball.v1",
+            &root,
+        );
+
+        let result = evaluate_command(Command::VmDetonate {
+            tool: "pip".to_string(),
+            args: vec!["install".to_string(), ".".to_string()],
+            execute: true,
+            sync_back: true,
+            state_dir: Some(state_dir.display().to_string()),
+            helper_path: Some(helper.display().to_string()),
+            workspace: Some(root.display().to_string()),
+            package_risk_receipt: Some(package_risk_receipt.display().to_string()),
+            fixture: None,
+            timeout_seconds: Some(75),
+            json: false,
+        });
+
+        assert_eq!(result.exit_code, ExitCode::Deny.code());
+        assert!(result
+            .output
+            .contains("package_risk_receipt_package_class_unbound_for_public_package_auto_sync"));
+        assert!(result.output.contains("sync_back_applied=false"));
+        assert!(!root.join(".venv").exists());
+        let _ = std::fs::remove_dir_all(&state_dir);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vm_detonate_sync_back_rejects_package_risk_receipt_for_wrong_workspace() {
+        let root = temp_root("whoathere-cli-sync-risk-receipt-wrong-workspace");
+        write_clean_python_project(&root);
+        let other_workspace = root.with_extension("other-workspace");
+        let _ = std::fs::remove_dir_all(&other_workspace);
+        std::fs::create_dir_all(&other_workspace).expect("other workspace");
+        std::fs::write(other_workspace.join("marker.txt"), "not this workspace\n")
+            .expect("other marker");
+        let helper = sync_test_helper_path(&root);
+        let (archive_hex, archive_sha256, file_count, total_bytes) = sync_archive_hex(&[(
+            ".venv/lib/python3.11/site-packages/whoathere_clean.py",
+            b"VALUE = 'should-not-sync'\n",
+        )]);
+        write_guest_sync_helper(
+            &helper,
+            &guest_sync_evidence_json(GuestSyncEvidenceArgs {
+                tool: "pip",
+                command_class: "pip_install_detonation",
+                workflow: "pip_project_install",
+                status: "ok",
+                verdict: "allow_observed_clean",
+                reason_codes_json: "",
+                command_exit_code: 0,
+                exit_code: 0,
+                canary_access: false,
+                network_attempt: false,
+                sync_back_enabled: true,
+                archive: Some((&archive_hex, &archive_sha256, file_count, total_bytes)),
+            }),
+            0,
+        );
+        let state_dir = root.with_extension("state");
+        let _ = std::fs::remove_dir_all(&state_dir);
+        write_complete_guest_provisioning_receipt(&state_dir);
+        let package_risk_receipt = write_clean_package_risk_receipt(
+            &state_dir,
+            "test-clean-wrong-workspace",
             "pypi.pure_wheel.v1",
             &other_workspace,
         );
@@ -17420,7 +18086,7 @@ exit 0
     fn vm_detonate_sync_back_clean_uv_project_applies_only_allowed_venv_files() {
         let root = temp_root("whoathere-cli-sync-clean-uv");
         write_clean_python_project(&root);
-        let helper = root.join("helper.sh");
+        let helper = sync_test_helper_path(&root);
         let (archive_hex, archive_sha256, file_count, total_bytes) = sync_archive_hex(&[(
             ".venv/lib/python3.11/site-packages/whoathere_clean.py",
             b"VALUE = 'uv-synced'\n",
@@ -17446,8 +18112,12 @@ exit 0
         let state_dir = root.with_extension("state");
         let _ = std::fs::remove_dir_all(&state_dir);
         write_complete_guest_provisioning_receipt(&state_dir);
-        let package_risk_receipt = state_dir.join("package-risk-clean.json");
-        write_clean_package_risk_receipt(&package_risk_receipt, "pypi.pure_wheel.v1", &root);
+        let package_risk_receipt = write_clean_package_risk_receipt(
+            &state_dir,
+            "test-clean-receipt",
+            "pypi.pure_wheel.v1",
+            &root,
+        );
 
         let result = evaluate_command(Command::VmDetonate {
             tool: "uv".to_string(),
@@ -17483,7 +18153,7 @@ exit 0
     fn vm_detonate_sync_back_clean_npm_project_applies_only_allowed_npm_outputs() {
         let root = temp_root("whoathere-cli-sync-clean-npm");
         write_clean_npm_project(&root);
-        let helper = root.join("helper.sh");
+        let helper = sync_test_helper_path(&root);
         let (archive_hex, archive_sha256, file_count, total_bytes) = sync_archive_hex(&[
             ("package-lock.json", br#"{"lockfileVersion":3}"#),
             (
@@ -17512,8 +18182,12 @@ exit 0
         let state_dir = root.with_extension("state");
         let _ = std::fs::remove_dir_all(&state_dir);
         write_complete_guest_provisioning_receipt(&state_dir);
-        let package_risk_receipt = state_dir.join("package-risk-clean.json");
-        write_clean_package_risk_receipt(&package_risk_receipt, "npm.registry_tarball.v1", &root);
+        let package_risk_receipt = write_clean_package_risk_receipt(
+            &state_dir,
+            "test-clean-receipt",
+            "npm.registry_tarball.v1",
+            &root,
+        );
 
         let result = evaluate_command(Command::VmDetonate {
             tool: "npm".to_string(),
@@ -17544,7 +18218,7 @@ exit 0
     fn vm_detonate_sync_back_blocks_canary_evidence_and_syncs_nothing() {
         let root = temp_root("whoathere-cli-sync-canary-block");
         write_clean_python_project(&root);
-        let helper = root.join("helper.sh");
+        let helper = sync_test_helper_path(&root);
         let (archive_hex, archive_sha256, file_count, total_bytes) = sync_archive_hex(&[(
             ".venv/lib/python3.11/site-packages/whoathere_clean.py",
             b"VALUE = 'should-not-sync'\n",
@@ -17570,8 +18244,12 @@ exit 0
         let state_dir = root.with_extension("state");
         let _ = std::fs::remove_dir_all(&state_dir);
         write_complete_guest_provisioning_receipt(&state_dir);
-        let package_risk_receipt = state_dir.join("package-risk-clean.json");
-        write_clean_package_risk_receipt(&package_risk_receipt, "pypi.pure_wheel.v1", &root);
+        let package_risk_receipt = write_clean_package_risk_receipt(
+            &state_dir,
+            "test-clean-receipt",
+            "pypi.pure_wheel.v1",
+            &root,
+        );
 
         let result = evaluate_command(Command::VmDetonate {
             tool: "pip".to_string(),
@@ -17601,7 +18279,7 @@ exit 0
     fn vm_detonate_sync_back_blocks_traversal_archive_and_syncs_nothing() {
         let root = temp_root("whoathere-cli-sync-traversal-block");
         write_clean_python_project(&root);
-        let helper = root.join("helper.sh");
+        let helper = sync_test_helper_path(&root);
         let (archive_hex, archive_sha256, file_count, total_bytes) =
             sync_archive_hex(&[("../owned.py", b"owned = True\n")]);
         write_guest_sync_helper(
@@ -17625,8 +18303,12 @@ exit 0
         let state_dir = root.with_extension("state");
         let _ = std::fs::remove_dir_all(&state_dir);
         write_complete_guest_provisioning_receipt(&state_dir);
-        let package_risk_receipt = state_dir.join("package-risk-clean.json");
-        write_clean_package_risk_receipt(&package_risk_receipt, "pypi.pure_wheel.v1", &root);
+        let package_risk_receipt = write_clean_package_risk_receipt(
+            &state_dir,
+            "test-clean-receipt",
+            "pypi.pure_wheel.v1",
+            &root,
+        );
 
         let result = evaluate_command(Command::VmDetonate {
             tool: "pip".to_string(),
@@ -17656,7 +18338,7 @@ exit 0
     fn vm_detonate_sync_back_rejects_wrong_guest_context() {
         let root = temp_root("whoathere-cli-sync-wrong-context");
         write_clean_python_project(&root);
-        let helper = root.join("helper.sh");
+        let helper = sync_test_helper_path(&root);
         let (archive_hex, archive_sha256, file_count, total_bytes) = sync_archive_hex(&[(
             ".venv/lib/python3.11/site-packages/whoathere_clean.py",
             b"VALUE = 'should-not-sync'\n",
@@ -17682,8 +18364,12 @@ exit 0
         let state_dir = root.with_extension("state");
         let _ = std::fs::remove_dir_all(&state_dir);
         write_complete_guest_provisioning_receipt(&state_dir);
-        let package_risk_receipt = state_dir.join("package-risk-clean.json");
-        write_clean_package_risk_receipt(&package_risk_receipt, "pypi.pure_wheel.v1", &root);
+        let package_risk_receipt = write_clean_package_risk_receipt(
+            &state_dir,
+            "test-clean-receipt",
+            "pypi.pure_wheel.v1",
+            &root,
+        );
 
         let result = evaluate_command(Command::VmDetonate {
             tool: "pip".to_string(),
@@ -17717,7 +18403,7 @@ exit 0
         let _ = std::fs::remove_dir_all(&outside);
         std::fs::create_dir_all(&outside).expect("outside dir");
         std::os::unix::fs::symlink(&outside, root.join(".venv")).expect("venv symlink");
-        let helper = root.join("helper.sh");
+        let helper = sync_test_helper_path(&root);
         let (archive_hex, archive_sha256, file_count, total_bytes) = sync_archive_hex(&[(
             ".venv/lib/python3.11/site-packages/whoathere_clean.py",
             b"VALUE = 'escape'\n",
@@ -17742,8 +18428,12 @@ exit 0
         );
         let state_dir = root.join("state");
         write_complete_guest_provisioning_receipt(&state_dir);
-        let package_risk_receipt = state_dir.join("package-risk-clean.json");
-        write_clean_package_risk_receipt(&package_risk_receipt, "pypi.pure_wheel.v1", &root);
+        let package_risk_receipt = write_clean_package_risk_receipt(
+            &state_dir,
+            "test-clean-receipt",
+            "pypi.pure_wheel.v1",
+            &root,
+        );
 
         let result = evaluate_command(Command::VmDetonate {
             tool: "pip".to_string(),
@@ -17800,7 +18490,7 @@ exit 0
             .permissions();
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o500))
             .expect("lock dir");
-        let helper = root.join("helper.sh");
+        let helper = sync_test_helper_path(&root);
         let first_path = ".venv/lib/python3.11/site-packages/first.py";
         let (archive_hex, archive_sha256, file_count, total_bytes) = sync_archive_hex(&[
             (first_path, b"VALUE = 'first'\n"),
@@ -17830,8 +18520,12 @@ exit 0
         let state_dir = root.with_extension("state");
         let _ = std::fs::remove_dir_all(&state_dir);
         write_complete_guest_provisioning_receipt(&state_dir);
-        let package_risk_receipt = state_dir.join("package-risk-clean.json");
-        write_clean_package_risk_receipt(&package_risk_receipt, "pypi.pure_wheel.v1", &root);
+        let package_risk_receipt = write_clean_package_risk_receipt(
+            &state_dir,
+            "test-clean-receipt",
+            "pypi.pure_wheel.v1",
+            &root,
+        );
 
         let result = evaluate_command(Command::VmDetonate {
             tool: "pip".to_string(),
@@ -18106,6 +18800,7 @@ exit 0
             ecosystem: None,
             source: None,
             filename: None,
+            state_dir: None,
             lifecycle_script: false,
             pep517_backend: false,
             native_marker: false,
@@ -18139,6 +18834,7 @@ exit 0
             ecosystem: None,
             source: None,
             filename: None,
+            state_dir: None,
             lifecycle_script: false,
             pep517_backend: false,
             native_marker: false,
@@ -18158,6 +18854,7 @@ exit 0
             ecosystem: None,
             source: None,
             filename: None,
+            state_dir: None,
             lifecycle_script: false,
             pep517_backend: false,
             native_marker: false,
@@ -18180,6 +18877,7 @@ exit 0
             ecosystem: Some("pypi".to_string()),
             source: Some("registry".to_string()),
             filename: Some("pkg-1.0.0-py3-none-any.whl".to_string()),
+            state_dir: None,
             lifecycle_script: false,
             pep517_backend: false,
             native_marker: false,
@@ -18309,6 +19007,41 @@ exit 0
             .output
             .contains("package_risk_approve_non_auto_sync_receipt_refused"));
 
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn package_risk_approve_rejects_forged_clean_receipt() {
+        let root = temp_root("whoathere-cli-package-risk-approve-forged");
+        let state_dir = root.join("state");
+        let receipt_id = "forged-approval";
+        let receipt = package_risk_receipt_path(&state_dir, receipt_id);
+        std::fs::create_dir_all(receipt.parent().expect("receipt parent")).expect("receipt dir");
+        write_new_file(
+            &receipt,
+            format!(
+                "{{\n  \"schema_version\": {},\n  \"receipt_id\": {},\n  \"workspace_sha256\": \"sha256:forged\",\n  \"created_at_unix_seconds\": {},\n  \"requested_ecosystem\": \"pypi\",\n  \"cooldown_days\": {},\n  \"overall_verdict\": \"auto_sync_candidate\",\n  \"all_freshness_allowed\": true,\n  \"all_diff_clean_or_baseline_absent\": true,\n  \"all_scanner_clean\": true,\n  \"scanner_evidence\": {{\"requested\": true, \"applied\": true, \"scanner_clean\": true, \"status\": \"clean\", \"reason_codes\": []}},\n  \"artifact_review\": {{\"requested\": false, \"status\": \"not_requested\", \"reason_codes\": []}},\n  \"reason_codes\": [],\n  \"packages\": [{{\"ecosystem\": \"pypi\", \"package_name\": \"forged-pkg\", \"requested_spec\": \"forged-pkg==1.0.0\", \"resolved_version\": \"1.0.0\", \"selected_version\": \"1.0.0\", \"source_kind\": \"registry\", \"package_class\": \"pypi.pure_wheel.v1\", \"artifact_hash\": \"sha256:forged\", \"pinned\": true, \"freshness_allowed\": true, \"diff_clean_or_baseline_absent\": true, \"reputation_status\": \"ok\", \"scanner_evidence_status\": \"clean\", \"scanner_clean\": true, \"scanner_evidence_reason_codes\": [], \"artifact_review_status\": \"not_requested\", \"artifact_review_reason_codes\": [], \"artifact_review_output_sha256\": null, \"indicators\": [], \"verdict\": \"auto_sync_candidate\", \"reason_codes\": []}}]\n}}\n",
+                json_string(PACKAGE_RISK_ASSESSMENT_SCHEMA),
+                json_string(receipt_id),
+                current_unix_seconds(),
+                PACKAGE_RISK_COOLDOWN_DAYS
+            )
+            .as_bytes(),
+        )
+        .expect("forged receipt");
+
+        let approved = evaluate_command(Command::PackageRiskApprove {
+            receipt: Some(receipt.display().to_string()),
+            reason: Some("forged receipt should fail".to_string()),
+            state_dir: Some(state_dir.display().to_string()),
+            json: true,
+        });
+
+        assert_eq!(approved.exit_code, ExitCode::Misuse.code());
+        assert!(approved
+            .output
+            .contains("package_risk_receipt_auth_invalid"));
+        assert!(load_package_risk_memory(&state_dir).is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -18476,6 +19209,7 @@ exit 0
             ecosystem: None,
             source: None,
             filename: None,
+            state_dir: Some(state_dir.display().to_string()),
             lifecycle_script: false,
             pep517_backend: false,
             native_marker: false,
@@ -18532,6 +19266,7 @@ exit 0
             ecosystem: None,
             source: None,
             filename: None,
+            state_dir: Some(state_dir.display().to_string()),
             lifecycle_script: false,
             pep517_backend: false,
             native_marker: false,
@@ -18684,6 +19419,7 @@ exit 0
                 ecosystem: None,
                 source: None,
                 filename: None,
+                state_dir: None,
                 lifecycle_script: false,
                 pep517_backend: false,
                 native_marker: false,
@@ -18941,6 +19677,7 @@ exit 0
             ecosystem: None,
             source: None,
             filename: None,
+            state_dir: Some(state_dir.display().to_string()),
             lifecycle_script: false,
             pep517_backend: false,
             native_marker: false,
@@ -22503,7 +23240,19 @@ exit 0
         (hex_encode(&archive), digest, files.len(), total_bytes)
     }
 
+    fn sync_test_helper_path(root: &std::path::Path) -> std::path::PathBuf {
+        root.join("helpers")
+            .join("macos-vm-helper")
+            .join(".build")
+            .join("arm64-apple-macosx")
+            .join("release")
+            .join("whoathere-macos-vm-helper")
+    }
+
     fn write_guest_sync_helper(path: &std::path::Path, json: &str, exit_code: i32) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("helper parent dir");
+        }
         write_new_file(
             path,
             format!("#!/bin/sh\ncat <<'JSON'\n{json}\nJSON\nexit {exit_code}\n").as_bytes(),
@@ -22566,21 +23315,28 @@ exit 0
     }
 
     fn write_clean_package_risk_receipt(
-        path: &std::path::Path,
+        state_dir: &std::path::Path,
+        receipt_id: &str,
         package_class: &str,
         workspace: &std::path::Path,
-    ) {
-        write_new_file(
-            path,
-            format!(
-                "{{\"schema_version\": {}, \"receipt_id\": \"test-clean-receipt\", \"workspace_sha256\": {}, \"overall_verdict\": \"auto_sync_candidate\", \"all_freshness_allowed\": true, \"all_diff_clean_or_baseline_absent\": true, \"all_scanner_clean\": true, \"scanner_evidence\": {{\"requested\": true, \"applied\": true, \"scanner_clean\": true, \"status\": \"clean\", \"reason_codes\": []}}, \"artifact_review\": {{\"requested\": false, \"status\": \"not_requested\", \"reason_codes\": []}}, \"reason_codes\": [], \"packages\": [{{\"package_class\": {}, \"verdict\": \"auto_sync_candidate\", \"artifact_review_status\": \"not_requested\"}}]}}\n",
-                json_string(PACKAGE_RISK_ASSESSMENT_SCHEMA),
-                json_string(&scanner_workspace_digest(workspace)),
-                json_string(package_class)
-            )
-            .as_bytes(),
-        )
-        .expect("package risk receipt");
+    ) -> std::path::PathBuf {
+        let path = package_risk_receipt_path(state_dir, receipt_id);
+        let unsigned = format!(
+            "{{\n  \"schema_version\": {},\n  \"receipt_id\": {},\n  \"workspace_sha256\": {},\n  \"created_at_unix_seconds\": {},\n  \"requested_ecosystem\": \"pypi\",\n  \"cooldown_days\": {},\n  \"overall_verdict\": \"auto_sync_candidate\",\n  \"all_freshness_allowed\": true,\n  \"all_diff_clean_or_baseline_absent\": true,\n  \"all_scanner_clean\": true,\n  \"scanner_evidence\": {{\"requested\": true, \"applied\": true, \"scanner_clean\": true, \"status\": \"clean\", \"reason_codes\": []}},\n  \"artifact_review\": {{\"requested\": false, \"status\": \"not_requested\", \"reason_codes\": []}},\n  \"reason_codes\": [],\n  \"packages\": [{{\"ecosystem\": \"pypi\", \"package_name\": \"test-clean\", \"requested_spec\": \".\", \"resolved_version\": \"0.0.1\", \"selected_version\": \"0.0.1\", \"source_kind\": \"registry\", \"package_class\": {}, \"artifact_hash\": \"sha256:test\", \"pinned\": true, \"last_known_good_version\": null, \"last_known_good_hash\": null, \"last_known_good_used\": false, \"publish_age_days\": 365, \"freshness_allowed\": true, \"diff_clean_or_baseline_absent\": true, \"reputation_status\": \"ok\", \"scanner_evidence_status\": \"clean\", \"scanner_clean\": true, \"scanner_evidence_reason_codes\": [], \"artifact_review_status\": \"not_requested\", \"artifact_review_reason_codes\": [], \"artifact_review_output_sha256\": null, \"indicators\": [], \"verdict\": \"auto_sync_candidate\", \"reason_codes\": []}}]\n}}\n",
+            json_string(PACKAGE_RISK_ASSESSMENT_SCHEMA),
+            json_string(receipt_id),
+            json_string(&scanner_workspace_digest(workspace)),
+            current_unix_seconds(),
+            PACKAGE_RISK_COOLDOWN_DAYS,
+            json_string(package_class)
+        );
+        let contents = sign_package_risk_receipt_contents(state_dir, &unsigned)
+            .expect("signed package risk receipt");
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("package risk receipt dir");
+        }
+        std::fs::write(&path, contents).expect("package risk receipt");
+        path
     }
 
     fn write_scanner_run_receipt(

@@ -846,7 +846,7 @@ fn execute_scanner_plan(
     let start = Instant::now();
     let stdout_path = scanner_temp_path(&completed_safe_name(&plan.scanner), "stdout");
     let stderr_path = scanner_temp_path(&completed_safe_name(&plan.scanner), "stderr");
-    let stdout_file = match std::fs::File::create(&stdout_path) {
+    let stdout_file = match create_private_temp_file(&stdout_path) {
         Ok(file) => file,
         Err(_) => {
             let mut reason_codes = plan.reason_codes.clone();
@@ -860,7 +860,7 @@ fn execute_scanner_plan(
             );
         }
     };
-    let stderr_file = match std::fs::File::create(&stderr_path) {
+    let stderr_file = match create_private_temp_file(&stderr_path) {
         Ok(file) => file,
         Err(_) => {
             let _ = std::fs::remove_file(&stdout_path);
@@ -877,6 +877,7 @@ fn execute_scanner_plan(
     };
     let mut command = Command::new(&executable);
     command.args(&plan.argv);
+    configure_scanner_process_environment(&mut command);
     command.stdout(Stdio::from(stdout_file));
     command.stderr(Stdio::from(stderr_file));
     let spawn_result = command.spawn();
@@ -967,6 +968,48 @@ fn scanner_temp_path(scanner: &str, stream: &str) -> PathBuf {
     ))
 }
 
+fn create_private_temp_file(path: &Path) -> std::io::Result<std::fs::File> {
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = file.metadata()?.permissions();
+        permissions.set_mode(0o600);
+        std::fs::set_permissions(path, permissions)?;
+    }
+    Ok(file)
+}
+
+fn configure_scanner_process_environment(command: &mut Command) {
+    let home = scanner_bootstrap_cache_dir().join("runtime-home");
+    let _ = std::fs::create_dir_all(&home);
+    command.env_clear();
+    command.env("HOME", home);
+    command.env("PATH", safe_scanner_path());
+    command.env("TMPDIR", std::env::temp_dir());
+}
+
+fn safe_scanner_path() -> String {
+    let mut paths = vec![
+        scanner_bootstrap_cache_dir().join("bin"),
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/usr/local/bin"),
+        PathBuf::from("/usr/bin"),
+        PathBuf::from("/bin"),
+        PathBuf::from("/usr/sbin"),
+        PathBuf::from("/sbin"),
+    ];
+    paths.retain(|path| path.is_dir());
+    std::env::join_paths(paths)
+        .ok()
+        .and_then(|paths| paths.into_string().ok())
+        .unwrap_or_else(|| "/usr/bin:/bin:/usr/sbin:/sbin".to_string())
+}
+
 fn completed_safe_name(value: &str) -> String {
     value
         .chars()
@@ -1043,7 +1086,10 @@ fn scanner_version(name: &str, executable: &Path) -> Option<String> {
     } else if name == "scorecard" {
         args = vec!["version".to_string()];
     }
-    let output = Command::new(executable).args(args).output().ok()?;
+    let mut command = Command::new(executable);
+    command.args(args);
+    configure_scanner_process_environment(&mut command);
+    let output = command.output().ok()?;
     let text = if output.stdout.is_empty() {
         String::from_utf8_lossy(&output.stderr).to_string()
     } else {

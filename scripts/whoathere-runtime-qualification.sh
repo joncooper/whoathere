@@ -484,10 +484,9 @@ VALUE = "sync-canary"
 EOF
 }
 
-write_clean_package_risk_receipt_for_workspace() {
+write_scanner_receipt_for_workspace() {
   workspace=$1
   receipt=$2
-  package_name=$3
   digest_plan="$receipt.workspace.json"
   run_clean "$WRAPPER" scanners run --workspace "$workspace" --ecosystem pypi --json > "$digest_plan"
   workspace_sha256=$(json_string_field workspace_sha256 "$digest_plan")
@@ -498,73 +497,53 @@ write_clean_package_risk_receipt_for_workspace() {
   receipt_dir=$(dirname "$receipt")
   mkdir -p "$receipt_dir"
   escaped_workspace_sha256=$(json_escape "$workspace_sha256")
-  escaped_package_name=$(json_escape "$package_name")
   cat > "$receipt" <<EOF
-{
-  "schema_version": "whoathere.package_risk.assessment.v1",
-  "receipt_id": "runtime-qualification-$escaped_package_name",
-  "workspace_sha256": "$escaped_workspace_sha256",
-  "created_at_unix_seconds": 1700000000,
-  "requested_ecosystem": "pypi",
-  "cooldown_days": 7,
-  "overall_verdict": "auto_sync_candidate",
-  "all_freshness_allowed": true,
-  "all_diff_clean_or_baseline_absent": true,
-  "all_scanner_clean": true,
-  "scanner_evidence": {
-    "requested": true,
-    "applied": true,
-    "scanner_clean": true,
-    "status": "clean",
-    "reason_codes": []
-  },
-  "artifact_review": {
-    "requested": false,
-    "status": "not_requested",
-    "reason_codes": []
-  },
-  "reason_codes": [],
-  "packages": [
-    {
-      "ecosystem": "pypi",
-      "package_name": "$escaped_package_name",
-      "requested_spec": ".",
-      "resolved_version": "0.0.1",
-      "selected_version": "0.0.1",
-      "source_kind": "registry",
-      "package_class": "pypi.pure_wheel.v1",
-      "artifact_hash": "sha256:runtime-qualification",
-      "pinned": true,
-      "last_known_good_version": null,
-      "last_known_good_hash": null,
-      "last_known_good_used": false,
-      "publish_age_days": 365,
-      "freshness_allowed": true,
-      "diff_clean_or_baseline_absent": true,
-      "reputation_status": "ok",
-      "scanner_evidence_status": "clean",
-      "scanner_clean": true,
-      "scanner_evidence_reason_codes": [],
-      "artifact_review_status": "not_requested",
-      "artifact_review_reason_codes": [],
-      "artifact_review_output_sha256": null,
-      "indicators": [],
-      "verdict": "auto_sync_candidate",
-      "reason_codes": []
-    }
-  ]
-}
+{"schema_version":"whoathere.external_scanner_run.v1","workspace_sha256":"$escaped_workspace_sha256","execute_requested":true,"scanner_clean":true,"core_scanner_count":5,"core_scanner_runnable_count":5,"reason_codes":[],"records":[{"scanner":"guarddog","role":"core","status":"passed"},{"scanner":"osv-scanner","role":"core","status":"passed"},{"scanner":"pip-audit","role":"core","status":"passed"},{"scanner":"syft","role":"core","status":"passed"},{"scanner":"grype","role":"core","status":"passed"}]}
 EOF
+}
+
+latest_package_risk_receipt() {
+  find "$STATE_DIR/package-risk/receipts" -name '*.json' -type f 2>/dev/null | sort | tail -n 1
+}
+
+prepare_package_risk_receipt_for_workspace() {
+  workspace=$1
+  scanner_receipt=$2
+  assessment_output=$3
+  before_receipt=$(latest_package_risk_receipt || true)
+  write_scanner_receipt_for_workspace "$workspace" "$scanner_receipt"
+  set +e
+  run_clean "$WRAPPER" package-risk assess \
+    --workspace "$workspace" \
+    --ecosystem pypi \
+    --state-dir "$STATE_DIR" \
+    --scanner-receipt "$scanner_receipt" \
+    --json > "$assessment_output" 2>&1
+  assess_status=$?
+  set -e
+  case "$assess_status" in
+    0|20|22) ;;
+    *)
+      cat "$assessment_output" >&2
+      fail package_risk_assess_failed
+      ;;
+  esac
+  after_receipt=$(latest_package_risk_receipt || true)
+  if [ -z "$after_receipt" ] || [ "$after_receipt" = "$before_receipt" ]; then
+    cat "$assessment_output" >&2
+    fail package_risk_receipt_missing
+  fi
+  printf '%s\n' "$after_receipt"
 }
 
 run_sync_back_cases() {
   clean_project="$WORK_ROOT/sync-clean"
   write_sync_project "$clean_project"
-  clean_package_risk_receipt="$WORK_ROOT/package-risk/sync-clean-package-risk.json"
-  write_clean_package_risk_receipt_for_workspace \
+  clean_package_risk_receipt=$(prepare_package_risk_receipt_for_workspace \
     "$clean_project" \
-    "$clean_package_risk_receipt" \
-    whoathere-sync-clean
+    "$WORK_ROOT/package-risk/sync-clean-scanner.json" \
+    "$WORK_ROOT/package-risk/sync-clean-assess.json")
+  require_contains '"overall_verdict": "auto_sync_candidate"' "$WORK_ROOT/package-risk/sync-clean-assess.json" sync_clean_package_risk_not_auto
   set +e
   run_clean "$WRAPPER" vm detonate \
     --workspace "$clean_project" \
@@ -587,11 +566,10 @@ run_sync_back_cases() {
 
   canary_project="$WORK_ROOT/sync-canary"
   write_sync_canary_project "$canary_project"
-  canary_package_risk_receipt="$WORK_ROOT/package-risk/sync-canary-package-risk.json"
-  write_clean_package_risk_receipt_for_workspace \
+  canary_package_risk_receipt=$(prepare_package_risk_receipt_for_workspace \
     "$canary_project" \
-    "$canary_package_risk_receipt" \
-    whoathere-sync-canary
+    "$WORK_ROOT/package-risk/sync-canary-scanner.json" \
+    "$WORK_ROOT/package-risk/sync-canary-assess.json")
   set +e
   run_clean "$WRAPPER" vm detonate \
     --workspace "$canary_project" \

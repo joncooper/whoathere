@@ -11,13 +11,22 @@ WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/whoathere-scanner-smoke.XXXXXX")
 trap 'rm -rf "$WORK_DIR"' EXIT INT TERM
 
 FAKE_BIN="$WORK_DIR/fake-bin"
+ENV_LEAK_MARKER="$WORK_DIR/scanner-env-leak.marker"
 mkdir -p "$FAKE_BIN"
 
 write_fake_scanner() {
   name=$1
-  cat > "$FAKE_BIN/$name" <<'EOF'
+  cat > "$FAKE_BIN/$name" <<EOF
 #!/bin/sh
-case "$*" in
+if [ -n "\${NPM_TOKEN:-}" ]; then
+  printf 'scanner_env_leak\n' > "$ENV_LEAK_MARKER"
+  printf 'env_leak_npm_token=%s\n' "\$NPM_TOKEN"
+fi
+if [ -n "\${OPENAI_API_KEY:-}" ]; then
+  printf 'scanner_env_leak\n' > "$ENV_LEAK_MARKER"
+  printf 'env_leak_openai_key=%s\n' "\$OPENAI_API_KEY"
+fi
+case "\$*" in
   *timeout-npm*) sleep 3; printf '{"findings":[]}\n' ;;
   *bad-npm*) printf '{"findings":[{"whoathere_fake_finding":true}]}\n' ;;
   *) printf '{"findings":[]}\n' ;;
@@ -73,6 +82,9 @@ require_not_contains() {
 
 PATH="$FAKE_BIN:$ORIGINAL_PATH"
 export PATH
+NPM_TOKEN=npm_secret_token_value
+OPENAI_API_KEY=openai_secret_token_value
+export NPM_TOKEN OPENAI_API_KEY
 
 "$WHOATHERE_BIN" scanners list --json > "$WORK_DIR/list.json"
 require_contains '"command": "whoathere scanners list"' "$WORK_DIR/list.json" list_json_missing
@@ -98,6 +110,13 @@ require_contains '"status": "passed"' "$WORK_DIR/clean.json" clean_pass_status_m
 require_not_contains "$WORK_DIR" "$WORK_DIR/clean.json" clean_leaked_workspace_path
 require_not_contains 'WHOATHERE_CANARY_TOKEN' "$WORK_DIR/clean.json" clean_leaked_canary
 require_not_contains 'NPM_TOKEN' "$WORK_DIR/clean.json" clean_leaked_token
+require_not_contains 'npm_secret_token_value' "$WORK_DIR/clean.json" clean_leaked_token_value
+require_not_contains 'openai_secret_token_value' "$WORK_DIR/clean.json" clean_leaked_openai_value
+if [ -e "$ENV_LEAK_MARKER" ]; then
+  printf 'scanner_smoke_failed=scanner_subprocess_inherited_secret_env\n' >&2
+  cat "$ENV_LEAK_MARKER" >&2
+  exit 1
+fi
 
 if "$WHOATHERE_BIN" scanners run --workspace "$BAD_NPM" --ecosystem npm --execute --json > "$WORK_DIR/bad.json"; then
   printf 'scanner_smoke_failed=bad_fixture_unexpected_success\n' >&2
