@@ -185,6 +185,7 @@ pub enum Command {
         workspace: Option<String>,
         ecosystem: Option<String>,
         state_dir: Option<String>,
+        scanner_receipt: Option<String>,
         ai_review: bool,
         ai_provider: Option<String>,
         ai_model: Option<String>,
@@ -717,6 +718,7 @@ pub fn parse_command(args: &[String]) -> Command {
                 workspace: parse_flag_value(rest, "--workspace"),
                 ecosystem: parse_flag_value(rest, "--ecosystem"),
                 state_dir: parse_flag_value(rest, "--state-dir"),
+                scanner_receipt: parse_flag_value(rest, "--scanner-receipt"),
                 ai_review: rest.iter().any(|arg| arg == "--ai-review"),
                 ai_provider: parse_flag_value(rest, "--ai-provider"),
                 ai_model: parse_flag_value(rest, "--ai-model"),
@@ -969,6 +971,7 @@ fn render_command_text(command: Command) -> String {
             workspace,
             ecosystem,
             state_dir,
+            scanner_receipt,
             ai_review,
             ai_provider,
             ai_model,
@@ -978,6 +981,7 @@ fn render_command_text(command: Command) -> String {
             workspace: workspace.as_deref(),
             ecosystem: ecosystem.as_deref(),
             state_dir: state_dir.as_deref(),
+            scanner_receipt: scanner_receipt.as_deref(),
             ai_review,
             ai_provider: ai_provider.as_deref(),
             ai_model: ai_model.as_deref(),
@@ -1350,7 +1354,7 @@ fn command_help() -> String {
         "|scanners list [--json]",
         "|scanners bootstrap-plan [--json]",
         "|scanners run --workspace <path> [--ecosystem auto|npm|pypi] [--timeout-seconds <n>] [--execute] [--json]",
-        "|package-risk assess --workspace <path> [--ecosystem auto|npm|pypi|uv] [--state-dir <dir>] [--ai-review --ai-provider ollama --ai-model <model> --ai-timeout-seconds <n>] [--json]",
+        "|package-risk assess --workspace <path> [--ecosystem auto|npm|pypi|uv] [--state-dir <dir>] [--scanner-receipt <path>] [--ai-review --ai-provider ollama --ai-model <model> --ai-timeout-seconds <n>] [--json]",
         "|package-risk history --package <name> --ecosystem <npm|pypi|uv> [--state-dir <dir>] [--json]",
         "|package-risk approve --receipt <path> --reason <text> [--state-dir <dir>] [--json]",
         "|source scan <kind> <path> --vault-origin <url>",
@@ -7398,6 +7402,7 @@ fn apply_package_risk_receipt(
         Err(_) => {
             evidence.diff_clean_or_baseline_absent = false;
             evidence.freshness_allowed = false;
+            evidence.scanner_clean = false;
             return (
                 evidence,
                 PackageRiskReceiptApplication {
@@ -7412,8 +7417,12 @@ fn apply_package_risk_receipt(
         json_extract_bool_field(&contents, "all_diff_clean_or_baseline_absent").unwrap_or(false);
     let freshness_allowed =
         json_extract_bool_field(&contents, "all_freshness_allowed").unwrap_or(false);
+    let scanner_clean = json_extract_bool_field(&contents, "all_scanner_clean");
     evidence.diff_clean_or_baseline_absent = diff_clean;
     evidence.freshness_allowed = freshness_allowed;
+    if let Some(scanner_clean) = scanner_clean {
+        evidence.scanner_clean = scanner_clean;
+    }
     let mut reason_codes = json_extract_string_array_field(&contents, "reason_codes");
     if diff_clean {
         reason_codes.push("package_risk_diff_receipt_clean".to_string());
@@ -7424,6 +7433,13 @@ fn apply_package_risk_receipt(
         reason_codes.push("package_risk_freshness_receipt_allowed".to_string());
     } else {
         reason_codes.push("package_risk_freshness_receipt_not_allowed".to_string());
+    }
+    if let Some(scanner_clean) = scanner_clean {
+        if scanner_clean {
+            reason_codes.push("package_risk_scanner_receipt_clean".to_string());
+        } else {
+            reason_codes.push("package_risk_scanner_receipt_not_clean".to_string());
+        }
     }
     reason_codes.sort();
     reason_codes.dedup();
@@ -9837,6 +9853,33 @@ impl LocalArtifactReviewEvidence {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PackageRiskScannerEvidence {
+    requested: bool,
+    applied: bool,
+    receipt_path: Option<String>,
+    scanner_clean: Option<bool>,
+    status: String,
+    reason_codes: Vec<String>,
+}
+
+impl PackageRiskScannerEvidence {
+    fn not_requested() -> Self {
+        Self {
+            requested: false,
+            applied: false,
+            receipt_path: None,
+            scanner_clean: None,
+            status: "not_requested".to_string(),
+            reason_codes: vec!["scanner_receipt_not_requested".to_string()],
+        }
+    }
+
+    fn blocks_auto_sync(&self) -> bool {
+        self.requested && self.scanner_clean != Some(true)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PackageRiskEcosystem {
     Auto,
@@ -9924,6 +9967,7 @@ struct PackageRiskAssessment {
     freshness_allowed: bool,
     diff_clean_or_baseline_absent: bool,
     reputation_status: String,
+    scanner_evidence: PackageRiskScannerEvidence,
     artifact_review: LocalArtifactReviewEvidence,
     indicators: Vec<String>,
     verdict: PackageRiskVerdict,
@@ -9950,12 +9994,16 @@ struct PackageRiskMemoryRecord {
     freshness_allowed: bool,
     artifact_review_status: String,
     artifact_review_reason_codes: Vec<String>,
+    scanner_evidence_status: String,
+    scanner_clean: Option<bool>,
+    scanner_evidence_reason_codes: Vec<String>,
 }
 
 struct PackageRiskAssessArgs<'a> {
     workspace: Option<&'a str>,
     ecosystem: Option<&'a str>,
     state_dir: Option<&'a str>,
+    scanner_receipt: Option<&'a str>,
     ai_review: bool,
     ai_provider: Option<&'a str>,
     ai_model: Option<&'a str>,
@@ -9979,6 +10027,7 @@ fn render_package_risk_assess(args: PackageRiskAssessArgs<'_>) -> String {
     let config = macos_vm_config(args.state_dir, None, None);
     let memory = load_package_risk_memory(&config.state_dir);
     let subjects = discover_package_risk_subjects(workspace_path, requested_ecosystem);
+    let scanner_evidence = load_package_risk_scanner_evidence(args.scanner_receipt);
     let review_request = local_artifact_review_request(
         args.ai_review,
         args.ai_provider,
@@ -9994,7 +10043,9 @@ fn render_package_risk_assess(args: PackageRiskAssessArgs<'_>) -> String {
     let receipt_id = package_risk_receipt_id(workspace_path, current_unix_seconds());
     let assessments = subjects
         .iter()
-        .map(|subject| assess_package_risk_subject(subject, &memory, &artifact_review))
+        .map(|subject| {
+            assess_package_risk_subject(subject, &memory, &scanner_evidence, &artifact_review)
+        })
         .collect::<Vec<_>>();
     let all_freshness_allowed = !assessments.is_empty()
         && assessments
@@ -10016,6 +10067,7 @@ fn render_package_risk_assess(args: PackageRiskAssessArgs<'_>) -> String {
         receipt_id: &receipt_id,
         requested_ecosystem,
         assessments: &assessments,
+        scanner_evidence: &scanner_evidence,
         artifact_review: &artifact_review,
         all_freshness_allowed,
         all_diff_clean_or_baseline_absent,
@@ -10047,6 +10099,7 @@ fn render_package_risk_assess(args: PackageRiskAssessArgs<'_>) -> String {
         reason_codes: &summary_reasons,
         receipt_write_status: &receipt_write_status,
         store_status: &store_status,
+        scanner_evidence: &scanner_evidence,
         artifact_review: &artifact_review,
         json: args.json,
     })
@@ -10199,6 +10252,7 @@ struct PackageRiskSummaryRender<'a> {
     reason_codes: &'a [String],
     receipt_write_status: &'a str,
     store_status: &'a str,
+    scanner_evidence: &'a PackageRiskScannerEvidence,
     artifact_review: &'a LocalArtifactReviewEvidence,
     json: bool,
 }
@@ -10213,7 +10267,7 @@ fn render_package_risk_assessment_summary(view: PackageRiskSummaryRender<'_>) ->
             .collect::<Vec<_>>()
             .join(", ");
         return format!(
-            "{{\n  \"command\": \"whoathere package-risk assess\",\n  \"schema_version\": {},\n  \"requested_ecosystem\": {},\n  \"cooldown_days\": {},\n  \"store_path\": {},\n  \"receipt_path\": {},\n  \"receipt_id\": {},\n  \"receipt_write_status\": {},\n  \"store_status\": {},\n  \"package_count\": {},\n  \"overall_verdict\": {},\n  \"all_freshness_allowed\": {},\n  \"all_diff_clean_or_baseline_absent\": {},\n  \"artifact_review\": {},\n  \"reason_codes\": {},\n  \"packages\": [{}],\n  \"exit_code\": {}\n}}",
+            "{{\n  \"command\": \"whoathere package-risk assess\",\n  \"schema_version\": {},\n  \"requested_ecosystem\": {},\n  \"cooldown_days\": {},\n  \"store_path\": {},\n  \"receipt_path\": {},\n  \"receipt_id\": {},\n  \"receipt_write_status\": {},\n  \"store_status\": {},\n  \"package_count\": {},\n  \"overall_verdict\": {},\n  \"all_freshness_allowed\": {},\n  \"all_diff_clean_or_baseline_absent\": {},\n  \"all_scanner_clean\": {},\n  \"scanner_evidence\": {},\n  \"artifact_review\": {},\n  \"reason_codes\": {},\n  \"packages\": [{}],\n  \"exit_code\": {}\n}}",
             json_string(PACKAGE_RISK_ASSESSMENT_SCHEMA),
             json_string(view.requested_ecosystem.as_str()),
             PACKAGE_RISK_COOLDOWN_DAYS,
@@ -10226,6 +10280,8 @@ fn render_package_risk_assessment_summary(view: PackageRiskSummaryRender<'_>) ->
             json_string(view.overall_verdict.as_str()),
             view.all_freshness_allowed,
             view.all_diff_clean_or_baseline_absent,
+            json_option(view.scanner_evidence.scanner_clean),
+            render_package_risk_scanner_evidence_json(view.scanner_evidence),
             render_local_artifact_review_json(view.artifact_review),
             json_string_array(view.reason_codes),
             packages_json,
@@ -10239,7 +10295,7 @@ fn render_package_risk_assessment_summary(view: PackageRiskSummaryRender<'_>) ->
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "whoathere package-risk assess\nschema_version={}\nrequested_ecosystem={}\ncooldown_days={}\nstore_path={}\nreceipt_path={}\nreceipt_id={}\nreceipt_write_status={}\nstore_status={}\npackage_count={}\noverall_verdict={}\nall_freshness_allowed={}\nall_diff_clean_or_baseline_absent={}\n{}\nreason_codes={:?}\n{}\nexit_code={}",
+        "whoathere package-risk assess\nschema_version={}\nrequested_ecosystem={}\ncooldown_days={}\nstore_path={}\nreceipt_path={}\nreceipt_id={}\nreceipt_write_status={}\nstore_status={}\npackage_count={}\noverall_verdict={}\nall_freshness_allowed={}\nall_diff_clean_or_baseline_absent={}\nall_scanner_clean={}\n{}\n{}\nreason_codes={:?}\n{}\nexit_code={}",
         PACKAGE_RISK_ASSESSMENT_SCHEMA,
         view.requested_ecosystem.as_str(),
         PACKAGE_RISK_COOLDOWN_DAYS,
@@ -10252,6 +10308,8 @@ fn render_package_risk_assessment_summary(view: PackageRiskSummaryRender<'_>) ->
         view.overall_verdict.as_str(),
         view.all_freshness_allowed,
         view.all_diff_clean_or_baseline_absent,
+        option_bool_text(view.scanner_evidence.scanner_clean),
+        render_package_risk_scanner_evidence_text(view.scanner_evidence),
         render_local_artifact_review_text(view.artifact_review),
         view.reason_codes,
         rows,
@@ -10261,7 +10319,7 @@ fn render_package_risk_assessment_summary(view: PackageRiskSummaryRender<'_>) ->
 
 fn render_package_risk_package_json(assessment: &PackageRiskAssessment) -> String {
     format!(
-        "{{\"ecosystem\": {}, \"package_name\": {}, \"requested_spec\": {}, \"resolved_version\": {}, \"selected_version\": {}, \"source_kind\": {}, \"package_class\": {}, \"artifact_hash\": {}, \"pinned\": {}, \"last_known_good_version\": {}, \"last_known_good_hash\": {}, \"last_known_good_used\": {}, \"publish_age_days\": {}, \"freshness_allowed\": {}, \"diff_clean_or_baseline_absent\": {}, \"reputation_status\": {}, \"artifact_review_status\": {}, \"artifact_review_reason_codes\": {}, \"artifact_review_output_sha256\": {}, \"indicators\": {}, \"verdict\": {}, \"reason_codes\": {}}}",
+        "{{\"ecosystem\": {}, \"package_name\": {}, \"requested_spec\": {}, \"resolved_version\": {}, \"selected_version\": {}, \"source_kind\": {}, \"package_class\": {}, \"artifact_hash\": {}, \"pinned\": {}, \"last_known_good_version\": {}, \"last_known_good_hash\": {}, \"last_known_good_used\": {}, \"publish_age_days\": {}, \"freshness_allowed\": {}, \"diff_clean_or_baseline_absent\": {}, \"reputation_status\": {}, \"scanner_evidence_status\": {}, \"scanner_clean\": {}, \"scanner_evidence_reason_codes\": {}, \"artifact_review_status\": {}, \"artifact_review_reason_codes\": {}, \"artifact_review_output_sha256\": {}, \"indicators\": {}, \"verdict\": {}, \"reason_codes\": {}}}",
         json_string(assessment.ecosystem.as_str()),
         json_string(&assessment.package_name),
         json_string(&assessment.requested_spec),
@@ -10278,6 +10336,9 @@ fn render_package_risk_package_json(assessment: &PackageRiskAssessment) -> Strin
         assessment.freshness_allowed,
         assessment.diff_clean_or_baseline_absent,
         json_string(&assessment.reputation_status),
+        json_string(&assessment.scanner_evidence.status),
+        json_option(assessment.scanner_evidence.scanner_clean),
+        json_string_array(&assessment.scanner_evidence.reason_codes),
         json_string(assessment.artifact_review.status.as_str()),
         json_string_array(&assessment.artifact_review.reason_codes),
         json_option_string(assessment.artifact_review.output_sha256.as_deref()),
@@ -10289,7 +10350,7 @@ fn render_package_risk_package_json(assessment: &PackageRiskAssessment) -> Strin
 
 fn render_package_risk_package_text(assessment: &PackageRiskAssessment) -> String {
     format!(
-        "package_risk package={} ecosystem={} requested_spec={} resolved_version={} selected_version={} source_kind={} package_class={} artifact_hash={} pinned={} last_known_good_version={} last_known_good_used={} publish_age_days={} freshness_allowed={} diff_clean_or_baseline_absent={} reputation_status={} artifact_review_status={} artifact_review_reason_codes={:?} indicators={:?} verdict={} reason_codes={:?}",
+        "package_risk package={} ecosystem={} requested_spec={} resolved_version={} selected_version={} source_kind={} package_class={} artifact_hash={} pinned={} last_known_good_version={} last_known_good_used={} publish_age_days={} freshness_allowed={} diff_clean_or_baseline_absent={} reputation_status={} scanner_evidence_status={} scanner_clean={} scanner_evidence_reason_codes={:?} artifact_review_status={} artifact_review_reason_codes={:?} indicators={:?} verdict={} reason_codes={:?}",
         assessment.package_name,
         assessment.ecosystem.as_str(),
         redacted_scalar(&assessment.requested_spec),
@@ -10311,11 +10372,86 @@ fn render_package_risk_package_text(assessment: &PackageRiskAssessment) -> Strin
         assessment.freshness_allowed,
         assessment.diff_clean_or_baseline_absent,
         assessment.reputation_status,
+        assessment.scanner_evidence.status,
+        option_bool_text(assessment.scanner_evidence.scanner_clean),
+        assessment.scanner_evidence.reason_codes,
         assessment.artifact_review.status.as_str(),
         assessment.artifact_review.reason_codes,
         assessment.indicators,
         assessment.verdict.as_str(),
         assessment.reason_codes
+    )
+}
+
+fn load_package_risk_scanner_evidence(scanner_receipt: Option<&str>) -> PackageRiskScannerEvidence {
+    let Some(scanner_receipt) = scanner_receipt else {
+        return PackageRiskScannerEvidence::not_requested();
+    };
+    let redacted_path = redacted_package_risk_path(Path::new(scanner_receipt));
+    let contents = match std::fs::read_to_string(scanner_receipt) {
+        Ok(contents) => contents,
+        Err(_) => {
+            return PackageRiskScannerEvidence {
+                requested: true,
+                applied: false,
+                receipt_path: Some(redacted_path),
+                scanner_clean: Some(false),
+                status: "unreadable".to_string(),
+                reason_codes: vec!["scanner_receipt_unreadable".to_string()],
+            };
+        }
+    };
+    let mut reason_codes = json_extract_string_array_field(&contents, "reason_codes");
+    if json_extract_string_field(&contents, "schema_version").as_deref()
+        != Some(EXTERNAL_SCANNER_RUN_SCHEMA)
+    {
+        reason_codes.push("scanner_receipt_schema_invalid".to_string());
+        return PackageRiskScannerEvidence {
+            requested: true,
+            applied: false,
+            receipt_path: Some(redacted_path),
+            scanner_clean: Some(false),
+            status: "invalid".to_string(),
+            reason_codes: sorted_unique(reason_codes),
+        };
+    }
+    let scanner_clean = json_extract_bool_field(&contents, "scanner_clean").unwrap_or(false);
+    if scanner_clean {
+        reason_codes.push("scanner_receipt_clean_advisory".to_string());
+    } else {
+        reason_codes.push("scanner_receipt_not_clean".to_string());
+    }
+    PackageRiskScannerEvidence {
+        requested: true,
+        applied: true,
+        receipt_path: Some(redacted_path),
+        scanner_clean: Some(scanner_clean),
+        status: if scanner_clean { "clean" } else { "not_clean" }.to_string(),
+        reason_codes: sorted_unique(reason_codes),
+    }
+}
+
+fn render_package_risk_scanner_evidence_json(evidence: &PackageRiskScannerEvidence) -> String {
+    format!(
+        "{{\"requested\": {}, \"applied\": {}, \"receipt_path\": {}, \"scanner_clean\": {}, \"status\": {}, \"reason_codes\": {}}}",
+        evidence.requested,
+        evidence.applied,
+        json_option_string(evidence.receipt_path.as_deref()),
+        json_option(evidence.scanner_clean),
+        json_string(&evidence.status),
+        json_string_array(&evidence.reason_codes)
+    )
+}
+
+fn render_package_risk_scanner_evidence_text(evidence: &PackageRiskScannerEvidence) -> String {
+    format!(
+        "scanner_evidence_requested={}\nscanner_evidence_applied={}\nscanner_evidence_receipt_path={}\nscanner_evidence_clean={}\nscanner_evidence_status={}\nscanner_evidence_reason_codes={:?}",
+        evidence.requested,
+        evidence.applied,
+        evidence.receipt_path.as_deref().unwrap_or("none"),
+        option_bool_text(evidence.scanner_clean),
+        evidence.status,
+        evidence.reason_codes
     )
 }
 
@@ -11113,6 +11249,7 @@ fn discover_python_package_risk_subjects(
 fn assess_package_risk_subject(
     subject: &PackageRiskSubject,
     memory: &[PackageRiskMemoryRecord],
+    scanner_evidence: &PackageRiskScannerEvidence,
     artifact_review: &LocalArtifactReviewEvidence,
 ) -> PackageRiskAssessment {
     let mut reason_codes = Vec::new();
@@ -11186,6 +11323,7 @@ fn assess_package_risk_subject(
     if subject.reputation_status == "reputation_metadata_missing" {
         reason_codes.push("reputation_metadata_missing".to_string());
     }
+    reason_codes.extend(scanner_evidence.reason_codes.iter().cloned());
     reason_codes.extend(artifact_review.reason_codes.iter().cloned());
     match subject.package_class {
         PackageClass::NpmRegistryTarball | PackageClass::PypiPureWheel => {}
@@ -11216,6 +11354,7 @@ fn assess_package_risk_subject(
         || suspicious
         || !freshness_allowed
         || !diff_clean_or_baseline_absent
+        || scanner_evidence.blocks_auto_sync()
         || artifact_review.status.blocks_auto_sync()
     {
         PackageRiskVerdict::ManualReview
@@ -11247,6 +11386,7 @@ fn assess_package_risk_subject(
         freshness_allowed,
         diff_clean_or_baseline_absent,
         reputation_status: subject.reputation_status.clone(),
+        scanner_evidence: scanner_evidence.clone(),
         artifact_review: artifact_review.clone(),
         indicators: subject.indicators.clone(),
         verdict,
@@ -11832,6 +11972,7 @@ struct PackageRiskReceiptWrite<'a> {
     receipt_id: &'a str,
     requested_ecosystem: PackageRiskEcosystem,
     assessments: &'a [PackageRiskAssessment],
+    scanner_evidence: &'a PackageRiskScannerEvidence,
     artifact_review: &'a LocalArtifactReviewEvidence,
     all_freshness_allowed: bool,
     all_diff_clean_or_baseline_absent: bool,
@@ -11853,7 +11994,7 @@ fn write_package_risk_receipt(write: PackageRiskReceiptWrite<'_>) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     let contents = format!(
-        "{{\n  \"schema_version\": {},\n  \"receipt_id\": {},\n  \"created_at_unix_seconds\": {},\n  \"requested_ecosystem\": {},\n  \"cooldown_days\": {},\n  \"overall_verdict\": {},\n  \"all_freshness_allowed\": {},\n  \"all_diff_clean_or_baseline_absent\": {},\n  \"artifact_review\": {},\n  \"reason_codes\": {},\n  \"packages\": [{}]\n}}\n",
+        "{{\n  \"schema_version\": {},\n  \"receipt_id\": {},\n  \"created_at_unix_seconds\": {},\n  \"requested_ecosystem\": {},\n  \"cooldown_days\": {},\n  \"overall_verdict\": {},\n  \"all_freshness_allowed\": {},\n  \"all_diff_clean_or_baseline_absent\": {},\n  \"all_scanner_clean\": {},\n  \"scanner_evidence\": {},\n  \"artifact_review\": {},\n  \"reason_codes\": {},\n  \"packages\": [{}]\n}}\n",
         json_string(PACKAGE_RISK_ASSESSMENT_SCHEMA),
         json_string(write.receipt_id),
         current_unix_seconds(),
@@ -11862,6 +12003,8 @@ fn write_package_risk_receipt(write: PackageRiskReceiptWrite<'_>) -> String {
         json_string(write.overall_verdict.as_str()),
         write.all_freshness_allowed,
         write.all_diff_clean_or_baseline_absent,
+        json_option(write.scanner_evidence.scanner_clean),
+        render_package_risk_scanner_evidence_json(write.scanner_evidence),
         render_local_artifact_review_json(write.artifact_review),
         json_string_array(write.reason_codes),
         packages
@@ -11896,6 +12039,9 @@ fn package_risk_assessment_store_record(
         freshness_allowed: assessment.freshness_allowed,
         artifact_review_status: assessment.artifact_review.status.as_str().to_string(),
         artifact_review_reason_codes: assessment.artifact_review.reason_codes.clone(),
+        scanner_evidence_status: assessment.scanner_evidence.status.clone(),
+        scanner_clean: assessment.scanner_evidence.scanner_clean,
+        scanner_evidence_reason_codes: assessment.scanner_evidence.reason_codes.clone(),
     }
 }
 
@@ -11939,6 +12085,13 @@ fn package_risk_approval_record_from_receipt_object(
         artifact_review_reason_codes: json_extract_string_array_field(
             object,
             "artifact_review_reason_codes",
+        ),
+        scanner_evidence_status: json_extract_string_field(object, "scanner_evidence_status")
+            .unwrap_or_else(|| "not_requested".to_string()),
+        scanner_clean: json_extract_bool_field(object, "scanner_clean"),
+        scanner_evidence_reason_codes: json_extract_string_array_field(
+            object,
+            "scanner_evidence_reason_codes",
         ),
     })
 }
@@ -11997,12 +12150,19 @@ fn parse_package_risk_memory_record(line: &str) -> Option<PackageRiskMemoryRecor
             line,
             "artifact_review_reason_codes",
         ),
+        scanner_evidence_status: json_extract_string_field(line, "scanner_evidence_status")
+            .unwrap_or_else(|| "not_requested".to_string()),
+        scanner_clean: json_extract_bool_field(line, "scanner_clean"),
+        scanner_evidence_reason_codes: json_extract_string_array_field(
+            line,
+            "scanner_evidence_reason_codes",
+        ),
     })
 }
 
 fn render_package_risk_memory_record_json(record: &PackageRiskMemoryRecord) -> String {
     format!(
-        "{{\"schema_version\": {}, \"record_kind\": {}, \"ecosystem\": {}, \"package_name\": {}, \"requested_spec\": {}, \"resolved_version\": {}, \"selected_version\": {}, \"source_kind\": {}, \"package_class\": {}, \"artifact_hash\": {}, \"verdict\": {}, \"approved\": {}, \"created_at_unix_seconds\": {}, \"receipt_id\": {}, \"reason_codes\": {}, \"diff_clean_or_baseline_absent\": {}, \"freshness_allowed\": {}, \"artifact_review_status\": {}, \"artifact_review_reason_codes\": {}}}",
+        "{{\"schema_version\": {}, \"record_kind\": {}, \"ecosystem\": {}, \"package_name\": {}, \"requested_spec\": {}, \"resolved_version\": {}, \"selected_version\": {}, \"source_kind\": {}, \"package_class\": {}, \"artifact_hash\": {}, \"verdict\": {}, \"approved\": {}, \"created_at_unix_seconds\": {}, \"receipt_id\": {}, \"reason_codes\": {}, \"diff_clean_or_baseline_absent\": {}, \"freshness_allowed\": {}, \"artifact_review_status\": {}, \"artifact_review_reason_codes\": {}, \"scanner_evidence_status\": {}, \"scanner_clean\": {}, \"scanner_evidence_reason_codes\": {}}}",
         json_string(PACKAGE_RISK_STORE_SCHEMA),
         json_string(&record.record_kind),
         json_string(record.ecosystem.as_str()),
@@ -12021,13 +12181,16 @@ fn render_package_risk_memory_record_json(record: &PackageRiskMemoryRecord) -> S
         record.diff_clean_or_baseline_absent,
         record.freshness_allowed,
         json_string(&record.artifact_review_status),
-        json_string_array(&record.artifact_review_reason_codes)
+        json_string_array(&record.artifact_review_reason_codes),
+        json_string(&record.scanner_evidence_status),
+        json_option(record.scanner_clean),
+        json_string_array(&record.scanner_evidence_reason_codes)
     )
 }
 
 fn render_package_risk_memory_record_text(record: &PackageRiskMemoryRecord) -> String {
     format!(
-        "package_risk_record kind={} ecosystem={} package={} requested_spec={} selected_version={} approved={} verdict={} artifact_hash={} receipt_id={} diff_clean_or_baseline_absent={} freshness_allowed={} artifact_review_status={} artifact_review_reason_codes={:?} reason_codes={:?}",
+        "package_risk_record kind={} ecosystem={} package={} requested_spec={} selected_version={} approved={} verdict={} artifact_hash={} receipt_id={} diff_clean_or_baseline_absent={} freshness_allowed={} artifact_review_status={} artifact_review_reason_codes={:?} scanner_evidence_status={} scanner_clean={} scanner_evidence_reason_codes={:?} reason_codes={:?}",
         record.record_kind,
         record.ecosystem.as_str(),
         record.package_name,
@@ -12041,6 +12204,9 @@ fn render_package_risk_memory_record_text(record: &PackageRiskMemoryRecord) -> S
         record.freshness_allowed,
         record.artifact_review_status,
         record.artifact_review_reason_codes,
+        record.scanner_evidence_status,
+        option_bool_text(record.scanner_clean),
+        record.scanner_evidence_reason_codes,
         record.reason_codes
     )
 }
@@ -17355,6 +17521,7 @@ exit 0
             workspace: Some(pinned.display().to_string()),
             ecosystem: Some("pypi".to_string()),
             state_dir: Some(state_dir.display().to_string()),
+            scanner_receipt: None,
             ai_review: false,
             ai_provider: None,
             ai_model: None,
@@ -17386,6 +17553,7 @@ exit 0
             workspace: Some(unpinned.display().to_string()),
             ecosystem: Some("pypi".to_string()),
             state_dir: Some(state_dir.display().to_string()),
+            scanner_receipt: None,
             ai_review: false,
             ai_provider: None,
             ai_model: None,
@@ -17422,6 +17590,7 @@ exit 0
             workspace: Some(fresh.display().to_string()),
             ecosystem: Some("pypi".to_string()),
             state_dir: Some(state_dir.display().to_string()),
+            scanner_receipt: None,
             ai_review: false,
             ai_provider: None,
             ai_model: None,
@@ -17441,6 +17610,7 @@ exit 0
             workspace: Some(unpinned.display().to_string()),
             ecosystem: Some("pypi".to_string()),
             state_dir: Some(state_dir.display().to_string()),
+            scanner_receipt: None,
             ai_review: false,
             ai_provider: None,
             ai_model: None,
@@ -17463,6 +17633,7 @@ exit 0
             workspace: Some(direct.display().to_string()),
             ecosystem: Some("pypi".to_string()),
             state_dir: Some(state_dir.display().to_string()),
+            scanner_receipt: None,
             ai_review: false,
             ai_provider: None,
             ai_model: None,
@@ -17503,6 +17674,7 @@ exit 0
             workspace: Some(root.display().to_string()),
             ecosystem: Some("npm".to_string()),
             state_dir: Some(state_dir.display().to_string()),
+            scanner_receipt: None,
             ai_review: false,
             ai_provider: None,
             ai_model: None,
@@ -17516,6 +17688,114 @@ exit 0
         assert!(result.output.contains("network_capability_observed"));
         assert!(!result.output.contains("NPM_TOKEN_VALUE"));
         assert!(!result.output.contains("/Users/"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn package_risk_scanner_receipt_findings_force_manual_review() {
+        let root = temp_root("whoathere-cli-package-risk-scanner-dirty");
+        let state_dir = root.join("state");
+        let scanner_receipt = root.join("scanner-dirty.json");
+        write_scanner_run_receipt(&scanner_receipt, false, &["scanner_findings_observed"]);
+        write_new_file(
+            &root.join("requirements.txt"),
+            b"safe-pkg==1.2.3 # whoathere-published-at=1700000000\n",
+        )
+        .expect("requirements");
+
+        let assessed = evaluate_command(Command::PackageRiskAssess {
+            workspace: Some(root.display().to_string()),
+            ecosystem: Some("pypi".to_string()),
+            state_dir: Some(state_dir.display().to_string()),
+            scanner_receipt: Some(scanner_receipt.display().to_string()),
+            ai_review: false,
+            ai_provider: None,
+            ai_model: None,
+            ai_timeout_seconds: None,
+            json: true,
+        });
+        assert_eq!(assessed.exit_code, 22);
+        assert!(assessed.output.contains("\"all_scanner_clean\": false"));
+        assert!(assessed.output.contains("scanner_receipt_not_clean"));
+        assert!(assessed
+            .output
+            .contains("\"scanner_evidence_status\": \"not_clean\""));
+
+        let receipt = single_package_risk_receipt(&state_dir);
+        let result = evaluate_command(Command::VmReleasePlan {
+            artifact_class: Some("pypi.pure_wheel.v1".to_string()),
+            ecosystem: None,
+            source: None,
+            filename: None,
+            lifecycle_script: false,
+            pep517_backend: false,
+            native_marker: false,
+            editable: false,
+            evidence: LocalEvidenceFlags::clean(true),
+            package_risk_receipt: Some(receipt.display().to_string()),
+            json: true,
+        });
+        assert_eq!(result.exit_code, 22);
+        assert!(result.output.contains("\"scanner_clean\": false"));
+        assert!(result
+            .output
+            .contains("package_risk_scanner_receipt_not_clean"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn package_risk_scanner_receipt_clean_can_satisfy_release_plan_scanner_bit() {
+        let root = temp_root("whoathere-cli-package-risk-scanner-clean");
+        let state_dir = root.join("state");
+        let scanner_receipt = root.join("scanner-clean.json");
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        write_scanner_run_receipt(&scanner_receipt, true, &[]);
+        write_new_file(
+            &workspace.join("requirements.txt"),
+            b"safe-pkg==1.2.3 # whoathere-published-at=1700000000\n",
+        )
+        .expect("requirements");
+
+        let assessed = evaluate_command(Command::PackageRiskAssess {
+            workspace: Some(workspace.display().to_string()),
+            ecosystem: Some("pypi".to_string()),
+            state_dir: Some(state_dir.display().to_string()),
+            scanner_receipt: Some(scanner_receipt.display().to_string()),
+            ai_review: false,
+            ai_provider: None,
+            ai_model: None,
+            ai_timeout_seconds: None,
+            json: true,
+        });
+        assert_eq!(assessed.exit_code, 0);
+        assert!(assessed.output.contains("\"all_scanner_clean\": true"));
+        assert!(assessed.output.contains("scanner_receipt_clean_advisory"));
+
+        let receipt = single_package_risk_receipt(&state_dir);
+        let mut evidence = LocalEvidenceFlags::clean(true);
+        evidence.scanner_clean = false;
+        evidence.diff_clean_or_baseline_absent = false;
+        evidence.freshness_allowed = false;
+        let result = evaluate_command(Command::VmReleasePlan {
+            artifact_class: Some("pypi.pure_wheel.v1".to_string()),
+            ecosystem: None,
+            source: None,
+            filename: None,
+            lifecycle_script: false,
+            pep517_backend: false,
+            native_marker: false,
+            editable: false,
+            evidence,
+            package_risk_receipt: Some(receipt.display().to_string()),
+            json: true,
+        });
+        assert_eq!(result.exit_code, 0);
+        assert!(result.output.contains("\"scanner_clean\": true"));
+        assert!(result.output.contains("package_risk_scanner_receipt_clean"));
+        assert!(result.output.contains("\"verdict\": \"auto_sync\""));
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -17551,6 +17831,7 @@ exit 64
                     workspace: Some(root.display().to_string()),
                     ecosystem: Some("npm".to_string()),
                     state_dir: Some(state_dir.display().to_string()),
+                    scanner_receipt: None,
                     ai_review: true,
                     ai_provider: Some("ollama".to_string()),
                     ai_model: Some("fake-review-model".to_string()),
@@ -17609,6 +17890,7 @@ exit 0
                     workspace: Some(root.display().to_string()),
                     ecosystem: Some("pypi".to_string()),
                     state_dir: Some(state_dir.display().to_string()),
+                    scanner_receipt: None,
                     ai_review: true,
                     ai_provider: Some("ollama".to_string()),
                     ai_model: Some("fake-review-model".to_string()),
@@ -17649,6 +17931,7 @@ exit 0
                     workspace: Some(root.display().to_string()),
                     ecosystem: Some("pypi".to_string()),
                     state_dir: Some(state_dir.display().to_string()),
+                    scanner_receipt: None,
                     ai_review: true,
                     ai_provider: Some("ollama".to_string()),
                     ai_model: Some("fake-review-model".to_string()),
@@ -17700,6 +17983,7 @@ exit 0
                     workspace: Some(root.display().to_string()),
                     ecosystem: Some("pypi".to_string()),
                     state_dir: Some(state_dir.display().to_string()),
+                    scanner_receipt: None,
                     ai_review: true,
                     ai_provider: Some("ollama".to_string()),
                     ai_model: Some("fake-review-model".to_string()),
@@ -17737,6 +18021,7 @@ exit 0
             workspace: Some(workspace.display().to_string()),
             ecosystem: Some("pypi".to_string()),
             state_dir: Some(state_dir.display().to_string()),
+            scanner_receipt: None,
             ai_review: false,
             ai_provider: None,
             ai_model: None,
@@ -21375,6 +21660,25 @@ exit 0
         receipts.sort();
         assert_eq!(receipts.len(), 1);
         receipts.remove(0)
+    }
+
+    fn write_scanner_run_receipt(path: &std::path::Path, scanner_clean: bool, reasons: &[&str]) {
+        let reasons_json = reasons
+            .iter()
+            .map(|reason| json_string(reason))
+            .collect::<Vec<_>>()
+            .join(", ");
+        write_new_file(
+            path,
+            format!(
+                "{{\"schema_version\": {}, \"scanner_clean\": {}, \"reason_codes\": [{}]}}\n",
+                json_string(EXTERNAL_SCANNER_RUN_SCHEMA),
+                scanner_clean,
+                reasons_json
+            )
+            .as_bytes(),
+        )
+        .expect("scanner receipt");
     }
 
     fn write_complete_guest_provisioning_receipt(state_dir: &std::path::Path) {

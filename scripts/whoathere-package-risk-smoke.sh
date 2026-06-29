@@ -101,6 +101,18 @@ REQ
 run_capture 20 "$WORK_DIR/direct.json" "$CLI" package-risk assess --workspace "$DIRECT" --ecosystem pypi --state-dir "$STATE_DIR" --json
 require_contains 'direct_vcs_editable_denied_by_default' "$WORK_DIR/direct.json" direct_deny
 
+SCANNER_DIRTY="$WORK_DIR/scanner-dirty"
+mkdir -p "$SCANNER_DIRTY"
+cat >"$SCANNER_DIRTY/requirements.txt" <<'REQ'
+safe-pkg==1.2.3 # whoathere-published-at=1700000000
+REQ
+cat >"$WORK_DIR/scanner-dirty.json" <<'JSON'
+{"schema_version":"whoathere.external_scanner_run.v1","scanner_clean":false,"reason_codes":["scanner_findings_observed"]}
+JSON
+run_capture 22 "$WORK_DIR/scanner-dirty-assess.json" "$CLI" package-risk assess --workspace "$SCANNER_DIRTY" --ecosystem pypi --state-dir "$STATE_DIR" --scanner-receipt "$WORK_DIR/scanner-dirty.json" --json
+require_contains '"all_scanner_clean": false' "$WORK_DIR/scanner-dirty-assess.json" scanner_dirty_clean
+require_contains 'scanner_receipt_not_clean' "$WORK_DIR/scanner-dirty-assess.json" scanner_dirty_reason
+
 NPM_EVIL="$WORK_DIR/npm-evil"
 mkdir -p "$NPM_EVIL"
 cat >"$NPM_EVIL/package.json" <<'JSON'

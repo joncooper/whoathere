@@ -15,6 +15,7 @@ replace the macOS VM, scanners, canary checks, strict sync-back rules, or manual
 ## Implemented Behavior
 
 - Added `whoathere package-risk assess --workspace <path> [--ecosystem auto|npm|pypi|uv] [--state-dir <dir>] [--json]`.
+- Added `package-risk assess --scanner-receipt <path>` to consume normalized `scanners run --json` evidence.
 - Added opt-in local model review through `package-risk assess --ai-review --ai-provider ollama --ai-model <model>`.
 - Added `whoathere package-risk history --package <name> --ecosystem <npm|pypi|uv> [--state-dir <dir>] [--json]`.
 - Added `whoathere package-risk approve --receipt <path> --reason <text> [--state-dir <dir>] [--json]`.
@@ -35,6 +36,9 @@ replace the macOS VM, scanners, canary checks, strict sync-back rules, or manual
 - A clean local model result cannot authorize execution, copy-back, or bypass freshness, diff,
   scanner, VM, or package-class gates. Requested model findings, timeout, error, or provider
   unavailability force manual review.
+- Scanner receipts are normalized evidence. Clean scanner receipts can satisfy only the scanner
+  evidence bit for `vm release-plan`; dirty, unreadable, or invalid scanner receipts force manual
+  review and override operator-provided `--scanner-clean`.
 - Reputation is a warning and reason-code signal, not an allow rule.
 - New lifecycle scripts, `.pth` files, native/binary markers, direct URLs, VCS/editable sources,
   platform-specific payloads, and credential/network-looking code block auto-sync.
