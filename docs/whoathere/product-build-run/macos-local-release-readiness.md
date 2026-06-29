@@ -399,9 +399,11 @@ workflow.
 
 The preview packaging path now has `scripts/whoathere-package-macos-preview.sh`. It validates the
 Rust workspace, builds the release CLI, locally signs the CLI, runs Swift helper tests, builds and
-signs the release helper, runs the local red-team fixture gate, stages helper scripts and docs, and
-writes a tarball plus SHA-256 checksum under ignored `dist/`. It deliberately reports
-`notarization_status=not_performed`; final Developer ID/notarization work remains open.
+signs the release helper, runs the local red-team fixture gate, stages helper scripts and docs,
+refuses dirty git trees by default, refuses skipped validation unless explicitly overridden for a
+non-release experiment, and writes a tarball plus SHA-256 checksum under ignored `dist/`. It
+deliberately reports `notarization_status=not_performed`; final Developer ID/notarization work
+remains open.
 
 The release notarization-prep path now has `scripts/whoathere-notarize-macos-release.sh`. In dry-run
 mode it verifies the package checksum sidecar, extracts the archive, verifies CLI/helper codesign

@@ -235,6 +235,11 @@ helper scripts, a no-sudo user installer, guest readiness agent source, and loca
 scripts/whoathere-package-macos-preview.sh
 ```
 
+The package name is derived from the current git commit, so the script refuses a dirty worktree by
+default. It also refuses `WHOATHERE_PACKAGE_SKIP_VALIDATION=true` unless
+`WHOATHERE_PACKAGE_ALLOW_SKIPPED_VALIDATION=true` is set. Use that override only for non-release
+developer experiments after equivalent validation has already passed.
+
 The script runs Rust validation, builds the release CLI, locally signs the CLI, runs Swift helper
 tests, builds and signs the release helper, runs the local red-team fixture gate, writes the
 archive and checksum, then extracts the archive and smoke-tests the packaged CLI/helper. The smoke

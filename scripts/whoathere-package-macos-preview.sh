@@ -8,6 +8,8 @@ HELPER_ROOT="$RUST_WORKSPACE/helpers/macos-vm-helper"
 DIST_DIR=${WHOATHERE_DIST_DIR:-"$REPO_ROOT/dist"}
 SIGN_IDENTITY=${WHOATHERE_CODESIGN_IDENTITY:--}
 SKIP_VALIDATION=${WHOATHERE_PACKAGE_SKIP_VALIDATION:-false}
+ALLOW_SKIPPED_VALIDATION=${WHOATHERE_PACKAGE_ALLOW_SKIPPED_VALIDATION:-false}
+ALLOW_DIRTY_PACKAGE=${WHOATHERE_PACKAGE_ALLOW_DIRTY:-false}
 VERSION=${WHOATHERE_PREVIEW_VERSION:-$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || date -u +%Y%m%d%H%M%S)}
 PACKAGE_NAME="whoathere-macos-arm64-preview-$VERSION"
 STAGE_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/whoathere-package.XXXXXX")
@@ -34,6 +36,32 @@ require_host() {
   if [ "$(uname -m)" != "arm64" ]; then
     echo "apple_silicon_arm64_required=true" >&2
     exit 64
+  fi
+}
+
+require_release_integrity() {
+  if git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    GIT_HEAD=$(git -C "$REPO_ROOT" rev-parse --short HEAD)
+    if [ -z "${WHOATHERE_PREVIEW_VERSION:-}" ] && [ "$VERSION" != "$GIT_HEAD" ]; then
+      echo "package_version_head_mismatch=true" >&2
+      echo "package_version=$VERSION" >&2
+      echo "git_head=$GIT_HEAD" >&2
+      exit 65
+    fi
+    if [ "$ALLOW_DIRTY_PACKAGE" != "true" ]; then
+      GIT_STATUS=$(git -C "$REPO_ROOT" status --porcelain --untracked-files=normal)
+      if [ -n "$GIT_STATUS" ]; then
+        echo "package_worktree_dirty=true" >&2
+        printf '%s\n' "$GIT_STATUS" >&2
+        echo "set WHOATHERE_PACKAGE_ALLOW_DIRTY=true only for non-release developer experiments" >&2
+        exit 65
+      fi
+    fi
+  fi
+  if [ "$SKIP_VALIDATION" = "true" ] && [ "$ALLOW_SKIPPED_VALIDATION" != "true" ]; then
+    echo "package_validation_skip_refused=true" >&2
+    echo "set WHOATHERE_PACKAGE_ALLOW_SKIPPED_VALIDATION=true only after equivalent validation has already passed" >&2
+    exit 65
   fi
 }
 
@@ -231,6 +259,7 @@ smoke_package() {
 }
 
 require_host
+require_release_integrity
 run_validation
 build_artifacts
 run_release_gate
