@@ -145,6 +145,18 @@ require_contains '"artifact_review_status": "passed"' "$WORK_DIR/ai-clean-fresh.
 require_contains 'artifact_review_clean_advisory' "$WORK_DIR/ai-clean-fresh.json" ai_clean_reason
 require_contains 'fresh_release_cooldown_active' "$WORK_DIR/ai-clean-fresh.json" ai_clean_no_fresh_bypass
 
+FAKE_OLLAMA_NOISY="$WORK_DIR/fake-ollama-noisy"
+cat >"$FAKE_OLLAMA_NOISY" <<'SH'
+#!/bin/sh
+cat >/dev/null
+awk 'BEGIN { for (i = 0; i < 600000; i++) printf "A" }'
+exit 0
+SH
+chmod +x "$FAKE_OLLAMA_NOISY"
+run_capture 22 "$WORK_DIR/ai-output-limit.json" env WHOATHERE_OLLAMA_BIN="$FAKE_OLLAMA_NOISY" "$CLI" package-risk assess --workspace "$AI_SAFE" --ecosystem npm --state-dir "$STATE_DIR" --ai-review --ai-model fake-review-model --ai-timeout-seconds 5 --json
+require_contains 'artifact_review_output_limit_exceeded' "$WORK_DIR/ai-output-limit.json" ai_output_limit
+require_contains '"raw_output_included": false' "$WORK_DIR/ai-output-limit.json" ai_output_not_included
+
 RELEASE_RECEIPT=$PINNED_RECEIPT
 run_capture 0 "$WORK_DIR/release-plan.json" "$CLI" vm release-plan --class pypi.pure_wheel.v1 --vm-ready --static-clean --dynamic-clean --egress-clean --no-canary-access --scanner-clean --package-risk-receipt "$RELEASE_RECEIPT" --json
 require_contains '"package_risk_receipt_applied": true' "$WORK_DIR/release-plan.json" release_receipt

@@ -9776,6 +9776,7 @@ const PACKAGE_RISK_ASSESSMENT_SCHEMA: &str = "whoathere.package_risk_assessment.
 const PACKAGE_RISK_STORE_SCHEMA: &str = "whoathere.package_risk_store_record.v1";
 const PACKAGE_ARTIFACT_REVIEW_SCHEMA: &str = "whoathere.local_artifact_review.v1";
 const PACKAGE_RISK_COOLDOWN_DAYS: u64 = 7;
+const PACKAGE_ARTIFACT_REVIEW_OUTPUT_LIMIT_BYTES: u64 = 512 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LocalArtifactReviewStatus {
@@ -10492,7 +10493,16 @@ fn run_local_artifact_review(
 
     let timeout = Duration::from_secs(request.timeout_seconds);
     let mut timed_out = false;
+    let mut output_limit_exceeded = false;
     let exit_status = loop {
+        if artifact_review_output_size(&stdout_path, &stderr_path)
+            > PACKAGE_ARTIFACT_REVIEW_OUTPUT_LIMIT_BYTES
+        {
+            output_limit_exceeded = true;
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
+        }
         match child.try_wait() {
             Ok(Some(status)) => break Some(status),
             Ok(None) => {
@@ -10512,6 +10522,21 @@ fn run_local_artifact_review(
     let _ = std::fs::remove_file(&stdout_path);
     let _ = std::fs::remove_file(&stderr_path);
     let output_sha256 = sha256_digest(&[stdout.as_slice(), stderr.as_slice()].concat());
+    if output_limit_exceeded
+        || stdout.len().saturating_add(stderr.len())
+            > PACKAGE_ARTIFACT_REVIEW_OUTPUT_LIMIT_BYTES as usize
+    {
+        base_reasons.push("artifact_review_output_limit_exceeded".to_string());
+        return local_artifact_review_failure(
+            request.provider,
+            Some(model),
+            LocalArtifactReviewStatus::Error,
+            Some(prompt_sha256),
+            Some(output_sha256),
+            Some(start.elapsed().as_millis()),
+            base_reasons,
+        );
+    }
     if timed_out {
         base_reasons.push("artifact_review_process_timed_out".to_string());
         return local_artifact_review_failure(
@@ -10574,6 +10599,17 @@ fn local_artifact_review_failure(
         elapsed_ms,
         reason_codes: sorted_unique(reason_codes),
     }
+}
+
+fn artifact_review_output_size(stdout_path: &Path, stderr_path: &Path) -> u64 {
+    std::fs::metadata(stdout_path)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0)
+        .saturating_add(
+            std::fs::metadata(stderr_path)
+                .map(|metadata| metadata.len())
+                .unwrap_or(0),
+        )
 }
 
 fn classify_local_artifact_review_output(output: &str) -> (LocalArtifactReviewStatus, Vec<String>) {
@@ -17632,6 +17668,56 @@ exit 0
         assert!(result
             .output
             .contains("\"overall_verdict\": \"manual_review\""));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn package_risk_requested_ai_review_output_limit_fails_closed() {
+        let root = temp_root("whoathere-cli-package-risk-ai-output-limit");
+        let state_dir = root.join("state");
+        let fake_ollama = root.join("ollama");
+        write_new_file(
+            &fake_ollama,
+            br#"#!/bin/sh
+cat >/dev/null
+awk 'BEGIN { for (i = 0; i < 600000; i++) printf "A" }'
+exit 0
+"#,
+        )
+        .expect("fake ollama");
+        set_executable(&fake_ollama).expect("fake executable");
+        write_new_file(
+            &root.join("requirements.txt"),
+            b"safe-pkg==1.2.3 # whoathere-published-at=1700000000\n",
+        )
+        .expect("requirements");
+
+        let result = with_reprovision_env(
+            &[("WHOATHERE_OLLAMA_BIN", fake_ollama.display().to_string())],
+            || {
+                evaluate_command(Command::PackageRiskAssess {
+                    workspace: Some(root.display().to_string()),
+                    ecosystem: Some("pypi".to_string()),
+                    state_dir: Some(state_dir.display().to_string()),
+                    ai_review: true,
+                    ai_provider: Some("ollama".to_string()),
+                    ai_model: Some("fake-review-model".to_string()),
+                    ai_timeout_seconds: Some(5),
+                    json: true,
+                })
+            },
+        );
+
+        assert_eq!(result.exit_code, 22);
+        assert!(result
+            .output
+            .contains("artifact_review_output_limit_exceeded"));
+        assert!(result
+            .output
+            .contains("\"artifact_review_status\": \"error\""));
+        assert!(result.output.contains("\"raw_output_included\": false"));
+        assert!(!result.output.contains(&"A".repeat(128)));
 
         let _ = std::fs::remove_dir_all(&root);
     }
