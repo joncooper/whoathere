@@ -53,6 +53,11 @@ Report-only adapters:
 - Executed scanner receipts include state-local `scanner_receipt_auth` when `--state-dir` is
   supplied. Clean scanner receipts without this auth tag are report-only and cannot satisfy
   package-risk auto-sync evidence.
+- Package-risk accepts clean scanner receipts only when they were actually executed, match the
+  current workspace digest, are state-authenticated, are not stale, include every expected core
+  scanner record, include valid full SHA-256 executable digests, have a consistent runnable core
+  scanner count, and show at least one core scanner passed. Signed but malformed clean receipts are
+  treated as invalid evidence.
 - Scanner binaries are resolved from the WhoaThere scanner cache or trusted system binary
   directories. Scanner binaries inside the assessed workspace are refused.
 - Workspace paths, canaries, and token-like material must not appear in scanner JSON output.

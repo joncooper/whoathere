@@ -12,6 +12,8 @@ NOTARY_PASSWORD=${WHOATHERE_NOTARY_PASSWORD:-}
 RELEASE_STATE_DIR=${WHOATHERE_RELEASE_STATE_DIR:-${WHOATHERE_STATE_DIR:-"$HOME/.whoathere/macos-vm-validation"}}
 RELEASE_NOTARIZATION_RECEIPT=${WHOATHERE_RELEASE_NOTARIZATION_RECEIPT:-"$RELEASE_STATE_DIR/bundle/release-notarization.json"}
 WORK_ROOT=""
+NOTARY_CREDENTIALS_CONFIGURED=false
+NOTARY_CREDENTIALS_VERIFIED=not_checked
 
 usage() {
   cat >&2 <<'EOF'
@@ -220,6 +222,16 @@ notary_credentials_ready() {
   return 1
 }
 
+verify_notary_credentials() {
+  CREDENTIAL_RESULT_PATH="$WORK_ROOT/notary-credential-preflight.json"
+  CREDENTIAL_ERROR_PATH="$WORK_ROOT/notary-credential-preflight.stderr"
+  if [ -n "$NOTARY_PROFILE" ]; then
+    xcrun notarytool history --output-format json --keychain-profile "$NOTARY_PROFILE" > "$CREDENTIAL_RESULT_PATH" 2> "$CREDENTIAL_ERROR_PATH"
+  else
+    xcrun notarytool history --output-format json --apple-id "$NOTARY_APPLE_ID" --team-id "$NOTARY_TEAM_ID" --password "$NOTARY_PASSWORD" > "$CREDENTIAL_RESULT_PATH" 2> "$CREDENTIAL_ERROR_PATH"
+  fi
+}
+
 submit_notarization() {
   if [ "$CLI_ADHOC" = "true" ] || [ "$HELPER_ADHOC" = "true" ]; then
     echo "notarization_submit_ready=false"
@@ -235,6 +247,11 @@ submit_notarization() {
     echo "notarization_submit_ready=false"
     echo "notarization_blocker=notary_credentials_missing"
     exit 64
+  fi
+  if [ "$NOTARY_CREDENTIALS_VERIFIED" != "true" ]; then
+    echo "notarization_submit_ready=false"
+    echo "notarization_blocker=notary_credentials_invalid_or_unavailable"
+    exit 69
   fi
 
   RESULT_PATH=${WHOATHERE_NOTARY_RESULT_PATH:-"$NOTARY_ZIP.notarytool.json"}
@@ -256,15 +273,28 @@ tar -xzf "$ARCHIVE" -C "$WORK_ROOT"
 require_extracted_artifacts
 write_notarization_zip
 
-SUBMIT_READY=true
+SUBMIT_PREREQUISITES_READY=true
 if [ "$CLI_ADHOC" = "true" ] || [ "$HELPER_ADHOC" = "true" ]; then
-  SUBMIT_READY=false
+  SUBMIT_PREREQUISITES_READY=false
 fi
 if [ "$CLI_SIGNATURE_KIND" != "developer_id_application" ] || [ "$HELPER_SIGNATURE_KIND" != "developer_id_application" ]; then
-  SUBMIT_READY=false
+  SUBMIT_PREREQUISITES_READY=false
 fi
 if ! notary_credentials_ready; then
-  SUBMIT_READY=false
+  SUBMIT_PREREQUISITES_READY=false
+else
+  NOTARY_CREDENTIALS_CONFIGURED=true
+fi
+if [ "$MODE" = "--submit" ] && [ "$NOTARY_CREDENTIALS_CONFIGURED" = "true" ]; then
+  if verify_notary_credentials; then
+    NOTARY_CREDENTIALS_VERIFIED=true
+  else
+    NOTARY_CREDENTIALS_VERIFIED=false
+  fi
+fi
+SUBMIT_READY=false
+if [ "$SUBMIT_PREREQUISITES_READY" = "true" ] && [ "$NOTARY_CREDENTIALS_VERIFIED" = "true" ]; then
+  SUBMIT_READY=true
 fi
 
 echo "notarization_archive=$ARCHIVE"
@@ -273,7 +303,9 @@ echo "cli_signature_kind=$CLI_SIGNATURE_KIND"
 echo "helper_signature_kind=$HELPER_SIGNATURE_KIND"
 echo "cli_signature_adhoc=$CLI_ADHOC"
 echo "helper_signature_adhoc=$HELPER_ADHOC"
-echo "notary_credentials_configured=$(notary_credentials_ready && echo true || echo false)"
+echo "notary_credentials_configured=$NOTARY_CREDENTIALS_CONFIGURED"
+echo "notary_credentials_verified=$NOTARY_CREDENTIALS_VERIFIED"
+echo "notarization_submit_prerequisites_ready=$SUBMIT_PREREQUISITES_READY"
 echo "notarization_submit_ready=$SUBMIT_READY"
 echo "stapling_supported_for_archive=false"
 

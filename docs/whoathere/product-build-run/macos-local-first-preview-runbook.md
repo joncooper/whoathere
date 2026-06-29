@@ -115,9 +115,14 @@ raw scanner output, package contents, tokens, canaries, or raw host secret paths
 When `--state-dir` is provided, executed scanner receipts include a state-local
 `scanner_receipt_auth` tag and executable digests. Clean scanner receipts without that auth tag are
 report-only and cannot satisfy package-risk auto-sync evidence.
+Package-risk also rejects clean scanner receipts that were only dry-run, target a different
+workspace digest, omit expected core scanner records, contain malformed executable digests, report an
+inconsistent runnable core scanner count, or show no core scanner actually passed.
 
-For the current local-only beta, scanner availability is visible in `doctor --json` but remains
-advisory: `scanner_release_blocking=false`. Missing scanners must block future public-package
+For the current local-only beta, scanner availability and bootstrap receipt validity are visible in
+`doctor --json`, but remain advisory: `scanner_release_blocking=false`. Future public-package
+auto-trust requires all core scanners plus a valid, current bootstrap receipt. Missing scanners,
+malformed bootstrap receipts, or stale scanner version records must block future public-package
 auto-trust, but they do not block the current local-only VM beta because public package acquisition
 is still disabled.
 
@@ -295,6 +300,13 @@ the repository.
 WHOATHERE_NOTARY_PROFILE=whoathere-notary \
   scripts/whoathere-notarize-macos-release.sh --submit dist/whoathere-macos-arm64-preview-<git-sha>.tar.gz
 ```
+
+Submit mode verifies the configured notary credentials before claiming
+`notarization_submit_ready=true`. Dry-run mode reports
+`notarization_submit_prerequisites_ready` for the archive/signature/configuration checks, but leaves
+`notarization_submit_ready=false` until credentials have been verified in submit mode. If the
+Keychain profile is missing or unusable, the script reports `notary_credentials_verified=false` and
+exits with a credential blocker before attempting submission.
 
 Alternatively set `WHOATHERE_NOTARY_APPLE_ID`, `WHOATHERE_NOTARY_TEAM_ID`, and
 `WHOATHERE_NOTARY_PASSWORD` for non-interactive automation. Prefer the Keychain profile for local

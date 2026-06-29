@@ -11348,6 +11348,10 @@ fn validate_clean_scanner_receipt_records(contents: &str) -> Option<&'static str
     let Some(core_count) = json_extract_u64_field(contents, "core_scanner_count") else {
         return Some("scanner_receipt_core_record_count_missing");
     };
+    let Some(core_runnable_count) = json_extract_u64_field(contents, "core_scanner_runnable_count")
+    else {
+        return Some("scanner_receipt_core_runnable_count_missing");
+    };
     if core_count as usize != expected_core_scanners.len() {
         return Some("scanner_receipt_core_record_count_mismatch");
     }
@@ -11364,23 +11368,39 @@ fn validate_clean_scanner_receipt_records(contents: &str) -> Option<&'static str
             return Some("scanner_receipt_core_record_missing_expected_scanner");
         }
     }
-    if core_records.iter().any(|record| {
-        !json_extract_string_field(record, "executable_sha256")
-            .as_deref()
-            .unwrap_or("")
-            .starts_with("sha256:")
-    }) {
-        return Some("scanner_receipt_core_record_executable_digest_missing");
+    let mut observed_runnable_count = 0usize;
+    let mut passed_count = 0usize;
+    for record in &core_records {
+        let status = json_extract_string_field(record, "status");
+        match status.as_deref() {
+            Some("passed") => {
+                observed_runnable_count += 1;
+                passed_count += 1;
+            }
+            Some("not_applicable") => {}
+            _ => return Some("scanner_receipt_core_record_not_clean"),
+        }
+        let Some(executable_sha256) = json_extract_string_field(record, "executable_sha256") else {
+            return Some("scanner_receipt_core_record_executable_digest_missing");
+        };
+        if !valid_sha256_digest_string(&executable_sha256) {
+            return Some("scanner_receipt_core_record_executable_digest_invalid");
+        }
     }
-    if core_records.iter().any(|record| {
-        !matches!(
-            json_extract_string_field(record, "status").as_deref(),
-            Some("passed" | "not_applicable")
-        )
-    }) {
-        return Some("scanner_receipt_core_record_not_clean");
+    if core_runnable_count as usize != observed_runnable_count {
+        return Some("scanner_receipt_core_runnable_count_mismatch");
+    }
+    if passed_count == 0 {
+        return Some("scanner_receipt_core_runnable_records_missing");
     }
     None
+}
+
+fn valid_sha256_digest_string(value: &str) -> bool {
+    let Some(hex) = value.strip_prefix("sha256:") else {
+        return false;
+    };
+    hex.len() == 64 && hex.chars().all(|character| character.is_ascii_hexdigit())
 }
 
 fn render_package_risk_scanner_evidence_json(evidence: &PackageRiskScannerEvidence) -> String {
@@ -20419,6 +20439,87 @@ exit 0
             .output
             .contains("\"scanner_evidence_status\": \"invalid\""));
         assert!(assessed.output.contains("\"all_scanner_clean\": false"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn package_risk_clean_scanner_receipt_requires_strong_core_proof() {
+        let root = temp_root("whoathere-cli-package-risk-scanner-proof");
+        let state_dir = root.join("state");
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        write_new_file(
+            &workspace.join("requirements.txt"),
+            b"safe-pkg==1.2.3 # whoathere-published-at=1700000000\n",
+        )
+        .expect("requirements");
+        let workspace_sha256 = scanner_workspace_digest(&workspace);
+        let invalid_digest_receipt = root.join("scanner-invalid-digest.json");
+        let invalid_digest_unsigned = format!(
+            "{{\"schema_version\": {}, \"created_at_unix_seconds\": {}, \"workspace_sha256\": {}, \"workspace_kind\": \"python\", \"requested_ecosystem\": \"pypi\", \"effective_ecosystem\": \"pypi\", \"execute_requested\": true, \"timeout_seconds\": 120, \"scanner_clean\": true, \"core_scanner_count\": 5, \"core_scanner_runnable_count\": 5, \"reason_codes\": [], \"records\": [{{\"scanner\": \"guarddog\", \"role\": \"core\", \"status\": \"passed\", \"executable_sha256\": \"sha256:short\"}}, {{\"scanner\": \"osv-scanner\", \"role\": \"core\", \"status\": \"passed\", \"executable_sha256\": \"sha256:2222222222222222222222222222222222222222222222222222222222222222\"}}, {{\"scanner\": \"pip-audit\", \"role\": \"core\", \"status\": \"passed\", \"executable_sha256\": \"sha256:3333333333333333333333333333333333333333333333333333333333333333\"}}, {{\"scanner\": \"syft\", \"role\": \"core\", \"status\": \"passed\", \"executable_sha256\": \"sha256:4444444444444444444444444444444444444444444444444444444444444444\"}}, {{\"scanner\": \"grype\", \"role\": \"core\", \"status\": \"passed\", \"executable_sha256\": \"sha256:5555555555555555555555555555555555555555555555555555555555555555\"}}]}}\n",
+            json_string(EXTERNAL_SCANNER_RUN_SCHEMA),
+            current_unix_seconds(),
+            json_string(&workspace_sha256)
+        );
+        let invalid_digest_signed =
+            sign_scanner_receipt_contents(&state_dir, &invalid_digest_unsigned)
+                .expect("signed invalid scanner receipt");
+        write_new_file(&invalid_digest_receipt, invalid_digest_signed.as_bytes())
+            .expect("invalid digest scanner receipt");
+
+        let invalid_digest_result = evaluate_command(Command::PackageRiskAssess {
+            workspace: Some(workspace.display().to_string()),
+            ecosystem: Some("pypi".to_string()),
+            state_dir: Some(state_dir.display().to_string()),
+            scanner_receipt: Some(invalid_digest_receipt.display().to_string()),
+            ai_review: false,
+            ai_provider: None,
+            ai_model: None,
+            ai_timeout_seconds: None,
+            json: true,
+        });
+        assert_eq!(
+            invalid_digest_result.exit_code,
+            ExitCode::ManualReview.code()
+        );
+        assert!(invalid_digest_result
+            .output
+            .contains("scanner_receipt_core_record_executable_digest_invalid"));
+        assert!(invalid_digest_result
+            .output
+            .contains("\"scanner_evidence_status\": \"invalid\""));
+
+        let no_runnable_receipt = root.join("scanner-no-runnable.json");
+        let no_runnable_unsigned = format!(
+            "{{\"schema_version\": {}, \"created_at_unix_seconds\": {}, \"workspace_sha256\": {}, \"workspace_kind\": \"python\", \"requested_ecosystem\": \"pypi\", \"effective_ecosystem\": \"pypi\", \"execute_requested\": true, \"timeout_seconds\": 120, \"scanner_clean\": true, \"core_scanner_count\": 5, \"core_scanner_runnable_count\": 0, \"reason_codes\": [], \"records\": [{{\"scanner\": \"guarddog\", \"role\": \"core\", \"status\": \"not_applicable\", \"executable_sha256\": \"sha256:1111111111111111111111111111111111111111111111111111111111111111\"}}, {{\"scanner\": \"osv-scanner\", \"role\": \"core\", \"status\": \"not_applicable\", \"executable_sha256\": \"sha256:2222222222222222222222222222222222222222222222222222222222222222\"}}, {{\"scanner\": \"pip-audit\", \"role\": \"core\", \"status\": \"not_applicable\", \"executable_sha256\": \"sha256:3333333333333333333333333333333333333333333333333333333333333333\"}}, {{\"scanner\": \"syft\", \"role\": \"core\", \"status\": \"not_applicable\", \"executable_sha256\": \"sha256:4444444444444444444444444444444444444444444444444444444444444444\"}}, {{\"scanner\": \"grype\", \"role\": \"core\", \"status\": \"not_applicable\", \"executable_sha256\": \"sha256:5555555555555555555555555555555555555555555555555555555555555555\"}}]}}\n",
+            json_string(EXTERNAL_SCANNER_RUN_SCHEMA),
+            current_unix_seconds(),
+            json_string(&workspace_sha256)
+        );
+        let no_runnable_signed = sign_scanner_receipt_contents(&state_dir, &no_runnable_unsigned)
+            .expect("signed no-runnable scanner receipt");
+        write_new_file(&no_runnable_receipt, no_runnable_signed.as_bytes())
+            .expect("no-runnable scanner receipt");
+
+        let no_runnable_result = evaluate_command(Command::PackageRiskAssess {
+            workspace: Some(workspace.display().to_string()),
+            ecosystem: Some("pypi".to_string()),
+            state_dir: Some(state_dir.display().to_string()),
+            scanner_receipt: Some(no_runnable_receipt.display().to_string()),
+            ai_review: false,
+            ai_provider: None,
+            ai_model: None,
+            ai_timeout_seconds: None,
+            json: true,
+        });
+        assert_eq!(no_runnable_result.exit_code, ExitCode::ManualReview.code());
+        assert!(no_runnable_result
+            .output
+            .contains("scanner_receipt_core_runnable_records_missing"));
+        assert!(no_runnable_result
+            .output
+            .contains("\"scanner_evidence_status\": \"invalid\""));
 
         let _ = std::fs::remove_dir_all(&root);
     }

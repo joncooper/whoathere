@@ -143,6 +143,7 @@ smoke_package() {
   INSTALL_OUTPUT="$SMOKE_ROOT/install.txt"
   INSTALLED_DOCTOR_OUTPUT="$SMOKE_ROOT/installed-doctor.json"
   DOCTOR_OUTPUT="$SMOKE_ROOT/doctor.json"
+  SCANNERS_OUTPUT="$SMOKE_ROOT/scanners-clean.json"
   PREFLIGHT_OUTPUT="$SMOKE_ROOT/provision-preflight.txt"
   CLI_PREFLIGHT_OUTPUT="$SMOKE_ROOT/cli-provision-preflight.txt"
   CLI_NPM_UV_OUTPUT="$SMOKE_ROOT/cli-npm-uv-validation.txt"
@@ -217,6 +218,14 @@ smoke_package() {
   grep -q '"guest_reprovision_admin_required": true' "$DOCTOR_OUTPUT"
   grep -q '"guest_reprovision_operator_action": "run_guest_reprovision_command_in_interactive_admin_terminal"' "$DOCTOR_OUTPUT"
   grep -q 'helpers/macos-vm-helper/scripts/provision-guest-readiness.sh' "$DOCTOR_OUTPUT"
+
+  mkdir -p "$SMOKE_ROOT/scanner-home" "$SMOKE_ROOT/tmp"
+  env -i HOME="$SMOKE_ROOT/scanner-home" TMPDIR="$SMOKE_ROOT/tmp/" PATH="/usr/bin:/bin:/usr/sbin:/sbin" \
+    "$EXTRACTED_CLI" scanners list --json > "$SCANNERS_OUTPUT"
+  grep -q '"bootstrap_receipt_present": false' "$SCANNERS_OUTPUT"
+  grep -q '"bootstrap_receipt_valid": false' "$SCANNERS_OUTPUT"
+  grep -q '"scanner_bootstrap_receipt_missing"' "$SCANNERS_OUTPUT"
+  grep -q '"scanner_public_package_auto_trust_ready": false' "$SCANNERS_OUTPUT"
 
   echo "package_smoke_passed=true"
 }

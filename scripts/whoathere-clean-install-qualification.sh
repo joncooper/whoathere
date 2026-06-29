@@ -327,6 +327,10 @@ verify_installed_wrapper() {
   require_contains '"high_risk_allowed": false' "$DOCTOR_OUTPUT" doctor_high_risk_not_false
   require_contains '"release_claim": "vm_detonation_with_safe_sync_back_beta"' "$DOCTOR_OUTPUT" doctor_release_claim_missing
   require_contains '"package_acquisition_policy": "local_only_no_public_resolver"' "$DOCTOR_OUTPUT" doctor_package_policy_missing
+  require_contains '"scanner_bootstrap_receipt_present": false' "$DOCTOR_OUTPUT" doctor_scanner_bootstrap_present_not_false
+  require_contains '"scanner_bootstrap_receipt_valid": false' "$DOCTOR_OUTPUT" doctor_scanner_bootstrap_valid_not_false
+  require_contains '"scanner_bootstrap_receipt_missing"' "$DOCTOR_OUTPUT" doctor_scanner_bootstrap_missing_reason_absent
+  require_contains '"scanner_public_package_auto_trust_ready": false' "$DOCTOR_OUTPUT" doctor_scanner_auto_trust_not_false
   require_contains '"sync_validation_receipt_missing"' "$DOCTOR_OUTPUT" doctor_sync_validation_missing_reason_absent
   require_contains '"release_sync_back_validation_not_verified"' "$DOCTOR_OUTPUT" doctor_sync_release_blocker_absent
   require_contains '"guest_reprovision_required": true' "$DOCTOR_OUTPUT" doctor_reprovision_required_absent
