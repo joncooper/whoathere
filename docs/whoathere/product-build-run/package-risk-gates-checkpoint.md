@@ -15,6 +15,7 @@ replace the macOS VM, scanners, canary checks, strict sync-back rules, or manual
 ## Implemented Behavior
 
 - Added `whoathere package-risk assess --workspace <path> [--ecosystem auto|npm|pypi|uv] [--state-dir <dir>] [--json]`.
+- Added opt-in local model review through `package-risk assess --ai-review --ai-provider ollama --ai-model <model>`.
 - Added `whoathere package-risk history --package <name> --ecosystem <npm|pypi|uv> [--state-dir <dir>] [--json]`.
 - Added `whoathere package-risk approve --receipt <path> --reason <text> [--state-dir <dir>] [--json]`.
 - Added append-only local package memory under `<state-dir>/package-risk/package-risk-evidence.jsonl`.
@@ -28,6 +29,12 @@ replace the macOS VM, scanners, canary checks, strict sync-back rules, or manual
 
 - Package-risk JSON does not include raw package source, raw scanner output, canaries, tokens, or
   host secret paths.
+- Local model review is advisory evidence only. It runs through a local Ollama command when
+  requested, receives bounded redacted snippets, and records only status, reason codes, timing, and
+  prompt/output hashes. Raw prompts and model output are not stored.
+- A clean local model result cannot authorize execution, copy-back, or bypass freshness, diff,
+  scanner, VM, or package-class gates. Requested model findings, timeout, error, or provider
+  unavailability force manual review.
 - Reputation is a warning and reason-code signal, not an allow rule.
 - New lifecycle scripts, `.pth` files, native/binary markers, direct URLs, VCS/editable sources,
   platform-specific payloads, and credential/network-looking code block auto-sync.
@@ -65,4 +72,6 @@ rg -n "[^[:ascii:]]" docs/whoathere/product-build-run scripts whoathere/crates
   timeout paths.
 - Confirm package-risk receipts cannot make `vm release-plan` auto-sync without clean VM and
   scanner evidence.
+- Run `package-risk assess --ai-review --ai-provider ollama --ai-model gemma4:latest` on a known
+  suspicious fixture and verify only normalized review evidence is recorded.
 - Confirm docs still avoid claiming universal malware detection or runtime application protection.

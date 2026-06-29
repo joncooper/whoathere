@@ -185,6 +185,10 @@ pub enum Command {
         workspace: Option<String>,
         ecosystem: Option<String>,
         state_dir: Option<String>,
+        ai_review: bool,
+        ai_provider: Option<String>,
+        ai_model: Option<String>,
+        ai_timeout_seconds: Option<u64>,
         json: bool,
     },
     PackageRiskHistory {
@@ -713,6 +717,10 @@ pub fn parse_command(args: &[String]) -> Command {
                 workspace: parse_flag_value(rest, "--workspace"),
                 ecosystem: parse_flag_value(rest, "--ecosystem"),
                 state_dir: parse_flag_value(rest, "--state-dir"),
+                ai_review: rest.iter().any(|arg| arg == "--ai-review"),
+                ai_provider: parse_flag_value(rest, "--ai-provider"),
+                ai_model: parse_flag_value(rest, "--ai-model"),
+                ai_timeout_seconds: parse_u64_flag(rest, "--ai-timeout-seconds"),
                 json: rest.iter().any(|arg| arg == "--json"),
             }
         }
@@ -961,13 +969,21 @@ fn render_command_text(command: Command) -> String {
             workspace,
             ecosystem,
             state_dir,
+            ai_review,
+            ai_provider,
+            ai_model,
+            ai_timeout_seconds,
             json,
-        } => render_package_risk_assess(
-            workspace.as_deref(),
-            ecosystem.as_deref(),
-            state_dir.as_deref(),
+        } => render_package_risk_assess(PackageRiskAssessArgs {
+            workspace: workspace.as_deref(),
+            ecosystem: ecosystem.as_deref(),
+            state_dir: state_dir.as_deref(),
+            ai_review,
+            ai_provider: ai_provider.as_deref(),
+            ai_model: ai_model.as_deref(),
+            ai_timeout_seconds,
             json,
-        ),
+        }),
         Command::PackageRiskHistory {
             package,
             ecosystem,
@@ -1334,7 +1350,7 @@ fn command_help() -> String {
         "|scanners list [--json]",
         "|scanners bootstrap-plan [--json]",
         "|scanners run --workspace <path> [--ecosystem auto|npm|pypi] [--timeout-seconds <n>] [--execute] [--json]",
-        "|package-risk assess --workspace <path> [--ecosystem auto|npm|pypi|uv] [--state-dir <dir>] [--json]",
+        "|package-risk assess --workspace <path> [--ecosystem auto|npm|pypi|uv] [--state-dir <dir>] [--ai-review --ai-provider ollama --ai-model <model> --ai-timeout-seconds <n>] [--json]",
         "|package-risk history --package <name> --ecosystem <npm|pypi|uv> [--state-dir <dir>] [--json]",
         "|package-risk approve --receipt <path> --reason <text> [--state-dir <dir>] [--json]",
         "|source scan <kind> <path> --vault-origin <url>",
@@ -9758,7 +9774,67 @@ fn redacted_path_string(path: &Path) -> String {
 
 const PACKAGE_RISK_ASSESSMENT_SCHEMA: &str = "whoathere.package_risk_assessment.v1";
 const PACKAGE_RISK_STORE_SCHEMA: &str = "whoathere.package_risk_store_record.v1";
+const PACKAGE_ARTIFACT_REVIEW_SCHEMA: &str = "whoathere.local_artifact_review.v1";
 const PACKAGE_RISK_COOLDOWN_DAYS: u64 = 7;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LocalArtifactReviewStatus {
+    NotRequested,
+    Passed,
+    Findings,
+    NotApplicable,
+    Unavailable,
+    Error,
+    TimedOut,
+}
+
+impl LocalArtifactReviewStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::NotRequested => "not_requested",
+            Self::Passed => "passed",
+            Self::Findings => "findings",
+            Self::NotApplicable => "not_applicable",
+            Self::Unavailable => "unavailable",
+            Self::Error => "error",
+            Self::TimedOut => "timed_out",
+        }
+    }
+
+    fn blocks_auto_sync(self) -> bool {
+        matches!(
+            self,
+            Self::Findings | Self::Unavailable | Self::Error | Self::TimedOut
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LocalArtifactReviewEvidence {
+    requested: bool,
+    provider: String,
+    model: Option<String>,
+    status: LocalArtifactReviewStatus,
+    prompt_sha256: Option<String>,
+    output_sha256: Option<String>,
+    elapsed_ms: Option<u128>,
+    reason_codes: Vec<String>,
+}
+
+impl LocalArtifactReviewEvidence {
+    fn not_requested(provider: String, model: Option<String>) -> Self {
+        Self {
+            requested: false,
+            provider,
+            model,
+            status: LocalArtifactReviewStatus::NotRequested,
+            prompt_sha256: None,
+            output_sha256: None,
+            elapsed_ms: None,
+            reason_codes: vec!["artifact_review_not_requested".to_string()],
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PackageRiskEcosystem {
@@ -9847,6 +9923,7 @@ struct PackageRiskAssessment {
     freshness_allowed: bool,
     diff_clean_or_baseline_absent: bool,
     reputation_status: String,
+    artifact_review: LocalArtifactReviewEvidence,
     indicators: Vec<String>,
     verdict: PackageRiskVerdict,
     reason_codes: Vec<String>,
@@ -9870,33 +9947,53 @@ struct PackageRiskMemoryRecord {
     reason_codes: Vec<String>,
     diff_clean_or_baseline_absent: bool,
     freshness_allowed: bool,
+    artifact_review_status: String,
+    artifact_review_reason_codes: Vec<String>,
 }
 
-fn render_package_risk_assess(
-    workspace: Option<&str>,
-    ecosystem: Option<&str>,
-    state_dir: Option<&str>,
+struct PackageRiskAssessArgs<'a> {
+    workspace: Option<&'a str>,
+    ecosystem: Option<&'a str>,
+    state_dir: Option<&'a str>,
+    ai_review: bool,
+    ai_provider: Option<&'a str>,
+    ai_model: Option<&'a str>,
+    ai_timeout_seconds: Option<u64>,
     json: bool,
-) -> String {
-    let Some(workspace) = workspace else {
-        return package_risk_error("package_risk_workspace_required", json);
+}
+
+fn render_package_risk_assess(args: PackageRiskAssessArgs<'_>) -> String {
+    let Some(workspace) = args.workspace else {
+        return package_risk_error("package_risk_workspace_required", args.json);
     };
-    let requested_ecosystem = match PackageRiskEcosystem::parse(ecosystem.unwrap_or("auto")) {
+    let requested_ecosystem = match PackageRiskEcosystem::parse(args.ecosystem.unwrap_or("auto")) {
         Some(parsed) => parsed,
-        None => return package_risk_error("package_risk_ecosystem_invalid", json),
+        None => return package_risk_error("package_risk_ecosystem_invalid", args.json),
     };
     let workspace_path = Path::new(workspace);
     if !workspace_path.is_dir() {
-        return package_risk_error("package_risk_workspace_not_directory", json);
+        return package_risk_error("package_risk_workspace_not_directory", args.json);
     }
 
-    let config = macos_vm_config(state_dir, None, None);
+    let config = macos_vm_config(args.state_dir, None, None);
     let memory = load_package_risk_memory(&config.state_dir);
     let subjects = discover_package_risk_subjects(workspace_path, requested_ecosystem);
+    let review_request = local_artifact_review_request(
+        args.ai_review,
+        args.ai_provider,
+        args.ai_model,
+        args.ai_timeout_seconds,
+    );
+    let artifact_review = run_local_artifact_review(
+        workspace_path,
+        requested_ecosystem,
+        &subjects,
+        review_request,
+    );
     let receipt_id = package_risk_receipt_id(workspace_path, current_unix_seconds());
     let assessments = subjects
         .iter()
-        .map(|subject| assess_package_risk_subject(subject, &memory))
+        .map(|subject| assess_package_risk_subject(subject, &memory, &artifact_review))
         .collect::<Vec<_>>();
     let all_freshness_allowed = !assessments.is_empty()
         && assessments
@@ -9918,6 +10015,7 @@ fn render_package_risk_assess(
         receipt_id: &receipt_id,
         requested_ecosystem,
         assessments: &assessments,
+        artifact_review: &artifact_review,
         all_freshness_allowed,
         all_diff_clean_or_baseline_absent,
         overall_verdict,
@@ -9948,7 +10046,8 @@ fn render_package_risk_assess(
         reason_codes: &summary_reasons,
         receipt_write_status: &receipt_write_status,
         store_status: &store_status,
-        json,
+        artifact_review: &artifact_review,
+        json: args.json,
     })
 }
 
@@ -10099,6 +10198,7 @@ struct PackageRiskSummaryRender<'a> {
     reason_codes: &'a [String],
     receipt_write_status: &'a str,
     store_status: &'a str,
+    artifact_review: &'a LocalArtifactReviewEvidence,
     json: bool,
 }
 
@@ -10112,7 +10212,7 @@ fn render_package_risk_assessment_summary(view: PackageRiskSummaryRender<'_>) ->
             .collect::<Vec<_>>()
             .join(", ");
         return format!(
-            "{{\n  \"command\": \"whoathere package-risk assess\",\n  \"schema_version\": {},\n  \"requested_ecosystem\": {},\n  \"cooldown_days\": {},\n  \"store_path\": {},\n  \"receipt_path\": {},\n  \"receipt_id\": {},\n  \"receipt_write_status\": {},\n  \"store_status\": {},\n  \"package_count\": {},\n  \"overall_verdict\": {},\n  \"all_freshness_allowed\": {},\n  \"all_diff_clean_or_baseline_absent\": {},\n  \"reason_codes\": {},\n  \"packages\": [{}],\n  \"exit_code\": {}\n}}",
+            "{{\n  \"command\": \"whoathere package-risk assess\",\n  \"schema_version\": {},\n  \"requested_ecosystem\": {},\n  \"cooldown_days\": {},\n  \"store_path\": {},\n  \"receipt_path\": {},\n  \"receipt_id\": {},\n  \"receipt_write_status\": {},\n  \"store_status\": {},\n  \"package_count\": {},\n  \"overall_verdict\": {},\n  \"all_freshness_allowed\": {},\n  \"all_diff_clean_or_baseline_absent\": {},\n  \"artifact_review\": {},\n  \"reason_codes\": {},\n  \"packages\": [{}],\n  \"exit_code\": {}\n}}",
             json_string(PACKAGE_RISK_ASSESSMENT_SCHEMA),
             json_string(view.requested_ecosystem.as_str()),
             PACKAGE_RISK_COOLDOWN_DAYS,
@@ -10125,6 +10225,7 @@ fn render_package_risk_assessment_summary(view: PackageRiskSummaryRender<'_>) ->
             json_string(view.overall_verdict.as_str()),
             view.all_freshness_allowed,
             view.all_diff_clean_or_baseline_absent,
+            render_local_artifact_review_json(view.artifact_review),
             json_string_array(view.reason_codes),
             packages_json,
             exit_code
@@ -10137,7 +10238,7 @@ fn render_package_risk_assessment_summary(view: PackageRiskSummaryRender<'_>) ->
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "whoathere package-risk assess\nschema_version={}\nrequested_ecosystem={}\ncooldown_days={}\nstore_path={}\nreceipt_path={}\nreceipt_id={}\nreceipt_write_status={}\nstore_status={}\npackage_count={}\noverall_verdict={}\nall_freshness_allowed={}\nall_diff_clean_or_baseline_absent={}\nreason_codes={:?}\n{}\nexit_code={}",
+        "whoathere package-risk assess\nschema_version={}\nrequested_ecosystem={}\ncooldown_days={}\nstore_path={}\nreceipt_path={}\nreceipt_id={}\nreceipt_write_status={}\nstore_status={}\npackage_count={}\noverall_verdict={}\nall_freshness_allowed={}\nall_diff_clean_or_baseline_absent={}\n{}\nreason_codes={:?}\n{}\nexit_code={}",
         PACKAGE_RISK_ASSESSMENT_SCHEMA,
         view.requested_ecosystem.as_str(),
         PACKAGE_RISK_COOLDOWN_DAYS,
@@ -10150,6 +10251,7 @@ fn render_package_risk_assessment_summary(view: PackageRiskSummaryRender<'_>) ->
         view.overall_verdict.as_str(),
         view.all_freshness_allowed,
         view.all_diff_clean_or_baseline_absent,
+        render_local_artifact_review_text(view.artifact_review),
         view.reason_codes,
         rows,
         exit_code
@@ -10158,7 +10260,7 @@ fn render_package_risk_assessment_summary(view: PackageRiskSummaryRender<'_>) ->
 
 fn render_package_risk_package_json(assessment: &PackageRiskAssessment) -> String {
     format!(
-        "{{\"ecosystem\": {}, \"package_name\": {}, \"requested_spec\": {}, \"resolved_version\": {}, \"selected_version\": {}, \"source_kind\": {}, \"package_class\": {}, \"artifact_hash\": {}, \"pinned\": {}, \"last_known_good_version\": {}, \"last_known_good_hash\": {}, \"last_known_good_used\": {}, \"publish_age_days\": {}, \"freshness_allowed\": {}, \"diff_clean_or_baseline_absent\": {}, \"reputation_status\": {}, \"indicators\": {}, \"verdict\": {}, \"reason_codes\": {}}}",
+        "{{\"ecosystem\": {}, \"package_name\": {}, \"requested_spec\": {}, \"resolved_version\": {}, \"selected_version\": {}, \"source_kind\": {}, \"package_class\": {}, \"artifact_hash\": {}, \"pinned\": {}, \"last_known_good_version\": {}, \"last_known_good_hash\": {}, \"last_known_good_used\": {}, \"publish_age_days\": {}, \"freshness_allowed\": {}, \"diff_clean_or_baseline_absent\": {}, \"reputation_status\": {}, \"artifact_review_status\": {}, \"artifact_review_reason_codes\": {}, \"artifact_review_output_sha256\": {}, \"indicators\": {}, \"verdict\": {}, \"reason_codes\": {}}}",
         json_string(assessment.ecosystem.as_str()),
         json_string(&assessment.package_name),
         json_string(&assessment.requested_spec),
@@ -10175,6 +10277,9 @@ fn render_package_risk_package_json(assessment: &PackageRiskAssessment) -> Strin
         assessment.freshness_allowed,
         assessment.diff_clean_or_baseline_absent,
         json_string(&assessment.reputation_status),
+        json_string(assessment.artifact_review.status.as_str()),
+        json_string_array(&assessment.artifact_review.reason_codes),
+        json_option_string(assessment.artifact_review.output_sha256.as_deref()),
         json_string_array(&assessment.indicators),
         json_string(assessment.verdict.as_str()),
         json_string_array(&assessment.reason_codes)
@@ -10183,7 +10288,7 @@ fn render_package_risk_package_json(assessment: &PackageRiskAssessment) -> Strin
 
 fn render_package_risk_package_text(assessment: &PackageRiskAssessment) -> String {
     format!(
-        "package_risk package={} ecosystem={} requested_spec={} resolved_version={} selected_version={} source_kind={} package_class={} artifact_hash={} pinned={} last_known_good_version={} last_known_good_used={} publish_age_days={} freshness_allowed={} diff_clean_or_baseline_absent={} reputation_status={} indicators={:?} verdict={} reason_codes={:?}",
+        "package_risk package={} ecosystem={} requested_spec={} resolved_version={} selected_version={} source_kind={} package_class={} artifact_hash={} pinned={} last_known_good_version={} last_known_good_used={} publish_age_days={} freshness_allowed={} diff_clean_or_baseline_absent={} reputation_status={} artifact_review_status={} artifact_review_reason_codes={:?} indicators={:?} verdict={} reason_codes={:?}",
         assessment.package_name,
         assessment.ecosystem.as_str(),
         redacted_scalar(&assessment.requested_spec),
@@ -10205,10 +10310,527 @@ fn render_package_risk_package_text(assessment: &PackageRiskAssessment) -> Strin
         assessment.freshness_allowed,
         assessment.diff_clean_or_baseline_absent,
         assessment.reputation_status,
+        assessment.artifact_review.status.as_str(),
+        assessment.artifact_review.reason_codes,
         assessment.indicators,
         assessment.verdict.as_str(),
         assessment.reason_codes
     )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LocalArtifactReviewRequest {
+    requested: bool,
+    provider: String,
+    model: Option<String>,
+    timeout_seconds: u64,
+}
+
+fn local_artifact_review_request(
+    requested: bool,
+    provider: Option<&str>,
+    model: Option<&str>,
+    timeout_seconds: Option<u64>,
+) -> LocalArtifactReviewRequest {
+    let provider = provider.unwrap_or("ollama").to_ascii_lowercase();
+    let model = model
+        .map(ToString::to_string)
+        .or_else(|| std::env::var("WHOATHERE_ARTIFACT_REVIEW_MODEL").ok())
+        .or_else(|| {
+            if provider == "ollama" {
+                Some("gemma4:latest".to_string())
+            } else {
+                None
+            }
+        });
+    LocalArtifactReviewRequest {
+        requested,
+        provider,
+        model,
+        timeout_seconds: timeout_seconds.unwrap_or(45).clamp(5, 180),
+    }
+}
+
+fn run_local_artifact_review(
+    workspace: &Path,
+    ecosystem: PackageRiskEcosystem,
+    subjects: &[PackageRiskSubject],
+    request: LocalArtifactReviewRequest,
+) -> LocalArtifactReviewEvidence {
+    if !request.requested {
+        return LocalArtifactReviewEvidence::not_requested(request.provider, request.model);
+    }
+    let mut base_reasons = vec![
+        "artifact_review_requested_local_only".to_string(),
+        "artifact_review_no_allow_authority".to_string(),
+    ];
+    if subjects.is_empty() {
+        base_reasons.push("artifact_review_no_supported_subjects".to_string());
+        return LocalArtifactReviewEvidence {
+            requested: true,
+            provider: request.provider,
+            model: request.model,
+            status: LocalArtifactReviewStatus::NotApplicable,
+            prompt_sha256: None,
+            output_sha256: None,
+            elapsed_ms: None,
+            reason_codes: sorted_unique(base_reasons),
+        };
+    }
+    if request.provider != "ollama" {
+        base_reasons.push("artifact_review_provider_unsupported".to_string());
+        return LocalArtifactReviewEvidence {
+            requested: true,
+            provider: request.provider,
+            model: request.model,
+            status: LocalArtifactReviewStatus::Error,
+            prompt_sha256: None,
+            output_sha256: None,
+            elapsed_ms: None,
+            reason_codes: sorted_unique(base_reasons),
+        };
+    }
+    let Some(model) = request.model.clone() else {
+        base_reasons.push("artifact_review_model_missing".to_string());
+        return LocalArtifactReviewEvidence {
+            requested: true,
+            provider: request.provider,
+            model: None,
+            status: LocalArtifactReviewStatus::Error,
+            prompt_sha256: None,
+            output_sha256: None,
+            elapsed_ms: None,
+            reason_codes: sorted_unique(base_reasons),
+        };
+    };
+
+    let prompt = build_local_artifact_review_prompt(workspace, ecosystem, subjects);
+    let prompt_sha256 = sha256_digest(prompt.as_bytes());
+    let executable = std::env::var("WHOATHERE_OLLAMA_BIN").unwrap_or_else(|_| "ollama".to_string());
+    let start = Instant::now();
+    let stdout_path = std::env::temp_dir().join(format!(
+        "whoathere-artifact-review-{}-{}-stdout.txt",
+        std::process::id(),
+        current_unix_seconds()
+    ));
+    let stderr_path = stdout_path.with_extension("stderr.txt");
+    let stdout_file = match std::fs::File::create(&stdout_path) {
+        Ok(file) => file,
+        Err(_) => {
+            base_reasons.push("artifact_review_stdout_tempfile_failed".to_string());
+            return local_artifact_review_failure(
+                request.provider,
+                Some(model),
+                LocalArtifactReviewStatus::Error,
+                Some(prompt_sha256),
+                None,
+                Some(start.elapsed().as_millis()),
+                base_reasons,
+            );
+        }
+    };
+    let stderr_file = match std::fs::File::create(&stderr_path) {
+        Ok(file) => file,
+        Err(_) => {
+            let _ = std::fs::remove_file(&stdout_path);
+            base_reasons.push("artifact_review_stderr_tempfile_failed".to_string());
+            return local_artifact_review_failure(
+                request.provider,
+                Some(model),
+                LocalArtifactReviewStatus::Error,
+                Some(prompt_sha256),
+                None,
+                Some(start.elapsed().as_millis()),
+                base_reasons,
+            );
+        }
+    };
+
+    let mut command = ProcessCommand::new(&executable);
+    command
+        .arg("run")
+        .arg(&model)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::from(stdout_file))
+        .stderr(Stdio::from(stderr_file));
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            let _ = std::fs::remove_file(&stdout_path);
+            let _ = std::fs::remove_file(&stderr_path);
+            if error.kind() == std::io::ErrorKind::NotFound {
+                base_reasons.push("artifact_review_provider_unavailable".to_string());
+                return local_artifact_review_failure(
+                    request.provider,
+                    Some(model),
+                    LocalArtifactReviewStatus::Unavailable,
+                    Some(prompt_sha256),
+                    None,
+                    Some(start.elapsed().as_millis()),
+                    base_reasons,
+                );
+            }
+            base_reasons.push("artifact_review_process_spawn_failed".to_string());
+            return local_artifact_review_failure(
+                request.provider,
+                Some(model),
+                LocalArtifactReviewStatus::Error,
+                Some(prompt_sha256),
+                None,
+                Some(start.elapsed().as_millis()),
+                base_reasons,
+            );
+        }
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        if stdin.write_all(prompt.as_bytes()).is_err() {
+            base_reasons.push("artifact_review_prompt_write_failed".to_string());
+        }
+    } else {
+        base_reasons.push("artifact_review_stdin_unavailable".to_string());
+    }
+
+    let timeout = Duration::from_secs(request.timeout_seconds);
+    let mut timed_out = false;
+    let exit_status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) => {
+                if start.elapsed() >= timeout {
+                    timed_out = true;
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break None;
+                }
+                sleep(Duration::from_millis(50));
+            }
+            Err(_) => break None,
+        }
+    };
+    let stdout = std::fs::read(&stdout_path).unwrap_or_default();
+    let stderr = std::fs::read(&stderr_path).unwrap_or_default();
+    let _ = std::fs::remove_file(&stdout_path);
+    let _ = std::fs::remove_file(&stderr_path);
+    let output_sha256 = sha256_digest(&[stdout.as_slice(), stderr.as_slice()].concat());
+    if timed_out {
+        base_reasons.push("artifact_review_process_timed_out".to_string());
+        return local_artifact_review_failure(
+            request.provider,
+            Some(model),
+            LocalArtifactReviewStatus::TimedOut,
+            Some(prompt_sha256),
+            Some(output_sha256),
+            Some(start.elapsed().as_millis()),
+            base_reasons,
+        );
+    }
+    if !matches!(exit_status.and_then(|status| status.code()), Some(0)) {
+        base_reasons.push("artifact_review_process_error".to_string());
+        return local_artifact_review_failure(
+            request.provider,
+            Some(model),
+            LocalArtifactReviewStatus::Error,
+            Some(prompt_sha256),
+            Some(output_sha256),
+            Some(start.elapsed().as_millis()),
+            base_reasons,
+        );
+    }
+    let output_text = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&stdout),
+        String::from_utf8_lossy(&stderr)
+    );
+    let (status, mut output_reasons) = classify_local_artifact_review_output(&output_text);
+    base_reasons.append(&mut output_reasons);
+    LocalArtifactReviewEvidence {
+        requested: true,
+        provider: request.provider,
+        model: Some(model),
+        status,
+        prompt_sha256: Some(prompt_sha256),
+        output_sha256: Some(output_sha256),
+        elapsed_ms: Some(start.elapsed().as_millis()),
+        reason_codes: sorted_unique(base_reasons),
+    }
+}
+
+fn local_artifact_review_failure(
+    provider: String,
+    model: Option<String>,
+    status: LocalArtifactReviewStatus,
+    prompt_sha256: Option<String>,
+    output_sha256: Option<String>,
+    elapsed_ms: Option<u128>,
+    reason_codes: Vec<String>,
+) -> LocalArtifactReviewEvidence {
+    LocalArtifactReviewEvidence {
+        requested: true,
+        provider,
+        model,
+        status,
+        prompt_sha256,
+        output_sha256,
+        elapsed_ms,
+        reason_codes: sorted_unique(reason_codes),
+    }
+}
+
+fn classify_local_artifact_review_output(output: &str) -> (LocalArtifactReviewStatus, Vec<String>) {
+    let mut reason_codes = Vec::new();
+    let risk = json_extract_string_field(output, "risk")
+        .or_else(|| json_extract_string_field(output, "verdict"))
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    for model_reason in json_extract_string_array_field(output, "reason_codes") {
+        if let Some(normalized) = normalize_model_reason_code(&model_reason) {
+            reason_codes.push(format!("artifact_review_model_{normalized}"));
+        }
+    }
+    let status = match risk.as_str() {
+        "clean" | "low" | "low_risk" | "ok" | "pass" | "passed" => {
+            reason_codes.push("artifact_review_clean_advisory".to_string());
+            LocalArtifactReviewStatus::Passed
+        }
+        "suspicious" | "malicious" | "high" | "high_risk" | "manual_review" | "deny"
+        | "blocked" => {
+            reason_codes.push("artifact_review_model_reported_findings".to_string());
+            LocalArtifactReviewStatus::Findings
+        }
+        _ => {
+            let lowered = output.to_ascii_lowercase();
+            if lowered.contains("\"suspicious\"") || lowered.contains("\"malicious\"") {
+                reason_codes.push("artifact_review_model_reported_findings".to_string());
+                LocalArtifactReviewStatus::Findings
+            } else if lowered.contains("\"clean\"") || lowered.contains("\"low_risk\"") {
+                reason_codes.push("artifact_review_clean_advisory".to_string());
+                LocalArtifactReviewStatus::Passed
+            } else {
+                reason_codes.push("artifact_review_output_unparseable".to_string());
+                LocalArtifactReviewStatus::Error
+            }
+        }
+    };
+    (status, sorted_unique(reason_codes))
+}
+
+fn normalize_model_reason_code(value: &str) -> Option<String> {
+    let normalized = value
+        .chars()
+        .filter_map(|character| {
+            if character.is_ascii_alphanumeric() {
+                Some(character.to_ascii_lowercase())
+            } else if matches!(character, '-' | '_' | '.') {
+                Some('_')
+            } else {
+                None
+            }
+        })
+        .take(80)
+        .collect::<String>()
+        .trim_matches('_')
+        .to_string();
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
+fn build_local_artifact_review_prompt(
+    workspace: &Path,
+    ecosystem: PackageRiskEcosystem,
+    subjects: &[PackageRiskSubject],
+) -> String {
+    let subject_lines = subjects
+        .iter()
+        .map(|subject| {
+            format!(
+                "- ecosystem={} package={} spec={} class={} source={} pinned={} indicators={}",
+                subject.ecosystem.as_str(),
+                subject.package_name,
+                redacted_scalar(&subject.requested_spec),
+                subject.package_class.as_str(),
+                subject.source_kind,
+                subject.pinned,
+                subject.indicators.join(",")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let snippet_lines = collect_artifact_review_snippets(workspace)
+        .into_iter()
+        .map(|(path, contents)| {
+            format!(
+                "FILE: {}\n{}\nEND_FILE",
+                path,
+                artifact_review_redact_text(&contents)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "You are reviewing a Node/Python package workspace for software supply-chain risk.\n\
+Return JSON only with this exact shape: {{\"risk\":\"clean|suspicious\",\"reason_codes\":[\"short_snake_case\"],\"summary\":\"one short sentence\"}}.\n\
+Treat install scripts, credential or environment access, network activity, process spawning, obfuscation, native/binary artifacts, direct/VCS/editable sources, platform-specific activation, and delayed CI behavior as suspicious.\n\
+Never recommend execution or host sync-back; this model output is advisory evidence only.\n\
+Schema: {PACKAGE_ARTIFACT_REVIEW_SCHEMA}\n\
+Requested ecosystem: {}\n\
+Workspace path: <workspace>\n\
+Subjects:\n{}\n\
+Bounded redacted evidence snippets:\n{}\n",
+        ecosystem.as_str(),
+        subject_lines,
+        snippet_lines
+    )
+}
+
+fn collect_artifact_review_snippets(workspace: &Path) -> Vec<(String, String)> {
+    let mut files = Vec::new();
+    collect_artifact_review_snippets_inner(workspace, workspace, &mut files, 0);
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut total_bytes = 0usize;
+    let mut selected = Vec::new();
+    for (path, contents) in files {
+        if selected.len() >= 12 || total_bytes >= 16_000 {
+            break;
+        }
+        let snippet = truncate_chars(&contents, 2_000);
+        total_bytes += snippet.len();
+        selected.push((path, snippet));
+    }
+    selected
+}
+
+fn collect_artifact_review_snippets_inner(
+    root: &Path,
+    current: &Path,
+    files: &mut Vec<(String, String)>,
+    depth: usize,
+) {
+    if depth > 4 {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(current) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with(".git") || name == "node_modules" || name == ".venv" {
+            continue;
+        }
+        if path.is_dir() {
+            collect_artifact_review_snippets_inner(root, &path, files, depth + 1);
+            continue;
+        }
+        if !artifact_review_file_allowed(&path) {
+            continue;
+        }
+        if std::fs::metadata(&path)
+            .map(|metadata| metadata.len() > 64_000)
+            .unwrap_or(true)
+        {
+            continue;
+        }
+        let Ok(contents) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if let Ok(relative) = path.strip_prefix(root) {
+            files.push((relative.display().to_string(), contents));
+        }
+    }
+}
+
+fn artifact_review_file_allowed(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if matches!(
+        name.as_str(),
+        "package.json"
+            | "pyproject.toml"
+            | "setup.py"
+            | "setup.cfg"
+            | "requirements.txt"
+            | "constraints.txt"
+    ) || name.starts_with("requirements")
+    {
+        return true;
+    }
+    matches!(
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase()
+            .as_str(),
+        "js" | "mjs" | "cjs" | "ts" | "py" | "json" | "toml" | "cfg" | "txt"
+    )
+}
+
+fn artifact_review_redact_text(contents: &str) -> String {
+    let redacted = redacted_scalar(contents);
+    redacted
+        .lines()
+        .map(|line| {
+            if line.contains("/Users/") {
+                "<redacted-local-path-line>".to_string()
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn truncate_chars(value: &str, max_chars: usize) -> String {
+    let mut out = value.chars().take(max_chars).collect::<String>();
+    if value.chars().count() > max_chars {
+        out.push_str("\n<truncated>");
+    }
+    out
+}
+
+fn render_local_artifact_review_json(review: &LocalArtifactReviewEvidence) -> String {
+    format!(
+        "{{\"schema_version\": {}, \"requested\": {}, \"provider\": {}, \"model\": {}, \"status\": {}, \"prompt_sha256\": {}, \"output_sha256\": {}, \"elapsed_ms\": {}, \"raw_prompt_included\": false, \"raw_output_included\": false, \"reason_codes\": {}}}",
+        json_string(PACKAGE_ARTIFACT_REVIEW_SCHEMA),
+        review.requested,
+        json_string(&review.provider),
+        json_option_string(review.model.as_deref()),
+        json_string(review.status.as_str()),
+        json_option_string(review.prompt_sha256.as_deref()),
+        json_option_string(review.output_sha256.as_deref()),
+        json_option(review.elapsed_ms),
+        json_string_array(&review.reason_codes)
+    )
+}
+
+fn render_local_artifact_review_text(review: &LocalArtifactReviewEvidence) -> String {
+    format!(
+        "artifact_review_schema_version={}\nartifact_review_requested={}\nartifact_review_provider={}\nartifact_review_model={}\nartifact_review_status={}\nartifact_review_prompt_sha256={}\nartifact_review_output_sha256={}\nartifact_review_elapsed_ms={}\nartifact_review_raw_prompt_included=false\nartifact_review_raw_output_included=false\nartifact_review_reason_codes={:?}",
+        PACKAGE_ARTIFACT_REVIEW_SCHEMA,
+        review.requested,
+        review.provider,
+        review.model.as_deref().unwrap_or("none"),
+        review.status.as_str(),
+        review.prompt_sha256.as_deref().unwrap_or("none"),
+        review.output_sha256.as_deref().unwrap_or("none"),
+        review
+            .elapsed_ms
+            .map(|elapsed| elapsed.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        review.reason_codes
+    )
+}
+
+fn sorted_unique(mut values: Vec<String>) -> Vec<String> {
+    values.sort();
+    values.dedup();
+    values
 }
 
 fn discover_package_risk_subjects(
@@ -10455,6 +11077,7 @@ fn discover_python_package_risk_subjects(
 fn assess_package_risk_subject(
     subject: &PackageRiskSubject,
     memory: &[PackageRiskMemoryRecord],
+    artifact_review: &LocalArtifactReviewEvidence,
 ) -> PackageRiskAssessment {
     let mut reason_codes = Vec::new();
     let baseline = find_last_known_good(subject, memory);
@@ -10527,6 +11150,7 @@ fn assess_package_risk_subject(
     if subject.reputation_status == "reputation_metadata_missing" {
         reason_codes.push("reputation_metadata_missing".to_string());
     }
+    reason_codes.extend(artifact_review.reason_codes.iter().cloned());
     match subject.package_class {
         PackageClass::NpmRegistryTarball | PackageClass::PypiPureWheel => {}
         PackageClass::PypiSdistPep517 => {
@@ -10556,6 +11180,7 @@ fn assess_package_risk_subject(
         || suspicious
         || !freshness_allowed
         || !diff_clean_or_baseline_absent
+        || artifact_review.status.blocks_auto_sync()
     {
         PackageRiskVerdict::ManualReview
     } else {
@@ -10586,6 +11211,7 @@ fn assess_package_risk_subject(
         freshness_allowed,
         diff_clean_or_baseline_absent,
         reputation_status: subject.reputation_status.clone(),
+        artifact_review: artifact_review.clone(),
         indicators: subject.indicators.clone(),
         verdict,
         reason_codes,
@@ -11170,6 +11796,7 @@ struct PackageRiskReceiptWrite<'a> {
     receipt_id: &'a str,
     requested_ecosystem: PackageRiskEcosystem,
     assessments: &'a [PackageRiskAssessment],
+    artifact_review: &'a LocalArtifactReviewEvidence,
     all_freshness_allowed: bool,
     all_diff_clean_or_baseline_absent: bool,
     overall_verdict: PackageRiskVerdict,
@@ -11190,7 +11817,7 @@ fn write_package_risk_receipt(write: PackageRiskReceiptWrite<'_>) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     let contents = format!(
-        "{{\n  \"schema_version\": {},\n  \"receipt_id\": {},\n  \"created_at_unix_seconds\": {},\n  \"requested_ecosystem\": {},\n  \"cooldown_days\": {},\n  \"overall_verdict\": {},\n  \"all_freshness_allowed\": {},\n  \"all_diff_clean_or_baseline_absent\": {},\n  \"reason_codes\": {},\n  \"packages\": [{}]\n}}\n",
+        "{{\n  \"schema_version\": {},\n  \"receipt_id\": {},\n  \"created_at_unix_seconds\": {},\n  \"requested_ecosystem\": {},\n  \"cooldown_days\": {},\n  \"overall_verdict\": {},\n  \"all_freshness_allowed\": {},\n  \"all_diff_clean_or_baseline_absent\": {},\n  \"artifact_review\": {},\n  \"reason_codes\": {},\n  \"packages\": [{}]\n}}\n",
         json_string(PACKAGE_RISK_ASSESSMENT_SCHEMA),
         json_string(write.receipt_id),
         current_unix_seconds(),
@@ -11199,6 +11826,7 @@ fn write_package_risk_receipt(write: PackageRiskReceiptWrite<'_>) -> String {
         json_string(write.overall_verdict.as_str()),
         write.all_freshness_allowed,
         write.all_diff_clean_or_baseline_absent,
+        render_local_artifact_review_json(write.artifact_review),
         json_string_array(write.reason_codes),
         packages
     );
@@ -11230,6 +11858,8 @@ fn package_risk_assessment_store_record(
         reason_codes: assessment.reason_codes.clone(),
         diff_clean_or_baseline_absent: assessment.diff_clean_or_baseline_absent,
         freshness_allowed: assessment.freshness_allowed,
+        artifact_review_status: assessment.artifact_review.status.as_str().to_string(),
+        artifact_review_reason_codes: assessment.artifact_review.reason_codes.clone(),
     }
 }
 
@@ -11268,6 +11898,12 @@ fn package_risk_approval_record_from_receipt_object(
         )
         .unwrap_or(false),
         freshness_allowed: json_extract_bool_field(object, "freshness_allowed").unwrap_or(false),
+        artifact_review_status: json_extract_string_field(object, "artifact_review_status")
+            .unwrap_or_else(|| "not_requested".to_string()),
+        artifact_review_reason_codes: json_extract_string_array_field(
+            object,
+            "artifact_review_reason_codes",
+        ),
     })
 }
 
@@ -11319,12 +11955,18 @@ fn parse_package_risk_memory_record(line: &str) -> Option<PackageRiskMemoryRecor
         )
         .unwrap_or(false),
         freshness_allowed: json_extract_bool_field(line, "freshness_allowed").unwrap_or(false),
+        artifact_review_status: json_extract_string_field(line, "artifact_review_status")
+            .unwrap_or_else(|| "not_requested".to_string()),
+        artifact_review_reason_codes: json_extract_string_array_field(
+            line,
+            "artifact_review_reason_codes",
+        ),
     })
 }
 
 fn render_package_risk_memory_record_json(record: &PackageRiskMemoryRecord) -> String {
     format!(
-        "{{\"schema_version\": {}, \"record_kind\": {}, \"ecosystem\": {}, \"package_name\": {}, \"requested_spec\": {}, \"resolved_version\": {}, \"selected_version\": {}, \"source_kind\": {}, \"package_class\": {}, \"artifact_hash\": {}, \"verdict\": {}, \"approved\": {}, \"created_at_unix_seconds\": {}, \"receipt_id\": {}, \"reason_codes\": {}, \"diff_clean_or_baseline_absent\": {}, \"freshness_allowed\": {}}}",
+        "{{\"schema_version\": {}, \"record_kind\": {}, \"ecosystem\": {}, \"package_name\": {}, \"requested_spec\": {}, \"resolved_version\": {}, \"selected_version\": {}, \"source_kind\": {}, \"package_class\": {}, \"artifact_hash\": {}, \"verdict\": {}, \"approved\": {}, \"created_at_unix_seconds\": {}, \"receipt_id\": {}, \"reason_codes\": {}, \"diff_clean_or_baseline_absent\": {}, \"freshness_allowed\": {}, \"artifact_review_status\": {}, \"artifact_review_reason_codes\": {}}}",
         json_string(PACKAGE_RISK_STORE_SCHEMA),
         json_string(&record.record_kind),
         json_string(record.ecosystem.as_str()),
@@ -11341,13 +11983,15 @@ fn render_package_risk_memory_record_json(record: &PackageRiskMemoryRecord) -> S
         json_string(&record.receipt_id),
         json_string_array(&record.reason_codes),
         record.diff_clean_or_baseline_absent,
-        record.freshness_allowed
+        record.freshness_allowed,
+        json_string(&record.artifact_review_status),
+        json_string_array(&record.artifact_review_reason_codes)
     )
 }
 
 fn render_package_risk_memory_record_text(record: &PackageRiskMemoryRecord) -> String {
     format!(
-        "package_risk_record kind={} ecosystem={} package={} requested_spec={} selected_version={} approved={} verdict={} artifact_hash={} receipt_id={} diff_clean_or_baseline_absent={} freshness_allowed={} reason_codes={:?}",
+        "package_risk_record kind={} ecosystem={} package={} requested_spec={} selected_version={} approved={} verdict={} artifact_hash={} receipt_id={} diff_clean_or_baseline_absent={} freshness_allowed={} artifact_review_status={} artifact_review_reason_codes={:?} reason_codes={:?}",
         record.record_kind,
         record.ecosystem.as_str(),
         record.package_name,
@@ -11359,6 +12003,8 @@ fn render_package_risk_memory_record_text(record: &PackageRiskMemoryRecord) -> S
         record.receipt_id,
         record.diff_clean_or_baseline_absent,
         record.freshness_allowed,
+        record.artifact_review_status,
+        record.artifact_review_reason_codes,
         record.reason_codes
     )
 }
@@ -13935,6 +14581,8 @@ mod tests {
             "WHOATHERE_WHEEL_PACKAGE_FILE",
             "WHOATHERE_NODE_RUNTIME_DIR",
             "WHOATHERE_UV_BINARY",
+            "WHOATHERE_OLLAMA_BIN",
+            "WHOATHERE_ARTIFACT_REVIEW_MODEL",
             "HOME",
             "PATH",
         ];
@@ -16671,6 +17319,10 @@ exit 0
             workspace: Some(pinned.display().to_string()),
             ecosystem: Some("pypi".to_string()),
             state_dir: Some(state_dir.display().to_string()),
+            ai_review: false,
+            ai_provider: None,
+            ai_model: None,
+            ai_timeout_seconds: None,
             json: true,
         });
         assert_eq!(assessed.exit_code, 0);
@@ -16698,6 +17350,10 @@ exit 0
             workspace: Some(unpinned.display().to_string()),
             ecosystem: Some("pypi".to_string()),
             state_dir: Some(state_dir.display().to_string()),
+            ai_review: false,
+            ai_provider: None,
+            ai_model: None,
+            ai_timeout_seconds: None,
             json: true,
         });
         assert_eq!(assessed_unpinned.exit_code, 0);
@@ -16730,6 +17386,10 @@ exit 0
             workspace: Some(fresh.display().to_string()),
             ecosystem: Some("pypi".to_string()),
             state_dir: Some(state_dir.display().to_string()),
+            ai_review: false,
+            ai_provider: None,
+            ai_model: None,
+            ai_timeout_seconds: None,
             json: true,
         });
         assert_eq!(fresh_result.exit_code, 22);
@@ -16745,6 +17405,10 @@ exit 0
             workspace: Some(unpinned.display().to_string()),
             ecosystem: Some("pypi".to_string()),
             state_dir: Some(state_dir.display().to_string()),
+            ai_review: false,
+            ai_provider: None,
+            ai_model: None,
+            ai_timeout_seconds: None,
             json: true,
         });
         assert_eq!(unpinned_result.exit_code, 22);
@@ -16763,6 +17427,10 @@ exit 0
             workspace: Some(direct.display().to_string()),
             ecosystem: Some("pypi".to_string()),
             state_dir: Some(state_dir.display().to_string()),
+            ai_review: false,
+            ai_provider: None,
+            ai_model: None,
+            ai_timeout_seconds: None,
             json: true,
         });
         assert_eq!(direct_result.exit_code, 20);
@@ -16799,6 +17467,10 @@ exit 0
             workspace: Some(root.display().to_string()),
             ecosystem: Some("npm".to_string()),
             state_dir: Some(state_dir.display().to_string()),
+            ai_review: false,
+            ai_provider: None,
+            ai_model: None,
+            ai_timeout_seconds: None,
             json: true,
         });
 
@@ -16808,6 +17480,158 @@ exit 0
         assert!(result.output.contains("network_capability_observed"));
         assert!(!result.output.contains("NPM_TOKEN_VALUE"));
         assert!(!result.output.contains("/Users/"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn package_risk_ai_review_findings_force_manual_review_without_raw_output() {
+        let root = temp_root("whoathere-cli-package-risk-ai-findings");
+        let state_dir = root.join("state");
+        let fake_ollama = root.join("ollama");
+        write_new_file(
+            &fake_ollama,
+            br#"#!/bin/sh
+if [ "$1" = "run" ]; then
+  cat >/dev/null
+  printf '{"risk":"suspicious","reason_codes":["credential_exfil"],"summary":"WHOATHERE_CANARY_TOKEN_VALUE"}\n'
+  exit 0
+fi
+exit 64
+"#,
+        )
+        .expect("fake ollama");
+        set_executable(&fake_ollama).expect("fake executable");
+        write_new_file(
+            &root.join("package.json"),
+            br#"{"name":"ai-review-clean-looking","version":"1.0.0","whoatherePublishedAtUnixSeconds":1700000000,"repository":"https://example.invalid/repo"}"#,
+        )
+        .expect("package json");
+
+        let result = with_reprovision_env(
+            &[("WHOATHERE_OLLAMA_BIN", fake_ollama.display().to_string())],
+            || {
+                evaluate_command(Command::PackageRiskAssess {
+                    workspace: Some(root.display().to_string()),
+                    ecosystem: Some("npm".to_string()),
+                    state_dir: Some(state_dir.display().to_string()),
+                    ai_review: true,
+                    ai_provider: Some("ollama".to_string()),
+                    ai_model: Some("fake-review-model".to_string()),
+                    ai_timeout_seconds: Some(5),
+                    json: true,
+                })
+            },
+        );
+
+        assert_eq!(result.exit_code, 22);
+        assert!(result
+            .output
+            .contains("\"artifact_review_status\": \"findings\""));
+        assert!(result
+            .output
+            .contains("artifact_review_model_credential_exfil"));
+        assert!(result
+            .output
+            .contains("artifact_review_model_reported_findings"));
+        assert!(result.output.contains("\"raw_output_included\": false"));
+        assert!(!result.output.contains("WHOATHERE_CANARY_TOKEN_VALUE"));
+        assert!(!result.output.contains("/Users/"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn package_risk_ai_review_clean_cannot_override_freshness_gate() {
+        let root = temp_root("whoathere-cli-package-risk-ai-clean-fresh");
+        let state_dir = root.join("state");
+        let fake_ollama = root.join("ollama");
+        write_new_file(
+            &fake_ollama,
+            br#"#!/bin/sh
+cat >/dev/null
+printf '{"risk":"clean","reason_codes":["no_issue_seen"],"summary":"clean"}\n'
+exit 0
+"#,
+        )
+        .expect("fake ollama");
+        set_executable(&fake_ollama).expect("fake executable");
+        write_new_file(
+            &root.join("requirements.txt"),
+            format!(
+                "fresh-pkg==2.0.0 # whoathere-published-at={}\n",
+                current_unix_seconds()
+            )
+            .as_bytes(),
+        )
+        .expect("requirements");
+
+        let result = with_reprovision_env(
+            &[("WHOATHERE_OLLAMA_BIN", fake_ollama.display().to_string())],
+            || {
+                evaluate_command(Command::PackageRiskAssess {
+                    workspace: Some(root.display().to_string()),
+                    ecosystem: Some("pypi".to_string()),
+                    state_dir: Some(state_dir.display().to_string()),
+                    ai_review: true,
+                    ai_provider: Some("ollama".to_string()),
+                    ai_model: Some("fake-review-model".to_string()),
+                    ai_timeout_seconds: Some(5),
+                    json: true,
+                })
+            },
+        );
+
+        assert_eq!(result.exit_code, 22);
+        assert!(result
+            .output
+            .contains("\"artifact_review_status\": \"passed\""));
+        assert!(result.output.contains("artifact_review_clean_advisory"));
+        assert!(result.output.contains("fresh_release_cooldown_active"));
+        assert!(result
+            .output
+            .contains("\"overall_verdict\": \"manual_review\""));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn package_risk_requested_ai_review_unavailable_fails_closed() {
+        let root = temp_root("whoathere-cli-package-risk-ai-unavailable");
+        let state_dir = root.join("state");
+        write_new_file(
+            &root.join("requirements.txt"),
+            b"safe-pkg==1.2.3 # whoathere-published-at=1700000000\n",
+        )
+        .expect("requirements");
+
+        let missing_ollama = root.join("missing-ollama");
+        let result = with_reprovision_env(
+            &[("WHOATHERE_OLLAMA_BIN", missing_ollama.display().to_string())],
+            || {
+                evaluate_command(Command::PackageRiskAssess {
+                    workspace: Some(root.display().to_string()),
+                    ecosystem: Some("pypi".to_string()),
+                    state_dir: Some(state_dir.display().to_string()),
+                    ai_review: true,
+                    ai_provider: Some("ollama".to_string()),
+                    ai_model: Some("fake-review-model".to_string()),
+                    ai_timeout_seconds: Some(5),
+                    json: true,
+                })
+            },
+        );
+
+        assert_eq!(result.exit_code, 22);
+        assert!(result
+            .output
+            .contains("\"artifact_review_status\": \"unavailable\""));
+        assert!(result
+            .output
+            .contains("artifact_review_provider_unavailable"));
+        assert!(result
+            .output
+            .contains("\"overall_verdict\": \"manual_review\""));
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -16827,6 +17651,10 @@ exit 0
             workspace: Some(workspace.display().to_string()),
             ecosystem: Some("pypi".to_string()),
             state_dir: Some(state_dir.display().to_string()),
+            ai_review: false,
+            ai_provider: None,
+            ai_model: None,
+            ai_timeout_seconds: None,
             json: true,
         });
         assert_eq!(assessed.exit_code, 0);

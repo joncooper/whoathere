@@ -114,6 +114,37 @@ require_contains 'npm_lifecycle_script_postinstall' "$WORK_DIR/npm-evil.json" np
 require_contains 'credential_or_environment_access' "$WORK_DIR/npm-evil.json" npm_secret
 require_contains 'network_capability_observed' "$WORK_DIR/npm-evil.json" npm_network
 
+AI_SAFE="$WORK_DIR/ai-safe"
+mkdir -p "$AI_SAFE"
+cat >"$AI_SAFE/package.json" <<'JSON'
+{"name":"ai-safe-looking","version":"1.0.0","whoatherePublishedAtUnixSeconds":1700000000,"repository":"https://example.invalid/repo"}
+JSON
+FAKE_OLLAMA_FINDINGS="$WORK_DIR/fake-ollama-findings"
+cat >"$FAKE_OLLAMA_FINDINGS" <<'SH'
+#!/bin/sh
+cat >/dev/null
+printf '{"risk":"suspicious","reason_codes":["credential_exfil"],"summary":"WHOATHERE_CANARY_TOKEN_VALUE"}\n'
+exit 0
+SH
+chmod +x "$FAKE_OLLAMA_FINDINGS"
+run_capture 22 "$WORK_DIR/ai-findings.json" env WHOATHERE_OLLAMA_BIN="$FAKE_OLLAMA_FINDINGS" "$CLI" package-risk assess --workspace "$AI_SAFE" --ecosystem npm --state-dir "$STATE_DIR" --ai-review --ai-model fake-review-model --ai-timeout-seconds 5 --json
+require_contains '"artifact_review_status": "findings"' "$WORK_DIR/ai-findings.json" ai_findings_status
+require_contains 'artifact_review_model_credential_exfil' "$WORK_DIR/ai-findings.json" ai_findings_reason
+require_not_contains 'WHOATHERE_CANARY_TOKEN_VALUE' "$WORK_DIR/ai-findings.json" ai_raw_output
+
+FAKE_OLLAMA_CLEAN="$WORK_DIR/fake-ollama-clean"
+cat >"$FAKE_OLLAMA_CLEAN" <<'SH'
+#!/bin/sh
+cat >/dev/null
+printf '{"risk":"clean","reason_codes":["no_issue_seen"],"summary":"clean"}\n'
+exit 0
+SH
+chmod +x "$FAKE_OLLAMA_CLEAN"
+run_capture 22 "$WORK_DIR/ai-clean-fresh.json" env WHOATHERE_OLLAMA_BIN="$FAKE_OLLAMA_CLEAN" "$CLI" package-risk assess --workspace "$FRESH" --ecosystem pypi --state-dir "$STATE_DIR" --ai-review --ai-model fake-review-model --ai-timeout-seconds 5 --json
+require_contains '"artifact_review_status": "passed"' "$WORK_DIR/ai-clean-fresh.json" ai_clean_status
+require_contains 'artifact_review_clean_advisory' "$WORK_DIR/ai-clean-fresh.json" ai_clean_reason
+require_contains 'fresh_release_cooldown_active' "$WORK_DIR/ai-clean-fresh.json" ai_clean_no_fresh_bypass
+
 RELEASE_RECEIPT=$PINNED_RECEIPT
 run_capture 0 "$WORK_DIR/release-plan.json" "$CLI" vm release-plan --class pypi.pure_wheel.v1 --vm-ready --static-clean --dynamic-clean --egress-clean --no-canary-access --scanner-clean --package-risk-receipt "$RELEASE_RECEIPT" --json
 require_contains '"package_risk_receipt_applied": true' "$WORK_DIR/release-plan.json" release_receipt
