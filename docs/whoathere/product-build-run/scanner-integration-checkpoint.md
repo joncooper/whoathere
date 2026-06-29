@@ -21,6 +21,11 @@ execution or file copy-back by itself.
 - Added scanner bootstrap script: `scripts/whoathere-bootstrap-scanners.sh`.
 - Added scanner smoke script: `scripts/whoathere-scanner-integration-smoke.sh`.
 - Added doctor fields for scanner bootstrap and future public-package auto-trust readiness.
+- Tightened `scanner_public_package_auto_trust_ready` so it requires all core scanners to be
+  available and a scanner bootstrap receipt to be present. Finding scanner binaries alone is not
+  enough to claim future public-package readiness.
+- Fixed GuardDog and pip-audit `uvx` fallback execution so fallback runs as `uvx guarddog ...`
+  or `uvx pip-audit ...` instead of treating `uvx` as if it were the scanner binary.
 
 ## Adapter Scope
 
@@ -48,6 +53,8 @@ Report-only adapters:
 - Workspace paths, canaries, and token-like material must not appear in scanner JSON output.
 - pip-audit skips unpinned, direct URL, VCS, editable, nested, and otherwise resolution-dependent
   requirements instead of resolving on the host.
+- A scanner run against an unknown workspace/ecosystem cannot produce `scanner_clean=true`, even if
+  generic filesystem scanners pass.
 - Missing scanners are visible but do not block the current local-only macOS beta.
 - Missing or dirty scanner evidence must block any future public package auto-trust claim.
 - Scanners cannot override VM isolation, canary checks, strict file copy-back rules, or manual

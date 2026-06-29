@@ -7455,7 +7455,8 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
         .iter()
         .filter(|item| item.spec.role == ScannerExecutionRole::Core)
         .count();
-    let scanner_public_package_auto_trust_ready = scanner_available == scanner_required;
+    let scanner_public_package_auto_trust_ready =
+        scanner_public_package_auto_trust_is_ready(scanner_available, scanner_required);
     let package_memory_ready = package_risk_memory_ready(&config.state_dir);
     let package_risk_gate_ready = true;
     let package_reputation_support = "local_metadata_only";
@@ -10123,6 +10124,8 @@ fn render_scanners_list(json: bool) -> String {
         .iter()
         .filter(|item| item.spec.role == ScannerExecutionRole::Core && item.available)
         .count();
+    let public_auto_trust_ready =
+        scanner_public_package_auto_trust_is_ready(core_available_count, core_count);
     if json {
         let scanners_json = inventory
             .iter()
@@ -10152,7 +10155,7 @@ fn render_scanners_list(json: bool) -> String {
             core_available_count,
             scanner_bootstrap_receipt_present(),
             json_string(&redacted_path_string(&scanner_bootstrap_receipt_path())),
-            core_available_count == core_count,
+            public_auto_trust_ready,
             scanners_json
         );
     }
@@ -10178,9 +10181,16 @@ fn render_scanners_list(json: bool) -> String {
         core_available_count,
         scanner_bootstrap_receipt_present(),
         redacted_path_string(&scanner_bootstrap_receipt_path()),
-        core_available_count == core_count,
+        public_auto_trust_ready,
         rows
     )
+}
+
+fn scanner_public_package_auto_trust_is_ready(
+    core_available_count: usize,
+    core_count: usize,
+) -> bool {
+    core_count > 0 && core_available_count == core_count && scanner_bootstrap_receipt_present()
 }
 
 fn render_scanners_bootstrap_plan(json: bool) -> String {
@@ -20911,10 +20921,89 @@ exit 0
             .contains("\"core_scanner_available_count\": 5"));
         assert!(result
             .output
-            .contains("\"scanner_public_package_auto_trust_ready\": true"));
+            .contains("\"bootstrap_receipt_present\": false"));
+        assert!(result
+            .output
+            .contains("\"scanner_public_package_auto_trust_ready\": false"));
         assert!(result.output.contains("\"name\": \"guarddog\""));
         assert!(result.output.contains("\"name\": \"pip-audit\""));
         assert!(!result.output.contains("/Users/"));
+
+        write_new_file(
+            &scanner_cache.join("scanner-bootstrap.json"),
+            br#"{"schema_version":"whoathere.scanner_bootstrap.v1"}"#,
+        )
+        .expect("bootstrap receipt");
+        let ready_result = with_reprovision_env(
+            &[
+                ("HOME", home.display().to_string()),
+                (
+                    "WHOATHERE_SCANNER_CACHE_DIR",
+                    scanner_cache.display().to_string(),
+                ),
+            ],
+            || evaluate_command(Command::ScannersList { json: true }),
+        );
+        assert_eq!(ready_result.exit_code, 0);
+        assert!(ready_result
+            .output
+            .contains("\"bootstrap_receipt_present\": true"));
+        assert!(ready_result
+            .output
+            .contains("\"scanner_public_package_auto_trust_ready\": true"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn scanners_run_uvx_fallback_invokes_target_scanner_command() {
+        let root = temp_root("whoathere-cli-scanners-uvx-fallback");
+        let scanner_cache = root.join("scanners");
+        let bin = scanner_cache.join("bin");
+        let workspace = root.join("python-project");
+        let state_dir = root.join("state");
+        std::fs::create_dir_all(&bin).expect("bin");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        std::fs::write(workspace.join("requirements.txt"), "requests==2.31.0\n")
+            .expect("requirements");
+        for scanner in ["osv-scanner", "syft", "grype"] {
+            write_fake_scanner(&bin.join(scanner));
+        }
+        write_new_file(
+            &bin.join("uvx"),
+            br#"#!/bin/sh
+case "$1" in
+  guarddog|pip-audit) printf '{"findings":[]}\n'; exit 0 ;;
+  *) printf '{"findings":[{"whoathere_fake_finding":true}]}\n'; exit 0 ;;
+esac
+"#,
+        )
+        .expect("uvx fallback");
+        set_executable(&bin.join("uvx")).expect("uvx executable");
+
+        with_reprovision_env(
+            &[(
+                "WHOATHERE_SCANNER_CACHE_DIR",
+                scanner_cache.display().to_string(),
+            )],
+            || {
+                let result = evaluate_command(Command::ScannersRun {
+                    workspace: Some(workspace.display().to_string()),
+                    ecosystem: Some("pypi".to_string()),
+                    state_dir: Some(state_dir.display().to_string()),
+                    timeout_seconds: Some(5),
+                    execute: true,
+                    json: true,
+                });
+                assert_eq!(result.exit_code, 0);
+                assert!(result.output.contains("\"scanner_clean\": true"));
+                assert!(result.output.contains("\"scanner\": \"guarddog\""));
+                assert!(result.output.contains("\"scanner\": \"pip-audit\""));
+                assert!(result.output.contains("\"guarddog\""));
+                assert!(result.output.contains("\"pip-audit\""));
+                assert!(!result.output.contains(&root.display().to_string()));
+            },
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -20995,6 +21084,46 @@ exit 0
                 assert!(!bad_result.output.contains(&root.display().to_string()));
             },
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn scanners_run_unknown_workspace_cannot_be_clean() {
+        let root = temp_root("whoathere-cli-scanners-unknown-workspace");
+        let scanner_cache = root.join("scanners");
+        let bin = scanner_cache.join("bin");
+        let workspace = root.join("unknown");
+        std::fs::create_dir_all(&bin).expect("bin");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        std::fs::write(workspace.join("README.txt"), "not a package workspace\n").expect("readme");
+        for scanner in ["guarddog", "osv-scanner", "syft", "grype", "pip-audit"] {
+            write_fake_scanner(&bin.join(scanner));
+        }
+
+        with_reprovision_env(
+            &[(
+                "WHOATHERE_SCANNER_CACHE_DIR",
+                scanner_cache.display().to_string(),
+            )],
+            || {
+                let result = evaluate_command(Command::ScannersRun {
+                    workspace: Some(workspace.display().to_string()),
+                    ecosystem: Some("auto".to_string()),
+                    state_dir: None,
+                    timeout_seconds: Some(5),
+                    execute: true,
+                    json: true,
+                });
+                assert_eq!(result.exit_code, ExitCode::Deny.code());
+                assert!(result.output.contains("\"effective_ecosystem\": \"auto\""));
+                assert!(result.output.contains("\"scanner_clean\": false"));
+                assert!(result
+                    .output
+                    .contains("scanner_workspace_ecosystem_unknown"));
+                assert!(!result.output.contains(&root.display().to_string()));
+            },
+        );
+
         let _ = std::fs::remove_dir_all(&root);
     }
 

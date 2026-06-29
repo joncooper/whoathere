@@ -564,7 +564,14 @@ fn build_external_scanner_summary(
     }
     reason_codes.sort();
     reason_codes.dedup();
+    let clean_core_record_count = records
+        .iter()
+        .filter(|record| record.role == ScannerExecutionRole::Core && record.status.scanner_clean())
+        .count();
     let scanner_clean = execute
+        && effective_ecosystem != ScannerEcosystem::Auto
+        && clean_core_record_count == core_scanner_count
+        && core_scanner_runnable_count > 0
         && records
             .iter()
             .filter(|record| record.role == ScannerExecutionRole::Core)
@@ -775,20 +782,28 @@ fn plan_guarddog(
 ) {
     match ecosystem {
         ScannerEcosystem::Npm => {
-            plan.argv = vec![
-                "npm".to_string(),
-                "scan".to_string(),
-                workspace.display().to_string(),
-                "--output-format=json".to_string(),
-            ];
+            plan.argv = scanner_invocation_args(
+                plan.executable.as_deref(),
+                "guarddog",
+                vec![
+                    "npm".to_string(),
+                    "scan".to_string(),
+                    workspace.display().to_string(),
+                    "--output-format=json".to_string(),
+                ],
+            );
         }
         ScannerEcosystem::Pypi => {
-            plan.argv = vec![
-                "pypi".to_string(),
-                "scan".to_string(),
-                workspace.display().to_string(),
-                "--output-format=json".to_string(),
-            ];
+            plan.argv = scanner_invocation_args(
+                plan.executable.as_deref(),
+                "guarddog",
+                vec![
+                    "pypi".to_string(),
+                    "scan".to_string(),
+                    workspace.display().to_string(),
+                    "--output-format=json".to_string(),
+                ],
+            );
         }
         ScannerEcosystem::Auto => {
             plan.status = ScannerRunStatus::NotApplicable;
@@ -832,13 +847,38 @@ fn plan_pip_audit(
         return;
     }
     let first = safe_requirements.remove(0);
-    plan.argv = vec![
-        "-r".to_string(),
-        first.display().to_string(),
-        "--format=json".to_string(),
-        "--progress-spinner=off".to_string(),
-        "--no-deps".to_string(),
-    ];
+    plan.argv = scanner_invocation_args(
+        plan.executable.as_deref(),
+        "pip-audit",
+        vec![
+            "-r".to_string(),
+            first.display().to_string(),
+            "--format=json".to_string(),
+            "--progress-spinner=off".to_string(),
+            "--no-deps".to_string(),
+        ],
+    );
+}
+
+fn scanner_invocation_args(
+    executable: Option<&Path>,
+    scanner_name: &str,
+    scanner_args: Vec<String>,
+) -> Vec<String> {
+    if scanner_executable_is_uvx(executable) {
+        let mut args = vec![scanner_name.to_string()];
+        args.extend(scanner_args);
+        args
+    } else {
+        scanner_args
+    }
+}
+
+fn scanner_executable_is_uvx(executable: Option<&Path>) -> bool {
+    executable
+        .and_then(|path| path.file_name())
+        .and_then(|name| name.to_str())
+        == Some("uvx")
 }
 
 fn execute_scanner_plan(
