@@ -450,6 +450,7 @@
           <li><a href="#cannot-do">What It Cannot Do</a></li>
           <li><a href="#validation">Validation</a></li>
           <li><a href="#scanner-signals">Scanner Signals</a></li>
+          <li><a href="#package-risk">Package Risk Gates</a></li>
           <li><a href="#before-using">Before Using It</a></li>
           <li><a href="#next">What Comes Next</a></li>
           <li><a href="#sources">Local Sources Used</a></li>
@@ -833,6 +834,39 @@
         </div>
       </section>
 
+      <section id="package-risk">
+        <h2>Package Risk Gates</h2>
+        <p>
+          WhoaThere now keeps a local memory of package decisions. This helps it avoid silently
+          jumping to a brand-new package version just because a requirement was unpinned or used a
+          broad version range.
+        </p>
+        <p>
+          The tool can record the last version you approved, apply a 7 day cooldown to new public
+          package versions, compare a candidate with the last approved version, and explain why a
+          package is allowed, blocked, or sent to manual review. It can also flag new install
+          scripts, Python startup hooks, native or binary files, direct URLs, Git dependencies,
+          platform-specific payloads, and code that appears to read credentials or make network
+          calls.
+        </p>
+        <div class="grid">
+          <div class="card">
+            <h3>What this helps with</h3>
+            <p>
+              It reduces surprise upgrades, catches risky changes between versions, and keeps fresh
+              package releases from being trusted immediately.
+            </p>
+          </div>
+          <div class="card">
+            <h3>What this does not prove</h3>
+            <p>
+              It does not prove that a package is safe. Reputation, diffs, and age are signals.
+              They do not override VM evidence, scanner findings, or the strict copy-back rules.
+            </p>
+          </div>
+        </div>
+      </section>
+
       <section id="before-using">
         <h2>What To Check Before Using It</h2>
         <p>
@@ -865,9 +899,8 @@
         </p>
         <ul>
           <li>Install testing on another Mac, or in the cleanest available VM-like environment, for more release confidence.</li>
-          <li>Deeper scanner pressure testing with real public packages and stronger repository reputation signals.</li>
-          <li>Known-good package history and diffs against the last approved version.</li>
-          <li>Fresh-release cooldowns and package reputation scoring for public packages.</li>
+          <li>Deeper scanner and package-risk pressure testing with real public packages.</li>
+          <li>Online repository reputation enrichment, such as maintainer and repository history, when network access is allowed.</li>
           <li>VM runs that execute project tests or generated package-use checks to catch packages that are malicious only when their APIs are used.</li>
           <li>A team server: shared package cache, central rules, audit log, review flow, and no silent fallback to public registries.</li>
         </ul>

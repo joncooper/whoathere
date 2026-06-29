@@ -128,6 +128,75 @@ To add a best-effort real-tool pass after bootstrap:
 WHOATHERE_SCANNER_REAL_SMOKE=1 scripts/whoathere-scanner-integration-smoke.sh
 ```
 
+The scanner cache can be overridden for deterministic tests with
+`WHOATHERE_SCANNER_CACHE_DIR=/path/to/cache`.
+
+## Package Risk Gates
+
+Package risk gates remember local package decisions and help avoid surprise upgrades. They are
+still evidence, not a proof that a package is safe.
+
+Assess a workspace:
+
+```sh
+$WHOATHERE package-risk assess --workspace /path/to/project --ecosystem auto --state-dir "$WHOATHERE_STATE" --json
+```
+
+The assessment writes an append-only local evidence store under:
+
+```text
+$WHOATHERE_STATE/package-risk/package-risk-evidence.jsonl
+```
+
+It also writes a receipt under:
+
+```text
+$WHOATHERE_STATE/package-risk/receipts/
+```
+
+The receipt records package name, ecosystem, requested spec, selected last-known-good version when
+used, source kind, artifact hash, freshness gate, diff gate, reputation status, verdict, and reason
+codes. It does not include raw package source, scanner dumps, canaries, tokens, or host secret
+paths.
+
+Approve a local beta baseline:
+
+```sh
+$WHOATHERE package-risk approve --receipt /path/to/receipt.json --reason "reviewed local beta baseline" --state-dir "$WHOATHERE_STATE" --json
+```
+
+Review package history:
+
+```sh
+$WHOATHERE package-risk history --package safe-pkg --ecosystem pypi --state-dir "$WHOATHERE_STATE" --json
+```
+
+Policy for the macOS beta:
+
+- Exact previously approved artifacts are recognized as last-known-good.
+- Unpinned npm, pip, and uv specs prefer the newest locally approved version when one exists.
+- Unpinned specs with no last-known-good version require manual review.
+- Fresh public package versions cannot auto-sync until the 7 day cooldown is satisfied.
+- Suspicious diffs, new lifecycle scripts, `.pth` startup hooks, native/binary markers, direct URLs,
+  VCS dependencies, editable installs, platform-specific payloads, and credential/network-looking
+  code block auto-sync.
+- Reputation is a warning/reason-code signal. It never authorizes a package by itself.
+
+Use a package-risk receipt with the release-plan model:
+
+```sh
+$WHOATHERE vm release-plan --class pypi.pure_wheel.v1 \
+  --vm-ready --static-clean --dynamic-clean --egress-clean --no-canary-access --scanner-clean \
+  --package-risk-receipt /path/to/package-risk-receipt.json --json
+```
+
+Run the deterministic package-risk and attack harnesses:
+
+```sh
+scripts/whoathere-package-risk-smoke.sh
+scripts/whoathere-real-world-attack-harness.sh
+```
+
 ## Package A Preview Artifact
 
 To build a repeatable Apple Silicon preview tarball with the release CLI, signed release helper,
@@ -488,6 +557,8 @@ Do not call the macOS local-first preview ready until all of these are true:
 - Shell syntax checks for touched scripts pass.
 - ASCII scan over touched docs/scripts/Rust/Swift/C files has no matches.
 - `whoathere vm red-team-gate --json` passes with `passed=true`.
+- `scripts/whoathere-package-risk-smoke.sh` passes.
+- `scripts/whoathere-real-world-attack-harness.sh` passes.
 - Live VM validation passes for every workflow claimed in the release.
 - For npm/uv claims, `validate-npm-uv-detonation.sh` has written a current
   `release-validation.json` receipt and `doctor --json` no longer reports
@@ -499,6 +570,8 @@ Do not call the macOS local-first preview ready until all of these are true:
   npm/uv proof, sync-validation proof, and public package policy gates are actually complete.
 - Missing scanner binaries are advisory for the local-only sync beta; they must be installed or
   otherwise replaced by explicit evidence before any public package auto-sync or auto-allow claim.
+- Package-risk receipts must show clean freshness and diff gates before `vm release-plan` can model
+  public package auto-sync eligibility.
 
 ## Limitations
 

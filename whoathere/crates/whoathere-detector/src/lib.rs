@@ -479,6 +479,9 @@ pub fn scanner_inventory() -> Vec<ExternalScannerInventoryItem> {
 }
 
 pub fn scanner_bootstrap_cache_dir() -> PathBuf {
+    if let Some(path) = std::env::var_os("WHOATHERE_SCANNER_CACHE_DIR") {
+        return PathBuf::from(path);
+    }
     std::env::current_dir()
         .unwrap_or_else(|_| PathBuf::from("."))
         .join(".whoathere")
