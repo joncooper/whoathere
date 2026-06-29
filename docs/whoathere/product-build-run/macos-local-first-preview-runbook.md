@@ -139,7 +139,9 @@ still evidence, not a proof that a package is safe.
 Assess a workspace:
 
 ```sh
-$WHOATHERE package-risk assess --workspace /path/to/project --ecosystem auto --state-dir "$WHOATHERE_STATE" --json
+$WHOATHERE scanners run --workspace /path/to/project --ecosystem auto --execute --json > scanner-receipt.json
+$WHOATHERE package-risk assess --workspace /path/to/project --ecosystem auto \
+  --state-dir "$WHOATHERE_STATE" --scanner-receipt scanner-receipt.json --json
 ```
 
 The assessment writes an append-only local evidence store under:
@@ -155,9 +157,9 @@ $WHOATHERE_STATE/package-risk/receipts/
 ```
 
 The receipt records package name, ecosystem, requested spec, selected last-known-good version when
-used, source kind, artifact hash, freshness gate, diff gate, reputation status, verdict, and reason
-codes. It does not include raw package source, scanner dumps, canaries, tokens, or host secret
-paths.
+used, source kind, artifact hash, scanner gate, freshness gate, diff gate, reputation status,
+verdict, and reason codes. It does not include raw package source, scanner dumps, canaries, tokens,
+or host secret paths.
 
 Approve a local beta baseline:
 
@@ -176,6 +178,8 @@ Policy for the macOS beta:
 - Exact previously approved artifacts are recognized as last-known-good.
 - Unpinned npm, pip, and uv specs prefer the newest locally approved version when one exists.
 - Unpinned specs with no last-known-good version require manual review.
+- Missing, dirty, stale, not-executed, or wrong-workspace scanner evidence requires manual review.
+- Only clean auto-sync-candidate package-risk receipts can be approved into last-known-good memory.
 - Fresh public package versions cannot auto-sync until the 7 day cooldown is satisfied.
 - Suspicious diffs, new lifecycle scripts, `.pth` startup hooks, native/binary markers, direct URLs,
   VCS dependencies, editable installs, platform-specific payloads, and credential/network-looking
@@ -186,7 +190,7 @@ Use a package-risk receipt with the release-plan model:
 
 ```sh
 $WHOATHERE vm release-plan --class pypi.pure_wheel.v1 \
-  --vm-ready --static-clean --dynamic-clean --egress-clean --no-canary-access --scanner-clean \
+  --vm-ready --static-clean --dynamic-clean --egress-clean --no-canary-access \
   --package-risk-receipt /path/to/package-risk-receipt.json --json
 ```
 

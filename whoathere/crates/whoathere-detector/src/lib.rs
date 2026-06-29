@@ -372,6 +372,7 @@ pub struct ExternalScannerRunRecord {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExternalScannerRunSummary {
     pub schema_version: &'static str,
+    pub workspace_sha256: String,
     pub workspace_kind: String,
     pub requested_ecosystem: ScannerEcosystem,
     pub effective_ecosystem: ScannerEcosystem,
@@ -565,6 +566,7 @@ fn build_external_scanner_summary(
             .all(|record| record.status.scanner_clean());
     ExternalScannerRunSummary {
         schema_version: EXTERNAL_SCANNER_RUN_SCHEMA,
+        workspace_sha256: scanner_workspace_digest(workspace),
         workspace_kind: workspace_kind(workspace).to_string(),
         requested_ecosystem,
         effective_ecosystem,
@@ -575,6 +577,101 @@ fn build_external_scanner_summary(
         core_scanner_runnable_count,
         reason_codes,
         records,
+    }
+}
+
+pub fn scanner_workspace_digest(workspace: &Path) -> String {
+    const MAX_FILES: usize = 512;
+    const MAX_FILE_BYTES: u64 = 1024 * 1024;
+    const MAX_TOTAL_BYTES: u64 = 8 * 1024 * 1024;
+
+    let root = workspace
+        .canonicalize()
+        .unwrap_or_else(|_| workspace.to_path_buf());
+    let mut files = Vec::new();
+    collect_workspace_digest_files(
+        &root,
+        &root,
+        &mut files,
+        &mut 0,
+        MAX_FILES,
+        MAX_FILE_BYTES,
+        MAX_TOTAL_BYTES,
+    );
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+
+    let mut material = Vec::new();
+    material.extend_from_slice(b"whoathere.scanner_workspace_digest.v1\n");
+    material
+        .extend_from_slice(format!("workspace_kind={}\n", workspace_kind(workspace)).as_bytes());
+    for (relative_path, file_digest, file_len) in files {
+        material.extend_from_slice(relative_path.as_bytes());
+        material.push(b'\0');
+        material.extend_from_slice(file_len.to_string().as_bytes());
+        material.push(b'\0');
+        material.extend_from_slice(file_digest.as_bytes());
+        material.push(b'\n');
+    }
+    sha256_digest(&material)
+}
+
+fn collect_workspace_digest_files(
+    root: &Path,
+    current: &Path,
+    files: &mut Vec<(String, String, u64)>,
+    total_bytes: &mut u64,
+    max_files: usize,
+    max_file_bytes: u64,
+    max_total_bytes: u64,
+) {
+    if files.len() >= max_files || *total_bytes >= max_total_bytes {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(current) else {
+        return;
+    };
+    let mut entries = entries.filter_map(Result::ok).collect::<Vec<_>>();
+    entries.sort_by_key(|entry| entry.path());
+    for entry in entries {
+        if files.len() >= max_files || *total_bytes >= max_total_bytes {
+            return;
+        }
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if matches!(
+            name.as_str(),
+            ".git" | ".whoathere" | "node_modules" | ".venv" | "target" | "__pycache__"
+        ) {
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        if metadata.is_dir() {
+            collect_workspace_digest_files(
+                root,
+                &path,
+                files,
+                total_bytes,
+                max_files,
+                max_file_bytes,
+                max_total_bytes,
+            );
+        } else if metadata.is_file() && metadata.len() <= max_file_bytes {
+            if *total_bytes + metadata.len() > max_total_bytes {
+                return;
+            }
+            let Ok(contents) = std::fs::read(&path) else {
+                continue;
+            };
+            let relative_path = path
+                .strip_prefix(root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            files.push((relative_path, sha256_digest(&contents), metadata.len()));
+            *total_bytes += metadata.len();
+        }
     }
 }
 

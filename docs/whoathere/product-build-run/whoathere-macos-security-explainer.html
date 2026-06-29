@@ -844,24 +844,27 @@
         <p>
           The tool can record the last version you approved, apply a 7 day cooldown to new public
           package versions, compare a candidate with the last approved version, and explain why a
-          package is allowed, blocked, or sent to manual review. It can also flag new install
-          scripts, Python startup hooks, native or binary files, direct URLs, Git dependencies,
-          platform-specific payloads, and code that appears to read credentials or make network
-          calls.
+          package is allowed, blocked, or sent to manual review. For public packages, a clean
+          scanner run for that workspace is required before the package can even become a copy-back
+          candidate. It can also flag new install scripts, Python startup hooks, native or binary
+          files, direct URLs, Git dependencies, platform-specific payloads, and code that appears to
+          read credentials or make network calls.
         </p>
         <div class="grid">
           <div class="card">
             <h3>What this helps with</h3>
             <p>
-              It reduces surprise upgrades, catches risky changes between versions, and keeps fresh
-              package releases from being trusted immediately.
+              It reduces surprise upgrades, catches risky changes between versions, keeps fresh
+              package releases from being trusted immediately, and avoids treating packages as clean
+              when scanner evidence is missing.
             </p>
           </div>
           <div class="card">
             <h3>What this does not prove</h3>
             <p>
-              It does not prove that a package is safe. Reputation, diffs, and age are signals.
-              They do not override VM evidence, scanner findings, or the strict copy-back rules.
+              It does not prove that a package is safe. Reputation, diffs, age, and scanner results
+              are signals. They do not override VM evidence, scanner findings, or the strict
+              copy-back rules.
             </p>
           </div>
         </div>

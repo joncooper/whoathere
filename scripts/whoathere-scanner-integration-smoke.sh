@@ -93,6 +93,7 @@ write_python_requirements "$UNPINNED_PY" "requests"
 
 "$WHOATHERE_BIN" scanners run --workspace "$CLEAN_NPM" --ecosystem npm --execute --json > "$WORK_DIR/clean.json"
 require_contains '"scanner_clean": true' "$WORK_DIR/clean.json" clean_not_clean
+require_contains '"workspace_sha256": "sha256:' "$WORK_DIR/clean.json" clean_workspace_digest_missing
 require_contains '"status": "passed"' "$WORK_DIR/clean.json" clean_pass_status_missing
 require_not_contains "$WORK_DIR" "$WORK_DIR/clean.json" clean_leaked_workspace_path
 require_not_contains 'WHOATHERE_CANARY_TOKEN' "$WORK_DIR/clean.json" clean_leaked_canary
