@@ -11362,7 +11362,7 @@ fn validate_clean_scanner_receipt_records(contents: &str) -> Option<&'static str
     if core_records.len() != expected_core_scanners.len() {
         return Some("scanner_receipt_core_record_count_mismatch");
     }
-    for expected in expected_core_scanners {
+    for expected in &expected_core_scanners {
         if !core_records.iter().any(|record| {
             json_extract_string_field(record, "scanner").as_deref() == Some(expected.as_str())
         }) {
@@ -11381,14 +11381,19 @@ fn validate_clean_scanner_receipt_records(contents: &str) -> Option<&'static str
             Some("not_applicable") => {}
             _ => return Some("scanner_receipt_core_record_not_clean"),
         }
-        let Some(executable_sha256) = json_extract_string_field(record, "executable_sha256") else {
-            return Some("scanner_receipt_core_record_executable_digest_missing");
-        };
-        if !valid_sha256_digest_string(&executable_sha256) {
-            return Some("scanner_receipt_core_record_executable_digest_invalid");
+        if status.as_deref() == Some("passed") {
+            let Some(executable_sha256) = json_extract_string_field(record, "executable_sha256")
+            else {
+                return Some("scanner_receipt_core_record_executable_digest_missing");
+            };
+            if !valid_sha256_digest_string(&executable_sha256) {
+                return Some("scanner_receipt_core_record_executable_digest_invalid");
+            }
         }
     }
-    if core_runnable_count as usize != observed_runnable_count {
+    if core_runnable_count as usize > expected_core_scanners.len()
+        || (core_runnable_count as usize) < observed_runnable_count
+    {
         return Some("scanner_receipt_core_runnable_count_mismatch");
     }
     if passed_count == 0 {
@@ -20579,6 +20584,61 @@ exit 0
         assert!(no_runnable_result
             .output
             .contains("\"scanner_evidence_status\": \"invalid\""));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn package_risk_clean_scanner_receipt_accepts_not_applicable_core_records() {
+        let root = temp_root("whoathere-cli-package-risk-scanner-not-applicable");
+        let state_dir = root.join("state");
+        let scanner_receipt = root.join("scanner-clean-with-not-applicable.json");
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        write_new_file(
+            &workspace.join("requirements.txt"),
+            b"safe-pkg==1.2.3 # whoathere-published-at=1700000000\n",
+        )
+        .expect("requirements");
+        let workspace_sha256 = scanner_workspace_digest(&workspace);
+        let clean_with_not_applicable_unsigned = format!(
+            "{{\"schema_version\": {}, \"created_at_unix_seconds\": {}, \"workspace_sha256\": {}, \"workspace_kind\": \"python\", \"requested_ecosystem\": \"pypi\", \"effective_ecosystem\": \"pypi\", \"execute_requested\": true, \"timeout_seconds\": 120, \"scanner_clean\": true, \"core_scanner_count\": 5, \"core_scanner_runnable_count\": 4, \"reason_codes\": [], \"records\": [{{\"scanner\": \"guarddog\", \"role\": \"core\", \"status\": \"passed\", \"executable_sha256\": \"sha256:1111111111111111111111111111111111111111111111111111111111111111\"}}, {{\"scanner\": \"osv-scanner\", \"role\": \"core\", \"status\": \"not_applicable\", \"executable_sha256\": \"sha256:2222222222222222222222222222222222222222222222222222222222222222\"}}, {{\"scanner\": \"pip-audit\", \"role\": \"core\", \"status\": \"not_applicable\", \"executable_sha256\": null}}, {{\"scanner\": \"syft\", \"role\": \"core\", \"status\": \"passed\", \"executable_sha256\": \"sha256:4444444444444444444444444444444444444444444444444444444444444444\"}}, {{\"scanner\": \"grype\", \"role\": \"core\", \"status\": \"passed\", \"executable_sha256\": \"sha256:5555555555555555555555555555555555555555555555555555555555555555\"}}]}}\n",
+            json_string(EXTERNAL_SCANNER_RUN_SCHEMA),
+            current_unix_seconds(),
+            json_string(&workspace_sha256)
+        );
+        let clean_with_not_applicable_signed =
+            sign_scanner_receipt_contents(&state_dir, &clean_with_not_applicable_unsigned)
+                .expect("signed scanner receipt");
+        write_new_file(
+            &scanner_receipt,
+            clean_with_not_applicable_signed.as_bytes(),
+        )
+        .expect("scanner receipt");
+
+        let assessed = evaluate_command(Command::PackageRiskAssess {
+            workspace: Some(workspace.display().to_string()),
+            ecosystem: Some("pypi".to_string()),
+            state_dir: Some(state_dir.display().to_string()),
+            scanner_receipt: Some(scanner_receipt.display().to_string()),
+            ai_review: false,
+            ai_provider: None,
+            ai_model: None,
+            ai_timeout_seconds: None,
+            json: true,
+        });
+
+        assert_eq!(assessed.exit_code, 0);
+        assert!(assessed.output.contains("\"all_scanner_clean\": true"));
+        assert!(assessed
+            .output
+            .contains("\"scanner_evidence_status\": \"clean\""));
+        assert!(assessed
+            .output
+            .contains("scanner_receipt_core_records_clean"));
+        assert!(!assessed
+            .output
+            .contains("scanner_receipt_core_runnable_count_mismatch"));
 
         let _ = std::fs::remove_dir_all(&root);
     }

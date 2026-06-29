@@ -470,21 +470,13 @@ run_packaged_validators() {
 write_sync_project() {
   project=$1
   mkdir -p "$project"
-  cat > "$project/pyproject.toml" <<'EOF'
-[project]
-name = "whoathere-sync-clean"
-version = "0.0.1"
-whoathere-published-at = 1700000000
-
-[project.urls]
-Repository = "https://example.invalid/whoathere-sync-clean"
-EOF
-  cat > "$project/setup.py" <<'EOF'
-from setuptools import setup
-setup(name="whoathere-sync-clean", version="0.0.1", py_modules=["whoathere_sync_clean"])
-EOF
-  cat > "$project/whoathere_sync_clean.py" <<'EOF'
-VALUE = "sync-clean"
+  cat > "$project/package.json" <<'EOF'
+{
+  "name": "whoathere-sync-clean-npm",
+  "version": "0.0.1",
+  "whoatherePublishedAtUnixSeconds": 1700000000,
+  "repository": "whoathere-sync-clean-npm"
+}
 EOF
 }
 
@@ -516,14 +508,25 @@ EOF
 write_scanner_receipt_for_workspace() {
   workspace=$1
   receipt=$2
+  ecosystem=$3
   receipt_dir=$(dirname "$receipt")
   mkdir -p "$receipt_dir"
+  set +e
   run_clean "$WRAPPER" scanners run \
     --workspace "$workspace" \
-    --ecosystem pypi \
+    --ecosystem "$ecosystem" \
     --state-dir "$STATE_DIR" \
     --execute \
     --json > "$receipt"
+  scanner_status=$?
+  set -e
+  case "$scanner_status" in
+    0|20|22) ;;
+    *)
+      cat "$receipt" >&2
+      fail scanner_run_failed
+      ;;
+  esac
   require_contains '"scanner_receipt_auth"' "$receipt" scanner_receipt_auth_missing
 }
 
@@ -535,12 +538,13 @@ prepare_package_risk_receipt_for_workspace() {
   workspace=$1
   scanner_receipt=$2
   assessment_output=$3
+  ecosystem=$4
   before_receipt=$(latest_package_risk_receipt || true)
-  write_scanner_receipt_for_workspace "$workspace" "$scanner_receipt"
+  write_scanner_receipt_for_workspace "$workspace" "$scanner_receipt" "$ecosystem"
   set +e
   run_clean "$WRAPPER" package-risk assess \
     --workspace "$workspace" \
-    --ecosystem pypi \
+    --ecosystem "$ecosystem" \
     --state-dir "$STATE_DIR" \
     --scanner-receipt "$scanner_receipt" \
     --json > "$assessment_output" 2>&1
@@ -567,7 +571,8 @@ run_sync_back_cases() {
   clean_package_risk_receipt=$(prepare_package_risk_receipt_for_workspace \
     "$clean_project" \
     "$WORK_ROOT/package-risk/sync-clean-scanner.json" \
-    "$WORK_ROOT/package-risk/sync-clean-assess.json")
+    "$WORK_ROOT/package-risk/sync-clean-assess.json" \
+    "npm")
   require_contains '"overall_verdict": "auto_sync_candidate"' "$WORK_ROOT/package-risk/sync-clean-assess.json" sync_clean_package_risk_not_auto
   set +e
   run_clean "$WRAPPER" vm detonate \
@@ -578,7 +583,7 @@ run_sync_back_cases() {
     --execute \
     --sync-back \
     --json \
-    pip -- install . > "$WORK_ROOT/sync-clean.json" 2>&1
+    npm -- install > "$WORK_ROOT/sync-clean.json" 2>&1
   clean_sync_status=$?
   set -e
   if [ "$clean_sync_status" -ne 0 ]; then
@@ -594,7 +599,8 @@ run_sync_back_cases() {
   canary_package_risk_receipt=$(prepare_package_risk_receipt_for_workspace \
     "$canary_project" \
     "$WORK_ROOT/package-risk/sync-canary-scanner.json" \
-    "$WORK_ROOT/package-risk/sync-canary-assess.json")
+    "$WORK_ROOT/package-risk/sync-canary-assess.json" \
+    "pypi")
   set +e
   run_clean "$WRAPPER" vm detonate \
     --workspace "$canary_project" \
