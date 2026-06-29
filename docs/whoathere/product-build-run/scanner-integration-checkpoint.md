@@ -22,8 +22,9 @@ execution or file copy-back by itself.
 - Added scanner smoke script: `scripts/whoathere-scanner-integration-smoke.sh`.
 - Added doctor fields for scanner bootstrap and future public-package auto-trust readiness.
 - Tightened `scanner_public_package_auto_trust_ready` so it requires all core scanners to be
-  available and a scanner bootstrap receipt to be present. Finding scanner binaries alone is not
-  enough to claim future public-package readiness.
+  available and a valid scanner bootstrap receipt with matching core counts and ready core scanner
+  records. Finding scanner binaries or a malformed receipt alone is not enough to claim future
+  public-package readiness.
 - Fixed GuardDog and pip-audit `uvx` fallback execution so fallback runs as `uvx guarddog ...`
   or `uvx pip-audit ...` instead of treating `uvx` as if it were the scanner binary.
 
@@ -45,6 +46,9 @@ Report-only adapters:
 ## Security Boundaries
 
 - Scanner output is summarized and digested; raw stdout/stderr is not included in JSON.
+- Scanner bootstrap readiness distinguishes receipt presence from receipt validity. Malformed
+  bootstrap receipts, missing core scanner records, or mismatched core counts keep future
+  public-package readiness false.
 - Executed scanner receipts include state-local `scanner_receipt_auth` when `--state-dir` is
   supplied. Clean scanner receipts without this auth tag are report-only and cannot satisfy
   package-risk auto-sync evidence.

@@ -17,10 +17,9 @@ use whoathere_core::{
 };
 use whoathere_detector::{
     external_scanner_specs, plan_external_scanner_run, run_external_scanners,
-    scan_npm_package_json, scan_pyproject_toml, scanner_bootstrap_receipt_path,
-    scanner_bootstrap_receipt_present, scanner_inventory, scanner_workspace_digest,
-    ExternalScannerRunRecord, ExternalScannerRunSummary, ScannerEcosystem, ScannerExecutionRole,
-    EXTERNAL_SCANNER_RUN_SCHEMA,
+    scan_npm_package_json, scan_pyproject_toml, scanner_bootstrap_receipt_path, scanner_inventory,
+    scanner_workspace_digest, ExternalScannerRunRecord, ExternalScannerRunSummary,
+    ScannerEcosystem, ScannerExecutionRole, EXTERNAL_SCANNER_RUN_SCHEMA,
 };
 use whoathere_evidence::{
     minimum_profiles, EvidenceBundle, EvidenceJobBinding, EvidenceJobResult, EvidenceProfile,
@@ -7455,8 +7454,9 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
         .iter()
         .filter(|item| item.spec.role == ScannerExecutionRole::Core)
         .count();
-    let scanner_public_package_auto_trust_ready =
-        scanner_public_package_auto_trust_is_ready(scanner_available, scanner_required);
+    let scanner_bootstrap =
+        scanner_bootstrap_receipt_readiness(scanner_available, scanner_required);
+    let scanner_public_package_auto_trust_ready = scanner_bootstrap.public_auto_trust_ready;
     let package_memory_ready = package_risk_memory_ready(&config.state_dir);
     let package_risk_gate_ready = true;
     let package_reputation_support = "local_metadata_only";
@@ -7504,7 +7504,7 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
             .collect::<Vec<_>>()
             .join(", ");
         return format!(
-            "{{\n  \"command\": \"whoathere doctor\",\n  \"status\": \"ok\",\n  \"release_target\": {},\n  \"release_claim\": {},\n  \"sandbox_label\": {},\n  \"high_risk_allowed\": {},\n  \"state_dir\": {},\n  \"vm_manifest_path\": {},\n  \"vm_manifest_load_reason\": {},\n  \"guest_provisioning\": {},\n  \"runtime_shutdown\": {},\n  \"release_validation\": {},\n  \"sync_validation\": {},\n  \"release_notarization\": {},\n  \"guest_reprovision_required\": {},\n  \"guest_reprovision_admin_required\": {},\n  \"guest_reprovision_operator_action\": {},\n  \"guest_reprovision_command\": {},\n  \"release_readiness_schema\": {},\n  \"release_stage\": {},\n  \"release_ready\": {},\n  \"release_blocking_reason_codes\": {},\n  \"scanner_release_blocking\": {},\n  \"scanner_release_scope\": {},\n  \"scanner_bootstrap_receipt_present\": {},\n  \"scanner_bootstrap_receipt_path\": {},\n  \"scanner_public_package_auto_trust_ready\": {},\n  \"package_memory_ready\": {},\n  \"package_memory_path\": {},\n  \"package_risk_gate_ready\": {},\n  \"package_age_gate_days\": {},\n  \"package_diff_supported\": {},\n  \"package_reputation_support\": {},\n  \"package_acquisition_policy\": {},\n  \"implemented_workflows\": {},\n  \"fail_closed_workflows\": {},\n  \"manual_review_classes\": {},\n  \"next_actions\": {},\n  \"vm_lifecycle_ready\": {},\n  \"vm_lifecycle_reason_codes\": {},\n  \"vm_runtime_ready\": {},\n  \"vm_ready\": {},\n  \"vm_reason_codes\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout_truncated\": {},\n  \"helper_stderr_truncated\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {},\n  \"scanner_available_count\": {},\n  \"scanner_required_count\": {},\n  \"scanners\": [{}]\n}}",
+            "{{\n  \"command\": \"whoathere doctor\",\n  \"status\": \"ok\",\n  \"release_target\": {},\n  \"release_claim\": {},\n  \"sandbox_label\": {},\n  \"high_risk_allowed\": {},\n  \"state_dir\": {},\n  \"vm_manifest_path\": {},\n  \"vm_manifest_load_reason\": {},\n  \"guest_provisioning\": {},\n  \"runtime_shutdown\": {},\n  \"release_validation\": {},\n  \"sync_validation\": {},\n  \"release_notarization\": {},\n  \"guest_reprovision_required\": {},\n  \"guest_reprovision_admin_required\": {},\n  \"guest_reprovision_operator_action\": {},\n  \"guest_reprovision_command\": {},\n  \"release_readiness_schema\": {},\n  \"release_stage\": {},\n  \"release_ready\": {},\n  \"release_blocking_reason_codes\": {},\n  \"scanner_release_blocking\": {},\n  \"scanner_release_scope\": {},\n  \"scanner_bootstrap_receipt_present\": {},\n  \"scanner_bootstrap_receipt_path\": {},\n  \"scanner_bootstrap_receipt_valid\": {},\n  \"scanner_bootstrap_receipt_reason_codes\": {},\n  \"scanner_public_package_auto_trust_ready\": {},\n  \"package_memory_ready\": {},\n  \"package_memory_path\": {},\n  \"package_risk_gate_ready\": {},\n  \"package_age_gate_days\": {},\n  \"package_diff_supported\": {},\n  \"package_reputation_support\": {},\n  \"package_acquisition_policy\": {},\n  \"implemented_workflows\": {},\n  \"fail_closed_workflows\": {},\n  \"manual_review_classes\": {},\n  \"next_actions\": {},\n  \"vm_lifecycle_ready\": {},\n  \"vm_lifecycle_reason_codes\": {},\n  \"vm_runtime_ready\": {},\n  \"vm_ready\": {},\n  \"vm_reason_codes\": {},\n  \"helper_path\": {},\n  \"helper_available\": {},\n  \"helper_exit_code\": {},\n  \"helper_reason_codes\": {},\n  \"helper_stdout_truncated\": {},\n  \"helper_stderr_truncated\": {},\n  \"helper_stdout\": {},\n  \"helper_stderr\": {},\n  \"scanner_available_count\": {},\n  \"scanner_required_count\": {},\n  \"scanners\": [{}]\n}}",
             json_string(RELEASE_TARGET),
             json_string(RELEASE_CLAIM),
             json_string(plan.label),
@@ -7533,8 +7533,10 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
             json_string_array(&readiness.blocking_reason_codes),
             readiness.scanner_release_blocking,
             json_string(readiness.scanner_release_scope),
-            scanner_bootstrap_receipt_present(),
+            scanner_bootstrap.present,
             json_string(&redacted_path_string(&scanner_bootstrap_receipt_path())),
+            scanner_bootstrap.valid,
+            json_string_array(&scanner_bootstrap.reason_codes),
             scanner_public_package_auto_trust_ready,
             package_memory_ready,
             json_string(&redacted_package_risk_path(&package_risk_store_path(&config.state_dir))),
@@ -7589,7 +7591,7 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "whoathere doctor\nstatus=ok\nrelease_target={}\nrelease_claim={}\nsandbox_label={}\nhigh_risk_allowed={}\nstate_dir={}\nvm_manifest_path={}\nvm_manifest_load_reason={}\n{}\n{}\n{}\n{}\n{}\nguest_reprovision_required={}\nguest_reprovision_admin_required={}\nguest_reprovision_operator_action={}\nguest_reprovision_command={}\nrelease_readiness_schema={}\nrelease_stage={}\nrelease_ready={}\nrelease_blocking_reason_codes={:?}\nscanner_release_blocking={}\nscanner_release_scope={}\nscanner_bootstrap_receipt_present={}\nscanner_bootstrap_receipt_path={}\nscanner_public_package_auto_trust_ready={}\npackage_memory_ready={}\npackage_memory_path={}\npackage_risk_gate_ready={}\npackage_age_gate_days={}\npackage_diff_supported=true\npackage_reputation_support={}\npackage_acquisition_policy={}\nimplemented_workflows={:?}\nfail_closed_workflows={:?}\nmanual_review_classes={:?}\nnext_actions={:?}\nvm_lifecycle_ready={}\nvm_lifecycle_reason_codes={:?}\nvm_runtime_ready={}\nvm_ready={}\nvm_reason_codes={:?}\n{}\nscanner_available_count={}\nscanner_required_count={}\n{}",
+        "whoathere doctor\nstatus=ok\nrelease_target={}\nrelease_claim={}\nsandbox_label={}\nhigh_risk_allowed={}\nstate_dir={}\nvm_manifest_path={}\nvm_manifest_load_reason={}\n{}\n{}\n{}\n{}\n{}\nguest_reprovision_required={}\nguest_reprovision_admin_required={}\nguest_reprovision_operator_action={}\nguest_reprovision_command={}\nrelease_readiness_schema={}\nrelease_stage={}\nrelease_ready={}\nrelease_blocking_reason_codes={:?}\nscanner_release_blocking={}\nscanner_release_scope={}\nscanner_bootstrap_receipt_present={}\nscanner_bootstrap_receipt_path={}\nscanner_bootstrap_receipt_valid={}\nscanner_bootstrap_receipt_reason_codes={:?}\nscanner_public_package_auto_trust_ready={}\npackage_memory_ready={}\npackage_memory_path={}\npackage_risk_gate_ready={}\npackage_age_gate_days={}\npackage_diff_supported=true\npackage_reputation_support={}\npackage_acquisition_policy={}\nimplemented_workflows={:?}\nfail_closed_workflows={:?}\nmanual_review_classes={:?}\nnext_actions={:?}\nvm_lifecycle_ready={}\nvm_lifecycle_reason_codes={:?}\nvm_runtime_ready={}\nvm_ready={}\nvm_reason_codes={:?}\n{}\nscanner_available_count={}\nscanner_required_count={}\n{}",
         RELEASE_TARGET,
         RELEASE_CLAIM,
         plan.label,
@@ -7614,8 +7616,10 @@ fn render_doctor(json: bool, state_dir: Option<&str>, helper_path: Option<&str>)
         readiness.blocking_reason_codes,
         readiness.scanner_release_blocking,
         readiness.scanner_release_scope,
-        scanner_bootstrap_receipt_present(),
+        scanner_bootstrap.present,
         redacted_path_string(&scanner_bootstrap_receipt_path()),
+        scanner_bootstrap.valid,
+        scanner_bootstrap.reason_codes,
         scanner_public_package_auto_trust_ready,
         package_memory_ready,
         redacted_package_risk_path(&package_risk_store_path(&config.state_dir)),
@@ -10124,8 +10128,8 @@ fn render_scanners_list(json: bool) -> String {
         .iter()
         .filter(|item| item.spec.role == ScannerExecutionRole::Core && item.available)
         .count();
-    let public_auto_trust_ready =
-        scanner_public_package_auto_trust_is_ready(core_available_count, core_count);
+    let bootstrap = scanner_bootstrap_receipt_readiness(core_available_count, core_count);
+    let public_auto_trust_ready = bootstrap.public_auto_trust_ready;
     if json {
         let scanners_json = inventory
             .iter()
@@ -10149,12 +10153,14 @@ fn render_scanners_list(json: bool) -> String {
             .collect::<Vec<_>>()
             .join(", ");
         return format!(
-            "{{\n  \"command\": \"whoathere scanners list\",\n  \"schema_version\": {},\n  \"core_scanner_count\": {},\n  \"core_scanner_available_count\": {},\n  \"bootstrap_receipt_present\": {},\n  \"bootstrap_receipt_path\": {},\n  \"scanner_public_package_auto_trust_ready\": {},\n  \"scanners\": [{}],\n  \"exit_code\": 0\n}}",
+            "{{\n  \"command\": \"whoathere scanners list\",\n  \"schema_version\": {},\n  \"core_scanner_count\": {},\n  \"core_scanner_available_count\": {},\n  \"bootstrap_receipt_present\": {},\n  \"bootstrap_receipt_path\": {},\n  \"bootstrap_receipt_valid\": {},\n  \"bootstrap_receipt_reason_codes\": {},\n  \"scanner_public_package_auto_trust_ready\": {},\n  \"scanners\": [{}],\n  \"exit_code\": 0\n}}",
             json_string(EXTERNAL_SCANNER_RUN_SCHEMA),
             core_count,
             core_available_count,
-            scanner_bootstrap_receipt_present(),
+            bootstrap.present,
             json_string(&redacted_path_string(&scanner_bootstrap_receipt_path())),
+            bootstrap.valid,
+            json_string_array(&bootstrap.reason_codes),
             public_auto_trust_ready,
             scanners_json
         );
@@ -10175,22 +10181,109 @@ fn render_scanners_list(json: bool) -> String {
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "whoathere scanners list\nschema_version={}\ncore_scanner_count={}\ncore_scanner_available_count={}\nbootstrap_receipt_present={}\nbootstrap_receipt_path={}\nscanner_public_package_auto_trust_ready={}\n{}\nexit_code=0",
+        "whoathere scanners list\nschema_version={}\ncore_scanner_count={}\ncore_scanner_available_count={}\nbootstrap_receipt_present={}\nbootstrap_receipt_path={}\nbootstrap_receipt_valid={}\nbootstrap_receipt_reason_codes={:?}\nscanner_public_package_auto_trust_ready={}\n{}\nexit_code=0",
         EXTERNAL_SCANNER_RUN_SCHEMA,
         core_count,
         core_available_count,
-        scanner_bootstrap_receipt_present(),
+        bootstrap.present,
         redacted_path_string(&scanner_bootstrap_receipt_path()),
+        bootstrap.valid,
+        bootstrap.reason_codes,
         public_auto_trust_ready,
         rows
     )
 }
 
-fn scanner_public_package_auto_trust_is_ready(
+struct ScannerBootstrapReceiptReadiness {
+    present: bool,
+    valid: bool,
+    public_auto_trust_ready: bool,
+    reason_codes: Vec<String>,
+}
+
+fn scanner_bootstrap_receipt_readiness(
     core_available_count: usize,
     core_count: usize,
-) -> bool {
-    core_count > 0 && core_available_count == core_count && scanner_bootstrap_receipt_present()
+) -> ScannerBootstrapReceiptReadiness {
+    let path = scanner_bootstrap_receipt_path();
+    if !path.is_file() {
+        return ScannerBootstrapReceiptReadiness {
+            present: false,
+            valid: false,
+            public_auto_trust_ready: false,
+            reason_codes: vec!["scanner_bootstrap_receipt_missing".to_string()],
+        };
+    }
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(_) => {
+            return ScannerBootstrapReceiptReadiness {
+                present: true,
+                valid: false,
+                public_auto_trust_ready: false,
+                reason_codes: vec!["scanner_bootstrap_receipt_unreadable".to_string()],
+            };
+        }
+    };
+    let mut reason_codes = validate_scanner_bootstrap_receipt(&contents, core_count);
+    if core_available_count != core_count {
+        reason_codes.push("scanner_bootstrap_current_core_scanners_missing".to_string());
+    }
+    reason_codes.sort();
+    reason_codes.dedup();
+    let valid = reason_codes.is_empty();
+    ScannerBootstrapReceiptReadiness {
+        present: true,
+        valid,
+        public_auto_trust_ready: valid && core_count > 0 && core_available_count == core_count,
+        reason_codes,
+    }
+}
+
+fn validate_scanner_bootstrap_receipt(contents: &str, expected_core_count: usize) -> Vec<String> {
+    let mut reason_codes = Vec::new();
+    if json_extract_string_field(contents, "schema_version").as_deref()
+        != Some("whoathere.scanner_bootstrap.v1")
+    {
+        reason_codes.push("scanner_bootstrap_receipt_schema_invalid".to_string());
+    }
+    match json_extract_u64_field(contents, "core_scanner_count") {
+        Some(count) if count as usize == expected_core_count => {}
+        Some(_) => reason_codes.push("scanner_bootstrap_core_count_mismatch".to_string()),
+        None => reason_codes.push("scanner_bootstrap_core_count_missing".to_string()),
+    }
+    match json_extract_u64_field(contents, "core_scanner_ready_count") {
+        Some(count) if count as usize == expected_core_count => {}
+        Some(_) => reason_codes.push("scanner_bootstrap_core_ready_count_mismatch".to_string()),
+        None => reason_codes.push("scanner_bootstrap_core_ready_count_missing".to_string()),
+    }
+    if json_extract_bool_field(contents, "scanner_public_package_auto_trust_ready") != Some(true) {
+        reason_codes.push("scanner_bootstrap_ready_flag_not_true".to_string());
+    }
+    let records = json_extract_object_array(contents, "scanners");
+    let expected_core_scanners = external_scanner_specs()
+        .into_iter()
+        .filter(|spec| spec.role == ScannerExecutionRole::Core)
+        .map(|spec| spec.name.to_string())
+        .collect::<Vec<_>>();
+    for expected in expected_core_scanners {
+        let Some(record) = records.iter().find(|record| {
+            json_extract_string_field(record, "name").as_deref() == Some(expected.as_str())
+        }) else {
+            reason_codes.push("scanner_bootstrap_core_record_missing".to_string());
+            continue;
+        };
+        if json_extract_string_field(record, "role").as_deref() != Some("core") {
+            reason_codes.push("scanner_bootstrap_core_record_role_invalid".to_string());
+        }
+        if !matches!(
+            json_extract_string_field(record, "status").as_deref(),
+            Some("available" | "installed" | "uvx_available")
+        ) {
+            reason_codes.push("scanner_bootstrap_core_record_not_ready".to_string());
+        }
+    }
+    reason_codes
 }
 
 fn render_scanners_bootstrap_plan(json: bool) -> String {
@@ -20881,6 +20974,7 @@ exit 0
         assert!(list
             .output
             .contains("\"scanner_public_package_auto_trust_ready\""));
+        assert!(list.output.contains("\"bootstrap_receipt_valid\""));
 
         let plan = evaluate_command(Command::ScannersBootstrapPlan { json: true });
         assert_eq!(plan.exit_code, 0);
@@ -20922,6 +21016,7 @@ exit 0
         assert!(result
             .output
             .contains("\"bootstrap_receipt_present\": false"));
+        assert!(result.output.contains("\"bootstrap_receipt_valid\": false"));
         assert!(result
             .output
             .contains("\"scanner_public_package_auto_trust_ready\": false"));
@@ -20933,7 +21028,32 @@ exit 0
             &scanner_cache.join("scanner-bootstrap.json"),
             br#"{"schema_version":"whoathere.scanner_bootstrap.v1"}"#,
         )
-        .expect("bootstrap receipt");
+        .expect("malformed bootstrap receipt");
+        let malformed_result = with_reprovision_env(
+            &[
+                ("HOME", home.display().to_string()),
+                (
+                    "WHOATHERE_SCANNER_CACHE_DIR",
+                    scanner_cache.display().to_string(),
+                ),
+            ],
+            || evaluate_command(Command::ScannersList { json: true }),
+        );
+        assert_eq!(malformed_result.exit_code, 0);
+        assert!(malformed_result
+            .output
+            .contains("\"bootstrap_receipt_present\": true"));
+        assert!(malformed_result
+            .output
+            .contains("\"bootstrap_receipt_valid\": false"));
+        assert!(malformed_result
+            .output
+            .contains("scanner_bootstrap_core_count_missing"));
+        assert!(malformed_result
+            .output
+            .contains("\"scanner_public_package_auto_trust_ready\": false"));
+
+        write_valid_scanner_bootstrap_receipt(&scanner_cache);
         let ready_result = with_reprovision_env(
             &[
                 ("HOME", home.display().to_string()),
@@ -20948,6 +21068,12 @@ exit 0
         assert!(ready_result
             .output
             .contains("\"bootstrap_receipt_present\": true"));
+        assert!(ready_result
+            .output
+            .contains("\"bootstrap_receipt_valid\": true"));
+        assert!(ready_result
+            .output
+            .contains("\"bootstrap_receipt_reason_codes\": []"));
         assert!(ready_result
             .output
             .contains("\"scanner_public_package_auto_trust_ready\": true"));
@@ -24561,6 +24687,34 @@ exit 0
         )
         .expect("fake scanner");
         set_executable(path).expect("fake scanner executable");
+    }
+
+    fn write_valid_scanner_bootstrap_receipt(scanner_cache: &std::path::Path) {
+        let path = scanner_cache.join("scanner-bootstrap.json");
+        let _ = std::fs::remove_file(&path);
+        write_new_file(
+            &path,
+            br#"{
+  "schema_version": "whoathere.scanner_bootstrap.v1",
+  "created_at": "2026-06-29T00:00:00Z",
+  "cache_dir": "<test-scanner-cache>",
+  "bin_dir": "<test-scanner-cache>/bin",
+  "core_scanner_count": 5,
+  "core_scanner_ready_count": 5,
+  "scanner_public_package_auto_trust_ready": true,
+  "scanners": [
+    {"name": "guarddog", "role": "core", "status": "available", "path": "guarddog", "version": "test", "install_method": "test", "failure": null},
+    {"name": "pip-audit", "role": "core", "status": "available", "path": "pip-audit", "version": "test", "install_method": "test", "failure": null},
+    {"name": "osv-scanner", "role": "core", "status": "available", "path": "osv-scanner", "version": "test", "install_method": "test", "failure": null},
+    {"name": "syft", "role": "core", "status": "available", "path": "syft", "version": "test", "install_method": "test", "failure": null},
+    {"name": "grype", "role": "core", "status": "available", "path": "grype", "version": "test", "install_method": "test", "failure": null},
+    {"name": "trivy", "role": "report_only", "status": "available", "path": "trivy", "version": "test", "install_method": "test", "failure": null},
+    {"name": "scorecard", "role": "report_only", "status": "available", "path": "scorecard", "version": "test", "install_method": "test", "failure": null}
+  ]
+}
+"#,
+        )
+        .expect("valid scanner bootstrap receipt");
     }
 
     fn temp_root(prefix: &str) -> std::path::PathBuf {
