@@ -36,6 +36,9 @@ security behavior, not installer, GUI, packaging polish, or enterprise Vault wor
   common zero-argument module functions and client methods inside the VM. Canary or network markers
   still deny sync-back. This improves coverage for API-compatible malicious packages without
   claiming full runtime behavior protection.
+- Added `docs/whoathere/product-build-run/macos-local-beta-cli-guide.md`, a short CLI-only guide for
+  building, checking VM readiness, running scanners and package-risk assessment, detonating npm,
+  pip, and uv workflows, interpreting decisions, and recovering from blocked cases.
 
 ## Validation Passed
 
