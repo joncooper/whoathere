@@ -55,6 +55,7 @@ security behavior, not installer, GUI, packaging polish, or enterprise Vault wor
 - `whoathere/helpers/macos-vm-helper/scripts/validate-guest-agent-project-payload.sh`
 - `swift test` in `whoathere/helpers/macos-vm-helper`
 - `cargo test --manifest-path whoathere/Cargo.toml -p whoathere-cli vm_detonate -- --nocapture`
+- `cargo test --manifest-path whoathere/Cargo.toml -p whoathere-cli scanners_run -- --nocapture`
 - ASCII scan over docs, scripts, and Rust sources
 
 ## Real Project Compatibility Pass
@@ -75,6 +76,36 @@ classifier could be measured by itself. The observed results were conservative r
 permissive: missing baselines, missing scanner receipts, missing publish-age metadata, and missing
 reputation metadata keep packages in manual review. This is expected for a fresh local beta state
 with no approved history.
+
+The same project set was then run with external scanners enabled:
+
+| Project | Ecosystem | Scanner ecosystem | Packages assessed | Verdict | Scanner clean | Elapsed |
+| --- | --- | --- | ---: | --- | --- | ---: |
+| `/Users/jdc/src/CodexBar` | npm | npm | 1 | manual_review | false | 41s |
+| `/Users/jdc/src/monoscope` | npm | npm | 931 | manual_review | false | 140s |
+| `/Users/jdc/src/halp-me-resume` | auto | auto | 106 | manual_review | false | 98s |
+| `/Users/jdc/src/autoport` | uv | pypi | 17 | manual_review | false | 75s |
+| `/Users/jdc/src/ramp-monorepo/ledger` | uv | pypi | 2 | manual_review | false | 38s |
+
+This pass found scanner integration friction but no fail-open behavior. GuardDog on macOS needs
+`--no-sandbox` when run as a host-side advisory scanner, so WhoaThere now adds that argument and
+records `guarddog_no_sandbox_for_macos_scanner_compatibility` in the scanner receipt. This does not
+grant package execution or copy-back authority. OSV can fail when the environment cannot resolve or
+reach `api.osv.dev`; those failures are now recorded as `scanner_network_unavailable` and keep
+`scanner_clean=false` instead of being hidden as a generic process error. uv project scanner runs
+now map to the PyPI scanner ecosystem, while package-risk assessment still records them as uv.
+
+A follow-up CodexBar-only scanner smoke after the OSV reason-code change produced:
+
+- package-risk verdict: `manual_review`
+- scanner receipt: `scanner_clean=false`
+- GuardDog: `passed` with the macOS compatibility reason recorded
+- OSV: `error` with `scanner_network_unavailable`
+- Syft and Grype: `passed`
+
+The scanner-enabled results are intentionally conservative. Scanner outage, scanner timeout, real
+Syft/Grype findings, missing baselines, missing publish-age metadata, and missing reputation data
+all prevent auto-allow. They do not cause host package execution, and they do not authorize sync-back.
 
 The pass found one useful false-positive class: uv lockfiles include normal registry package
 records with `sdist` and `wheels` artifact URLs. Those should not be treated as direct URL
@@ -105,6 +136,5 @@ binary, VCS, direct URL, editable, or unknown artifacts.
 
 - Run the opt-in VM pressure suite against a current signed preview archive:
   `WHOATHERE_PRESSURE_ENABLE_VM=1 WHOATHERE_PRESSURE_RUNTIME_ARCHIVE=<archive> scripts/whoathere-local-beta-pressure-suite.sh`.
-- Run real-project compatibility again with external scanners enabled after scanner bootstrap is
-  available in the current environment, then compare scanner friction against package-risk-only
-  friction.
+- Current live VM validation is blocked until guest reprovision is rerun with sudo after the guest
+  agent source digest changed.

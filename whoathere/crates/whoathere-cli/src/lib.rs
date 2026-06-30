@@ -22365,6 +22365,57 @@ exit 128
     }
 
     #[test]
+    fn scanners_run_classifies_osv_network_failure_without_raw_output() {
+        let root = temp_root("whoathere-cli-scanners-osv-network");
+        let scanner_cache = root.join("scanners");
+        let bin = scanner_cache.join("bin");
+        let workspace = root.join("npm-project");
+        let state_dir = root.join("state");
+        std::fs::create_dir_all(&bin).expect("bin");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        write_clean_npm_project(&workspace);
+        for scanner in ["guarddog", "syft", "grype", "pip-audit"] {
+            write_fake_scanner(&bin.join(scanner));
+        }
+        write_new_file(
+            &bin.join("osv-scanner"),
+            br#"#!/bin/sh
+printf 'error when retrieving vulns: lookup api.osv.dev: no such host\n' >&2
+exit 127
+"#,
+        )
+        .expect("osv fake");
+        set_executable(&bin.join("osv-scanner")).expect("osv executable");
+
+        with_reprovision_env(
+            &[(
+                "WHOATHERE_SCANNER_CACHE_DIR",
+                scanner_cache.display().to_string(),
+            )],
+            || {
+                let result = evaluate_command(Command::ScannersRun {
+                    workspace: Some(workspace.display().to_string()),
+                    ecosystem: Some("npm".to_string()),
+                    state_dir: Some(state_dir.display().to_string()),
+                    timeout_seconds: Some(5),
+                    execute: true,
+                    json: true,
+                });
+                assert_eq!(result.exit_code, ExitCode::Deny.code());
+                assert!(result.output.contains("\"scanner_clean\": false"));
+                assert!(result.output.contains("\"scanner\": \"osv-scanner\""));
+                assert!(result.output.contains("\"status\": \"error\""));
+                assert!(result.output.contains("scanner_network_unavailable"));
+                assert!(result.output.contains("scanner_osv-scanner_not_clean"));
+                assert!(!result.output.contains("api.osv.dev: no such host"));
+                assert!(!result.output.contains(&root.display().to_string()));
+            },
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn scanners_run_dry_run_requires_execute_without_raw_workspace_path() {
         let root = temp_root("whoathere-cli-scanners-dry-run");
         write_clean_npm_project(&root);

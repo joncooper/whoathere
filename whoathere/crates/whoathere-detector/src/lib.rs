@@ -782,34 +782,41 @@ fn plan_guarddog(
 ) {
     match ecosystem {
         ScannerEcosystem::Npm => {
-            plan.argv = scanner_invocation_args(
-                plan.executable.as_deref(),
-                "guarddog",
-                vec![
-                    "npm".to_string(),
-                    "scan".to_string(),
-                    workspace.display().to_string(),
-                    "--output-format=json".to_string(),
-                ],
-            );
+            let mut args = vec![
+                "npm".to_string(),
+                "scan".to_string(),
+                workspace.display().to_string(),
+                "--output-format=json".to_string(),
+            ];
+            add_guarddog_host_compatibility_args(&mut args, plan);
+            plan.argv = scanner_invocation_args(plan.executable.as_deref(), "guarddog", args);
         }
         ScannerEcosystem::Pypi => {
-            plan.argv = scanner_invocation_args(
-                plan.executable.as_deref(),
-                "guarddog",
-                vec![
-                    "pypi".to_string(),
-                    "scan".to_string(),
-                    workspace.display().to_string(),
-                    "--output-format=json".to_string(),
-                ],
-            );
+            let mut args = vec![
+                "pypi".to_string(),
+                "scan".to_string(),
+                workspace.display().to_string(),
+                "--output-format=json".to_string(),
+            ];
+            add_guarddog_host_compatibility_args(&mut args, plan);
+            plan.argv = scanner_invocation_args(plan.executable.as_deref(), "guarddog", args);
         }
         ScannerEcosystem::Auto => {
             plan.status = ScannerRunStatus::NotApplicable;
             plan.reason_codes
                 .push("guarddog_ecosystem_unknown".to_string());
         }
+    }
+}
+
+fn add_guarddog_host_compatibility_args(
+    args: &mut Vec<String>,
+    plan: &mut ExternalScannerCommandPlan,
+) {
+    if cfg!(target_os = "macos") {
+        args.push("--no-sandbox".to_string());
+        plan.reason_codes
+            .push("guarddog_no_sandbox_for_macos_scanner_compatibility".to_string());
     }
 }
 
@@ -883,6 +890,21 @@ fn scanner_executable_is_uvx(executable: Option<&Path>) -> bool {
 
 fn scanner_output_contains(output: &[u8], needle: &str) -> bool {
     String::from_utf8_lossy(output).contains(needle)
+}
+
+fn scanner_output_indicates_network_unavailable(stdout: &[u8], stderr: &[u8]) -> bool {
+    let combined = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(stdout).to_ascii_lowercase(),
+        String::from_utf8_lossy(stderr).to_ascii_lowercase()
+    );
+    combined.contains("no such host")
+        || combined.contains("could not resolve")
+        || combined.contains("name or service not known")
+        || combined.contains("lookup ")
+        || combined.contains("dial tcp")
+        || combined.contains("network is unreachable")
+        || combined.contains("api.osv.dev")
 }
 
 fn execute_scanner_plan(
@@ -999,6 +1021,13 @@ fn execute_scanner_plan(
         completed
             .reason_codes
             .push("scanner_grype_fail_on_threshold_triggered".to_string());
+    } else if completed.scanner == "osv-scanner"
+        && scanner_output_indicates_network_unavailable(&stdout, &stderr)
+    {
+        completed.status = ScannerRunStatus::Error;
+        completed
+            .reason_codes
+            .push("scanner_network_unavailable".to_string());
     } else {
         completed.status = ScannerRunStatus::Error;
         completed
