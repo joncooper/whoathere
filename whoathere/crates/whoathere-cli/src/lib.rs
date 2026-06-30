@@ -12834,6 +12834,9 @@ fn discover_python_lockfile_package_risk_subjects(
             let Some(name) = toml_like_string_field(&package_block, "name") else {
                 continue;
             };
+            if python_lockfile_source_is_workspace_root(&package_block) {
+                continue;
+            }
             let version = toml_like_string_field(&package_block, "version");
             let source_kind = python_lockfile_source_kind(&package_block);
             let package_class =
@@ -12843,8 +12846,8 @@ fn discover_python_lockfile_package_risk_subjects(
                 .map(|version| format!("=={version}"))
                 .unwrap_or_else(|| "lockfile".to_string());
             let mut indicators = vec!["python_lockfile_dependency_record".to_string()];
-            if python_lockfile_has_source_url(&package_block) {
-                indicators.push("python_lockfile_url_present".to_string());
+            if python_lockfile_has_source_reference(&package_block) {
+                indicators.push(python_lockfile_source_record_indicator(&source_kind));
             }
             if source_kind != "registry" {
                 indicators.push(format!("dependency_source_{source_kind}"));
@@ -12899,10 +12902,11 @@ fn toml_like_package_blocks(contents: &str) -> Vec<String> {
 }
 
 fn python_lockfile_source_kind(block: &str) -> String {
-    let lowered = block.to_ascii_lowercase();
+    let source = toml_like_source_line(block).unwrap_or_default();
+    let lowered = source.to_ascii_lowercase();
     if lowered.contains("git =") || lowered.contains("git+") || lowered.contains("source = { git") {
         "vcs".to_string()
-    } else if lowered.contains("editable = true") || lowered.contains("editable =true") {
+    } else if lowered.contains("editable =") {
         "editable".to_string()
     } else if lowered.contains("path =") || lowered.contains("directory =") {
         "local".to_string()
@@ -12913,13 +12917,41 @@ fn python_lockfile_source_kind(block: &str) -> String {
     }
 }
 
-fn python_lockfile_has_source_url(block: &str) -> bool {
-    let lowered = block.to_ascii_lowercase();
+fn python_lockfile_has_source_reference(block: &str) -> bool {
+    let source = toml_like_source_line(block).unwrap_or_default();
+    let lowered = source.to_ascii_lowercase();
     lowered.contains("url =")
         || lowered.contains("registry =")
         || lowered.contains("git =")
         || lowered.contains("path =")
         || lowered.contains("archive =")
+}
+
+fn python_lockfile_source_record_indicator(source_kind: &str) -> String {
+    match source_kind {
+        "registry" => "python_lockfile_registry_source_record".to_string(),
+        "direct_url" => "python_lockfile_direct_url_source_record".to_string(),
+        "vcs" => "python_lockfile_vcs_source_record".to_string(),
+        "editable" => "python_lockfile_editable_source_record".to_string(),
+        "local" => "python_lockfile_local_source_record".to_string(),
+        other => format!("python_lockfile_{other}_source_record"),
+    }
+}
+
+fn python_lockfile_source_is_workspace_root(block: &str) -> bool {
+    let source = toml_like_source_line(block).unwrap_or_default();
+    let lowered = source.to_ascii_lowercase();
+    lowered.contains("editable = \".\"")
+        || lowered.contains("editable = '.'")
+        || lowered.contains("path = \".\"")
+        || lowered.contains("path = '.'")
+}
+
+fn toml_like_source_line(block: &str) -> Option<&str> {
+    block
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("source") && line.contains('='))
 }
 
 fn assess_package_risk_subject(
@@ -20986,9 +21018,18 @@ exit 0
             &root.join("uv.lock"),
             br#"
 [[package]]
+name = "uv-root"
+version = "0.1.0"
+source = { editable = "." }
+
+[[package]]
 name = "uv-clean"
 version = "1.0.0"
 source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/uv-clean.tar.gz", hash = "sha256:clean" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/uv-clean.whl", hash = "sha256:clean" },
+]
 
 [[package]]
 name = "uv-vcs-evil"
@@ -21017,12 +21058,14 @@ source = { path = "../outside" }
 
         assert_eq!(result.exit_code, 20);
         assert!(result.output.contains("\"ecosystem\": \"uv\""));
+        assert!(!result.output.contains("\"package_name\": \"uv-root\""));
         assert!(result.output.contains("\"package_name\": \"uv-clean\""));
         assert!(result.output.contains("\"package_name\": \"uv-vcs-evil\""));
         assert!(result
             .output
             .contains("\"package_name\": \"uv-local-evil\""));
         assert!(result.output.contains("python_lockfile_dependency_record"));
+        assert!(!result.output.contains("dependency_source_direct_url"));
         assert!(result.output.contains("dependency_source_vcs"));
         assert!(result.output.contains("dependency_source_local"));
         assert!(result

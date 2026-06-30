@@ -25,6 +25,12 @@ security behavior, not installer, GUI, packaging polish, or enterprise Vault wor
   By default it is skipped; when `WHOATHERE_PRESSURE_ENABLE_VM=1` and
   `WHOATHERE_PRESSURE_RUNTIME_ARCHIVE` are set, it runs same-host runtime qualification, including
   live VM detonation and clean sync-back/malicious no-sync validation.
+- Added `scripts/whoathere-real-project-compatibility.sh` for repeatable package-risk assessment
+  against existing local npm, pip, and uv projects without host package execution.
+- Calibrated uv lockfile handling after real-project testing. Normal registry package entries with
+  wheel or sdist artifact URLs are now recorded as registry lockfile evidence, not denied as direct
+  URL dependencies. VCS, local, editable, direct URL, native, and binary classes remain
+  conservative.
 
 ## Validation Passed
 
@@ -37,7 +43,41 @@ security behavior, not installer, GUI, packaging polish, or enterprise Vault wor
 - `scripts/whoathere-local-beta-pressure-smoke.sh`
 - `scripts/whoathere-local-beta-pressure-suite.sh` with loopback compatibility enabled
 - `WHOATHERE_PRESSURE_SKIP_COMPAT=1 scripts/whoathere-local-beta-pressure-suite.sh`
+- `scripts/whoathere-real-project-compatibility.sh /Users/jdc/src/CodexBar:npm /Users/jdc/src/monoscope:npm /Users/jdc/src/halp-me-resume:auto /Users/jdc/src/autoport:uv /Users/jdc/src/ramp-monorepo/ledger:uv`
 - ASCII scan over docs, scripts, and Rust sources
+
+## Real Project Compatibility Pass
+
+The compatibility harness was run against five local projects that were not synthetic attack
+fixtures:
+
+| Project | Ecosystem | Packages assessed | Verdict | Elapsed |
+| --- | --- | ---: | --- | ---: |
+| `/Users/jdc/src/CodexBar` | npm | 1 | manual_review | 0s |
+| `/Users/jdc/src/monoscope` | npm | 931 | manual_review | 2s |
+| `/Users/jdc/src/halp-me-resume` | auto | 106 | manual_review | 1s |
+| `/Users/jdc/src/autoport` | uv | 17 | manual_review | 11s |
+| `/Users/jdc/src/ramp-monorepo/ledger` | uv | 2 | manual_review | 0s |
+
+External scanners were intentionally skipped in this first compatibility run so the package-risk
+classifier could be measured by itself. The observed results were conservative rather than
+permissive: missing baselines, missing scanner receipts, missing publish-age metadata, and missing
+reputation metadata keep packages in manual review. This is expected for a fresh local beta state
+with no approved history.
+
+The pass found one useful false-positive class: uv lockfiles include normal registry package
+records with `sdist` and `wheels` artifact URLs. Those should not be treated as direct URL
+dependencies. The classifier now reads the package source line instead of the entire lockfile block
+when deciding whether a package came from a registry, direct URL, VCS, local path, or editable
+source. Workspace root editable entries such as `source = { editable = "." }` are ignored because
+the root project is assessed separately from its dependencies.
+
+Remaining real-project friction is deliberate for the beta:
+
+- Fresh state without approved package history requires manual review.
+- Scanner receipts are useful evidence but are not allowed to authorize sync-back by themselves.
+- Registry lockfile records are visible in the output, but VCS, local, editable, direct URL,
+  native, binary, and unknown package classes remain blocked or manual review by default.
 
 ## Current Security Posture
 
@@ -54,9 +94,8 @@ binary, VCS, direct URL, editable, or unknown artifacts.
 
 - Run the opt-in VM pressure suite against a current signed preview archive:
   `WHOATHERE_PRESSURE_ENABLE_VM=1 WHOATHERE_PRESSURE_RUNTIME_ARCHIVE=<archive> scripts/whoathere-local-beta-pressure-suite.sh`.
-- Run against several real external npm, pip, and uv projects that are not synthetic fixtures, then
-  record observed false positives, false negatives, elapsed time, and workflow friction.
 - Decide whether Python API-compatible malicious behavior needs an additional project-mode method
   call probe beyond the existing import probes and fixture-mode API canary coverage.
-- Tune any noisy package-risk results found by real-project testing without relaxing fail-closed
-  behavior for high-risk package execution or sync-back.
+- Run real-project compatibility again with external scanners enabled after scanner bootstrap is
+  available in the current environment, then compare scanner friction against package-risk-only
+  friction.
