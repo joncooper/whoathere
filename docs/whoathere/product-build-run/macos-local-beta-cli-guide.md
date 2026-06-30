@@ -1,196 +1,289 @@
 # WhoaThere macOS Local Beta CLI Guide
 
-This guide is for Python and Node developers using the current Apple Silicon macOS local beta from
-the command line. It avoids installer, GUI, packaging, AWS, and enterprise Vault work.
+This guide is for Python and Node developers using the Apple Silicon macOS local beta from the
+command line. It assumes a signed and notarized preview archive such as:
 
-## What This Beta Does
+```text
+dist/whoathere-macos-arm64-preview-a212742.tar.gz
+```
 
-WhoaThere gives you a safer way to test package installs before they touch your normal project
-files. It mirrors a small project into a macOS VM, runs supported npm, pip, or uv workflows there,
-plants fake credentials in the VM, watches for risky behavior, and copies files back only when
-explicitly requested and backed by clean evidence.
+WhoaThere is not a general package-safety oracle. It is a way to run supported package workflows in
+a separate macOS VM, watch for dangerous behavior, and copy back only narrow outputs when the
+evidence is clean.
 
-It is useful because malicious packages often attack during install, build, import, or first API
-use. WhoaThere moves those moments away from your host and records why it allowed, denied, or asked
-for review.
+## What It Helps With
+
+WhoaThere improves local development safety when a package does something risky during install,
+build, import, or first simple API use. It can help catch or block:
+
+- npm lifecycle scripts that read fake credentials or try network exfiltration.
+- Python `setup.py`, PEP 517 build backends, import-time payloads, and `.pth` startup hooks.
+- npm or Python packages that look API-compatible but touch fake secrets during common use.
+- delayed `CI=true`, macOS-only, DNS/HTTPS exfiltration, binary/native marker, direct URL, VCS, and
+  editable dependency cases.
+- surprise upgrades when local last-known-good package memory exists.
 
 ## What It Does Not Do
 
 - It does not prove arbitrary packages are safe.
-- It does not protect your app after you import and run a package in normal application code.
-- It does not auto-trust native extensions, binary wheels, direct URLs, Git/VCS dependencies,
-  editable installs, unknown artifacts, or suspicious package classes.
-- It does not use public registry fallback for this beta.
+- It does not protect your application after you run admitted package code normally.
+- It does not safely auto-sync native extensions, binary wheels, direct URLs, VCS dependencies,
+  editable installs, global/system Python installs, unknown artifacts, or suspicious outputs.
+- It does not use public registry fallback in this beta.
 - It does not let scanner results authorize file copy-back by themselves.
+- It does not replace code review for packages that hide malicious behavior behind ordinary runtime
+  APIs that WhoaThere did not probe.
 
-## Build The CLI And Helper
+## Install From The Preview Archive
 
-From the repo root:
-
-```sh
-cargo build --manifest-path whoathere/Cargo.toml -p whoathere-cli --bin whoathere
-```
-
-Build the macOS VM helper:
+Extract and install for the current user only:
 
 ```sh
-cd /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper
-swift test
-swift build
-./scripts/sign-local-helper.sh
+cd /path/to/release-artifacts
+shasum -a 256 -c whoathere-macos-arm64-preview-a212742.tar.gz.sha256
+tar -xzf whoathere-macos-arm64-preview-a212742.tar.gz
+cd whoathere-macos-arm64-preview-a212742
+./install-macos-preview.sh --dry-run --prefix "$HOME/.whoathere"
+./install-macos-preview.sh --prefix "$HOME/.whoathere"
 ```
 
-Set these shell variables:
+Add the wrapper to your shell path:
 
 ```sh
-export WHOATHERE=/Users/jdc/src/whoathere/whoathere/target/debug/whoathere
-export WHOATHERE_STATE=/Users/jdc/.whoathere/macos-vm-validation
-export WHOATHERE_HELPER=/Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/.build/arm64-apple-macosx/debug/whoathere-macos-vm-helper
+export PATH="$HOME/.whoathere/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 ```
 
-Run `./scripts/sign-local-helper.sh` again after every `swift build`.
+The wrapper points `whoathere` at the packaged VM helper. You should not need to pass `--helper`
+when using the installed wrapper.
+
+Confirm the CLI runs:
+
+```sh
+whoathere --help
+```
+
+Use one state directory for the beta VM and receipts:
+
+```sh
+export WHOATHERE_STATE="$HOME/.whoathere/macos-vm-validation"
+```
 
 ## Check Readiness
 
-Use `doctor` first:
+Run:
 
 ```sh
-$WHOATHERE doctor --state-dir "$WHOATHERE_STATE" --helper "$WHOATHERE_HELPER" --json
-```
-
-Useful fields:
-
-- `release_ready`: whether the current local beta checks are satisfied.
-- `reason_codes`: what is missing or stale.
-- `guest_reprovision_required`: whether the VM guest tools need to be refreshed.
-- `guest_reprovision_command`: the admin command to run when guest tools are stale.
-- `package_acquisition_policy`: should remain `local_only_no_public_resolver` for this beta.
-
-## Initialize Or Refresh The VM
-
-Create the VM with a local restore image:
-
-```sh
-$WHOATHERE vm init --state-dir "$WHOATHERE_STATE" --helper "$WHOATHERE_HELPER" \
-  --restore-image /absolute/path/to/macos-restore.ipsw --execute
-```
-
-Or fetch Apple's current restore image:
-
-```sh
-$WHOATHERE vm init --state-dir "$WHOATHERE_STATE" --helper "$WHOATHERE_HELPER" \
-  --fetch-latest-restore-image --execute
-```
-
-Before refreshing guest tools:
-
-```sh
-$WHOATHERE vm reprovision --preflight --state-dir "$WHOATHERE_STATE" --helper "$WHOATHERE_HELPER"
-```
-
-Then run the printed admin command in an interactive terminal. After that:
-
-```sh
-$WHOATHERE vm status --state-dir "$WHOATHERE_STATE" --helper "$WHOATHERE_HELPER" --json
-```
-
-## Optional Scanner Evidence
-
-Bootstrap scanners:
-
-```sh
-scripts/whoathere-bootstrap-scanners.sh
-```
-
-Run scanners against a project:
-
-```sh
-$WHOATHERE scanners run --workspace /absolute/path/to/project --ecosystem auto \
-  --state-dir "$WHOATHERE_STATE" --execute --json
-```
-
-Scanner output is evidence, not permission. A scanner finding should make you more cautious. A clean
-scanner run does not make a package safe by itself.
-
-## Assess Package Risk
-
-Run package-risk assessment before VM sync-back:
-
-```sh
-$WHOATHERE package-risk assess --workspace /absolute/path/to/project --ecosystem auto \
-  --state-dir "$WHOATHERE_STATE" --json
-```
-
-With scanner evidence:
-
-```sh
-$WHOATHERE package-risk assess --workspace /absolute/path/to/project --ecosystem auto \
-  --state-dir "$WHOATHERE_STATE" --scanner-receipt /path/to/scanner-receipt.json --json
+whoathere doctor --state-dir "$WHOATHERE_STATE" --json
 ```
 
 Read these fields first:
 
-- `overall_verdict`: `allow`, `manual_review`, or `deny`.
-- `packages`: each package and the reason codes behind its verdict.
-- `host_effect`: what did or did not happen on your host.
-- `recommended_actions`: what to do next.
-- `receipt_path`: the receipt to use later if the result is clean enough for sync-back.
+- `release_ready`: `true` means this local state has current release evidence.
+- `release_blocking_reason_codes`: what is missing or stale when `release_ready` is false.
+- `guest_reprovision_required`: whether the VM guest tools must be refreshed.
+- `guest_reprovision_command`: the admin command to run when guest tooling is stale.
+- `package_acquisition_policy`: should be `local_only_no_public_resolver`.
+- `manual_review_classes`: package classes that stay conservative in this beta.
 
-Fresh local state usually produces `manual_review` because there is no approved history yet.
+It is normal for a fresh install to report `release_ready=false` until the VM is initialized,
+provisioned, and validated for that user state.
 
-## Detonate Without Copy-Back
+## Initialize The VM
+
+Create a VM from a local restore image:
+
+```sh
+whoathere vm init --state-dir "$WHOATHERE_STATE" \
+  --restore-image /absolute/path/to/macos-restore.ipsw \
+  --execute
+```
+
+Or allow the helper to fetch Apple's current restore image:
+
+```sh
+whoathere vm init --state-dir "$WHOATHERE_STATE" \
+  --fetch-latest-restore-image \
+  --execute
+```
+
+Refresh guest tools when `doctor` asks for it:
+
+```sh
+whoathere vm reprovision --preflight --state-dir "$WHOATHERE_STATE"
+```
+
+Run the printed `sudo ... provision-guest-readiness.sh ...` command in an interactive admin-capable
+Terminal. Then check:
+
+```sh
+whoathere vm status --state-dir "$WHOATHERE_STATE" --json
+```
+
+Start and health-check the VM:
+
+```sh
+whoathere vm start --state-dir "$WHOATHERE_STATE" --execute
+whoathere vm health --state-dir "$WHOATHERE_STATE"
+```
+
+Stop it when finished:
+
+```sh
+whoathere vm suspend --state-dir "$WHOATHERE_STATE" --execute
+```
+
+## Optional Scanner Setup
+
+Scanners add useful evidence. They do not replace the VM and cannot authorize copy-back by
+themselves.
+
+If Homebrew and uv are available, install the current core tools:
+
+```sh
+brew install osv-scanner syft grype trivy scorecard
+uv tool install guarddog
+uv tool install pip-audit
+```
+
+Check scanner readiness:
+
+```sh
+whoathere scanners list --json
+```
+
+Run scanners for a project:
+
+```sh
+whoathere scanners run --workspace /absolute/path/to/project \
+  --ecosystem auto \
+  --state-dir "$WHOATHERE_STATE" \
+  --execute \
+  --json > scanner-receipt.json
+```
+
+Scanner output is normalized and redacted. It should not include raw package dumps, tokens,
+canaries, or host secret paths.
+
+## Assess Package Risk
+
+Assess a workspace before copy-back:
+
+```sh
+whoathere package-risk assess --workspace /absolute/path/to/project \
+  --ecosystem auto \
+  --state-dir "$WHOATHERE_STATE" \
+  --scanner-receipt scanner-receipt.json \
+  --json > package-risk.json
+```
+
+Read:
+
+- `overall_verdict`: `auto_sync_candidate`, `manual_review`, or `deny`.
+- `decision_summary`: plain-language summary.
+- `host_effect`: what happened on the host. Package-risk assessment does not run package code.
+- `recommended_actions`: next practical steps.
+- `packages`: per-package verdicts and reason codes.
+
+The printed `receipt_path` is intentionally redacted. To find the newest receipt:
+
+```sh
+PACKAGE_RISK_RECEIPT=$(
+  find "$WHOATHERE_STATE/package-risk/receipts" -name '*.json' -type f | sort | tail -n 1
+)
+printf '%s\n' "$PACKAGE_RISK_RECEIPT"
+```
+
+Fresh local state often produces `manual_review` because no last-known-good version has been
+approved yet.
+
+Approve a local baseline only after review:
+
+```sh
+whoathere package-risk approve --receipt "$PACKAGE_RISK_RECEIPT" \
+  --reason "reviewed local beta baseline" \
+  --state-dir "$WHOATHERE_STATE" \
+  --json
+```
+
+## Run Without Copy-Back
 
 Python local project:
 
 ```sh
-$WHOATHERE vm detonate --workspace /absolute/path/to/python-project \
-  --state-dir "$WHOATHERE_STATE" --helper "$WHOATHERE_HELPER" \
-  --execute --json pip -- install .
+whoathere vm detonate --workspace /absolute/path/to/python-project \
+  --state-dir "$WHOATHERE_STATE" \
+  --execute --json \
+  pip -- install .
 ```
 
-Python requirements that only point at the local project:
+Python requirements that only point at local project files:
 
 ```sh
-$WHOATHERE vm detonate --workspace /absolute/path/to/python-project \
-  --state-dir "$WHOATHERE_STATE" --helper "$WHOATHERE_HELPER" \
-  --execute --json pip -- install -r requirements.txt
+whoathere vm detonate --workspace /absolute/path/to/python-project \
+  --state-dir "$WHOATHERE_STATE" \
+  --execute --json \
+  pip -- install -r requirements.txt
 ```
 
 uv local project:
 
 ```sh
-$WHOATHERE vm detonate --workspace /absolute/path/to/python-project \
-  --state-dir "$WHOATHERE_STATE" --helper "$WHOATHERE_HELPER" \
-  --execute --json uv -- pip install .
+whoathere vm detonate --workspace /absolute/path/to/python-project \
+  --state-dir "$WHOATHERE_STATE" \
+  --execute --json \
+  uv -- pip install .
 ```
 
 npm local project with no external dependency resolution:
 
 ```sh
-$WHOATHERE vm detonate --workspace /absolute/path/to/npm-project \
-  --state-dir "$WHOATHERE_STATE" --helper "$WHOATHERE_HELPER" \
-  --execute --json npm -- install
+whoathere vm detonate --workspace /absolute/path/to/npm-project \
+  --state-dir "$WHOATHERE_STATE" \
+  --execute --json \
+  npm -- install
 ```
 
-When a safe Python import module is inferred, VM detonation also runs a narrow API-use probe inside
-the VM. It imports the module and tries common zero-argument functions and client methods. This
-catches some packages that look normal until first use, but it is not complete runtime protection.
+Useful output fields:
+
+- `verdict`: top-level decision.
+- `guest_job.verdict`: what the guest observed.
+- `guest_job.canary_access_detected`: whether fake credentials were touched.
+- `guest_job.network_attempt_detected`: whether network behavior was observed.
+- `sync_back.applied`: whether anything copied back to the host.
+- `reason_codes`: why the command allowed, denied, or asked for review.
 
 ## Copy Files Back
 
-Copy-back is off unless you request it. Use it only with a clean package-risk receipt for the same
-workspace:
+Copy-back is always opt-in. Use it only after package-risk says the same workspace is an
+`auto_sync_candidate` and you have the latest receipt path:
 
 ```sh
-$WHOATHERE vm detonate --workspace /absolute/path/to/python-project \
-  --state-dir "$WHOATHERE_STATE" --helper "$WHOATHERE_HELPER" \
-  --package-risk-receipt /path/to/package-risk-receipt.json \
-  --execute --sync-back --json pip -- install .
+whoathere vm detonate --workspace /absolute/path/to/project \
+  --state-dir "$WHOATHERE_STATE" \
+  --package-risk-receipt "$PACKAGE_RISK_RECEIPT" \
+  --execute --sync-back --json \
+  npm -- install
 ```
 
-Copy-back still fails closed if the guest saw canary access, network markers, unexpected output,
-symlink escapes, traversal, wrong workspace, wrong receipt, stale evidence, or unsupported package
-classes.
+For Python:
+
+```sh
+whoathere vm detonate --workspace /absolute/path/to/python-project \
+  --state-dir "$WHOATHERE_STATE" \
+  --package-risk-receipt "$PACKAGE_RISK_RECEIPT" \
+  --execute --sync-back --json \
+  pip -- install .
+```
+
+Copy-back still fails closed if the guest saw canary access, network markers, unexpected outputs,
+symlink escapes, path traversal, a wrong workspace, a wrong receipt, stale evidence, or unsupported
+package classes.
+
+Current release-candidate caveat: copy-back also requires a current release-notarization receipt in
+the WhoaThere state directory. On the build validation state this is already present and `doctor`
+reports `release_ready=true`. A brand-new user state will not have that receipt until release
+evidence handoff is productized or release engineering generates the receipt for that state. Without
+it, `--sync-back` should fail closed before copying files back.
 
 ## Exit Codes
 
@@ -200,52 +293,98 @@ classes.
 - `64`: command misuse or invalid arguments.
 - `70`: internal error.
 
-In automation, treat anything other than `0` as not safe to continue.
+In scripts, treat anything other than `0` as "do not continue as if the package is safe."
 
 ## Common Blocked Cases
 
-- Public package resolution from npm, PyPI, or uv is blocked for this beta.
-- Unpinned dependencies with no last-known-good local approval require review.
-- Fresh public versions are held by the age gate.
-- New install scripts, `.pth` startup hooks, native markers, binary wheels, direct URLs, VCS sources,
-  editable installs, npm command shims, Python console scripts, and local path escapes prevent
-  automatic copy-back.
+- Public npm, PyPI, or uv dependency resolution is blocked for this beta.
+- Unpinned dependencies without last-known-good local approval require review.
+- Fresh public versions are held by the 7 day age gate.
+- New lifecycle scripts, `.pth` startup hooks, native markers, binary wheels, direct URLs, VCS
+  sources, editable installs, npm command shims, Python console scripts, and local path escapes
+  prevent automatic copy-back.
 - Missing or stale VM guest tooling fails before detonation.
-- Missing scanners are reported but do not block the current local-only beta by themselves.
+- Missing scanners are visible in readiness output. They do not block local-only detonation, but
+  clean scanner evidence is required for public-package auto-sync decisions.
 
-## Recovery
+## Minimal Smoke Project
 
-If `doctor` says the guest is stale, run the reprovision command it prints.
-
-If scanner or package-risk output says `manual_review`, read the package-level reason codes. Approve
-only after reviewing the package and receipt:
+Create a clean npm project:
 
 ```sh
-$WHOATHERE package-risk approve --receipt /path/to/package-risk-receipt.json \
-  --reason "reviewed local beta baseline" --state-dir "$WHOATHERE_STATE" --json
+mkdir -p "$HOME/whoathere-smoke/npm-clean"
+cd "$HOME/whoathere-smoke/npm-clean"
+cat > package.json <<'JSON'
+{
+  "name": "whoathere-smoke-npm-clean",
+  "version": "0.0.1",
+  "private": true,
+  "whoatherePublishedAtUnixSeconds": 1700000000,
+  "scripts": {
+    "postinstall": "node postinstall.js"
+  }
+}
+JSON
+cat > postinstall.js <<'JS'
+require("fs").writeFileSync("clean.marker", "ok");
+JS
 ```
 
-If a VM run is blocked because the package class is native, binary, direct URL, VCS, editable, or
-unknown, leave it blocked for this beta unless you are intentionally doing manual research in a
-separate environment.
-
-## Validation Commands
-
-Before relying on a local checkout, run:
+Run it in the VM without copy-back:
 
 ```sh
-cargo test --manifest-path whoathere/Cargo.toml
-cargo clippy --manifest-path whoathere/Cargo.toml --all-targets -- -D warnings
-cargo fmt --manifest-path whoathere/Cargo.toml --all -- --check
-swift test --package-path whoathere/helpers/macos-vm-helper
-whoathere/helpers/macos-vm-helper/scripts/validate-guest-agent-project-payload.sh
-scripts/whoathere-package-risk-smoke.sh
-scripts/whoathere-real-world-attack-harness.sh
-scripts/whoathere-local-beta-pressure-smoke.sh
+whoathere vm detonate --workspace "$HOME/whoathere-smoke/npm-clean" \
+  --state-dir "$WHOATHERE_STATE" \
+  --execute --json \
+  npm -- install
 ```
 
-Run the live VM validation when a provisioned VM is available:
+The command should exit `0`, report an observed-clean verdict, and not create `clean.marker` in the
+host project unless you later run a clean `--sync-back` flow.
+
+Create a mock malicious npm project:
 
 ```sh
-whoathere/helpers/macos-vm-helper/scripts/validate-project-detonation.sh
+mkdir -p "$HOME/whoathere-smoke/npm-canary"
+cd "$HOME/whoathere-smoke/npm-canary"
+cat > package.json <<'JSON'
+{
+  "name": "whoathere-smoke-npm-canary",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "postinstall": "node postinstall.js"
+  }
+}
+JSON
+cat > postinstall.js <<'JS'
+const fs = require("fs");
+if (process.env.NPM_TOKEN || process.env.GITHUB_TOKEN) {
+  fs.writeFileSync("canary-read.marker", "1");
+}
+JS
 ```
+
+Run it:
+
+```sh
+whoathere vm detonate --workspace "$HOME/whoathere-smoke/npm-canary" \
+  --state-dir "$WHOATHERE_STATE" \
+  --execute --json \
+  npm -- install
+```
+
+Expected result: exit `20`, no host `canary-read.marker`, and reason codes showing malicious VM
+behavior.
+
+## Daily Workflow
+
+1. Run `whoathere doctor --state-dir "$WHOATHERE_STATE" --json`.
+2. Keep public dependency resolution out of the workflow unless you are intentionally testing a
+   blocked/manual-review case.
+3. Run scanners when you want copy-back eligibility.
+4. Run `package-risk assess`.
+5. Run `vm detonate` without `--sync-back` first.
+6. Use `--sync-back` only for supported pure/safe classes with clean package-risk, VM evidence, and
+   current release evidence in the same state directory.
+7. Run `vm suspend --execute` when finished.
