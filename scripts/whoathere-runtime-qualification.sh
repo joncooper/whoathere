@@ -208,7 +208,10 @@ verify_checksum() {
   if [ ! -f "$ARCHIVE.sha256" ]; then
     fail archive_checksum_sidecar_missing
   fi
-  shasum -a 256 -c "$ARCHIVE.sha256"
+  (
+    cd "$(dirname "$ARCHIVE")"
+    shasum -a 256 -c "$(basename "$ARCHIVE").sha256"
+  )
 }
 
 first_existing_python_runtime() {

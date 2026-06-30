@@ -115,7 +115,10 @@ if [ ! -f "$CHECKSUM" ]; then
   exit 66
 fi
 
-shasum -a 256 -c "$CHECKSUM"
+(
+  cd "$(dirname "$ARCHIVE")"
+  shasum -a 256 -c "$(basename "$CHECKSUM")"
+)
 
 WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/whoathere-github-release.XXXXXX")
 cleanup() {

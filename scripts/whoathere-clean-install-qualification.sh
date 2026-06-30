@@ -193,7 +193,10 @@ require_archive() {
 
 verify_checksum() {
   if [ -f "$ARCHIVE.sha256" ]; then
-    shasum -a 256 -c "$ARCHIVE.sha256"
+    (
+      cd "$(dirname "$ARCHIVE")"
+      shasum -a 256 -c "$(basename "$ARCHIVE").sha256"
+    )
     CHECKSUM_STATUS=verified
   else
     CHECKSUM_STATUS=missing_sidecar

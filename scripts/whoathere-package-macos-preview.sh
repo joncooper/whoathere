@@ -151,12 +151,18 @@ write_archive() {
     cd "$STAGE_ROOT"
     tar -czf "$ARCHIVE_PATH" "$PACKAGE_NAME"
   )
-  shasum -a 256 "$ARCHIVE_PATH" > "$CHECKSUM_PATH"
+  (
+    cd "$(dirname "$ARCHIVE_PATH")"
+    shasum -a 256 "$(basename "$ARCHIVE_PATH")" > "$(basename "$CHECKSUM_PATH")"
+  )
 }
 
 smoke_package() {
   SMOKE_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/whoathere-package-smoke.XXXXXX")
-  shasum -a 256 -c "$CHECKSUM_PATH"
+  (
+    cd "$(dirname "$ARCHIVE_PATH")"
+    shasum -a 256 -c "$(basename "$CHECKSUM_PATH")"
+  )
   tar -xzf "$ARCHIVE_PATH" -C "$SMOKE_ROOT"
 
   EXTRACTED_ROOT="$SMOKE_ROOT/$PACKAGE_NAME"
