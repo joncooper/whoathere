@@ -223,8 +223,10 @@ copy_python_wheels() {
 
   GUEST_WHEEL_DIR="$DATA_MOUNT/usr/local/whoathere/python-wheels"
   install -d -o root -g wheel -m 0755 "$GUEST_WHEEL_DIR"
-  install -o root -g wheel -m 0644 "$PIP_WHEEL" "$GUEST_WHEEL_DIR/$(basename "$PIP_WHEEL")"
-  install -o root -g wheel -m 0644 "$SETUPTOOLS_WHEEL" "$GUEST_WHEEL_DIR/$(basename "$SETUPTOOLS_WHEEL")"
+  rm -f "$GUEST_WHEEL_DIR"/*.whl
+  find "$PYTHON_WHEEL_SOURCE_DIR" -maxdepth 1 -name '*.whl' -type f -print 2>/dev/null | sort | while IFS= read -r PYTHON_WHEEL_FILE; do
+    install -o root -g wheel -m 0644 "$PYTHON_WHEEL_FILE" "$GUEST_WHEEL_DIR/$(basename "$PYTHON_WHEEL_FILE")"
+  done
   install -o root -g wheel -m 0644 "$WHEEL_PACKAGE_FILE" "$GUEST_WHEEL_DIR/$(basename "$WHEEL_PACKAGE_FILE")"
   PYTHON_WHEEL_STATUS="installed"
   PIP_WHEEL_NAME=$(basename "$PIP_WHEEL")

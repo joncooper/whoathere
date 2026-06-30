@@ -29,7 +29,7 @@
 #define WHOATHERE_PATH_PREFIX "PATH=" WHOATHERE_TOOL_PATH "; export PATH; "
 #define WHOATHERE_GUEST_PYTHON "/usr/local/whoathere/python/bin/python3"
 #define WHOATHERE_PIP_WHEEL_DIR "/usr/local/whoathere/python-wheels"
-#define WHOATHERE_PIP_PREFIX WHOATHERE_PATH_PREFIX "WHOATHERE_PYTHON=" WHOATHERE_GUEST_PYTHON "; if [ ! -x \"$WHOATHERE_PYTHON\" ]; then WHOATHERE_PYTHON=python3; fi; PIP_WHEEL=$(ls " WHOATHERE_PIP_WHEEL_DIR "/pip-*.whl 2>/dev/null | head -n 1); SETUPTOOLS_WHEEL=$(ls " WHOATHERE_PIP_WHEEL_DIR "/setuptools-*.whl 2>/dev/null | head -n 1); WHEEL_WHEEL=$(ls " WHOATHERE_PIP_WHEEL_DIR "/wheel-*.whl 2>/dev/null | head -n 1); if [ -n \"$PIP_WHEEL\" ] && [ -n \"$SETUPTOOLS_WHEEL\" ] && [ -n \"$WHEEL_WHEEL\" ]; then export PYTHONPATH=\"$PIP_WHEEL:$SETUPTOOLS_WHEEL:$WHEEL_WHEEL\"; elif [ -n \"$PIP_WHEEL\" ] && [ -n \"$SETUPTOOLS_WHEEL\" ]; then export PYTHONPATH=\"$PIP_WHEEL:$SETUPTOOLS_WHEEL\"; fi; "
+#define WHOATHERE_PIP_PREFIX WHOATHERE_PATH_PREFIX "WHOATHERE_PYTHON=" WHOATHERE_GUEST_PYTHON "; if [ ! -x \"$WHOATHERE_PYTHON\" ]; then WHOATHERE_PYTHON=python3; fi; WHOATHERE_WHEEL_PATHS=\"\"; for WHOATHERE_WHEEL in " WHOATHERE_PIP_WHEEL_DIR "/*.whl; do if [ -f \"$WHOATHERE_WHEEL\" ]; then if [ -z \"$WHOATHERE_WHEEL_PATHS\" ]; then WHOATHERE_WHEEL_PATHS=\"$WHOATHERE_WHEEL\"; else WHOATHERE_WHEEL_PATHS=\"$WHOATHERE_WHEEL_PATHS:$WHOATHERE_WHEEL\"; fi; fi; done; if [ -n \"$WHOATHERE_WHEEL_PATHS\" ]; then export PYTHONPATH=\"$WHOATHERE_WHEEL_PATHS\"; fi; "
 
 static char current_request_nonce[WHOATHERE_MAX_FIELD] = "";
 static char current_project_workflow[WHOATHERE_MAX_FIELD] = "";

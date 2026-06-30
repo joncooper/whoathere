@@ -101,11 +101,95 @@ Automatic login is OFF.
 
 Automatic graphical login could not be enabled from SSH on this host.
 
-## Current Blocker
+## GUI Session Continuation
 
-Cloud-host VM validation cannot continue over SSH alone on this machine until there is an active
-GUI login/session for the target user, or the provider supplies a supported way to run
-Virtualization.framework macOS guests from a headless session.
+After a graphical login as `m1`, SSH-side checks reported:
+
+```text
+console_user=m1
+gui_session=ok
+```
+
+VM initialization then succeeded with a 64 GiB disk and 4096 MiB memory. The fetched Apple restore
+image was:
+
+```text
+macOS 26.5.2 build 25F84
+sha256:065abd295a1a456a46c1155217eab92ee95816520ec9aeed83f249f074f68a04
+```
+
+This confirms the earlier `Failed_to_get_current_host_key` error was a headless session problem,
+not a fundamental cloud-Mac or WhoaThere VM-init incompatibility.
+
+## Guest Runtime Provisioning
+
+The cloud Mac needed explicit guest toolchain staging before npm and uv validation could run. Added
+`scripts/whoathere-bootstrap-cloud-mac-runtimes.sh` to stage:
+
+- `uv 0.11.26`
+- CPython `3.12.13`
+- pip `26.1.2`
+- setuptools `68.2.2`
+- packaging `26.2`
+- wheel `0.47.0`
+- Node `v22.23.1`
+- npm `10.9.8`
+
+Provisioning receipt after rerun:
+
+```text
+offline_python_runtime_status=installed
+offline_python_wheels_status=installed
+wheel_package_status=installed
+offline_node_runtime_status=installed
+offline_uv_binary_status=installed
+host_home_mounted=false
+host_secrets_mounted=false
+high_risk_package_execution_enabled=false
+```
+
+During validation, clean `uv pip install .` initially failed closed because the guest agent only put
+pip, setuptools, and wheel on `PYTHONPATH`; current wheel imports `packaging` during metadata/wheel
+builds. The fix was to:
+
+- stage the `packaging` wheel with the runtime inputs
+- copy all staged wheels into the guest, clearing stale wheels first
+- build guest `PYTHONPATH` from all staged wheels rather than only three hardcoded wheel names
+
+## VM Detonation Validation
+
+After the runtime and guest-agent fix, live VM validation passed:
+
+```text
+whoathere vm validate-npm-uv --state-dir "$WHOATHERE_STATE" --execute
+validate_status=0
+npm_uv_detonation_validation=ok
+```
+
+Covered outcomes:
+
+- clean `npm install` allowed in the VM
+- clean `npm ci` allowed in the VM
+- npm lifecycle canary denied in the VM before host execution
+- npm API-use canary denied in the VM before host execution
+- public npm dependency resolution deferred/fail-closed
+- clean `uv pip install .` allowed in the VM
+- uv import-time canary denied in the VM before host execution
+- uv public requirement deferred/fail-closed
+- `uv sync` deferred/fail-closed until lock/source policy is explicit
+
+Final doctor summary on the cloud Mac:
+
+```text
+status=ok
+vm_ready=true
+vm_runtime_ready=true
+vm_lifecycle_ready=true
+release_ready=false
+```
+
+The remaining `release_ready=false` reasons on this patched preview tree were notarization and
+sync-back validation receipts, not VM runtime or npm/uv detonation blockers.
 
 ## Next Steps
 
@@ -131,8 +215,10 @@ Virtualization.framework macOS guests from a headless session.
      --execute
    ```
 
-5. If init succeeds, continue with guest provisioning, VM health, detonation, sync validation, and
-   real-project trials.
+5. For a packaged release candidate, rebuild the preview archive from the committed runtime fixes,
+   notarize it, and rerun this clean install path without patching files in place.
+6. Run sync-back validation from the rebuilt artifact.
+7. Run real-project trials for npm and uv projects to tune false positives and workflow friction.
 
 ## Product Follow-Ups
 
@@ -140,3 +226,6 @@ Virtualization.framework macOS guests from a headless session.
 - Improve `vm init` progress output during restore image download/install.
 - Detect and explain SSH-only/no-GUI-session Virtualization.framework failures explicitly.
 - Consider a preflight check for active `gui/<uid>` launchd domain before macOS guest install.
+- Keep the runtime bootstrap script as the repeatable path for disposable cloud Mac validation.
+- Consider adding a provisioning receipt field that records all staged Python helper wheels, not
+  only pip/setuptools/wheel.
