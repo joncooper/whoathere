@@ -142,6 +142,41 @@ require_contains 'native_extension_marker' "$WORK_DIR/npm-native.json" npm_nativ
 require_contains 'native_or_binary_payload_marker' "$WORK_DIR/npm-native.json" npm_binary_marker
 require_contains 'native_extension_requires_manual_review' "$WORK_DIR/npm-native.json" npm_native_review
 
+NPM_TRANSITIVE_LOCKFILE="$WORK_DIR/npm-transitive-lockfile"
+mkdir -p "$NPM_TRANSITIVE_LOCKFILE"
+cat >"$NPM_TRANSITIVE_LOCKFILE/package.json" <<'JSON'
+{"name":"npm-transitive-lockfile-fixture","version":"1.0.0","whoatherePublishedAtUnixSeconds":1700000000,"private":true}
+JSON
+cat >"$NPM_TRANSITIVE_LOCKFILE/package-lock.json" <<'JSON'
+{
+  "name": "npm-transitive-lockfile-fixture",
+  "version": "1.0.0",
+  "lockfileVersion": 3,
+  "packages": {
+    "": {
+      "name": "npm-transitive-lockfile-fixture",
+      "version": "1.0.0"
+    },
+    "node_modules/tiny-second-stage": {
+      "version": "1.0.0",
+      "resolved": "https://registry.npmjs.org/tiny-second-stage/-/tiny-second-stage-1.0.0.tgz",
+      "integrity": "sha512-clean"
+    },
+    "node_modules/transitive-evil": {
+      "version": "9.9.9",
+      "resolved": "https://evil.example.invalid/transitive-evil-9.9.9.tgz",
+      "integrity": "sha512-evil"
+    }
+  }
+}
+JSON
+run_capture 20 "$WORK_DIR/npm-transitive-lockfile.json" "$CLI" package-risk assess --workspace "$NPM_TRANSITIVE_LOCKFILE" --ecosystem npm --state-dir "$STATE_DIR" --json
+require_contains '"package_name": "tiny-second-stage"' "$WORK_DIR/npm-transitive-lockfile.json" npm_lockfile_registry_subject
+require_contains '"package_name": "transitive-evil"' "$WORK_DIR/npm-transitive-lockfile.json" npm_lockfile_direct_subject
+require_contains 'npm_lockfile_dependency_record' "$WORK_DIR/npm-transitive-lockfile.json" npm_lockfile_dependency
+require_contains 'dependency_source_direct_url' "$WORK_DIR/npm-transitive-lockfile.json" npm_lockfile_direct
+require_contains 'direct_vcs_editable_denied_by_default' "$WORK_DIR/npm-transitive-lockfile.json" npm_lockfile_denied
+
 PTH="$WORK_DIR/python-pth"
 make_pyproject "$PTH" "python_pth_fixture"
 cat >"$PTH/sitecustomize.pth" <<'PY'

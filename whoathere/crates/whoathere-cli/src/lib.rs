@@ -12580,7 +12580,119 @@ fn discover_npm_package_risk_subjects(workspace: &Path) -> Vec<PackageRiskSubjec
             });
         }
     }
+    subjects.extend(discover_npm_lockfile_package_risk_subjects(workspace));
     subjects
+}
+
+fn discover_npm_lockfile_package_risk_subjects(workspace: &Path) -> Vec<PackageRiskSubject> {
+    let mut subjects = Vec::new();
+    for lockfile_name in ["package-lock.json", "npm-shrinkwrap.json"] {
+        let lockfile_path = workspace.join(lockfile_name);
+        if !lockfile_path.is_file() {
+            continue;
+        }
+        let contents = std::fs::read_to_string(&lockfile_path).unwrap_or_default();
+        for (lock_path, object) in json_extract_object_members(&contents, "packages") {
+            if lock_path.is_empty() {
+                continue;
+            }
+            let Some(package_name) = npm_package_name_from_lockfile_path(&lock_path) else {
+                continue;
+            };
+            let version = json_extract_string_field(&object, "version");
+            let resolved = json_extract_string_field(&object, "resolved");
+            let integrity = json_extract_string_field(&object, "integrity");
+            let source_kind = npm_lockfile_source_kind(resolved.as_deref());
+            let package_class = package_class_for_source_kind("npm", &source_kind);
+            let pinned = version.is_some() && integrity.is_some() && source_kind == "registry";
+            let requested_spec = version
+                .as_deref()
+                .map(|version| version.to_string())
+                .unwrap_or_else(|| "lockfile".to_string());
+            let mut indicators = vec!["npm_lockfile_dependency_record".to_string()];
+            if resolved.is_some() {
+                indicators.push("npm_lockfile_resolved_url_present".to_string());
+            }
+            if integrity.is_none() {
+                indicators.push("npm_lockfile_integrity_missing".to_string());
+            }
+            if source_kind != "registry" {
+                indicators.push(format!("dependency_source_{source_kind}"));
+            }
+            subjects.push(PackageRiskSubject {
+                ecosystem: PackageRiskEcosystem::Npm,
+                package_name: package_name.clone(),
+                requested_spec: requested_spec.clone(),
+                resolved_version: version,
+                source_kind,
+                package_class,
+                artifact_hash: package_risk_artifact_hash(
+                    "npm-lockfile",
+                    &format!("{lockfile_name}:{lock_path}:{package_name}@{requested_spec}"),
+                    &object,
+                    &indicators,
+                ),
+                pinned,
+                publish_age_days: None,
+                reputation_status: "reputation_metadata_missing".to_string(),
+                indicators,
+            });
+        }
+    }
+    subjects.sort_by(|left, right| {
+        left.package_name
+            .cmp(&right.package_name)
+            .then(left.requested_spec.cmp(&right.requested_spec))
+    });
+    subjects.dedup_by(|left, right| {
+        left.package_name == right.package_name && left.requested_spec == right.requested_spec
+    });
+    subjects
+}
+
+fn npm_package_name_from_lockfile_path(lock_path: &str) -> Option<String> {
+    let segments = lock_path
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    let node_modules_index = segments
+        .iter()
+        .rposition(|segment| *segment == "node_modules")?;
+    let first = segments.get(node_modules_index + 1)?;
+    if first.starts_with('@') {
+        let second = segments.get(node_modules_index + 2)?;
+        Some(format!("{first}/{second}").to_ascii_lowercase())
+    } else {
+        Some((*first).to_ascii_lowercase())
+    }
+}
+
+fn npm_lockfile_source_kind(resolved: Option<&str>) -> String {
+    let Some(resolved) = resolved.map(str::trim).filter(|value| !value.is_empty()) else {
+        return "registry".to_string();
+    };
+    let lowered = resolved.to_ascii_lowercase();
+    if lowered.starts_with("file:") || lowered.starts_with("../") || lowered.starts_with("./") {
+        "local".to_string()
+    } else if lowered.starts_with("git+")
+        || lowered.starts_with("git://")
+        || lowered.starts_with("ssh://")
+        || lowered.contains("github.com:")
+    {
+        "vcs".to_string()
+    } else if lowered.starts_with("http://") || lowered.starts_with("https://") {
+        if lowered.contains("registry.npmjs.org/")
+            || lowered.contains("registry.npmjs.com/")
+            || lowered.contains("/-/")
+                && (lowered.contains("npmjs.org/") || lowered.contains("npmjs.com/"))
+        {
+            "registry".to_string()
+        } else {
+            "direct_url".to_string()
+        }
+    } else {
+        npm_spec_source_kind(resolved)
+    }
 }
 
 fn discover_python_package_risk_subjects(
@@ -12862,6 +12974,7 @@ fn package_risk_indicator_blocks_auto_sync(indicator: &str) -> bool {
         || indicator.contains("pth")
         || indicator.contains("import_hook")
         || indicator.contains("dependency_source_")
+        || indicator.contains("lockfile_dependency")
         || indicator.contains("platform_specific")
         || indicator.contains("obfuscated")
 }
@@ -13351,6 +13464,44 @@ fn json_extract_object_string_pairs(input: &str, field: &str) -> Vec<(String, St
         };
         pairs.push((key, value));
         rest = after_value.trim_start();
+        if rest.starts_with(',') {
+            rest = rest[1..].trim_start();
+        } else {
+            break;
+        }
+    }
+    pairs
+}
+
+fn json_extract_object_members(input: &str, field: &str) -> Vec<(String, String)> {
+    let Some(value) = json_field_value(input, field).map(str::trim_start) else {
+        return Vec::new();
+    };
+    if !value.starts_with('{') {
+        return Vec::new();
+    }
+    let Some(object) = extract_balanced_json(value, '{', '}') else {
+        return Vec::new();
+    };
+    let mut pairs = Vec::new();
+    let mut rest = object.trim_start_matches('{').trim_end_matches('}').trim();
+    while !rest.is_empty() {
+        let Some((key, after_key)) = json_parse_leading_string(rest) else {
+            break;
+        };
+        let after_key = after_key.trim_start();
+        if !after_key.starts_with(':') {
+            break;
+        }
+        let after_colon = after_key[1..].trim_start();
+        if !after_colon.starts_with('{') {
+            break;
+        }
+        let Some(value_object) = extract_balanced_json(after_colon, '{', '}') else {
+            break;
+        };
+        pairs.push((key, value_object.to_string()));
+        rest = after_colon[value_object.len()..].trim_start();
         if rest.starts_with(',') {
             rest = rest[1..].trim_start();
         } else {
@@ -20642,6 +20793,80 @@ exit 0
             .contains("Package code was not run on the host"));
         assert!(!poisoned_assessed.output.contains("NPM_TOKEN_VALUE"));
         assert!(!poisoned_assessed.output.contains("/Users/"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn package_risk_detects_transitive_npm_lockfile_risk() {
+        let root = temp_root("whoathere-cli-package-risk-npm-lockfile");
+        let state_dir = root.join("state");
+        write_new_file(
+            &root.join("package.json"),
+            br#"{
+  "name": "lockfile-risk-fixture",
+  "version": "1.0.0",
+  "whoatherePublishedAtUnixSeconds": 1700000000,
+  "private": true
+}
+"#,
+        )
+        .expect("package json");
+        write_new_file(
+            &root.join("package-lock.json"),
+            br#"{
+  "name": "lockfile-risk-fixture",
+  "version": "1.0.0",
+  "lockfileVersion": 3,
+  "packages": {
+    "": {
+      "name": "lockfile-risk-fixture",
+      "version": "1.0.0"
+    },
+    "node_modules/transitive-clean": {
+      "version": "1.0.0",
+      "resolved": "https://registry.npmjs.org/transitive-clean/-/transitive-clean-1.0.0.tgz",
+      "integrity": "sha512-clean"
+    },
+    "node_modules/transitive-evil": {
+      "version": "9.9.9",
+      "resolved": "https://evil.example.invalid/transitive-evil-9.9.9.tgz",
+      "integrity": "sha512-evil"
+    }
+  }
+}
+"#,
+        )
+        .expect("package lock");
+
+        let result = evaluate_command(Command::PackageRiskAssess {
+            workspace: Some(root.display().to_string()),
+            ecosystem: Some("npm".to_string()),
+            state_dir: Some(state_dir.display().to_string()),
+            scanner_receipt: None,
+            ai_review: false,
+            ai_provider: None,
+            ai_model: None,
+            ai_timeout_seconds: None,
+            json: true,
+        });
+
+        assert_eq!(result.exit_code, 20);
+        assert!(result
+            .output
+            .contains("\"package_name\": \"transitive-clean\""));
+        assert!(result
+            .output
+            .contains("\"package_name\": \"transitive-evil\""));
+        assert!(result.output.contains("npm_lockfile_dependency_record"));
+        assert!(result.output.contains("dependency_source_direct_url"));
+        assert!(result
+            .output
+            .contains("direct_vcs_editable_denied_by_default"));
+        assert!(result
+            .output
+            .contains("Package code was not run on the host"));
+        assert!(!result.output.contains("/Users/"));
 
         let _ = std::fs::remove_dir_all(&root);
     }
