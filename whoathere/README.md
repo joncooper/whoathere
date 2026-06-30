@@ -1,14 +1,14 @@
 # WhoaThere Implementation Workspace
 
-This directory is the scoped implementation workspace for the WhoaThere supply-chain security product. It is intentionally separate from the existing Swift timer app at the repository root.
+This directory is the implementation workspace for the WhoaThere supply-chain security product.
 
-The current Phase 1 cutline is documented in `docs/whoathere/product-build-run/phase-1-mvp-checkpoint.md`: macOS endpoint behavior first, Linux second, Windows deferred, and high-risk package-manager execution still fail-closed until Phase 2 proves real containment and Vault-only egress.
+The current Phase 1 cutline is documented in `docs/product-build-run/phase-1-mvp-checkpoint.md`: macOS endpoint behavior first, Linux second, Windows deferred, and high-risk package-manager execution still fail-closed until Phase 2 proves real containment and Vault-only egress.
 
-The current Phase 2 isolation cutline is documented in `docs/whoathere/product-build-run/phase-2-isolation-checkpoint.md`: local provider diagnostics now classify `diagnostic_only`, `partial`, `beta`, and `verified` control levels, while high-risk npm/pip execution remains fail-closed until real same-subject containment and Vault-only egress proofs exist.
+The current Phase 2 isolation cutline is documented in `docs/product-build-run/phase-2-isolation-checkpoint.md`: local provider diagnostics now classify `diagnostic_only`, `partial`, `beta`, and `verified` control levels, while high-risk npm/pip execution remains fail-closed until real same-subject containment and Vault-only egress proofs exist.
 
-The current Phase 3 Vault cutline is documented in `docs/whoathere/product-build-run/phase-3-enterprise-vault-checkpoint.md`: the Vault MVP has a bounded local HTTP data plane, npm/PyPI promoted-cache compatibility routes, fail-closed readiness, enterprise auth/bind boundary validation, tenant-aware route checks, and an AWS-first deployment skeleton. Durable production storage, upstream fetch, scanner execution, and full ECS/Aurora deployment remain gated.
+The current Phase 3 Vault cutline is documented in `docs/product-build-run/phase-3-enterprise-vault-checkpoint.md`: the Vault MVP has a bounded local HTTP data plane, npm/PyPI promoted-cache compatibility routes, fail-closed readiness, enterprise auth/bind boundary validation, tenant-aware route checks, and an AWS-first deployment skeleton. Durable production storage, upstream fetch, scanner execution, and full ECS/Aurora deployment remain gated.
 
-The current Phase 4 detonation cutline is documented in `docs/whoathere/product-build-run/phase-4-detonation-checkpoint.md`: dynamic behavior evidence now exists as typed fixture-safe job planning, result binding, local-dev simulation, and admission proof coverage. Arbitrary package execution, production detonator workers, and production admin UI remain gated.
+The current Phase 4 detonation cutline is documented in `docs/product-build-run/phase-4-detonation-checkpoint.md`: dynamic behavior evidence now exists as typed fixture-safe job planning, result binding, local-dev simulation, and admission proof coverage. Arbitrary package execution, production detonator workers, and production admin UI remain gated.
 
 ## Current Scope
 

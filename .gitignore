@@ -3,7 +3,7 @@
 *.jsonl
 *.tmp
 
-# Swift build and packaged app outputs.
+# Local build and packaged release outputs.
 .build/
 dist/
 whoathere/helpers/macos-vm-helper/guest-agent/whoathere-guest-ready

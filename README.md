@@ -1,109 +1,246 @@
 # WhoaThere
 
-WhoaThere is a local-first supply-chain safety tool for Python and Node development. The current
-macOS beta focuses on Apple Silicon Macs: it runs supported package workflows in a separate macOS
-VM, collects scanner and package-risk evidence, and only copies back narrow outputs when the result
-is clean enough for the beta policy.
+WhoaThere is a command-line tool that helps Python and Node developers install packages with less
+risk.
 
-## Install The macOS Local Beta From GitHub
+Modern package managers do more than download files. An `npm install`, `pip install`, or `uv sync`
+can run package code during install, build, import, or first use. That is useful for legitimate
+packages, but it is also how compromised packages steal tokens, read SSH keys, fetch second-stage
+payloads, or behave differently on CI and developer laptops.
 
-After a GitHub Release has been published, install on a clean Apple Silicon Mac with:
+WhoaThere's current macOS beta takes a conservative approach: run supported package workflows away
+from your host machine, watch what happens, and copy results back only when the evidence is clean
+enough.
+
+## Current Status
+
+The active target is an Apple Silicon macOS local beta.
+
+What that means:
+
+- CLI-only. No GUI and no installer package are required.
+- Built for local Python and Node development.
+- Uses a separate macOS VM as the main safety boundary.
+- Supports scanner and package-risk checks as extra evidence.
+- Blocks or asks for manual review on package shapes that are too risky for this beta.
+- Does not depend on AWS, a company package registry, or a cloud service.
+
+This is useful security tooling, not a promise that arbitrary packages are safe.
+
+## Why This Exists
+
+Package supply-chain attacks often work because a developer or CI runner asks a trusted tool to
+install something that has become untrusted:
+
+- a maintainer account is compromised
+- a package name is typo-squatted
+- an internal package name is confused with a public package
+- a new version adds a malicious install script
+- a Python build backend or `.pth` file runs code unexpectedly
+- a binary wheel or native extension hides behavior scanners cannot easily inspect
+- a package keeps the same public API but adds credential theft in normal-looking code
+
+Traditional scanners help, but they are not enough by themselves. WhoaThere combines several
+signals and keeps risky execution away from your host.
+
+## How It Works
+
+At a high level:
+
+1. You point WhoaThere at a project or run a protected package workflow.
+2. WhoaThere mirrors only the needed project files into a separate macOS VM.
+3. Package-manager work runs inside that VM, not directly on your host.
+4. The VM contains fake credentials and canaries instead of your real secrets.
+5. WhoaThere records package behavior, scanner results, package type, version age, diffs, and local
+   package history.
+6. It decides whether the result is safe enough to copy back.
+7. Copy-back is deny-by-default and limited to narrow project outputs.
+
+For example, pure package outputs with clean evidence may be eligible for copy-back. Native
+extensions, binary wheels, direct URLs, VCS dependencies, editable installs, suspicious diffs, new
+install scripts, startup hooks, or network/credential behavior stay blocked or require manual
+review.
+
+## What It Helps With
+
+WhoaThere can improve local development safety for:
+
+- npm lifecycle scripts such as `postinstall`, `prepare`, and package `bin` behavior
+- Python build hooks, import-time behavior, and `.pth` startup hooks
+- delayed behavior such as `CI=true` activation
+- macOS-specific payloads
+- packages that touch fake credentials during common API use
+- DNS/HTTPS exfiltration attempts visible from the VM
+- surprise upgrades when a last-known-good local package version exists
+- unpinned dependency specs that would otherwise float to a new version
+- known vulnerable packages when external scanners are available
+
+## What It Does Not Do
+
+WhoaThere does not:
+
+- prove arbitrary packages are safe
+- protect your app after you choose to run package code normally
+- make native extensions or binary wheels safe to auto-copy back
+- safely auto-approve direct URL, VCS, editable, unknown, or suspicious packages
+- replace code review for subtle malicious behavior hidden behind normal APIs
+- provide enterprise package registry enforcement in the current local beta
+- use scanner findings as the only reason to allow package output onto the host
+
+If WhoaThere cannot get enough evidence, the beta should fail closed rather than guess.
+
+## Install From Private GitHub
+
+For now, this project should stay private. A clean Apple Silicon Mac needs an authenticated GitHub
+CLI session before it can download the release archive.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/joncooper/whoathere/main/scripts/whoathere-install-from-github.sh \
-  | sh -s -- --repo joncooper/whoathere --prefix "$HOME/.whoathere"
+gh auth login -h github.com
+gh repo clone joncooper/whoathere
+cd whoathere
+scripts/whoathere-install-from-github.sh --private --repo joncooper/whoathere --prefix "$HOME/.whoathere"
 export PATH="$HOME/.whoathere/bin:$PATH"
 whoathere doctor --json
 ```
 
-For a specific release tag:
+To install a specific beta release:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/joncooper/whoathere/main/scripts/whoathere-install-from-github.sh \
-  | sh -s -- --repo joncooper/whoathere --tag macos-local-beta-a212742 --prefix "$HOME/.whoathere"
+scripts/whoathere-install-from-github.sh --private \
+  --repo joncooper/whoathere \
+  --tag macos-local-beta-a212742 \
+  --prefix "$HOME/.whoathere"
 ```
 
-Distribution runbook: `docs/whoathere/product-build-run/github-distribution.md`.
+The installer downloads the private GitHub Release archive through `gh release download`, verifies
+the SHA-256 checksum, extracts it, and runs the packaged user-level installer. It does not use
+`sudo`.
 
-## Legacy Timer Prototype
+Distribution details are in
+`docs/product-build-run/github-distribution.md`.
 
-A compact macOS menu bar timer for consulting hours.
+## First Commands
 
-## WhoaThere Supply Chain Planning
+Set a state directory for the local beta:
 
-The supply-chain security product planning artifacts live in `docs/whoathere/`.
-Start with `docs/whoathere/README.md`; it contains the generated goal packs for turning the WhoaThere meta-plan into build-ready implementation plans.
+```sh
+export WHOATHERE_STATE="$HOME/.whoathere/macos-vm-validation"
+```
 
-## WhoaThere Supply Chain Prototype
+Check readiness:
 
-The current Rust prototype lives in `whoathere/`. It is still local-dev only for endpoint execution: protected install/build/import execution, public registry fetches, OS sandbox enforcement, durable Vault storage, and full production Vault deployment remain gated. Phase 3 adds a bounded Vault data-plane prototype and AWS-first deployment skeleton, not a complete production service. Phase 4 adds typed, fixture-safe dynamic behavior evidence and admin workflow contracts, not arbitrary malware execution.
+```sh
+whoathere doctor --state-dir "$WHOATHERE_STATE" --json
+```
 
-Useful local checks:
+Initialize the VM from a local restore image:
+
+```sh
+whoathere vm init --state-dir "$WHOATHERE_STATE" \
+  --restore-image /absolute/path/to/macos-restore.ipsw \
+  --execute
+```
+
+Or let the helper fetch Apple's current restore image:
+
+```sh
+whoathere vm init --state-dir "$WHOATHERE_STATE" \
+  --fetch-latest-restore-image \
+  --execute
+```
+
+Start the VM:
+
+```sh
+whoathere vm start --state-dir "$WHOATHERE_STATE" --execute
+```
+
+Run scanners for a project:
+
+```sh
+whoathere scanners run --workspace /absolute/path/to/project \
+  --ecosystem auto \
+  --state-dir "$WHOATHERE_STATE" \
+  --execute \
+  --json > scanner-receipt.json
+```
+
+Assess package risk:
+
+```sh
+whoathere package-risk assess --workspace /absolute/path/to/project \
+  --ecosystem auto \
+  --state-dir "$WHOATHERE_STATE" \
+  --scanner-receipt scanner-receipt.json \
+  --json > package-risk.json
+```
+
+Run a local project workflow in the VM without copy-back:
+
+```sh
+whoathere vm detonate --workspace /absolute/path/to/project \
+  --state-dir "$WHOATHERE_STATE" \
+  --execute --json \
+  npm -- install
+```
+
+The detailed CLI guide is in
+`docs/product-build-run/macos-local-beta-cli-guide.md`.
+
+## Testing A Clean Mac
+
+For a fresh Mac or clean user account, follow:
+
+```text
+docs/product-build-run/macos-local-beta-fresh-user-test-plan.md
+```
+
+That plan covers install, `doctor`, VM setup, scanner readiness, mock malicious fixtures, and real
+project trials.
+
+## Repository Layout
+
+```text
+whoathere/     Rust workspace for the CLI, policy logic, scanners, VM workflow, and tests
+scripts/       Packaging, scanner, release, and smoke-test scripts
+docs/          Architecture notes, build plans, checkpoints, and user-facing runbooks
+dist/          Local release artifacts, ignored by git
+.whoathere/    Local runtime state and scanner cache, ignored by git
+```
+
+The main code lives in `whoathere/`.
+
+## Development Checks
+
+From the repo root:
 
 ```sh
 cargo test --manifest-path whoathere/Cargo.toml
-cargo run --manifest-path whoathere/Cargo.toml -p whoathere-cli -- doctor
-cargo run --manifest-path whoathere/Cargo.toml -p whoathere-cli -- doctor --json --state-dir "$HOME/.whoathere/macos-vm-validation" --helper /absolute/path/to/whoathere-macos-vm-helper
-cargo run --manifest-path whoathere/Cargo.toml -p whoathere-cli -- endpoint setup --shim-dir /tmp/whoathere-shims --workspace "$PWD" --vault-origin http://127.0.0.1:4873 --replay-store /tmp/whoathere-replay-store.txt
-cargo run --manifest-path whoathere/Cargo.toml -p whoathere-cli -- evidence providers --json --require-ready
-cargo run --manifest-path whoathere/Cargo.toml -p whoathere-cli -- evidence providers --json --require-ready --scope current
-cargo run --manifest-path whoathere/Cargo.toml -p whoathere-cli -- evidence providers --scope linux
-cargo run --manifest-path whoathere/Cargo.toml -p whoathere-cli -- evidence challenge --subject launch-sha256-smoke --context-hash sha256:smoke-context --vault-host 127.0.0.1:4873
-cargo run --manifest-path whoathere/Cargo.toml -p whoathere-cli -- evidence linux-active-probe-fixture --json --subject launch-sha256-smoke --context-hash sha256:smoke-context --vault-host 127.0.0.1:4873 --profile complete
-cargo run --manifest-path whoathere/Cargo.toml -p whoathere-cli -- evidence linux-active-probe-admission --json --subject launch-sha256-smoke --context-hash sha256:smoke-context --vault-host 127.0.0.1:4873 --profile complete
-scripts/whoathere-build-linux-active-probe-image.sh
-cargo run --manifest-path whoathere/Cargo.toml -p whoathere-cli -- evidence linux-active-probe-docker --json --execute --subject launch-sha256-smoke --context-hash sha256:smoke-context --vault-host 127.0.0.1:4873
-cargo run --manifest-path whoathere/Cargo.toml -p whoathere-cli -- evidence linux-active-probe-docker --json --execute --admit --subject launch-sha256-smoke --context-hash sha256:smoke-context --vault-host 127.0.0.1:4873
-cargo run --manifest-path whoathere/Cargo.toml -p whoathere-cli -- evidence linux-active-probe-docker --json --execute --admit --replay-store /tmp/whoathere-replay-store.txt --subject launch-sha256-smoke --context-hash sha256:smoke-context --vault-host 127.0.0.1:4873
-scripts/whoathere-linux-active-probe-internal-vault-smoke.sh
-cargo run --manifest-path whoathere/Cargo.toml -p whoathere-cli -- launch provider-check --execute --workspace whoathere/tests/fixtures/source-clean --vault-origin http://127.0.0.1:4873 --egress-enforced --containment-available npm -- ci
-cargo run --manifest-path whoathere/Cargo.toml -p whoathere-cli -- vault dev-http GET /v1/registry-compat/npm/fixture
-cargo run --manifest-path whoathere/Cargo.toml -p whoathere-cli -- vault dev-http GET /v1/registry-compat/pypi/simple/fixture/
-scripts/whoathere-linux-active-probe-docker-smoke.sh
-scripts/whoathere-linux-active-probe-docker-admission-smoke.sh
-scripts/whoathere-linux-active-probe-admission-smoke.sh
-scripts/whoathere-linux-active-probe-fixture-smoke.sh
-scripts/whoathere-provider-challenge-smoke.sh
-scripts/whoathere-provider-smoke.sh
-scripts/whoathere-compat-smoke.sh
-scripts/whoathere-endpoint-smoke.sh
+cargo clippy --manifest-path whoathere/Cargo.toml --all-targets -- -D warnings
+cargo fmt --manifest-path whoathere/Cargo.toml --all -- --check
 ```
 
-The local-dev Vault compatibility paths serve only deterministic safe fixture archives after exact promoted-cache lookup. They are not a production package registry.
-Vault `/healthz` is liveness only. Vault `/readyz` is fail-closed for protected traffic until real production dependencies are verified.
-`evidence providers --json --require-ready` is intentionally fail-closed until real OS containment and Vault-only egress providers can actively verify enforcement; its current posture fields are diagnostics only.
-Linux provider diagnostics now include a `provider_active_probe` receipt contract. Current read-only evidence reports the receipt as missing/unsatisfied; future Linux providers must satisfy that challenge-bound receipt before proof verification can be enabled.
-`evidence linux-active-probe-fixture` validates deterministic complete/incomplete/overpermissive receipt profiles for the Linux active-probe contract, but always reports `authorization=false`, `proof_minted=false`, and `execution_allowed=false`.
-`evidence linux-active-probe-admission` validates that an active-probe receipt is bound to a replay-guard-issued, single-use challenge before it is admissible; accepted admission still reports `authorization=false`, `proof_minted=false`, and `execution_allowed=false`.
-`evidence linux-active-probe-docker --execute` runs the local `whoathere/linux-active-probe:local` probe image as non-root user `65532:65532` with `--network none`, no-new-privileges, dropped capabilities, and resource limits, then validates the emitted receipt. With `--docker-network <name>`, it refuses to attach unless Docker reports the network as internal. With `--admit`, it issues a replay-guard-owned challenge, consumes the real Docker receipt through admission, and still remains fail-closed without proof minting or execution authorization. With `--admit --replay-store <path>` or `WHOATHERE_REPLAY_STORE=<path>`, challenge issue/consume state is persisted in the local file-backed replay store using nonce digests rather than raw nonces. The env default is applied only in admission mode. It records UID/GID maps and nested-userns attempt results, remains fail-closed, and always reports `authorization=false`, `proof_minted=false`, and `execution_allowed=false`.
-`evidence challenge --subject <id> --context-hash <hash> --vault-host <host>` evaluates an explicit provider challenge against one local provider and remains fail-closed until same-subject containment and Vault-only egress proofs are implemented. JSON challenge output includes the exact sorted `probe_destinations` manifest that a real active-probe executor must attempt.
-`launch provider-check` builds the same launch plan as `launch plan`, evaluates the generated proof challenge against the current local provider skeleton, appends `launch_provider_check_*` diagnostics, and remains fail-closed without package execution or OS/network mutation.
-Materialized PATH shims call `whoathere protect --execute <tool> -- "$@"`; use `WHOATHERE_WORKSPACE`, `WHOATHERE_VAULT_ORIGIN`, `WHOATHERE_POLICY`, `WHOATHERE_AUDIT_PATH`, and `WHOATHERE_REPLAY_STORE` to provide environment defaults without editing the shim files.
-`launch plan` emits `provider_challenge_command=...` whenever it creates a proof challenge, making the generated launch subject/context/Vault host directly testable with `evidence challenge`.
-`endpoint setup` prints the shim install command, shell exports including optional `WHOATHERE_REPLAY_STORE`, and current-provider readiness gate; it is diagnostic-only and exits fail-closed until real provider verification exists.
-`scripts/whoathere-provider-challenge-smoke.sh` checks the explicit provider challenge JSON contract and expected fail-closed challenge attempt reasons.
-`scripts/whoathere-build-linux-active-probe-image.sh` builds the local probe image from the already-present BuildKit base with `--pull=false` and a constrained Docker build context.
-`scripts/whoathere-linux-active-probe-admission-smoke.sh` checks replay-owned receipt admission: a complete issued receipt is accepted for admission only, while replayed, unknown, mutated, and incomplete receipts fail closed without proof minting or execution authorization.
-`scripts/whoathere-linux-active-probe-docker-smoke.sh` builds and checks the Docker active-probe executor against the local WhoaThere probe image without image pulls or public network access; current output proves the non-root container user, image contract, seccomp, cgroup, no-new-privileges, and no-network denial, but still fails closed on user namespace and Vault allowance gaps.
-`scripts/whoathere-linux-active-probe-docker-admission-smoke.sh` checks replay-owned admission against real Docker active-probe output: no-network, `WHOATHERE_REPLAY_STORE` durable replay-store, replayed, and internal-Vault receipt paths all fail closed without proof minting or execution authorization.
-`scripts/whoathere-linux-active-probe-internal-vault-smoke.sh` creates a Docker internal network, starts an inert Vault fixture on that network, proves configured-Vault reachability inside the internal network, denies every non-Vault challenge destination by internal-network boundary, and still fails closed without proof minting or launch authorization. The CLI refuses custom Docker networks unless Docker reports them as internal.
-`scripts/whoathere-linux-active-probe-fixture-smoke.sh` checks complete, incomplete, and overpermissive Linux active-probe fixture profiles without OS/network mutation or proof minting.
-`scripts/whoathere-provider-smoke.sh` checks current-host provider readiness diagnostics, including fail-closed status and no active/package/OS/network/public-probe side effects.
-`scripts/whoathere-endpoint-smoke.sh` chains endpoint setup, shim materialization, PATH resolution, and expected-denied `npm ci` plus `pip install` interception in a temp workspace without allowing package-manager execution.
-
-## Run
+Useful smoke checks:
 
 ```sh
-swift build
-open -n "dist/WhoaThere Timer.app"
+scripts/whoathere-scanner-integration-smoke.sh
+scripts/whoathere-package-risk-smoke.sh
+scripts/whoathere-real-world-attack-harness.sh
+scripts/whoathere-local-beta-pressure-suite.sh
 ```
 
-For development, `swift run whoathere-timer` also works. The app runs as an accessory app, so it appears in the menu bar without a Dock icon.
+Some checks require Apple Silicon macOS, Xcode tooling, a provisioned WhoaThere VM, or local scanner
+tools.
 
-## Behavior
+## Security Posture
 
-- Clicking the menu bar item opens a small anchored panel attached to the status item.
-- The menu bar item is a quiet `TC` marker while idle. While active, it shows the live elapsed interval.
-- The panel focuses on a one-line note, the next timer action, and compact `Today` / `Week` billing progress.
-- Focus settings, recent entries, and discard are hidden behind `Details`.
-- Stopping an active interval saves it locally in `UserDefaults` for the current user.
+WhoaThere is intentionally conservative.
+
+The current local beta is designed to make common Python and Node package workflows safer for a
+developer machine. It is not a complete answer to package supply-chain risk. The product should earn
+trust by showing its work: clear verdicts, reason codes, redacted evidence, no silent public
+fallback, no broad break-glass path, and no claims that scanners or AI review can prove a package
+safe by themselves.
+
+The broader vision includes an enterprise package proxy and cache, but the current release target is
+the local macOS CLI.

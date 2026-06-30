@@ -118,8 +118,8 @@ stage_package() {
   done
 
   install -m 0644 "$RUST_WORKSPACE/README.md" "$PACKAGE_ROOT/docs/whoathere-implementation-readme.md"
-  install -m 0644 "$REPO_ROOT/docs/whoathere/product-build-run/macos-local-first-preview-runbook.md" "$PACKAGE_ROOT/docs/macos-local-first-preview-runbook.md"
-  install -m 0644 "$REPO_ROOT/docs/whoathere/product-build-run/macos-local-release-readiness.md" "$PACKAGE_ROOT/docs/macos-local-release-readiness.md"
+  install -m 0644 "$REPO_ROOT/docs/product-build-run/macos-local-first-preview-runbook.md" "$PACKAGE_ROOT/docs/macos-local-first-preview-runbook.md"
+  install -m 0644 "$REPO_ROOT/docs/product-build-run/macos-local-release-readiness.md" "$PACKAGE_ROOT/docs/macos-local-release-readiness.md"
 
   cat > "$PACKAGE_ROOT/README.preview.md" <<EOF
 # WhoaThere macOS Local-First Preview

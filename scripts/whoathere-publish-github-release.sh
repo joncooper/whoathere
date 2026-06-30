@@ -142,11 +142,13 @@ cat > "$NOTES" <<EOF
 
 Apple Silicon macOS-only local beta archive.
 
-Install on a clean Apple Silicon Mac:
+Install on a clean Apple Silicon Mac from the private repository:
 
 \`\`\`sh
-curl -fsSL https://raw.githubusercontent.com/$REPO/main/scripts/whoathere-install-from-github.sh \\
-  | sh -s -- --repo $REPO --tag $TAG --prefix "\$HOME/.whoathere"
+gh auth login -h github.com
+gh repo clone $REPO
+cd whoathere
+scripts/whoathere-install-from-github.sh --private --repo $REPO --tag $TAG --prefix "\$HOME/.whoathere"
 \`\`\`
 
 Then run:
@@ -189,4 +191,4 @@ echo "github_release_published=true"
 echo "repo=$REPO"
 echo "tag=$TAG"
 echo "version=$VERSION"
-echo "install_url=https://raw.githubusercontent.com/$REPO/main/scripts/whoathere-install-from-github.sh"
+echo "private_install_command=scripts/whoathere-install-from-github.sh --private --repo $REPO --tag $TAG --prefix \\\"\\$HOME/.whoathere\\\""

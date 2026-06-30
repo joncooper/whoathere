@@ -31,4 +31,4 @@ terraform validate
 terraform plan
 ```
 
-Do not deploy this skeleton as a production Vault until the deferred Phase 3 items in `docs/whoathere/product-build-run/phase-3-enterprise-vault-checkpoint.md` are complete.
+Do not deploy this skeleton as a production Vault until the deferred Phase 3 items in `docs/product-build-run/phase-3-enterprise-vault-checkpoint.md` are complete.
