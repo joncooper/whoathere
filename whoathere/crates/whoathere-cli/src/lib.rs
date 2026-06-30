@@ -13007,6 +13007,20 @@ fn assess_package_risk_subject(
     } else {
         reason_codes.extend(subject.indicators.iter().cloned());
     }
+    if subject
+        .indicators
+        .iter()
+        .any(|indicator| indicator == "npm_bin_entry_declared")
+    {
+        reason_codes.push("npm_bin_entry_requires_manual_review".to_string());
+    }
+    if subject
+        .indicators
+        .iter()
+        .any(|indicator| indicator == "python_console_script_entry_declared")
+    {
+        reason_codes.push("python_entry_point_requires_manual_review".to_string());
+    }
 
     let baseline_hash = baseline.as_ref().map(|record| record.artifact_hash.clone());
     let exact_baseline_match = baseline_hash
@@ -13139,6 +13153,8 @@ fn package_risk_indicator_blocks_auto_sync(indicator: &str) -> bool {
         || indicator.contains("lockfile_dependency")
         || indicator.contains("platform_specific")
         || indicator.contains("obfuscated")
+        || indicator == "npm_bin_entry_declared"
+        || indicator == "python_console_script_entry_declared"
 }
 
 fn package_risk_overall_verdict(assessments: &[PackageRiskAssessment]) -> PackageRiskVerdict {
@@ -13276,6 +13292,15 @@ fn python_workspace_risk_indicators(
     let mut indicators = Vec::new();
     if pyproject.contains("[build-system]") || !setup_py.is_empty() {
         indicators.push("pypi_pep517_build_backend".to_string());
+    }
+    let entry_point_text = format!("{pyproject}\n{setup_py}").to_ascii_lowercase();
+    if entry_point_text.contains("[project.scripts]")
+        || entry_point_text.contains("[project.gui-scripts]")
+        || entry_point_text.contains("[project.entry-points")
+        || entry_point_text.contains("console_scripts")
+        || entry_point_text.contains("entry_points")
+    {
+        indicators.push("python_console_script_entry_declared".to_string());
     }
     indicators.extend(source_text_risk_indicators(pyproject));
     indicators.extend(source_text_risk_indicators(setup_py));
@@ -21101,6 +21126,105 @@ source = { path = "../outside" }
             .output
             .contains("direct_vcs_editable_denied_by_default"));
         assert!(!result.output.contains("/Users/"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn package_risk_command_entrypoints_require_manual_review() {
+        let root = temp_root("whoathere-cli-package-risk-entrypoints");
+        let state_dir = root.join("state");
+        let npm_workspace = root.join("npm-cli");
+        let npm_scanner_receipt = root.join("npm-scanner-clean.json");
+        std::fs::create_dir_all(&npm_workspace).expect("npm workspace");
+        std::fs::write(
+            npm_workspace.join("package.json"),
+            r#"{"name":"cli-surface-fixture","version":"1.0.0","whoatherePublishedAtUnixSeconds":1700000000,"bin":{"cli-surface":"cli.js"},"repository":"https://example.invalid/repo"}"#,
+        )
+        .expect("package json");
+        std::fs::write(npm_workspace.join("cli.js"), "console.log('ok');\n").expect("cli js");
+        write_scanner_run_receipt(
+            &npm_scanner_receipt,
+            Some(&state_dir),
+            &npm_workspace,
+            true,
+            &[],
+        );
+
+        let npm_assessed = evaluate_command(Command::PackageRiskAssess {
+            workspace: Some(npm_workspace.display().to_string()),
+            ecosystem: Some("npm".to_string()),
+            state_dir: Some(state_dir.display().to_string()),
+            scanner_receipt: Some(npm_scanner_receipt.display().to_string()),
+            ai_review: false,
+            ai_provider: None,
+            ai_model: None,
+            ai_timeout_seconds: None,
+            json: true,
+        });
+        assert_eq!(npm_assessed.exit_code, 22);
+        assert!(npm_assessed
+            .output
+            .contains("\"overall_verdict\": \"manual_review\""));
+        assert!(npm_assessed.output.contains("npm_bin_entry_declared"));
+        assert!(npm_assessed
+            .output
+            .contains("npm_bin_entry_requires_manual_review"));
+
+        let python_workspace = root.join("python-cli");
+        let python_scanner_receipt = root.join("python-scanner-clean.json");
+        std::fs::create_dir_all(python_workspace.join("python_cli_fixture"))
+            .expect("python package dir");
+        std::fs::write(
+            python_workspace.join("pyproject.toml"),
+            r#"[project]
+name = "python-cli-fixture"
+version = "1.0.0"
+whoathere-published-at = 1700000000
+
+[project.scripts]
+python-cli-fixture = "python_cli_fixture:main"
+"#,
+        )
+        .expect("pyproject");
+        std::fs::write(
+            python_workspace
+                .join("python_cli_fixture")
+                .join("__init__.py"),
+            "def main():\n    return 0\n",
+        )
+        .expect("python package");
+        write_scanner_run_receipt(
+            &python_scanner_receipt,
+            Some(&state_dir),
+            &python_workspace,
+            true,
+            &[],
+        );
+
+        let python_assessed = evaluate_command(Command::PackageRiskAssess {
+            workspace: Some(python_workspace.display().to_string()),
+            ecosystem: Some("pypi".to_string()),
+            state_dir: Some(state_dir.display().to_string()),
+            scanner_receipt: Some(python_scanner_receipt.display().to_string()),
+            ai_review: false,
+            ai_provider: None,
+            ai_model: None,
+            ai_timeout_seconds: None,
+            json: true,
+        });
+        assert_eq!(python_assessed.exit_code, 22);
+        assert!(python_assessed
+            .output
+            .contains("\"overall_verdict\": \"manual_review\""));
+        assert!(python_assessed
+            .output
+            .contains("python_console_script_entry_declared"));
+        assert!(python_assessed
+            .output
+            .contains("python_entry_point_requires_manual_review"));
+        assert!(!npm_assessed.output.contains("/Users/"));
+        assert!(!python_assessed.output.contains("/Users/"));
 
         let _ = std::fs::remove_dir_all(&root);
     }

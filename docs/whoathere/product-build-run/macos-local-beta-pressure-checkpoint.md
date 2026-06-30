@@ -21,6 +21,9 @@ security behavior, not installer, GUI, packaging polish, or enterprise Vault wor
   maintainer-update diffs, npm lockfile poisoning, uv lockfile VCS/local sources, static
   API-compatible malicious behavior, delayed CI activation, platform-specific code, and
   native/binary markers.
+- Tightened command-entry package policy. npm `bin` entries and Python console-script entry points
+  now force manual review because they create post-install execution surfaces that the local beta
+  does not claim to protect at normal runtime.
 - Added an opt-in VM pressure gate to `scripts/whoathere-local-beta-pressure-suite.sh`.
   By default it is skipped; when `WHOATHERE_PRESSURE_ENABLE_VM=1` and
   `WHOATHERE_PRESSURE_RUNTIME_ARCHIVE` are set, it runs same-host runtime qualification, including
@@ -56,6 +59,7 @@ security behavior, not installer, GUI, packaging polish, or enterprise Vault wor
 - `swift test` in `whoathere/helpers/macos-vm-helper`
 - `cargo test --manifest-path whoathere/Cargo.toml -p whoathere-cli vm_detonate -- --nocapture`
 - `cargo test --manifest-path whoathere/Cargo.toml -p whoathere-cli scanners_run -- --nocapture`
+- `cargo test --manifest-path whoathere/Cargo.toml -p whoathere-cli package_risk -- --nocapture`
 - ASCII scan over docs, scripts, and Rust sources
 
 ## Real Project Compatibility Pass
@@ -118,6 +122,7 @@ Remaining real-project friction is deliberate for the beta:
 
 - Fresh state without approved package history requires manual review.
 - Scanner receipts are useful evidence but are not allowed to authorize sync-back by themselves.
+- Packages that create npm command shims or Python console scripts require manual review.
 - Registry lockfile records are visible in the output, but VCS, local, editable, direct URL,
   native, binary, and unknown package classes remain blocked or manual review by default.
 

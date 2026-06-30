@@ -208,7 +208,8 @@ In automation, treat anything other than `0` as not safe to continue.
 - Unpinned dependencies with no last-known-good local approval require review.
 - Fresh public versions are held by the age gate.
 - New install scripts, `.pth` startup hooks, native markers, binary wheels, direct URLs, VCS sources,
-  editable installs, and local path escapes prevent automatic copy-back.
+  editable installs, npm command shims, Python console scripts, and local path escapes prevent
+  automatic copy-back.
 - Missing or stale VM guest tooling fails before detonation.
 - Missing scanners are reported but do not block the current local-only beta by themselves.
 

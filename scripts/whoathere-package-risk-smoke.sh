@@ -161,6 +161,41 @@ run_capture 22 "$WORK_DIR/scanner-dirty-assess.json" "$CLI" package-risk assess 
 require_contains '"all_scanner_clean": false' "$WORK_DIR/scanner-dirty-assess.json" scanner_dirty_clean
 require_contains 'scanner_receipt_not_clean' "$WORK_DIR/scanner-dirty-assess.json" scanner_dirty_reason
 
+NPM_BIN_ENTRY="$WORK_DIR/npm-bin-entry"
+mkdir -p "$NPM_BIN_ENTRY"
+cat >"$NPM_BIN_ENTRY/package.json" <<'JSON'
+{"name":"cli-surface-fixture","version":"1.0.0","whoatherePublishedAtUnixSeconds":1700000000,"bin":{"cli-surface":"cli.js"},"repository":"https://example.invalid/repo"}
+JSON
+cat >"$NPM_BIN_ENTRY/cli.js" <<'JS'
+console.log("ok")
+JS
+write_scanner_receipt "$NPM_BIN_ENTRY" npm "$WORK_DIR/npm-bin-entry-scanner.json"
+run_capture 22 "$WORK_DIR/npm-bin-entry.json" "$CLI" package-risk assess --workspace "$NPM_BIN_ENTRY" --ecosystem npm --state-dir "$STATE_DIR" --scanner-receipt "$WORK_DIR/npm-bin-entry-scanner.json" --json
+require_contains '"overall_verdict": "manual_review"' "$WORK_DIR/npm-bin-entry.json" npm_bin_manual
+require_contains 'npm_bin_entry_declared' "$WORK_DIR/npm-bin-entry.json" npm_bin_indicator
+require_contains 'npm_bin_entry_requires_manual_review' "$WORK_DIR/npm-bin-entry.json" npm_bin_review
+
+PYTHON_ENTRYPOINT="$WORK_DIR/python-entrypoint"
+mkdir -p "$PYTHON_ENTRYPOINT/python_entrypoint_fixture"
+cat >"$PYTHON_ENTRYPOINT/pyproject.toml" <<'PY'
+[project]
+name = "python-entrypoint-fixture"
+version = "1.0.0"
+whoathere-published-at = 1700000000
+
+[project.scripts]
+python-entrypoint-fixture = "python_entrypoint_fixture:main"
+PY
+cat >"$PYTHON_ENTRYPOINT/python_entrypoint_fixture/__init__.py" <<'PY'
+def main():
+    return 0
+PY
+write_scanner_receipt "$PYTHON_ENTRYPOINT" pypi "$WORK_DIR/python-entrypoint-scanner.json"
+run_capture 22 "$WORK_DIR/python-entrypoint.json" "$CLI" package-risk assess --workspace "$PYTHON_ENTRYPOINT" --ecosystem pypi --state-dir "$STATE_DIR" --scanner-receipt "$WORK_DIR/python-entrypoint-scanner.json" --json
+require_contains '"overall_verdict": "manual_review"' "$WORK_DIR/python-entrypoint.json" python_entrypoint_manual
+require_contains 'python_console_script_entry_declared' "$WORK_DIR/python-entrypoint.json" python_entrypoint_indicator
+require_contains 'python_entry_point_requires_manual_review' "$WORK_DIR/python-entrypoint.json" python_entrypoint_review
+
 NPM_EVIL="$WORK_DIR/npm-evil"
 mkdir -p "$NPM_EVIL"
 cat >"$NPM_EVIL/package.json" <<'JSON'
