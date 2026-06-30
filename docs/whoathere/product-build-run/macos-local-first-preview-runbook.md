@@ -247,6 +247,11 @@ approved as a local baseline, then a later pinned version of the same package ad
 network/token path. Even with clean scanner evidence, the later version must require manual review
 with a suspicious-diff reason and concrete behavior reasons.
 
+The real-world attack harness includes npm and Python fixtures for install-time hooks, startup or
+import-time behavior, API-compatible credential access, delayed CI activation, macOS-specific
+activation, and native/binary markers. These fixtures are non-destructive and use mock signals only;
+the expected result is manual review or deny before host package execution or unsafe sync-back.
+
 The registry compatibility smoke uses the local loopback dev registry. It now verifies a real
 `npm ci` flow from a generated lockfile, confirms lockfile integrity and loopback-only resolved
 URLs, installs the npm fixture without running scripts, installs the PyPI fixture from a
