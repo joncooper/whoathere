@@ -196,6 +196,26 @@ printf '%s\n' "$PACKAGE_RISK_RECEIPT"
 Fresh local state often produces `manual_review` because no last-known-good version has been
 approved yet.
 
+## Untrusted Repo Intake
+
+For an agent-generated or newly cloned repo, prefer the composed intake command before running setup
+on the host:
+
+```sh
+whoathere intake assess --workspace /absolute/path/to/project \
+  --ecosystem auto \
+  --state-dir "$WHOATHERE_STATE" \
+  --scanner-receipt scanner-receipt.json \
+  --execute \
+  --json \
+  npm -- install
+```
+
+`intake assess` requests local AI package review by default, runs package-risk assessment, detonates
+the requested install workflow in the VM with sync-back disabled, and fails closed unless package
+risk and dynamic VM evidence are both clean. Without `--execute`, it previews the plan but returns
+manual review because no dynamic VM run happened.
+
 Approve a local baseline only after review:
 
 ```sh
@@ -383,8 +403,9 @@ behavior.
 2. Keep public dependency resolution out of the workflow unless you are intentionally testing a
    blocked/manual-review case.
 3. Run scanners when you want copy-back eligibility.
-4. Run `package-risk assess`.
-5. Run `vm detonate` without `--sync-back` first.
+4. Run `intake assess --execute` for newly cloned or agent-generated repos.
+5. Run `package-risk assess` and `vm detonate` separately when you need lower-level receipts or
+   debugging detail.
 6. Use `--sync-back` only for supported pure/safe classes with clean package-risk, VM evidence, and
    current release evidence in the same state directory.
 7. Run `vm suspend --execute` when finished.

