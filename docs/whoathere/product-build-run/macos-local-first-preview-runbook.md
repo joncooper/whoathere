@@ -234,6 +234,7 @@ Run the deterministic package-risk and attack harnesses:
 scripts/whoathere-package-risk-smoke.sh
 scripts/whoathere-real-world-attack-harness.sh
 scripts/whoathere-local-beta-pressure-smoke.sh
+scripts/whoathere-local-beta-pressure-suite.sh
 ```
 
 The local beta pressure smoke uses realistic local npm, pip, and uv project shapes without public
@@ -257,6 +258,11 @@ The registry compatibility smoke uses the local loopback dev registry. It now ve
 URLs, installs the npm fixture without running scripts, installs the PyPI fixture from a
 hash-pinned requirements file, and confirms pip rejects a bad hash without leaving the package
 installed.
+
+The pressure suite runs the package-risk smoke, real-world attack harness, local beta pressure
+smoke, and registry compatibility smoke with per-step elapsed seconds. Set
+`WHOATHERE_PRESSURE_SKIP_COMPAT=1` only when loopback registry tests cannot run in the current
+environment.
 
 ## Package A Preview Artifact
 
