@@ -128,6 +128,7 @@ import Testing
         "--project-payload-path", "/tmp/whoathere-vm/runs/project-payloads/1.payload.hex",
         "--project-workflow=pip_project_install",
         "--project-import-module", "whoathere_clean",
+        "--project-api-probe",
         "--project-requirements-path=requirements.txt",
         "--sync-back",
         "--execute",
@@ -144,6 +145,7 @@ import Testing
     #expect(options.detonationProjectPayloadPath == "/tmp/whoathere-vm/runs/project-payloads/1.payload.hex")
     #expect(options.detonationProjectWorkflow == "pip_project_install")
     #expect(options.detonationProjectImportModule == "whoathere_clean")
+    #expect(options.detonationProjectApiProbe)
     #expect(options.detonationProjectRequirementsPath == "requirements.txt")
     #expect(options.detonationSyncBack)
     #expect(options.detonationArgs == ["install", "."])

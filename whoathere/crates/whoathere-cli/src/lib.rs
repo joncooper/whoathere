@@ -2347,6 +2347,7 @@ struct ProjectDetonationPlan {
     project_mode: bool,
     workflow: Option<String>,
     import_module: Option<String>,
+    api_probe_enabled: bool,
     requirements_path: Option<String>,
     safe_to_execute: bool,
     reason_codes: Vec<String>,
@@ -2386,6 +2387,7 @@ struct GuestJobEvidence {
     project_mode: Option<bool>,
     project_workflow: Option<String>,
     project_import_module: Option<String>,
+    project_api_probe_enabled: Option<bool>,
     project_requirements_path: Option<String>,
     vm_session_id: Option<String>,
     sync_output_archive_hex: Option<String>,
@@ -2494,6 +2496,9 @@ fn render_vm_detonate(args: VmDetonateRenderArgs<'_>) -> String {
         if let Some(import_module) = &project_plan.import_module {
             helper_args.push("--project-import-module".to_string());
             helper_args.push(import_module.clone());
+        }
+        if project_plan.api_probe_enabled {
+            helper_args.push("--project-api-probe".to_string());
         }
         if let Some(requirements_path) = &project_plan.requirements_path {
             helper_args.push("--project-requirements-path".to_string());
@@ -2624,7 +2629,7 @@ fn render_vm_detonate(args: VmDetonateRenderArgs<'_>) -> String {
         .map(|helper| helper.render_text())
         .unwrap_or_else(|| "helper_invoked=false".to_string());
     format!(
-        "whoathere vm detonate\nschema_version=whoathere.macos_vm.detonation.v1\nrelease_target={}\nvm_boundary={}\nnetwork_model={}\nsync_back_enabled={}\nhost_package_execution_enabled=false\nhigh_risk_package_execution_enabled=false\nmutation_requested={}\nstate_dir={}\ntool={}\ncommand_class={}\nargv={:?}\nfixture={}\ntimeout_seconds={}\nworkspace={}\nmirror_workspace_configured={}\nmirror_allowed_file_count={}\nmirror_secret_exclusion_count={}\nmirror_symlink_escape_count={}\nmirror_large_file_exclusion_count={}\nmirror_package_data_file_count={}\nmirror_risky_file_exclusion_count={}\nmirror_total_allowed_bytes={}\nmirror_file_classes={:?}\nmirror_included_paths={:?}\nmirror_reason_codes={:?}\nproject_mode={}\nproject_workflow={}\nproject_import_module={}\nproject_requirements_path={}\nproject_safe_to_execute={}\nproject_payload_path={}\nguest_tooling_ready={}\nguest_tooling_reason_codes={:?}\n{}\ncanary_categories={:?}\nverdict={}\nreason_codes={:?}\n{}\n{}\nexit_code={}",
+        "whoathere vm detonate\nschema_version=whoathere.macos_vm.detonation.v1\nrelease_target={}\nvm_boundary={}\nnetwork_model={}\nsync_back_enabled={}\nhost_package_execution_enabled=false\nhigh_risk_package_execution_enabled=false\nmutation_requested={}\nstate_dir={}\ntool={}\ncommand_class={}\nargv={:?}\nfixture={}\ntimeout_seconds={}\nworkspace={}\nmirror_workspace_configured={}\nmirror_allowed_file_count={}\nmirror_secret_exclusion_count={}\nmirror_symlink_escape_count={}\nmirror_large_file_exclusion_count={}\nmirror_package_data_file_count={}\nmirror_risky_file_exclusion_count={}\nmirror_total_allowed_bytes={}\nmirror_file_classes={:?}\nmirror_included_paths={:?}\nmirror_reason_codes={:?}\nproject_mode={}\nproject_workflow={}\nproject_import_module={}\nproject_api_probe_enabled={}\nproject_requirements_path={}\nproject_safe_to_execute={}\nproject_payload_path={}\nguest_tooling_ready={}\nguest_tooling_reason_codes={:?}\n{}\ncanary_categories={:?}\nverdict={}\nreason_codes={:?}\n{}\n{}\nexit_code={}",
         RELEASE_TARGET,
         VM_BOUNDARY,
         NETWORK_MODEL,
@@ -2654,6 +2659,7 @@ fn render_vm_detonate(args: VmDetonateRenderArgs<'_>) -> String {
         project_plan.project_mode,
         project_plan.workflow.as_deref().unwrap_or("none"),
         project_plan.import_module.as_deref().unwrap_or("none"),
+        project_plan.api_probe_enabled,
         project_plan.requirements_path.as_deref().unwrap_or("none"),
         project_plan.safe_to_execute,
         payload_preparation
@@ -3129,6 +3135,7 @@ fn build_project_detonation_plan(
             project_mode: false,
             workflow: None,
             import_module: None,
+            api_probe_enabled: false,
             requirements_path: None,
             safe_to_execute: false,
             reason_codes: Vec::new(),
@@ -3145,6 +3152,7 @@ fn build_project_detonation_plan(
             project_mode: false,
             workflow: None,
             import_module: None,
+            api_probe_enabled: false,
             requirements_path: None,
             safe_to_execute: false,
             reason_codes: vec!["project_detonation_pip_only_goal_3".to_string()],
@@ -3155,6 +3163,7 @@ fn build_project_detonation_plan(
             project_mode: false,
             workflow: None,
             import_module: None,
+            api_probe_enabled: false,
             requirements_path: None,
             safe_to_execute: false,
             reason_codes: vec!["project_detonation_workspace_required".to_string()],
@@ -3168,6 +3177,7 @@ fn build_project_detonation_plan(
             project_mode: true,
             workflow: None,
             import_module: None,
+            api_probe_enabled: false,
             requirements_path: None,
             safe_to_execute: false,
             reason_codes: vec!["project_detonation_pip_install_required".to_string()],
@@ -3212,6 +3222,7 @@ fn build_project_detonation_plan(
         return ProjectDetonationPlan {
             project_mode: true,
             workflow: Some("pip_project_install".to_string()),
+            api_probe_enabled: import_module.is_some() && reason_codes.is_empty(),
             import_module,
             requirements_path: None,
             safe_to_execute: reason_codes.is_empty(),
@@ -3235,6 +3246,7 @@ fn build_project_detonation_plan(
         return ProjectDetonationPlan {
             project_mode: true,
             workflow: Some("pip_requirements_install".to_string()),
+            api_probe_enabled: import_module.is_some() && reason_codes.is_empty(),
             import_module,
             requirements_path: Some(requirements_path),
             safe_to_execute: reason_codes.is_empty(),
@@ -3248,6 +3260,7 @@ fn build_project_detonation_plan(
     ProjectDetonationPlan {
         project_mode: true,
         workflow: None,
+        api_probe_enabled: false,
         import_module,
         requirements_path: None,
         safe_to_execute: false,
@@ -3264,6 +3277,7 @@ fn build_uv_project_detonation_plan(
             project_mode: true,
             workflow: Some("uv_sync".to_string()),
             import_module: None,
+            api_probe_enabled: false,
             requirements_path: None,
             safe_to_execute: false,
             reason_codes: vec!["project_uv_sync_deferred_until_lock_policy".to_string()],
@@ -3277,6 +3291,7 @@ fn build_uv_project_detonation_plan(
             project_mode: true,
             workflow: None,
             import_module: None,
+            api_probe_enabled: false,
             requirements_path: None,
             safe_to_execute: false,
             reason_codes: vec!["project_uv_pip_install_required".to_string()],
@@ -3311,6 +3326,7 @@ fn build_npm_project_detonation_plan(
             project_mode: false,
             workflow: None,
             import_module: None,
+            api_probe_enabled: false,
             requirements_path: None,
             safe_to_execute: false,
             reason_codes: vec!["project_detonation_workspace_required".to_string()],
@@ -3359,6 +3375,7 @@ fn build_npm_project_detonation_plan(
 
     ProjectDetonationPlan {
         project_mode: true,
+        api_probe_enabled: workflow.is_some() && reason_codes.is_empty(),
         workflow,
         import_module: None,
         requirements_path: None,
@@ -3771,10 +3788,11 @@ fn hex_encode(bytes: &[u8]) -> String {
 
 fn render_project_detonation_plan_json(plan: &ProjectDetonationPlan) -> String {
     format!(
-        "{{\"project_mode\": {}, \"workflow\": {}, \"import_module\": {}, \"requirements_path\": {}, \"safe_to_execute\": {}, \"reason_codes\": {}}}",
+        "{{\"project_mode\": {}, \"workflow\": {}, \"import_module\": {}, \"api_probe_enabled\": {}, \"requirements_path\": {}, \"safe_to_execute\": {}, \"reason_codes\": {}}}",
         plan.project_mode,
         json_option_string(plan.workflow.as_deref()),
         json_option_string(plan.import_module.as_deref()),
+        plan.api_probe_enabled,
         json_option_string(plan.requirements_path.as_deref()),
         plan.safe_to_execute,
         json_string_array(&plan.reason_codes)
@@ -3861,6 +3879,10 @@ fn parse_guest_job_evidence(helper: Option<&MacosVmHelperOutput>) -> Option<Gues
         project_mode: json_extract_bool_field(&helper.stdout, "project_mode"),
         project_workflow: json_extract_string_field(&helper.stdout, "project_workflow"),
         project_import_module: json_extract_string_field(&helper.stdout, "project_import_module"),
+        project_api_probe_enabled: json_extract_bool_field(
+            &helper.stdout,
+            "project_api_probe_enabled",
+        ),
         project_requirements_path: json_extract_string_field(
             &helper.stdout,
             "project_requirements_path",
@@ -3885,7 +3907,7 @@ fn render_guest_job_evidence_json(evidence: Option<&GuestJobEvidence>) -> String
         return "null".to_string();
     };
     format!(
-        "{{\"protocol\": {}, \"schema_version\": {}, \"agent_version\": {}, \"job_id\": {}, \"tool\": {}, \"command_class\": {}, \"fixture\": {}, \"status\": {}, \"verdict\": {}, \"reason_codes\": {}, \"command_exit_code\": {}, \"timed_out\": {}, \"canary_access_detected\": {}, \"network_attempt_detected\": {}, \"filesystem_write_detected\": {}, \"toolchain_available\": {}, \"stdout_captured\": {}, \"stderr_captured\": {}, \"raw_canary_values_captured\": {}, \"sync_back_enabled\": {}, \"host_package_execution_enabled\": {}, \"high_risk_package_execution_enabled\": {}, \"project_mode\": {}, \"project_workflow\": {}, \"project_import_module\": {}, \"project_requirements_path\": {}, \"vm_session_id\": {}, \"sync_output_archive_present\": {}, \"sync_output_archive_sha256\": {}, \"sync_output_file_count\": {}, \"sync_output_total_bytes\": {}, \"exit_code\": {}}}",
+        "{{\"protocol\": {}, \"schema_version\": {}, \"agent_version\": {}, \"job_id\": {}, \"tool\": {}, \"command_class\": {}, \"fixture\": {}, \"status\": {}, \"verdict\": {}, \"reason_codes\": {}, \"command_exit_code\": {}, \"timed_out\": {}, \"canary_access_detected\": {}, \"network_attempt_detected\": {}, \"filesystem_write_detected\": {}, \"toolchain_available\": {}, \"stdout_captured\": {}, \"stderr_captured\": {}, \"raw_canary_values_captured\": {}, \"sync_back_enabled\": {}, \"host_package_execution_enabled\": {}, \"high_risk_package_execution_enabled\": {}, \"project_mode\": {}, \"project_workflow\": {}, \"project_import_module\": {}, \"project_api_probe_enabled\": {}, \"project_requirements_path\": {}, \"vm_session_id\": {}, \"sync_output_archive_present\": {}, \"sync_output_archive_sha256\": {}, \"sync_output_file_count\": {}, \"sync_output_total_bytes\": {}, \"exit_code\": {}}}",
         json_option_string_redacted(evidence.protocol.as_deref()),
         json_option_string_redacted(evidence.schema_version.as_deref()),
         json_option_string_redacted(evidence.agent_version.as_deref()),
@@ -3917,6 +3939,7 @@ fn render_guest_job_evidence_json(evidence: Option<&GuestJobEvidence>) -> String
         json_option(evidence.project_mode),
         json_option_string_redacted(evidence.project_workflow.as_deref()),
         json_option_string_redacted(evidence.project_import_module.as_deref()),
+        json_option(evidence.project_api_probe_enabled),
         json_option_string_redacted(evidence.project_requirements_path.as_deref()),
         json_option_string_redacted(evidence.vm_session_id.as_deref()),
         evidence.sync_output_archive_hex.is_some(),
@@ -18759,6 +18782,7 @@ mod tests {
         assert!(result
             .output
             .contains("project_import_module=whoathere_clean"));
+        assert!(result.output.contains("project_api_probe_enabled=true"));
         assert!(result.output.contains("project_safe_to_execute=true"));
         assert!(result.output.contains("mirror_secret_exclusion_count=1"));
         assert!(!result.output.contains("real-secret"));
@@ -18808,6 +18832,7 @@ mod tests {
         assert!(result
             .output
             .contains("<--project-import-module><whoathere_clean>"));
+        assert!(result.output.contains("<--project-api-probe>"));
         assert!(result.output.contains("project_payload_path="));
         let payload_dir = state_dir.join("runs").join("project-payloads");
         let payload_count = std::fs::read_dir(payload_dir)
@@ -18863,6 +18888,7 @@ mod tests {
         assert!(result
             .output
             .contains("project_workflow=npm_project_install"));
+        assert!(result.output.contains("project_api_probe_enabled=true"));
         assert!(result.output.contains("project_safe_to_execute=true"));
         assert!(result.output.contains("npm_manifest"));
         assert!(result.output.contains("npm_source"));
@@ -18916,6 +18942,7 @@ mod tests {
         assert!(result
             .output
             .contains("<--project-workflow><npm_project_install>"));
+        assert!(result.output.contains("<--project-api-probe>"));
         assert!(!result.output.contains("<--project-import-module>"));
         let payload_dir = state_dir.join("runs").join("project-payloads");
         let payload_count = std::fs::read_dir(payload_dir)
@@ -19055,6 +19082,7 @@ mod tests {
         assert!(result
             .output
             .contains("project_import_module=whoathere_clean"));
+        assert!(result.output.contains("project_api_probe_enabled=true"));
         assert!(result.output.contains("project_safe_to_execute=true"));
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -19106,6 +19134,7 @@ mod tests {
         assert!(result
             .output
             .contains("<--project-import-module><whoathere_clean>"));
+        assert!(result.output.contains("<--project-api-probe>"));
         let payload_dir = state_dir.join("runs").join("project-payloads");
         let payload_count = std::fs::read_dir(payload_dir)
             .expect("payload dir")

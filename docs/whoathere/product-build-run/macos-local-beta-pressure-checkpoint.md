@@ -31,6 +31,11 @@ security behavior, not installer, GUI, packaging polish, or enterprise Vault wor
   wheel or sdist artifact URLs are now recorded as registry lockfile evidence, not denied as direct
   URL dependencies. VCS, local, editable, direct URL, native, and binary classes remain
   conservative.
+- Added a project-mode Python API-use probe for VM detonation. When WhoaThere can infer a safe
+  import module for a pip or uv local project, the guest now imports it and exercises a small set of
+  common zero-argument module functions and client methods inside the VM. Canary or network markers
+  still deny sync-back. This improves coverage for API-compatible malicious packages without
+  claiming full runtime behavior protection.
 
 ## Validation Passed
 
@@ -44,6 +49,9 @@ security behavior, not installer, GUI, packaging polish, or enterprise Vault wor
 - `scripts/whoathere-local-beta-pressure-suite.sh` with loopback compatibility enabled
 - `WHOATHERE_PRESSURE_SKIP_COMPAT=1 scripts/whoathere-local-beta-pressure-suite.sh`
 - `scripts/whoathere-real-project-compatibility.sh /Users/jdc/src/CodexBar:npm /Users/jdc/src/monoscope:npm /Users/jdc/src/halp-me-resume:auto /Users/jdc/src/autoport:uv /Users/jdc/src/ramp-monorepo/ledger:uv`
+- `whoathere/helpers/macos-vm-helper/scripts/validate-guest-agent-project-payload.sh`
+- `swift test` in `whoathere/helpers/macos-vm-helper`
+- `cargo test --manifest-path whoathere/Cargo.toml -p whoathere-cli vm_detonate -- --nocapture`
 - ASCII scan over docs, scripts, and Rust sources
 
 ## Real Project Compatibility Pass
@@ -94,8 +102,6 @@ binary, VCS, direct URL, editable, or unknown artifacts.
 
 - Run the opt-in VM pressure suite against a current signed preview archive:
   `WHOATHERE_PRESSURE_ENABLE_VM=1 WHOATHERE_PRESSURE_RUNTIME_ARCHIVE=<archive> scripts/whoathere-local-beta-pressure-suite.sh`.
-- Decide whether Python API-compatible malicious behavior needs an additional project-mode method
-  call probe beyond the existing import probes and fixture-mode API canary coverage.
 - Run real-project compatibility again with external scanners enabled after scanner bootstrap is
   available in the current environment, then compare scanner friction against package-risk-only
   friction.

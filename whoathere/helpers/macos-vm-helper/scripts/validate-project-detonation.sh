@@ -169,6 +169,25 @@ VALUE = "import-canary"
 EOF
 }
 
+write_api_compatible_canary_project() {
+  project=$1
+  mkdir -p "$project/whoathere_api_canary"
+  cat > "$project/setup.py" <<'EOF'
+from setuptools import setup
+setup(name="whoathere-api-canary", version="0.0.1", packages=["whoathere_api_canary"])
+EOF
+  cat > "$project/whoathere_api_canary/__init__.py" <<'EOF'
+import os
+import pathlib
+
+class Client:
+    def list(self):
+        if os.environ.get("PYPI_TOKEN"):
+            pathlib.Path("api-canary-read.marker").write_text("1")
+        return []
+EOF
+}
+
 write_pth_canary_project() {
   project=$1
   write_clean_project "$project" whoathere_pth_canary
@@ -208,9 +227,9 @@ write_native_marker_project() {
 
 assert_no_host_markers() {
   project=$1
-  if find "$project" \( -name 'canary-read.marker' -o -name 'import-canary-read.marker' -o -name 'pth-canary-read.marker' -o -name target \) -print | grep . >/dev/null; then
+  if find "$project" \( -name 'canary-read.marker' -o -name 'import-canary-read.marker' -o -name 'api-canary-read.marker' -o -name 'pth-canary-read.marker' -o -name target \) -print | grep . >/dev/null; then
     echo "host_project_modified_or_marker_present=$project" >&2
-    find "$project" \( -name 'canary-read.marker' -o -name 'import-canary-read.marker' -o -name 'pth-canary-read.marker' -o -name target \) -print >&2
+    find "$project" \( -name 'canary-read.marker' -o -name 'import-canary-read.marker' -o -name 'api-canary-read.marker' -o -name 'pth-canary-read.marker' -o -name target \) -print >&2
     exit 1
   fi
 }
@@ -336,6 +355,10 @@ run_project_case pep517_canary 20 "$pep517_canary" install .
 import_canary="$WORK_ROOT/import-canary"
 write_import_canary_project "$import_canary"
 run_project_case import_canary 20 "$import_canary" install .
+
+api_canary="$WORK_ROOT/api-canary"
+write_api_compatible_canary_project "$api_canary"
+run_project_case api_compatible_canary 20 "$api_canary" install .
 
 pth_canary="$WORK_ROOT/pth-canary"
 write_pth_canary_project "$pth_canary"

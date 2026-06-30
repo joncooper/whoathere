@@ -328,6 +328,11 @@ private func detonationResultMismatchReasons(_ result: [String: Any], request: [
         if actualWorkflow != expectedWorkflow {
             reasons.append("guest_detonation_result_project_workflow_mismatch")
         }
+        let expectedApiProbe = request["project_api_probe_enabled"] as? Bool ?? false
+        let actualApiProbe = result["project_api_probe_enabled"] as? Bool ?? false
+        if actualApiProbe != expectedApiProbe {
+            reasons.append("guest_detonation_result_project_api_probe_mismatch")
+        }
     }
     return reasons.sorted()
 }
@@ -2264,6 +2269,7 @@ struct WhoaThereMacosVmHelper {
                 request["project_mode"] = true
                 request["project_payload_hex"] = projectPayloadHex ?? ""
                 request["project_workflow"] = options.detonationProjectWorkflow ?? ""
+                request["project_api_probe_enabled"] = options.detonationProjectApiProbe
                 if let importModule = options.detonationProjectImportModule {
                     request["project_import_module"] = importModule
                 }
@@ -2311,6 +2317,7 @@ struct WhoaThereMacosVmHelper {
             fields["project_mode"] = projectMode
             fields["project_workflow"] = options.detonationProjectWorkflow ?? "none"
             fields["project_import_module"] = options.detonationProjectImportModule ?? "none"
+            fields["project_api_probe_enabled"] = options.detonationProjectApiProbe
             fields["project_requirements_path"] = options.detonationProjectRequirementsPath ?? "none"
             fields["sync_back_enabled"] = result["sync_back_enabled"] as? Bool ?? false
             fields["host_package_execution_enabled"] = false

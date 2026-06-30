@@ -36,6 +36,7 @@ public struct HelperOptions: Equatable, Sendable {
     public var detonationProjectPayloadPath: String?
     public var detonationProjectWorkflow: String?
     public var detonationProjectImportModule: String?
+    public var detonationProjectApiProbe: Bool
     public var detonationProjectRequirementsPath: String?
     public var detonationSyncBack: Bool
     public var detonationArgs: [String]
@@ -57,6 +58,7 @@ public struct HelperOptions: Equatable, Sendable {
         detonationProjectPayloadPath: String? = nil,
         detonationProjectWorkflow: String? = nil,
         detonationProjectImportModule: String? = nil,
+        detonationProjectApiProbe: Bool = false,
         detonationProjectRequirementsPath: String? = nil,
         detonationSyncBack: Bool = false,
         detonationArgs: [String] = []
@@ -77,6 +79,7 @@ public struct HelperOptions: Equatable, Sendable {
         self.detonationProjectPayloadPath = detonationProjectPayloadPath
         self.detonationProjectWorkflow = detonationProjectWorkflow
         self.detonationProjectImportModule = detonationProjectImportModule
+        self.detonationProjectApiProbe = detonationProjectApiProbe
         self.detonationProjectRequirementsPath = detonationProjectRequirementsPath
         self.detonationSyncBack = detonationSyncBack
         self.detonationArgs = detonationArgs
@@ -152,6 +155,9 @@ public func parseArguments(_ arguments: [String]) throws -> HelperOptions {
             options.detonationProjectWorkflow = try value(after: token, in: arguments, at: &index)
         case "--project-import-module":
             options.detonationProjectImportModule = try value(after: token, in: arguments, at: &index)
+        case "--project-api-probe":
+            options.detonationProjectApiProbe = true
+            index += 1
         case "--project-requirements-path":
             options.detonationProjectRequirementsPath = try value(after: token, in: arguments, at: &index)
         case "--sync-back":
@@ -203,6 +209,11 @@ public func parseArguments(_ arguments: [String]) throws -> HelperOptions {
                     options.detonationProjectWorkflow = rawValue
                 case "--project-import-module":
                     options.detonationProjectImportModule = rawValue
+                case "--project-api-probe":
+                    guard rawValue == "true" else {
+                        throw ArgumentError.unknownFlag(token)
+                    }
+                    options.detonationProjectApiProbe = true
                 case "--project-requirements-path":
                     options.detonationProjectRequirementsPath = rawValue
                 case "--sync-back":

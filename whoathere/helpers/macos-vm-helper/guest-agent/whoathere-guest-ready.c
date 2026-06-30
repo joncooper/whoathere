@@ -33,6 +33,7 @@
 
 static char current_request_nonce[WHOATHERE_MAX_FIELD] = "";
 static char current_project_workflow[WHOATHERE_MAX_FIELD] = "";
+static int current_project_api_probe_enabled = 0;
 
 static int path_exists(const char *path);
 static int safe_relative_path(const char *path);
@@ -524,6 +525,43 @@ static int write_file(const char *path, const char *body) {
     return result;
 }
 
+static int write_python_api_probe_script(const char *workspace) {
+    char probe_path[1024];
+    int length = snprintf(probe_path, sizeof(probe_path), "%s/.whoathere-api-probe.py", workspace);
+    if (length < 0 || (size_t)length >= sizeof(probe_path)) {
+        return -1;
+    }
+    return write_file(
+        probe_path,
+        "import importlib\n"
+        "import sys\n"
+        "module = sys.argv[1]\n"
+        "mod = importlib.import_module(module)\n"
+        "def _call(fn):\n"
+        "    try:\n"
+        "        fn()\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "for name in ('run', 'main', 'list', 'get', 'request'):\n"
+        "    fn = getattr(mod, name, None)\n"
+        "    if callable(fn):\n"
+        "        _call(fn)\n"
+        "for cls_name in ('Client', 'ApiClient', 'APIClient', 'Session'):\n"
+        "    cls = getattr(mod, cls_name, None)\n"
+        "    if isinstance(cls, type):\n"
+        "        obj = None\n"
+        "        try:\n"
+        "            obj = cls()\n"
+        "        except Exception:\n"
+        "            obj = None\n"
+        "        if obj is not None:\n"
+        "            for name in ('list', 'run', 'get', 'request', 'create'):\n"
+        "                fn = getattr(obj, name, None)\n"
+        "                if callable(fn):\n"
+        "                    _call(fn)\n"
+    );
+}
+
 static int write_binary_file(const char *path, const unsigned char *body, size_t length) {
     FILE *file = fopen(path, "wb");
     if (file == NULL) {
@@ -996,13 +1034,14 @@ static int write_detonation_response_ex(
     int length = snprintf(
         response,
         sizeof(response),
-        "{\"protocol\":\"whoathere.guest_detonation.v1\",\"schema_version\":\"whoathere.macos_vm.bundle.v1\",\"agent_version\":\"0.2.0\",\"job_id\":\"%s\",\"request_nonce\":\"%s\",\"tool\":\"%s\",\"command_class\":\"%s\",\"fixture\":\"%s\",\"project_workflow\":\"%s\",\"status\":\"%s\",\"verdict\":\"%s\",\"reason_codes\":[%s],\"command_exit_code\":%d,\"timed_out\":%s,\"canary_access_detected\":%s,\"network_attempt_detected\":%s,\"filesystem_write_detected\":%s,\"toolchain_available\":%s,\"stdout_captured\":false,\"stderr_captured\":false,\"raw_canary_values_captured\":false,\"sync_back_enabled\":%s,\"host_package_execution_enabled\":false,\"high_risk_package_execution_enabled\":false",
+        "{\"protocol\":\"whoathere.guest_detonation.v1\",\"schema_version\":\"whoathere.macos_vm.bundle.v1\",\"agent_version\":\"0.2.0\",\"job_id\":\"%s\",\"request_nonce\":\"%s\",\"tool\":\"%s\",\"command_class\":\"%s\",\"fixture\":\"%s\",\"project_workflow\":\"%s\",\"project_api_probe_enabled\":%s,\"status\":\"%s\",\"verdict\":\"%s\",\"reason_codes\":[%s],\"command_exit_code\":%d,\"timed_out\":%s,\"canary_access_detected\":%s,\"network_attempt_detected\":%s,\"filesystem_write_detected\":%s,\"toolchain_available\":%s,\"stdout_captured\":false,\"stderr_captured\":false,\"raw_canary_values_captured\":false,\"sync_back_enabled\":%s,\"host_package_execution_enabled\":false,\"high_risk_package_execution_enabled\":false",
         job_id,
         current_request_nonce,
         tool,
         command_class,
         fixture,
         current_project_workflow,
+        current_project_api_probe_enabled ? "true" : "false",
         status,
         verdict,
         reason_codes_json,
@@ -1128,6 +1167,7 @@ static int run_detonation_job(int fd, const char *line) {
     }
     snprintf(current_request_nonce, sizeof(current_request_nonce), "%s", request_nonce);
     current_project_workflow[0] = '\0';
+    current_project_api_probe_enabled = 0;
     unsigned int timeout_seconds = extract_json_uint(line, "timeout_seconds", 120);
     if (timeout_seconds < 5) {
         timeout_seconds = 5;
@@ -1149,8 +1189,13 @@ static int run_detonation_job(int fd, const char *line) {
             return write_detonation_response(fd, job_id, tool, command_class, fixture, "fail_closed", "fail_closed_runner_error", "\"project_payload_or_workflow_missing\"", 70, 70, 0, 0, 0, 0, 0);
         }
         snprintf(current_project_workflow, sizeof(current_project_workflow), "%s", project_workflow);
+        current_project_api_probe_enabled = extract_json_bool(line, "project_api_probe_enabled", 0);
         (void)extract_json_string(line, "project_import_module", project_import_module, sizeof(project_import_module));
         (void)extract_json_string(line, "project_requirements_path", project_requirements_path, sizeof(project_requirements_path));
+        if ((strcmp(tool, "pip") == 0 || strcmp(tool, "uv") == 0) && current_project_api_probe_enabled && project_import_module[0] == '\0') {
+            free(project_payload_hex);
+            return write_detonation_response(fd, job_id, tool, command_class, fixture, "fail_closed", "fail_closed_runner_error", "\"project_api_probe_module_missing\"", 70, 70, 0, 0, 0, 0, 0);
+        }
         if ((strcmp(tool, "pip") == 0 || strcmp(tool, "uv") == 0) && project_import_module[0] != '\0' && !safe_python_module(project_import_module)) {
             free(project_payload_hex);
             return write_detonation_response(fd, job_id, tool, command_class, fixture, "fail_closed", "fail_closed_runner_error", "\"project_import_module_rejected\"", 70, 70, 0, 0, 0, 0, 0);
@@ -1214,7 +1259,9 @@ static int run_detonation_job(int fd, const char *line) {
             }
             free(project_payload_hex);
             project_payload_hex = NULL;
-            const char *api_probe = " && node -e \"try{const m=require('./'); if(m&&typeof m.run==='function') m.run(); if(typeof m==='function') m();}catch(e){}\"";
+            const char *api_probe = current_project_api_probe_enabled
+                ? " && node -e \"try{const m=require('./'); if(m&&typeof m.run==='function') m.run(); if(typeof m==='function') m();}catch(e){}\""
+                : "";
             if (strcmp(project_workflow, "npm_project_install") == 0) {
                 int command_length = snprintf(
                     shell_command_buffer,
@@ -1261,14 +1308,24 @@ static int run_detonation_job(int fd, const char *line) {
             const char *import_probe = "";
             char import_probe_buffer[512];
             if (project_import_module[0] != '\0') {
-                int import_length = snprintf(
-                    import_probe_buffer,
-                    sizeof(import_probe_buffer),
-                    " && PYTHONPATH=target $WHOATHERE_PYTHON -c 'import %s'",
-                    project_import_module
-                );
+                int import_length = current_project_api_probe_enabled
+                    ? snprintf(
+                          import_probe_buffer,
+                          sizeof(import_probe_buffer),
+                          " && PYTHONPATH=target $WHOATHERE_PYTHON .whoathere-api-probe.py %s",
+                          project_import_module
+                      )
+                    : snprintf(
+                          import_probe_buffer,
+                          sizeof(import_probe_buffer),
+                          " && PYTHONPATH=target $WHOATHERE_PYTHON -c 'import %s'",
+                          project_import_module
+                      );
                 if (import_length < 0 || (size_t)import_length >= sizeof(import_probe_buffer)) {
                     return write_detonation_response(fd, job_id, tool, command_class, fixture, "fail_closed", "fail_closed_runner_error", "\"project_import_probe_too_long\"", 70, 70, 0, 0, 0, 0, 0);
+                }
+                if (current_project_api_probe_enabled && write_python_api_probe_script(workspace) != 0) {
+                    return write_detonation_response(fd, job_id, tool, command_class, fixture, "fail_closed", "fail_closed_runner_error", "\"project_api_probe_script_write_failed\"", 70, 70, 0, 0, 0, 0, 0);
                 }
                 import_probe = import_probe_buffer;
             }
@@ -1327,14 +1384,24 @@ static int run_detonation_job(int fd, const char *line) {
             const char *import_probe = "";
             char import_probe_buffer[512];
             if (project_import_module[0] != '\0') {
-                int import_length = snprintf(
-                    import_probe_buffer,
-                    sizeof(import_probe_buffer),
-                    " && PYTHONPATH=target $WHOATHERE_PYTHON -c 'import %s'",
-                    project_import_module
-                );
+                int import_length = current_project_api_probe_enabled
+                    ? snprintf(
+                          import_probe_buffer,
+                          sizeof(import_probe_buffer),
+                          " && PYTHONPATH=target $WHOATHERE_PYTHON .whoathere-api-probe.py %s",
+                          project_import_module
+                      )
+                    : snprintf(
+                          import_probe_buffer,
+                          sizeof(import_probe_buffer),
+                          " && PYTHONPATH=target $WHOATHERE_PYTHON -c 'import %s'",
+                          project_import_module
+                      );
                 if (import_length < 0 || (size_t)import_length >= sizeof(import_probe_buffer)) {
                     return write_detonation_response(fd, job_id, tool, command_class, fixture, "fail_closed", "fail_closed_runner_error", "\"project_import_probe_too_long\"", 70, 70, 0, 0, 0, 0, 0);
+                }
+                if (current_project_api_probe_enabled && write_python_api_probe_script(workspace) != 0) {
+                    return write_detonation_response(fd, job_id, tool, command_class, fixture, "fail_closed", "fail_closed_runner_error", "\"project_api_probe_script_write_failed\"", 70, 70, 0, 0, 0, 0, 0);
                 }
                 import_probe = import_probe_buffer;
             }

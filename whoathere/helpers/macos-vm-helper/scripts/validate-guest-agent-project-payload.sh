@@ -95,6 +95,38 @@ int main(void) {
     assert(materialize_project_payload(workspace, payload) == -1);
     free(payload);
 
+    char target_dir[512];
+    length = snprintf(target_dir, sizeof(target_dir), "%s/target", workspace);
+    assert(length > 0 && (size_t)length < sizeof(target_dir));
+    assert(mkdir(target_dir, 0700) == 0);
+
+    char package_dir[512];
+    length = snprintf(package_dir, sizeof(package_dir), "%s/target/probe_pkg", workspace);
+    assert(length > 0 && (size_t)length < sizeof(package_dir));
+    assert(mkdir(package_dir, 0700) == 0);
+
+    char package_init[512];
+    length = snprintf(package_init, sizeof(package_init), "%s/target/probe_pkg/__init__.py", workspace);
+    assert(length > 0 && (size_t)length < sizeof(package_init));
+    assert(write_file(package_init,
+        "import os, pathlib\\n"
+        "class Client:\\n"
+        "    def list(self):\\n"
+        "        if os.environ.get('PYPI_TOKEN'):\\n"
+        "            pathlib.Path('api-canary-read.marker').write_text('1')\\n"
+    ) == 0);
+
+    assert(write_python_api_probe_script(workspace) == 0);
+    struct command_result probe_result = run_shell_fixture(
+        workspace,
+        "PYTHONPATH=target python3 .whoathere-api-probe.py probe_pkg",
+        10
+    );
+    assert(probe_result.exit_code == 0);
+    length = snprintf(expected_path, sizeof(expected_path), "%s/api-canary-read.marker", workspace);
+    assert(length > 0 && (size_t)length < sizeof(expected_path));
+    assert(path_exists(expected_path));
+
     return 0;
 }
 EOF
