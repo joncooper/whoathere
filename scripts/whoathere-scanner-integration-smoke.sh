@@ -111,6 +111,9 @@ require_contains '"scanner_clean": true' "$WORK_DIR/clean.json" clean_not_clean
 require_contains '"scanner_receipt_auth"' "$WORK_DIR/clean.json" clean_auth_missing
 require_contains '"workspace_sha256": "sha256:' "$WORK_DIR/clean.json" clean_workspace_digest_missing
 require_contains '"status": "passed"' "$WORK_DIR/clean.json" clean_pass_status_missing
+require_contains '"decision_summary"' "$WORK_DIR/clean.json" clean_summary_missing
+require_contains '"host_effect": "host_scanner_processes_spawned_raw_output_hashed_no_package_manager_install_no_package_code_intentionally_executed"' "$WORK_DIR/clean.json" clean_host_effect_missing
+require_contains 'Pass this scanner receipt to whoathere package-risk assess' "$WORK_DIR/clean.json" clean_action_missing
 require_not_contains "$WORK_DIR" "$WORK_DIR/clean.json" clean_leaked_workspace_path
 require_not_contains 'WHOATHERE_CANARY_TOKEN' "$WORK_DIR/clean.json" clean_leaked_canary
 require_not_contains 'NPM_TOKEN' "$WORK_DIR/clean.json" clean_leaked_token
@@ -130,6 +133,8 @@ fi
 require_contains '"scanner_clean": false' "$WORK_DIR/bad.json" bad_not_blocked
 require_contains '"status": "findings"' "$WORK_DIR/bad.json" bad_findings_missing
 require_contains 'scanner_findings_observed' "$WORK_DIR/bad.json" bad_reason_missing
+require_contains '"decision_summary"' "$WORK_DIR/bad.json" bad_summary_missing
+require_contains 'Review scanner records and keep package execution inside the VM' "$WORK_DIR/bad.json" bad_action_missing
 require_not_contains "$WORK_DIR" "$WORK_DIR/bad.json" bad_leaked_workspace_path
 
 "$WHOATHERE_BIN" scanners run --workspace "$UNPINNED_PY" --ecosystem pypi --state-dir "$STATE_DIR" --execute --json > "$WORK_DIR/unpinned.json" || true

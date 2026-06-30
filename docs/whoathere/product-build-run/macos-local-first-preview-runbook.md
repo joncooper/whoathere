@@ -112,6 +112,9 @@ $WHOATHERE scanners run --workspace /path/to/project --ecosystem auto \
 The output uses schema `whoathere.external_scanner_run.v1`. It reports normalized scanner status,
 finding counts where cheaply available, stdout/stderr digests, and reason codes. It does not include
 raw scanner output, package contents, tokens, canaries, or raw host secret paths.
+For CLI use, read `scanner_clean`, `decision_summary`, `host_effect`, and `recommended_actions`
+first. Scanner execution may spawn trusted host scanner tools, but it does not run npm, pip, or uv
+install commands and does not intentionally execute package code.
 When `--state-dir` is provided, executed scanner receipts include a state-local
 `scanner_receipt_auth` tag and executable digests. Clean scanner receipts without that auth tag are
 report-only and cannot satisfy package-risk auto-sync evidence.

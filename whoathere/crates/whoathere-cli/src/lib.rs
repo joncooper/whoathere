@@ -10432,6 +10432,9 @@ fn render_scanner_run_summary(
         ExitCode::Deny.code()
     };
     let created_at_unix_seconds = current_unix_seconds();
+    let decision_summary = scanner_run_decision_summary(summary);
+    let host_effect = scanner_run_host_effect(summary);
+    let recommended_actions = scanner_run_recommended_actions(summary);
     if json {
         let records_json = summary
             .records
@@ -10440,7 +10443,7 @@ fn render_scanner_run_summary(
             .collect::<Vec<_>>()
             .join(", ");
         let unsigned = format!(
-            "{{\n  \"command\": \"whoathere scanners run\",\n  \"schema_version\": {},\n  \"created_at_unix_seconds\": {},\n  \"workspace\": \"<workspace>\",\n  \"workspace_sha256\": {},\n  \"workspace_kind\": {},\n  \"requested_ecosystem\": {},\n  \"effective_ecosystem\": {},\n  \"execute_requested\": {},\n  \"timeout_seconds\": {},\n  \"scanner_clean\": {},\n  \"core_scanner_count\": {},\n  \"core_scanner_runnable_count\": {},\n  \"reason_codes\": {},\n  \"records\": [{}],\n  \"exit_code\": {}\n}}",
+            "{{\n  \"command\": \"whoathere scanners run\",\n  \"schema_version\": {},\n  \"created_at_unix_seconds\": {},\n  \"workspace\": \"<workspace>\",\n  \"workspace_sha256\": {},\n  \"workspace_kind\": {},\n  \"requested_ecosystem\": {},\n  \"effective_ecosystem\": {},\n  \"execute_requested\": {},\n  \"timeout_seconds\": {},\n  \"scanner_clean\": {},\n  \"decision_summary\": {},\n  \"host_effect\": {},\n  \"recommended_actions\": {},\n  \"core_scanner_count\": {},\n  \"core_scanner_runnable_count\": {},\n  \"reason_codes\": {},\n  \"records\": [{}],\n  \"exit_code\": {}\n}}",
             json_string(summary.schema_version),
             created_at_unix_seconds,
             json_string(&summary.workspace_sha256),
@@ -10450,6 +10453,9 @@ fn render_scanner_run_summary(
             summary.execute_requested,
             summary.timeout_seconds,
             summary.scanner_clean,
+            json_string(&decision_summary),
+            json_string(&host_effect),
+            json_string_array(&recommended_actions),
             summary.core_scanner_count,
             summary.core_scanner_runnable_count,
             json_string_array(&summary.reason_codes),
@@ -10472,7 +10478,7 @@ fn render_scanner_run_summary(
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "whoathere scanners run\nschema_version={}\ncreated_at_unix_seconds={}\nworkspace=<workspace>\nworkspace_sha256={}\nworkspace_kind={}\nrequested_ecosystem={}\neffective_ecosystem={}\nexecute_requested={}\ntimeout_seconds={}\nscanner_clean={}\ncore_scanner_count={}\ncore_scanner_runnable_count={}\nreason_codes={:?}\n{}\nexit_code={}",
+        "whoathere scanners run\nschema_version={}\ncreated_at_unix_seconds={}\nworkspace=<workspace>\nworkspace_sha256={}\nworkspace_kind={}\nrequested_ecosystem={}\neffective_ecosystem={}\nexecute_requested={}\ntimeout_seconds={}\nscanner_clean={}\ndecision_summary={}\nhost_effect={}\nrecommended_actions={:?}\ncore_scanner_count={}\ncore_scanner_runnable_count={}\nreason_codes={:?}\n{}\nexit_code={}",
         summary.schema_version,
         created_at_unix_seconds,
         summary.workspace_sha256,
@@ -10482,12 +10488,82 @@ fn render_scanner_run_summary(
         summary.execute_requested,
         summary.timeout_seconds,
         summary.scanner_clean,
+        decision_summary,
+        host_effect,
+        recommended_actions,
         summary.core_scanner_count,
         summary.core_scanner_runnable_count,
         summary.reason_codes,
         records,
         exit_code
     )
+}
+
+fn scanner_run_decision_summary(summary: &ExternalScannerRunSummary) -> String {
+    if !summary.execute_requested {
+        return "Scanner execution was not requested. This is a command plan only and cannot be used as clean package evidence.".to_string();
+    }
+    if summary.scanner_clean {
+        format!(
+            "{} core scanner(s) ran or were not applicable, and no scanner findings were observed. This is useful evidence, not proof the package is safe.",
+            summary.core_scanner_runnable_count
+        )
+    } else {
+        "One or more scanners reported findings, errors, timeouts, or unavailable required evidence. Do not use this as clean package evidence.".to_string()
+    }
+}
+
+fn scanner_run_host_effect(summary: &ExternalScannerRunSummary) -> String {
+    if summary.execute_requested {
+        "host_scanner_processes_spawned_raw_output_hashed_no_package_manager_install_no_package_code_intentionally_executed"
+            .to_string()
+    } else {
+        "dry_run_no_scanner_processes_spawned_no_package_manager_install_no_package_code_executed"
+            .to_string()
+    }
+}
+
+fn scanner_run_recommended_actions(summary: &ExternalScannerRunSummary) -> Vec<String> {
+    let mut actions = Vec::new();
+    if !summary.execute_requested {
+        actions.push(
+            "Rerun with --execute to produce scanner evidence that package-risk can consider."
+                .to_string(),
+        );
+    } else if summary.scanner_clean {
+        actions.push(
+            "Pass this scanner receipt to whoathere package-risk assess with --scanner-receipt."
+                .to_string(),
+        );
+    } else {
+        actions.push(
+            "Review scanner records and keep package execution inside the VM until findings or scanner failures are resolved."
+                .to_string(),
+        );
+    }
+    if summary
+        .reason_codes
+        .iter()
+        .any(|reason| reason.contains("timed_out"))
+    {
+        actions.push(
+            "Increase --timeout-seconds only if the scanner is trusted and the workspace size warrants it."
+                .to_string(),
+        );
+    }
+    if summary.reason_codes.iter().any(|reason| {
+        reason.contains("unavailable")
+            || reason.contains("not_found")
+            || reason.contains("spawn_failed")
+    }) {
+        actions.push(
+            "Run whoathere scanners bootstrap-plan or scripts/whoathere-bootstrap-scanners.sh to install missing scanners."
+                .to_string(),
+        );
+    }
+    actions.sort();
+    actions.dedup();
+    actions
 }
 
 fn render_scanner_record_json(record: &ExternalScannerRunRecord) -> String {
@@ -21847,6 +21923,10 @@ exit 128
             .contains("\"command\": \"whoathere scanners run\""));
         assert!(result.output.contains("\"execute_requested\": false"));
         assert!(result.output.contains("scanner_execution_requires_execute"));
+        assert!(result.output.contains("\"decision_summary\""));
+        assert!(result.output.contains("command plan only"));
+        assert!(result.output.contains("\"host_effect\": \"dry_run_no_scanner_processes_spawned_no_package_manager_install_no_package_code_executed\""));
+        assert!(result.output.contains("Rerun with --execute"));
         assert!(!result.output.contains(&root.display().to_string()));
         assert!(!result.output.contains("/Users/"));
         let _ = std::fs::remove_dir_all(&root);
@@ -21886,6 +21966,12 @@ exit 128
                 assert!(clean_result.output.contains("\"scanner_clean\": true"));
                 assert!(clean_result.output.contains("\"status\": \"passed\""));
                 assert!(clean_result.output.contains("\"scanner_receipt_auth\""));
+                assert!(clean_result.output.contains("\"decision_summary\""));
+                assert!(clean_result.output.contains("useful evidence, not proof"));
+                assert!(clean_result.output.contains("\"host_effect\": \"host_scanner_processes_spawned_raw_output_hashed_no_package_manager_install_no_package_code_intentionally_executed\""));
+                assert!(clean_result
+                    .output
+                    .contains("Pass this scanner receipt to whoathere package-risk assess"));
                 assert!(!clean_result.output.contains("WHOATHERE_CANARY_TOKEN"));
                 assert!(!clean_result.output.contains(&root.display().to_string()));
 
@@ -21901,6 +21987,13 @@ exit 128
                 assert!(bad_result.output.contains("\"scanner_clean\": false"));
                 assert!(bad_result.output.contains("\"status\": \"findings\""));
                 assert!(bad_result.output.contains("scanner_findings_observed"));
+                assert!(bad_result.output.contains("\"decision_summary\""));
+                assert!(bad_result
+                    .output
+                    .contains("Do not use this as clean package evidence"));
+                assert!(bad_result
+                    .output
+                    .contains("Review scanner records and keep package execution inside the VM"));
                 assert!(!bad_result.output.contains("WHOATHERE_CANARY_TOKEN"));
                 assert!(!bad_result.output.contains(&root.display().to_string()));
             },
