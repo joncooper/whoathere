@@ -1,4 +1,31 @@
-# WhoaThere Timer
+# WhoaThere
+
+WhoaThere is a local-first supply-chain safety tool for Python and Node development. The current
+macOS beta focuses on Apple Silicon Macs: it runs supported package workflows in a separate macOS
+VM, collects scanner and package-risk evidence, and only copies back narrow outputs when the result
+is clean enough for the beta policy.
+
+## Install The macOS Local Beta From GitHub
+
+After a GitHub Release has been published, install on a clean Apple Silicon Mac with:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/joncooper/whoathere/main/scripts/whoathere-install-from-github.sh \
+  | sh -s -- --repo joncooper/whoathere --prefix "$HOME/.whoathere"
+export PATH="$HOME/.whoathere/bin:$PATH"
+whoathere doctor --json
+```
+
+For a specific release tag:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/joncooper/whoathere/main/scripts/whoathere-install-from-github.sh \
+  | sh -s -- --repo joncooper/whoathere --tag macos-local-beta-a212742 --prefix "$HOME/.whoathere"
+```
+
+Distribution runbook: `docs/whoathere/product-build-run/github-distribution.md`.
+
+## Legacy Timer Prototype
 
 A compact macOS menu bar timer for consulting hours.
 
