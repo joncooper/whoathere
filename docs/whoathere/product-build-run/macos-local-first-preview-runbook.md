@@ -174,6 +174,15 @@ used, source kind, artifact hash, scanner gate, freshness gate, diff gate, reput
 verdict, and reason codes. It does not include raw package source, scanner dumps, canaries, tokens,
 or host secret paths.
 
+For CLI use, read these fields first:
+
+- `overall_verdict` tells whether the workspace is an `auto_sync_candidate`, needs
+  `manual_review`, or is denied.
+- `decision_summary` gives the same decision in plain language.
+- `host_effect` states that package-risk assessment itself does not run package code on the host or
+  copy project files back from the VM. It may write receipts and local package memory.
+- `recommended_actions` gives the next practical command or review step.
+
 Approve a local beta baseline:
 
 ```sh
@@ -224,7 +233,20 @@ Run the deterministic package-risk and attack harnesses:
 ```sh
 scripts/whoathere-package-risk-smoke.sh
 scripts/whoathere-real-world-attack-harness.sh
+scripts/whoathere-local-beta-pressure-smoke.sh
 ```
+
+The local beta pressure smoke uses realistic local npm, pip, and uv project shapes without public
+network access. It checks that clean pinned registry-shaped inputs can become beta sync candidates,
+that npm local workspace/file dependencies remain denied, that uv range requests use the latest
+approved last-known-good version, and that package-risk output explains the host impact and next
+action.
+
+The registry compatibility smoke uses the local loopback dev registry. It now verifies a real
+`npm ci` flow from a generated lockfile, confirms lockfile integrity and loopback-only resolved
+URLs, installs the npm fixture without running scripts, installs the PyPI fixture from a
+hash-pinned requirements file, and confirms pip rejects a bad hash without leaving the package
+installed.
 
 ## Package A Preview Artifact
 

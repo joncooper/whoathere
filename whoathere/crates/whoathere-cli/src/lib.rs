@@ -11095,6 +11095,10 @@ struct PackageRiskSummaryRender<'a> {
 
 fn render_package_risk_assessment_summary(view: PackageRiskSummaryRender<'_>) -> String {
     let exit_code = view.overall_verdict.exit_code();
+    let decision_summary = package_risk_decision_summary(view.overall_verdict, view.assessments);
+    let host_effect = package_risk_host_effect();
+    let recommended_actions =
+        package_risk_recommended_actions(view.overall_verdict, view.reason_codes);
     if view.json {
         let packages_json = view
             .assessments
@@ -11103,7 +11107,7 @@ fn render_package_risk_assessment_summary(view: PackageRiskSummaryRender<'_>) ->
             .collect::<Vec<_>>()
             .join(", ");
         return format!(
-            "{{\n  \"command\": \"whoathere package-risk assess\",\n  \"schema_version\": {},\n  \"requested_ecosystem\": {},\n  \"workspace_sha256\": {},\n  \"cooldown_days\": {},\n  \"store_path\": {},\n  \"receipt_path\": {},\n  \"receipt_id\": {},\n  \"receipt_write_status\": {},\n  \"store_status\": {},\n  \"package_count\": {},\n  \"overall_verdict\": {},\n  \"all_freshness_allowed\": {},\n  \"all_diff_clean_or_baseline_absent\": {},\n  \"all_scanner_clean\": {},\n  \"scanner_evidence\": {},\n  \"artifact_review\": {},\n  \"reason_codes\": {},\n  \"packages\": [{}],\n  \"exit_code\": {}\n}}",
+            "{{\n  \"command\": \"whoathere package-risk assess\",\n  \"schema_version\": {},\n  \"requested_ecosystem\": {},\n  \"workspace_sha256\": {},\n  \"cooldown_days\": {},\n  \"store_path\": {},\n  \"receipt_path\": {},\n  \"receipt_id\": {},\n  \"receipt_write_status\": {},\n  \"store_status\": {},\n  \"package_count\": {},\n  \"overall_verdict\": {},\n  \"decision_summary\": {},\n  \"host_effect\": {},\n  \"recommended_actions\": {},\n  \"all_freshness_allowed\": {},\n  \"all_diff_clean_or_baseline_absent\": {},\n  \"all_scanner_clean\": {},\n  \"scanner_evidence\": {},\n  \"artifact_review\": {},\n  \"reason_codes\": {},\n  \"packages\": [{}],\n  \"exit_code\": {}\n}}",
             json_string(PACKAGE_RISK_ASSESSMENT_SCHEMA),
             json_string(view.requested_ecosystem.as_str()),
             json_string(view.workspace_sha256),
@@ -11115,6 +11119,9 @@ fn render_package_risk_assessment_summary(view: PackageRiskSummaryRender<'_>) ->
             json_string(view.store_status),
             view.assessments.len(),
             json_string(view.overall_verdict.as_str()),
+            json_string(&decision_summary),
+            json_string(host_effect),
+            json_string_array(&recommended_actions),
             view.all_freshness_allowed,
             view.all_diff_clean_or_baseline_absent,
             view.scanner_evidence.clean_for_auto_sync(),
@@ -11132,7 +11139,7 @@ fn render_package_risk_assessment_summary(view: PackageRiskSummaryRender<'_>) ->
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "whoathere package-risk assess\nschema_version={}\nrequested_ecosystem={}\nworkspace_sha256={}\ncooldown_days={}\nstore_path={}\nreceipt_path={}\nreceipt_id={}\nreceipt_write_status={}\nstore_status={}\npackage_count={}\noverall_verdict={}\nall_freshness_allowed={}\nall_diff_clean_or_baseline_absent={}\nall_scanner_clean={}\n{}\n{}\nreason_codes={:?}\n{}\nexit_code={}",
+        "whoathere package-risk assess\nschema_version={}\nrequested_ecosystem={}\nworkspace_sha256={}\ncooldown_days={}\nstore_path={}\nreceipt_path={}\nreceipt_id={}\nreceipt_write_status={}\nstore_status={}\npackage_count={}\noverall_verdict={}\ndecision_summary={}\nhost_effect={}\nrecommended_actions={:?}\nall_freshness_allowed={}\nall_diff_clean_or_baseline_absent={}\nall_scanner_clean={}\n{}\n{}\nreason_codes={:?}\n{}\nexit_code={}",
         PACKAGE_RISK_ASSESSMENT_SCHEMA,
         view.requested_ecosystem.as_str(),
         view.workspace_sha256,
@@ -11144,6 +11151,9 @@ fn render_package_risk_assessment_summary(view: PackageRiskSummaryRender<'_>) ->
         view.store_status,
         view.assessments.len(),
         view.overall_verdict.as_str(),
+        decision_summary,
+        host_effect,
+        recommended_actions,
         view.all_freshness_allowed,
         view.all_diff_clean_or_baseline_absent,
         view.scanner_evidence.clean_for_auto_sync(),
@@ -11153,6 +11163,140 @@ fn render_package_risk_assessment_summary(view: PackageRiskSummaryRender<'_>) ->
         rows,
         exit_code
     )
+}
+
+fn package_risk_decision_summary(
+    verdict: PackageRiskVerdict,
+    assessments: &[PackageRiskAssessment],
+) -> String {
+    if assessments.is_empty() {
+        return "No supported npm, pip, or uv package inputs were found. Nothing was approved."
+            .to_string();
+    }
+    let package_count = assessments.len();
+    match verdict {
+        PackageRiskVerdict::AutoSyncCandidate => format!(
+            "{package_count} package input(s) have complete clean beta evidence and may be used as a sync-back candidate."
+        ),
+        PackageRiskVerdict::ManualReview => format!(
+            "{package_count} package input(s) need manual review before any beta sync-back. Package code was not run on the host by this assessment."
+        ),
+        PackageRiskVerdict::Deny => format!(
+            "{package_count} package input(s) are denied for the macOS beta. Package code was not run on the host by this assessment."
+        ),
+    }
+}
+
+fn package_risk_host_effect() -> &'static str {
+    "assessment_only_no_package_code_executed_no_project_files_copied_receipt_and_local_memory_may_be_written"
+}
+
+fn package_risk_recommended_actions(
+    verdict: PackageRiskVerdict,
+    reason_codes: &[String],
+) -> Vec<String> {
+    let mut actions = Vec::new();
+    if reason_codes
+        .iter()
+        .any(|reason| reason == "scanner_receipt_not_requested")
+    {
+        actions.push(
+            "Run whoathere scanners run --execute --json for this workspace, then reassess with --scanner-receipt.".to_string(),
+        );
+    }
+    if reason_codes
+        .iter()
+        .any(|reason| reason == "scanner_receipt_not_clean")
+    {
+        actions.push(
+            "Review scanner findings and keep any package execution inside the VM until findings are resolved."
+                .to_string(),
+        );
+    }
+    if reason_codes
+        .iter()
+        .any(|reason| reason == "scanner_receipt_workspace_digest_mismatch")
+    {
+        actions.push(
+            "Regenerate scanner evidence for the exact workspace being assessed.".to_string(),
+        );
+    }
+    if reason_codes
+        .iter()
+        .any(|reason| reason == "unpinned_no_last_known_good")
+    {
+        actions.push(
+            "Pin the dependency or first approve a clean last-known-good version for this package."
+                .to_string(),
+        );
+    }
+    if reason_codes
+        .iter()
+        .any(|reason| reason == "last_known_good_substitution_selected")
+    {
+        actions.push(
+            "Use the selected last-known-good version instead of silently upgrading the unpinned request."
+                .to_string(),
+        );
+    }
+    if reason_codes
+        .iter()
+        .any(|reason| reason == "fresh_release_cooldown_active")
+    {
+        actions.push(
+            "Wait for the fresh-release cooldown or perform manual review; the beta will not auto-sync this version yet."
+                .to_string(),
+        );
+    }
+    if reason_codes.iter().any(|reason| {
+        reason == "direct_vcs_editable_denied_by_default"
+            || reason.contains("dependency_source_direct_url")
+            || reason.contains("dependency_source_vcs")
+            || reason.contains("dependency_source_editable")
+            || reason.contains("dependency_source_local")
+    }) {
+        actions.push(
+            "Replace direct, VCS, editable, or local dependencies with pinned registry artifacts for beta auto-sync."
+                .to_string(),
+        );
+    }
+    if reason_codes.iter().any(|reason| {
+        reason == "native_extension_requires_manual_review"
+            || reason == "binary_wheel_requires_manual_review"
+            || reason == "pypi_sdist_or_pep517_requires_manual_review"
+    }) {
+        actions.push(
+            "Treat native, binary, and build-backend artifacts as manual review; the macOS beta does not auto-sync them."
+                .to_string(),
+        );
+    }
+    if reason_codes.iter().any(|reason| {
+        reason.contains("lifecycle")
+            || reason.contains("credential")
+            || reason.contains("network")
+            || reason.contains("pth")
+            || reason.contains("platform_specific")
+            || reason.contains("delayed_ci")
+    }) {
+        actions.push(
+            "Inspect the suspicious behavior and keep execution inside the VM; do not copy outputs to the host automatically."
+                .to_string(),
+        );
+    }
+    if verdict == PackageRiskVerdict::AutoSyncCandidate {
+        actions.push(
+            "Use this receipt with whoathere vm release-plan or whoathere vm detonate --sync-back, then approve it as a local baseline if reviewed."
+                .to_string(),
+        );
+    } else if actions.is_empty() {
+        actions.push(
+            "Review the reason_codes and keep the package out of host execution until clean evidence exists."
+                .to_string(),
+        );
+    }
+    actions.sort();
+    actions.dedup();
+    actions
 }
 
 fn render_package_risk_package_json(assessment: &PackageRiskAssessment) -> String {
@@ -20058,6 +20202,11 @@ exit 0
         assert!(assessed
             .output
             .contains("\"overall_verdict\": \"auto_sync_candidate\""));
+        assert!(assessed.output.contains("\"decision_summary\""));
+        assert!(assessed.output.contains("\"host_effect\""));
+        assert!(assessed
+            .output
+            .contains("Use this receipt with whoathere vm release-plan"));
         assert!(assessed.output.contains("\"all_freshness_allowed\": true"));
         assert!(!assessed.output.contains("WHOATHERE_CANARY_TOKEN"));
 
@@ -20131,6 +20280,14 @@ exit 0
         assert!(assessed
             .output
             .contains("\"overall_verdict\": \"manual_review\""));
+        assert!(assessed.output.contains("\"decision_summary\""));
+        assert!(assessed
+            .output
+            .contains("Package code was not run on the host"));
+        assert!(assessed.output.contains("\"recommended_actions\""));
+        assert!(assessed
+            .output
+            .contains("Run whoathere scanners run --execute --json"));
         assert!(assessed.output.contains("\"all_scanner_clean\": false"));
         assert!(assessed.output.contains("scanner_receipt_not_requested"));
 
