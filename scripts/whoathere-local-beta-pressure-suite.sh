@@ -46,6 +46,24 @@ main() {
   else
     run_step compat_smoke "$ROOT_DIR/scripts/whoathere-compat-smoke.sh"
   fi
+  if [ "${WHOATHERE_PRESSURE_ENABLE_VM:-0}" = "1" ]; then
+    if [ -z "${WHOATHERE_PRESSURE_RUNTIME_ARCHIVE:-}" ]; then
+      printf 'pressure_step=runtime_qualification status=failed reason=WHOATHERE_PRESSURE_RUNTIME_ARCHIVE_required\n' >&2
+      exit 64
+    fi
+    if [ -n "${WHOATHERE_PRESSURE_RUNTIME_STATE_DIR:-}" ]; then
+      run_step runtime_qualification \
+        "$ROOT_DIR/scripts/whoathere-runtime-qualification.sh" \
+        --archive "$WHOATHERE_PRESSURE_RUNTIME_ARCHIVE" \
+        --state-dir "$WHOATHERE_PRESSURE_RUNTIME_STATE_DIR"
+    else
+      run_step runtime_qualification \
+        "$ROOT_DIR/scripts/whoathere-runtime-qualification.sh" \
+        --archive "$WHOATHERE_PRESSURE_RUNTIME_ARCHIVE"
+    fi
+  else
+    printf 'pressure_step=runtime_qualification status=skipped reason=WHOATHERE_PRESSURE_ENABLE_VM\n'
+  fi
   suite_ended=$(date +%s)
   printf 'local_beta_pressure_suite=ok elapsed_seconds=%s\n' "$((suite_ended - suite_started))"
 }

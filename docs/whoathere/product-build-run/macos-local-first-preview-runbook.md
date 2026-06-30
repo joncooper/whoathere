@@ -268,6 +268,17 @@ smoke, and registry compatibility smoke with per-step elapsed seconds. Set
 `WHOATHERE_PRESSURE_SKIP_COMPAT=1` only when loopback registry tests cannot run in the current
 environment.
 
+The pressure suite skips live VM runtime qualification by default. To include the same-host VM
+detonation and sync-back/no-sync gate, provide a preview archive:
+
+```sh
+WHOATHERE_PRESSURE_ENABLE_VM=1 \
+WHOATHERE_PRESSURE_RUNTIME_ARCHIVE=dist/whoathere-macos-arm64-preview-<git-sha>.tar.gz \
+scripts/whoathere-local-beta-pressure-suite.sh
+```
+
+Optionally set `WHOATHERE_PRESSURE_RUNTIME_STATE_DIR` to reuse a prepared validation VM state.
+
 ## Package A Preview Artifact
 
 To build a repeatable Apple Silicon preview tarball with the release CLI, signed release helper,
