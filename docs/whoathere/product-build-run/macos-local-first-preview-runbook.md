@@ -243,8 +243,8 @@ scripts/whoathere-local-beta-pressure-suite.sh
 The local beta pressure smoke uses realistic local npm, pip, and uv project shapes without public
 network access. It checks that clean pinned registry-shaped inputs can become beta sync candidates,
 that npm local workspace/file dependencies remain denied, that uv range requests use the latest
-approved last-known-good version, and that package-risk output explains the host impact and next
-action.
+approved last-known-good version, that risky `uv.lock` transitive sources are surfaced and denied,
+and that package-risk output explains the host impact and next action.
 
 The package-risk smoke also covers a maintainer-takeover style update: a clean pinned npm package is
 approved as a local baseline, then a later pinned version of the same package adds a `postinstall`

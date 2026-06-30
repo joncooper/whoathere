@@ -10,6 +10,7 @@ pub enum SourceFileKind {
     NpmRc,
     PipConfig,
     PackageLock,
+    PythonLock,
     PackageJson,
     Requirements,
     PyProjectToml,
@@ -341,7 +342,10 @@ pub fn extract_package_identities(
         findings: Vec::new(),
     };
     match kind {
-        SourceFileKind::NpmRc | SourceFileKind::PipConfig | SourceFileKind::PackageLock => {}
+        SourceFileKind::NpmRc
+        | SourceFileKind::PipConfig
+        | SourceFileKind::PackageLock
+        | SourceFileKind::PythonLock => {}
         SourceFileKind::PackageJson => match npm_package_json_dependency_entries(contents) {
             Ok(entries) => {
                 for (name, source_kind) in entries {
@@ -476,6 +480,7 @@ fn scan_source_contents_with_origin(
         SourceFileKind::NpmRc => scan_npmrc(file, contents, vault_origin, &mut report),
         SourceFileKind::PipConfig => scan_pip_config(file, contents, vault_origin, &mut report),
         SourceFileKind::PackageLock => scan_package_lock(file, contents, vault_origin, &mut report),
+        SourceFileKind::PythonLock => scan_python_lock(file, contents, vault_origin, &mut report),
         SourceFileKind::PackageJson | SourceFileKind::PyProjectToml => {}
         SourceFileKind::Requirements => {
             scan_requirements_contents(file, contents, vault_origin, &mut report)
@@ -547,6 +552,8 @@ fn known_source_files() -> Vec<(&'static str, SourceFileKind)> {
         (".npmrc", SourceFileKind::NpmRc),
         ("package-lock.json", SourceFileKind::PackageLock),
         ("npm-shrinkwrap.json", SourceFileKind::PackageLock),
+        ("uv.lock", SourceFileKind::PythonLock),
+        ("poetry.lock", SourceFileKind::PythonLock),
         ("requirements.txt", SourceFileKind::Requirements),
         ("requirements-dev.txt", SourceFileKind::Requirements),
         ("pip.conf", SourceFileKind::PipConfig),
@@ -732,6 +739,33 @@ fn scan_package_lock(
                 file,
                 "lockfile_empty_integrity",
                 "lockfile contains an empty integrity value",
+            );
+        }
+    }
+}
+
+fn scan_python_lock(file: &str, contents: &str, vault_origin: &str, report: &mut SourceScanReport) {
+    for raw_line in contents.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if has_env_interpolation(line) {
+            report.push_high(
+                file,
+                "python_lockfile_env_interpolation",
+                "Python lockfile contains environment interpolation",
+            );
+        }
+        for value in python_lock_source_values(line) {
+            scan_source_value(
+                report,
+                file,
+                &value,
+                vault_origin,
+                "python_lockfile_external_source",
+                "python_lockfile_vcs_source",
+                "python_lockfile_local_source",
             );
         }
     }
@@ -1537,6 +1571,63 @@ fn requirement_source_values(line: &str) -> Vec<&str> {
     values
 }
 
+fn python_lock_source_values(line: &str) -> Vec<String> {
+    let lowered = line.to_ascii_lowercase();
+    if !lowered.contains("source")
+        && !lowered.contains("url")
+        && !lowered.contains("path")
+        && !lowered.contains("git")
+        && !lowered.contains("registry")
+    {
+        return Vec::new();
+    }
+    let mut values = Vec::new();
+    for value in quoted_values(line) {
+        let value = value
+            .strip_prefix("registry+")
+            .or_else(|| value.strip_prefix("archive+"))
+            .or_else(|| value.strip_prefix("url+"))
+            .unwrap_or(&value)
+            .to_string();
+        if (is_url_source(&value) || is_vcs_source(&value) || is_local_source(&value))
+            && !values.contains(&value)
+        {
+            values.push(value);
+        }
+    }
+    values
+}
+
+fn quoted_values(line: &str) -> Vec<String> {
+    let mut values = Vec::new();
+    let mut current = String::new();
+    let mut quote = None;
+    let mut escaped = false;
+    for character in line.chars() {
+        match quote {
+            Some(active_quote) => {
+                if escaped {
+                    current.push(character);
+                    escaped = false;
+                } else if character == '\\' {
+                    escaped = true;
+                } else if character == active_quote {
+                    values.push(current.clone());
+                    current.clear();
+                    quote = None;
+                } else {
+                    current.push(character);
+                }
+            }
+            None if character == '"' || character == '\'' => {
+                quote = Some(character);
+            }
+            None => {}
+        }
+    }
+    values
+}
+
 fn push_unique<'a>(values: &mut Vec<&'a str>, value: &'a str) {
     if !values.contains(&value) {
         values.push(value);
@@ -1935,6 +2026,63 @@ mod tests {
         );
         assert!(report.has_blocking_findings());
         assert_eq!(report.findings[0].reason_code, "lockfile_parse_error");
+    }
+
+    #[test]
+    fn uv_lock_external_and_vcs_sources_block() {
+        let report = scan_source_contents(
+            "uv.lock",
+            SourceFileKind::PythonLock,
+            r#"
+[[package]]
+name = "clean"
+version = "1.0.0"
+source = { registry = "http://127.0.0.1:4873/pypi/simple" }
+
+[[package]]
+name = "public"
+version = "2.0.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/public.tar.gz" }
+
+[[package]]
+name = "vcs"
+version = "3.0.0"
+source = { git = "git+https://github.com/acme/vcs.git" }
+"#,
+            VAULT,
+        );
+        assert!(report.has_blocking_findings());
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| finding.reason_code == "python_lockfile_external_source"));
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| finding.reason_code == "python_lockfile_vcs_source"));
+    }
+
+    #[test]
+    fn workspace_scan_reads_uv_lock() {
+        let root = temp_root("whoathere-source-uv-lock");
+        fs::write(
+            root.join("uv.lock"),
+            r#"
+[[package]]
+name = "local-path"
+version = "1.0.0"
+source = { path = "../outside" }
+"#,
+        )
+        .expect("write uv lock");
+        let report = scan_workspace(&root, VAULT);
+        assert_eq!(report.files_scanned, 1);
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| finding.reason_code == "python_lockfile_local_source"));
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

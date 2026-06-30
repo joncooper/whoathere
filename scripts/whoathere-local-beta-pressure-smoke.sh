@@ -208,6 +208,37 @@ require_contains 'last_known_good_substitution_selected' "$WORK_DIR/uv-range-ris
 require_contains '"selected_version": "2.3.4"' "$WORK_DIR/uv-range-risk.json" uv_selected
 require_contains 'Use the selected last-known-good version instead of silently upgrading the unpinned request' "$WORK_DIR/uv-range-risk.json" uv_action
 
+UV_LOCK_RISK="$WORK_DIR/uv-lock-risk"
+mkdir -p "$UV_LOCK_RISK"
+cat >"$UV_LOCK_RISK/uv.lock" <<'LOCK'
+[[package]]
+name = "uv-clean"
+version = "1.0.0"
+source = { registry = "https://pypi.org/simple" }
+
+[[package]]
+name = "uv-vcs-evil"
+version = "9.9.9"
+source = { git = "git+https://github.com/acme/uv-vcs-evil.git" }
+
+[[package]]
+name = "uv-local-evil"
+version = "0.1.0"
+source = { path = "../outside" }
+LOCK
+run_capture 20 "$WORK_DIR/uv-lock-risk.json" "$CLI" package-risk assess \
+  --workspace "$UV_LOCK_RISK" \
+  --ecosystem uv \
+  --state-dir "$STATE_DIR" \
+  --json
+require_contains '"package_name": "uv-clean"' "$WORK_DIR/uv-lock-risk.json" uv_lock_registry_subject
+require_contains '"package_name": "uv-vcs-evil"' "$WORK_DIR/uv-lock-risk.json" uv_lock_vcs_subject
+require_contains '"package_name": "uv-local-evil"' "$WORK_DIR/uv-lock-risk.json" uv_lock_local_subject
+require_contains 'python_lockfile_dependency_record' "$WORK_DIR/uv-lock-risk.json" uv_lock_dependency
+require_contains 'dependency_source_vcs' "$WORK_DIR/uv-lock-risk.json" uv_lock_vcs
+require_contains 'dependency_source_local' "$WORK_DIR/uv-lock-risk.json" uv_lock_local
+require_contains 'direct_vcs_editable_denied_by_default' "$WORK_DIR/uv-lock-risk.json" uv_lock_denied
+
 for file in "$WORK_DIR"/*.json; do
   require_not_contains 'NPM_TOKEN=' "$file" raw_npm_token
   require_not_contains 'PYPI_TOKEN=' "$file" raw_pypi_token

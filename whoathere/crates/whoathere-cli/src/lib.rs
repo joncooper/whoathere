@@ -12812,7 +12812,114 @@ fn discover_python_package_risk_subjects(
             indicators,
         });
     }
+    subjects.extend(discover_python_lockfile_package_risk_subjects(
+        workspace,
+        effective_ecosystem,
+    ));
     subjects
+}
+
+fn discover_python_lockfile_package_risk_subjects(
+    workspace: &Path,
+    effective_ecosystem: PackageRiskEcosystem,
+) -> Vec<PackageRiskSubject> {
+    let mut subjects = Vec::new();
+    for lockfile_name in ["uv.lock"] {
+        let lockfile_path = workspace.join(lockfile_name);
+        if !lockfile_path.is_file() {
+            continue;
+        }
+        let contents = std::fs::read_to_string(&lockfile_path).unwrap_or_default();
+        for package_block in toml_like_package_blocks(&contents) {
+            let Some(name) = toml_like_string_field(&package_block, "name") else {
+                continue;
+            };
+            let version = toml_like_string_field(&package_block, "version");
+            let source_kind = python_lockfile_source_kind(&package_block);
+            let package_class =
+                package_class_for_source_kind(effective_ecosystem.as_str(), &source_kind);
+            let requested_spec = version
+                .as_deref()
+                .map(|version| format!("=={version}"))
+                .unwrap_or_else(|| "lockfile".to_string());
+            let mut indicators = vec!["python_lockfile_dependency_record".to_string()];
+            if python_lockfile_has_source_url(&package_block) {
+                indicators.push("python_lockfile_url_present".to_string());
+            }
+            if source_kind != "registry" {
+                indicators.push(format!("dependency_source_{source_kind}"));
+            }
+            subjects.push(PackageRiskSubject {
+                ecosystem: effective_ecosystem,
+                package_name: normalize_package_name(&name),
+                requested_spec: requested_spec.clone(),
+                resolved_version: version,
+                source_kind,
+                package_class,
+                artifact_hash: package_risk_artifact_hash(
+                    lockfile_name,
+                    &format!("{name}{requested_spec}"),
+                    &package_block,
+                    &indicators,
+                ),
+                pinned: package_class.auto_sync_eligible() && requested_spec.starts_with("=="),
+                publish_age_days: None,
+                reputation_status: "reputation_metadata_missing".to_string(),
+                indicators,
+            });
+        }
+    }
+    subjects.sort_by(|left, right| {
+        left.package_name
+            .cmp(&right.package_name)
+            .then(left.requested_spec.cmp(&right.requested_spec))
+    });
+    subjects.dedup_by(|left, right| {
+        left.package_name == right.package_name && left.requested_spec == right.requested_spec
+    });
+    subjects
+}
+
+fn toml_like_package_blocks(contents: &str) -> Vec<String> {
+    let mut blocks = Vec::new();
+    let mut current = Vec::new();
+    for line in contents.lines() {
+        if line.trim() == "[[package]]" && !current.is_empty() {
+            blocks.push(current.join("\n"));
+            current.clear();
+        }
+        if !current.is_empty() || line.trim() == "[[package]]" {
+            current.push(line.to_string());
+        }
+    }
+    if !current.is_empty() {
+        blocks.push(current.join("\n"));
+    }
+    blocks
+}
+
+fn python_lockfile_source_kind(block: &str) -> String {
+    let lowered = block.to_ascii_lowercase();
+    if lowered.contains("git =") || lowered.contains("git+") || lowered.contains("source = { git") {
+        "vcs".to_string()
+    } else if lowered.contains("editable = true") || lowered.contains("editable =true") {
+        "editable".to_string()
+    } else if lowered.contains("path =") || lowered.contains("directory =") {
+        "local".to_string()
+    } else if lowered.contains("url =") || lowered.contains("archive =") {
+        "direct_url".to_string()
+    } else {
+        "registry".to_string()
+    }
+}
+
+fn python_lockfile_has_source_url(block: &str) -> bool {
+    let lowered = block.to_ascii_lowercase();
+    lowered.contains("url =")
+        || lowered.contains("registry =")
+        || lowered.contains("git =")
+        || lowered.contains("path =")
+        || lowered.contains("archive =")
 }
 
 fn assess_package_risk_subject(
@@ -20866,6 +20973,61 @@ exit 0
         assert!(result
             .output
             .contains("Package code was not run on the host"));
+        assert!(!result.output.contains("/Users/"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn package_risk_detects_uv_lockfile_source_risk() {
+        let root = temp_root("whoathere-cli-package-risk-uv-lockfile");
+        let state_dir = root.join("state");
+        write_new_file(
+            &root.join("uv.lock"),
+            br#"
+[[package]]
+name = "uv-clean"
+version = "1.0.0"
+source = { registry = "https://pypi.org/simple" }
+
+[[package]]
+name = "uv-vcs-evil"
+version = "9.9.9"
+source = { git = "git+https://github.com/acme/uv-vcs-evil.git" }
+
+[[package]]
+name = "uv-local-evil"
+version = "0.1.0"
+source = { path = "../outside" }
+"#,
+        )
+        .expect("uv lock");
+
+        let result = evaluate_command(Command::PackageRiskAssess {
+            workspace: Some(root.display().to_string()),
+            ecosystem: Some("uv".to_string()),
+            state_dir: Some(state_dir.display().to_string()),
+            scanner_receipt: None,
+            ai_review: false,
+            ai_provider: None,
+            ai_model: None,
+            ai_timeout_seconds: None,
+            json: true,
+        });
+
+        assert_eq!(result.exit_code, 20);
+        assert!(result.output.contains("\"ecosystem\": \"uv\""));
+        assert!(result.output.contains("\"package_name\": \"uv-clean\""));
+        assert!(result.output.contains("\"package_name\": \"uv-vcs-evil\""));
+        assert!(result
+            .output
+            .contains("\"package_name\": \"uv-local-evil\""));
+        assert!(result.output.contains("python_lockfile_dependency_record"));
+        assert!(result.output.contains("dependency_source_vcs"));
+        assert!(result.output.contains("dependency_source_local"));
+        assert!(result
+            .output
+            .contains("direct_vcs_editable_denied_by_default"));
         assert!(!result.output.contains("/Users/"));
 
         let _ = std::fs::remove_dir_all(&root);
