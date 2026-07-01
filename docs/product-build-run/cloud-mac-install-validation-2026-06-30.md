@@ -191,6 +191,58 @@ release_ready=false
 The remaining `release_ready=false` reasons on this patched preview tree were notarization and
 sync-back validation receipts, not VM runtime or npm/uv detonation blockers.
 
+## Packaged `aaa5dc1` Follow-Up
+
+After committing the runtime/provisioning fix, a new Developer-ID-signed preview archive was built:
+
+```text
+dist/whoathere-macos-arm64-preview-aaa5dc1.tar.gz
+sha256:a27ca7379233515e342faa7e56e6782a644a7f8c3418d9e66d110a1cbf78b718
+```
+
+Archive smoke validation passed locally, including checksum verification, install dry-run, install
+to a path containing spaces, binary signature verification, `doctor`, stale-tooling fail-closed
+checks, scanner readiness checks, and helper script syntax checks.
+
+The archive was copied to the cloud Mac, checksum-verified, installed into:
+
+```text
+/Users/m1/.whoathere-aaa5dc1
+```
+
+The existing validation VM was then reprovisioned from the packaged `aaa5dc1` helper tree and
+validated without patching the installed package in place:
+
+```text
+validate_aaa5dc1_status=0
+npm_uv_detonation_validation=ok
+```
+
+The packaged run wrote a signed release-validation receipt with:
+
+```text
+npm_vm_detonation_verified=true
+uv_vm_detonation_verified=true
+live_guest_toolchains_verified=true
+host_package_execution_enabled=false
+sync_back_enabled=false
+high_risk_package_execution_enabled=false
+package_acquisition_policy=local_only_no_public_resolver
+```
+
+The VM was suspended cleanly after validation.
+
+GitHub pre-release:
+
+```text
+https://github.com/joncooper/whoathere/releases/tag/macos-local-beta-aaa5dc1
+```
+
+Notarization note: the archive is Developer-ID signed, but Apple notarization was not completed
+from the Codex execution context because the `whoathere-notary` keychain profile was not visible to
+`notarytool` in that context. Run notarization from the interactive shell before treating this as a
+fully notarized beta artifact.
+
 ## Next Steps
 
 1. Enable/use provider console, Screen Sharing, or VNC.
@@ -215,8 +267,8 @@ sync-back validation receipts, not VM runtime or npm/uv detonation blockers.
      --execute
    ```
 
-5. For a packaged release candidate, rebuild the preview archive from the committed runtime fixes,
-   notarize it, and rerun this clean install path without patching files in place.
+5. Complete Apple notarization for `whoathere-macos-arm64-preview-aaa5dc1.tar.gz` from an
+   interactive shell that can access the `whoathere-notary` keychain profile.
 6. Run sync-back validation from the rebuilt artifact.
 7. Run real-project trials for npm and uv projects to tune false positives and workflow friction.
 
