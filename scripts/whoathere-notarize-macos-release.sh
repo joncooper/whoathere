@@ -72,7 +72,12 @@ require_mode_and_archive() {
 
 verify_archive_checksum_if_present() {
   if [ -f "$ARCHIVE.sha256" ]; then
-    shasum -a 256 -c "$ARCHIVE.sha256"
+    ARCHIVE_DIR=$(CDPATH= cd -- "$(dirname -- "$ARCHIVE")" && pwd)
+    CHECKSUM_FILE=$(basename "$ARCHIVE").sha256
+    (
+      cd "$ARCHIVE_DIR"
+      shasum -a 256 -c "$CHECKSUM_FILE"
+    )
   else
     echo "archive_checksum_sidecar_present=false"
   fi
