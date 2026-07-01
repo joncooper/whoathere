@@ -348,6 +348,13 @@ doctor_release_blocking_reason_codes=["macos_vm_guest_agent_source_digest_mismat
 
    It must report `ready=true` before the six-stage validation path is complete.
 
+   To do the same verification and publish the final evidence to the GitHub pre-release after the
+   handoff succeeds, run:
+
+   ```sh
+   scripts/whoathere-finalize-macos-beta.sh --version aaa5dc1 --state-dir /Users/jdc/.whoathere/macos-vm-validation --publish --repo joncooper/whoathere
+   ```
+
 7. For private real projects, keep networked scanners opt-in because they may disclose dependency
    metadata to external services. Use offline package-risk by default and controlled public fixtures
    for networked scanner testing.
