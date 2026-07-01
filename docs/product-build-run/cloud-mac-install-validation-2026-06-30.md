@@ -283,6 +283,25 @@ artifact, and then resumes runtime qualification. Until it is run, local `doctor
 keeps `release_ready=false` because the current sync-validation receipt is stale for the
 `aaa5dc1` CLI/helper digests.
 
+The packaged artifact readiness gate is now repeatable:
+
+```sh
+scripts/whoathere-macos-beta-readiness-check.sh --version aaa5dc1 --state-dir /Users/jdc/.whoathere/macos-vm-validation
+```
+
+Current output is intentionally not ready:
+
+```text
+ready=false
+checksum_verified=true
+cli_signature_valid=true
+helper_signature_valid=true
+notary_accepted=true
+clean_install_qualified=true
+doctor_release_ready=false
+doctor_release_blocking_reason_codes=["macos_vm_guest_agent_source_digest_mismatch","release_sync_back_validation_not_verified","sync_validation_cli_digest_mismatch","sync_validation_helper_digest_mismatch"]
+```
+
 ## Next Steps
 
 1. If validating the cloud Mac again, enable/use provider console, Screen Sharing, or VNC.
@@ -320,6 +339,14 @@ keeps `release_ready=false` because the current sync-validation receipt is stale
    /Users/jdc/.whoathere/macos-vm-validation --helper
    /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/.build/arm64-apple-macosx/release/whoathere-macos-vm-helper`
    and confirm no sync-validation or guest-agent digest blockers remain.
+
+   The simpler final gate is:
+
+   ```sh
+   scripts/whoathere-macos-beta-readiness-check.sh --version aaa5dc1 --state-dir /Users/jdc/.whoathere/macos-vm-validation
+   ```
+
+   It must report `ready=true` before the six-stage validation path is complete.
 
 7. For private real projects, keep networked scanners opt-in because they may disclose dependency
    metadata to external services. Use offline package-risk by default and controlled public fixtures
