@@ -238,14 +238,54 @@ GitHub pre-release:
 https://github.com/joncooper/whoathere/releases/tag/macos-local-beta-aaa5dc1
 ```
 
-Notarization note: the archive is Developer-ID signed, but Apple notarization was not completed
-from the Codex execution context because the `whoathere-notary` keychain profile was not visible to
-`notarytool` in that context. Run notarization from the interactive shell before treating this as a
-fully notarized beta artifact.
+Apple notarization was completed from an interactive shell that could access the
+`whoathere-notary` keychain profile. Apple returned `Accepted` for the packaged notary zip:
+
+```text
+notarytool_id=89b83bb6-a060-4b09-9090-adc8f683bda9
+notarytool_status=Accepted
+notarization_receipt=/Users/jdc/.whoathere/macos-vm-validation/bundle/release-notarization.json
+```
+
+The accepted notary JSON is attached to the GitHub pre-release alongside the archive and checksum.
+
+## Six-Stage Validation Status
+
+Current status for the `aaa5dc1` macOS local beta candidate:
+
+| Stage | Status | Evidence |
+| --- | --- | --- |
+| 1. Fresh Mac access and baseline | Passed | Disposable Apple Silicon cloud Mac reached, updated to macOS 26.5.2, and confirmed to require an active GUI session for Virtualization.framework VM install. |
+| 2. Distribution and install | Passed | SSH/SCP archive transfer passed, GitHub pre-release is available, checksum validation passed, clean temporary HOME install qualification passed for the notarized archive. |
+| 3. VM creation and provisioning | Passed with known operator requirement | VM init succeeded after GUI login. Guest runtime provisioning succeeded after staging Python, Node/npm, uv, and required wheels. |
+| 4. Synthetic VM safety validation | Passed | Packaged `aaa5dc1` VM validation reported `npm_uv_detonation_validation=ok`, with clean npm/uv cases allowed inside the VM and canary/public-resolution cases fail-closed. |
+| 5. Signed/notarized release artifact | Passed | CLI and helper are Developer ID signed. Apple notarization returned `Accepted` for submission `89b83bb6-a060-4b09-9090-adc8f683bda9`; the notary JSON is attached to the GitHub pre-release. |
+| 6. Real-project trials | Partially passed | Offline package-risk trials against six local npm/uv/Python workspaces completed without host package execution; all stayed `manual_review` in fresh package memory, which is secure but friction-heavy. Scanner-backed trials on private projects were kept offline to avoid disclosing private dependency metadata to external services. |
+
+Local validation on the development Mac also reran:
+
+```text
+scripts/whoathere-clean-install-qualification.sh --archive dist/whoathere-macos-arm64-preview-aaa5dc1.tar.gz --notarization-receipt /Users/jdc/.whoathere/macos-vm-validation/bundle/release-notarization.json
+clean_install_fully_qualified=true
+```
+
+The same-host runtime qualification preflight is ready but currently stops at the admin
+reprovision step because `sudo` is not cached:
+
+```text
+runtime_reprovision_required=true
+runtime_reprovision_handoff=/Users/jdc/src/whoathere/dist/whoathere-macos-arm64-preview-aaa5dc1-runtime-reprovision.sh
+sudo: a password is required
+```
+
+That handoff re-extracts the signed archive, runs the guest provisioning script from the extracted
+artifact, and then resumes runtime qualification. Until it is run, local `doctor --json` correctly
+keeps `release_ready=false` because the current sync-validation receipt is stale for the
+`aaa5dc1` CLI/helper digests.
 
 ## Next Steps
 
-1. Enable/use provider console, Screen Sharing, or VNC.
+1. If validating the cloud Mac again, enable/use provider console, Screen Sharing, or VNC.
 2. Log in graphically as `m1`.
 3. Confirm:
 
@@ -267,10 +307,23 @@ fully notarized beta artifact.
      --execute
    ```
 
-5. Complete Apple notarization for `whoathere-macos-arm64-preview-aaa5dc1.tar.gz` from an
-   interactive shell that can access the `whoathere-notary` keychain profile.
-6. Run sync-back validation from the rebuilt artifact.
-7. Run real-project trials for npm and uv projects to tune false positives and workflow friction.
+5. On the development Mac, run:
+
+   ```sh
+   dist/whoathere-macos-arm64-preview-aaa5dc1-runtime-reprovision.sh
+   ```
+
+   This should refresh guest provisioning and rerun same-host runtime qualification, including
+   current sync-back validation.
+
+6. After runtime qualification passes, rerun `doctor --json --state-dir
+   /Users/jdc/.whoathere/macos-vm-validation --helper
+   /Users/jdc/src/whoathere/whoathere/helpers/macos-vm-helper/.build/arm64-apple-macosx/release/whoathere-macos-vm-helper`
+   and confirm no sync-validation or guest-agent digest blockers remain.
+
+7. For private real projects, keep networked scanners opt-in because they may disclose dependency
+   metadata to external services. Use offline package-risk by default and controlled public fixtures
+   for networked scanner testing.
 
 ## Product Follow-Ups
 

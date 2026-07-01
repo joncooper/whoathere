@@ -340,7 +340,24 @@ write_reprovision_handoff() {
     printf '%s\n' '#!/bin/sh'
     printf '%s\n' 'set -eu'
     printf 'cd %s\n' "$(shell_quote "$REPO_ROOT")"
-    printf '%s\n' "$command_text"
+    printf '%s\n' ''
+    printf '%s\n' '# Original preflight command for operator inspection:'
+    printf '# %s\n' "$command_text"
+    printf 'archive=%s\n' "$(shell_quote "$ARCHIVE")"
+    printf 'package_name=%s\n' "$(shell_quote "$PACKAGE_NAME")"
+    printf 'state_dir=%s\n' "$(shell_quote "$STATE_DIR")"
+    printf 'handoff_tmp=$(mktemp -d "${TMPDIR:-/tmp}/whoathere-runtime-reprovision.XXXXXX")\n'
+    printf '%s\n' 'cleanup() { rm -rf "$handoff_tmp"; }'
+    printf '%s\n' 'trap cleanup EXIT HUP INT TERM'
+    printf '%s\n' 'tar -xzf "$archive" -C "$handoff_tmp"'
+    printf '%s\n' 'provisioner="$handoff_tmp/$package_name/helpers/macos-vm-helper/scripts/provision-guest-readiness.sh"'
+    printf '%s\n' 'test -x "$provisioner"'
+    printf 'sudo WHOATHERE_PYTHON_RUNTIME_DIR=%s \\\n' "$(shell_quote "$PYTHON_RUNTIME_DIR")"
+    printf '  WHOATHERE_PYTHON_WHEEL_DIR=%s \\\n' "$(shell_quote "$PYTHON_WHEEL_DIR")"
+    printf '  WHOATHERE_WHEEL_PACKAGE_FILE=%s \\\n' "$(shell_quote "$WHEEL_PACKAGE_FILE")"
+    printf '  WHOATHERE_NODE_RUNTIME_DIR=%s \\\n' "$(shell_quote "$NODE_RUNTIME_DIR")"
+    printf '  WHOATHERE_UV_BINARY=%s \\\n' "$(shell_quote "$UV_BINARY")"
+    printf '%s\n' '  "$provisioner" "$state_dir"'
     printf '%s\n' 'echo "runtime_reprovision_handoff_sudo=ok"'
     printf 'exec %s --archive %s --state-dir %s --attempt-sudo\n' \
       "$(shell_quote "$REPO_ROOT/scripts/whoathere-runtime-qualification.sh")" \
