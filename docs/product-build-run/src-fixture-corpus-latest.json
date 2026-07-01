@@ -1,0 +1,597 @@
+{
+  "case_results": [
+    {
+      "case": "active-direct-node",
+      "ecosystem": "npm",
+      "exit_code": 22,
+      "expected": "conservative",
+      "failures": [],
+      "output_path": "/var/folders/7_/j0p6z0qj5x13kcwpxz7ls90w0000gn/T/whoathere-src-fixture-corpus._zq1hs1d/outputs/offline/package-risk-active-direct-node.stdout",
+      "package_count": 51,
+      "reason_codes": [
+        "artifact_review_not_requested",
+        "baseline_absent_pinned_clean_candidate",
+        "baseline_absent_requires_review",
+        "package_publish_time_missing",
+        "package_risk_no_static_high_risk_indicator",
+        "reputation_metadata_missing",
+        "scanner_receipt_not_requested",
+        "unpinned_no_last_known_good"
+      ],
+      "scanner_clean": null,
+      "slice": "active-direct-small",
+      "verdict": "manual_review",
+      "warnings": [
+        "reputation_metadata_missing"
+      ]
+    },
+    {
+      "case": "active-direct-python",
+      "ecosystem": "pypi",
+      "exit_code": 22,
+      "expected": "conservative",
+      "failures": [],
+      "output_path": "/var/folders/7_/j0p6z0qj5x13kcwpxz7ls90w0000gn/T/whoathere-src-fixture-corpus._zq1hs1d/outputs/offline/package-risk-active-direct-python.stdout",
+      "package_count": 50,
+      "reason_codes": [
+        "artifact_review_not_requested",
+        "baseline_absent_requires_review",
+        "package_publish_time_missing",
+        "package_risk_no_static_high_risk_indicator",
+        "reputation_metadata_missing",
+        "scanner_receipt_not_requested",
+        "unpinned_no_last_known_good"
+      ],
+      "scanner_clean": null,
+      "slice": "active-direct-small",
+      "verdict": "manual_review",
+      "warnings": [
+        "reputation_metadata_missing"
+      ]
+    },
+    {
+      "case": "active-locked-node",
+      "ecosystem": "npm",
+      "exit_code": 22,
+      "expected": "conservative",
+      "failures": [],
+      "output_path": "/var/folders/7_/j0p6z0qj5x13kcwpxz7ls90w0000gn/T/whoathere-src-fixture-corpus._zq1hs1d/outputs/offline/package-risk-active-locked-node.stdout",
+      "package_count": 201,
+      "reason_codes": [
+        "artifact_review_not_requested",
+        "baseline_absent_requires_review",
+        "network_capability_observed",
+        "npm_lockfile_dependency_record",
+        "npm_lockfile_resolved_url_present",
+        "package_publish_time_missing",
+        "package_risk_no_static_high_risk_indicator",
+        "reputation_metadata_missing",
+        "scanner_receipt_not_requested"
+      ],
+      "scanner_clean": null,
+      "slice": "active-locked-small",
+      "verdict": "manual_review",
+      "warnings": [
+        "reputation_metadata_missing"
+      ]
+    },
+    {
+      "case": "active-locked-python",
+      "ecosystem": "uv",
+      "exit_code": 22,
+      "expected": "conservative",
+      "failures": [],
+      "output_path": "/var/folders/7_/j0p6z0qj5x13kcwpxz7ls90w0000gn/T/whoathere-src-fixture-corpus._zq1hs1d/outputs/offline/package-risk-active-locked-python.stdout",
+      "package_count": 200,
+      "reason_codes": [
+        "artifact_review_not_requested",
+        "baseline_absent_requires_review",
+        "package_publish_time_missing",
+        "python_lockfile_dependency_record",
+        "python_lockfile_registry_source_record",
+        "reputation_metadata_missing",
+        "scanner_receipt_not_requested"
+      ],
+      "scanner_clean": null,
+      "slice": "active-locked-small",
+      "verdict": "manual_review",
+      "warnings": [
+        "reputation_metadata_missing"
+      ]
+    },
+    {
+      "case": "workflow-friction-node",
+      "ecosystem": "npm",
+      "exit_code": 22,
+      "expected": "conservative",
+      "failures": [],
+      "output_path": "/var/folders/7_/j0p6z0qj5x13kcwpxz7ls90w0000gn/T/whoathere-src-fixture-corpus._zq1hs1d/outputs/offline/package-risk-workflow-friction-node.stdout",
+      "package_count": 9,
+      "reason_codes": [
+        "artifact_review_not_requested",
+        "baseline_absent_pinned_clean_candidate",
+        "baseline_absent_requires_review",
+        "package_publish_time_missing",
+        "package_risk_no_static_high_risk_indicator",
+        "reputation_metadata_missing",
+        "scanner_receipt_not_requested",
+        "unpinned_no_last_known_good"
+      ],
+      "scanner_clean": null,
+      "slice": "workflow-friction",
+      "verdict": "manual_review",
+      "warnings": [
+        "reputation_metadata_missing"
+      ]
+    },
+    {
+      "case": "workflow-friction-python",
+      "ecosystem": "pypi",
+      "exit_code": 22,
+      "expected": "conservative",
+      "failures": [],
+      "output_path": "/var/folders/7_/j0p6z0qj5x13kcwpxz7ls90w0000gn/T/whoathere-src-fixture-corpus._zq1hs1d/outputs/offline/package-risk-workflow-friction-python.stdout",
+      "package_count": 7,
+      "reason_codes": [
+        "artifact_review_not_requested",
+        "baseline_absent_requires_review",
+        "package_publish_time_missing",
+        "package_risk_no_static_high_risk_indicator",
+        "reputation_metadata_missing",
+        "scanner_receipt_not_requested",
+        "unpinned_no_last_known_good"
+      ],
+      "scanner_clean": null,
+      "slice": "workflow-friction",
+      "verdict": "manual_review",
+      "warnings": [
+        "reputation_metadata_missing"
+      ]
+    },
+    {
+      "case": "hard-classes-node",
+      "ecosystem": "npm",
+      "exit_code": 22,
+      "expected": "hard_class",
+      "failures": [],
+      "output_path": "/var/folders/7_/j0p6z0qj5x13kcwpxz7ls90w0000gn/T/whoathere-src-fixture-corpus._zq1hs1d/outputs/offline/package-risk-hard-classes-node.stdout",
+      "package_count": 4,
+      "reason_codes": [
+        "artifact_review_not_requested",
+        "baseline_absent_requires_review",
+        "native_extension_marker",
+        "native_extension_requires_manual_review",
+        "npm_lifecycle_script_install",
+        "package_publish_time_missing",
+        "package_risk_no_static_high_risk_indicator",
+        "reputation_metadata_missing",
+        "scanner_receipt_not_requested",
+        "unpinned_no_last_known_good"
+      ],
+      "scanner_clean": null,
+      "slice": "hard-classes",
+      "verdict": "manual_review",
+      "warnings": [
+        "reputation_metadata_missing"
+      ]
+    },
+    {
+      "case": "hard-classes-python",
+      "ecosystem": "pypi",
+      "exit_code": 22,
+      "expected": "hard_class",
+      "failures": [],
+      "output_path": "/var/folders/7_/j0p6z0qj5x13kcwpxz7ls90w0000gn/T/whoathere-src-fixture-corpus._zq1hs1d/outputs/offline/package-risk-hard-classes-python.stdout",
+      "package_count": 6,
+      "reason_codes": [
+        "artifact_review_not_requested",
+        "baseline_absent_pinned_clean_candidate",
+        "package_risk_no_static_high_risk_indicator",
+        "reputation_metadata_missing",
+        "scanner_receipt_not_requested"
+      ],
+      "scanner_clean": null,
+      "slice": "hard-classes",
+      "verdict": "manual_review",
+      "warnings": [
+        "reputation_metadata_missing"
+      ]
+    },
+    {
+      "case": "range-unpinned-node",
+      "ecosystem": "npm",
+      "exit_code": 22,
+      "expected": "range_unpinned",
+      "failures": [],
+      "output_path": "/var/folders/7_/j0p6z0qj5x13kcwpxz7ls90w0000gn/T/whoathere-src-fixture-corpus._zq1hs1d/outputs/offline/package-risk-range-unpinned-node.stdout",
+      "package_count": 5,
+      "reason_codes": [
+        "artifact_review_not_requested",
+        "baseline_absent_pinned_clean_candidate",
+        "baseline_absent_requires_review",
+        "package_publish_time_missing",
+        "package_risk_no_static_high_risk_indicator",
+        "reputation_metadata_missing",
+        "scanner_receipt_not_requested",
+        "unpinned_no_last_known_good"
+      ],
+      "scanner_clean": null,
+      "slice": "range-unpinned",
+      "verdict": "manual_review",
+      "warnings": [
+        "reputation_metadata_missing"
+      ]
+    },
+    {
+      "case": "range-unpinned-python",
+      "ecosystem": "pypi",
+      "exit_code": 22,
+      "expected": "range_unpinned",
+      "failures": [],
+      "output_path": "/var/folders/7_/j0p6z0qj5x13kcwpxz7ls90w0000gn/T/whoathere-src-fixture-corpus._zq1hs1d/outputs/offline/package-risk-range-unpinned-python.stdout",
+      "package_count": 3,
+      "reason_codes": [
+        "artifact_review_not_requested",
+        "baseline_absent_requires_review",
+        "package_publish_time_missing",
+        "package_risk_no_static_high_risk_indicator",
+        "reputation_metadata_missing",
+        "scanner_receipt_not_requested",
+        "unpinned_no_last_known_good"
+      ],
+      "scanner_clean": null,
+      "slice": "range-unpinned",
+      "verdict": "manual_review",
+      "warnings": [
+        "reputation_metadata_missing"
+      ]
+    },
+    {
+      "case": "online-public-node",
+      "ecosystem": "npm",
+      "exit_code": 22,
+      "expected": "scanner_public",
+      "failures": [],
+      "output_path": "/var/folders/7_/j0p6z0qj5x13kcwpxz7ls90w0000gn/T/whoathere-src-fixture-corpus._zq1hs1d/outputs/online/package-risk-online-public-node.stdout",
+      "package_count": 4,
+      "reason_codes": [
+        "artifact_review_not_requested",
+        "baseline_absent_pinned_clean_candidate",
+        "baseline_absent_requires_review",
+        "package_publish_time_missing",
+        "package_risk_no_static_high_risk_indicator",
+        "reputation_metadata_missing",
+        "scanner_receipt_clean_advisory",
+        "scanner_receipt_core_records_clean",
+        "scanner_receipt_workspace_bound"
+      ],
+      "scanner_clean": true,
+      "slice": "online-public",
+      "verdict": "manual_review",
+      "warnings": [
+        "reputation_metadata_missing"
+      ]
+    },
+    {
+      "case": "online-public-python",
+      "ecosystem": "pypi",
+      "exit_code": 22,
+      "expected": "scanner_public",
+      "failures": [],
+      "output_path": "/var/folders/7_/j0p6z0qj5x13kcwpxz7ls90w0000gn/T/whoathere-src-fixture-corpus._zq1hs1d/outputs/online/package-risk-online-public-python.stdout",
+      "package_count": 3,
+      "reason_codes": [
+        "artifact_review_not_requested",
+        "baseline_absent_pinned_clean_candidate",
+        "package_risk_no_static_high_risk_indicator",
+        "reputation_metadata_missing",
+        "scanner_grype_not_clean",
+        "scanner_osv-scanner_not_clean",
+        "scanner_pip-audit_not_clean",
+        "scanner_receipt_not_clean",
+        "scanner_receipt_workspace_bound"
+      ],
+      "scanner_clean": false,
+      "slice": "online-public",
+      "verdict": "manual_review",
+      "warnings": [
+        "reputation_metadata_missing"
+      ]
+    }
+  ],
+  "case_summary": {
+    "case_count": 12,
+    "failure_counts": {},
+    "packages_seen": 543,
+    "top_reason_codes": [
+      [
+        "artifact_review_not_requested",
+        12
+      ],
+      [
+        "reputation_metadata_missing",
+        12
+      ],
+      [
+        "package_risk_no_static_high_risk_indicator",
+        11
+      ],
+      [
+        "baseline_absent_requires_review",
+        10
+      ],
+      [
+        "package_publish_time_missing",
+        10
+      ],
+      [
+        "scanner_receipt_not_requested",
+        10
+      ],
+      [
+        "unpinned_no_last_known_good",
+        7
+      ],
+      [
+        "baseline_absent_pinned_clean_candidate",
+        6
+      ],
+      [
+        "scanner_receipt_workspace_bound",
+        2
+      ],
+      [
+        "network_capability_observed",
+        1
+      ],
+      [
+        "npm_lockfile_dependency_record",
+        1
+      ],
+      [
+        "npm_lockfile_resolved_url_present",
+        1
+      ],
+      [
+        "python_lockfile_dependency_record",
+        1
+      ],
+      [
+        "python_lockfile_registry_source_record",
+        1
+      ],
+      [
+        "native_extension_marker",
+        1
+      ],
+      [
+        "native_extension_requires_manual_review",
+        1
+      ],
+      [
+        "npm_lifecycle_script_install",
+        1
+      ],
+      [
+        "scanner_receipt_clean_advisory",
+        1
+      ],
+      [
+        "scanner_receipt_core_records_clean",
+        1
+      ],
+      [
+        "scanner_grype_not_clean",
+        1
+      ]
+    ],
+    "verdict_counts": {
+      "manual_review": 12
+    },
+    "warning_counts": {
+      "reputation_metadata_missing": 12
+    }
+  },
+  "fixture_json": "docs/product-build-run/src-dependency-fixtures.json",
+  "generated_at": "2026-07-01T12:00:30Z",
+  "generated_case_counts": {
+    "offline": 10,
+    "online": 2,
+    "vm": 2
+  },
+  "global_failures": [],
+  "mode": {
+    "include_vm": false,
+    "offline": true,
+    "online_public": true
+  },
+  "offline_summary": {
+    "case_count": 10,
+    "failure_counts": {},
+    "packages_seen": 536,
+    "top_reason_codes": [
+      [
+        "artifact_review_not_requested",
+        10
+      ],
+      [
+        "reputation_metadata_missing",
+        10
+      ],
+      [
+        "scanner_receipt_not_requested",
+        10
+      ],
+      [
+        "baseline_absent_requires_review",
+        9
+      ],
+      [
+        "package_publish_time_missing",
+        9
+      ],
+      [
+        "package_risk_no_static_high_risk_indicator",
+        9
+      ],
+      [
+        "unpinned_no_last_known_good",
+        7
+      ],
+      [
+        "baseline_absent_pinned_clean_candidate",
+        4
+      ],
+      [
+        "network_capability_observed",
+        1
+      ],
+      [
+        "npm_lockfile_dependency_record",
+        1
+      ],
+      [
+        "npm_lockfile_resolved_url_present",
+        1
+      ],
+      [
+        "python_lockfile_dependency_record",
+        1
+      ],
+      [
+        "python_lockfile_registry_source_record",
+        1
+      ],
+      [
+        "native_extension_marker",
+        1
+      ],
+      [
+        "native_extension_requires_manual_review",
+        1
+      ],
+      [
+        "npm_lifecycle_script_install",
+        1
+      ]
+    ],
+    "verdict_counts": {
+      "manual_review": 10
+    },
+    "warning_counts": {
+      "reputation_metadata_missing": 10
+    }
+  },
+  "online_summary": {
+    "case_count": 2,
+    "failure_counts": {},
+    "packages_seen": 7,
+    "top_reason_codes": [
+      [
+        "artifact_review_not_requested",
+        2
+      ],
+      [
+        "baseline_absent_pinned_clean_candidate",
+        2
+      ],
+      [
+        "package_risk_no_static_high_risk_indicator",
+        2
+      ],
+      [
+        "reputation_metadata_missing",
+        2
+      ],
+      [
+        "scanner_receipt_workspace_bound",
+        2
+      ],
+      [
+        "baseline_absent_requires_review",
+        1
+      ],
+      [
+        "package_publish_time_missing",
+        1
+      ],
+      [
+        "scanner_receipt_clean_advisory",
+        1
+      ],
+      [
+        "scanner_receipt_core_records_clean",
+        1
+      ],
+      [
+        "scanner_grype_not_clean",
+        1
+      ],
+      [
+        "scanner_osv-scanner_not_clean",
+        1
+      ],
+      [
+        "scanner_pip-audit_not_clean",
+        1
+      ],
+      [
+        "scanner_receipt_not_clean",
+        1
+      ]
+    ],
+    "verdict_counts": {
+      "manual_review": 2
+    },
+    "warning_counts": {
+      "reputation_metadata_missing": 2
+    }
+  },
+  "scanner_results": [
+    {
+      "case": "online-public-node",
+      "exit_code": 0,
+      "failures": [],
+      "output_path": "/var/folders/7_/j0p6z0qj5x13kcwpxz7ls90w0000gn/T/whoathere-src-fixture-corpus._zq1hs1d/outputs/online/scanners-online-public-node.stdout",
+      "reason_codes": [],
+      "receipt_path": "/var/folders/7_/j0p6z0qj5x13kcwpxz7ls90w0000gn/T/whoathere-src-fixture-corpus._zq1hs1d/outputs/online/scanners-online-public-node.stdout",
+      "scanner_clean": true,
+      "status": "passed"
+    },
+    {
+      "case": "online-public-python",
+      "exit_code": 20,
+      "failures": [],
+      "output_path": "/var/folders/7_/j0p6z0qj5x13kcwpxz7ls90w0000gn/T/whoathere-src-fixture-corpus._zq1hs1d/outputs/online/scanners-online-public-python.stdout",
+      "reason_codes": [
+        "scanner_grype_not_clean",
+        "scanner_osv-scanner_not_clean",
+        "scanner_pip-audit_not_clean"
+      ],
+      "receipt_path": "/var/folders/7_/j0p6z0qj5x13kcwpxz7ls90w0000gn/T/whoathere-src-fixture-corpus._zq1hs1d/outputs/online/scanners-online-public-python.stdout",
+      "scanner_clean": false,
+      "status": "error+findings"
+    }
+  ],
+  "scanner_summary": {
+    "failure_counts": {},
+    "record_count": 2,
+    "scanner_clean_counts": {
+      "False": 1,
+      "True": 1
+    },
+    "status_counts": {
+      "error+findings": 1,
+      "passed": 1
+    }
+  },
+  "schema_version": "whoathere.src_fixture_corpus_smoke_report.v1",
+  "state_dir": "/var/folders/7_/j0p6z0qj5x13kcwpxz7ls90w0000gn/T/whoathere-src-fixture-corpus._zq1hs1d/state",
+  "vm_results": [],
+  "vm_summary": {
+    "failure_counts": {},
+    "record_count": 0,
+    "status_counts": {}
+  },
+  "work_dir": "/var/folders/7_/j0p6z0qj5x13kcwpxz7ls90w0000gn/T/whoathere-src-fixture-corpus._zq1hs1d"
+}
