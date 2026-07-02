@@ -1,0 +1,15 @@
+.git
+.env
+.env.*
+!.env.example
+.whoathere
+dist
+target
+whoathere/target
+whoathere/.whoathere
+*.log
+*.tmp
+*.jsonl
+**/__pycache__
+**/*.pyc
+.DS_Store

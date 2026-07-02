@@ -14,7 +14,8 @@ enough.
 
 ## Current Status
 
-The active target is an Apple Silicon macOS local beta.
+The active target is an Apple Silicon macOS local beta. The most recent major product experiment
+was the July 1, 2026 actual-malware evaluation on a disposable Scaleway Mac.
 
 What that means:
 
@@ -25,7 +26,67 @@ What that means:
 - Blocks or asks for manual review on package shapes that are too risky for this beta.
 - Does not depend on AWS, a company package registry, or a cloud service.
 
+Current claim boundary:
+
+- Credible now: WhoaThere can be positioned as a containment and package-workflow admission tool
+  for supported local macOS workflows.
+- Not credible yet: broad supply-chain malware detection, low false-positive claims, arbitrary
+  npm/PyPI package safety, live C2 detection, or enterprise CI/package-proxy enforcement.
+
 This is useful security tooling, not a promise that arbitrary packages are safe.
+
+## Actual Malware Experiment
+
+On July 1, 2026, WhoaThere was evaluated against 11 real npm/PyPI supply-chain malware artifacts
+from a restricted MalwareBazaar-backed corpus on a disposable Scaleway Mac. The malware was run only
+through the VM-backed path, with no host package execution, no sync-back, no live C2, and no live
+second-stage fetching.
+
+Result:
+
+- Safety gate passed: 0 unsafe allows, 0 host executions, 0 sync-backs, and 0 restricted-material
+  leaks in sanitized evidence.
+- Detection gate failed: 7 of 11 malicious artifacts produced behavior-specific evidence, or
+  63.6%, below the 85-90% target.
+- Benign gate was not measured in the final campaign.
+- Network evidence is egress-denied/no-live-C2, not sinkhole/replay telemetry.
+
+The correct read is: **containment worked; behavior detection is not release-credible yet**.
+
+Start with:
+
+- `docs/product-build-run/whoathere-actual-malware-experimental-run-2026-07-01.html`
+- `docs/product-build-run/actual-malware-evaluation.md`
+- `docs/product-build-run/actual-malware-execution-plan-5-8.md`
+
+Restricted raw samples and sanitized local evidence snapshots live outside git under `.whoathere/`.
+Do not move them into source-controlled paths.
+
+## Release Direction
+
+The strongest near-term release option is a **public local containment preview**:
+
+> WhoaThere safely detonates supported Python and Node package setup workflows in a local macOS VM
+> before anything runs on your host or syncs back to your project. It composes with existing
+> scanners, but does not trust scanner output alone.
+
+Avoid claims such as:
+
+- "detects supply-chain malware"
+- "makes npm/pip install safe"
+- "replaces OSV-Scanner, pip-audit, npm audit, Trivy, GuardDog, Packj, or provenance"
+- "supports arbitrary public packages, native extensions, wheels, direct URLs, VCS, editable
+  installs, or runtime app protection"
+
+Next gates before a detection-credible beta:
+
+- Add first-class PyPI wheel metadata handling and wheel detonation routing.
+- Normalize nested PyPI sdist roots before package-risk and VM planning.
+- Add package-artifact detonation for npm lifecycle hooks, including CI-gated behavior.
+- Rerun the four `safe_block` malware cases and reach at least 85% behavior-specific evidence.
+- Run benign controls and report hard-deny/manual-review rates.
+- Preserve the safety invariants: no host execution, no sync-back, no live C2, and no redaction
+  leaks.
 
 ## Why This Exists
 
