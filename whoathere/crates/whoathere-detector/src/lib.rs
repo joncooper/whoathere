@@ -1,6 +1,8 @@
 mod artifact_bound;
+mod artifact_review;
 
 pub use artifact_bound::*;
+pub use artifact_review::*;
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
