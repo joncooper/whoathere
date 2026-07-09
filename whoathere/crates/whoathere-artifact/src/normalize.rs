@@ -167,6 +167,12 @@ fn normalize_npm(
         package_json_file_id: Some(package_json.record.file_id.clone()),
         ..NpmMetadata::default()
     };
+    if let Some(main) = object.get("main") {
+        npm.main_target = Some(
+            main.as_string("package.json main target must be a string")?
+                .to_string(),
+        );
+    }
     if let Some(scripts) = object.get("scripts") {
         for (name, command) in scripts.as_object("package.json scripts must be an object")? {
             if is_npm_lifecycle(name) {
@@ -847,7 +853,7 @@ fn is_executable_text(path: &str) -> bool {
     let lower = path.to_ascii_lowercase();
     [
         ".js", ".cjs", ".mjs", ".jsx", ".ts", ".tsx", ".py", ".pyi", ".sh", ".bash", ".zsh",
-        ".ps1", ".pth", ".toml", ".cfg", ".json",
+        ".ps1", ".pth", ".toml", ".cfg", ".json", ".gyp",
     ]
     .iter()
     .any(|extension| lower.ends_with(extension))

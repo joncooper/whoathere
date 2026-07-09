@@ -6,3 +6,6 @@ version.workspace = true
 
 [dependencies]
 whoathere-vault-api = { path = "../whoathere-vault-api" }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.186"

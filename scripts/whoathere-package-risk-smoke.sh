@@ -122,9 +122,12 @@ cat >"$UNPINNED/requirements.txt" <<'REQ'
 safe-pkg>=1.0
 REQ
 write_scanner_receipt "$UNPINNED" pypi "$WORK_DIR/scanner-clean-unpinned.json"
-run_capture 0 "$WORK_DIR/unpinned.json" "$CLI" package-risk assess --workspace "$UNPINNED" --ecosystem pypi --state-dir "$STATE_DIR" --scanner-receipt "$WORK_DIR/scanner-clean-unpinned.json" --json
+run_capture 22 "$WORK_DIR/unpinned.json" "$CLI" package-risk assess --workspace "$UNPINNED" --ecosystem pypi --state-dir "$STATE_DIR" --scanner-receipt "$WORK_DIR/scanner-clean-unpinned.json" --json
 require_contains 'last_known_good_substitution_selected' "$WORK_DIR/unpinned.json" lkg_reason
 require_contains '"selected_version": "1.2.3"' "$WORK_DIR/unpinned.json" lkg_version
+require_contains 'known_good_workspace_fingerprint_changed_requires_review' "$WORK_DIR/unpinned.json" lkg_workspace_review
+require_contains '"subject_kind": "workspace"' "$WORK_DIR/unpinned.json" lkg_workspace_subject
+require_not_contains '"artifact_hash"' "$WORK_DIR/unpinned.json" lkg_pseudo_artifact_hash
 
 NO_LKG="$WORK_DIR/no-lkg"
 mkdir -p "$NO_LKG"
@@ -232,7 +235,7 @@ write_scanner_receipt "$MAINTAINER_POISONED" npm "$WORK_DIR/maintainer-poisoned-
 run_capture 22 "$WORK_DIR/maintainer-poisoned.json" "$CLI" package-risk assess --workspace "$MAINTAINER_POISONED" --ecosystem npm --state-dir "$STATE_DIR" --scanner-receipt "$WORK_DIR/maintainer-poisoned-scanner.json" --json
 require_contains '"overall_verdict": "manual_review"' "$WORK_DIR/maintainer-poisoned.json" maintainer_poisoned_manual
 require_contains '"last_known_good_version": "1.0.0"' "$WORK_DIR/maintainer-poisoned.json" maintainer_poisoned_lkg
-require_contains 'known_good_diff_suspicious' "$WORK_DIR/maintainer-poisoned.json" maintainer_poisoned_diff
+require_contains 'known_good_workspace_diff_suspicious' "$WORK_DIR/maintainer-poisoned.json" maintainer_poisoned_diff
 require_contains 'npm_lifecycle_script_postinstall' "$WORK_DIR/maintainer-poisoned.json" maintainer_poisoned_postinstall
 require_contains 'credential_or_environment_access' "$WORK_DIR/maintainer-poisoned.json" maintainer_poisoned_secret
 require_contains 'network_capability_observed' "$WORK_DIR/maintainer-poisoned.json" maintainer_poisoned_network

@@ -8096,6 +8096,13 @@ fn apply_package_risk_receipt(
         .as_deref()
         .and_then(|object| json_extract_string_field(object, "status"));
     let package_objects = json_extract_object_array(&contents, "packages");
+    let workspace_subjects_valid = !package_objects.is_empty()
+        && package_objects.iter().all(|object| {
+            json_extract_string_field(object, "subject_kind").as_deref() == Some("workspace")
+                && json_extract_string_field(object, "workspace_subject_fingerprint")
+                    .as_deref()
+                    .is_some_and(valid_sha256_digest_string)
+        });
     let package_classes = package_objects
         .iter()
         .filter_map(|object| json_extract_string_field(object, "package_class"))
@@ -8114,6 +8121,14 @@ fn apply_package_risk_receipt(
         evidence.scanner_clean = scanner_clean;
     }
     let mut reason_codes = json_extract_string_array_field(&contents, "reason_codes");
+    if workspace_subjects_valid {
+        reason_codes.push("package_risk_workspace_subjects_bound".to_string());
+    } else {
+        reason_codes.push("package_risk_workspace_subject_binding_invalid".to_string());
+        evidence.diff_clean_or_baseline_absent = false;
+        evidence.freshness_allowed = false;
+        evidence.scanner_clean = false;
+    }
     if diff_clean {
         reason_codes.push("package_risk_diff_receipt_clean".to_string());
     } else {
@@ -10262,11 +10277,11 @@ fn render_context_error_lines(tool: &str, error: ContextError) -> String {
 
 fn render_execution_plan(tool: &str, args: &[String], execute: bool) -> String {
     let plan = plan_protected_execution(tool, args, execute);
-    match plan.decision {
-        ExecutionDecision::ExecuteReadonly => match execute_readonly(tool, args, &plan) {
+    match plan.decision() {
+        ExecutionDecision::ExecuteReadonly => match execute_readonly(&plan) {
             Ok(output) => format!(
                 "execution_requested=true\nexecution_decision=execute_readonly\nexecution_reason={}\nexecution_status={:?}\nexecution_stdout={:?}\nexecution_stderr={:?}",
-                plan.reason_code,
+                plan.reason_code(),
                 output.status_code,
                 redacted_scalar(&output.stdout),
                 redacted_scalar(&output.stderr)
@@ -10278,7 +10293,7 @@ fn render_execution_plan(tool: &str, args: &[String], execute: bool) -> String {
         },
         ExecutionDecision::Refuse => format!(
             "execution_requested={execute}\nexecution_decision=refuse\nexecution_reason={}",
-            plan.reason_code
+            plan.reason_code()
         ),
     }
 }
@@ -10882,8 +10897,8 @@ fn redacted_path_string(path: &Path) -> String {
     value
 }
 
-const PACKAGE_RISK_ASSESSMENT_SCHEMA: &str = "whoathere.package_risk_assessment.v1";
-const PACKAGE_RISK_STORE_SCHEMA: &str = "whoathere.package_risk_store_record.v1";
+const PACKAGE_RISK_ASSESSMENT_SCHEMA: &str = "whoathere.package_risk_assessment.v2";
+const PACKAGE_RISK_STORE_SCHEMA: &str = "whoathere.package_risk_store_record.v2";
 const PACKAGE_RISK_RECEIPT_AUTH_SCHEMA: &str = "whoathere.package_risk_receipt_auth.v1";
 const SCANNER_RECEIPT_AUTH_SCHEMA: &str = "whoathere.scanner_receipt_auth.v1";
 const PACKAGE_ARTIFACT_REVIEW_SCHEMA: &str = "whoathere.local_artifact_review.v1";
@@ -11044,7 +11059,9 @@ struct PackageRiskSubject {
     resolved_version: Option<String>,
     source_kind: String,
     package_class: PackageClass,
-    artifact_hash: String,
+    /// A deterministic snapshot fingerprint for legacy workspace admission.
+    /// This is never an original package-artifact digest.
+    workspace_subject_fingerprint: String,
     pinned: bool,
     publish_age_days: Option<u64>,
     reputation_status: String,
@@ -11060,10 +11077,10 @@ struct PackageRiskAssessment {
     selected_version: Option<String>,
     source_kind: String,
     package_class: PackageClass,
-    artifact_hash: String,
+    workspace_subject_fingerprint: String,
     pinned: bool,
     last_known_good_version: Option<String>,
-    last_known_good_hash: Option<String>,
+    last_known_good_subject_fingerprint: Option<String>,
     last_known_good_used: bool,
     publish_age_days: Option<u64>,
     freshness_allowed: bool,
@@ -11086,7 +11103,7 @@ struct PackageRiskMemoryRecord {
     selected_version: Option<String>,
     source_kind: String,
     package_class: String,
-    artifact_hash: String,
+    workspace_subject_fingerprint: String,
     verdict: String,
     approved: bool,
     created_at_unix_seconds: u64,
@@ -11847,7 +11864,7 @@ fn package_risk_recommended_actions(
 
 fn render_package_risk_package_json(assessment: &PackageRiskAssessment) -> String {
     format!(
-        "{{\"ecosystem\": {}, \"package_name\": {}, \"requested_spec\": {}, \"resolved_version\": {}, \"selected_version\": {}, \"source_kind\": {}, \"package_class\": {}, \"artifact_hash\": {}, \"pinned\": {}, \"last_known_good_version\": {}, \"last_known_good_hash\": {}, \"last_known_good_used\": {}, \"publish_age_days\": {}, \"freshness_allowed\": {}, \"diff_clean_or_baseline_absent\": {}, \"reputation_status\": {}, \"scanner_evidence_status\": {}, \"scanner_clean\": {}, \"scanner_evidence_reason_codes\": {}, \"artifact_review_status\": {}, \"artifact_review_reason_codes\": {}, \"artifact_review_output_sha256\": {}, \"indicators\": {}, \"verdict\": {}, \"reason_codes\": {}}}",
+        "{{\"subject_kind\": \"workspace\", \"ecosystem\": {}, \"package_name\": {}, \"requested_spec\": {}, \"resolved_version\": {}, \"selected_version\": {}, \"source_kind\": {}, \"package_class\": {}, \"workspace_subject_fingerprint\": {}, \"pinned\": {}, \"last_known_good_version\": {}, \"last_known_good_subject_fingerprint\": {}, \"last_known_good_used\": {}, \"publish_age_days\": {}, \"freshness_allowed\": {}, \"diff_clean_or_baseline_absent\": {}, \"reputation_status\": {}, \"scanner_evidence_status\": {}, \"scanner_clean\": {}, \"scanner_evidence_reason_codes\": {}, \"artifact_review_status\": {}, \"artifact_review_reason_codes\": {}, \"artifact_review_output_sha256\": {}, \"indicators\": {}, \"verdict\": {}, \"reason_codes\": {}}}",
         json_string(assessment.ecosystem.as_str()),
         json_string(&assessment.package_name),
         json_string(&assessment.requested_spec),
@@ -11855,10 +11872,10 @@ fn render_package_risk_package_json(assessment: &PackageRiskAssessment) -> Strin
         json_option_string(assessment.selected_version.as_deref()),
         json_string(&assessment.source_kind),
         json_string(assessment.package_class.as_str()),
-        json_string(&assessment.artifact_hash),
+        json_string(&assessment.workspace_subject_fingerprint),
         assessment.pinned,
         json_option_string(assessment.last_known_good_version.as_deref()),
-        json_option_string(assessment.last_known_good_hash.as_deref()),
+        json_option_string(assessment.last_known_good_subject_fingerprint.as_deref()),
         assessment.last_known_good_used,
         json_option(assessment.publish_age_days),
         assessment.freshness_allowed,
@@ -11878,7 +11895,7 @@ fn render_package_risk_package_json(assessment: &PackageRiskAssessment) -> Strin
 
 fn render_package_risk_package_text(assessment: &PackageRiskAssessment) -> String {
     format!(
-        "package_risk package={} ecosystem={} requested_spec={} resolved_version={} selected_version={} source_kind={} package_class={} artifact_hash={} pinned={} last_known_good_version={} last_known_good_used={} publish_age_days={} freshness_allowed={} diff_clean_or_baseline_absent={} reputation_status={} scanner_evidence_status={} scanner_clean={} scanner_evidence_reason_codes={:?} artifact_review_status={} artifact_review_reason_codes={:?} indicators={:?} verdict={} reason_codes={:?}",
+        "package_risk package={} ecosystem={} requested_spec={} resolved_version={} selected_version={} source_kind={} package_class={} workspace_subject_fingerprint={} pinned={} last_known_good_version={} last_known_good_used={} publish_age_days={} freshness_allowed={} diff_clean_or_baseline_absent={} reputation_status={} scanner_evidence_status={} scanner_clean={} scanner_evidence_reason_codes={:?} artifact_review_status={} artifact_review_reason_codes={:?} indicators={:?} verdict={} reason_codes={:?}",
         assessment.package_name,
         assessment.ecosystem.as_str(),
         redacted_scalar(&assessment.requested_spec),
@@ -11886,7 +11903,7 @@ fn render_package_risk_package_text(assessment: &PackageRiskAssessment) -> Strin
         assessment.selected_version.as_deref().unwrap_or("none"),
         assessment.source_kind,
         assessment.package_class.as_str(),
-        assessment.artifact_hash,
+        assessment.workspace_subject_fingerprint,
         assessment.pinned,
         assessment
             .last_known_good_version
@@ -13005,7 +13022,12 @@ fn discover_npm_package_risk_subjects(workspace: &Path) -> Vec<PackageRiskSubjec
         resolved_version: root_version,
         source_kind: "registry".to_string(),
         package_class: root_class,
-        artifact_hash: package_risk_artifact_hash("npm", &root_spec, &contents, &indicators),
+        workspace_subject_fingerprint: package_risk_workspace_subject_fingerprint(
+            "npm",
+            &root_spec,
+            &contents,
+            &indicators,
+        ),
         pinned: true,
         publish_age_days,
         reputation_status: reputation_status.clone(),
@@ -13037,7 +13059,7 @@ fn discover_npm_package_risk_subjects(workspace: &Path) -> Vec<PackageRiskSubjec
                 resolved_version,
                 source_kind,
                 package_class,
-                artifact_hash: package_risk_artifact_hash(
+                workspace_subject_fingerprint: package_risk_workspace_subject_fingerprint(
                     "npm",
                     &format!("{name}@{spec}"),
                     &contents,
@@ -13096,7 +13118,7 @@ fn discover_npm_lockfile_package_risk_subjects(workspace: &Path) -> Vec<PackageR
                 resolved_version: version,
                 source_kind,
                 package_class,
-                artifact_hash: package_risk_artifact_hash(
+                workspace_subject_fingerprint: package_risk_workspace_subject_fingerprint(
                     "npm-lockfile",
                     &format!("{lockfile_name}:{lock_path}:{package_name}@{requested_spec}"),
                     &object,
@@ -13212,7 +13234,7 @@ fn discover_python_package_risk_subjects(
                 resolved_version,
                 source_kind,
                 package_class,
-                artifact_hash: package_risk_artifact_hash(
+                workspace_subject_fingerprint: package_risk_workspace_subject_fingerprint(
                     effective_ecosystem.as_str(),
                     &format!("{name}{spec}"),
                     &contents,
@@ -13270,7 +13292,7 @@ fn discover_python_package_risk_subjects(
             resolved_version: version,
             source_kind: "registry".to_string(),
             package_class,
-            artifact_hash: package_risk_artifact_hash(
+            workspace_subject_fingerprint: package_risk_workspace_subject_fingerprint(
                 effective_ecosystem.as_str(),
                 &spec,
                 &(pyproject + &setup_py),
@@ -13329,7 +13351,7 @@ fn discover_python_lockfile_package_risk_subjects(
                 resolved_version: version,
                 source_kind,
                 package_class,
-                artifact_hash: package_risk_artifact_hash(
+                workspace_subject_fingerprint: package_risk_workspace_subject_fingerprint(
                     lockfile_name,
                     &format!("{name}{requested_spec}"),
                     &package_block,
@@ -13469,11 +13491,13 @@ fn assess_package_risk_subject(
         reason_codes.push("python_entry_point_requires_manual_review".to_string());
     }
 
-    let baseline_hash = baseline.as_ref().map(|record| record.artifact_hash.clone());
-    let exact_baseline_match = baseline_hash
+    let baseline_fingerprint = baseline
+        .as_ref()
+        .map(|record| record.workspace_subject_fingerprint.clone());
+    let exact_workspace_subject_match = baseline_fingerprint
         .as_deref()
-        .is_some_and(|hash| hash == subject.artifact_hash);
-    let freshness_allowed = if exact_baseline_match || last_known_good_used {
+        .is_some_and(|hash| hash == subject.workspace_subject_fingerprint);
+    let freshness_allowed = if exact_workspace_subject_match || last_known_good_used {
         true
     } else if let Some(days) = subject.publish_age_days {
         if days >= PACKAGE_RISK_COOLDOWN_DAYS {
@@ -13490,17 +13514,16 @@ fn assess_package_risk_subject(
         .indicators
         .iter()
         .any(|indicator| package_risk_indicator_blocks_auto_sync(indicator));
-    let diff_clean_or_baseline_absent = if exact_baseline_match {
-        reason_codes.push("last_known_good_exact_artifact_match".to_string());
+    let diff_clean_or_baseline_absent = if exact_workspace_subject_match {
+        reason_codes.push("last_known_good_exact_workspace_subject_match".to_string());
         true
     } else if baseline.is_some() {
-        if suspicious {
-            reason_codes.push("known_good_diff_suspicious".to_string());
-            false
+        reason_codes.push(if suspicious {
+            "known_good_workspace_diff_suspicious".to_string()
         } else {
-            reason_codes.push("known_good_diff_changed_low_risk".to_string());
-            true
-        }
+            "known_good_workspace_fingerprint_changed_requires_review".to_string()
+        });
+        false
     } else if subject.pinned
         && subject.package_class.auto_sync_eligible()
         && !suspicious
@@ -13564,7 +13587,7 @@ fn assess_package_risk_subject(
         selected_version,
         source_kind: subject.source_kind.clone(),
         package_class: subject.package_class,
-        artifact_hash: subject.artifact_hash.clone(),
+        workspace_subject_fingerprint: subject.workspace_subject_fingerprint.clone(),
         pinned: subject.pinned,
         last_known_good_version: baseline.as_ref().and_then(|record| {
             record
@@ -13572,7 +13595,7 @@ fn assess_package_risk_subject(
                 .clone()
                 .or(record.resolved_version.clone())
         }),
-        last_known_good_hash: baseline_hash,
+        last_known_good_subject_fingerprint: baseline_fingerprint,
         last_known_good_used,
         publish_age_days: subject.publish_age_days,
         freshness_allowed,
@@ -13667,7 +13690,7 @@ fn find_last_known_good<'a>(
     });
     if subject.pinned {
         let exact_match = candidates.iter().position(|record| {
-            record.artifact_hash == subject.artifact_hash
+            record.workspace_subject_fingerprint == subject.workspace_subject_fingerprint
                 || record
                     .resolved_version
                     .as_deref()
@@ -14055,7 +14078,7 @@ fn python_spec_is_exact(spec: &str) -> bool {
     spec.starts_with("==") && python_spec_source_kind(spec) == "registry"
 }
 
-fn package_risk_artifact_hash(
+fn package_risk_workspace_subject_fingerprint(
     ecosystem: &str,
     subject: &str,
     contents: &str,
@@ -14063,7 +14086,7 @@ fn package_risk_artifact_hash(
 ) -> String {
     sha256_digest(
         format!(
-            "{ecosystem}\n{subject}\n{}\n{}",
+            "whoathere.workspace_subject_fingerprint.v1\n{ecosystem}\n{subject}\n{}\n{}",
             sha256_digest(contents.as_bytes()),
             indicators.join(",")
         )
@@ -14982,7 +15005,7 @@ fn package_risk_assessment_store_record(
         selected_version: assessment.selected_version.clone(),
         source_kind: assessment.source_kind.clone(),
         package_class: assessment.package_class.as_str().to_string(),
-        artifact_hash: assessment.artifact_hash.clone(),
+        workspace_subject_fingerprint: assessment.workspace_subject_fingerprint.clone(),
         verdict: assessment.verdict.as_str().to_string(),
         approved,
         created_at_unix_seconds: current_unix_seconds(),
@@ -15004,7 +15027,15 @@ fn package_risk_approval_record_from_receipt_object(
     reason: &str,
     now: u64,
 ) -> Option<PackageRiskMemoryRecord> {
+    if json_extract_string_field(object, "subject_kind").as_deref() != Some("workspace") {
+        return None;
+    }
     let ecosystem = PackageRiskEcosystem::parse(&json_extract_string_field(object, "ecosystem")?)?;
+    let workspace_subject_fingerprint =
+        json_extract_string_field(object, "workspace_subject_fingerprint")?;
+    if !valid_sha256_digest_string(&workspace_subject_fingerprint) {
+        return None;
+    }
     let mut reason_codes = json_extract_string_array_field(object, "reason_codes");
     reason_codes.push(format!(
         "manual_approval_reason_sha256:{}",
@@ -15021,7 +15052,7 @@ fn package_risk_approval_record_from_receipt_object(
         selected_version: json_extract_string_field(object, "selected_version"),
         source_kind: json_extract_string_field(object, "source_kind")?,
         package_class: json_extract_string_field(object, "package_class")?,
-        artifact_hash: json_extract_string_field(object, "artifact_hash")?,
+        workspace_subject_fingerprint,
         verdict: json_extract_string_field(object, "verdict")?,
         approved: true,
         created_at_unix_seconds: now,
@@ -15076,6 +15107,17 @@ fn load_package_risk_memory(state_dir: &Path) -> Vec<PackageRiskMemoryRecord> {
 }
 
 fn parse_package_risk_memory_record(line: &str) -> Option<PackageRiskMemoryRecord> {
+    if json_extract_string_field(line, "schema_version").as_deref()
+        != Some(PACKAGE_RISK_STORE_SCHEMA)
+        || json_extract_string_field(line, "subject_kind").as_deref() != Some("workspace")
+    {
+        return None;
+    }
+    let workspace_subject_fingerprint =
+        json_extract_string_field(line, "workspace_subject_fingerprint")?;
+    if !valid_sha256_digest_string(&workspace_subject_fingerprint) {
+        return None;
+    }
     Some(PackageRiskMemoryRecord {
         record_kind: json_extract_string_field(line, "record_kind")?,
         ecosystem: PackageRiskEcosystem::parse(&json_extract_string_field(line, "ecosystem")?)?,
@@ -15085,7 +15127,7 @@ fn parse_package_risk_memory_record(line: &str) -> Option<PackageRiskMemoryRecor
         selected_version: json_extract_string_field(line, "selected_version"),
         source_kind: json_extract_string_field(line, "source_kind")?,
         package_class: json_extract_string_field(line, "package_class")?,
-        artifact_hash: json_extract_string_field(line, "artifact_hash")?,
+        workspace_subject_fingerprint,
         verdict: json_extract_string_field(line, "verdict")?,
         approved: json_extract_bool_field(line, "approved").unwrap_or(false),
         created_at_unix_seconds: json_extract_u64_field(line, "created_at_unix_seconds")?,
@@ -15115,7 +15157,7 @@ fn parse_package_risk_memory_record(line: &str) -> Option<PackageRiskMemoryRecor
 
 fn render_package_risk_memory_record_json(record: &PackageRiskMemoryRecord) -> String {
     format!(
-        "{{\"schema_version\": {}, \"record_kind\": {}, \"ecosystem\": {}, \"package_name\": {}, \"requested_spec\": {}, \"resolved_version\": {}, \"selected_version\": {}, \"source_kind\": {}, \"package_class\": {}, \"artifact_hash\": {}, \"verdict\": {}, \"approved\": {}, \"created_at_unix_seconds\": {}, \"receipt_id\": {}, \"reason_codes\": {}, \"diff_clean_or_baseline_absent\": {}, \"freshness_allowed\": {}, \"artifact_review_status\": {}, \"artifact_review_reason_codes\": {}, \"scanner_evidence_status\": {}, \"scanner_clean\": {}, \"scanner_evidence_reason_codes\": {}}}",
+        "{{\"schema_version\": {}, \"subject_kind\": \"workspace\", \"record_kind\": {}, \"ecosystem\": {}, \"package_name\": {}, \"requested_spec\": {}, \"resolved_version\": {}, \"selected_version\": {}, \"source_kind\": {}, \"package_class\": {}, \"workspace_subject_fingerprint\": {}, \"verdict\": {}, \"approved\": {}, \"created_at_unix_seconds\": {}, \"receipt_id\": {}, \"reason_codes\": {}, \"diff_clean_or_baseline_absent\": {}, \"freshness_allowed\": {}, \"artifact_review_status\": {}, \"artifact_review_reason_codes\": {}, \"scanner_evidence_status\": {}, \"scanner_clean\": {}, \"scanner_evidence_reason_codes\": {}}}",
         json_string(PACKAGE_RISK_STORE_SCHEMA),
         json_string(&record.record_kind),
         json_string(record.ecosystem.as_str()),
@@ -15125,7 +15167,7 @@ fn render_package_risk_memory_record_json(record: &PackageRiskMemoryRecord) -> S
         json_option_string(record.selected_version.as_deref()),
         json_string(&record.source_kind),
         json_string(&record.package_class),
-        json_string(&record.artifact_hash),
+        json_string(&record.workspace_subject_fingerprint),
         json_string(&record.verdict),
         record.approved,
         record.created_at_unix_seconds,
@@ -15143,7 +15185,7 @@ fn render_package_risk_memory_record_json(record: &PackageRiskMemoryRecord) -> S
 
 fn render_package_risk_memory_record_text(record: &PackageRiskMemoryRecord) -> String {
     format!(
-        "package_risk_record kind={} ecosystem={} package={} requested_spec={} selected_version={} approved={} verdict={} artifact_hash={} receipt_id={} diff_clean_or_baseline_absent={} freshness_allowed={} artifact_review_status={} artifact_review_reason_codes={:?} scanner_evidence_status={} scanner_clean={} scanner_evidence_reason_codes={:?} reason_codes={:?}",
+        "package_risk_record kind={} ecosystem={} package={} requested_spec={} selected_version={} approved={} verdict={} workspace_subject_fingerprint={} receipt_id={} diff_clean_or_baseline_absent={} freshness_allowed={} artifact_review_status={} artifact_review_reason_codes={:?} scanner_evidence_status={} scanner_clean={} scanner_evidence_reason_codes={:?} reason_codes={:?}",
         record.record_kind,
         record.ecosystem.as_str(),
         record.package_name,
@@ -15151,7 +15193,7 @@ fn render_package_risk_memory_record_text(record: &PackageRiskMemoryRecord) -> S
         record.selected_version.as_deref().unwrap_or("none"),
         record.approved,
         record.verdict,
-        record.artifact_hash,
+        record.workspace_subject_fingerprint,
         record.receipt_id,
         record.diff_clean_or_baseline_absent,
         record.freshness_allowed,
@@ -20161,7 +20203,7 @@ exit 0
         write_new_file(
             &package_risk_receipt,
             format!(
-                "{{\n  \"schema_version\": {},\n  \"receipt_id\": {},\n  \"workspace_sha256\": {},\n  \"created_at_unix_seconds\": {},\n  \"requested_ecosystem\": \"pypi\",\n  \"cooldown_days\": {},\n  \"overall_verdict\": \"auto_sync_candidate\",\n  \"all_freshness_allowed\": true,\n  \"all_diff_clean_or_baseline_absent\": true,\n  \"all_scanner_clean\": true,\n  \"scanner_evidence\": {{\"requested\": true, \"applied\": true, \"scanner_clean\": true, \"status\": \"clean\", \"reason_codes\": []}},\n  \"artifact_review\": {{\"requested\": false, \"status\": \"not_requested\", \"reason_codes\": []}},\n  \"reason_codes\": [],\n  \"packages\": [{{\"ecosystem\": \"pypi\", \"package_name\": \"forged-clean\", \"requested_spec\": \".\", \"resolved_version\": \"0.0.1\", \"selected_version\": \"0.0.1\", \"source_kind\": \"registry\", \"package_class\": \"pypi.pure_wheel.v1\", \"artifact_hash\": \"sha256:forged\", \"pinned\": true, \"last_known_good_version\": null, \"last_known_good_hash\": null, \"last_known_good_used\": false, \"publish_age_days\": 365, \"freshness_allowed\": true, \"diff_clean_or_baseline_absent\": true, \"reputation_status\": \"ok\", \"scanner_evidence_status\": \"clean\", \"scanner_clean\": true, \"scanner_evidence_reason_codes\": [], \"artifact_review_status\": \"not_requested\", \"artifact_review_reason_codes\": [], \"artifact_review_output_sha256\": null, \"indicators\": [], \"verdict\": \"auto_sync_candidate\", \"reason_codes\": []}}]\n}}\n",
+                "{{\n  \"schema_version\": {},\n  \"receipt_id\": {},\n  \"workspace_sha256\": {},\n  \"created_at_unix_seconds\": {},\n  \"requested_ecosystem\": \"pypi\",\n  \"cooldown_days\": {},\n  \"overall_verdict\": \"auto_sync_candidate\",\n  \"all_freshness_allowed\": true,\n  \"all_diff_clean_or_baseline_absent\": true,\n  \"all_scanner_clean\": true,\n  \"scanner_evidence\": {{\"requested\": true, \"applied\": true, \"scanner_clean\": true, \"status\": \"clean\", \"reason_codes\": []}},\n  \"artifact_review\": {{\"requested\": false, \"status\": \"not_requested\", \"reason_codes\": []}},\n  \"reason_codes\": [],\n  \"packages\": [{{\"ecosystem\": \"pypi\", \"package_name\": \"forged-clean\", \"requested_spec\": \".\", \"resolved_version\": \"0.0.1\", \"selected_version\": \"0.0.1\", \"source_kind\": \"registry\", \"package_class\": \"pypi.pure_wheel.v1\", \"workspace_subject_fingerprint\": \"sha256:forged\", \"pinned\": true, \"last_known_good_version\": null, \"last_known_good_subject_fingerprint\": null, \"last_known_good_used\": false, \"publish_age_days\": 365, \"freshness_allowed\": true, \"diff_clean_or_baseline_absent\": true, \"reputation_status\": \"ok\", \"scanner_evidence_status\": \"clean\", \"scanner_clean\": true, \"scanner_evidence_reason_codes\": [], \"artifact_review_status\": \"not_requested\", \"artifact_review_reason_codes\": [], \"artifact_review_output_sha256\": null, \"indicators\": [], \"verdict\": \"auto_sync_candidate\", \"reason_codes\": []}}]\n}}\n",
                 json_string(PACKAGE_RISK_ASSESSMENT_SCHEMA),
                 json_string(receipt_id),
                 json_string(&scanner_workspace_digest(&root)),
@@ -21141,7 +21183,7 @@ exit 0
     }
 
     #[test]
-    fn package_risk_assess_approves_and_reuses_last_known_good_for_unpinned_python() {
+    fn package_risk_assess_recommends_last_known_good_but_requires_exact_workspace_match() {
         let root = temp_root("whoathere-cli-package-risk-lkg");
         let state_dir = root.join("state");
         let pinned = root.join("pinned");
@@ -21181,6 +21223,11 @@ exit 0
             .output
             .contains("Use this receipt with whoathere vm release-plan"));
         assert!(assessed.output.contains("\"all_freshness_allowed\": true"));
+        assert!(assessed.output.contains("\"subject_kind\": \"workspace\""));
+        assert!(assessed
+            .output
+            .contains("\"workspace_subject_fingerprint\": \"sha256:"));
+        assert!(!assessed.output.contains("\"artifact_hash\""));
         assert!(!assessed.output.contains("WHOATHERE_CANARY_TOKEN"));
 
         let receipt = single_package_risk_receipt(&state_dir);
@@ -21216,15 +21263,105 @@ exit 0
             ai_timeout_seconds: None,
             json: true,
         });
-        assert_eq!(assessed_unpinned.exit_code, 0);
+        assert_eq!(assessed_unpinned.exit_code, ExitCode::ManualReview.code());
         assert!(assessed_unpinned
             .output
             .contains("last_known_good_substitution_selected"));
         assert!(assessed_unpinned
             .output
             .contains("\"selected_version\": \"1.2.3\""));
+        assert!(assessed_unpinned
+            .output
+            .contains("known_good_workspace_fingerprint_changed_requires_review"));
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn package_risk_same_version_changed_workspace_is_not_an_exact_match() {
+        let root = temp_root("whoathere-cli-package-risk-same-version-changed-workspace");
+        let state_dir = root.join("state");
+        let workspace = root.join("workspace");
+        let first_scanner_receipt = root.join("first-scanner.json");
+        let changed_scanner_receipt = root.join("changed-scanner.json");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        write_new_file(
+            &workspace.join("requirements.txt"),
+            b"safe-pkg==1.2.3 # whoathere-published-at=1700000000\n",
+        )
+        .expect("initial requirements");
+        write_scanner_run_receipt(
+            &first_scanner_receipt,
+            Some(&state_dir),
+            &workspace,
+            true,
+            &[],
+        );
+
+        let initial = evaluate_command(Command::PackageRiskAssess {
+            workspace: Some(workspace.display().to_string()),
+            ecosystem: Some("pypi".to_string()),
+            state_dir: Some(state_dir.display().to_string()),
+            scanner_receipt: Some(first_scanner_receipt.display().to_string()),
+            ai_review: false,
+            ai_provider: None,
+            ai_model: None,
+            ai_timeout_seconds: None,
+            json: true,
+        });
+        assert_eq!(initial.exit_code, ExitCode::Allow.code());
+        let receipt = single_package_risk_receipt(&state_dir);
+        let approved = evaluate_command(Command::PackageRiskApprove {
+            receipt: Some(receipt.display().to_string()),
+            reason: Some("same-version substitution regression baseline".to_string()),
+            state_dir: Some(state_dir.display().to_string()),
+            json: true,
+        });
+        assert_eq!(approved.exit_code, ExitCode::Allow.code());
+
+        std::fs::write(
+            workspace.join("requirements.txt"),
+            b"safe-pkg==1.2.3 # whoathere-published-at=1700000000 harmless-change\n",
+        )
+        .expect("changed requirements");
+        write_scanner_run_receipt(
+            &changed_scanner_receipt,
+            Some(&state_dir),
+            &workspace,
+            true,
+            &[],
+        );
+        let changed = evaluate_command(Command::PackageRiskAssess {
+            workspace: Some(workspace.display().to_string()),
+            ecosystem: Some("pypi".to_string()),
+            state_dir: Some(state_dir.display().to_string()),
+            scanner_receipt: Some(changed_scanner_receipt.display().to_string()),
+            ai_review: false,
+            ai_provider: None,
+            ai_model: None,
+            ai_timeout_seconds: None,
+            json: true,
+        });
+
+        assert_eq!(changed.exit_code, ExitCode::ManualReview.code());
+        assert!(changed
+            .output
+            .contains("known_good_workspace_fingerprint_changed_requires_review"));
+        assert!(!changed
+            .output
+            .contains("last_known_good_exact_workspace_subject_match"));
+        assert!(changed
+            .output
+            .contains("\"diff_clean_or_baseline_absent\": false"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn package_risk_legacy_artifact_hash_store_record_is_ignored() {
+        let legacy = r#"{"schema_version":"whoathere.package_risk_store_record.v1","subject_kind":"workspace","record_kind":"approval","ecosystem":"pypi","package_name":"safe-pkg","requested_spec":"safe-pkg==1.2.3","resolved_version":"1.2.3","selected_version":"1.2.3","source_kind":"registry","package_class":"pypi.pure_wheel.v1","artifact_hash":"sha256:1111111111111111111111111111111111111111111111111111111111111111","verdict":"auto_sync_candidate","approved":true,"created_at_unix_seconds":1,"receipt_id":"legacy","reason_codes":[],"diff_clean_or_baseline_absent":true,"freshness_allowed":true,"artifact_review_status":"not_requested","artifact_review_reason_codes":[],"scanner_evidence_status":"clean","scanner_clean":true,"scanner_evidence_reason_codes":[]}"#;
+
+        assert!(parse_package_risk_memory_record(legacy).is_none());
     }
 
     #[test]
@@ -21289,7 +21426,7 @@ exit 0
         write_new_file(
             &receipt,
             format!(
-                "{{\n  \"schema_version\": {},\n  \"receipt_id\": {},\n  \"workspace_sha256\": \"sha256:forged\",\n  \"created_at_unix_seconds\": {},\n  \"requested_ecosystem\": \"pypi\",\n  \"cooldown_days\": {},\n  \"overall_verdict\": \"auto_sync_candidate\",\n  \"all_freshness_allowed\": true,\n  \"all_diff_clean_or_baseline_absent\": true,\n  \"all_scanner_clean\": true,\n  \"scanner_evidence\": {{\"requested\": true, \"applied\": true, \"scanner_clean\": true, \"status\": \"clean\", \"reason_codes\": []}},\n  \"artifact_review\": {{\"requested\": false, \"status\": \"not_requested\", \"reason_codes\": []}},\n  \"reason_codes\": [],\n  \"packages\": [{{\"ecosystem\": \"pypi\", \"package_name\": \"forged-pkg\", \"requested_spec\": \"forged-pkg==1.0.0\", \"resolved_version\": \"1.0.0\", \"selected_version\": \"1.0.0\", \"source_kind\": \"registry\", \"package_class\": \"pypi.pure_wheel.v1\", \"artifact_hash\": \"sha256:forged\", \"pinned\": true, \"freshness_allowed\": true, \"diff_clean_or_baseline_absent\": true, \"reputation_status\": \"ok\", \"scanner_evidence_status\": \"clean\", \"scanner_clean\": true, \"scanner_evidence_reason_codes\": [], \"artifact_review_status\": \"not_requested\", \"artifact_review_reason_codes\": [], \"artifact_review_output_sha256\": null, \"indicators\": [], \"verdict\": \"auto_sync_candidate\", \"reason_codes\": []}}]\n}}\n",
+                "{{\n  \"schema_version\": {},\n  \"receipt_id\": {},\n  \"workspace_sha256\": \"sha256:forged\",\n  \"created_at_unix_seconds\": {},\n  \"requested_ecosystem\": \"pypi\",\n  \"cooldown_days\": {},\n  \"overall_verdict\": \"auto_sync_candidate\",\n  \"all_freshness_allowed\": true,\n  \"all_diff_clean_or_baseline_absent\": true,\n  \"all_scanner_clean\": true,\n  \"scanner_evidence\": {{\"requested\": true, \"applied\": true, \"scanner_clean\": true, \"status\": \"clean\", \"reason_codes\": []}},\n  \"artifact_review\": {{\"requested\": false, \"status\": \"not_requested\", \"reason_codes\": []}},\n  \"reason_codes\": [],\n  \"packages\": [{{\"ecosystem\": \"pypi\", \"package_name\": \"forged-pkg\", \"requested_spec\": \"forged-pkg==1.0.0\", \"resolved_version\": \"1.0.0\", \"selected_version\": \"1.0.0\", \"source_kind\": \"registry\", \"package_class\": \"pypi.pure_wheel.v1\", \"workspace_subject_fingerprint\": \"sha256:forged\", \"pinned\": true, \"freshness_allowed\": true, \"diff_clean_or_baseline_absent\": true, \"reputation_status\": \"ok\", \"scanner_evidence_status\": \"clean\", \"scanner_clean\": true, \"scanner_evidence_reason_codes\": [], \"artifact_review_status\": \"not_requested\", \"artifact_review_reason_codes\": [], \"artifact_review_output_sha256\": null, \"indicators\": [], \"verdict\": \"auto_sync_candidate\", \"reason_codes\": []}}]\n}}\n",
                 json_string(PACKAGE_RISK_ASSESSMENT_SCHEMA),
                 json_string(receipt_id),
                 current_unix_seconds(),
@@ -21779,7 +21916,7 @@ dns.resolveTxt("stage.example", function(_err, records) {
             .contains("\"last_known_good_version\": \"1.0.0\""));
         assert!(poisoned_assessed
             .output
-            .contains("known_good_diff_suspicious"));
+            .contains("known_good_workspace_diff_suspicious"));
         assert!(poisoned_assessed
             .output
             .contains("npm_lifecycle_script_postinstall"));
@@ -26985,7 +27122,7 @@ exit 0
     ) -> std::path::PathBuf {
         let path = package_risk_receipt_path(state_dir, receipt_id);
         let unsigned = format!(
-            "{{\n  \"schema_version\": {},\n  \"receipt_id\": {},\n  \"workspace_sha256\": {},\n  \"created_at_unix_seconds\": {},\n  \"requested_ecosystem\": \"pypi\",\n  \"cooldown_days\": {},\n  \"overall_verdict\": \"auto_sync_candidate\",\n  \"all_freshness_allowed\": true,\n  \"all_diff_clean_or_baseline_absent\": true,\n  \"all_scanner_clean\": true,\n  \"scanner_evidence\": {{\"requested\": true, \"applied\": true, \"scanner_clean\": true, \"status\": \"clean\", \"reason_codes\": []}},\n  \"artifact_review\": {{\"requested\": false, \"status\": \"not_requested\", \"reason_codes\": []}},\n  \"reason_codes\": [],\n  \"packages\": [{{\"ecosystem\": \"pypi\", \"package_name\": \"test-clean\", \"requested_spec\": \".\", \"resolved_version\": \"0.0.1\", \"selected_version\": \"0.0.1\", \"source_kind\": \"registry\", \"package_class\": {}, \"artifact_hash\": \"sha256:test\", \"pinned\": true, \"last_known_good_version\": null, \"last_known_good_hash\": null, \"last_known_good_used\": false, \"publish_age_days\": 365, \"freshness_allowed\": true, \"diff_clean_or_baseline_absent\": true, \"reputation_status\": \"ok\", \"scanner_evidence_status\": \"clean\", \"scanner_clean\": true, \"scanner_evidence_reason_codes\": [], \"artifact_review_status\": \"not_requested\", \"artifact_review_reason_codes\": [], \"artifact_review_output_sha256\": null, \"indicators\": [], \"verdict\": \"auto_sync_candidate\", \"reason_codes\": []}}]\n}}\n",
+            "{{\n  \"schema_version\": {},\n  \"receipt_id\": {},\n  \"workspace_sha256\": {},\n  \"created_at_unix_seconds\": {},\n  \"requested_ecosystem\": \"pypi\",\n  \"cooldown_days\": {},\n  \"overall_verdict\": \"auto_sync_candidate\",\n  \"all_freshness_allowed\": true,\n  \"all_diff_clean_or_baseline_absent\": true,\n  \"all_scanner_clean\": true,\n  \"scanner_evidence\": {{\"requested\": true, \"applied\": true, \"scanner_clean\": true, \"status\": \"clean\", \"reason_codes\": []}},\n  \"artifact_review\": {{\"requested\": false, \"status\": \"not_requested\", \"reason_codes\": []}},\n  \"reason_codes\": [],\n  \"packages\": [{{\"subject_kind\": \"workspace\", \"ecosystem\": \"pypi\", \"package_name\": \"test-clean\", \"requested_spec\": \".\", \"resolved_version\": \"0.0.1\", \"selected_version\": \"0.0.1\", \"source_kind\": \"registry\", \"package_class\": {}, \"workspace_subject_fingerprint\": \"sha256:1111111111111111111111111111111111111111111111111111111111111111\", \"pinned\": true, \"last_known_good_version\": null, \"last_known_good_subject_fingerprint\": null, \"last_known_good_used\": false, \"publish_age_days\": 365, \"freshness_allowed\": true, \"diff_clean_or_baseline_absent\": true, \"reputation_status\": \"ok\", \"scanner_evidence_status\": \"clean\", \"scanner_clean\": true, \"scanner_evidence_reason_codes\": [], \"artifact_review_status\": \"not_requested\", \"artifact_review_reason_codes\": [], \"artifact_review_output_sha256\": null, \"indicators\": [], \"verdict\": \"auto_sync_candidate\", \"reason_codes\": []}}]\n}}\n",
             json_string(PACKAGE_RISK_ASSESSMENT_SCHEMA),
             json_string(receipt_id),
             json_string(&scanner_workspace_digest(workspace)),

@@ -7,9 +7,9 @@ use std::str::FromStr;
 use whoathere_hash::sha256_digest;
 
 pub const ARTIFACT_ENVELOPE_SCHEMA_VERSION: &str = "whoathere.artifact_envelope.v1";
-pub const ARTIFACT_MANIFEST_SCHEMA_VERSION: &str = "whoathere.artifact_manifest.v1";
+pub const ARTIFACT_MANIFEST_SCHEMA_VERSION: &str = "whoathere.artifact_manifest.v2";
 pub const ARTIFACT_MANIFEST_CANONICALIZATION_VERSION: &str =
-    "whoathere.artifact_manifest.canonical_json.v1";
+    "whoathere.artifact_manifest.canonical_json.v2";
 
 /// Canonical lowercase `sha256:<64 hex characters>` digest.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -304,12 +304,41 @@ impl ArtifactEnvelope {
                 "artifact envelope contains an empty required field".to_string(),
             ));
         }
+        if !is_canonical_utc_timestamp(&self.acquired_at) {
+            return Err(ArtifactModelError::InvalidContract(
+                "artifact acquisition timestamp must be canonical UTC seconds".to_string(),
+            ));
+        }
+        let acquisition_pair_valid = matches!(
+            (self.source_type, self.acquisition_method),
+            (
+                ArtifactSourceType::Registry,
+                AcquisitionMethod::RegistryDownload
+            ) | (
+                ArtifactSourceType::ApprovedCustody,
+                AcquisitionMethod::ApprovedCustodyImport
+            ) | (
+                ArtifactSourceType::LocalFile,
+                AcquisitionMethod::LocalInertFixture
+            )
+        );
+        if !acquisition_pair_valid {
+            return Err(ArtifactModelError::InvalidContract(
+                "artifact source type and acquisition method disagree".to_string(),
+            ));
+        }
         if self.original_byte_length == 0 {
             return Err(ArtifactModelError::InvalidContract(
                 "artifact envelope original byte length is zero".to_string(),
             ));
         }
         if self.source_type == ArtifactSourceType::Registry {
+            if self.resolver_metadata_sha256.is_none() || self.registry_metadata_sha256.is_none() {
+                return Err(ArtifactModelError::InvalidContract(
+                    "registry artifact envelope lacks resolver or registry metadata digest"
+                        .to_string(),
+                ));
+            }
             let (name, version) = self
                 .package_name
                 .as_deref()
@@ -331,6 +360,47 @@ impl ArtifactEnvelope {
         }
         Ok(())
     }
+}
+
+fn is_canonical_utc_timestamp(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() != 20
+        || bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || bytes[10] != b'T'
+        || bytes[13] != b':'
+        || bytes[16] != b':'
+        || bytes[19] != b'Z'
+        || bytes.iter().enumerate().any(|(index, byte)| {
+            !matches!(index, 4 | 7 | 10 | 13 | 16 | 19) && !byte.is_ascii_digit()
+        })
+    {
+        return false;
+    }
+    let parse = |range: std::ops::Range<usize>| {
+        std::str::from_utf8(&bytes[range])
+            .ok()
+            .and_then(|part| part.parse::<u32>().ok())
+    };
+    let (Some(year), Some(month), Some(day), Some(hour), Some(minute), Some(second)) = (
+        parse(0..4),
+        parse(5..7),
+        parse(8..10),
+        parse(11..13),
+        parse(14..16),
+        parse(17..19),
+    ) else {
+        return false;
+    };
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let max_day = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return false,
+    };
+    year != 0 && (1..=max_day).contains(&day) && hour <= 23 && minute <= 59 && second <= 59
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -444,6 +514,7 @@ pub struct DependencyDeclaration {
 #[serde(deny_unknown_fields)]
 pub struct NpmMetadata {
     pub package_json_file_id: Option<Sha256Digest>,
+    pub main_target: Option<String>,
     pub lifecycle_scripts: BTreeMap<String, String>,
     pub bin_targets: BTreeMap<String, String>,
     pub export_targets: Vec<String>,
@@ -535,7 +606,7 @@ impl ArtifactManifestInput {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Clone, PartialEq, Eq, Serialize)]
 pub struct ArtifactManifest {
     pub schema_version: String,
     pub canonicalization_version: String,
@@ -554,6 +625,26 @@ pub struct ArtifactManifest {
     pub metadata: ArtifactMetadata,
     pub executable_text_file_ids: Vec<Sha256Digest>,
     pub native_binary_file_ids: Vec<Sha256Digest>,
+}
+
+impl fmt::Debug for ArtifactManifest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ArtifactManifest")
+            .field("schema_version", &self.schema_version)
+            .field("artifact_sha256", &self.artifact_sha256)
+            .field("manifest_sha256", &self.manifest_sha256)
+            .field("magic_detected_format", &self.magic_detected_format)
+            .field("member_count", &self.members.len())
+            .field("total_expanded_size", &self.total_expanded_size)
+            .field(
+                "normalization_completeness",
+                &self.normalization_completeness,
+            )
+            .field("package_metadata", &"<redacted>")
+            .field("member_paths", &"<redacted>")
+            .finish()
+    }
 }
 
 #[derive(Deserialize)]
@@ -827,12 +918,25 @@ impl ArtifactManifest {
 ///
 /// This type intentionally does not implement `Serialize`, preventing source
 /// bytes from being included accidentally in normal evidence envelopes.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct NormalizedMemberContent {
     pub file_id: Sha256Digest,
     pub normalized_path: String,
     pub sha256: Sha256Digest,
     bytes: Vec<u8>,
+}
+
+impl fmt::Debug for NormalizedMemberContent {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("NormalizedMemberContent")
+            .field("file_id", &self.file_id)
+            .field("normalized_path", &self.normalized_path)
+            .field("sha256", &self.sha256)
+            .field("byte_len", &self.bytes.len())
+            .field("bytes", &"<redacted>")
+            .finish()
+    }
 }
 
 impl NormalizedMemberContent {
@@ -851,10 +955,23 @@ impl NormalizedMemberContent {
 }
 
 /// A manifest and its immutable-in-memory normalized file view from one parse.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct NormalizedArtifact {
     pub manifest: ArtifactManifest,
     contents: BTreeMap<Sha256Digest, NormalizedMemberContent>,
+}
+
+impl fmt::Debug for NormalizedArtifact {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("NormalizedArtifact")
+            .field("artifact_sha256", &self.manifest.artifact_sha256)
+            .field("manifest_sha256", &self.manifest.manifest_sha256)
+            .field("member_count", &self.manifest.members.len())
+            .field("manifest", &"<redacted>")
+            .field("member_bytes", &"<redacted>")
+            .finish()
+    }
 }
 
 impl NormalizedArtifact {
@@ -1100,7 +1217,7 @@ mod tests {
         let mut right = ArtifactManifest::new(right).expect("right manifest");
         assert_eq!(
             left.manifest_sha256.as_str(),
-            "sha256:e7dc1405ee5ea6310eb68b0c5b6e1ed5401f032e32f46ba5a6fa13d4a7fe03bf",
+            "sha256:899d7f58ef4613b60f2428c915027aac2fd43e484b9878a203e590ad7683c535",
             "canonicalization changes require an explicit version bump and shared vectors"
         );
         assert_eq!(left.manifest_sha256, right.manifest_sha256);

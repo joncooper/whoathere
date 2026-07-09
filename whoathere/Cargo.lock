@@ -326,6 +326,7 @@ version = "0.1.0"
 name = "whoathere-cache"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "whoathere-vault-api",
 ]
 
@@ -358,8 +359,14 @@ version = "0.1.0"
 name = "whoathere-detector"
 version = "0.1.0"
 dependencies = [
+ "flate2",
+ "serde",
+ "serde_json",
+ "tar",
+ "whoathere-artifact",
  "whoathere-evidence",
  "whoathere-hash",
+ "zip",
 ]
 
 [[package]]
@@ -419,6 +426,15 @@ dependencies = [
 [[package]]
 name = "whoathere-runner"
 version = "0.1.0"
+dependencies = [
+ "flate2",
+ "tar",
+ "whoathere-artifact",
+ "whoathere-cache",
+ "whoathere-detector",
+ "whoathere-evidence",
+ "whoathere-hash",
+]
 
 [[package]]
 name = "whoathere-sandbox"

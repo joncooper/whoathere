@@ -1,3 +1,5 @@
+pub mod v2;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EvidenceJobKind {
     StaticManifest,

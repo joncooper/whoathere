@@ -5,3 +5,12 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
+whoathere-artifact = { path = "../whoathere-artifact" }
+whoathere-cache = { path = "../whoathere-cache" }
+whoathere-detector = { path = "../whoathere-detector" }
+whoathere-evidence = { path = "../whoathere-evidence" }
+
+[dev-dependencies]
+flate2 = { version = "1.1.9", default-features = false, features = ["miniz_oxide"] }
+tar = { version = "0.4.46", default-features = false }
+whoathere-hash = { path = "../whoathere-hash" }
