@@ -1,0 +1,17 @@
+[package]
+name = "whoathere-artifact"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+flate2 = { version = "1.1.9", default-features = false, features = ["miniz_oxide"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+tar = { version = "0.4.46", default-features = false }
+thiserror = "2.0.18"
+toml = "0.8.23"
+unicode-normalization = "0.1.25"
+unicase = "2.9.0"
+whoathere-hash = { path = "../whoathere-hash" }
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2"] }

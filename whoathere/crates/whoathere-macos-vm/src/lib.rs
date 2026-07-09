@@ -7,12 +7,112 @@ pub const TARGET_ARCH: &str = "arm64";
 pub const VM_BOUNDARY: &str = "apple_virtualization_macos_guest";
 pub const NETWORK_MODEL: &str = "recorded_egress";
 pub const SYNC_POLICY: &str = "sync_back_local_beta_allowlist_v1";
+pub const ARTIFACT_DETECTION_SYNC_BACK_DENIED: &str = "artifact_detection_sync_back_forbidden";
+pub const UNKNOWN_ARTIFACT_SYNC_BACK_DENIED: &str = "unknown_artifact_sync_back_forbidden";
+pub const RESTRICTED_MALWARE_LAB_SYNC_BACK_DENIED: &str =
+    "restricted_malware_lab_sync_back_forbidden";
 pub const RELEASE_CLAIM: &str = "vm_detonation_with_safe_sync_back_beta";
 pub const DEFAULT_MEMORY_MIB: u64 = 6144;
 pub const DEFAULT_NATIVE_MEMORY_MIB: u64 = 8192;
 pub const DEFAULT_DISK_GIB: u64 = 64;
 pub const MIN_DISK_GIB: u64 = 64;
 pub const DEFAULT_AUTO_SUSPEND_MINUTES: u64 = 15;
+
+/// Security scope for a VM detonation job.
+///
+/// The local-beta project workflow predates artifact-native detection and may
+/// still request its evidence-bound allowlist sync. Artifact detection jobs do
+/// not trust files produced by the guest and therefore cannot authorize the
+/// helper's `--sync-back` flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DetonationJobScope {
+    ProjectAdmission,
+    ArtifactDetection,
+    UnknownArtifactDetection,
+    RestrictedMalwareLab,
+}
+
+impl DetonationJobScope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ProjectAdmission => "project_admission",
+            Self::ArtifactDetection => "artifact_detection",
+            Self::UnknownArtifactDetection => "unknown_artifact_detection",
+            Self::RestrictedMalwareLab => "restricted_malware_lab",
+        }
+    }
+}
+
+/// Scope-bound decision controlling whether the VM helper may receive a
+/// sync-back argument.
+///
+/// Fields are private so callers cannot construct an enabled decision without
+/// passing through [`decide_detonation_sync_back`]. Artifact-native callers
+/// should forward only [`Self::helper_argument`] rather than retaining a raw
+/// sync-back boolean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use = "the scope-bound sync-back decision must be enforced"]
+pub struct DetonationSyncBackDecision {
+    scope: DetonationJobScope,
+    requested: bool,
+    enabled: bool,
+    denial_reason_code: Option<&'static str>,
+}
+
+impl DetonationSyncBackDecision {
+    pub fn scope(self) -> DetonationJobScope {
+        self.scope
+    }
+
+    pub fn requested(self) -> bool {
+        self.requested
+    }
+
+    pub fn enabled(self) -> bool {
+        self.enabled
+    }
+
+    pub fn denial_reason_code(self) -> Option<&'static str> {
+        self.denial_reason_code
+    }
+
+    pub fn helper_argument(self) -> Option<&'static str> {
+        self.enabled.then_some("--sync-back")
+    }
+}
+
+/// Decide whether a detonation job may request guest-to-host copy-back.
+///
+/// Artifact-native, unknown-artifact, and restricted-malware scopes always
+/// return a disabled decision. A request in one of those scopes is retained as
+/// an auditable policy denial with a stable reason code.
+#[must_use = "the scope-bound sync-back decision must be enforced"]
+pub fn decide_detonation_sync_back(
+    scope: DetonationJobScope,
+    requested: bool,
+) -> DetonationSyncBackDecision {
+    let denial_reason_code = if requested {
+        match scope {
+            DetonationJobScope::ProjectAdmission => None,
+            DetonationJobScope::ArtifactDetection => Some(ARTIFACT_DETECTION_SYNC_BACK_DENIED),
+            DetonationJobScope::UnknownArtifactDetection => Some(UNKNOWN_ARTIFACT_SYNC_BACK_DENIED),
+            DetonationJobScope::RestrictedMalwareLab => {
+                Some(RESTRICTED_MALWARE_LAB_SYNC_BACK_DENIED)
+            }
+        }
+    } else {
+        None
+    };
+    let enabled =
+        requested && scope == DetonationJobScope::ProjectAdmission && denial_reason_code.is_none();
+
+    DetonationSyncBackDecision {
+        scope,
+        requested,
+        enabled,
+        denial_reason_code,
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostPlatform {
@@ -793,6 +893,53 @@ mod tests {
             .reason_codes
             .contains(&"macos_vm_disk_below_minimum".to_string()));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn artifact_and_restricted_detonations_cannot_enable_sync_back() {
+        for (scope, expected_reason) in [
+            (
+                DetonationJobScope::ArtifactDetection,
+                ARTIFACT_DETECTION_SYNC_BACK_DENIED,
+            ),
+            (
+                DetonationJobScope::UnknownArtifactDetection,
+                UNKNOWN_ARTIFACT_SYNC_BACK_DENIED,
+            ),
+            (
+                DetonationJobScope::RestrictedMalwareLab,
+                RESTRICTED_MALWARE_LAB_SYNC_BACK_DENIED,
+            ),
+        ] {
+            let decision = decide_detonation_sync_back(scope, true);
+            assert!(decision.requested());
+            assert!(!decision.enabled());
+            assert_eq!(decision.scope(), scope);
+            assert_eq!(decision.denial_reason_code(), Some(expected_reason));
+            assert_eq!(decision.helper_argument(), None);
+        }
+    }
+
+    #[test]
+    fn artifact_detonation_no_sync_is_structurally_forwarded_without_helper_flag() {
+        let decision = decide_detonation_sync_back(DetonationJobScope::ArtifactDetection, false);
+        assert!(!decision.requested());
+        assert!(!decision.enabled());
+        assert_eq!(decision.denial_reason_code(), None);
+        assert_eq!(decision.helper_argument(), None);
+    }
+
+    #[test]
+    fn project_admission_sync_back_behavior_remains_backward_compatible() {
+        let requested = decide_detonation_sync_back(DetonationJobScope::ProjectAdmission, true);
+        assert!(requested.enabled());
+        assert_eq!(requested.denial_reason_code(), None);
+        assert_eq!(requested.helper_argument(), Some("--sync-back"));
+
+        let not_requested =
+            decide_detonation_sync_back(DetonationJobScope::ProjectAdmission, false);
+        assert!(!not_requested.enabled());
+        assert_eq!(not_requested.helper_argument(), None);
     }
 
     #[test]

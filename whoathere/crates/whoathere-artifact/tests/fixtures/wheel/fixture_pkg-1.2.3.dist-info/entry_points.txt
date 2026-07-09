@@ -1,0 +1,2 @@
+[console_scripts]
+whoathere-inert = fixture_pkg.cli:main

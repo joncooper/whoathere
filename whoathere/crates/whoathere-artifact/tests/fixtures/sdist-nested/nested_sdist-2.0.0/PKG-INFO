@@ -1,0 +1,4 @@
+Metadata-Version: 2.3
+Name: nested-sdist
+Version: 2.0.0
+Summary: Inert sdist artifact-normalization fixture

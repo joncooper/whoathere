@@ -1,0 +1,19 @@
+{
+  "name": "@whoathere/inert-lifecycle-fixture",
+  "version": "1.2.3",
+  "description": "Inert npm artifact-normalization fixture",
+  "scripts": {
+    "preinstall": "node lifecycle-canary.js preinstall",
+    "install": "node lifecycle-canary.js install",
+    "postinstall": "node lifecycle-canary.js postinstall"
+  },
+  "bin": {
+    "whoathere-inert": "bin/cli.js"
+  },
+  "exports": {
+    ".": "./lib/index.js"
+  },
+  "dependencies": {
+    "inert-offline-dependency": "1.0.0"
+  }
+}
