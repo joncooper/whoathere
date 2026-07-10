@@ -599,6 +599,12 @@ dependencies = [
 name = "whoathere-detonation"
 version = "0.1.0"
 dependencies = [
+ "flate2",
+ "serde",
+ "serde_json",
+ "serde_json_canonicalizer",
+ "tar",
+ "whoathere-artifact",
  "whoathere-evidence",
  "whoathere-hash",
  "whoathere-vault-api",

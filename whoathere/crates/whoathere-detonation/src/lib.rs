@@ -1,3 +1,17 @@
+//! Dynamic-behavior fixtures and artifact-native detonation contracts.
+//!
+//! The artifact-native modules compile already-normalized exact artifacts into
+//! closed, backend-neutral scenario plans. They do not launch a VM, execute a
+//! package, return a verdict, or expose a sync-back operation.
+
+mod artifact;
+mod npm;
+mod wire;
+
+pub use artifact::*;
+pub use npm::*;
+pub use wire::*;
+
 use whoathere_evidence::JobState;
 use whoathere_hash::sha256_digest;
 use whoathere_vault_api::{
