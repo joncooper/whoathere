@@ -393,7 +393,8 @@ fn assert_zero_findings_cannot_be_promoted_to_no_finding(
         .map(|item| {
             claim_builder.from_adapter_claims(
                 item.work_item_id().clone(),
-                Sha256Digest::from_bytes(b"inert provider raw output"),
+                Sha256Digest::from_bytes(b"inert provider output capture"),
+                b"inert provider output capture".len() as u64,
                 ArtifactReviewWorkItemStatusV2::Completed,
                 ArtifactReviewChannelIsolationV2::SeparateTrustedAndUntrusted,
                 true,

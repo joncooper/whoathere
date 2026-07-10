@@ -20,7 +20,8 @@ use whoathere_detector::{
     ArtifactReviewWorkItemStatusV2, ARTIFACT_REVIEW_PROMPT_TEMPLATE_ID_V2,
     ARTIFACT_REVIEW_PROMPT_TEMPLATE_VERSION_V2, ARTIFACT_REVIEW_RESULT_SCHEMA_V2,
     MAX_ARTIFACT_REVIEW_CHUNK_BYTES_V2, MAX_ARTIFACT_REVIEW_CONTEXT_TOKENS_V2,
-    MAX_ARTIFACT_REVIEW_OUTPUT_TOKENS_V2, MAX_ARTIFACT_REVIEW_RESULT_BYTES_V2,
+    MAX_ARTIFACT_REVIEW_INVOCATION_SOURCE_BYTES_V2, MAX_ARTIFACT_REVIEW_OUTPUT_TOKENS_V2,
+    MAX_ARTIFACT_REVIEW_RESULT_BYTES_V2, MAX_ARTIFACT_REVIEW_WORK_ITEMS_V2,
 };
 use whoathere_evidence::v2::{canonical_cas_object_key_for_artifact, ArtifactEvidenceSubjectV2};
 
@@ -166,14 +167,17 @@ fn execution_report(
     channel_isolation: ArtifactReviewChannelIsolationV2,
     no_truncation_verified: bool,
 ) -> Result<ArtifactReviewExecutionReportV2, ArtifactReviewErrorV2> {
-    let raw_output_sha256 = Sha256Digest::from_bytes(b"inert provider raw output");
+    let output_capture = b"inert provider output capture";
+    let output_capture_sha256 = Sha256Digest::from_bytes(output_capture);
+    let output_capture_byte_len = output_capture.len() as u64;
     let claim_builder = request.execution_claim_builder()?;
     let claims = completed_work_item_ids
         .into_iter()
         .map(|work_item_id| {
             claim_builder.from_adapter_claims(
                 work_item_id,
-                raw_output_sha256.clone(),
+                output_capture_sha256.clone(),
+                output_capture_byte_len,
                 ArtifactReviewWorkItemStatusV2::Completed,
                 channel_isolation,
                 no_truncation_verified,
@@ -248,6 +252,12 @@ fn request_accounts_for_every_executable_member_and_separates_untrusted_bytes() 
         invocation.binding().request_sha256(),
         &request.request_sha256().expect("request digest")
     );
+    assert_eq!(
+        invocation.invocation_sha256(),
+        &request
+            .invocation_sha256(item.work_item_id())
+            .expect("invocation digest")
+    );
     assert_eq!(invocation.untrusted().normalized_path(), "index.js");
     assert!(!invocation.untrusted().contexts().is_empty());
     assert_eq!(
@@ -257,6 +267,9 @@ fn request_accounts_for_every_executable_member_and_separates_untrusted_bytes() 
     assert!(invocation
         .trusted_model_output_schema_json()
         .contains("chunk_relative_start_byte"));
+    assert!(invocation
+        .trusted_model_output_schema_json()
+        .contains("invocation_sha256"));
     assert!(!invocation
         .trusted_model_output_schema_json()
         .contains("evidence_sha256"));
@@ -318,11 +331,11 @@ fn request_and_coverage_digests_are_deterministic_and_bind_settings() {
     );
     assert_eq!(
         first.request_sha256().unwrap().as_str(),
-        "sha256:aa42b316f50667bd4d1dd9c6dd7a08703b899df0b8004897d9973b640da81815"
+        "sha256:edaceaeed030a5ea26ef3485ff5466906aa851bf431cd90ca6a8aafd3a541639"
     );
     assert_eq!(
         first.coverage_manifest_sha256().as_str(),
-        "sha256:066ead9c039e42c15aa0c73e56471291b348a70fe047f52792b3c63c5516a5cd"
+        "sha256:a91ff96fedbd284956fb12cc66418c5118e83c3ba2dc78b4cf11d3371fe28a9a"
     );
 }
 
@@ -622,6 +635,8 @@ fn repeated_model_input_has_a_hard_execution_cost_ceiling() {
         state ^= state << 17;
         source.push(b'!' + (state % 90) as u8);
     }
+    let mut inventory_only_source = source.clone();
+    inventory_only_source.reverse();
     let artifact = normalize_npm(&[
         (
             "package/package.json",
@@ -629,12 +644,130 @@ fn repeated_model_input_has_a_hard_execution_cost_ceiling() {
             0o644,
         ),
         ("package/index.js", source.as_slice(), 0o644),
+        (
+            "package/inventory-only.js",
+            inventory_only_source.as_slice(),
+            0o644,
+        ),
     ]);
     let analysis = analyze_normalized_artifact(&artifact).expect("bounded static analysis");
+    let request =
+        build_artifact_review_request_v2(&subject(&artifact), &artifact, &analysis, config())
+            .expect("oversized review plan degrades to explicit partial coverage");
+    let coverage_for_path = |path: &str| {
+        request
+            .coverage()
+            .files()
+            .iter()
+            .find(|coverage| {
+                artifact
+                    .file(coverage.file_id())
+                    .is_some_and(|file| file.normalized_path == path)
+            })
+            .expect("coverage entry")
+    };
     assert_eq!(
-        build_artifact_review_request_v2(&subject(&artifact), &artifact, &analysis, config()),
-        Err(ArtifactReviewErrorV2::InvocationSourceByteLimitExceeded)
+        coverage_for_path("index.js").disposition(),
+        ArtifactReviewFileDispositionV2::SelectedForReview
     );
+    let inventory_only_coverage = coverage_for_path("inventory-only.js");
+    assert_eq!(
+        inventory_only_coverage.disposition(),
+        ArtifactReviewFileDispositionV2::WorkBudgetExceeded
+    );
+    assert!(inventory_only_coverage
+        .limitations()
+        .iter()
+        .any(|limitation| limitation == "artifact_review_invocation_source_byte_budget_exceeded"));
+    assert!(request.work_items().len() <= MAX_ARTIFACT_REVIEW_WORK_ITEMS_V2);
+    let repeated_source_bytes = request
+        .coverage()
+        .files()
+        .iter()
+        .filter(|file| file.disposition() == ArtifactReviewFileDispositionV2::SelectedForReview)
+        .flat_map(|file| {
+            file.chunks().iter().map(move |chunk| {
+                usize::try_from(chunk.end_byte() - chunk.start_byte()).expect("chunk length")
+                    * file.required_passes().len()
+            })
+        })
+        .sum::<usize>();
+    assert!(repeated_source_bytes <= MAX_ARTIFACT_REVIEW_INVOCATION_SOURCE_BYTES_V2);
+}
+
+#[test]
+fn work_item_budget_prioritizes_trigger_files_and_degrades_deterministically() {
+    let make_entries = |reverse: bool| {
+        let mut entries = vec![
+            (
+                "package/package.json".to_string(),
+                br#"{"name":"review-fixture","version":"1.0.0","scripts":{"postinstall":"node zz-trigger.js"}}"#
+                    .to_vec(),
+                0o644,
+            ),
+            (
+                "package/zz-trigger.js".to_string(),
+                b"console.log('inert trigger');\n".to_vec(),
+                0o644,
+            ),
+        ];
+        for index in 0..90 {
+            entries.push((format!("package/aa-decoy-{index:03}.js"), Vec::new(), 0o644));
+        }
+        if reverse {
+            entries.reverse();
+        }
+        entries
+    };
+    let normalize_owned = |entries: &[(String, Vec<u8>, u32)]| {
+        let views = entries
+            .iter()
+            .map(|(path, bytes, mode)| (path.as_str(), bytes.as_slice(), *mode))
+            .collect::<Vec<_>>();
+        normalize_npm(&views)
+    };
+    let summarize = |artifact: &whoathere_artifact::NormalizedArtifact| {
+        let analysis = analyze_normalized_artifact(artifact).expect("bounded static analysis");
+        let request =
+            build_artifact_review_request_v2(&subject(artifact), artifact, &analysis, config())
+                .expect("work-item pressure becomes partial coverage, not request failure");
+        assert!(request.work_items().len() <= MAX_ARTIFACT_REVIEW_WORK_ITEMS_V2);
+        let mut selected = BTreeSet::new();
+        let mut skipped = BTreeSet::new();
+        for coverage in request.coverage().files() {
+            let file = artifact
+                .file(coverage.file_id())
+                .expect("coverage file remains normalized");
+            match coverage.disposition() {
+                ArtifactReviewFileDispositionV2::SelectedForReview => {
+                    selected.insert(file.normalized_path.clone());
+                }
+                ArtifactReviewFileDispositionV2::WorkBudgetExceeded => {
+                    assert!(coverage.limitations().iter().any(
+                        |limitation| limitation == "artifact_review_work_item_budget_exceeded"
+                    ));
+                    assert!(coverage.chunks().is_empty());
+                    assert!(!request
+                        .work_items()
+                        .iter()
+                        .any(|item| item.file_id() == coverage.file_id()));
+                    skipped.insert(file.normalized_path.clone());
+                }
+                other => panic!("unexpected inert fixture disposition: {other:?}"),
+            }
+        }
+        assert!(selected.contains("zz-trigger.js"));
+        assert!(selected.contains("package.json"));
+        assert!(skipped.contains("aa-decoy-089.js"));
+        assert!(skipped.iter().all(|path| path.starts_with("aa-decoy-")));
+        (selected, skipped, request.work_items().len())
+    };
+
+    let forward_entries = make_entries(false);
+    let reversed_entries = make_entries(true);
+    let forward = summarize(&normalize_owned(&forward_entries));
+    let reversed = summarize(&normalize_owned(&reversed_entries));
+    assert_eq!(forward, reversed);
 }
 
 #[test]
@@ -692,8 +825,10 @@ fn zero_findings_remain_uncertain_until_the_provider_contract_is_qualified() {
         &Sha256Digest::from_bytes(&raw)
     );
     assert!(receipt.work_item_claims().iter().all(|claim| {
-        claim.provider_raw_output_sha256()
-            == &Sha256Digest::from_bytes(b"inert provider raw output")
+        claim.provider_output_capture_sha256()
+            == &Sha256Digest::from_bytes(b"inert provider output capture")
+            && claim.provider_output_capture_byte_len()
+                == b"inert provider output capture".len() as u64
             && claim.status() == ArtifactReviewWorkItemStatusV2::Completed
             && claim.invocation_sha256()
                 == &request
@@ -762,6 +897,39 @@ fn incomplete_work_or_collapsed_roles_can_only_yield_uncertain() {
     )
     .expect("collapsed roles are uncertain");
     assert_eq!(collapsed.verdict(), ArtifactReviewVerdictV2::Uncertain);
+
+    let claim_builder = request.execution_claim_builder().expect("claim builder");
+    for contradictory_claim in [
+        claim_builder
+            .from_adapter_claims(
+                request.work_items()[0].work_item_id().clone(),
+                Sha256Digest::from_bytes(b"completed but truncated"),
+                b"completed but truncated".len() as u64,
+                ArtifactReviewWorkItemStatusV2::Completed,
+                ArtifactReviewChannelIsolationV2::SeparateTrustedAndUntrusted,
+                false,
+            )
+            .expect("caller assertion"),
+        claim_builder
+            .from_adapter_claims(
+                request.work_items()[0].work_item_id().clone(),
+                Sha256Digest::from_bytes(b"truncated but complete"),
+                b"truncated but complete".len() as u64,
+                ArtifactReviewWorkItemStatusV2::Truncated,
+                ArtifactReviewChannelIsolationV2::SeparateTrustedAndUntrusted,
+                true,
+            )
+            .expect("caller assertion"),
+    ] {
+        assert!(matches!(
+            ArtifactReviewExecutionReportV2::from_adapter_claims(
+                &request,
+                [contradictory_claim],
+                &uncertain,
+            ),
+            Err(ArtifactReviewErrorV2::InvalidExecutionReport)
+        ));
+    }
 
     let falsely_clean = result_json(&request, "no_finding", serde_json::json!([]));
     let falsely_clean_receipt = execution_report(
@@ -956,6 +1124,7 @@ fn validated_finding_requires_completed_exact_chunk_range_and_evidence_digest() 
         .from_adapter_claims(
             item.work_item_id().clone(),
             Sha256Digest::from_bytes(b"truncated inert provider output"),
+            b"truncated inert provider output".len() as u64,
             ArtifactReviewWorkItemStatusV2::Truncated,
             ArtifactReviewChannelIsolationV2::SeparateTrustedAndUntrusted,
             false,
