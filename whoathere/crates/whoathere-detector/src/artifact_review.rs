@@ -8,13 +8,18 @@ use crate::{ArtifactStaticAnalysis, SourceLanguage};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
-use whoathere_artifact::{NormalizationCompleteness, NormalizedArtifact, Sha256Digest};
+use std::io::{self, Write};
+use whoathere_artifact::{
+    MemberRecord, MemberType, NormalizationCompleteness, NormalizedArtifact, Sha256Digest,
+};
 use whoathere_evidence::v2::ArtifactEvidenceSubjectV2;
 
 pub const ARTIFACT_REVIEW_REQUEST_SCHEMA_V2: &str = "whoathere.artifact_review_request.v2";
 pub const ARTIFACT_REVIEW_REQUEST_CANONICALIZATION_V2: &str =
     "whoathere.artifact_review_request.canonical_json.v2";
 pub const ARTIFACT_REVIEW_COVERAGE_SCHEMA_V2: &str = "whoathere.artifact_review_coverage.v2";
+pub const ARTIFACT_REVIEW_PROVIDER_INPUT_SCHEMA_V2: &str =
+    "whoathere.artifact_review_provider_input.v2";
 
 pub const MAX_ARTIFACT_REVIEW_CHUNK_BYTES_V2: usize = 32 * 1024;
 pub const MAX_ARTIFACT_REVIEW_FILE_BYTES_V2: usize = 2 * 1024 * 1024;
@@ -23,6 +28,7 @@ pub const MAX_ARTIFACT_REVIEW_FILES_V2: usize = 20_000;
 pub const MAX_ARTIFACT_REVIEW_CONTEXT_REFERENCES_V2: usize = 200_000;
 pub const MAX_ARTIFACT_REVIEW_WORK_ITEMS_V2: usize = 512;
 pub const MAX_ARTIFACT_REVIEW_INVOCATION_SOURCE_BYTES_V2: usize = 16 * 1024 * 1024;
+pub const MAX_ARTIFACT_REVIEW_PROVIDER_INPUT_BYTES_V2: usize = 256 * 1024;
 pub const MAX_ARTIFACT_REVIEW_PROVIDER_OUTPUT_BYTES_V2: usize = 256 * 1024;
 pub const MAX_ARTIFACT_REVIEW_RESULT_BYTES_V2: usize = 1024 * 1024;
 pub const MAX_ARTIFACT_REVIEW_FINDINGS_V2: usize = 256;
@@ -444,8 +450,8 @@ impl fmt::Debug for ArtifactReviewRequestV2 {
             .field("artifact_sha256", &self.artifact_sha256)
             .field("manifest_sha256", &self.manifest_sha256)
             .field("coverage_manifest_sha256", &self.coverage_manifest_sha256)
-            .field("provider", &self.provider.adapter_id)
-            .field("model", &self.model.model_id)
+            .field("provider", &"<redacted>")
+            .field("model", &"<redacted>")
             .field("file_count", &self.coverage.files.len())
             .field("work_item_count", &self.work_items.len())
             .field("artifact_bytes", &"<not-present>")
@@ -496,6 +502,14 @@ impl ArtifactReviewRequestV2 {
 
     pub fn adapter_result_schema_sha256(&self) -> &Sha256Digest {
         &self.adapter_result_schema_sha256
+    }
+
+    pub fn privacy_posture(&self) -> ArtifactReviewPrivacyPostureV2 {
+        self.privacy_posture
+    }
+
+    pub fn inference(&self) -> &ArtifactReviewInferenceSettingsV2 {
+        &self.inference
     }
 
     pub fn coverage(&self) -> &ArtifactReviewCoverageManifestV2 {
@@ -652,6 +666,9 @@ impl ArtifactReviewRequestV2 {
             work_item_id: work_item.work_item_id.clone(),
             invocation_sha256,
             pass: work_item.pass,
+            provider: self.provider.clone(),
+            model: self.model.clone(),
+            prompt: self.prompt.clone(),
             trusted_system_prompt: TRUSTED_SYSTEM_PROMPT_V2,
             trusted_model_output_schema_json: STRICT_MODEL_OUTPUT_SCHEMA_JSON_V2,
             trusted_adapter_result_schema_json: STRICT_ADAPTER_RESULT_SCHEMA_JSON_V2,
@@ -675,11 +692,14 @@ impl ArtifactReviewRequestV2 {
                 file_id: file.file_id.clone(),
                 file_sha256: file.sha256.clone(),
                 chunk_id: chunk.chunk_id.clone(),
+                selected_sha256: chunk.selected_sha256.clone(),
                 normalized_path: file.normalized_path.clone(),
                 language: file_coverage.language,
                 contexts: file_coverage.contexts.clone(),
                 start_byte: chunk.start_byte,
                 end_byte: chunk.end_byte,
+                start_line: chunk.start_line,
+                end_line: chunk.end_line,
                 bytes: bytes.to_vec(),
             },
         })
@@ -737,6 +757,9 @@ pub struct ArtifactReviewInvocationV2 {
     work_item_id: Sha256Digest,
     invocation_sha256: Sha256Digest,
     pass: ArtifactReviewPassV2,
+    provider: ArtifactReviewProviderIdentityV2,
+    model: ArtifactReviewModelIdentityV2,
+    prompt: ArtifactReviewPromptIdentityV2,
     trusted_system_prompt: &'static str,
     trusted_model_output_schema_json: &'static str,
     trusted_adapter_result_schema_json: &'static str,
@@ -785,6 +808,101 @@ impl ArtifactReviewInvocationBindingV2 {
     }
 }
 
+#[derive(Serialize)]
+#[serde(deny_unknown_fields)]
+struct ArtifactReviewProviderInputWireV2<'a> {
+    schema_version: &'static str,
+    work_item_id: &'a Sha256Digest,
+    invocation_sha256: &'a Sha256Digest,
+    trusted: ArtifactReviewProviderInputTrustedV2<'a>,
+    binding: ArtifactReviewProviderInputBindingWireV2<'a>,
+    untrusted: ArtifactReviewProviderInputUntrustedV2<'a>,
+}
+
+#[derive(Serialize)]
+#[serde(deny_unknown_fields)]
+struct ArtifactReviewProviderInputTrustedV2<'a> {
+    pass: ArtifactReviewPassV2,
+    provider: &'a ArtifactReviewProviderIdentityV2,
+    model: &'a ArtifactReviewModelIdentityV2,
+    prompt: &'a ArtifactReviewPromptIdentityV2,
+    inference: &'a ArtifactReviewInferenceSettingsV2,
+    system_prompt: &'a str,
+    model_output_schema_json: &'a str,
+}
+
+#[derive(Serialize)]
+#[serde(deny_unknown_fields)]
+struct ArtifactReviewProviderInputBindingWireV2<'a> {
+    request_sha256: &'a Sha256Digest,
+    artifact_sha256: &'a Sha256Digest,
+    envelope_sha256: &'a Sha256Digest,
+    manifest_sha256: &'a Sha256Digest,
+    policy_sha256: &'a Sha256Digest,
+    deterministic_analysis_sha256: &'a Sha256Digest,
+    coverage_manifest_sha256: &'a Sha256Digest,
+    provider_adapter_sha256: &'a Sha256Digest,
+    model_content_sha256: &'a Sha256Digest,
+    prompt_template_sha256: &'a Sha256Digest,
+    model_output_schema_sha256: &'a Sha256Digest,
+    adapter_result_schema_sha256: &'a Sha256Digest,
+    privacy_posture: ArtifactReviewPrivacyPostureV2,
+}
+
+#[derive(Serialize)]
+#[serde(deny_unknown_fields)]
+struct ArtifactReviewProviderInputUntrustedV2<'a> {
+    file_id: &'a Sha256Digest,
+    file_sha256: &'a Sha256Digest,
+    chunk_id: &'a Sha256Digest,
+    selected_sha256: &'a Sha256Digest,
+    contexts: &'a [ArtifactReviewContextReferenceV2],
+    normalized_path: &'a str,
+    language: SourceLanguage,
+    start_byte: u64,
+    end_byte: u64,
+    start_line: u64,
+    end_line: u64,
+    source_text: &'a str,
+}
+
+struct BoundedArtifactReviewProviderInputWriterV2 {
+    encoded: Vec<u8>,
+    limit_exceeded: bool,
+}
+
+impl BoundedArtifactReviewProviderInputWriterV2 {
+    fn new() -> Self {
+        Self {
+            encoded: Vec::with_capacity(MAX_ARTIFACT_REVIEW_PROVIDER_INPUT_BYTES_V2),
+            limit_exceeded: false,
+        }
+    }
+}
+
+impl Write for BoundedArtifactReviewProviderInputWriterV2 {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let Some(next_len) = self.encoded.len().checked_add(bytes.len()) else {
+            self.limit_exceeded = true;
+            return Err(io::Error::other(
+                "artifact review provider input limit exceeded",
+            ));
+        };
+        if next_len > MAX_ARTIFACT_REVIEW_PROVIDER_INPUT_BYTES_V2 {
+            self.limit_exceeded = true;
+            return Err(io::Error::other(
+                "artifact review provider input limit exceeded",
+            ));
+        }
+        self.encoded.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 impl fmt::Debug for ArtifactReviewInvocationV2 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -793,6 +911,9 @@ impl fmt::Debug for ArtifactReviewInvocationV2 {
             .field("invocation_sha256", &self.invocation_sha256)
             .field("pass", &self.pass)
             .field("request_sha256", &self.binding.request_sha256)
+            .field("provider", &"<redacted>")
+            .field("model", &"<redacted>")
+            .field("prompt", &"<redacted>")
             .field("trusted_system_prompt", &"<fixed>")
             .field("trusted_model_output_schema_json", &"<fixed>")
             .field("trusted_adapter_result_schema_json", &"<fixed>")
@@ -839,17 +960,189 @@ impl ArtifactReviewInvocationV2 {
     pub fn untrusted(&self) -> &UntrustedArtifactChunkV2 {
         &self.untrusted
     }
+
+    /// Returns the complete, deterministic input for one local provider call.
+    ///
+    /// Package-controlled path and source text are confined to `untrusted`;
+    /// they are never interpolated into the fixed instructions in `trusted`.
+    /// The adapter-result schema is deliberately excluded because it belongs
+    /// to the trusted post-provider normalization boundary.
+    pub fn canonical_provider_input_json_v2(&self) -> Result<Vec<u8>, ArtifactReviewErrorV2> {
+        let source_text = self.validate_provider_input_binding_v2()?;
+        let wire = ArtifactReviewProviderInputWireV2 {
+            schema_version: ARTIFACT_REVIEW_PROVIDER_INPUT_SCHEMA_V2,
+            work_item_id: &self.work_item_id,
+            invocation_sha256: &self.invocation_sha256,
+            trusted: ArtifactReviewProviderInputTrustedV2 {
+                pass: self.pass,
+                provider: &self.provider,
+                model: &self.model,
+                prompt: &self.prompt,
+                inference: &self.binding.inference,
+                system_prompt: self.trusted_system_prompt,
+                model_output_schema_json: self.trusted_model_output_schema_json,
+            },
+            binding: ArtifactReviewProviderInputBindingWireV2 {
+                request_sha256: &self.binding.request_sha256,
+                artifact_sha256: &self.binding.artifact_sha256,
+                envelope_sha256: &self.binding.envelope_sha256,
+                manifest_sha256: &self.binding.manifest_sha256,
+                policy_sha256: &self.binding.policy_sha256,
+                deterministic_analysis_sha256: &self.binding.deterministic_analysis_sha256,
+                coverage_manifest_sha256: &self.binding.coverage_manifest_sha256,
+                provider_adapter_sha256: &self.binding.provider_adapter_sha256,
+                model_content_sha256: &self.binding.model_content_sha256,
+                prompt_template_sha256: &self.binding.prompt_template_sha256,
+                model_output_schema_sha256: &self.binding.model_output_schema_sha256,
+                adapter_result_schema_sha256: &self.binding.adapter_result_schema_sha256,
+                privacy_posture: self.binding.privacy_posture,
+            },
+            untrusted: ArtifactReviewProviderInputUntrustedV2 {
+                file_id: &self.untrusted.file_id,
+                file_sha256: &self.untrusted.file_sha256,
+                chunk_id: &self.untrusted.chunk_id,
+                selected_sha256: &self.untrusted.selected_sha256,
+                contexts: &self.untrusted.contexts,
+                normalized_path: &self.untrusted.normalized_path,
+                language: self.untrusted.language,
+                start_byte: self.untrusted.start_byte,
+                end_byte: self.untrusted.end_byte,
+                start_line: self.untrusted.start_line,
+                end_line: self.untrusted.end_line,
+                source_text,
+            },
+        };
+        let mut writer = BoundedArtifactReviewProviderInputWriterV2::new();
+        let serialized = serde_json::to_writer(&mut writer, &wire);
+        if writer.limit_exceeded {
+            return Err(ArtifactReviewErrorV2::ProviderInputLimitExceeded);
+        }
+        serialized.map_err(|_| ArtifactReviewErrorV2::Serialization)?;
+        Ok(writer.encoded)
+    }
+
+    pub fn provider_input_sha256_v2(&self) -> Result<Sha256Digest, ArtifactReviewErrorV2> {
+        self.canonical_provider_input_json_v2()
+            .map(|encoded| Sha256Digest::from_bytes(&encoded))
+    }
+
+    fn validate_provider_input_binding_v2(&self) -> Result<&str, ArtifactReviewErrorV2> {
+        ArtifactReviewConfigV2 {
+            policy_sha256: self.binding.policy_sha256.clone(),
+            provider: self.provider.clone(),
+            model: self.model.clone(),
+            prompt: self.prompt.clone(),
+            adapter_result_schema_sha256: self.binding.adapter_result_schema_sha256.clone(),
+            privacy_posture: self.binding.privacy_posture,
+            inference: self.binding.inference.clone(),
+        }
+        .validate()?;
+        if self.provider.adapter_sha256 != self.binding.provider_adapter_sha256
+            || self.model.model_content_sha256 != self.binding.model_content_sha256
+            || self.prompt.template_sha256 != self.binding.prompt_template_sha256
+            || self.trusted_system_prompt != TRUSTED_SYSTEM_PROMPT_V2
+            || self.trusted_model_output_schema_json != STRICT_MODEL_OUTPUT_SCHEMA_JSON_V2
+            || self.binding.prompt_template_sha256 != artifact_review_prompt_template_sha256_v2()
+            || self.binding.model_output_schema_sha256
+                != artifact_review_model_output_schema_sha256_v2()
+            || self.binding.adapter_result_schema_sha256
+                != artifact_review_adapter_result_schema_sha256_v2()
+            || self.invocation_sha256
+                != invocation_sha256_from_request_digest(
+                    &self.binding.request_sha256,
+                    &self.work_item_id,
+                )
+        {
+            return Err(ArtifactReviewErrorV2::BindingMismatch);
+        }
+        let expected_file_id = MemberRecord::compute_file_id(
+            &self.binding.artifact_sha256,
+            &self.untrusted.normalized_path,
+            MemberType::File,
+            &self.untrusted.file_sha256,
+        );
+        let byte_len = self
+            .untrusted
+            .end_byte
+            .checked_sub(self.untrusted.start_byte)
+            .and_then(|length| usize::try_from(length).ok())
+            .ok_or(ArtifactReviewErrorV2::ChunkMismatch)?;
+        let source_text = std::str::from_utf8(&self.untrusted.bytes)
+            .map_err(|_| ArtifactReviewErrorV2::ChunkMismatch)?;
+        let newline_count = self
+            .untrusted
+            .bytes
+            .iter()
+            .filter(|byte| **byte == b'\n')
+            .count() as u64;
+        let expected_end_line = self
+            .untrusted
+            .start_line
+            .checked_add(if self.untrusted.bytes.last() == Some(&b'\n') {
+                newline_count.saturating_sub(1)
+            } else {
+                newline_count
+            })
+            .ok_or(ArtifactReviewErrorV2::ChunkMismatch)?;
+        if expected_file_id != self.untrusted.file_id
+            || byte_len != self.untrusted.bytes.len()
+            || self.untrusted.bytes.len() > MAX_ARTIFACT_REVIEW_CHUNK_BYTES_V2
+            || self.untrusted.bytes.contains(&0)
+            || self.untrusted.start_line == 0
+            || self.untrusted.end_line == 0
+            || self.untrusted.start_line > self.untrusted.end_line
+            || self.untrusted.end_line != expected_end_line
+            || self.untrusted.contexts.is_empty()
+            || self.untrusted.contexts.len() > MAX_ARTIFACT_REVIEW_CONTEXT_REFERENCES_V2
+            || !self
+                .untrusted
+                .contexts
+                .windows(2)
+                .all(|pair| pair[0] < pair[1])
+            || Sha256Digest::from_bytes(&self.untrusted.bytes) != self.untrusted.selected_sha256
+        {
+            return Err(ArtifactReviewErrorV2::ChunkMismatch);
+        }
+        let expected_chunk_id = Sha256Digest::from_bytes(
+            format!(
+                "whoathere.artifact_review.chunk.v2\0{}\0{}\0{}\0{}",
+                self.untrusted.file_id,
+                self.untrusted.start_byte,
+                self.untrusted.end_byte,
+                self.untrusted.selected_sha256
+            )
+            .as_bytes(),
+        );
+        let expected_work_item_id = Sha256Digest::from_bytes(
+            format!(
+                "whoathere.artifact_review.work_item.v2\0{}\0{}\0{}",
+                self.untrusted.file_id,
+                self.untrusted.chunk_id,
+                self.pass.as_str()
+            )
+            .as_bytes(),
+        );
+        if expected_chunk_id != self.untrusted.chunk_id
+            || expected_work_item_id != self.work_item_id
+        {
+            return Err(ArtifactReviewErrorV2::ChunkMismatch);
+        }
+        Ok(source_text)
+    }
 }
 
 pub struct UntrustedArtifactChunkV2 {
     file_id: Sha256Digest,
     file_sha256: Sha256Digest,
     chunk_id: Sha256Digest,
+    selected_sha256: Sha256Digest,
     normalized_path: String,
     language: SourceLanguage,
     contexts: Vec<ArtifactReviewContextReferenceV2>,
     start_byte: u64,
     end_byte: u64,
+    start_line: u64,
+    end_line: u64,
     bytes: Vec<u8>,
 }
 
@@ -860,11 +1153,14 @@ impl fmt::Debug for UntrustedArtifactChunkV2 {
             .field("file_id", &self.file_id)
             .field("file_sha256", &self.file_sha256)
             .field("chunk_id", &self.chunk_id)
+            .field("selected_sha256", &self.selected_sha256)
             .field("normalized_path", &"<redacted>")
             .field("language", &self.language)
             .field("context_count", &self.contexts.len())
             .field("start_byte", &self.start_byte)
             .field("end_byte", &self.end_byte)
+            .field("start_line", &self.start_line)
+            .field("end_line", &self.end_line)
             .field("byte_len", &self.bytes.len())
             .field("bytes", &"<redacted>")
             .finish()
@@ -882,6 +1178,10 @@ impl UntrustedArtifactChunkV2 {
 
     pub fn chunk_id(&self) -> &Sha256Digest {
         &self.chunk_id
+    }
+
+    pub fn selected_sha256(&self) -> &Sha256Digest {
+        &self.selected_sha256
     }
 
     pub fn normalized_path(&self) -> &str {
@@ -902,6 +1202,14 @@ impl UntrustedArtifactChunkV2 {
 
     pub fn end_byte(&self) -> u64 {
         self.end_byte
+    }
+
+    pub fn start_line(&self) -> u64 {
+        self.start_line
+    }
+
+    pub fn end_line(&self) -> u64 {
+        self.end_line
     }
 
     pub fn bytes(&self) -> &[u8] {
@@ -1734,6 +2042,7 @@ pub enum ArtifactReviewErrorV2 {
     ContextLimitExceeded,
     WorkItemLimitExceeded,
     InvocationSourceByteLimitExceeded,
+    ProviderInputLimitExceeded,
     UnknownWorkItem,
     ChunkMismatch,
     Serialization,
@@ -1765,6 +2074,9 @@ impl ArtifactReviewErrorV2 {
             Self::WorkItemLimitExceeded => "artifact_review_v2_work_item_limit_exceeded",
             Self::InvocationSourceByteLimitExceeded => {
                 "artifact_review_v2_invocation_source_byte_limit_exceeded"
+            }
+            Self::ProviderInputLimitExceeded => {
+                "artifact_review_v2_provider_input_byte_limit_exceeded"
             }
             Self::UnknownWorkItem => "artifact_review_v2_work_item_unknown",
             Self::ChunkMismatch => "artifact_review_v2_chunk_mismatch",
@@ -2223,4 +2535,126 @@ fn valid_identity_component(value: &str) -> bool {
         && value.bytes().all(|byte| {
             byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'@' | b'+' | b':')
         })
+}
+
+#[cfg(test)]
+mod provider_input_tests {
+    use super::*;
+
+    fn digest(label: impl AsRef<[u8]>) -> Sha256Digest {
+        Sha256Digest::from_bytes(label.as_ref())
+    }
+
+    #[test]
+    fn provider_input_cap_rejects_oversized_context_projection() {
+        let artifact_sha256 = digest(b"provider-input-cap-artifact");
+        let source = vec![b'x'; MAX_ARTIFACT_REVIEW_CHUNK_BYTES_V2];
+        let file_sha256 = digest(&source);
+        let normalized_path = "index.js".to_string();
+        let file_id = MemberRecord::compute_file_id(
+            &artifact_sha256,
+            &normalized_path,
+            MemberType::File,
+            &file_sha256,
+        );
+        let selected_sha256 = digest(&source);
+        let start_byte = 0;
+        let end_byte = source.len() as u64;
+        let chunk_id = digest(
+            format!(
+                "whoathere.artifact_review.chunk.v2\0{file_id}\0{start_byte}\0{end_byte}\0{selected_sha256}"
+            )
+            .as_bytes(),
+        );
+        let pass = ArtifactReviewPassV2::Trigger;
+        let work_item_id = digest(
+            format!(
+                "whoathere.artifact_review.work_item.v2\0{file_id}\0{chunk_id}\0{}",
+                pass.as_str()
+            )
+            .as_bytes(),
+        );
+        let request_sha256 = digest(b"provider-input-cap-request");
+        let invocation_sha256 =
+            invocation_sha256_from_request_digest(&request_sha256, &work_item_id);
+        let provider = ArtifactReviewProviderIdentityV2 {
+            adapter_id: "inert-test-adapter".to_string(),
+            adapter_version: "2.0.0".to_string(),
+            adapter_sha256: digest(b"inert-test-adapter-content"),
+        };
+        let model = ArtifactReviewModelIdentityV2 {
+            model_id: "inert-test-model".to_string(),
+            model_version: "2026-07-09".to_string(),
+            model_content_sha256: digest(b"inert-test-model-content"),
+        };
+        let prompt = ArtifactReviewPromptIdentityV2 {
+            template_id: ARTIFACT_REVIEW_PROMPT_TEMPLATE_ID_V2.to_string(),
+            template_version: ARTIFACT_REVIEW_PROMPT_TEMPLATE_VERSION_V2.to_string(),
+            template_sha256: artifact_review_prompt_template_sha256_v2(),
+        };
+        let mut contexts = (0..5_000)
+            .map(|index| ArtifactReviewContextReferenceV2 {
+                context_id: digest(format!("oversized-context-{index}")),
+                kind: ArtifactReviewContextKindV2::InventoryOnly,
+            })
+            .collect::<Vec<_>>();
+        contexts.sort();
+        contexts.dedup();
+        let invocation = ArtifactReviewInvocationV2 {
+            work_item_id,
+            invocation_sha256,
+            pass,
+            provider: provider.clone(),
+            model: model.clone(),
+            prompt: prompt.clone(),
+            trusted_system_prompt: TRUSTED_SYSTEM_PROMPT_V2,
+            trusted_model_output_schema_json: STRICT_MODEL_OUTPUT_SCHEMA_JSON_V2,
+            trusted_adapter_result_schema_json: STRICT_ADAPTER_RESULT_SCHEMA_JSON_V2,
+            binding: ArtifactReviewInvocationBindingV2 {
+                request_sha256,
+                artifact_sha256,
+                envelope_sha256: digest(b"provider-input-cap-envelope"),
+                manifest_sha256: digest(b"provider-input-cap-manifest"),
+                policy_sha256: digest(b"provider-input-cap-policy"),
+                deterministic_analysis_sha256: digest(b"provider-input-cap-analysis"),
+                coverage_manifest_sha256: digest(b"provider-input-cap-coverage"),
+                provider_adapter_sha256: provider.adapter_sha256,
+                model_content_sha256: model.model_content_sha256,
+                prompt_template_sha256: prompt.template_sha256,
+                model_output_schema_sha256: artifact_review_model_output_schema_sha256_v2(),
+                adapter_result_schema_sha256: artifact_review_adapter_result_schema_sha256_v2(),
+                privacy_posture: ArtifactReviewPrivacyPostureV2::LocalOnly,
+                inference: ArtifactReviewInferenceSettingsV2 {
+                    seed: 7,
+                    temperature_milli: 0,
+                    top_p_milli: 1_000,
+                    context_tokens: 16_384,
+                    max_output_tokens: 2_048,
+                },
+            },
+            untrusted: UntrustedArtifactChunkV2 {
+                file_id,
+                file_sha256,
+                chunk_id,
+                selected_sha256,
+                normalized_path,
+                language: SourceLanguage::Javascript,
+                contexts,
+                start_byte,
+                end_byte,
+                start_line: 1,
+                end_line: 1,
+                bytes: source,
+            },
+        };
+
+        assert_eq!(
+            invocation.canonical_provider_input_json_v2(),
+            Err(ArtifactReviewErrorV2::ProviderInputLimitExceeded)
+        );
+        assert_eq!(
+            ArtifactReviewErrorV2::ProviderInputLimitExceeded.reason_code(),
+            "artifact_review_v2_provider_input_byte_limit_exceeded"
+        );
+    }
 }

@@ -1,0 +1,21 @@
+[package]
+name = "whoathere-artifact-review-runtime"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+publish = false
+
+[[bin]]
+name = "whoathere-inert-artifact-review-provider"
+path = "src/bin/inert_provider.rs"
+
+[dependencies]
+libc = "0.2.186"
+serde_json = "1.0.150"
+whoathere-artifact = { path = "../whoathere-artifact" }
+whoathere-detector = { path = "../whoathere-detector" }
+whoathere-evidence = { path = "../whoathere-evidence" }
+
+[dev-dependencies]
+flate2 = { version = "1.1.9", default-features = false, features = ["miniz_oxide"] }
+tar = { version = "0.4.46", default-features = false }

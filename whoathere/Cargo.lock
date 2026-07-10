@@ -319,6 +319,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "whoathere-artifact-review-runtime"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "libc",
+ "serde_json",
+ "tar",
+ "whoathere-artifact",
+ "whoathere-detector",
+ "whoathere-evidence",
+]
+
+[[package]]
 name = "whoathere-audit"
 version = "0.1.0"
 
