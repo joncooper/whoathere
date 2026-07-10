@@ -14,15 +14,16 @@ use whoathere_artifact::{
     normalize_artifact, AcquisitionMethod, ArtifactEnvelope, ArtifactEnvelopeInput, ArtifactFormat,
     ArtifactSourceType, Ecosystem, NormalizationLimits, NormalizedArtifact, Sha256Digest,
 };
+use whoathere_artifact_review_ollama::{OLLAMA_ADAPTER_ID_V1, OLLAMA_ADAPTER_VERSION_V1};
 use whoathere_artifact_review_runtime::{
     inert_fixture_model_content_sha256_v2, run_local_provider_for_evidence_v2,
     run_local_provider_v2, ArtifactReviewCancellationTokenV2, AuthorizedLocalProviderV2,
     EvidenceBoundLocalProviderRunV2, LocalProviderEvidenceExecutionBindingV2,
     LocalProviderExecutableIdentityPostureV2, LocalProviderHostIsolationV2,
-    LocalProviderModelIdentityPostureV2, LocalProviderNetworkIsolationV2,
-    LocalProviderResourceIsolationV2, LocalProviderRuntimeErrorV2, LocalProviderRuntimePolicyV2,
-    LocalProviderTerminalPhaseV2, LocalProviderTerminationReasonV2, LocalProviderWorkPartitionV2,
-    INERT_PROVIDER_ADAPTER_ID_V2, INERT_PROVIDER_ADAPTER_VERSION_V2,
+    LocalProviderInvocationObservationV2, LocalProviderModelIdentityPostureV2,
+    LocalProviderNetworkIsolationV2, LocalProviderResourceIsolationV2, LocalProviderRuntimeErrorV2,
+    LocalProviderRuntimePolicyV2, LocalProviderTerminalPhaseV2, LocalProviderTerminationReasonV2,
+    LocalProviderWorkPartitionV2, INERT_PROVIDER_ADAPTER_ID_V2, INERT_PROVIDER_ADAPTER_VERSION_V2,
     INERT_PROVIDER_MODEL_VERSION_V2, MAX_LOCAL_PROVIDER_EVIDENCE_EXECUTION_ID_BYTES_V2,
     MAX_LOCAL_PROVIDER_STDERR_BYTES_V2,
 };
@@ -86,6 +87,12 @@ struct Fixture {
 fn inert_provider_path() -> PathBuf {
     PathBuf::from(env!(
         "CARGO_BIN_EXE_whoathere-inert-artifact-review-provider"
+    ))
+}
+
+fn inert_ollama_protocol_provider_path() -> PathBuf {
+    PathBuf::from(env!(
+        "CARGO_BIN_EXE_whoathere-inert-ollama-protocol-provider"
     ))
 }
 
@@ -218,6 +225,73 @@ fn fixture_with_policy(
         per_call_timeout,
         global_timeout,
         termination_grace,
+    )
+    .expect("bounded local provider runtime policy");
+    Fixture {
+        artifact,
+        analysis,
+        subject,
+        request,
+        authorization,
+        policy,
+        root,
+    }
+}
+
+fn ollama_protocol_fixture() -> Fixture {
+    ollama_protocol_fixture_with_model("qwen3:8b-inert-runtime")
+}
+
+fn ollama_protocol_fixture_with_model(model_id: &str) -> Fixture {
+    let executable_path = inert_ollama_protocol_provider_path();
+    let executable_bytes = fs::read(&executable_path).expect("read inert Ollama protocol fixture");
+    let provider = ArtifactReviewProviderIdentityV2 {
+        adapter_id: OLLAMA_ADAPTER_ID_V1.to_string(),
+        adapter_version: OLLAMA_ADAPTER_VERSION_V1.to_string(),
+        adapter_sha256: Sha256Digest::from_bytes(&executable_bytes),
+    };
+    let model = ArtifactReviewModelIdentityV2 {
+        model_id: model_id.to_string(),
+        model_version: "manifest-2026-07-10".to_string(),
+        model_content_sha256: Sha256Digest::from_bytes(b"inert pinned Ollama model manifest"),
+    };
+    let artifact = fixture_artifact();
+    let analysis = analyze_normalized_artifact(&artifact).expect("static analysis");
+    let subject = subject(&artifact);
+    let request = build_artifact_review_request_v2(
+        &subject,
+        &artifact,
+        &analysis,
+        ArtifactReviewConfigV2 {
+            policy_sha256: Sha256Digest::from_bytes(b"local runtime inert Ollama policy"),
+            provider: provider.clone(),
+            model: model.clone(),
+            prompt: ArtifactReviewPromptIdentityV2 {
+                template_id: ARTIFACT_REVIEW_PROMPT_TEMPLATE_ID_V2.to_string(),
+                template_version: ARTIFACT_REVIEW_PROMPT_TEMPLATE_VERSION_V2.to_string(),
+                template_sha256: artifact_review_prompt_template_sha256_v2(),
+            },
+            adapter_result_schema_sha256: artifact_review_adapter_result_schema_sha256_v2(),
+            privacy_posture: ArtifactReviewPrivacyPostureV2::LocalOnly,
+            inference: ArtifactReviewInferenceSettingsV2 {
+                seed: 37,
+                temperature_milli: 0,
+                top_p_milli: 1_000,
+                context_tokens: 16_384,
+                max_output_tokens: 2_048,
+            },
+        },
+    )
+    .expect("Ollama artifact review request");
+    let authorization =
+        AuthorizedLocalProviderV2::new_ollama_loopback_v1(&request, executable_path)
+            .expect("request-bound Ollama adapter authorization");
+    let root = PrivateTempRoot::new("ollama-protocol");
+    let policy = LocalProviderRuntimePolicyV2::new(
+        root.path().to_path_buf(),
+        Duration::from_secs(2),
+        Duration::from_secs(20),
+        Duration::from_millis(20),
     )
     .expect("bounded local provider runtime policy");
     Fixture {
@@ -463,6 +537,74 @@ fn bound_wrapper_keeps_partial_runs_but_propagates_underlying_errors() {
         ),
         Err(LocalProviderRuntimeErrorV2::AuthorizationMismatch)
     ));
+}
+
+#[test]
+fn ollama_protocol_fixture_proves_role_and_terminal_frame_binding_without_network() {
+    let fixture = ollama_protocol_fixture();
+    let execution = run(&fixture, &ArtifactReviewCancellationTokenV2::new())
+        .expect("inert Ollama protocol run");
+    assert!(!execution.invocation_records().is_empty());
+    assert!(execution.invocation_records().iter().all(|record| {
+        record.termination_reason() == LocalProviderTerminationReasonV2::Completed
+            && record.channel_isolation()
+                == ArtifactReviewChannelIsolationV2::SeparateTrustedAndUntrusted
+            && record.network_isolation()
+                == LocalProviderNetworkIsolationV2::LiteralLoopbackAdapterTransportServerEgressNotEnforced
+            && record.model_identity_posture()
+                == LocalProviderModelIdentityPostureV2::ServerReportedManifestDigestMatchedPinnedExpectedValueServerNotAttested
+            && record.resource_isolation()
+                == LocalProviderResourceIsolationV2::AdapterWallClockStreamCapsServerResourcesNotEnforced
+            && matches!(
+                record.provider_observation(),
+                Some(LocalProviderInvocationObservationV2::OllamaLoopbackV1(_))
+            )
+    }));
+    assert!(execution
+        .attempted_without_capture_work_item_ids()
+        .is_empty());
+    assert!(execution.unattempted_work_item_ids().is_empty());
+    let normalized = normalize_artifact_review_provider_outputs_v2(
+        &fixture.subject,
+        &fixture.artifact,
+        &fixture.analysis,
+        &fixture.request,
+        execution.provider_outputs(),
+    )
+    .expect("inert Ollama outputs normalize");
+    assert_eq!(
+        normalized.structurally_validated_result().verdict(),
+        ArtifactReviewVerdictV2::Uncertain,
+        "an unqualified all-no-finding provider remains uncertain"
+    );
+}
+
+#[test]
+fn tampered_ollama_terminal_frame_is_failed_capture_not_completed_review() {
+    let fixture = ollama_protocol_fixture_with_model("qwen3:8b-inert-runtime-tampered-terminal");
+    let execution = run(&fixture, &ArtifactReviewCancellationTokenV2::new())
+        .expect("tampered protocol frame remains a captured failed run");
+    assert!(!execution.invocation_records().is_empty());
+    assert!(execution.invocation_records().iter().all(|record| {
+        record.termination_reason() == LocalProviderTerminationReasonV2::ProtocolHandshakeFailed
+            && record.provider_output_status() == ArtifactReviewWorkItemStatusV2::Failed
+            && record.channel_isolation() == ArtifactReviewChannelIsolationV2::CollapsedPrompt
+            && record.provider_observation().is_none()
+            && record.model_identity_posture()
+                == LocalProviderModelIdentityPostureV2::UnavailableOrUnverified
+    }));
+    let normalized = normalize_artifact_review_provider_outputs_v2(
+        &fixture.subject,
+        &fixture.artifact,
+        &fixture.analysis,
+        &fixture.request,
+        execution.provider_outputs(),
+    )
+    .expect("failed captures remain normalizable uncertainty");
+    assert_eq!(
+        normalized.structurally_validated_result().verdict(),
+        ArtifactReviewVerdictV2::Uncertain
+    );
 }
 
 #[test]

@@ -1,26 +1,21 @@
 [package]
-name = "whoathere-artifact-review-runtime"
+name = "whoathere-artifact-review-ollama"
 edition.workspace = true
 license.workspace = true
 version.workspace = true
 publish = false
 
 [[bin]]
-name = "whoathere-inert-artifact-review-provider"
-path = "src/bin/inert_provider.rs"
-
-[[bin]]
-name = "whoathere-inert-ollama-protocol-provider"
-path = "src/bin/inert_ollama_protocol_provider.rs"
+name = "whoathere-ollama-artifact-review-adapter"
+path = "src/main.rs"
 
 [dependencies]
-libc = "0.2.186"
+serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 whoathere-artifact = { path = "../whoathere-artifact" }
-whoathere-artifact-review-ollama = { path = "../whoathere-artifact-review-ollama" }
 whoathere-detector = { path = "../whoathere-detector" }
-whoathere-evidence = { path = "../whoathere-evidence" }
 
 [dev-dependencies]
 flate2 = { version = "1.1.9", default-features = false, features = ["miniz_oxide"] }
 tar = { version = "0.4.46", default-features = false }
+whoathere-evidence = { path = "../whoathere-evidence" }

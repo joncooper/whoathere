@@ -1,14 +1,11 @@
-//! Bounded macOS process execution for the Artifact Review v2 inert fixture.
+//! Bounded macOS process execution for Artifact Review v2 provider adapters.
 //!
-//! This crate deliberately does not support Ollama, HTTP, model discovery,
-//! model pulls, shell commands, or package execution. It exercises a
-//! request-bound, digest-checked process-adapter contract with one compiled
-//! inert binary. It is not a sandbox or VM: network, memory, process-count,
-//! and full descendant containment are explicitly unenforced, and a same-user
-//! staged-path replacement race is not excluded. Its records are always
-//! unauthenticated and cannot authorize an allow decision. Restricted capture
-//! bytes can also exist in detector-owned output buffers and allocator memory;
-//! this crate does not claim comprehensive memory zeroization.
+//! It supports a compiled inert fixture and a measured, literal-loopback Ollama
+//! adapter. It never pulls models or executes package code. This is not a
+//! sandbox or VM: network, memory, process-count, server egress, and full
+//! descendant containment remain explicitly limited, and a same-user staged
+//! path or loopback-server substitution race is not excluded. Its direct
+//! records are unauthenticated and cannot authorize an allow decision.
 
 use std::collections::HashSet;
 use std::ffi::CString;
@@ -24,12 +21,16 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use whoathere_artifact::{NormalizedArtifact, Sha256Digest};
+use whoathere_artifact_review_ollama::{
+    parse_ollama_terminal_frame_v1, verify_ollama_terminal_frame_v1, OllamaInvocationObservationV1,
+    OLLAMA_ADAPTER_ID_V1, OLLAMA_ADAPTER_VERSION_V1, OLLAMA_READY_MARKER_V1,
+};
 use whoathere_detector::{
-    ArtifactReviewChannelIsolationV2, ArtifactReviewModelIdentityV2,
-    ArtifactReviewPrivacyPostureV2, ArtifactReviewProviderIdentityV2,
-    ArtifactReviewProviderOutputV2, ArtifactReviewRequestV2, ArtifactReviewWorkItemStatusV2,
-    ArtifactStaticAnalysis, MAX_ARTIFACT_REVIEW_PROVIDER_INPUT_BYTES_V2,
-    MAX_ARTIFACT_REVIEW_PROVIDER_OUTPUT_BYTES_V2,
+    decode_and_validate_artifact_review_provider_input_v2, ArtifactReviewChannelIsolationV2,
+    ArtifactReviewModelIdentityV2, ArtifactReviewPrivacyPostureV2,
+    ArtifactReviewProviderIdentityV2, ArtifactReviewProviderOutputV2, ArtifactReviewRequestV2,
+    ArtifactReviewWorkItemStatusV2, ArtifactStaticAnalysis,
+    MAX_ARTIFACT_REVIEW_PROVIDER_INPUT_BYTES_V2, MAX_ARTIFACT_REVIEW_PROVIDER_OUTPUT_BYTES_V2,
     MAX_ARTIFACT_REVIEW_TOTAL_PROVIDER_OUTPUT_BYTES_V2,
 };
 use whoathere_evidence::v2::ArtifactEvidenceSubjectV2;
@@ -56,6 +57,16 @@ static RUN_DIRECTORY_COUNTER: AtomicU64 = AtomicU64::new(0);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LocalProviderProtocolV2 {
     InertFixtureStdinV1,
+    OllamaLoopbackChatV1,
+}
+
+impl LocalProviderProtocolV2 {
+    fn ready_marker(self) -> &'static [u8] {
+        match self {
+            Self::InertFixtureStdinV1 => INERT_PROVIDER_READY_MARKER_V2,
+            Self::OllamaLoopbackChatV1 => OLLAMA_READY_MARKER_V1,
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -108,6 +119,29 @@ impl AuthorizedLocalProviderV2 {
             model,
             executable_path,
             protocol: LocalProviderProtocolV2::InertFixtureStdinV1,
+        })
+    }
+
+    pub fn new_ollama_loopback_v1(
+        request: &ArtifactReviewRequestV2,
+        executable_path: PathBuf,
+    ) -> Result<Self, LocalProviderRuntimeErrorV2> {
+        let provider = request.provider().clone();
+        let model = request.model().clone();
+        if provider.adapter_id != OLLAMA_ADAPTER_ID_V1
+            || provider.adapter_version != OLLAMA_ADAPTER_VERSION_V1
+            || !executable_path.is_absolute()
+        {
+            return Err(LocalProviderRuntimeErrorV2::InvalidAuthorization);
+        }
+        Ok(Self {
+            request_sha256: request
+                .request_sha256()
+                .map_err(|_| LocalProviderRuntimeErrorV2::InvalidAuthorization)?,
+            provider,
+            model,
+            executable_path,
+            protocol: LocalProviderProtocolV2::OllamaLoopbackChatV1,
         })
     }
 
@@ -344,6 +378,7 @@ pub enum LocalProviderTerminalPhaseV2 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LocalProviderNetworkIsolationV2 {
     NotEnforcedCallerAuthorizedExecutable,
+    LiteralLoopbackAdapterTransportServerEgressNotEnforced,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -354,16 +389,24 @@ pub enum LocalProviderHostIsolationV2 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LocalProviderModelIdentityPostureV2 {
     SyntheticBehaviorLabelBoundToVerifiedAdapterBytes,
+    ServerReportedManifestDigestMatchedPinnedExpectedValueServerNotAttested,
+    UnavailableOrUnverified,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LocalProviderResourceIsolationV2 {
     WallClockStreamCapsAndDescriptorClosureOnly,
+    AdapterWallClockStreamCapsServerResourcesNotEnforced,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LocalProviderExecutableIdentityPostureV2 {
     DigestVerifiedPrivateStagedPathSameUserRaceNotExcluded,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LocalProviderInvocationObservationV2 {
+    OllamaLoopbackV1(OllamaInvocationObservationV1),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -393,6 +436,7 @@ pub struct LocalProviderInvocationRecordV2 {
     model_identity_posture: LocalProviderModelIdentityPostureV2,
     resource_isolation: LocalProviderResourceIsolationV2,
     executable_identity_posture: LocalProviderExecutableIdentityPostureV2,
+    provider_observation: Option<LocalProviderInvocationObservationV2>,
     elapsed_millis: u64,
 }
 
@@ -491,6 +535,10 @@ impl LocalProviderInvocationRecordV2 {
 
     pub fn executable_identity_posture(&self) -> LocalProviderExecutableIdentityPostureV2 {
         self.executable_identity_posture
+    }
+
+    pub fn provider_observation(&self) -> Option<&LocalProviderInvocationObservationV2> {
+        self.provider_observation.as_ref()
     }
 
     pub fn elapsed_millis(&self) -> u64 {
@@ -1283,6 +1331,32 @@ fn new_validated_local_provider_run(
             LocalProviderTerminationReasonV2::StderrLimitExceeded => !record.stderr_eof_verified(),
             _ => true,
         };
+        let provider_observation_consistent = match record.provider_observation() {
+            None => {
+                record.channel_isolation()
+                    != ArtifactReviewChannelIsolationV2::SeparateTrustedAndUntrusted
+                    && record.model_identity_posture()
+                        != LocalProviderModelIdentityPostureV2::ServerReportedManifestDigestMatchedPinnedExpectedValueServerNotAttested
+            }
+            Some(LocalProviderInvocationObservationV2::OllamaLoopbackV1(observation)) => {
+                let frame = observation.terminal_frame();
+                record.termination_reason() == LocalProviderTerminationReasonV2::Completed
+                    && record.channel_isolation()
+                        == ArtifactReviewChannelIsolationV2::SeparateTrustedAndUntrusted
+                    && record.network_isolation()
+                        == LocalProviderNetworkIsolationV2::LiteralLoopbackAdapterTransportServerEgressNotEnforced
+                    && record.model_identity_posture()
+                        == LocalProviderModelIdentityPostureV2::ServerReportedManifestDigestMatchedPinnedExpectedValueServerNotAttested
+                    && record.resource_isolation()
+                        == LocalProviderResourceIsolationV2::AdapterWallClockStreamCapsServerResourcesNotEnforced
+                    && &frame.work_item_id == record.work_item_id()
+                    && &frame.invocation_sha256 == record.invocation_sha256()
+                    && &frame.provider_input_sha256 == record.provider_input_sha256()
+                    && &frame.expected_model_content_sha256 == record.model_content_sha256()
+                    && &frame.model_output_sha256 == record.stdout_capture_sha256()
+                    && frame.model_output_byte_len == record.stdout_capture_byte_len()
+            }
+        };
         total_stdout_bytes = total_stdout_bytes
             .checked_add(output.captured_output_len())
             .ok_or(LocalProviderRuntimeErrorV2::InvalidRunEvidence)?;
@@ -1294,6 +1368,7 @@ fn new_validated_local_provider_run(
             || output.status() != record.provider_output_status()
             || output.status() != expected_output_status
             || !eof_claims_consistent
+            || !provider_observation_consistent
             || output.captured_output_sha256() != record.stdout_capture_sha256().clone()
             || output.captured_output_len() as u64 != record.stdout_capture_byte_len()
             || capture.stdout_capture_sha256() != record.stdout_capture_sha256().clone()
@@ -1364,7 +1439,6 @@ pub fn run_local_provider_v2(
     }
     if request.provider() != authorization.provider()
         || request.model() != authorization.model()
-        || authorization.protocol() != LocalProviderProtocolV2::InertFixtureStdinV1
         || &request
             .request_sha256()
             .map_err(|_| LocalProviderRuntimeErrorV2::InvalidRequest)?
@@ -1536,6 +1610,7 @@ pub fn run_local_provider_v2(
             &staged_executable,
             &invocation_directory,
             &prepared_invocation.provider_input,
+            authorization.protocol().ready_marker(),
             stdout_limit,
             stderr_limit,
             policy.per_call_timeout,
@@ -1562,25 +1637,68 @@ pub fn run_local_provider_v2(
         total_stdout_bytes += execution.stdout_capture.len();
         total_stderr_bytes += execution.stderr_capture.len();
 
+        let mut execution = execution;
+        let provider_observation = match authorization.protocol() {
+            LocalProviderProtocolV2::InertFixtureStdinV1 => None,
+            LocalProviderProtocolV2::OllamaLoopbackChatV1
+                if execution.termination_reason == LocalProviderTerminationReasonV2::Completed =>
+            {
+                let observation = decode_and_validate_artifact_review_provider_input_v2(
+                    &prepared_invocation.provider_input,
+                )
+                .map_err(|_| ())
+                .and_then(|input| {
+                    parse_ollama_terminal_frame_v1(&execution.stderr_capture)
+                        .map_err(|_| ())
+                        .and_then(|frame| {
+                            verify_ollama_terminal_frame_v1(
+                                frame,
+                                &input,
+                                &execution.stdout_capture,
+                            )
+                            .map_err(|_| ())
+                        })
+                });
+                match observation {
+                    Ok(observation) => Some(
+                        LocalProviderInvocationObservationV2::OllamaLoopbackV1(observation),
+                    ),
+                    Err(()) => {
+                        execution.termination_reason =
+                            LocalProviderTerminationReasonV2::ProtocolHandshakeFailed;
+                        None
+                    }
+                }
+            }
+            LocalProviderProtocolV2::OllamaLoopbackChatV1 => None,
+        };
+        let channel_isolation = if matches!(
+            provider_observation,
+            Some(LocalProviderInvocationObservationV2::OllamaLoopbackV1(_))
+        ) {
+            ArtifactReviewChannelIsolationV2::SeparateTrustedAndUntrusted
+        } else {
+            ArtifactReviewChannelIsolationV2::CollapsedPrompt
+        };
         let provider_output = match execution.termination_reason {
             LocalProviderTerminationReasonV2::Completed => {
                 ArtifactReviewProviderOutputV2::new_complete(
                     prepared_invocation.work_item_id.clone(),
                     execution.stdout_capture.clone(),
-                    ArtifactReviewChannelIsolationV2::CollapsedPrompt,
+                    channel_isolation,
                 )
             }
             LocalProviderTerminationReasonV2::StdoutLimitExceeded => {
                 ArtifactReviewProviderOutputV2::new_truncated_capture(
                     prepared_invocation.work_item_id.clone(),
                     execution.stdout_capture.clone(),
-                    ArtifactReviewChannelIsolationV2::CollapsedPrompt,
+                    channel_isolation,
                 )
             }
             _ => ArtifactReviewProviderOutputV2::new_failed_capture(
                 prepared_invocation.work_item_id.clone(),
                 execution.stdout_capture.clone(),
-                ArtifactReviewChannelIsolationV2::CollapsedPrompt,
+                channel_isolation,
                 execution.stdout_eof_verified,
             ),
         };
@@ -1631,20 +1749,32 @@ pub fn run_local_provider_v2(
             provider_output_status,
             termination_reason: execution.termination_reason,
             exit_code: execution.exit_code,
-            channel_isolation: ArtifactReviewChannelIsolationV2::CollapsedPrompt,
+            channel_isolation,
             stdout_eof_verified: execution.stdout_eof_verified,
             stderr_eof_verified: execution.stderr_eof_verified,
             process_group_cleanup_verified: execution.process_group_cleanup_verified,
             descendant_containment_verified: false,
             kill_escalated: execution.kill_escalated,
-            network_isolation:
-                LocalProviderNetworkIsolationV2::NotEnforcedCallerAuthorizedExecutable,
+            network_isolation: match authorization.protocol() {
+                LocalProviderProtocolV2::InertFixtureStdinV1 => {
+                    LocalProviderNetworkIsolationV2::NotEnforcedCallerAuthorizedExecutable
+                }
+                LocalProviderProtocolV2::OllamaLoopbackChatV1 => {
+                    LocalProviderNetworkIsolationV2::LiteralLoopbackAdapterTransportServerEgressNotEnforced
+                }
+            },
             host_isolation: LocalProviderHostIsolationV2::NotSandboxedCallerAuthorizedExecutable,
-            model_identity_posture:
-                LocalProviderModelIdentityPostureV2::SyntheticBehaviorLabelBoundToVerifiedAdapterBytes,
-            resource_isolation:
-                LocalProviderResourceIsolationV2::WallClockStreamCapsAndDescriptorClosureOnly,
+            model_identity_posture: match authorization.protocol() {
+                LocalProviderProtocolV2::InertFixtureStdinV1 => LocalProviderModelIdentityPostureV2::SyntheticBehaviorLabelBoundToVerifiedAdapterBytes,
+                LocalProviderProtocolV2::OllamaLoopbackChatV1 if provider_observation.is_some() => LocalProviderModelIdentityPostureV2::ServerReportedManifestDigestMatchedPinnedExpectedValueServerNotAttested,
+                LocalProviderProtocolV2::OllamaLoopbackChatV1 => LocalProviderModelIdentityPostureV2::UnavailableOrUnverified,
+            },
+            resource_isolation: match authorization.protocol() {
+                LocalProviderProtocolV2::InertFixtureStdinV1 => LocalProviderResourceIsolationV2::WallClockStreamCapsAndDescriptorClosureOnly,
+                LocalProviderProtocolV2::OllamaLoopbackChatV1 => LocalProviderResourceIsolationV2::AdapterWallClockStreamCapsServerResourcesNotEnforced,
+            },
             executable_identity_posture: LocalProviderExecutableIdentityPostureV2::DigestVerifiedPrivateStagedPathSameUserRaceNotExcluded,
+            provider_observation,
             elapsed_millis: execution.elapsed.as_millis().min(u128::from(u64::MAX)) as u64,
         };
         invocation_records.push(invocation_record);
@@ -1856,6 +1986,7 @@ fn execute_provider_invocation(
     executable: &VerifiedStagedExecutable,
     invocation_directory: &Path,
     provider_input: &[u8],
+    ready_marker: &[u8],
     stdout_limit: usize,
     stderr_limit: usize,
     per_call_timeout: Duration,
@@ -2024,7 +2155,7 @@ fn execute_provider_invocation(
                 }
             }
 
-            if !provider_ready && stderr_capture.starts_with(INERT_PROVIDER_READY_MARKER_V2) {
+            if !provider_ready && stderr_capture.starts_with(ready_marker) {
                 provider_ready = true;
                 call_deadline = Some(
                     Instant::now()
@@ -2702,7 +2833,7 @@ impl ChildProcessGroupGuard {
         }
     }
 
-    fn send_group_signal(&self, signal: i32) -> Result<bool, LocalProviderRuntimeErrorV2> {
+    fn send_group_signal(&mut self, signal: i32) -> Result<bool, LocalProviderRuntimeErrorV2> {
         if self.reaped {
             return Err(LocalProviderRuntimeErrorV2::ProcessControlFailed);
         }
@@ -2713,10 +2844,38 @@ impl ChildProcessGroupGuard {
         }
         let error = io::Error::last_os_error();
         if error.raw_os_error() == Some(libc::ESRCH) {
-            Ok(false)
-        } else {
-            Err(LocalProviderRuntimeErrorV2::ProcessControlFailed)
+            return Ok(false);
         }
+        if error.raw_os_error() == Some(libc::EPERM) {
+            // Under heavy concurrent process churn, macOS can reject the
+            // negative-pgid signal even though posix_spawn created and getpgid
+            // verified a dedicated group led by our owned child. Never weaken
+            // cleanup for a group with descendants: reconcile the independent
+            // waitid/libproc observations, and use the owned child PID only
+            // when the leader is provably the sole remaining member. A later
+            // group query is still required before cleanup can succeed.
+            let leader_exited = self.leader_has_exited_without_reaping()?;
+            let group_has_other_members = self.group_has_other_members()?;
+            if leader_exited && !group_has_other_members {
+                return Ok(false);
+            }
+            if leader_exited || group_has_other_members {
+                return Err(LocalProviderRuntimeErrorV2::ProcessControlFailed);
+            }
+            // SAFETY: process_id is the unreaped child owned by this process.
+            let leader_result = unsafe { libc::kill(self.process_id, signal) };
+            if leader_result == 0 {
+                return Ok(true);
+            }
+            let leader_error = io::Error::last_os_error();
+            if leader_error.raw_os_error() == Some(libc::ESRCH)
+                && self.leader_has_exited_without_reaping()?
+            {
+                return Ok(false);
+            }
+            return Err(LocalProviderRuntimeErrorV2::ProcessControlFailed);
+        }
+        Err(LocalProviderRuntimeErrorV2::ProcessControlFailed)
     }
 
     #[cfg(target_os = "macos")]

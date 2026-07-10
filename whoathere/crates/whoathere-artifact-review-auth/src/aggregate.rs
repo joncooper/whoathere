@@ -16,18 +16,23 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 use whoathere_artifact::{NormalizedArtifact, Sha256Digest};
+use whoathere_artifact_review_ollama::{
+    parse_ollama_terminal_frame_v1, verify_ollama_terminal_frame_v1, OLLAMA_ADAPTER_VERSION_V1,
+    OLLAMA_TERMINAL_FRAME_SCHEMA_V1,
+};
 use whoathere_artifact_review_runtime::{
     EvidenceBoundLocalProviderRunV2, LocalProviderEvidenceExecutionBindingV2,
     LocalProviderExecutableIdentityPostureV2, LocalProviderHostIsolationV2,
-    LocalProviderInvocationRecordV2, LocalProviderModelIdentityPostureV2,
-    LocalProviderNetworkIsolationV2, LocalProviderResourceIsolationV2,
-    LocalProviderRunTerminalStateV2, LocalProviderRuntimeErrorV2, LocalProviderTerminalPhaseV2,
-    LocalProviderTerminationReasonV2, LocalProviderWorkPartitionV2,
+    LocalProviderInvocationObservationV2, LocalProviderInvocationRecordV2,
+    LocalProviderModelIdentityPostureV2, LocalProviderNetworkIsolationV2,
+    LocalProviderResourceIsolationV2, LocalProviderRunTerminalStateV2, LocalProviderRuntimeErrorV2,
+    LocalProviderTerminalPhaseV2, LocalProviderTerminationReasonV2, LocalProviderWorkPartitionV2,
     INERT_PROVIDER_ADAPTER_VERSION_V2, MAX_LOCAL_PROVIDER_TOTAL_INPUT_BYTES_V2,
     MAX_LOCAL_PROVIDER_TOTAL_STDERR_BYTES_V2,
 };
 use whoathere_detector::{
     artifact_review_adapter_result_schema_sha256_v2, artifact_review_model_output_schema_sha256_v2,
+    decode_and_validate_artifact_review_provider_input_v2,
     normalize_artifact_review_provider_outputs_v2, ArtifactReviewAdapterNormalizationV2,
     ArtifactReviewChannelIsolationV2, ArtifactReviewCoverageCompletenessV2,
     ArtifactReviewPrivacyPostureV2, ArtifactReviewProviderOutputV2, ArtifactReviewRequestV2,
@@ -42,13 +47,13 @@ use whoathere_detector::{
 use whoathere_evidence::v2::ArtifactEvidenceSubjectV2;
 
 pub const ARTIFACT_REVIEW_AGGREGATE_MANIFEST_SCHEMA_V2: &str =
-    "whoathere.artifact_review_authenticated_aggregate_manifest.v2";
+    "whoathere.artifact_review_authenticated_aggregate_manifest.v3";
 pub const ARTIFACT_REVIEW_EXPECTED_WORK_SET_SCHEMA_V2: &str =
     "whoathere.artifact_review_expected_work_set.v2";
 pub const LOCAL_ARTIFACT_REVIEW_NORMALIZER_CONTRACT_ID_V2: &str =
     "whoathere.artifact_review_normalizer_contract.v2";
 pub const LOCAL_PROVIDER_RUNTIME_CONTRACT_ID_V2: &str =
-    "whoathere.macos_local_provider_runtime_contract.v2";
+    "whoathere.macos_local_provider_runtime_contract.v3";
 pub const ARTIFACT_REVIEW_RUNTIME_EXECUTION_BINDING_SCHEMA_V2: &str =
     "whoathere.artifact_review_runtime_execution_binding.v2";
 pub const LOCAL_PROVIDER_EVIDENCE_BOUND_EXECUTION_SEAM_V2: &str =
@@ -258,8 +263,10 @@ pub fn local_artifact_review_normalizer_contract_sha256_v2() -> Sha256Digest {
 pub fn local_provider_runtime_contract_sha256_v2() -> Sha256Digest {
     Sha256Digest::from_bytes(
         format!(
-            "{LOCAL_PROVIDER_RUNTIME_CONTRACT_ID_V2}\0{}\0{}\0{}\0{}\0{}\0{}\0{}",
+            "{LOCAL_PROVIDER_RUNTIME_CONTRACT_ID_V2}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}",
             INERT_PROVIDER_ADAPTER_VERSION_V2,
+            OLLAMA_ADAPTER_VERSION_V1,
+            OLLAMA_TERMINAL_FRAME_SCHEMA_V1,
             MAX_ARTIFACT_REVIEW_PROVIDER_INPUT_BYTES_V2,
             MAX_LOCAL_PROVIDER_TOTAL_INPUT_BYTES_V2,
             MAX_ARTIFACT_REVIEW_TOTAL_PROVIDER_OUTPUT_BYTES_V2,
@@ -703,6 +710,38 @@ fn reconstruct_local_evidence_v2(
         {
             return Err(ArtifactReviewAuthErrorV2::InvalidRuntimeEvidence);
         }
+        match record.provider_observation() {
+            None => {
+                if record.channel_isolation()
+                    == ArtifactReviewChannelIsolationV2::SeparateTrustedAndUntrusted
+                    || record.model_identity_posture()
+                        == LocalProviderModelIdentityPostureV2::ServerReportedManifestDigestMatchedPinnedExpectedValueServerNotAttested
+                {
+                    return Err(ArtifactReviewAuthErrorV2::InvalidRuntimeEvidence);
+                }
+            }
+            Some(LocalProviderInvocationObservationV2::OllamaLoopbackV1(observation)) => {
+                let decoded = decode_and_validate_artifact_review_provider_input_v2(&provider_input)
+                    .map_err(|_| ArtifactReviewAuthErrorV2::InvalidRuntimeEvidence)?;
+                let parsed = parse_ollama_terminal_frame_v1(&capture.stderr)
+                    .map_err(|_| ArtifactReviewAuthErrorV2::InvalidRuntimeEvidence)?;
+                let verified = verify_ollama_terminal_frame_v1(parsed, &decoded, &capture.stdout)
+                    .map_err(|_| ArtifactReviewAuthErrorV2::InvalidRuntimeEvidence)?;
+                if &verified != observation
+                    || record.termination_reason() != LocalProviderTerminationReasonV2::Completed
+                    || record.channel_isolation()
+                        != ArtifactReviewChannelIsolationV2::SeparateTrustedAndUntrusted
+                    || record.network_isolation()
+                        != LocalProviderNetworkIsolationV2::LiteralLoopbackAdapterTransportServerEgressNotEnforced
+                    || record.model_identity_posture()
+                        != LocalProviderModelIdentityPostureV2::ServerReportedManifestDigestMatchedPinnedExpectedValueServerNotAttested
+                    || record.resource_isolation()
+                        != LocalProviderResourceIsolationV2::AdapterWallClockStreamCapsServerResourcesNotEnforced
+                {
+                    return Err(ArtifactReviewAuthErrorV2::InvalidRuntimeEvidence);
+                }
+            }
+        }
         total_stdout = total_stdout
             .checked_add(capture.stdout.len())
             .ok_or(ArtifactReviewAuthErrorV2::InvalidRuntimeEvidence)?;
@@ -886,6 +925,12 @@ fn derive_limitations_v2(
             LocalProviderNetworkIsolationV2::NotEnforcedCallerAuthorizedExecutable => {
                 limitations.insert("local_provider_network_isolation_not_enforced".to_string());
             }
+            LocalProviderNetworkIsolationV2::LiteralLoopbackAdapterTransportServerEgressNotEnforced => {
+                limitations.insert("ollama_adapter_transport_observed_loopback_only".to_string());
+                limitations.insert("ollama_server_egress_not_enforced".to_string());
+                limitations.insert("ollama_server_peer_process_not_attested".to_string());
+                limitations.insert("ollama_local_only_privacy_not_verified".to_string());
+            }
         }
         match record.host_isolation() {
             LocalProviderHostIsolationV2::NotSandboxedCallerAuthorizedExecutable => {
@@ -896,10 +941,24 @@ fn derive_limitations_v2(
             LocalProviderModelIdentityPostureV2::SyntheticBehaviorLabelBoundToVerifiedAdapterBytes => {
                 limitations.insert("local_provider_model_identity_synthetic".to_string());
             }
+            LocalProviderModelIdentityPostureV2::ServerReportedManifestDigestMatchedPinnedExpectedValueServerNotAttested => {
+                limitations.insert("ollama_server_executable_not_measured".to_string());
+                limitations.insert("ollama_model_manifest_digest_server_reported".to_string());
+                limitations.insert("ollama_model_weight_closure_not_independently_measured".to_string());
+                limitations.insert("ollama_server_role_semantics_not_attested".to_string());
+            }
+            LocalProviderModelIdentityPostureV2::UnavailableOrUnverified => {
+                limitations.insert("local_provider_model_identity_unverified".to_string());
+            }
         }
         match record.resource_isolation() {
             LocalProviderResourceIsolationV2::WallClockStreamCapsAndDescriptorClosureOnly => {
                 limitations.insert("local_provider_resource_isolation_partial".to_string());
+            }
+            LocalProviderResourceIsolationV2::AdapterWallClockStreamCapsServerResourcesNotEnforced => {
+                limitations.insert("ollama_adapter_resource_isolation_partial".to_string());
+                limitations.insert("ollama_server_resource_isolation_not_enforced".to_string());
+                limitations.insert("ollama_server_side_cancellation_not_verified".to_string());
             }
         }
         match record.executable_identity_posture() {
@@ -1182,7 +1241,51 @@ struct InvocationManifestWireV2 {
     model_identity_posture: String,
     resource_isolation: String,
     executable_identity_posture: String,
+    provider_observation: ProviderObservationWireV2,
     elapsed_millis: String,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum ProviderObservationWireV2 {
+    Absent,
+    OllamaLoopbackV1(Box<OllamaObservationManifestWireV2>),
+}
+
+#[derive(Serialize)]
+#[serde(deny_unknown_fields)]
+struct OllamaObservationManifestWireV2 {
+    schema_version: String,
+    adapter_id: String,
+    adapter_version: String,
+    outcome: String,
+    work_item_id: String,
+    invocation_sha256: String,
+    provider_input_sha256: String,
+    endpoint: String,
+    server_version: String,
+    requested_model: String,
+    response_model: String,
+    expected_model_content_sha256: String,
+    pre_model_content_sha256: String,
+    post_model_content_sha256: String,
+    system_message_sha256: String,
+    user_message_sha256: String,
+    role_mapping_contract_sha256: String,
+    api_request_sha256: String,
+    raw_api_response_sha256: String,
+    model_output_sha256: String,
+    model_output_byte_len: String,
+    prompt_eval_count: String,
+    eval_count: String,
+    done_reason: String,
+    seed: String,
+    temperature_milli: String,
+    top_p_milli: String,
+    context_tokens: String,
+    max_output_tokens: String,
+    observed_transport: String,
+    model_identity_posture: String,
 }
 
 #[derive(Serialize)]
@@ -1241,7 +1344,58 @@ fn invocation_manifest_wire_v2(
             record.executable_identity_posture(),
         )
         .to_string(),
+        provider_observation: provider_observation_wire_v2(record.provider_observation()),
         elapsed_millis: record.elapsed_millis().to_string(),
+    }
+}
+
+fn provider_observation_wire_v2(
+    observation: Option<&LocalProviderInvocationObservationV2>,
+) -> ProviderObservationWireV2 {
+    match observation {
+        None => ProviderObservationWireV2::Absent,
+        Some(LocalProviderInvocationObservationV2::OllamaLoopbackV1(observation)) => {
+            let frame = observation.terminal_frame();
+            ProviderObservationWireV2::OllamaLoopbackV1(Box::new(OllamaObservationManifestWireV2 {
+                schema_version: frame.schema_version.clone(),
+                adapter_id: frame.adapter_id.clone(),
+                adapter_version: frame.adapter_version.clone(),
+                outcome: "completed".to_string(),
+                work_item_id: frame.work_item_id.as_str().to_string(),
+                invocation_sha256: frame.invocation_sha256.as_str().to_string(),
+                provider_input_sha256: frame.provider_input_sha256.as_str().to_string(),
+                endpoint: frame.endpoint.clone(),
+                server_version: frame.server_version.clone(),
+                requested_model: frame.requested_model.clone(),
+                response_model: frame.response_model.clone(),
+                expected_model_content_sha256: frame
+                    .expected_model_content_sha256
+                    .as_str()
+                    .to_string(),
+                pre_model_content_sha256: frame.pre_model_content_sha256.as_str().to_string(),
+                post_model_content_sha256: frame.post_model_content_sha256.as_str().to_string(),
+                system_message_sha256: frame.system_message_sha256.as_str().to_string(),
+                user_message_sha256: frame.user_message_sha256.as_str().to_string(),
+                role_mapping_contract_sha256: frame
+                    .role_mapping_contract_sha256
+                    .as_str()
+                    .to_string(),
+                api_request_sha256: frame.api_request_sha256.as_str().to_string(),
+                raw_api_response_sha256: frame.raw_api_response_sha256.as_str().to_string(),
+                model_output_sha256: frame.model_output_sha256.as_str().to_string(),
+                model_output_byte_len: frame.model_output_byte_len.to_string(),
+                prompt_eval_count: frame.prompt_eval_count.to_string(),
+                eval_count: frame.eval_count.to_string(),
+                done_reason: frame.done_reason.clone(),
+                seed: frame.seed.to_string(),
+                temperature_milli: frame.temperature_milli.to_string(),
+                top_p_milli: frame.top_p_milli.to_string(),
+                context_tokens: frame.context_tokens.to_string(),
+                max_output_tokens: frame.max_output_tokens.to_string(),
+                observed_transport: frame.observed_transport.clone(),
+                model_identity_posture: frame.model_identity_posture.clone(),
+            }))
+        }
     }
 }
 
@@ -1324,6 +1478,9 @@ fn network_isolation_wire_v2(value: LocalProviderNetworkIsolationV2) -> &'static
         LocalProviderNetworkIsolationV2::NotEnforcedCallerAuthorizedExecutable => {
             "not_enforced_caller_authorized_executable"
         }
+        LocalProviderNetworkIsolationV2::LiteralLoopbackAdapterTransportServerEgressNotEnforced => {
+            "literal_loopback_adapter_transport_server_egress_not_enforced"
+        }
     }
 }
 
@@ -1340,6 +1497,12 @@ fn model_identity_posture_wire_v2(value: LocalProviderModelIdentityPostureV2) ->
         LocalProviderModelIdentityPostureV2::SyntheticBehaviorLabelBoundToVerifiedAdapterBytes => {
             "synthetic_behavior_label_bound_to_verified_adapter_bytes"
         }
+        LocalProviderModelIdentityPostureV2::ServerReportedManifestDigestMatchedPinnedExpectedValueServerNotAttested => {
+            "server_reported_manifest_digest_matched_pinned_expected_value_server_not_attested"
+        }
+        LocalProviderModelIdentityPostureV2::UnavailableOrUnverified => {
+            "unavailable_or_unverified"
+        }
     }
 }
 
@@ -1347,6 +1510,9 @@ fn resource_isolation_wire_v2(value: LocalProviderResourceIsolationV2) -> &'stat
     match value {
         LocalProviderResourceIsolationV2::WallClockStreamCapsAndDescriptorClosureOnly => {
             "wall_clock_stream_caps_and_descriptor_closure_only"
+        }
+        LocalProviderResourceIsolationV2::AdapterWallClockStreamCapsServerResourcesNotEnforced => {
+            "adapter_wall_clock_stream_caps_server_resources_not_enforced"
         }
     }
 }

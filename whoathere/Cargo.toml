@@ -17,6 +17,7 @@ members = [
     "crates/whoathere-artifact",
     "crates/whoathere-artifact-review-runtime",
     "crates/whoathere-artifact-review-auth",
+    "crates/whoathere-artifact-review-ollama",
     "crates/whoathere-job-log",
     "crates/whoathere-macos-vm",
     "crates/whoathere-runner",

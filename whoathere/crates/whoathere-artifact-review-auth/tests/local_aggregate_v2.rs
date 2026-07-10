@@ -21,6 +21,7 @@ use whoathere_artifact_review_auth::{
     ArtifactReviewSigningKeyV2, ArtifactReviewSubjectBindingV2, ExplicitDigestStateV2,
     SignedArtifactReviewEvidencePackageV2, SignedArtifactReviewStatementV2,
 };
+use whoathere_artifact_review_ollama::{OLLAMA_ADAPTER_ID_V1, OLLAMA_ADAPTER_VERSION_V1};
 use whoathere_artifact_review_runtime::{
     inert_fixture_model_content_sha256_v2, run_local_provider_for_evidence_v2,
     ArtifactReviewCancellationTokenV2, AuthorizedLocalProviderV2, EvidenceBoundLocalProviderRunV2,
@@ -86,6 +87,12 @@ struct Fixture {
 fn provider_path() -> PathBuf {
     PathBuf::from(env!(
         "CARGO_BIN_EXE_whoathere-auth-inert-artifact-review-provider"
+    ))
+}
+
+fn ollama_protocol_provider_path() -> PathBuf {
+    PathBuf::from(env!(
+        "CARGO_BIN_EXE_whoathere-auth-inert-ollama-protocol-provider"
     ))
 }
 
@@ -227,6 +234,69 @@ fn fixture(label: &str) -> Fixture {
     }
 }
 
+fn ollama_fixture(label: &str) -> Fixture {
+    let executable_path = ollama_protocol_provider_path();
+    let executable_bytes = fs::read(&executable_path).expect("Ollama protocol provider bytes");
+    let provider = ArtifactReviewProviderIdentityV2 {
+        adapter_id: OLLAMA_ADAPTER_ID_V1.to_string(),
+        adapter_version: OLLAMA_ADAPTER_VERSION_V1.to_string(),
+        adapter_sha256: Sha256Digest::from_bytes(&executable_bytes),
+    };
+    let model = ArtifactReviewModelIdentityV2 {
+        model_id: "qwen3:8b-inert-auth".to_string(),
+        model_version: "manifest-2026-07-10".to_string(),
+        model_content_sha256: Sha256Digest::from_bytes(b"auth inert pinned Ollama manifest"),
+    };
+    let artifact = normalized_artifact();
+    let analysis = analyze_normalized_artifact(&artifact).expect("analysis");
+    let subject = evidence_subject(&artifact);
+    let request = build_artifact_review_request_v2(
+        &subject,
+        &artifact,
+        &analysis,
+        ArtifactReviewConfigV2 {
+            policy_sha256: Sha256Digest::from_bytes(b"auth Ollama integration policy"),
+            provider: provider.clone(),
+            model,
+            prompt: ArtifactReviewPromptIdentityV2 {
+                template_id: ARTIFACT_REVIEW_PROMPT_TEMPLATE_ID_V2.to_string(),
+                template_version: ARTIFACT_REVIEW_PROMPT_TEMPLATE_VERSION_V2.to_string(),
+                template_sha256: artifact_review_prompt_template_sha256_v2(),
+            },
+            adapter_result_schema_sha256: artifact_review_adapter_result_schema_sha256_v2(),
+            privacy_posture: ArtifactReviewPrivacyPostureV2::LocalOnly,
+            inference: ArtifactReviewInferenceSettingsV2 {
+                seed: 37,
+                temperature_milli: 0,
+                top_p_milli: 1_000,
+                context_tokens: 16_384,
+                max_output_tokens: 2_048,
+            },
+        },
+    )
+    .expect("Ollama request");
+    let authorization =
+        AuthorizedLocalProviderV2::new_ollama_loopback_v1(&request, executable_path)
+            .expect("Ollama authorization");
+    let root = PrivateTempRoot::new(label);
+    let policy = LocalProviderRuntimePolicyV2::new(
+        root.path().to_path_buf(),
+        Duration::from_secs(2),
+        Duration::from_secs(20),
+        Duration::from_millis(50),
+    )
+    .expect("policy");
+    Fixture {
+        artifact,
+        analysis,
+        subject,
+        request,
+        authorization,
+        policy,
+        _root: root,
+    }
+}
+
 fn key_identity() -> ArtifactReviewKeyIdentityV2 {
     ArtifactReviewKeyIdentityV2::new_host_control_plane(
         "local-mac-auth-test",
@@ -342,6 +412,75 @@ fn run(
         cancellation,
     )
     .expect("evidence-bound local provider run")
+}
+
+#[test]
+fn ollama_terminal_observation_is_reparsed_authenticated_and_never_allows() {
+    let fixture = ollama_fixture("ollama-observation");
+    let authority = ArtifactReviewChallengeAuthorityV2::new_memory_only().expect("authority");
+    let context = context(&fixture, &authority, "evidence-ollama", "run-ollama");
+    let signer = signer();
+    let registry =
+        ArtifactReviewKeyRegistryV2::new([signer.verification_record()]).expect("registry");
+    let package = sign_local_provider_artifact_review_evidence_v2(
+        &fixture.subject,
+        &fixture.artifact,
+        &fixture.analysis,
+        &fixture.request,
+        &context,
+        run(
+            &fixture,
+            &context,
+            &ArtifactReviewCancellationTokenV2::new(),
+        ),
+        &signer,
+        &authority,
+    )
+    .expect("signed Ollama protocol package");
+    let (statement, restricted) = package.into_parts();
+    let aggregate: serde_json::Value =
+        serde_json::from_slice(restricted.aggregate_manifest_bytes()).expect("aggregate JSON");
+    assert_eq!(
+        aggregate["schema_version"],
+        "whoathere.artifact_review_authenticated_aggregate_manifest.v3"
+    );
+    assert_eq!(
+        aggregate["invocations"][0]["provider_observation"]["kind"],
+        "ollama_loopback_v1"
+    );
+    let limitations = aggregate["limitations"]
+        .as_array()
+        .expect("limitations")
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect::<Vec<_>>();
+    for expected in [
+        "ollama_server_egress_not_enforced",
+        "ollama_server_peer_process_not_attested",
+        "ollama_model_manifest_digest_server_reported",
+        "ollama_model_weight_closure_not_independently_measured",
+        "ollama_server_role_semantics_not_attested",
+    ] {
+        assert!(limitations.contains(&expected), "missing {expected}");
+    }
+    let authenticated = verify_and_accept_local_provider_artifact_review_evidence_v2(
+        SignedArtifactReviewEvidencePackageV2::from_parts(statement, restricted),
+        &fixture.subject,
+        &fixture.artifact,
+        &fixture.analysis,
+        &fixture.request,
+        &context,
+        &registry,
+        &authority,
+    )
+    .expect("authenticated Ollama protocol evidence");
+    assert!(authenticated.is_authenticated());
+    assert!(!authenticated.is_complete());
+    assert!(!authenticated.can_authorize_allow());
+    assert_eq!(
+        authenticated.result().verdict(),
+        ArtifactReviewVerdictV2::Uncertain
+    );
 }
 
 #[test]

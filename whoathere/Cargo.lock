@@ -510,10 +510,24 @@ dependencies = [
  "serde_json_canonicalizer",
  "tar",
  "whoathere-artifact",
+ "whoathere-artifact-review-ollama",
  "whoathere-artifact-review-runtime",
  "whoathere-detector",
  "whoathere-evidence",
  "zeroize",
+]
+
+[[package]]
+name = "whoathere-artifact-review-ollama"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "serde",
+ "serde_json",
+ "tar",
+ "whoathere-artifact",
+ "whoathere-detector",
+ "whoathere-evidence",
 ]
 
 [[package]]
@@ -525,6 +539,7 @@ dependencies = [
  "serde_json",
  "tar",
  "whoathere-artifact",
+ "whoathere-artifact-review-ollama",
  "whoathere-detector",
  "whoathere-evidence",
 ]

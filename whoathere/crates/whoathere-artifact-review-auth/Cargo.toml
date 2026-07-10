@@ -10,6 +10,10 @@ rust-version = "1.85"
 name = "whoathere-auth-inert-artifact-review-provider"
 path = "../whoathere-artifact-review-runtime/src/bin/inert_provider.rs"
 
+[[bin]]
+name = "whoathere-auth-inert-ollama-protocol-provider"
+path = "../whoathere-artifact-review-runtime/src/bin/inert_ollama_protocol_provider.rs"
+
 [dependencies]
 ed25519-dalek = { version = "=3.0.0", default-features = false, features = ["fast", "zeroize"] }
 getrandom = { version = "=0.4.3", default-features = false }
@@ -18,6 +22,7 @@ serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.150"
 serde_json_canonicalizer = "=0.3.2"
 whoathere-artifact = { path = "../whoathere-artifact" }
+whoathere-artifact-review-ollama = { path = "../whoathere-artifact-review-ollama" }
 whoathere-artifact-review-runtime = { path = "../whoathere-artifact-review-runtime" }
 whoathere-detector = { path = "../whoathere-detector" }
 whoathere-evidence = { path = "../whoathere-evidence" }

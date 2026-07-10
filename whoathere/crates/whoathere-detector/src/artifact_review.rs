@@ -57,6 +57,11 @@ pub fn artifact_review_prompt_template_sha256_v2() -> Sha256Digest {
     Sha256Digest::from_bytes(TRUSTED_SYSTEM_PROMPT_V2.as_bytes())
 }
 
+/// Exact trusted instruction submitted in the provider's system role.
+pub fn artifact_review_system_prompt_v2() -> &'static str {
+    TRUSTED_SYSTEM_PROMPT_V2
+}
+
 pub fn artifact_review_model_output_schema_sha256_v2() -> Sha256Digest {
     Sha256Digest::from_bytes(STRICT_MODEL_OUTPUT_SCHEMA_JSON_V2.as_bytes())
 }
@@ -73,7 +78,7 @@ pub fn artifact_review_adapter_result_schema_json_v2() -> &'static str {
     STRICT_ADAPTER_RESULT_SCHEMA_JSON_V2
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactReviewPassV2 {
     Trigger,
@@ -88,7 +93,7 @@ pub enum ArtifactReviewPassV2 {
 }
 
 impl ArtifactReviewPassV2 {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Trigger => "trigger",
             Self::CredentialFilesystem => "credential_filesystem",
@@ -112,7 +117,7 @@ const REQUIRED_CHUNK_PASSES: [ArtifactReviewPassV2; 6] = [
     ArtifactReviewPassV2::EnvironmentGating,
 ];
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ArtifactReviewProviderIdentityV2 {
     pub adapter_id: String,
@@ -120,7 +125,7 @@ pub struct ArtifactReviewProviderIdentityV2 {
     pub adapter_sha256: Sha256Digest,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ArtifactReviewModelIdentityV2 {
     pub model_id: String,
@@ -128,7 +133,7 @@ pub struct ArtifactReviewModelIdentityV2 {
     pub model_content_sha256: Sha256Digest,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ArtifactReviewPromptIdentityV2 {
     pub template_id: String,
@@ -136,14 +141,14 @@ pub struct ArtifactReviewPromptIdentityV2 {
     pub template_sha256: Sha256Digest,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactReviewPrivacyPostureV2 {
     LocalOnly,
     ApprovedHosted,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ArtifactReviewInferenceSettingsV2 {
     pub seed: u64,
@@ -243,7 +248,7 @@ impl ArtifactReviewContextKindV2 {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ArtifactReviewContextReferenceV2 {
     context_id: Sha256Digest,
@@ -795,6 +800,10 @@ impl ArtifactReviewInvocationBindingV2 {
         &self.artifact_sha256
     }
 
+    pub fn envelope_sha256(&self) -> &Sha256Digest {
+        &self.envelope_sha256
+    }
+
     pub fn manifest_sha256(&self) -> &Sha256Digest {
         &self.manifest_sha256
     }
@@ -803,8 +812,36 @@ impl ArtifactReviewInvocationBindingV2 {
         &self.policy_sha256
     }
 
+    pub fn deterministic_analysis_sha256(&self) -> &Sha256Digest {
+        &self.deterministic_analysis_sha256
+    }
+
     pub fn coverage_manifest_sha256(&self) -> &Sha256Digest {
         &self.coverage_manifest_sha256
+    }
+
+    pub fn provider_adapter_sha256(&self) -> &Sha256Digest {
+        &self.provider_adapter_sha256
+    }
+
+    pub fn model_content_sha256(&self) -> &Sha256Digest {
+        &self.model_content_sha256
+    }
+
+    pub fn prompt_template_sha256(&self) -> &Sha256Digest {
+        &self.prompt_template_sha256
+    }
+
+    pub fn model_output_schema_sha256(&self) -> &Sha256Digest {
+        &self.model_output_schema_sha256
+    }
+
+    pub fn adapter_result_schema_sha256(&self) -> &Sha256Digest {
+        &self.adapter_result_schema_sha256
+    }
+
+    pub fn privacy_posture(&self) -> ArtifactReviewPrivacyPostureV2 {
+        self.privacy_posture
     }
 }
 
@@ -864,6 +901,214 @@ struct ArtifactReviewProviderInputUntrustedV2<'a> {
     start_line: u64,
     end_line: u64,
     source_text: &'a str,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OwnedArtifactReviewProviderInputWireV2 {
+    schema_version: String,
+    work_item_id: Sha256Digest,
+    invocation_sha256: Sha256Digest,
+    trusted: OwnedArtifactReviewProviderInputTrustedV2,
+    binding: OwnedArtifactReviewProviderInputBindingV2,
+    untrusted: OwnedArtifactReviewProviderInputUntrustedV2,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OwnedArtifactReviewProviderInputTrustedV2 {
+    pass: ArtifactReviewPassV2,
+    provider: ArtifactReviewProviderIdentityV2,
+    model: ArtifactReviewModelIdentityV2,
+    prompt: ArtifactReviewPromptIdentityV2,
+    inference: ArtifactReviewInferenceSettingsV2,
+    system_prompt: String,
+    model_output_schema_json: String,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OwnedArtifactReviewProviderInputBindingV2 {
+    request_sha256: Sha256Digest,
+    artifact_sha256: Sha256Digest,
+    envelope_sha256: Sha256Digest,
+    manifest_sha256: Sha256Digest,
+    policy_sha256: Sha256Digest,
+    deterministic_analysis_sha256: Sha256Digest,
+    coverage_manifest_sha256: Sha256Digest,
+    provider_adapter_sha256: Sha256Digest,
+    model_content_sha256: Sha256Digest,
+    prompt_template_sha256: Sha256Digest,
+    model_output_schema_sha256: Sha256Digest,
+    adapter_result_schema_sha256: Sha256Digest,
+    privacy_posture: ArtifactReviewPrivacyPostureV2,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OwnedArtifactReviewProviderInputUntrustedV2 {
+    file_id: Sha256Digest,
+    file_sha256: Sha256Digest,
+    chunk_id: Sha256Digest,
+    selected_sha256: Sha256Digest,
+    contexts: Vec<ArtifactReviewContextReferenceV2>,
+    normalized_path: String,
+    language: SourceLanguage,
+    start_byte: u64,
+    end_byte: u64,
+    start_line: u64,
+    end_line: u64,
+    source_text: String,
+}
+
+/// Strictly decoded provider input whose exact bindings have been
+/// independently reconstructed from the received canonical bytes.
+pub struct ValidatedArtifactReviewProviderInputV2 {
+    invocation: ArtifactReviewInvocationV2,
+    provider_input_sha256: Sha256Digest,
+}
+
+impl fmt::Debug for ValidatedArtifactReviewProviderInputV2 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ValidatedArtifactReviewProviderInputV2")
+            .field("work_item_id", self.invocation.work_item_id())
+            .field("invocation_sha256", self.invocation.invocation_sha256())
+            .field("provider_input_sha256", &self.provider_input_sha256)
+            .field("pass", &self.invocation.pass())
+            .field("provider", &"<redacted>")
+            .field("model", &"<redacted>")
+            .field("normalized_path", &"<redacted>")
+            .field("source_text", &"<redacted>")
+            .finish()
+    }
+}
+
+impl ValidatedArtifactReviewProviderInputV2 {
+    pub fn work_item_id(&self) -> &Sha256Digest {
+        self.invocation.work_item_id()
+    }
+
+    pub fn invocation_sha256(&self) -> &Sha256Digest {
+        self.invocation.invocation_sha256()
+    }
+
+    pub fn provider_input_sha256(&self) -> &Sha256Digest {
+        &self.provider_input_sha256
+    }
+
+    pub fn pass(&self) -> ArtifactReviewPassV2 {
+        self.invocation.pass()
+    }
+
+    pub fn provider(&self) -> &ArtifactReviewProviderIdentityV2 {
+        &self.invocation.provider
+    }
+
+    pub fn model(&self) -> &ArtifactReviewModelIdentityV2 {
+        &self.invocation.model
+    }
+
+    pub fn prompt(&self) -> &ArtifactReviewPromptIdentityV2 {
+        &self.invocation.prompt
+    }
+
+    pub fn inference(&self) -> &ArtifactReviewInferenceSettingsV2 {
+        &self.invocation.binding.inference
+    }
+
+    pub fn binding(&self) -> &ArtifactReviewInvocationBindingV2 {
+        self.invocation.binding()
+    }
+
+    pub fn untrusted(&self) -> &UntrustedArtifactChunkV2 {
+        self.invocation.untrusted()
+    }
+
+    pub fn trusted_system_prompt(&self) -> &'static str {
+        artifact_review_system_prompt_v2()
+    }
+
+    pub fn trusted_model_output_schema_json(&self) -> &'static str {
+        artifact_review_model_output_schema_json_v2()
+    }
+
+    pub fn canonical_provider_input_json_v2(&self) -> Result<Vec<u8>, ArtifactReviewErrorV2> {
+        self.invocation.canonical_provider_input_json_v2()
+    }
+}
+
+/// Decode one canonical provider invocation and independently recheck every
+/// request, model, prompt, chunk, range, context, and source binding.
+pub fn decode_and_validate_artifact_review_provider_input_v2(
+    bytes: &[u8],
+) -> Result<ValidatedArtifactReviewProviderInputV2, ArtifactReviewErrorV2> {
+    if bytes.len() > MAX_ARTIFACT_REVIEW_PROVIDER_INPUT_BYTES_V2 {
+        return Err(ArtifactReviewErrorV2::ProviderInputLimitExceeded);
+    }
+    let mut deserializer = serde_json::Deserializer::from_slice(bytes);
+    let wire = OwnedArtifactReviewProviderInputWireV2::deserialize(&mut deserializer)
+        .map_err(|_| ArtifactReviewErrorV2::InvalidProviderInputWire)?;
+    deserializer
+        .end()
+        .map_err(|_| ArtifactReviewErrorV2::InvalidProviderInputWire)?;
+    if wire.schema_version != ARTIFACT_REVIEW_PROVIDER_INPUT_SCHEMA_V2
+        || wire.trusted.system_prompt != TRUSTED_SYSTEM_PROMPT_V2
+        || wire.trusted.model_output_schema_json != STRICT_MODEL_OUTPUT_SCHEMA_JSON_V2
+    {
+        return Err(ArtifactReviewErrorV2::InvalidProviderInputWire);
+    }
+
+    let invocation = ArtifactReviewInvocationV2 {
+        work_item_id: wire.work_item_id,
+        invocation_sha256: wire.invocation_sha256,
+        pass: wire.trusted.pass,
+        provider: wire.trusted.provider,
+        model: wire.trusted.model,
+        prompt: wire.trusted.prompt,
+        trusted_system_prompt: TRUSTED_SYSTEM_PROMPT_V2,
+        trusted_model_output_schema_json: STRICT_MODEL_OUTPUT_SCHEMA_JSON_V2,
+        trusted_adapter_result_schema_json: STRICT_ADAPTER_RESULT_SCHEMA_JSON_V2,
+        binding: ArtifactReviewInvocationBindingV2 {
+            request_sha256: wire.binding.request_sha256,
+            artifact_sha256: wire.binding.artifact_sha256,
+            envelope_sha256: wire.binding.envelope_sha256,
+            manifest_sha256: wire.binding.manifest_sha256,
+            policy_sha256: wire.binding.policy_sha256,
+            deterministic_analysis_sha256: wire.binding.deterministic_analysis_sha256,
+            coverage_manifest_sha256: wire.binding.coverage_manifest_sha256,
+            provider_adapter_sha256: wire.binding.provider_adapter_sha256,
+            model_content_sha256: wire.binding.model_content_sha256,
+            prompt_template_sha256: wire.binding.prompt_template_sha256,
+            model_output_schema_sha256: wire.binding.model_output_schema_sha256,
+            adapter_result_schema_sha256: wire.binding.adapter_result_schema_sha256,
+            privacy_posture: wire.binding.privacy_posture,
+            inference: wire.trusted.inference,
+        },
+        untrusted: UntrustedArtifactChunkV2 {
+            file_id: wire.untrusted.file_id,
+            file_sha256: wire.untrusted.file_sha256,
+            chunk_id: wire.untrusted.chunk_id,
+            selected_sha256: wire.untrusted.selected_sha256,
+            normalized_path: wire.untrusted.normalized_path,
+            language: wire.untrusted.language,
+            contexts: wire.untrusted.contexts,
+            start_byte: wire.untrusted.start_byte,
+            end_byte: wire.untrusted.end_byte,
+            start_line: wire.untrusted.start_line,
+            end_line: wire.untrusted.end_line,
+            bytes: wire.untrusted.source_text.into_bytes(),
+        },
+    };
+    invocation.validate_provider_input_binding_v2()?;
+    let canonical = invocation.canonical_provider_input_json_v2()?;
+    if canonical != bytes {
+        return Err(ArtifactReviewErrorV2::InvalidProviderInputWire);
+    }
+    Ok(ValidatedArtifactReviewProviderInputV2 {
+        provider_input_sha256: Sha256Digest::from_bytes(bytes),
+        invocation,
+    })
 }
 
 struct BoundedArtifactReviewProviderInputWriterV2 {
@@ -2043,6 +2288,7 @@ pub enum ArtifactReviewErrorV2 {
     WorkItemLimitExceeded,
     InvocationSourceByteLimitExceeded,
     ProviderInputLimitExceeded,
+    InvalidProviderInputWire,
     UnknownWorkItem,
     ChunkMismatch,
     Serialization,
@@ -2078,6 +2324,7 @@ impl ArtifactReviewErrorV2 {
             Self::ProviderInputLimitExceeded => {
                 "artifact_review_v2_provider_input_byte_limit_exceeded"
             }
+            Self::InvalidProviderInputWire => "artifact_review_v2_provider_input_wire_invalid",
             Self::UnknownWorkItem => "artifact_review_v2_work_item_unknown",
             Self::ChunkMismatch => "artifact_review_v2_chunk_mismatch",
             Self::Serialization => "artifact_review_v2_serialization_failed",
