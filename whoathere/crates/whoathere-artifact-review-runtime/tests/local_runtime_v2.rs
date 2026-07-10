@@ -9,19 +9,21 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use whoathere_artifact::{
     normalize_artifact, AcquisitionMethod, ArtifactEnvelope, ArtifactEnvelopeInput, ArtifactFormat,
     ArtifactSourceType, Ecosystem, NormalizationLimits, NormalizedArtifact, Sha256Digest,
 };
 use whoathere_artifact_review_runtime::{
-    inert_fixture_model_content_sha256_v2, run_local_provider_v2,
-    ArtifactReviewCancellationTokenV2, AuthorizedLocalProviderV2,
+    inert_fixture_model_content_sha256_v2, run_local_provider_for_evidence_v2,
+    run_local_provider_v2, ArtifactReviewCancellationTokenV2, AuthorizedLocalProviderV2,
+    EvidenceBoundLocalProviderRunV2, LocalProviderEvidenceExecutionBindingV2,
     LocalProviderExecutableIdentityPostureV2, LocalProviderHostIsolationV2,
     LocalProviderModelIdentityPostureV2, LocalProviderNetworkIsolationV2,
     LocalProviderResourceIsolationV2, LocalProviderRuntimeErrorV2, LocalProviderRuntimePolicyV2,
-    LocalProviderTerminationReasonV2, INERT_PROVIDER_ADAPTER_ID_V2,
-    INERT_PROVIDER_ADAPTER_VERSION_V2, INERT_PROVIDER_MODEL_VERSION_V2,
+    LocalProviderTerminalPhaseV2, LocalProviderTerminationReasonV2, LocalProviderWorkPartitionV2,
+    INERT_PROVIDER_ADAPTER_ID_V2, INERT_PROVIDER_ADAPTER_VERSION_V2,
+    INERT_PROVIDER_MODEL_VERSION_V2, MAX_LOCAL_PROVIDER_EVIDENCE_EXECUTION_ID_BYTES_V2,
     MAX_LOCAL_PROVIDER_STDERR_BYTES_V2,
 };
 use whoathere_detector::{
@@ -253,6 +255,216 @@ fn run(
     )
 }
 
+fn first_invocation_dispatch_ready(root: &Path) -> bool {
+    let Ok(run_directories) = fs::read_dir(root) else {
+        return false;
+    };
+    run_directories.filter_map(Result::ok).any(|entry| {
+        entry
+            .path()
+            .join("invocation-000000")
+            .join("home")
+            .join(".whoathere-inert-provider-dispatch-ready")
+            .is_file()
+    })
+}
+
+fn evidence_execution_binding(label: &str) -> LocalProviderEvidenceExecutionBindingV2 {
+    LocalProviderEvidenceExecutionBindingV2::new(
+        format!(
+            "arv2-challenge-{}",
+            Sha256Digest::from_bytes(format!("challenge {label}").as_bytes())
+        ),
+        format!("evidence-{label}"),
+        format!("run-{label}"),
+        Sha256Digest::from_bytes(format!("canonical challenge binding {label}").as_bytes()),
+    )
+    .expect("valid evidence execution binding")
+}
+
+fn run_for_evidence(
+    fixture: &Fixture,
+    binding: LocalProviderEvidenceExecutionBindingV2,
+) -> Result<EvidenceBoundLocalProviderRunV2, LocalProviderRuntimeErrorV2> {
+    run_local_provider_for_evidence_v2(
+        binding,
+        &fixture.subject,
+        &fixture.artifact,
+        &fixture.analysis,
+        &fixture.request,
+        &fixture.authorization,
+        &fixture.policy,
+        &ArtifactReviewCancellationTokenV2::new(),
+    )
+}
+
+fn assert_all_unattempted_terminal_run(
+    execution: &whoathere_artifact_review_runtime::LocalProviderRunV2,
+    request: &ArtifactReviewRequestV2,
+    expected_error: LocalProviderRuntimeErrorV2,
+) {
+    assert!(execution.provider_outputs().is_empty());
+    assert!(execution.invocation_records().is_empty());
+    assert!(execution.restricted_captures().is_empty());
+    assert!(execution.recorded_work_item_ids().is_empty());
+    assert!(execution
+        .attempted_without_capture_work_item_ids()
+        .is_empty());
+    assert_eq!(
+        execution.unattempted_work_item_ids(),
+        request
+            .work_items()
+            .iter()
+            .map(|item| item.work_item_id().clone())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(execution.terminal_error(), Some(expected_error));
+    assert_eq!(
+        execution.terminal_phase(),
+        Some(LocalProviderTerminalPhaseV2::RunSetup)
+    );
+    assert!(execution.terminal_error_work_item_id().is_none());
+    assert!(execution.run_directory_cleanup_verified());
+    assert!(execution.secondary_cleanup_error().is_none());
+    assert!(!execution.is_dispatch_complete());
+    assert!(!execution.is_authenticated());
+    assert!(!execution.can_authorize_allow());
+}
+
+#[test]
+fn evidence_execution_binding_validates_ids_and_redacts_them_from_debug() {
+    let binding = evidence_execution_binding("binding-validation");
+    assert!(binding.challenge_id().starts_with("arv2-challenge-sha256:"));
+    assert_eq!(binding.evidence_id(), "evidence-binding-validation");
+    assert_eq!(binding.run_id(), "run-binding-validation");
+    assert_eq!(
+        binding.challenge_binding_sha256(),
+        &Sha256Digest::from_bytes(b"canonical challenge binding binding-validation")
+    );
+    assert!(!binding.is_authenticated());
+    assert!(!binding.can_authorize_allow());
+    let debug = format!("{binding:?}");
+    for raw_id in [
+        binding.challenge_id(),
+        binding.evidence_id(),
+        binding.run_id(),
+    ] {
+        assert!(!debug.contains(raw_id));
+    }
+
+    let digest = Sha256Digest::from_bytes(b"canonical challenge binding");
+    let too_long = "a".repeat(MAX_LOCAL_PROVIDER_EVIDENCE_EXECUTION_ID_BYTES_V2 + 1);
+    for (challenge_id, evidence_id, run_id) in [
+        ("".to_string(), "evidence".to_string(), "run".to_string()),
+        ("challenge".to_string(), ".".to_string(), "run".to_string()),
+        (
+            "challenge".to_string(),
+            "evidence".to_string(),
+            "run with spaces".to_string(),
+        ),
+        (
+            "challenge".to_string(),
+            "evidence".to_string(),
+            "rún".to_string(),
+        ),
+        (too_long, "evidence".to_string(), "run".to_string()),
+    ] {
+        assert!(matches!(
+            LocalProviderEvidenceExecutionBindingV2::new(
+                challenge_id,
+                evidence_id,
+                run_id,
+                digest.clone(),
+            ),
+            Err(LocalProviderRuntimeErrorV2::InvalidEvidenceExecutionBinding)
+        ));
+    }
+    assert!(Sha256Digest::parse("sha256:not-a-canonical-digest").is_err());
+}
+
+#[test]
+fn distinct_evidence_bindings_produce_distinct_host_timed_bound_runs() {
+    let fixture = fixture("whoathere-inert-fixture-echo");
+    let first_binding = evidence_execution_binding("first-bound-run");
+    let second_binding = evidence_execution_binding("second-bound-run");
+    let first_raw_ids = [
+        first_binding.challenge_id().to_string(),
+        first_binding.evidence_id().to_string(),
+        first_binding.run_id().to_string(),
+    ];
+    let first = run_for_evidence(&fixture, first_binding.clone()).expect("first bound run");
+    let second = run_for_evidence(&fixture, second_binding.clone()).expect("second bound run");
+
+    assert_eq!(first.binding(), &first_binding);
+    assert_eq!(second.binding(), &second_binding);
+    assert_ne!(first.binding(), second.binding());
+    for bound in [&first, &second] {
+        assert!(bound.started_at_unix_seconds() > 0);
+        assert!(bound.started_at_unix_seconds() <= bound.finished_at_unix_seconds());
+        assert!(bound.local_provider_run().is_dispatch_complete());
+        assert!(!bound.is_authenticated());
+        assert!(!bound.can_authorize_allow());
+    }
+    let debug = format!("{first:?}");
+    for raw_id in first_raw_ids {
+        assert!(!debug.contains(&raw_id));
+    }
+
+    let (consumed_binding, started_at, finished_at, unbound_run) = first.into_parts();
+    assert_eq!(consumed_binding, first_binding);
+    assert!(started_at > 0);
+    assert!(started_at <= finished_at);
+    assert!(unbound_run.is_dispatch_complete());
+}
+
+#[test]
+fn bound_wrapper_keeps_partial_runs_but_propagates_underlying_errors() {
+    let base = fixture("whoathere-inert-fixture-echo");
+    let unsafe_root = base.root.path().join("bound-unsafe-runtime-root");
+    fs::create_dir(&unsafe_root).expect("create unsafe runtime root");
+    fs::set_permissions(&unsafe_root, fs::Permissions::from_mode(0o777))
+        .expect("set unsafe root mode");
+    let unsafe_policy = LocalProviderRuntimePolicyV2::new(
+        unsafe_root,
+        Duration::from_secs(1),
+        Duration::from_secs(2),
+        Duration::from_millis(20),
+    )
+    .expect("syntactically valid unsafe policy");
+    let partial_binding = evidence_execution_binding("bound-partial");
+    let partial = run_local_provider_for_evidence_v2(
+        partial_binding.clone(),
+        &base.subject,
+        &base.artifact,
+        &base.analysis,
+        &base.request,
+        &base.authorization,
+        &unsafe_policy,
+        &ArtifactReviewCancellationTokenV2::new(),
+    )
+    .expect("validated setup failure remains evidence-bound");
+    assert_eq!(partial.binding(), &partial_binding);
+    assert_eq!(
+        partial.local_provider_run().terminal_error(),
+        Some(LocalProviderRuntimeErrorV2::RuntimeRootInvalid)
+    );
+
+    let mismatched = fixture("whoathere-inert-fixture-stderr");
+    assert!(matches!(
+        run_local_provider_for_evidence_v2(
+            evidence_execution_binding("bound-underlying-error"),
+            &base.subject,
+            &base.artifact,
+            &base.analysis,
+            &base.request,
+            &mismatched.authorization,
+            &base.policy,
+            &ArtifactReviewCancellationTokenV2::new(),
+        ),
+        Err(LocalProviderRuntimeErrorV2::AuthorizationMismatch)
+    ));
+}
+
 #[test]
 fn exact_inert_provider_outputs_normalize_with_bound_sanitized_records() {
     let fixture = fixture("whoathere-inert-fixture-echo");
@@ -317,6 +529,7 @@ fn exact_inert_provider_outputs_normalize_with_bound_sanitized_records() {
             ArtifactReviewChannelIsolationV2::CollapsedPrompt
         );
         assert!(record.stdout_eof_verified());
+        assert!(record.stderr_eof_verified());
         assert!(record.process_group_cleanup_verified());
         assert!(!record.descendant_containment_verified());
         assert_eq!(
@@ -372,6 +585,234 @@ fn exact_inert_provider_outputs_normalize_with_bound_sanitized_records() {
         "INERT_TOKEN",
     ] {
         assert!(!debug.contains(secret));
+    }
+    assert!(!execution.is_authenticated());
+    assert!(!execution.can_authorize_allow());
+    assert!(!execution.work_partition().is_authenticated());
+    assert!(!execution.work_partition().can_authorize_allow());
+}
+
+#[test]
+fn restricted_captures_match_records_and_require_explicit_consumption() {
+    let fixture = fixture("whoathere-inert-fixture-stderr");
+    let execution = run(&fixture, &ArtifactReviewCancellationTokenV2::new())
+        .expect("bounded stderr fixture run");
+    let expected = execution
+        .invocation_records()
+        .iter()
+        .map(|record| {
+            (
+                record.work_item_id().clone(),
+                record.stdout_capture_sha256().clone(),
+                record.stdout_capture_byte_len(),
+                record.stderr_capture_sha256().clone(),
+                record.stderr_capture_byte_len(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(execution.restricted_captures().len(), expected.len());
+    let debug = format!("{execution:?} {:?}", execution.restricted_captures());
+    assert!(!debug.contains("inert provider diagnostic"));
+    assert!(!debug.contains("whoathere-inert-provider-ready-v2"));
+
+    for (capture, (work_item_id, stdout_sha256, stdout_len, stderr_sha256, stderr_len)) in execution
+        .into_restricted_captures()
+        .into_iter()
+        .zip(expected)
+    {
+        assert_eq!(capture.work_item_id(), &work_item_id);
+        assert_eq!(capture.stdout_capture_sha256(), stdout_sha256);
+        assert_eq!(capture.stdout_capture_byte_len(), stdout_len);
+        assert_eq!(capture.stderr_capture_sha256(), stderr_sha256);
+        assert_eq!(capture.stderr_capture_byte_len(), stderr_len);
+        assert!(!capture.is_authenticated());
+        assert!(!capture.can_authorize_allow());
+        let capture_debug = format!("{capture:?}");
+        assert!(!capture_debug.contains("inert provider diagnostic"));
+        assert!(!capture_debug.contains("whoathere-inert-provider-ready-v2"));
+        capture.consume(|view| {
+            assert_eq!(view.work_item_id(), &work_item_id);
+            assert_eq!(Sha256Digest::from_bytes(view.stdout_bytes()), stdout_sha256);
+            assert_eq!(view.stdout_bytes().len() as u64, stdout_len);
+            assert_eq!(Sha256Digest::from_bytes(view.stderr_bytes()), stderr_sha256);
+            assert_eq!(view.stderr_bytes().len() as u64, stderr_len);
+            assert!(view
+                .stderr_bytes()
+                .windows(b"inert provider diagnostic".len())
+                .any(|window| window == b"inert provider diagnostic"));
+            let view_debug = format!("{view:?}");
+            assert!(!view_debug.contains("inert provider diagnostic"));
+            assert!(!view_debug.contains("whoathere-inert-provider-ready-v2"));
+        });
+    }
+}
+
+#[test]
+fn consuming_evidence_parts_preserves_records_captures_partition_and_terminal_state() {
+    let fixture = fixture("whoathere-inert-fixture-prefix-then-block-next");
+    let execution = run(&fixture, &ArtifactReviewCancellationTokenV2::new())
+        .expect("partial run with a pre-spawn terminal failure");
+    let evidence_parts = execution.into_evidence_parts();
+    assert_eq!(evidence_parts.provider_outputs().len(), 1);
+    assert_eq!(evidence_parts.invocation_records().len(), 1);
+    assert_eq!(evidence_parts.restricted_captures().len(), 1);
+    assert_eq!(
+        evidence_parts
+            .work_partition()
+            .recorded_work_item_ids()
+            .len(),
+        1
+    );
+    assert!(evidence_parts
+        .work_partition()
+        .attempted_without_capture_work_item_ids()
+        .is_empty());
+    assert_eq!(
+        evidence_parts.terminal_state().terminal_error(),
+        Some(LocalProviderRuntimeErrorV2::RunDirectoryCreationFailed)
+    );
+    assert_eq!(
+        evidence_parts.terminal_state().terminal_phase(),
+        Some(LocalProviderTerminalPhaseV2::Invocation)
+    );
+    assert_eq!(
+        evidence_parts
+            .terminal_state()
+            .terminal_error_work_item_id(),
+        Some(fixture.request.work_items()[1].work_item_id())
+    );
+    assert!(evidence_parts
+        .terminal_state()
+        .run_directory_cleanup_verified());
+    assert!(evidence_parts
+        .terminal_state()
+        .secondary_cleanup_error()
+        .is_none());
+    assert!(!evidence_parts.is_authenticated());
+    assert!(!evidence_parts.can_authorize_allow());
+    assert!(!evidence_parts.terminal_state().is_authenticated());
+    assert!(!evidence_parts.terminal_state().can_authorize_allow());
+    let debug = format!("{evidence_parts:?}");
+    assert!(!debug.contains("whoathere-inert-provider-ready-v2"));
+    assert!(!debug.contains("whoathere.artifact_review_model_output.v2"));
+
+    let (outputs, records, captures, partition, terminal_state) = evidence_parts.into_parts();
+    assert_eq!(outputs.len(), records.len());
+    assert_eq!(records.len(), captures.len());
+    assert_eq!(partition.recorded_work_item_ids().len(), records.len());
+    assert_eq!(
+        partition.recorded_work_item_ids().len()
+            + partition.attempted_without_capture_work_item_ids().len()
+            + partition.unattempted_work_item_ids().len(),
+        partition.expected_work_item_ids().len()
+    );
+    assert_eq!(
+        terminal_state.terminal_error(),
+        Some(LocalProviderRuntimeErrorV2::RunDirectoryCreationFailed)
+    );
+    assert_eq!(
+        terminal_state.terminal_phase(),
+        Some(LocalProviderTerminalPhaseV2::Invocation)
+    );
+    for (record, capture) in records.iter().zip(captures) {
+        assert_eq!(record.work_item_id(), capture.work_item_id());
+        assert_eq!(
+            record.stdout_capture_sha256(),
+            &capture.stdout_capture_sha256()
+        );
+        assert_eq!(
+            record.stderr_capture_sha256(),
+            &capture.stderr_capture_sha256()
+        );
+        capture.consume(|view| {
+            assert_eq!(
+                Sha256Digest::from_bytes(view.stdout_bytes()),
+                record.stdout_capture_sha256().clone()
+            );
+            assert_eq!(
+                Sha256Digest::from_bytes(view.stderr_bytes()),
+                record.stderr_capture_sha256().clone()
+            );
+        });
+    }
+}
+
+#[test]
+fn work_partition_constructor_rejects_nonsequential_or_tampered_classifications() {
+    let fixture = fixture("whoathere-inert-fixture-echo");
+    let expected = fixture
+        .request
+        .work_items()
+        .iter()
+        .map(|item| item.work_item_id().clone())
+        .collect::<Vec<_>>();
+    assert!(expected.len() > 2);
+    let exact = LocalProviderWorkPartitionV2::new(
+        expected.clone(),
+        vec![expected[0].clone()],
+        vec![expected[1].clone()],
+        expected[2..].to_vec(),
+    )
+    .expect("exact duplicate-free partition");
+    assert_eq!(exact.expected_work_item_ids(), expected);
+    assert!(!exact.is_authenticated());
+    assert!(!exact.can_authorize_allow());
+
+    for tampered in [
+        LocalProviderWorkPartitionV2::new(
+            expected.clone(),
+            vec![expected[0].clone()],
+            Vec::new(),
+            expected[2..].to_vec(),
+        ),
+        LocalProviderWorkPartitionV2::new(
+            expected.clone(),
+            vec![expected[0].clone()],
+            vec![expected[0].clone()],
+            expected[1..].to_vec(),
+        ),
+        LocalProviderWorkPartitionV2::new(
+            expected.clone(),
+            vec![Sha256Digest::from_bytes(b"unknown work item")],
+            Vec::new(),
+            expected.clone(),
+        ),
+        LocalProviderWorkPartitionV2::new(
+            expected.clone(),
+            vec![expected[1].clone(), expected[0].clone()],
+            Vec::new(),
+            expected[2..].to_vec(),
+        ),
+        LocalProviderWorkPartitionV2::new(
+            expected.clone(),
+            vec![expected[0].clone(), expected[2].clone()],
+            Vec::new(),
+            std::iter::once(expected[1].clone())
+                .chain(expected[3..].iter().cloned())
+                .collect(),
+        ),
+        LocalProviderWorkPartitionV2::new(
+            expected.clone(),
+            vec![expected[0].clone()],
+            vec![expected[2].clone()],
+            std::iter::once(expected[1].clone())
+                .chain(expected[3..].iter().cloned())
+                .collect(),
+        ),
+        LocalProviderWorkPartitionV2::new(
+            expected.clone(),
+            vec![expected[0].clone()],
+            Vec::new(),
+            std::iter::once(expected[2].clone())
+                .chain(std::iter::once(expected[1].clone()))
+                .chain(expected[3..].iter().cloned())
+                .collect(),
+        ),
+    ] {
+        assert!(matches!(
+            tampered,
+            Err(LocalProviderRuntimeErrorV2::InvalidWorkPartition)
+        ));
     }
 }
 
@@ -487,7 +928,10 @@ fn stdout_and_stderr_caps_stop_without_hashing_an_unbounded_remainder() {
     let stdout = fixture("whoathere-inert-fixture-stdout-overflow");
     let stdout_run = run(&stdout, &ArtifactReviewCancellationTokenV2::new())
         .expect("bounded stdout overflow run");
-    assert!(!stdout_run.provider_outputs().is_empty());
+    assert!(
+        !stdout_run.provider_outputs().is_empty(),
+        "stdout run: {stdout_run:?}"
+    );
     assert!(stdout_run.provider_outputs().iter().all(|output| {
         output.status() == ArtifactReviewWorkItemStatusV2::Truncated
             && output.captured_output_len() == MAX_ARTIFACT_REVIEW_PROVIDER_OUTPUT_BYTES_V2
@@ -496,6 +940,8 @@ fn stdout_and_stderr_caps_stop_without_hashing_an_unbounded_remainder() {
         record.termination_reason() == LocalProviderTerminationReasonV2::StdoutLimitExceeded
             && record.stdout_capture_byte_len()
                 == MAX_ARTIFACT_REVIEW_PROVIDER_OUTPUT_BYTES_V2 as u64
+            && !record.stdout_eof_verified()
+            && record.stderr_eof_verified()
     }));
     let normalized = normalize_artifact_review_provider_outputs_v2(
         &stdout.subject,
@@ -520,6 +966,7 @@ fn stdout_and_stderr_caps_stop_without_hashing_an_unbounded_remainder() {
     assert!(stderr_run.invocation_records().iter().all(|record| {
         record.termination_reason() == LocalProviderTerminationReasonV2::StderrLimitExceeded
             && record.stderr_capture_byte_len() == MAX_LOCAL_PROVIDER_STDERR_BYTES_V2 as u64
+            && !record.stderr_eof_verified()
     }));
 }
 
@@ -528,7 +975,7 @@ fn timeout_cancellation_and_descendant_cleanup_are_bounded() {
     let timeout = fixture_with_policy(
         "whoathere-inert-fixture-hang",
         Duration::from_millis(60),
-        Duration::from_secs(2),
+        Duration::from_secs(20),
         Duration::from_millis(20),
     );
     let timeout_run = run(&timeout, &ArtifactReviewCancellationTokenV2::new())
@@ -537,11 +984,20 @@ fn timeout_cancellation_and_descendant_cleanup_are_bounded() {
         timeout_run.invocation_records().iter().any(|record| {
             record.termination_reason() == LocalProviderTerminationReasonV2::PerCallTimeout
                 && record.process_group_cleanup_verified()
+                && record.stderr_eof_verified()
         }),
-        "timeout records: {:?}",
-        timeout_run.invocation_records()
+        "timeout run: {timeout_run:?}"
     );
+    assert!(timeout_run
+        .attempted_without_capture_work_item_ids()
+        .is_empty());
     assert!(!timeout_run.unattempted_work_item_ids().is_empty());
+    assert_eq!(
+        timeout_run.recorded_work_item_ids().len()
+            + timeout_run.attempted_without_capture_work_item_ids().len()
+            + timeout_run.unattempted_work_item_ids().len(),
+        timeout_run.expected_work_item_ids().len()
+    );
     let timeout_normalized = normalize_artifact_review_provider_outputs_v2(
         &timeout.subject,
         &timeout.artifact,
@@ -564,7 +1020,7 @@ fn timeout_cancellation_and_descendant_cleanup_are_bounded() {
     let ignore_term = fixture_with_policy(
         "whoathere-inert-fixture-ignore-term",
         Duration::from_millis(60),
-        Duration::from_secs(2),
+        Duration::from_secs(20),
         Duration::from_millis(20),
     );
     let ignore_term_run = run(&ignore_term, &ArtifactReviewCancellationTokenV2::new())
@@ -582,17 +1038,29 @@ fn timeout_cancellation_and_descendant_cleanup_are_bounded() {
     let cancelled = fixture_with_policy(
         "whoathere-inert-fixture-hang",
         Duration::from_secs(2),
-        Duration::from_secs(5),
+        Duration::from_secs(20),
         Duration::from_millis(20),
     );
     let token = ArtifactReviewCancellationTokenV2::new();
     let canceller = token.clone();
+    let cancellation_root = cancelled.root.path().to_path_buf();
     let cancel_thread = thread::spawn(move || {
-        thread::sleep(Duration::from_millis(200));
+        let deadline = Instant::now() + Duration::from_secs(22);
+        while Instant::now() < deadline {
+            if first_invocation_dispatch_ready(&cancellation_root) {
+                canceller.cancel();
+                return true;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
         canceller.cancel();
+        false
     });
     let cancelled_run = run(&cancelled, &token).expect("cancellation tears down provider group");
-    cancel_thread.join().expect("cancellation thread");
+    assert!(
+        cancel_thread.join().expect("cancellation thread"),
+        "provider dispatch readiness was not observed before the bounded cancellation deadline"
+    );
     assert_eq!(cancelled_run.invocation_records().len(), 1);
     assert_eq!(
         cancelled_run.invocation_records()[0].termination_reason(),
@@ -717,18 +1185,21 @@ fn executable_and_authorization_substitution_fail_before_provider_execution() {
         Duration::from_millis(20),
     )
     .expect("syntactically valid unsafe-root policy");
-    assert!(matches!(
-        run_local_provider_v2(
-            &fixture.subject,
-            &fixture.artifact,
-            &fixture.analysis,
-            &fixture.request,
-            &fixture.authorization,
-            &unsafe_root_policy,
-            &ArtifactReviewCancellationTokenV2::new(),
-        ),
-        Err(LocalProviderRuntimeErrorV2::RuntimeRootInvalid)
-    ));
+    let unsafe_root_run = run_local_provider_v2(
+        &fixture.subject,
+        &fixture.artifact,
+        &fixture.analysis,
+        &fixture.request,
+        &fixture.authorization,
+        &unsafe_root_policy,
+        &ArtifactReviewCancellationTokenV2::new(),
+    )
+    .expect("validated request returns an explicit runtime-root failure run");
+    assert_all_unattempted_terminal_run(
+        &unsafe_root_run,
+        &fixture.request,
+        LocalProviderRuntimeErrorV2::RuntimeRootInvalid,
+    );
 
     let unsafe_path = fixture.root.path().join("unsafe-provider");
     let mut unsafe_file = OpenOptions::new()
@@ -745,36 +1216,42 @@ fn executable_and_authorization_substitution_fail_before_provider_execution() {
     let unsafe_authorization =
         AuthorizedLocalProviderV2::new_inert_fixture(&fixture.request, unsafe_path)
             .expect("syntactically valid explicit authorization");
-    assert!(matches!(
-        run_local_provider_v2(
-            &fixture.subject,
-            &fixture.artifact,
-            &fixture.analysis,
-            &fixture.request,
-            &unsafe_authorization,
-            &fixture.policy,
-            &ArtifactReviewCancellationTokenV2::new(),
-        ),
-        Err(LocalProviderRuntimeErrorV2::ExecutableMetadataInvalid)
-    ));
+    let unsafe_executable_run = run_local_provider_v2(
+        &fixture.subject,
+        &fixture.artifact,
+        &fixture.analysis,
+        &fixture.request,
+        &unsafe_authorization,
+        &fixture.policy,
+        &ArtifactReviewCancellationTokenV2::new(),
+    )
+    .expect("validated request returns an explicit executable-metadata failure run");
+    assert_all_unattempted_terminal_run(
+        &unsafe_executable_run,
+        &fixture.request,
+        LocalProviderRuntimeErrorV2::ExecutableMetadataInvalid,
+    );
 
     let symlink_path = fixture.root.path().join("provider-symlink");
     symlink(inert_provider_path(), &symlink_path).expect("create provider symlink");
     let symlink_authorization =
         AuthorizedLocalProviderV2::new_inert_fixture(&fixture.request, symlink_path)
             .expect("syntactically valid symlink authorization");
-    assert!(matches!(
-        run_local_provider_v2(
-            &fixture.subject,
-            &fixture.artifact,
-            &fixture.analysis,
-            &fixture.request,
-            &symlink_authorization,
-            &fixture.policy,
-            &ArtifactReviewCancellationTokenV2::new(),
-        ),
-        Err(LocalProviderRuntimeErrorV2::ExecutableOpenFailed)
-    ));
+    let symlink_run = run_local_provider_v2(
+        &fixture.subject,
+        &fixture.artifact,
+        &fixture.analysis,
+        &fixture.request,
+        &symlink_authorization,
+        &fixture.policy,
+        &ArtifactReviewCancellationTokenV2::new(),
+    )
+    .expect("validated request returns an explicit executable-open failure run");
+    assert_all_unattempted_terminal_run(
+        &symlink_run,
+        &fixture.request,
+        LocalProviderRuntimeErrorV2::ExecutableOpenFailed,
+    );
 
     let mut wrong_digest_provider = fixture.request.provider().clone();
     wrong_digest_provider.adapter_sha256 = Sha256Digest::from_bytes(b"wrong provider digest");
@@ -802,18 +1279,21 @@ fn executable_and_authorization_substitution_fail_before_provider_execution() {
     let wrong_digest_authorization =
         AuthorizedLocalProviderV2::new_inert_fixture(&wrong_digest_request, inert_provider_path())
             .expect("authorization with substituted digest");
-    assert!(matches!(
-        run_local_provider_v2(
-            &fixture.subject,
-            &fixture.artifact,
-            &fixture.analysis,
-            &wrong_digest_request,
-            &wrong_digest_authorization,
-            &fixture.policy,
-            &ArtifactReviewCancellationTokenV2::new(),
-        ),
-        Err(LocalProviderRuntimeErrorV2::ExecutableDigestMismatch)
-    ));
+    let wrong_digest_run = run_local_provider_v2(
+        &fixture.subject,
+        &fixture.artifact,
+        &fixture.analysis,
+        &wrong_digest_request,
+        &wrong_digest_authorization,
+        &fixture.policy,
+        &ArtifactReviewCancellationTokenV2::new(),
+    )
+    .expect("validated request returns an explicit executable-digest failure run");
+    assert_all_unattempted_terminal_run(
+        &wrong_digest_run,
+        &wrong_digest_request,
+        LocalProviderRuntimeErrorV2::ExecutableDigestMismatch,
+    );
 
     let alternate_model = ArtifactReviewModelIdentityV2 {
         model_id: "whoathere-inert-fixture-stderr".to_string(),
@@ -865,6 +1345,7 @@ fn later_runtime_failure_preserves_the_normalizable_output_prefix() {
 
     assert_eq!(execution.provider_outputs().len(), 1);
     assert_eq!(execution.invocation_records().len(), 1);
+    assert_eq!(execution.restricted_captures().len(), 1);
     assert_eq!(
         execution.terminal_error(),
         Some(LocalProviderRuntimeErrorV2::RunDirectoryCreationFailed)
@@ -879,6 +1360,19 @@ fn later_runtime_failure_preserves_the_normalizable_output_prefix() {
             .iter()
             .map(|item| item.work_item_id().clone())
             .collect::<Vec<_>>()
+    );
+    assert!(execution
+        .attempted_without_capture_work_item_ids()
+        .is_empty());
+    assert_eq!(
+        execution.recorded_work_item_ids(),
+        std::slice::from_ref(fixture.request.work_items()[0].work_item_id())
+    );
+    assert_eq!(
+        execution.recorded_work_item_ids().len()
+            + execution.attempted_without_capture_work_item_ids().len()
+            + execution.unattempted_work_item_ids().len(),
+        execution.expected_work_item_ids().len()
     );
     assert!(execution.run_directory_cleanup_verified());
     assert!(execution.secondary_cleanup_error().is_none());

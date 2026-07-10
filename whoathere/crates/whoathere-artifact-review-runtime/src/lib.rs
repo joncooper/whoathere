@@ -6,8 +6,11 @@
 //! inert binary. It is not a sandbox or VM: network, memory, process-count,
 //! and full descendant containment are explicitly unenforced, and a same-user
 //! staged-path replacement race is not excluded. Its records are always
-//! unauthenticated and cannot authorize an allow decision.
+//! unauthenticated and cannot authorize an allow decision. Restricted capture
+//! bytes can also exist in detector-owned output buffers and allocator memory;
+//! this crate does not claim comprehensive memory zeroization.
 
+use std::collections::HashSet;
 use std::ffi::CString;
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, ErrorKind, Read, Write};
@@ -19,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use whoathere_artifact::{NormalizedArtifact, Sha256Digest};
 use whoathere_detector::{
     ArtifactReviewChannelIsolationV2, ArtifactReviewModelIdentityV2,
@@ -40,6 +43,7 @@ pub const MAX_LOCAL_PROVIDER_EXECUTABLE_BYTES_V2: usize = 64 * 1024 * 1024;
 pub const MAX_LOCAL_PROVIDER_STDERR_BYTES_V2: usize = 64 * 1024;
 pub const MAX_LOCAL_PROVIDER_TOTAL_STDERR_BYTES_V2: usize = 2 * 1024 * 1024;
 pub const MAX_LOCAL_PROVIDER_TOTAL_INPUT_BYTES_V2: usize = 64 * 1024 * 1024;
+pub const MAX_LOCAL_PROVIDER_EVIDENCE_EXECUTION_ID_BYTES_V2: usize = 256;
 
 const MAX_PER_CALL_TIMEOUT_V2: Duration = Duration::from_secs(5 * 60);
 const MAX_GLOBAL_TIMEOUT_V2: Duration = Duration::from_secs(30 * 60);
@@ -126,6 +130,92 @@ impl AuthorizedLocalProviderV2 {
     pub fn is_authenticated(&self) -> bool {
         false
     }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct LocalProviderEvidenceExecutionBindingV2 {
+    challenge_id: String,
+    evidence_id: String,
+    run_id: String,
+    challenge_binding_sha256: Sha256Digest,
+}
+
+impl std::fmt::Debug for LocalProviderEvidenceExecutionBindingV2 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LocalProviderEvidenceExecutionBindingV2")
+            .field(
+                "challenge_id_sha256",
+                &Sha256Digest::from_bytes(self.challenge_id.as_bytes()),
+            )
+            .field(
+                "evidence_id_sha256",
+                &Sha256Digest::from_bytes(self.evidence_id.as_bytes()),
+            )
+            .field(
+                "run_id_sha256",
+                &Sha256Digest::from_bytes(self.run_id.as_bytes()),
+            )
+            .field("challenge_binding_sha256", &self.challenge_binding_sha256)
+            .finish()
+    }
+}
+
+impl LocalProviderEvidenceExecutionBindingV2 {
+    pub fn new(
+        challenge_id: impl Into<String>,
+        evidence_id: impl Into<String>,
+        run_id: impl Into<String>,
+        challenge_binding_sha256: Sha256Digest,
+    ) -> Result<Self, LocalProviderRuntimeErrorV2> {
+        let binding = Self {
+            challenge_id: challenge_id.into(),
+            evidence_id: evidence_id.into(),
+            run_id: run_id.into(),
+            challenge_binding_sha256,
+        };
+        if !valid_local_provider_evidence_execution_id_v2(&binding.challenge_id)
+            || !valid_local_provider_evidence_execution_id_v2(&binding.evidence_id)
+            || !valid_local_provider_evidence_execution_id_v2(&binding.run_id)
+        {
+            return Err(LocalProviderRuntimeErrorV2::InvalidEvidenceExecutionBinding);
+        }
+        Ok(binding)
+    }
+
+    pub fn challenge_id(&self) -> &str {
+        &self.challenge_id
+    }
+
+    pub fn evidence_id(&self) -> &str {
+        &self.evidence_id
+    }
+
+    pub fn run_id(&self) -> &str {
+        &self.run_id
+    }
+
+    pub fn challenge_binding_sha256(&self) -> &Sha256Digest {
+        &self.challenge_binding_sha256
+    }
+
+    pub fn is_authenticated(&self) -> bool {
+        false
+    }
+
+    pub fn can_authorize_allow(&self) -> bool {
+        false
+    }
+}
+
+fn valid_local_provider_evidence_execution_id_v2(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_LOCAL_PROVIDER_EVIDENCE_EXECUTION_ID_BYTES_V2
+        && value.as_bytes().iter().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'/' | b'-')
+        })
+        && value != "."
+        && value != ".."
 }
 
 pub fn inert_fixture_model_content_sha256_v2(
@@ -244,6 +334,14 @@ pub enum LocalProviderTerminationReasonV2 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalProviderTerminalPhaseV2 {
+    Preflight,
+    RunSetup,
+    Invocation,
+    RunDirectoryCleanup,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LocalProviderNetworkIsolationV2 {
     NotEnforcedCallerAuthorizedExecutable,
 }
@@ -286,6 +384,7 @@ pub struct LocalProviderInvocationRecordV2 {
     exit_code: Option<i32>,
     channel_isolation: ArtifactReviewChannelIsolationV2,
     stdout_eof_verified: bool,
+    stderr_eof_verified: bool,
     process_group_cleanup_verified: bool,
     descendant_containment_verified: bool,
     kill_escalated: bool,
@@ -358,6 +457,10 @@ impl LocalProviderInvocationRecordV2 {
         self.stdout_eof_verified
     }
 
+    pub fn stderr_eof_verified(&self) -> bool {
+        self.stderr_eof_verified
+    }
+
     pub fn process_group_cleanup_verified(&self) -> bool {
         self.process_group_cleanup_verified
     }
@@ -403,11 +506,215 @@ impl LocalProviderInvocationRecordV2 {
     }
 }
 
+/// Exact classification of every work item planned by a local provider run.
+///
+/// Construction rejects unknown, duplicate, missing, or multiply classified
+/// identifiers. This is structural bookkeeping only; it is unauthenticated
+/// and cannot authorize an allow decision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalProviderWorkPartitionV2 {
+    expected_work_item_ids: Vec<Sha256Digest>,
+    recorded_work_item_ids: Vec<Sha256Digest>,
+    attempted_without_capture_work_item_ids: Vec<Sha256Digest>,
+    unattempted_work_item_ids: Vec<Sha256Digest>,
+}
+
+impl LocalProviderWorkPartitionV2 {
+    pub fn new(
+        expected_work_item_ids: Vec<Sha256Digest>,
+        recorded_work_item_ids: Vec<Sha256Digest>,
+        attempted_without_capture_work_item_ids: Vec<Sha256Digest>,
+        unattempted_work_item_ids: Vec<Sha256Digest>,
+    ) -> Result<Self, LocalProviderRuntimeErrorV2> {
+        if expected_work_item_ids.iter().collect::<HashSet<_>>().len()
+            != expected_work_item_ids.len()
+            || recorded_work_item_ids.len() > expected_work_item_ids.len()
+            || recorded_work_item_ids != expected_work_item_ids[..recorded_work_item_ids.len()]
+        {
+            return Err(LocalProviderRuntimeErrorV2::InvalidWorkPartition);
+        }
+
+        let next_index = recorded_work_item_ids.len();
+        let suffix_is_exact = match attempted_without_capture_work_item_ids.as_slice() {
+            [] => unattempted_work_item_ids == expected_work_item_ids[next_index..],
+            [attempted] => {
+                expected_work_item_ids.get(next_index) == Some(attempted)
+                    && unattempted_work_item_ids == expected_work_item_ids[next_index + 1..]
+            }
+            _ => false,
+        };
+        if !suffix_is_exact {
+            return Err(LocalProviderRuntimeErrorV2::InvalidWorkPartition);
+        }
+
+        Ok(Self {
+            expected_work_item_ids,
+            recorded_work_item_ids,
+            attempted_without_capture_work_item_ids,
+            unattempted_work_item_ids,
+        })
+    }
+
+    pub fn expected_work_item_ids(&self) -> &[Sha256Digest] {
+        &self.expected_work_item_ids
+    }
+
+    pub fn recorded_work_item_ids(&self) -> &[Sha256Digest] {
+        &self.recorded_work_item_ids
+    }
+
+    pub fn attempted_without_capture_work_item_ids(&self) -> &[Sha256Digest] {
+        &self.attempted_without_capture_work_item_ids
+    }
+
+    pub fn unattempted_work_item_ids(&self) -> &[Sha256Digest] {
+        &self.unattempted_work_item_ids
+    }
+
+    pub fn is_authenticated(&self) -> bool {
+        false
+    }
+
+    pub fn can_authorize_allow(&self) -> bool {
+        false
+    }
+}
+
+/// Raw bounded provider streams retained for a future trusted verifier.
+///
+/// The bytes are intentionally inaccessible through ordinary getters and are
+/// never included in `Debug`. A verifier must explicitly consume the capture
+/// and handle the restricted byte view synchronously. These buffers and the
+/// duplicate detector-output buffers are not guaranteed to be zeroized on
+/// drop; a future verifier must minimize their lifetime and treat process
+/// memory as restricted.
+pub struct RestrictedLocalProviderCaptureV2 {
+    work_item_id: Sha256Digest,
+    stdout_capture: Vec<u8>,
+    stderr_capture: Vec<u8>,
+}
+
+impl std::fmt::Debug for RestrictedLocalProviderCaptureV2 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RestrictedLocalProviderCaptureV2")
+            .field("work_item_id", &self.work_item_id)
+            .field("stdout_capture_sha256", &self.stdout_capture_sha256())
+            .field("stdout_capture_byte_len", &self.stdout_capture.len())
+            .field("stderr_capture_sha256", &self.stderr_capture_sha256())
+            .field("stderr_capture_byte_len", &self.stderr_capture.len())
+            .field("stdout_capture", &"<restricted>")
+            .field("stderr_capture", &"<restricted>")
+            .finish()
+    }
+}
+
+impl RestrictedLocalProviderCaptureV2 {
+    fn new(
+        work_item_id: Sha256Digest,
+        stdout_capture: Vec<u8>,
+        stderr_capture: Vec<u8>,
+    ) -> Result<Self, LocalProviderRuntimeErrorV2> {
+        if stdout_capture.len() > MAX_ARTIFACT_REVIEW_PROVIDER_OUTPUT_BYTES_V2
+            || stderr_capture.len() > MAX_LOCAL_PROVIDER_STDERR_BYTES_V2
+        {
+            return Err(LocalProviderRuntimeErrorV2::InvalidRunEvidence);
+        }
+        Ok(Self {
+            work_item_id,
+            stdout_capture,
+            stderr_capture,
+        })
+    }
+
+    pub fn work_item_id(&self) -> &Sha256Digest {
+        &self.work_item_id
+    }
+
+    pub fn stdout_capture_sha256(&self) -> Sha256Digest {
+        Sha256Digest::from_bytes(&self.stdout_capture)
+    }
+
+    pub fn stdout_capture_byte_len(&self) -> u64 {
+        self.stdout_capture.len() as u64
+    }
+
+    pub fn stderr_capture_sha256(&self) -> Sha256Digest {
+        Sha256Digest::from_bytes(&self.stderr_capture)
+    }
+
+    pub fn stderr_capture_byte_len(&self) -> u64 {
+        self.stderr_capture.len() as u64
+    }
+
+    pub fn is_authenticated(&self) -> bool {
+        false
+    }
+
+    pub fn can_authorize_allow(&self) -> bool {
+        false
+    }
+
+    pub fn consume<R>(
+        self,
+        consumer: impl FnOnce(RestrictedLocalProviderCaptureViewV2<'_>) -> R,
+    ) -> R {
+        consumer(RestrictedLocalProviderCaptureViewV2 {
+            work_item_id: &self.work_item_id,
+            stdout_capture: &self.stdout_capture,
+            stderr_capture: &self.stderr_capture,
+        })
+    }
+}
+
+pub struct RestrictedLocalProviderCaptureViewV2<'a> {
+    work_item_id: &'a Sha256Digest,
+    stdout_capture: &'a [u8],
+    stderr_capture: &'a [u8],
+}
+
+impl std::fmt::Debug for RestrictedLocalProviderCaptureViewV2<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RestrictedLocalProviderCaptureViewV2")
+            .field("work_item_id", self.work_item_id)
+            .field(
+                "stdout_capture_sha256",
+                &Sha256Digest::from_bytes(self.stdout_capture),
+            )
+            .field("stdout_capture_byte_len", &self.stdout_capture.len())
+            .field(
+                "stderr_capture_sha256",
+                &Sha256Digest::from_bytes(self.stderr_capture),
+            )
+            .field("stderr_capture_byte_len", &self.stderr_capture.len())
+            .field("stdout_capture", &"<restricted>")
+            .field("stderr_capture", &"<restricted>")
+            .finish()
+    }
+}
+
+impl RestrictedLocalProviderCaptureViewV2<'_> {
+    pub fn work_item_id(&self) -> &Sha256Digest {
+        self.work_item_id
+    }
+
+    pub fn stdout_bytes(&self) -> &[u8] {
+        self.stdout_capture
+    }
+
+    pub fn stderr_bytes(&self) -> &[u8] {
+        self.stderr_capture
+    }
+}
+
 pub struct LocalProviderRunV2 {
     provider_outputs: Vec<ArtifactReviewProviderOutputV2>,
     invocation_records: Vec<LocalProviderInvocationRecordV2>,
-    unattempted_work_item_ids: Vec<Sha256Digest>,
+    restricted_captures: Vec<RestrictedLocalProviderCaptureV2>,
+    work_partition: LocalProviderWorkPartitionV2,
     terminal_error: Option<LocalProviderRuntimeErrorV2>,
+    terminal_phase: Option<LocalProviderTerminalPhaseV2>,
     terminal_error_work_item_id: Option<Sha256Digest>,
     run_directory_cleanup_verified: bool,
     secondary_cleanup_error: Option<LocalProviderRuntimeErrorV2>,
@@ -419,11 +726,20 @@ impl std::fmt::Debug for LocalProviderRunV2 {
             .debug_struct("LocalProviderRunV2")
             .field("provider_output_count", &self.provider_outputs.len())
             .field("invocation_record_count", &self.invocation_records.len())
+            .field("restricted_capture_count", &self.restricted_captures.len())
+            .field(
+                "attempted_without_capture_work_item_count",
+                &self
+                    .work_partition
+                    .attempted_without_capture_work_item_ids
+                    .len(),
+            )
             .field(
                 "unattempted_work_item_count",
-                &self.unattempted_work_item_ids.len(),
+                &self.work_partition.unattempted_work_item_ids.len(),
             )
             .field("terminal_error", &self.terminal_error)
+            .field("terminal_phase", &self.terminal_phase)
             .field(
                 "terminal_error_has_work_item",
                 &self.terminal_error_work_item_id.is_some(),
@@ -447,12 +763,37 @@ impl LocalProviderRunV2 {
         &self.invocation_records
     }
 
+    pub fn restricted_captures(&self) -> &[RestrictedLocalProviderCaptureV2] {
+        &self.restricted_captures
+    }
+
+    pub fn work_partition(&self) -> &LocalProviderWorkPartitionV2 {
+        &self.work_partition
+    }
+
+    pub fn expected_work_item_ids(&self) -> &[Sha256Digest] {
+        self.work_partition.expected_work_item_ids()
+    }
+
+    pub fn recorded_work_item_ids(&self) -> &[Sha256Digest] {
+        self.work_partition.recorded_work_item_ids()
+    }
+
+    pub fn attempted_without_capture_work_item_ids(&self) -> &[Sha256Digest] {
+        self.work_partition
+            .attempted_without_capture_work_item_ids()
+    }
+
     pub fn unattempted_work_item_ids(&self) -> &[Sha256Digest] {
-        &self.unattempted_work_item_ids
+        self.work_partition.unattempted_work_item_ids()
     }
 
     pub fn terminal_error(&self) -> Option<LocalProviderRuntimeErrorV2> {
         self.terminal_error
+    }
+
+    pub fn terminal_phase(&self) -> Option<LocalProviderTerminalPhaseV2> {
+        self.terminal_phase
     }
 
     pub fn terminal_error_work_item_id(&self) -> Option<&Sha256Digest> {
@@ -472,11 +813,234 @@ impl LocalProviderRunV2 {
     pub fn is_dispatch_complete(&self) -> bool {
         self.terminal_error.is_none()
             && self.secondary_cleanup_error.is_none()
-            && self.unattempted_work_item_ids.is_empty()
+            && self
+                .work_partition
+                .attempted_without_capture_work_item_ids
+                .is_empty()
+            && self.work_partition.unattempted_work_item_ids.is_empty()
+            && self.work_partition.recorded_work_item_ids.len()
+                == self.work_partition.expected_work_item_ids.len()
+    }
+
+    pub fn is_authenticated(&self) -> bool {
+        false
+    }
+
+    pub fn can_authorize_allow(&self) -> bool {
+        false
     }
 
     pub fn into_provider_outputs(self) -> Vec<ArtifactReviewProviderOutputV2> {
         self.provider_outputs
+    }
+
+    /// Consumes the run and transfers its restricted raw captures to a future
+    /// verifier. Prefer `into_evidence_parts` when the verifier must retain the
+    /// records, partition, and terminal state alongside those captures.
+    pub fn into_restricted_captures(self) -> Vec<RestrictedLocalProviderCaptureV2> {
+        self.restricted_captures
+    }
+
+    /// Atomically transfers every runtime evidence component into an owned,
+    /// still-unauthenticated verifier input.
+    pub fn into_evidence_parts(self) -> LocalProviderRunEvidencePartsV2 {
+        LocalProviderRunEvidencePartsV2 {
+            provider_outputs: self.provider_outputs,
+            invocation_records: self.invocation_records,
+            restricted_captures: self.restricted_captures,
+            work_partition: self.work_partition,
+            terminal_state: LocalProviderRunTerminalStateV2 {
+                terminal_error: self.terminal_error,
+                terminal_phase: self.terminal_phase,
+                terminal_error_work_item_id: self.terminal_error_work_item_id,
+                run_directory_cleanup_verified: self.run_directory_cleanup_verified,
+                secondary_cleanup_error: self.secondary_cleanup_error,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalProviderRunTerminalStateV2 {
+    terminal_error: Option<LocalProviderRuntimeErrorV2>,
+    terminal_phase: Option<LocalProviderTerminalPhaseV2>,
+    terminal_error_work_item_id: Option<Sha256Digest>,
+    run_directory_cleanup_verified: bool,
+    secondary_cleanup_error: Option<LocalProviderRuntimeErrorV2>,
+}
+
+impl LocalProviderRunTerminalStateV2 {
+    pub fn terminal_error(&self) -> Option<LocalProviderRuntimeErrorV2> {
+        self.terminal_error
+    }
+
+    pub fn terminal_phase(&self) -> Option<LocalProviderTerminalPhaseV2> {
+        self.terminal_phase
+    }
+
+    pub fn terminal_error_work_item_id(&self) -> Option<&Sha256Digest> {
+        self.terminal_error_work_item_id.as_ref()
+    }
+
+    pub fn run_directory_cleanup_verified(&self) -> bool {
+        self.run_directory_cleanup_verified
+    }
+
+    pub fn secondary_cleanup_error(&self) -> Option<LocalProviderRuntimeErrorV2> {
+        self.secondary_cleanup_error
+    }
+
+    pub fn is_authenticated(&self) -> bool {
+        false
+    }
+
+    pub fn can_authorize_allow(&self) -> bool {
+        false
+    }
+}
+
+pub struct LocalProviderRunEvidencePartsV2 {
+    provider_outputs: Vec<ArtifactReviewProviderOutputV2>,
+    invocation_records: Vec<LocalProviderInvocationRecordV2>,
+    restricted_captures: Vec<RestrictedLocalProviderCaptureV2>,
+    work_partition: LocalProviderWorkPartitionV2,
+    terminal_state: LocalProviderRunTerminalStateV2,
+}
+
+impl std::fmt::Debug for LocalProviderRunEvidencePartsV2 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LocalProviderRunEvidencePartsV2")
+            .field("provider_output_count", &self.provider_outputs.len())
+            .field("invocation_record_count", &self.invocation_records.len())
+            .field("restricted_capture_count", &self.restricted_captures.len())
+            .field("work_partition", &self.work_partition)
+            .field("terminal_state", &self.terminal_state)
+            .field("provider_output_bytes", &"<redacted>")
+            .field("restricted_capture_bytes", &"<restricted>")
+            .finish()
+    }
+}
+
+pub type LocalProviderRunEvidenceComponentsV2 = (
+    Vec<ArtifactReviewProviderOutputV2>,
+    Vec<LocalProviderInvocationRecordV2>,
+    Vec<RestrictedLocalProviderCaptureV2>,
+    LocalProviderWorkPartitionV2,
+    LocalProviderRunTerminalStateV2,
+);
+
+impl LocalProviderRunEvidencePartsV2 {
+    pub fn provider_outputs(&self) -> &[ArtifactReviewProviderOutputV2] {
+        &self.provider_outputs
+    }
+
+    pub fn invocation_records(&self) -> &[LocalProviderInvocationRecordV2] {
+        &self.invocation_records
+    }
+
+    pub fn restricted_captures(&self) -> &[RestrictedLocalProviderCaptureV2] {
+        &self.restricted_captures
+    }
+
+    pub fn work_partition(&self) -> &LocalProviderWorkPartitionV2 {
+        &self.work_partition
+    }
+
+    pub fn terminal_state(&self) -> &LocalProviderRunTerminalStateV2 {
+        &self.terminal_state
+    }
+
+    pub fn is_authenticated(&self) -> bool {
+        false
+    }
+
+    pub fn can_authorize_allow(&self) -> bool {
+        false
+    }
+
+    pub fn into_parts(self) -> LocalProviderRunEvidenceComponentsV2 {
+        (
+            self.provider_outputs,
+            self.invocation_records,
+            self.restricted_captures,
+            self.work_partition,
+            self.terminal_state,
+        )
+    }
+}
+
+/// A local provider run whose evidence identity was fixed before execution.
+///
+/// There is deliberately no conversion from `LocalProviderRunV2`; only
+/// `run_local_provider_for_evidence_v2` can construct this type.
+///
+/// ```compile_fail
+/// use whoathere_artifact_review_runtime::{
+///     EvidenceBoundLocalProviderRunV2, LocalProviderRunV2,
+/// };
+/// fn wrap_after_execution(run: LocalProviderRunV2) -> EvidenceBoundLocalProviderRunV2 {
+///     run.into()
+/// }
+/// ```
+pub struct EvidenceBoundLocalProviderRunV2 {
+    binding: LocalProviderEvidenceExecutionBindingV2,
+    started_at_unix_seconds: u64,
+    finished_at_unix_seconds: u64,
+    run: LocalProviderRunV2,
+}
+
+impl std::fmt::Debug for EvidenceBoundLocalProviderRunV2 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("EvidenceBoundLocalProviderRunV2")
+            .field("binding", &self.binding)
+            .field("started_at_unix_seconds", &self.started_at_unix_seconds)
+            .field("finished_at_unix_seconds", &self.finished_at_unix_seconds)
+            .field("run", &self.run)
+            .finish()
+    }
+}
+
+impl EvidenceBoundLocalProviderRunV2 {
+    pub fn binding(&self) -> &LocalProviderEvidenceExecutionBindingV2 {
+        &self.binding
+    }
+
+    pub fn started_at_unix_seconds(&self) -> u64 {
+        self.started_at_unix_seconds
+    }
+
+    pub fn finished_at_unix_seconds(&self) -> u64 {
+        self.finished_at_unix_seconds
+    }
+
+    pub fn local_provider_run(&self) -> &LocalProviderRunV2 {
+        &self.run
+    }
+
+    pub fn is_authenticated(&self) -> bool {
+        false
+    }
+
+    pub fn can_authorize_allow(&self) -> bool {
+        false
+    }
+
+    pub fn into_parts(
+        self,
+    ) -> (
+        LocalProviderEvidenceExecutionBindingV2,
+        u64,
+        u64,
+        LocalProviderRunV2,
+    ) {
+        (
+            self.binding,
+            self.started_at_unix_seconds,
+            self.finished_at_unix_seconds,
+            self.run,
+        )
     }
 }
 
@@ -484,6 +1048,7 @@ impl LocalProviderRunV2 {
 pub enum LocalProviderRuntimeErrorV2 {
     InvalidRequest,
     InvalidAuthorization,
+    InvalidEvidenceExecutionBinding,
     AuthorizationMismatch,
     HostedReviewNotAuthorized,
     InvalidRuntimePolicy,
@@ -498,6 +1063,9 @@ pub enum LocalProviderRuntimeErrorV2 {
     ExecutableStagingFailed,
     ProviderInputInvalid,
     ProviderCaptureInvalid,
+    InvalidWorkPartition,
+    InvalidRunEvidence,
+    SystemClockInvalid,
     ProcessSpawnFailed,
     ProcessControlFailed,
     ProcessCleanupFailed,
@@ -508,6 +1076,9 @@ impl LocalProviderRuntimeErrorV2 {
         match self {
             Self::InvalidRequest => "artifact_review_local_runtime_request_invalid",
             Self::InvalidAuthorization => "artifact_review_local_runtime_authorization_invalid",
+            Self::InvalidEvidenceExecutionBinding => {
+                "artifact_review_local_runtime_evidence_execution_binding_invalid"
+            }
             Self::AuthorizationMismatch => "artifact_review_local_runtime_authorization_mismatch",
             Self::HostedReviewNotAuthorized => {
                 "artifact_review_local_runtime_hosted_review_not_authorized"
@@ -538,6 +1109,9 @@ impl LocalProviderRuntimeErrorV2 {
             Self::ProviderCaptureInvalid => {
                 "artifact_review_local_runtime_provider_capture_invalid"
             }
+            Self::InvalidWorkPartition => "artifact_review_local_runtime_work_partition_invalid",
+            Self::InvalidRunEvidence => "artifact_review_local_runtime_run_evidence_invalid",
+            Self::SystemClockInvalid => "artifact_review_local_runtime_system_clock_invalid",
             Self::ProcessSpawnFailed => "artifact_review_local_runtime_process_spawn_failed",
             Self::ProcessControlFailed => "artifact_review_local_runtime_process_control_failed",
             Self::ProcessCleanupFailed => "artifact_review_local_runtime_process_cleanup_failed",
@@ -567,6 +1141,203 @@ fn unattempted_work_item_ids_from(
         .iter()
         .map(|item| item.work_item_id().clone())
         .collect()
+}
+
+fn expected_work_item_ids(request: &ArtifactReviewRequestV2) -> Vec<Sha256Digest> {
+    unattempted_work_item_ids_from(request, 0)
+}
+
+fn validate_terminal_work_item_binding(
+    work_partition: &LocalProviderWorkPartitionV2,
+    terminal_error: Option<LocalProviderRuntimeErrorV2>,
+    terminal_phase: Option<LocalProviderTerminalPhaseV2>,
+    terminal_error_work_item_id: Option<&Sha256Digest>,
+) -> Result<(), LocalProviderRuntimeErrorV2> {
+    let all_work_unattempted = work_partition.recorded_work_item_ids().is_empty()
+        && work_partition
+            .attempted_without_capture_work_item_ids()
+            .is_empty()
+        && work_partition.unattempted_work_item_ids() == work_partition.expected_work_item_ids();
+    let valid = match (terminal_error, terminal_phase) {
+        (None, None) => {
+            terminal_error_work_item_id.is_none()
+                && work_partition
+                    .attempted_without_capture_work_item_ids()
+                    .is_empty()
+        }
+        (Some(_), Some(LocalProviderTerminalPhaseV2::Preflight)) => {
+            all_work_unattempted
+                && terminal_error_work_item_id.is_some_and(|work_item_id| {
+                    work_partition
+                        .expected_work_item_ids()
+                        .contains(work_item_id)
+                })
+        }
+        (Some(_), Some(LocalProviderTerminalPhaseV2::RunSetup)) => {
+            all_work_unattempted && terminal_error_work_item_id.is_none()
+        }
+        (Some(_), Some(LocalProviderTerminalPhaseV2::Invocation)) => {
+            let next_terminal_item = work_partition
+                .attempted_without_capture_work_item_ids()
+                .first()
+                .or_else(|| work_partition.unattempted_work_item_ids().first());
+            terminal_error_work_item_id.is_some()
+                && terminal_error_work_item_id == next_terminal_item
+        }
+        (Some(_), Some(LocalProviderTerminalPhaseV2::RunDirectoryCleanup)) => {
+            terminal_error_work_item_id.is_none()
+                && work_partition
+                    .attempted_without_capture_work_item_ids()
+                    .is_empty()
+        }
+        _ => false,
+    };
+    valid
+        .then_some(())
+        .ok_or(LocalProviderRuntimeErrorV2::InvalidRunEvidence)
+}
+
+fn all_unattempted_terminal_run(
+    request: &ArtifactReviewRequestV2,
+    primary_error: LocalProviderRuntimeErrorV2,
+    run_directory_cleanup_verified: bool,
+    secondary_cleanup_error: Option<LocalProviderRuntimeErrorV2>,
+) -> Result<LocalProviderRunV2, LocalProviderRuntimeErrorV2> {
+    new_validated_local_provider_run(
+        expected_work_item_ids(request),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        unattempted_work_item_ids_from(request, 0),
+        Some(primary_error),
+        Some(LocalProviderTerminalPhaseV2::RunSetup),
+        None,
+        run_directory_cleanup_verified,
+        secondary_cleanup_error,
+    )
+}
+
+fn all_unattempted_preflight_failure_run(
+    request: &ArtifactReviewRequestV2,
+    primary_error: LocalProviderRuntimeErrorV2,
+    failing_work_item_id: Sha256Digest,
+) -> Result<LocalProviderRunV2, LocalProviderRuntimeErrorV2> {
+    new_validated_local_provider_run(
+        expected_work_item_ids(request),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        unattempted_work_item_ids_from(request, 0),
+        Some(primary_error),
+        Some(LocalProviderTerminalPhaseV2::Preflight),
+        Some(failing_work_item_id),
+        true,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn new_validated_local_provider_run(
+    expected_work_item_ids: Vec<Sha256Digest>,
+    provider_outputs: Vec<ArtifactReviewProviderOutputV2>,
+    invocation_records: Vec<LocalProviderInvocationRecordV2>,
+    restricted_captures: Vec<RestrictedLocalProviderCaptureV2>,
+    attempted_without_capture_work_item_ids: Vec<Sha256Digest>,
+    unattempted_work_item_ids: Vec<Sha256Digest>,
+    terminal_error: Option<LocalProviderRuntimeErrorV2>,
+    terminal_phase: Option<LocalProviderTerminalPhaseV2>,
+    terminal_error_work_item_id: Option<Sha256Digest>,
+    run_directory_cleanup_verified: bool,
+    secondary_cleanup_error: Option<LocalProviderRuntimeErrorV2>,
+) -> Result<LocalProviderRunV2, LocalProviderRuntimeErrorV2> {
+    if provider_outputs.len() != invocation_records.len()
+        || invocation_records.len() != restricted_captures.len()
+    {
+        return Err(LocalProviderRuntimeErrorV2::InvalidRunEvidence);
+    }
+
+    let mut total_stdout_bytes = 0usize;
+    let mut total_stderr_bytes = 0usize;
+    for ((output, record), capture) in provider_outputs
+        .iter()
+        .zip(&invocation_records)
+        .zip(&restricted_captures)
+    {
+        let expected_output_status = match record.termination_reason() {
+            LocalProviderTerminationReasonV2::Completed => {
+                ArtifactReviewWorkItemStatusV2::Completed
+            }
+            LocalProviderTerminationReasonV2::StdoutLimitExceeded => {
+                ArtifactReviewWorkItemStatusV2::Truncated
+            }
+            _ => ArtifactReviewWorkItemStatusV2::Failed,
+        };
+        let eof_claims_consistent = match record.termination_reason() {
+            LocalProviderTerminationReasonV2::Completed
+            | LocalProviderTerminationReasonV2::NonZeroExit => {
+                record.stdout_eof_verified() && record.stderr_eof_verified()
+            }
+            LocalProviderTerminationReasonV2::StdoutLimitExceeded => !record.stdout_eof_verified(),
+            LocalProviderTerminationReasonV2::StderrLimitExceeded => !record.stderr_eof_verified(),
+            _ => true,
+        };
+        total_stdout_bytes = total_stdout_bytes
+            .checked_add(output.captured_output_len())
+            .ok_or(LocalProviderRuntimeErrorV2::InvalidRunEvidence)?;
+        total_stderr_bytes = total_stderr_bytes
+            .checked_add(capture.stderr_capture.len())
+            .ok_or(LocalProviderRuntimeErrorV2::InvalidRunEvidence)?;
+        if output.work_item_id() != record.work_item_id()
+            || output.work_item_id() != capture.work_item_id()
+            || output.status() != record.provider_output_status()
+            || output.status() != expected_output_status
+            || !eof_claims_consistent
+            || output.captured_output_sha256() != record.stdout_capture_sha256().clone()
+            || output.captured_output_len() as u64 != record.stdout_capture_byte_len()
+            || capture.stdout_capture_sha256() != record.stdout_capture_sha256().clone()
+            || capture.stdout_capture_byte_len() != record.stdout_capture_byte_len()
+            || capture.stderr_capture_sha256() != record.stderr_capture_sha256().clone()
+            || capture.stderr_capture_byte_len() != record.stderr_capture_byte_len()
+        {
+            return Err(LocalProviderRuntimeErrorV2::InvalidRunEvidence);
+        }
+    }
+    if total_stdout_bytes > MAX_ARTIFACT_REVIEW_TOTAL_PROVIDER_OUTPUT_BYTES_V2
+        || total_stderr_bytes > MAX_LOCAL_PROVIDER_TOTAL_STDERR_BYTES_V2
+    {
+        return Err(LocalProviderRuntimeErrorV2::InvalidRunEvidence);
+    }
+
+    let recorded_work_item_ids = invocation_records
+        .iter()
+        .map(|record| record.work_item_id().clone())
+        .collect::<Vec<_>>();
+    let work_partition = LocalProviderWorkPartitionV2::new(
+        expected_work_item_ids,
+        recorded_work_item_ids,
+        attempted_without_capture_work_item_ids,
+        unattempted_work_item_ids,
+    )?;
+    validate_terminal_work_item_binding(
+        &work_partition,
+        terminal_error,
+        terminal_phase,
+        terminal_error_work_item_id.as_ref(),
+    )?;
+
+    Ok(LocalProviderRunV2 {
+        provider_outputs,
+        invocation_records,
+        restricted_captures,
+        work_partition,
+        terminal_error,
+        terminal_phase,
+        terminal_error_work_item_id,
+        run_directory_cleanup_verified,
+        secondary_cleanup_error,
+    })
 }
 
 pub fn run_local_provider_v2(
@@ -605,15 +1376,19 @@ pub fn run_local_provider_v2(
         .request_sha256()
         .map_err(|_| LocalProviderRuntimeErrorV2::InvalidRequest)?;
     if cancellation.is_cancelled() || Instant::now() >= global_deadline {
-        return Ok(LocalProviderRunV2 {
-            provider_outputs: Vec::new(),
-            invocation_records: Vec::new(),
-            unattempted_work_item_ids: unattempted_work_item_ids_from(request, 0),
-            terminal_error: None,
-            terminal_error_work_item_id: None,
-            run_directory_cleanup_verified: true,
-            secondary_cleanup_error: None,
-        });
+        return new_validated_local_provider_run(
+            expected_work_item_ids(request),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            unattempted_work_item_ids_from(request, 0),
+            None,
+            None,
+            None,
+            true,
+            None,
+        );
     }
 
     let mut prepared = Vec::new();
@@ -624,20 +1399,47 @@ pub fn run_local_provider_v2(
             preflight_stopped = true;
             break;
         }
-        let invocation = request
-            .invocation(artifact, work_item.work_item_id())
-            .map_err(|_| LocalProviderRuntimeErrorV2::InvalidRequest)?;
-        let provider_input = invocation
-            .canonical_provider_input_json_v2()
-            .map_err(|_| LocalProviderRuntimeErrorV2::ProviderInputInvalid)?;
+        let failing_work_item_id = work_item.work_item_id().clone();
+        let invocation = match request.invocation(artifact, work_item.work_item_id()) {
+            Ok(invocation) => invocation,
+            Err(_) => {
+                return all_unattempted_preflight_failure_run(
+                    request,
+                    LocalProviderRuntimeErrorV2::InvalidRequest,
+                    failing_work_item_id,
+                );
+            }
+        };
+        let provider_input = match invocation.canonical_provider_input_json_v2() {
+            Ok(provider_input) => provider_input,
+            Err(_) => {
+                return all_unattempted_preflight_failure_run(
+                    request,
+                    LocalProviderRuntimeErrorV2::ProviderInputInvalid,
+                    failing_work_item_id,
+                );
+            }
+        };
         if provider_input.len() > MAX_ARTIFACT_REVIEW_PROVIDER_INPUT_BYTES_V2 {
-            return Err(LocalProviderRuntimeErrorV2::ProviderInputInvalid);
+            return all_unattempted_preflight_failure_run(
+                request,
+                LocalProviderRuntimeErrorV2::ProviderInputInvalid,
+                failing_work_item_id,
+            );
         }
-        let next_total = total_input_bytes
-            .checked_add(provider_input.len())
-            .ok_or(LocalProviderRuntimeErrorV2::ProviderInputInvalid)?;
+        let Some(next_total) = total_input_bytes.checked_add(provider_input.len()) else {
+            return all_unattempted_preflight_failure_run(
+                request,
+                LocalProviderRuntimeErrorV2::ProviderInputInvalid,
+                failing_work_item_id,
+            );
+        };
         if next_total > MAX_LOCAL_PROVIDER_TOTAL_INPUT_BYTES_V2 {
-            break;
+            return all_unattempted_preflight_failure_run(
+                request,
+                LocalProviderRuntimeErrorV2::ProviderInputInvalid,
+                failing_work_item_id,
+            );
         }
         total_input_bytes = next_total;
         prepared.push(PreparedInvocationV2 {
@@ -647,19 +1449,35 @@ pub fn run_local_provider_v2(
         });
     }
     if preflight_stopped {
-        return Ok(LocalProviderRunV2 {
-            provider_outputs: Vec::new(),
-            invocation_records: Vec::new(),
-            unattempted_work_item_ids: unattempted_work_item_ids_from(request, 0),
-            terminal_error: None,
-            terminal_error_work_item_id: None,
-            run_directory_cleanup_verified: true,
-            secondary_cleanup_error: None,
-        });
+        return new_validated_local_provider_run(
+            expected_work_item_ids(request),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            unattempted_work_item_ids_from(request, 0),
+            None,
+            None,
+            None,
+            true,
+            None,
+        );
     }
 
-    ensure_private_runtime_root(&policy.runtime_root)?;
-    let run_directory = create_private_run_directory(&policy.runtime_root)?;
+    if let Err(error) = ensure_private_runtime_root(&policy.runtime_root) {
+        return all_unattempted_terminal_run(request, error, true, None);
+    }
+    let run_directory = match create_private_run_directory(&policy.runtime_root) {
+        Ok(run_directory) => run_directory,
+        Err(failure) => {
+            return all_unattempted_terminal_run(
+                request,
+                failure.primary_error,
+                failure.run_directory_cleanup_verified,
+                failure.secondary_cleanup_error,
+            );
+        }
+    };
     let mut run_directory_guard = RunDirectoryGuard::new(run_directory.clone());
     let staged_executable = match stage_verified_executable(
         &authorization.executable_path,
@@ -667,18 +1485,28 @@ pub fn run_local_provider_v2(
         &authorization.provider.adapter_sha256,
     ) {
         Ok(executable) => executable,
-        Err(error) => {
-            return match run_directory_guard.cleanup() {
-                Ok(()) => Err(error),
-                Err(cleanup_error) => Err(cleanup_error),
-            };
+        Err(primary_error) => {
+            let (run_directory_cleanup_verified, secondary_cleanup_error) =
+                match run_directory_guard.cleanup() {
+                    Ok(()) => (true, None),
+                    Err(cleanup_error) => (false, Some(cleanup_error)),
+                };
+            return all_unattempted_terminal_run(
+                request,
+                primary_error,
+                run_directory_cleanup_verified,
+                secondary_cleanup_error,
+            );
         }
     };
 
     let mut provider_outputs = Vec::new();
     let mut invocation_records = Vec::new();
+    let mut restricted_captures = Vec::new();
+    let mut attempted_without_capture_work_item_ids = Vec::new();
     let mut unattempted_work_item_ids = unattempted_work_item_ids_from(request, prepared.len());
     let mut terminal_error = None;
+    let mut terminal_phase = None;
     let mut terminal_error_work_item_id = None;
     let mut total_stdout_bytes = 0usize;
     let mut total_stderr_bytes = 0usize;
@@ -699,6 +1527,7 @@ pub fn run_local_provider_v2(
         let invocation_directory = run_directory.join(format!("invocation-{index:06}"));
         if let Err(error) = create_invocation_directories(&invocation_directory) {
             terminal_error = Some(error);
+            terminal_phase = Some(LocalProviderTerminalPhaseV2::Invocation);
             terminal_error_work_item_id = Some(prepared_invocation.work_item_id.clone());
             unattempted_work_item_ids = unattempted_work_item_ids_from(request, index);
             break;
@@ -715,10 +1544,18 @@ pub fn run_local_provider_v2(
             cancellation,
         ) {
             Ok(execution) => execution,
-            Err(error) => {
-                terminal_error = Some(error);
+            Err(failure) => {
+                terminal_error = Some(failure.error);
+                terminal_phase = Some(LocalProviderTerminalPhaseV2::Invocation);
                 terminal_error_work_item_id = Some(prepared_invocation.work_item_id.clone());
-                unattempted_work_item_ids = unattempted_work_item_ids_from(request, index + 1);
+                let expected = expected_work_item_ids(request);
+                let (attempted, unattempted) = terminal_invocation_failure_classification(
+                    &expected,
+                    index,
+                    failure.attempt_state,
+                )?;
+                attempted_without_capture_work_item_ids.extend(attempted);
+                unattempted_work_item_ids = unattempted;
                 break;
             }
         };
@@ -751,7 +1588,10 @@ pub fn run_local_provider_v2(
             Ok(provider_output) => provider_output,
             Err(_) => {
                 terminal_error = Some(LocalProviderRuntimeErrorV2::ProviderCaptureInvalid);
+                terminal_phase = Some(LocalProviderTerminalPhaseV2::Invocation);
                 terminal_error_work_item_id = Some(prepared_invocation.work_item_id.clone());
+                attempted_without_capture_work_item_ids
+                    .push(prepared_invocation.work_item_id.clone());
                 unattempted_work_item_ids = unattempted_work_item_ids_from(request, index + 1);
                 break;
             }
@@ -760,7 +1600,23 @@ pub fn run_local_provider_v2(
         let provider_input_sha256 = Sha256Digest::from_bytes(&prepared_invocation.provider_input);
         let stdout_capture_sha256 = Sha256Digest::from_bytes(&execution.stdout_capture);
         let stderr_capture_sha256 = Sha256Digest::from_bytes(&execution.stderr_capture);
-        invocation_records.push(LocalProviderInvocationRecordV2 {
+        let restricted_capture = match RestrictedLocalProviderCaptureV2::new(
+            prepared_invocation.work_item_id.clone(),
+            execution.stdout_capture,
+            execution.stderr_capture,
+        ) {
+            Ok(capture) => capture,
+            Err(error) => {
+                terminal_error = Some(error);
+                terminal_phase = Some(LocalProviderTerminalPhaseV2::Invocation);
+                terminal_error_work_item_id = Some(prepared_invocation.work_item_id.clone());
+                attempted_without_capture_work_item_ids
+                    .push(prepared_invocation.work_item_id.clone());
+                unattempted_work_item_ids = unattempted_work_item_ids_from(request, index + 1);
+                break;
+            }
+        };
+        let invocation_record = LocalProviderInvocationRecordV2 {
             request_sha256: request_sha256.clone(),
             invocation_sha256: prepared_invocation.invocation_sha256.clone(),
             work_item_id: prepared_invocation.work_item_id.clone(),
@@ -769,14 +1625,15 @@ pub fn run_local_provider_v2(
             provider_input_sha256,
             provider_input_byte_len: prepared_invocation.provider_input.len() as u64,
             stdout_capture_sha256,
-            stdout_capture_byte_len: execution.stdout_capture.len() as u64,
+            stdout_capture_byte_len: restricted_capture.stdout_capture_byte_len(),
             stderr_capture_sha256,
-            stderr_capture_byte_len: execution.stderr_capture.len() as u64,
+            stderr_capture_byte_len: restricted_capture.stderr_capture_byte_len(),
             provider_output_status,
             termination_reason: execution.termination_reason,
             exit_code: execution.exit_code,
             channel_isolation: ArtifactReviewChannelIsolationV2::CollapsedPrompt,
             stdout_eof_verified: execution.stdout_eof_verified,
+            stderr_eof_verified: execution.stderr_eof_verified,
             process_group_cleanup_verified: execution.process_group_cleanup_verified,
             descendant_containment_verified: false,
             kill_escalated: execution.kill_escalated,
@@ -789,8 +1646,10 @@ pub fn run_local_provider_v2(
                 LocalProviderResourceIsolationV2::WallClockStreamCapsAndDescriptorClosureOnly,
             executable_identity_posture: LocalProviderExecutableIdentityPostureV2::DigestVerifiedPrivateStagedPathSameUserRaceNotExcluded,
             elapsed_millis: execution.elapsed.as_millis().min(u128::from(u64::MAX)) as u64,
-        });
+        };
+        invocation_records.push(invocation_record);
         provider_outputs.push(provider_output);
+        restricted_captures.push(restricted_capture);
 
         if matches!(
             execution.termination_reason,
@@ -804,34 +1663,139 @@ pub fn run_local_provider_v2(
     }
 
     drop(staged_executable);
-    let mut run = LocalProviderRunV2 {
+    let mut run = new_validated_local_provider_run(
+        expected_work_item_ids(request),
         provider_outputs,
         invocation_records,
+        restricted_captures,
+        attempted_without_capture_work_item_ids,
         unattempted_work_item_ids,
         terminal_error,
+        terminal_phase,
         terminal_error_work_item_id,
-        run_directory_cleanup_verified: false,
-        secondary_cleanup_error: None,
-    };
+        false,
+        None,
+    )?;
     match run_directory_guard.cleanup() {
         Ok(()) => run.run_directory_cleanup_verified = true,
         Err(error) if run.terminal_error.is_some() => {
             run.secondary_cleanup_error = Some(error);
         }
-        Err(error) => run.terminal_error = Some(error),
+        Err(error) => {
+            run.terminal_error = Some(error);
+            run.terminal_phase = Some(LocalProviderTerminalPhaseV2::RunDirectoryCleanup);
+        }
     }
     Ok(run)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn run_local_provider_for_evidence_v2(
+    binding: LocalProviderEvidenceExecutionBindingV2,
+    subject: &ArtifactEvidenceSubjectV2,
+    artifact: &NormalizedArtifact,
+    analysis: &ArtifactStaticAnalysis,
+    request: &ArtifactReviewRequestV2,
+    authorization: &AuthorizedLocalProviderV2,
+    policy: &LocalProviderRuntimePolicyV2,
+    cancellation: &ArtifactReviewCancellationTokenV2,
+) -> Result<EvidenceBoundLocalProviderRunV2, LocalProviderRuntimeErrorV2> {
+    let started_at_unix_seconds = host_unix_seconds_v2()?;
+    let run = run_local_provider_v2(
+        subject,
+        artifact,
+        analysis,
+        request,
+        authorization,
+        policy,
+        cancellation,
+    )?;
+    let finished_at_unix_seconds = host_unix_seconds_v2()?;
+    validate_host_time_range_v2(started_at_unix_seconds, finished_at_unix_seconds)?;
+    Ok(EvidenceBoundLocalProviderRunV2 {
+        binding,
+        started_at_unix_seconds,
+        finished_at_unix_seconds,
+        run,
+    })
+}
+
+fn host_unix_seconds_v2() -> Result<u64, LocalProviderRuntimeErrorV2> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .map_err(|_| LocalProviderRuntimeErrorV2::SystemClockInvalid)
+}
+
+fn validate_host_time_range_v2(
+    started_at_unix_seconds: u64,
+    finished_at_unix_seconds: u64,
+) -> Result<(), LocalProviderRuntimeErrorV2> {
+    if started_at_unix_seconds == 0
+        || finished_at_unix_seconds == 0
+        || started_at_unix_seconds > finished_at_unix_seconds
+    {
+        return Err(LocalProviderRuntimeErrorV2::SystemClockInvalid);
+    }
+    Ok(())
 }
 
 struct ProcessExecutionResult {
     stdout_capture: Vec<u8>,
     stderr_capture: Vec<u8>,
     stdout_eof_verified: bool,
+    stderr_eof_verified: bool,
     process_group_cleanup_verified: bool,
     kill_escalated: bool,
     termination_reason: LocalProviderTerminationReasonV2,
     exit_code: Option<i32>,
     elapsed: Duration,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProviderInvocationAttemptStateV2 {
+    NotStarted,
+    StartedWithoutCapture,
+}
+
+fn terminal_invocation_failure_classification(
+    expected_work_item_ids: &[Sha256Digest],
+    index: usize,
+    attempt_state: ProviderInvocationAttemptStateV2,
+) -> Result<(Vec<Sha256Digest>, Vec<Sha256Digest>), LocalProviderRuntimeErrorV2> {
+    if index >= expected_work_item_ids.len() {
+        return Err(LocalProviderRuntimeErrorV2::InvalidWorkPartition);
+    }
+    Ok(match attempt_state {
+        ProviderInvocationAttemptStateV2::NotStarted => {
+            (Vec::new(), expected_work_item_ids[index..].to_vec())
+        }
+        ProviderInvocationAttemptStateV2::StartedWithoutCapture => (
+            vec![expected_work_item_ids[index].clone()],
+            expected_work_item_ids[index + 1..].to_vec(),
+        ),
+    })
+}
+
+struct ProviderInvocationFailureV2 {
+    error: LocalProviderRuntimeErrorV2,
+    attempt_state: ProviderInvocationAttemptStateV2,
+}
+
+impl ProviderInvocationFailureV2 {
+    fn not_started(error: LocalProviderRuntimeErrorV2) -> Self {
+        Self {
+            error,
+            attempt_state: ProviderInvocationAttemptStateV2::NotStarted,
+        }
+    }
+
+    fn started_without_capture(error: LocalProviderRuntimeErrorV2) -> Self {
+        Self {
+            error,
+            attempt_state: ProviderInvocationAttemptStateV2::StartedWithoutCapture,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -898,242 +1862,252 @@ fn execute_provider_invocation(
     global_deadline: Instant,
     termination_grace: Duration,
     cancellation: &ArtifactReviewCancellationTokenV2,
-) -> Result<ProcessExecutionResult, LocalProviderRuntimeErrorV2> {
-    executable.verify_path_identity()?;
+) -> Result<ProcessExecutionResult, ProviderInvocationFailureV2> {
+    executable
+        .verify_path_identity()
+        .map_err(ProviderInvocationFailureV2::not_started)?;
     let started = Instant::now();
-    let mut call_deadline = None;
     let cwd = invocation_directory.join("cwd");
     let home = invocation_directory.join("home");
     let temporary = invocation_directory.join("tmp");
 
-    let spawned = spawn_provider_process_macos(executable.exec_path(), &cwd, &home, &temporary)?;
-    let SpawnedProviderProcess {
-        process_id,
-        stdin: provider_stdin,
-        mut stdout,
-        mut stderr,
-    } = spawned;
-    let mut process = ChildProcessGroupGuard::new(process_id)?;
-    executable.verify_path_identity()?;
-    let mut stdin = Some(provider_stdin);
-    set_nonblocking(
-        stdin
-            .as_ref()
-            .ok_or(LocalProviderRuntimeErrorV2::ProcessControlFailed)?
-            .as_raw_fd(),
-    )?;
-    set_nonblocking(stdout.as_raw_fd())?;
-    set_nonblocking(stderr.as_raw_fd())?;
+    let spawned = spawn_provider_process_macos(executable.exec_path(), &cwd, &home, &temporary)
+        .map_err(ProviderInvocationFailureV2::not_started)?;
+    (|| -> Result<ProcessExecutionResult, LocalProviderRuntimeErrorV2> {
+        let mut call_deadline = None;
+        let SpawnedProviderProcess {
+            process_id,
+            stdin: provider_stdin,
+            mut stdout,
+            mut stderr,
+        } = spawned;
+        let mut process = ChildProcessGroupGuard::new(process_id)?;
+        executable.verify_path_identity()?;
+        let mut stdin = Some(provider_stdin);
+        set_nonblocking(
+            stdin
+                .as_ref()
+                .ok_or(LocalProviderRuntimeErrorV2::ProcessControlFailed)?
+                .as_raw_fd(),
+        )?;
+        set_nonblocking(stdout.as_raw_fd())?;
+        set_nonblocking(stderr.as_raw_fd())?;
 
-    let mut stdin_open = true;
-    let mut stdin_offset = 0usize;
-    let mut stdout_open = true;
-    let mut stderr_open = true;
-    let mut stdout_eof = false;
-    let mut stderr_eof = false;
-    let mut stdout_capture = Vec::new();
-    let mut stderr_capture = Vec::new();
-    let mut facts = ProcessExecutionFacts::default();
-    let mut provider_ready = false;
-    let mut leader_exited = false;
-    let mut cleanup_started = None;
-    let mut kill_attempted = false;
-    let mut kill_escalated = false;
+        let mut stdin_open = true;
+        let mut stdin_offset = 0usize;
+        let mut stdout_open = true;
+        let mut stderr_open = true;
+        let mut stdout_eof = false;
+        let mut stderr_eof = false;
+        let mut stdout_capture = Vec::new();
+        let mut stderr_capture = Vec::new();
+        let mut facts = ProcessExecutionFacts::default();
+        let mut provider_ready = false;
+        let mut leader_exited = false;
+        let mut cleanup_started = None;
+        let mut kill_attempted = false;
+        let mut kill_escalated = false;
 
-    loop {
-        let now = Instant::now();
-        if cleanup_started.is_none() {
-            if cancellation.is_cancelled() {
-                facts.cancelled = true;
-            }
-            if now >= global_deadline {
-                facts.global_timeout = true;
-            }
-            if call_deadline.is_some_and(|deadline| now >= deadline) && now < global_deadline {
-                facts.per_call_timeout = true;
-            }
-        }
-
-        if !leader_exited {
-            leader_exited = process.leader_has_exited_without_reaping()?;
-        }
-
-        if facts.requires_cleanup() && cleanup_started.is_none() {
-            cleanup_started = Some(Instant::now());
-            stdin_open = false;
-            stdin.take();
-            process.send_group_signal(libc::SIGTERM)?;
-        }
-
-        if cleanup_started.is_none() {
-            poll_process_pipes(
-                if stdin_open {
-                    stdin.as_ref().map(AsRawFd::as_raw_fd)
-                } else {
-                    None
-                },
-                if stdout_open {
-                    Some(stdout.as_raw_fd())
-                } else {
-                    None
-                },
-                if stderr_open {
-                    Some(stderr.as_raw_fd())
-                } else {
-                    None
-                },
-            )?;
-            if stdin_open {
-                let write_result = {
-                    let input_pipe = stdin
-                        .as_mut()
-                        .ok_or(LocalProviderRuntimeErrorV2::ProcessControlFailed)?;
-                    write_nonblocking(input_pipe, &provider_input[stdin_offset..])
-                };
-                match write_result {
-                    Ok(written) => {
-                        stdin_offset += written;
-                        if stdin_offset == provider_input.len() {
-                            stdin_open = false;
-                            // Closing stdin proves the complete canonical input was delivered.
-                            stdin.take();
-                        }
-                    }
-                    Err(error) if error.kind() == ErrorKind::WouldBlock => {}
-                    Err(_) => {
-                        facts.input_write_failed = true;
-                    }
+        loop {
+            let now = Instant::now();
+            if cleanup_started.is_none() {
+                if cancellation.is_cancelled() {
+                    facts.cancelled = true;
+                }
+                if now >= global_deadline {
+                    facts.global_timeout = true;
+                }
+                if call_deadline.is_some_and(|deadline| now >= deadline) && now < global_deadline {
+                    facts.per_call_timeout = true;
                 }
             }
-        } else {
-            poll_process_pipes(
-                None,
-                if stdout_open {
-                    Some(stdout.as_raw_fd())
-                } else {
-                    None
-                },
-                if stderr_open {
-                    Some(stderr.as_raw_fd())
-                } else {
-                    None
-                },
-            )?;
-        }
 
-        if stdout_open {
-            match read_nonblocking_capture(&mut stdout, &mut stdout_capture, stdout_limit) {
-                Ok(CaptureProgress::Pending) => {}
-                Ok(CaptureProgress::Eof) => {
-                    stdout_open = false;
-                    stdout_eof = true;
-                }
-                Ok(CaptureProgress::Overflow) => {
-                    stdout_open = false;
-                    facts.stdout_limit_exceeded = true;
-                }
-                Err(_) => {
-                    stdout_open = false;
-                    facts.output_read_failed = true;
-                }
-            }
-        }
-        if stderr_open {
-            match read_nonblocking_capture(&mut stderr, &mut stderr_capture, stderr_limit) {
-                Ok(CaptureProgress::Pending) => {}
-                Ok(CaptureProgress::Eof) => {
-                    stderr_open = false;
-                    stderr_eof = true;
-                }
-                Ok(CaptureProgress::Overflow) => {
-                    stderr_open = false;
-                    facts.stderr_limit_exceeded = true;
-                }
-                Err(_) => {
-                    stderr_open = false;
-                    facts.output_read_failed = true;
-                }
-            }
-        }
-
-        if !provider_ready && stderr_capture.starts_with(INERT_PROVIDER_READY_MARKER_V2) {
-            provider_ready = true;
-            call_deadline = Some(
-                Instant::now()
-                    .checked_add(per_call_timeout)
-                    .ok_or(LocalProviderRuntimeErrorV2::InvalidRuntimePolicy)?
-                    .min(global_deadline),
-            );
-        }
-
-        if leader_exited && cleanup_started.is_none() {
-            if !provider_ready {
-                facts.protocol_handshake_failed = true;
-            } else if process.group_has_other_members()? {
-                facts.lingering_process_group = true;
-            } else if stdin_offset != provider_input.len() {
-                facts.input_write_failed = true;
-            } else if stdout_eof && stderr_eof {
-                break;
-            }
-        }
-
-        if facts.requires_cleanup() && cleanup_started.is_none() {
-            continue;
-        }
-        if let Some(cleanup_start) = cleanup_started {
             if !leader_exited {
                 leader_exited = process.leader_has_exited_without_reaping()?;
             }
-            let group_has_other_members = process.group_has_other_members()?;
-            let kill_deadline = cleanup_start
-                .checked_add(termination_grace)
-                .ok_or(LocalProviderRuntimeErrorV2::InvalidRuntimePolicy)?;
-            if !kill_attempted
-                && Instant::now() >= kill_deadline
-                && (!leader_exited || group_has_other_members)
-            {
-                kill_attempted = true;
-                kill_escalated = process.send_group_signal(libc::SIGKILL)?;
+
+            if facts.requires_cleanup() && cleanup_started.is_none() {
+                cleanup_started = Some(Instant::now());
+                stdin_open = false;
+                stdin.take();
+                process.send_group_signal(libc::SIGTERM)?;
             }
-            let hard_deadline = kill_deadline
-                .checked_add(termination_grace)
-                .ok_or(LocalProviderRuntimeErrorV2::InvalidRuntimePolicy)?;
-            if leader_exited
-                && !group_has_other_members
-                && (!stdout_open || stdout_eof)
-                && (!stderr_open || stderr_eof)
-            {
-                break;
+
+            if cleanup_started.is_none() {
+                poll_process_pipes(
+                    if stdin_open {
+                        stdin.as_ref().map(AsRawFd::as_raw_fd)
+                    } else {
+                        None
+                    },
+                    if stdout_open {
+                        Some(stdout.as_raw_fd())
+                    } else {
+                        None
+                    },
+                    if stderr_open {
+                        Some(stderr.as_raw_fd())
+                    } else {
+                        None
+                    },
+                )?;
+                if stdin_open {
+                    let write_result = {
+                        let input_pipe = stdin
+                            .as_mut()
+                            .ok_or(LocalProviderRuntimeErrorV2::ProcessControlFailed)?;
+                        write_nonblocking(input_pipe, &provider_input[stdin_offset..])
+                    };
+                    match write_result {
+                        Ok(written) => {
+                            stdin_offset += written;
+                            if stdin_offset == provider_input.len() {
+                                stdin_open = false;
+                                // Closing stdin proves the complete canonical input was delivered.
+                                stdin.take();
+                            }
+                        }
+                        Err(error) if error.kind() == ErrorKind::WouldBlock => {}
+                        Err(_) => {
+                            facts.input_write_failed = true;
+                        }
+                    }
+                }
+            } else {
+                poll_process_pipes(
+                    None,
+                    if stdout_open {
+                        Some(stdout.as_raw_fd())
+                    } else {
+                        None
+                    },
+                    if stderr_open {
+                        Some(stderr.as_raw_fd())
+                    } else {
+                        None
+                    },
+                )?;
             }
-            if Instant::now() >= hard_deadline {
-                return Err(LocalProviderRuntimeErrorV2::ProcessCleanupFailed);
+
+            if stdout_open {
+                match read_nonblocking_capture(&mut stdout, &mut stdout_capture, stdout_limit) {
+                    Ok(CaptureProgress::Pending) => {}
+                    Ok(CaptureProgress::Eof) => {
+                        stdout_open = false;
+                        stdout_eof = true;
+                    }
+                    Ok(CaptureProgress::Overflow) => {
+                        stdout_open = false;
+                        facts.stdout_limit_exceeded = true;
+                    }
+                    Err(_) => {
+                        stdout_open = false;
+                        facts.output_read_failed = true;
+                    }
+                }
+            }
+            if stderr_open {
+                match read_nonblocking_capture(&mut stderr, &mut stderr_capture, stderr_limit) {
+                    Ok(CaptureProgress::Pending) => {}
+                    Ok(CaptureProgress::Eof) => {
+                        stderr_open = false;
+                        stderr_eof = true;
+                    }
+                    Ok(CaptureProgress::Overflow) => {
+                        stderr_open = false;
+                        facts.stderr_limit_exceeded = true;
+                    }
+                    Err(_) => {
+                        stderr_open = false;
+                        facts.output_read_failed = true;
+                    }
+                }
+            }
+
+            if !provider_ready && stderr_capture.starts_with(INERT_PROVIDER_READY_MARKER_V2) {
+                provider_ready = true;
+                call_deadline = Some(
+                    Instant::now()
+                        .checked_add(per_call_timeout)
+                        .ok_or(LocalProviderRuntimeErrorV2::InvalidRuntimePolicy)?
+                        .min(global_deadline),
+                );
+            }
+
+            if leader_exited && cleanup_started.is_none() {
+                if !provider_ready {
+                    facts.protocol_handshake_failed = true;
+                } else if process.group_has_other_members()? {
+                    facts.lingering_process_group = true;
+                } else if stdin_offset != provider_input.len() {
+                    facts.input_write_failed = true;
+                } else if stdout_eof && stderr_eof {
+                    break;
+                }
+            }
+
+            if facts.requires_cleanup() && cleanup_started.is_none() {
+                continue;
+            }
+            if let Some(cleanup_start) = cleanup_started {
+                if !leader_exited {
+                    leader_exited = process.leader_has_exited_without_reaping()?;
+                }
+                let group_has_other_members = process.group_has_other_members()?;
+                let kill_deadline = cleanup_start
+                    .checked_add(termination_grace)
+                    .ok_or(LocalProviderRuntimeErrorV2::InvalidRuntimePolicy)?;
+                if !kill_attempted
+                    && Instant::now() >= kill_deadline
+                    && (!leader_exited || group_has_other_members)
+                {
+                    kill_attempted = true;
+                    kill_escalated = process.send_group_signal(libc::SIGKILL)?;
+                }
+                let hard_deadline = kill_deadline
+                    .checked_add(termination_grace)
+                    .ok_or(LocalProviderRuntimeErrorV2::InvalidRuntimePolicy)?;
+                if leader_exited
+                    && !group_has_other_members
+                    && (!stdout_open || stdout_eof)
+                    && (!stderr_open || stderr_eof)
+                {
+                    break;
+                }
+                if Instant::now() >= hard_deadline {
+                    return Err(LocalProviderRuntimeErrorV2::ProcessCleanupFailed);
+                }
             }
         }
-    }
 
-    if !leader_exited || process.group_has_other_members()? {
-        return Err(LocalProviderRuntimeErrorV2::ProcessCleanupFailed);
-    }
-    let leader_status = process.reap()?;
-    process.disarm();
-    if stdin_offset != provider_input.len() {
-        facts.input_write_failed = true;
-    }
-    if !stdout_eof && !facts.stdout_limit_exceeded {
-        facts.output_read_failed = true;
-    }
-    let reason = facts.termination_reason(leader_status);
-    Ok(ProcessExecutionResult {
-        stdout_capture,
-        stderr_capture,
-        stdout_eof_verified: stdout_eof,
-        process_group_cleanup_verified: true,
-        kill_escalated,
-        termination_reason: reason,
-        exit_code: leader_status.code(),
-        elapsed: started.elapsed(),
-    })
+        if !leader_exited || process.group_has_other_members()? {
+            return Err(LocalProviderRuntimeErrorV2::ProcessCleanupFailed);
+        }
+        let leader_status = process.reap()?;
+        process.disarm();
+        if stdin_offset != provider_input.len() {
+            facts.input_write_failed = true;
+        }
+        if !stdout_eof && !facts.stdout_limit_exceeded {
+            facts.output_read_failed = true;
+        }
+        if !stderr_eof && !facts.stderr_limit_exceeded {
+            facts.output_read_failed = true;
+        }
+        let reason = facts.termination_reason(leader_status);
+        Ok(ProcessExecutionResult {
+            stdout_capture,
+            stderr_capture,
+            stdout_eof_verified: stdout_eof,
+            stderr_eof_verified: stderr_eof,
+            process_group_cleanup_verified: true,
+            kill_escalated,
+            termination_reason: reason,
+            exit_code: leader_status.code(),
+            elapsed: started.elapsed(),
+        })
+    })()
+    .map_err(ProviderInvocationFailureV2::started_without_capture)
 }
 
 fn ensure_private_runtime_root(path: &Path) -> Result<(), LocalProviderRuntimeErrorV2> {
@@ -1151,7 +2125,35 @@ fn ensure_private_runtime_root(path: &Path) -> Result<(), LocalProviderRuntimeEr
     }
 }
 
-fn create_private_run_directory(root: &Path) -> Result<PathBuf, LocalProviderRuntimeErrorV2> {
+struct RunDirectoryCreationFailureV2 {
+    primary_error: LocalProviderRuntimeErrorV2,
+    run_directory_cleanup_verified: bool,
+    secondary_cleanup_error: Option<LocalProviderRuntimeErrorV2>,
+}
+
+impl RunDirectoryCreationFailureV2 {
+    fn without_owned_directory() -> Self {
+        Self {
+            primary_error: LocalProviderRuntimeErrorV2::RunDirectoryCreationFailed,
+            run_directory_cleanup_verified: true,
+            secondary_cleanup_error: None,
+        }
+    }
+
+    fn after_created_directory(path: PathBuf) -> Self {
+        let mut guard = RunDirectoryGuard::new(path);
+        match guard.cleanup() {
+            Ok(()) => Self::without_owned_directory(),
+            Err(cleanup_error) => Self {
+                primary_error: LocalProviderRuntimeErrorV2::RunDirectoryCreationFailed,
+                run_directory_cleanup_verified: false,
+                secondary_cleanup_error: Some(cleanup_error),
+            },
+        }
+    }
+}
+
+fn create_private_run_directory(root: &Path) -> Result<PathBuf, RunDirectoryCreationFailureV2> {
     for _ in 0..128 {
         let counter = RUN_DIRECTORY_COUNTER.fetch_add(1, Ordering::Relaxed);
         let path = root.join(format!("run-{}-{counter}", std::process::id()));
@@ -1159,17 +2161,21 @@ fn create_private_run_directory(root: &Path) -> Result<PathBuf, LocalProviderRun
         builder.mode(0o700);
         match builder.create(&path) {
             Ok(()) => {
-                validate_private_directory(
+                if validate_private_directory(
                     &path,
                     LocalProviderRuntimeErrorV2::RunDirectoryCreationFailed,
-                )?;
+                )
+                .is_err()
+                {
+                    return Err(RunDirectoryCreationFailureV2::after_created_directory(path));
+                }
                 return Ok(path);
             }
             Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
-            Err(_) => return Err(LocalProviderRuntimeErrorV2::RunDirectoryCreationFailed),
+            Err(_) => return Err(RunDirectoryCreationFailureV2::without_owned_directory()),
         }
     }
-    Err(LocalProviderRuntimeErrorV2::RunDirectoryCreationFailed)
+    Err(RunDirectoryCreationFailureV2::without_owned_directory())
 }
 
 fn create_invocation_directories(path: &Path) -> Result<(), LocalProviderRuntimeErrorV2> {
@@ -1714,7 +2720,7 @@ impl ChildProcessGroupGuard {
     }
 
     #[cfg(target_os = "macos")]
-    fn group_has_other_members(&self) -> Result<bool, LocalProviderRuntimeErrorV2> {
+    fn group_has_other_members(&mut self) -> Result<bool, LocalProviderRuntimeErrorV2> {
         const MAX_OBSERVED_GROUP_MEMBERS: usize = 4_096;
         if self.reaped {
             return Err(LocalProviderRuntimeErrorV2::ProcessControlFailed);
@@ -1759,15 +2765,35 @@ impl ChildProcessGroupGuard {
                 continue;
             }
             let returned = &process_ids[..count];
-            if returned.iter().any(|pid| *pid <= 0) || !returned.contains(&self.process_group_id) {
+            if returned.iter().any(|pid| *pid <= 0) {
                 return Err(LocalProviderRuntimeErrorV2::ProcessControlFailed);
             }
-            return Ok(returned.iter().any(|pid| *pid != self.process_group_id));
+            if returned.contains(&self.process_group_id) {
+                return Ok(returned.iter().any(|pid| *pid != self.process_group_id));
+            }
+            // The leader can exit after the caller's waitid observation but
+            // before this independent libproc query. macOS then omits the
+            // waitable zombie even though it remains owned and unreaped. Every
+            // returned live PID is necessarily another member regardless of
+            // whether that leader transition has been observed yet.
+            if !returned.is_empty() {
+                return Ok(true);
+            }
+
+            // Refresh the durable waitid observation when the successful group
+            // query is empty. A still-live omitted leader does not make the
+            // empty result sufficient for cleanup: callers also require their
+            // separate leader-exited fact before they can break or reap. If the
+            // leader exited in the query window, this records that proof for
+            // the next loop iteration without turning the normal transition
+            // into ProcessControlFailed.
+            let _ = self.leader_has_exited_without_reaping()?;
+            return Ok(false);
         }
     }
 
     #[cfg(not(target_os = "macos"))]
-    fn group_has_other_members(&self) -> Result<bool, LocalProviderRuntimeErrorV2> {
+    fn group_has_other_members(&mut self) -> Result<bool, LocalProviderRuntimeErrorV2> {
         Err(LocalProviderRuntimeErrorV2::UnsupportedPlatform)
     }
 
@@ -1834,6 +2860,168 @@ extern "C" {
         actions: *mut libc::posix_spawn_file_actions_t,
         path: *const libc::c_char,
     ) -> libc::c_int;
+}
+
+#[cfg(test)]
+mod partition_tests {
+    use super::*;
+
+    fn work_item_ids() -> Vec<Sha256Digest> {
+        [
+            b"first".as_slice(),
+            b"second".as_slice(),
+            b"third".as_slice(),
+        ]
+        .into_iter()
+        .map(Sha256Digest::from_bytes)
+        .collect()
+    }
+
+    #[test]
+    fn terminal_failure_classification_distinguishes_pre_and_post_spawn() {
+        let expected = work_item_ids();
+        let recorded = vec![expected[0].clone()];
+
+        let (pre_attempted, pre_unattempted) = terminal_invocation_failure_classification(
+            &expected,
+            1,
+            ProviderInvocationAttemptStateV2::NotStarted,
+        )
+        .expect("valid pre-spawn classification");
+        assert!(pre_attempted.is_empty());
+        assert_eq!(pre_unattempted, expected[1..]);
+        LocalProviderWorkPartitionV2::new(
+            expected.clone(),
+            recorded.clone(),
+            pre_attempted,
+            pre_unattempted,
+        )
+        .expect("pre-spawn failure keeps current item unattempted");
+
+        let (post_attempted, post_unattempted) = terminal_invocation_failure_classification(
+            &expected,
+            1,
+            ProviderInvocationAttemptStateV2::StartedWithoutCapture,
+        )
+        .expect("valid post-spawn classification");
+        assert_eq!(
+            post_attempted.as_slice(),
+            std::slice::from_ref(&expected[1])
+        );
+        assert_eq!(post_unattempted, expected[2..]);
+        LocalProviderWorkPartitionV2::new(
+            expected.clone(),
+            recorded,
+            post_attempted,
+            post_unattempted,
+        )
+        .expect("post-spawn failure isolates the attempted item");
+
+        assert!(matches!(
+            terminal_invocation_failure_classification(
+                &expected,
+                expected.len(),
+                ProviderInvocationAttemptStateV2::NotStarted,
+            ),
+            Err(LocalProviderRuntimeErrorV2::InvalidWorkPartition)
+        ));
+    }
+
+    #[test]
+    fn terminal_work_item_must_be_the_next_unrecorded_item() {
+        let expected = work_item_ids();
+        let pre_spawn_partition = LocalProviderWorkPartitionV2::new(
+            expected.clone(),
+            vec![expected[0].clone()],
+            Vec::new(),
+            expected[1..].to_vec(),
+        )
+        .expect("sequential pre-spawn partition");
+        validate_terminal_work_item_binding(
+            &pre_spawn_partition,
+            Some(LocalProviderRuntimeErrorV2::ProcessSpawnFailed),
+            Some(LocalProviderTerminalPhaseV2::Invocation),
+            Some(&expected[1]),
+        )
+        .expect("first unattempted item is the terminal item");
+        assert!(matches!(
+            validate_terminal_work_item_binding(
+                &pre_spawn_partition,
+                Some(LocalProviderRuntimeErrorV2::ProcessSpawnFailed),
+                Some(LocalProviderTerminalPhaseV2::Invocation),
+                Some(&expected[2]),
+            ),
+            Err(LocalProviderRuntimeErrorV2::InvalidRunEvidence)
+        ));
+
+        let post_spawn_partition = LocalProviderWorkPartitionV2::new(
+            expected.clone(),
+            vec![expected[0].clone()],
+            vec![expected[1].clone()],
+            expected[2..].to_vec(),
+        )
+        .expect("sequential post-spawn partition");
+        assert!(matches!(
+            validate_terminal_work_item_binding(
+                &post_spawn_partition,
+                Some(LocalProviderRuntimeErrorV2::ProcessControlFailed),
+                Some(LocalProviderTerminalPhaseV2::Invocation),
+                None,
+            ),
+            Err(LocalProviderRuntimeErrorV2::InvalidRunEvidence)
+        ));
+    }
+
+    #[test]
+    fn preflight_phase_can_bind_a_later_item_without_claiming_dispatch() {
+        let expected = work_item_ids();
+        let partition = LocalProviderWorkPartitionV2::new(
+            expected.clone(),
+            Vec::new(),
+            Vec::new(),
+            expected.clone(),
+        )
+        .expect("all-unattempted preflight partition");
+        validate_terminal_work_item_binding(
+            &partition,
+            Some(LocalProviderRuntimeErrorV2::ProviderInputInvalid),
+            Some(LocalProviderTerminalPhaseV2::Preflight),
+            Some(&expected[2]),
+        )
+        .expect("later preflight item is bound without a dispatch claim");
+        assert!(matches!(
+            validate_terminal_work_item_binding(
+                &partition,
+                Some(LocalProviderRuntimeErrorV2::ProviderInputInvalid),
+                Some(LocalProviderTerminalPhaseV2::Invocation),
+                Some(&expected[2]),
+            ),
+            Err(LocalProviderRuntimeErrorV2::InvalidRunEvidence)
+        ));
+        assert!(matches!(
+            validate_terminal_work_item_binding(
+                &partition,
+                Some(LocalProviderRuntimeErrorV2::ProviderInputInvalid),
+                Some(LocalProviderTerminalPhaseV2::Preflight),
+                None,
+            ),
+            Err(LocalProviderRuntimeErrorV2::InvalidRunEvidence)
+        ));
+    }
+
+    #[test]
+    fn evidence_bound_host_time_range_is_present_and_ordered() {
+        validate_host_time_range_v2(1, 1).expect("equal nonzero second is ordered");
+        validate_host_time_range_v2(1, 2).expect("increasing seconds are ordered");
+        assert_eq!(
+            validate_host_time_range_v2(0, 1),
+            Err(LocalProviderRuntimeErrorV2::SystemClockInvalid)
+        );
+        assert_eq!(
+            validate_host_time_range_v2(2, 1),
+            Err(LocalProviderRuntimeErrorV2::SystemClockInvalid)
+        );
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -1980,6 +3168,36 @@ mod tests {
         );
         drop(invalid_guard);
         fs::remove_file(invalid_path).expect("remove invalid guard target");
+        fs::remove_dir(root).expect("remove private unit-test root");
+    }
+
+    #[test]
+    fn occupied_staging_path_reports_staging_error_and_remains_cleanup_capable() {
+        let root = private_test_root("staging-failure");
+        let source_path = root.join("provider-source");
+        fs::copy("/usr/bin/true", &source_path).expect("copy inert executable source");
+        fs::set_permissions(&source_path, fs::Permissions::from_mode(0o500))
+            .expect("set safe executable mode");
+        let expected_sha256 =
+            Sha256Digest::from_bytes(&fs::read(&source_path).expect("read executable source"));
+        let run_directory = root.join("run");
+        create_private_directory(&run_directory).expect("create private run directory");
+        fs::write(
+            run_directory.join("authorized-provider"),
+            b"occupied staging destination",
+        )
+        .expect("occupy staging destination");
+
+        assert!(matches!(
+            stage_verified_executable(&source_path, &run_directory, &expected_sha256),
+            Err(LocalProviderRuntimeErrorV2::ExecutableStagingFailed)
+        ));
+        let mut guard = RunDirectoryGuard::new(run_directory.clone());
+        guard
+            .cleanup()
+            .expect("staging failure directory remains explicitly cleanable");
+        assert!(!run_directory.exists());
+        fs::remove_file(source_path).expect("remove executable source");
         fs::remove_dir(root).expect("remove private unit-test root");
     }
 

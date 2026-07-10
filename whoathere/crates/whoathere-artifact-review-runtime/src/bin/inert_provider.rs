@@ -80,7 +80,12 @@ fn main() {
             let _ = io::stderr().write_all(&bytes);
             emit_empty_result(work_item_id, invocation_sha256);
         }
-        "whoathere-inert-fixture-hang" => thread::sleep(Duration::from_secs(30)),
+        "whoathere-inert-fixture-hang" => {
+            if !write_dispatch_ready_marker() {
+                process::exit(77);
+            }
+            thread::sleep(Duration::from_secs(30));
+        }
         "whoathere-inert-fixture-ignore-term" => thread::sleep(Duration::from_secs(30)),
         "whoathere-inert-fixture-nonzero" => {
             let _ = io::stderr().write_all(b"inert nonzero fixture\n");
@@ -118,6 +123,18 @@ fn main() {
         }
         _ => process::exit(72),
     }
+}
+
+fn write_dispatch_ready_marker() -> bool {
+    let Some(home) = env::var_os("HOME") else {
+        return false;
+    };
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(std::path::Path::new(&home).join(".whoathere-inert-provider-dispatch-ready"))
+        .and_then(|mut file| file.write_all(b"ready\n"))
+        .is_ok()
 }
 
 fn inherited_descriptor_exposes_test_sentinel() -> bool {
