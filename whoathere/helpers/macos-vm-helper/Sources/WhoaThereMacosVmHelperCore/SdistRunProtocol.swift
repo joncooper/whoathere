@@ -67,7 +67,7 @@ public final class SdistRunSubmissionReader {
     public let prelude: SdistRunSubmissionPrelude
 
     private let handle: FileHandle
-    private let expectedArtifactDigest: Data
+    let expectedArtifactDigest: Data
     let canonicalHeaderData: Data
     private var consumed = false
 
