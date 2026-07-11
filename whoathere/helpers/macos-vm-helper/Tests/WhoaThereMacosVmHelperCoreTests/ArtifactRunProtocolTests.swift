@@ -136,6 +136,9 @@ func artifactSubmissionFixture() throws -> ArtifactSubmissionFixture {
     let nodeSHA256 = sha256(Data("node executable".utf8))
     let npmSHA256 = sha256(Data("npm cli".utf8))
     let guestAuthPublicKey = try guestAuthTestPublicKey()
+    let provisioningReceipt = try artifactSupervisorProvisioningFixtureData(
+        guestAuthPublicKey: guestAuthPublicKey
+    )
     let commandTemplateSHA256 = sha256(
         Data("whoathere.npm_local_tarball_install.fixed_argv.v1".utf8)
     )
@@ -240,7 +243,7 @@ func artifactSubmissionFixture() throws -> ArtifactSubmissionFixture {
             "machine_identifier_sha256": sha256(Data("machine identifier".utf8)),
             "cpu_count": UInt64(4),
             "memory_mib": UInt64(6_144),
-            "post_provisioning_receipt_sha256": sha256(Data("receipt".utf8)),
+            "post_provisioning_receipt_sha256": sha256(provisioningReceipt),
             "helper_sha256": sha256(Data("helper".utf8)),
             "guest_supervisor_sha256": sha256(Data("supervisor".utf8)),
             "guest_auth_public_key_sha256": sha256(guestAuthPublicKey),
@@ -251,7 +254,9 @@ func artifactSubmissionFixture() throws -> ArtifactSubmissionFixture {
             "node_executable_sha256": nodeSHA256,
             "npm_version": "11.18.0",
             "npm_cli_sha256": npmSHA256,
-            "clone_implementation_sha256": sha256(Data("clone".utf8)),
+            "clone_implementation_sha256": sha256(
+                Data("whoathere.swift.fclonefileat.direct.v1".utf8)
+            ),
             "guest_protocol_sha256": guestProtocolSHA256
         ],
         "clone_policy": "apfs_clone_required_no_copy_fallback",

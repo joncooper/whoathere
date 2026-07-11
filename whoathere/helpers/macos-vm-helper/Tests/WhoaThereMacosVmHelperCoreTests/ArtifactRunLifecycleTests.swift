@@ -59,6 +59,21 @@ import Testing
     }
 
     do {
+        let fixture = try lifecycleFixture(
+            receiptSupervisorDigestOverride: sha256(Data("different supervisor".utf8))
+        )
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        #expect(throws: ArtifactRunLifecycleError.provisioningReceiptInvalid) {
+            try verifyAndLockArtifactRunBase(
+                layout: fixture.layout,
+                identity: fixture.identity,
+                helperURL: fixture.helperURL
+            )
+        }
+        #expect(!FileManager.default.fileExists(atPath: fixture.layout.artifactRunsDirectory.path))
+    }
+
+    do {
         let fixture = try lifecycleFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         try FileManager.default.removeItem(at: fixture.layout.diskURL)
@@ -125,7 +140,8 @@ struct LifecycleFixture {
 }
 
 func lifecycleFixture(
-    diskDigestOverride: String? = nil
+    diskDigestOverride: String? = nil,
+    receiptSupervisorDigestOverride: String? = nil
 ) throws -> LifecycleFixture {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(
         "whoathere-artifact-lifecycle-\(UUID().uuidString)", isDirectory: true
@@ -144,7 +160,11 @@ func lifecycleFixture(
     let hardware = Data("hardware model".utf8)
     let machine = Data("machine identifier".utf8)
     let guestAuthPublicKey = try guestAuthTestPublicKey()
-    let receipt = Data("receipt".utf8)
+    let receipt = try artifactSupervisorProvisioningFixtureData(
+        guestAuthPublicKey: guestAuthPublicKey,
+        guestSupervisorSHA256: receiptSupervisorDigestOverride
+            ?? sha256(Data("supervisor".utf8))
+    )
     let helper = Data("helper".utf8)
     let helperURL = root.appendingPathComponent("helper-fixture")
     for (url, data) in [
@@ -179,7 +199,9 @@ func lifecycleFixture(
         nodeExecutableSHA256: sha256(Data("node executable".utf8)),
         npmVersion: "11.18.0",
         npmCLISHA256: sha256(Data("npm cli".utf8)),
-        cloneImplementationSHA256: sha256(Data("clone".utf8)),
+        cloneImplementationSHA256: sha256(
+            Data("whoathere.swift.fclonefileat.direct.v1".utf8)
+        ),
         guestProtocolSHA256: sha256(Data("whoathere.artifact_scenario.v1".utf8))
     )
     return LifecycleFixture(
@@ -193,6 +215,33 @@ func lifecycleFixture(
         machineIdentifier: machine,
         guestAuthPublicKey: guestAuthPublicKey
     )
+}
+
+func artifactSupervisorProvisioningFixtureData(
+    guestAuthPublicKey: Data,
+    guestSupervisorSHA256: String = sha256(Data("supervisor".utf8))
+) throws -> Data {
+    try canonicalJSONData([
+        "artifact_vsock_port": "47079",
+        "base_generation_id": "base-generation-inert-v1",
+        "clone_implementation_sha256": sha256(
+            Data("whoathere.swift.fclonefileat.direct.v1".utf8)
+        ),
+        "cpu_count": "4",
+        "guest_auth_public_key_sha256": sha256(guestAuthPublicKey),
+        "guest_supervisor_sha256": guestSupervisorSHA256,
+        "memory_mib": "6144",
+        "node_executable_sha256": sha256(Data("node executable".utf8)),
+        "node_version": "22.17.0",
+        "npm_cli_sha256": sha256(Data("npm cli".utf8)),
+        "npm_version": "11.18.0",
+        "package_execution_enabled": false,
+        "package_gid": "502",
+        "package_uid": "502",
+        "runner_configuration_sha256": sha256(Data("runner".utf8)),
+        "schema_version": artifactSupervisorProvisioningReceiptSchemaV1,
+        "sync_back_enabled": false
+    ])
 }
 
 private func setMode(_ url: URL, _ mode: mode_t) throws {

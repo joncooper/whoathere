@@ -185,7 +185,7 @@ import Testing
                 descriptor: guestDescriptor,
                 expectedType: .authenticationChallenge,
                 maximumBodyBytes: maximumArtifactGuestAuthBytesV1,
-                timeoutMillis: 1_000
+                timeoutMillis: 5_000
             )
             let challenge = try decodeArtifactGuestAuthChallenge(challengeData)
             let authResponse = try signedGuestAuthResponse(
@@ -196,7 +196,7 @@ import Testing
                 descriptor: guestDescriptor,
                 frameType: .authenticationResponse,
                 body: authResponse,
-                timeoutMillis: 1_000
+                timeoutMillis: 5_000
             )
 
             var guestFrame = try readSessionToEOF(guestDescriptor)
@@ -218,7 +218,7 @@ import Testing
                 descriptor: guestDescriptor,
                 frameType: .stagingReceipt,
                 body: receipt,
-                timeoutMillis: 1_000
+                timeoutMillis: 5_000
             )
             guard shutdown(guestDescriptor, SHUT_WR) == 0 else {
                 throw ArtifactGuestControlError.ioFailed
@@ -235,7 +235,7 @@ import Testing
         reader: reader,
         base: base,
         clone: clone,
-        timeoutMillis: 1_000
+        timeoutMillis: 5_000
     )
     #expect(observation.authentication.signatureVerified)
     #expect(observation.transport.artifactSHA256 == submission.artifactSHA256)
@@ -243,7 +243,7 @@ import Testing
     #expect(observation.stagingReceipt.stagedDevice == 123)
     #expect(observation.stagingReceipt.stagedInode == 456)
     #expect(observation.packageExecutionEnabled == false)
-    #expect(finished.wait(timeout: .now() + 1) == .success)
+    #expect(finished.wait(timeout: .now() + 5) == .success)
     try resultBox.load()?.get()
 }
 

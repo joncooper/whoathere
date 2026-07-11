@@ -10,6 +10,7 @@ public enum ArtifactRunLifecycleError: Error, Equatable, CustomStringConvertible
     case baseLockUnavailable
     case baseDigestMismatch
     case helperDigestMismatch
+    case provisioningReceiptInvalid
     case metadataLimitExceeded
     case randomGenerationFailed
     case runDirectoryFailed
@@ -28,6 +29,8 @@ public enum ArtifactRunLifecycleError: Error, Equatable, CustomStringConvertible
         case .baseLockUnavailable: return "artifact_run_base_lock_unavailable"
         case .baseDigestMismatch: return "artifact_run_base_digest_mismatch"
         case .helperDigestMismatch: return "artifact_run_helper_digest_mismatch"
+        case .provisioningReceiptInvalid:
+            return "artifact_run_supervisor_provisioning_receipt_invalid"
         case .metadataLimitExceeded: return "artifact_run_metadata_limit_exceeded"
         case .randomGenerationFailed: return "artifact_run_random_generation_failed"
         case .runDirectoryFailed: return "artifact_run_directory_failed"
@@ -68,7 +71,7 @@ public struct ArtifactRunBaseLayout: Equatable, Sendable {
             "artifact-supervisor-public-key.bin"
         )
         postProvisioningReceiptURL = bundleDirectory.appendingPathComponent(
-            "guest-provisioning.json"
+            "artifact-supervisor-provisioning.json"
         )
         runtimePIDURL = bundleDirectory.appendingPathComponent("runtime.pid")
     }
@@ -314,10 +317,16 @@ public func verifyAndLockArtifactRunBase(
         }
         guard let hardwareData = hardware.boundedData,
               let machineData = machine.boundedData,
+              let receiptData = receipt.boundedData,
               let guestAuthPublicKeyData = guestAuthPublicKey.boundedData,
               guestAuthPublicKeyData.count == 32 else {
             throw ArtifactRunLifecycleError.baseFileUnsafe
         }
+        _ = try verifyArtifactSupervisorProvisioningReceipt(
+            receiptData,
+            identity: identity,
+            guestAuthPublicKey: guestAuthPublicKeyData
+        )
         let measurement = ArtifactRunBaseMeasurement(
             baseGenerationID: identity.baseGenerationID,
             diskSHA256: disk.sha256,
