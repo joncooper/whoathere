@@ -654,6 +654,7 @@ dependencies = [
  "whoathere-detonation",
  "whoathere-evidence",
  "zeroize",
+ "zip",
 ]
 
 [[package]]
