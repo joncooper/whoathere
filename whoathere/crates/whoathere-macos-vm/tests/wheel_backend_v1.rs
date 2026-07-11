@@ -19,20 +19,21 @@ use whoathere_macos_vm::{
     compile_macos_wheel_run_spec_v1, decode_and_validate_macos_artifact_run_spec_v1,
     decode_and_validate_macos_wheel_run_spec_v1, decode_macos_wheel_guest_auth_challenge_v1,
     decode_macos_wheel_submission_frame_v1, encode_macos_wheel_submission_frame_v1,
-    macos_wheel_execution_binding_sha256_v1, read_macos_wheel_guest_control_frame_v1,
-    require_macos_wheel_guest_control_eof_v1, run_macos_wheel_guest_nonexecuting_session_v1,
-    sign_macos_wheel_guest_auth_response_v1, sign_macos_wheel_guest_staging_receipt_v1,
-    stage_macos_wheel_guest_submission_v1, stream_macos_wheel_guest_submission_v1,
-    verify_macos_wheel_guest_auth_response_v1, verify_macos_wheel_guest_staging_receipt_v1,
-    write_macos_wheel_guest_control_frame_v1, MacosArtifactRunErrorV1,
-    MacosWheelBackendCapabilitiesV1, MacosWheelBackendIdentityV1, MacosWheelGuestAuthChallengeV1,
-    MacosWheelGuestAuthClaimsV1, MacosWheelGuestAuthErrorV1, MacosWheelGuestControlErrorV1,
-    MacosWheelGuestControlFrameTypeV1, MacosWheelGuestStagingErrorV1,
-    MacosWheelGuestStagingPolicyV1, MacosWheelGuestStagingReceiptClaimsV1,
-    MacosWheelGuestSupervisorPrimaryErrorV1, MacosWheelSubmissionBindingsV1,
-    MacosWheelSubmissionErrorV1, MacosWheelSubmissionHeaderV1, WheelGuestRehashPhaseV1,
-    MACOS_WHEEL_GUEST_SUBMISSION_MAGIC_V1, MACOS_WHEEL_SUBMISSION_FIXED_PREFIX_BYTES_V1,
-    MACOS_WHEEL_SUBMISSION_MAGIC_V1,
+    macos_wheel_execution_binding_sha256_v1, prepare_macos_wheel_launch_v1,
+    read_macos_wheel_guest_control_frame_v1, require_macos_wheel_guest_control_eof_v1,
+    run_macos_wheel_guest_nonexecuting_session_v1, sign_macos_wheel_guest_auth_response_v1,
+    sign_macos_wheel_guest_staging_receipt_v1, stage_macos_wheel_guest_submission_v1,
+    stream_macos_wheel_guest_submission_v1, verify_macos_wheel_guest_auth_response_v1,
+    verify_macos_wheel_guest_staging_receipt_v1, write_macos_wheel_guest_control_frame_v1,
+    MacosArtifactRunErrorV1, MacosWheelBackendCapabilitiesV1, MacosWheelBackendIdentityV1,
+    MacosWheelGuestAuthChallengeV1, MacosWheelGuestAuthClaimsV1, MacosWheelGuestAuthErrorV1,
+    MacosWheelGuestControlErrorV1, MacosWheelGuestControlFrameTypeV1,
+    MacosWheelGuestStagingErrorV1, MacosWheelGuestStagingPolicyV1,
+    MacosWheelGuestStagingReceiptClaimsV1, MacosWheelGuestSupervisorPrimaryErrorV1,
+    MacosWheelLaunchAuthorityErrorV1, MacosWheelSubmissionBindingsV1, MacosWheelSubmissionErrorV1,
+    MacosWheelSubmissionHeaderV1, WheelGuestRehashPhaseV1, MACOS_WHEEL_GUEST_SUBMISSION_MAGIC_V1,
+    MACOS_WHEEL_LAUNCH_AUTHORITY_SCHEMA_V1, MACOS_WHEEL_SUBMISSION_FIXED_PREFIX_BYTES_V1,
+    MACOS_WHEEL_SUBMISSION_MAGIC_V1, MAX_MACOS_WHEEL_LAUNCH_AUTHORITY_LIFETIME_SECONDS_V1,
 };
 use zip::write::SimpleFileOptions;
 
@@ -189,6 +190,125 @@ fn base64_url_no_pad(bytes: &[u8]) -> String {
         }
     }
     output
+}
+
+#[test]
+fn wheel_launch_authority_is_random_single_use_state_bound_to_the_exact_run_spec() {
+    let (template, _) = compiled_template(b"VALUE = 1\n");
+    let backend = backend(digest(b"measured pip"));
+    let run_spec = compile_macos_wheel_run_spec_v1(&template, &backend).expect("run spec");
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "whoathere-wheel-authority-{}-{nonce}",
+        std::process::id()
+    ));
+    fs::create_dir(&root).expect("state root");
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).expect("protect state root");
+
+    let first = prepare_macos_wheel_launch_v1(&root, run_spec.clone(), 2_000_000_000, 120)
+        .expect("first authority");
+    let second = prepare_macos_wheel_launch_v1(&root, run_spec.clone(), 2_000_000_001, 120)
+        .expect("second authority");
+    assert_ne!(
+        first.authority().record().authority_id(),
+        second.authority().record().authority_id()
+    );
+    assert_ne!(
+        first.authority().record().challenge_binding_sha256(),
+        second.authority().record().challenge_binding_sha256()
+    );
+    assert_eq!(
+        first.header().bindings().challenge_binding_sha256(),
+        first.authority().record().challenge_binding_sha256()
+    );
+    assert_eq!(
+        first.authority().record().run_spec_sha256(),
+        run_spec.run_spec_sha256()
+    );
+    assert_eq!(
+        first.authority().record().artifact_sha256(),
+        run_spec.artifact_sha256()
+    );
+    assert_eq!(
+        first.authority().record().issued_at_unix_seconds(),
+        2_000_000_000
+    );
+    assert_eq!(
+        first.authority().record().expires_at_unix_seconds(),
+        2_000_000_120
+    );
+    let bytes = fs::read(first.authority().pending_path()).expect("authority bytes");
+    assert_eq!(
+        first.authority().record_sha256(),
+        &Sha256Digest::from_bytes(&bytes)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&bytes).expect("authority JSON");
+    assert_eq!(
+        value
+            .get("schema_version")
+            .and_then(serde_json::Value::as_str),
+        Some(MACOS_WHEEL_LAUNCH_AUTHORITY_SCHEMA_V1)
+    );
+    assert_eq!(
+        fs::metadata(first.authority().pending_path())
+            .expect("authority metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+    for name in [
+        "wheel-authorities",
+        "wheel-authorities/pending",
+        "wheel-authorities/consumed",
+    ] {
+        assert_eq!(
+            fs::metadata(root.join(name))
+                .expect("authority directory metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+    }
+
+    fs::remove_dir_all(&root).expect("remove authority fixture");
+}
+
+#[test]
+fn wheel_launch_authority_rejects_unsafe_state_and_excess_lifetime() {
+    let (template, _) = compiled_template(b"VALUE = 1\n");
+    let backend = backend(digest(b"measured pip"));
+    let run_spec = compile_macos_wheel_run_spec_v1(&template, &backend).expect("run spec");
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "whoathere-wheel-authority-unsafe-{}-{nonce}",
+        std::process::id()
+    ));
+    fs::create_dir(&root).expect("state root");
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o777)).expect("weaken state root");
+    assert_eq!(
+        prepare_macos_wheel_launch_v1(&root, run_spec.clone(), 2_000_000_000, 120)
+            .expect_err("unsafe root"),
+        MacosWheelLaunchAuthorityErrorV1::UnsafeStateDirectory
+    );
+    assert_eq!(
+        prepare_macos_wheel_launch_v1(
+            &root,
+            run_spec,
+            2_000_000_000,
+            MAX_MACOS_WHEEL_LAUNCH_AUTHORITY_LIFETIME_SECONDS_V1 + 1,
+        )
+        .expect_err("excess lifetime"),
+        MacosWheelLaunchAuthorityErrorV1::InvalidTime
+    );
+    fs::remove_dir(&root).expect("remove unsafe state root");
 }
 
 fn backend(pip_digest: Sha256Digest) -> MacosWheelBackendCapabilitiesV1 {

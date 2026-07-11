@@ -11,6 +11,7 @@ mod wheel_guest_control;
 mod wheel_guest_receipt;
 mod wheel_guest_staging;
 mod wheel_guest_supervisor;
+mod wheel_launch_authority;
 mod wheel_transport;
 
 pub use artifact_backend::*;
@@ -26,6 +27,7 @@ pub use wheel_guest_control::*;
 pub use wheel_guest_receipt::*;
 pub use wheel_guest_staging::*;
 pub use wheel_guest_supervisor::*;
+pub use wheel_launch_authority::*;
 pub use wheel_transport::*;
 
 use std::path::{Path, PathBuf};
