@@ -772,8 +772,9 @@ Work packages:
   rejects the current macOS-native backend as the bulk lane and selects a lightweight Linux VZ
   guest on the Mac as the candidate. The closed cross-language
   [telemetry-conformance run spec](artifact-native-linux-vz-telemetry-conformance-run-spec-checkpoint-2026-07-11.md)
-  now exists, but the measured image, sensors, evidence receipts, and required inert Linux
-  conformance run remain open.
+  and [authenticated receipt schemas](artifact-native-linux-vz-authenticated-conformance-evidence-checkpoint-2026-07-11.md)
+  now exist, but the complete qualification aggregate, measured image, sensors, actual receipts,
+  and required inert Linux conformance run remain open.
 - **AN-008 Artifact transport feasibility spike:** replace or prototype beyond the current bounded
   hex-in-JSON project payload so realistic tgz/wheel/sdist sizes can be transported as exact bytes
   with streaming or bounded-memory behavior and end-to-end digest verification.

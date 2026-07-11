@@ -89,8 +89,10 @@ changes the challenge digest; run-spec, backend, requirements, key, execution, u
 noncanonical rebinding fail closed. The shared challenge golden is
 `sha256:28136636fa8be52022213f238b9a39b55c35a837eb8262552dc5eeae55400ff6`.
 
-The challenge is not execution authority and cannot authorize package code. Signed guest and host
-receipts that consume this challenge remain the next implementation boundary.
+The challenge is not execution authority and cannot authorize package code. The follow-on
+[authenticated conformance-evidence checkpoint](artifact-native-linux-vz-authenticated-conformance-evidence-checkpoint-2026-07-11.md)
+now defines and cross-language verifies distinct guest and host receipts that consume it. No actual
+receipt or complete-matrix qualification exists yet.
 
 ## Cross-language binding
 
@@ -129,9 +131,9 @@ sample, or malware was used.
 
 ## Next gate
 
-Build and measure a minimal Linux VZ image containing only the root-owned runner, protected sensors,
-BPF objects, configuration, evidence key, and trusted inert fixtures. Implement separately
-authenticated guest and host conformance evidence, then run the 38-case matrix with fault injection
+Complete the 38-case qualification aggregate, then build and measure a minimal Linux VZ image
+containing only the root-owned runner, protected sensors, BPF objects, configuration, evidence
+keys, and trusted inert fixtures. Run the matrix with fault injection
 for drop, sensor-death, channel-loss, timeout, and teardown paths.
 
 A distinct qualified-backend type may be constructed only from verified conformance receipts that

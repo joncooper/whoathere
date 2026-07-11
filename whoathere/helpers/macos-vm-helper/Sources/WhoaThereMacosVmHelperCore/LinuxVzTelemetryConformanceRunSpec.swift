@@ -47,6 +47,21 @@ public struct LinuxVzTelemetryConformanceRunSpec: Equatable, Sendable {
     public var packageExecutionAuthorityPermitted: Bool { false }
 }
 
+func linuxVzConformanceExpectedGuestSensors(_ runSpec: LinuxVzTelemetryConformanceRunSpec) -> [String] {
+    let hostOnly = Set([
+        "host_raw_frames", "dns_sinkhole", "http_sinkhole", "vm_clone_lifecycle"
+    ])
+    return runSpec.expectedSensors.filter { !hostOnly.contains($0) }
+}
+
+func linuxVzConformanceExpectedHostSensors(_ runSpec: LinuxVzTelemetryConformanceRunSpec) -> [String] {
+    let host = Set([
+        "host_raw_frames", "dns_sinkhole", "http_sinkhole", "vm_clone_lifecycle",
+        "sensor_health_heartbeat", "dropped_event_accounting"
+    ])
+    return runSpec.expectedSensors.filter { host.contains($0) }
+}
+
 public func decodeLinuxVzTelemetryConformanceRunSpec(
     _ data: Data
 ) throws -> LinuxVzTelemetryConformanceRunSpec {

@@ -17,6 +17,17 @@ pub enum LinuxVzTelemetryConformanceChallengePurposeV1 {
     TrustedInertTelemetryConformanceOnly,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LinuxVzTelemetryConformanceObservedTerminalV1 {
+    ObservationComplete,
+    IncompleteOnInjectedGap,
+    TimeoutWithTeardown,
+    InfrastructureErrorWithTeardown,
+    AccessDeniedWithCompleteEvidence,
+    UnexpectedFailure,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LinuxVzTelemetryConformanceChallengeWireV1 {
@@ -152,6 +163,10 @@ pub enum MacosLinuxVzTelemetryEvidenceErrorV1 {
     RunSpecMismatch,
     BackendMismatch,
     CloneMismatch,
+    InvalidReceipt,
+    PublicKeyMismatch,
+    SignatureFailed,
+    ConformanceFailed,
     NonCanonical,
     Serialization,
 }
@@ -166,6 +181,10 @@ impl MacosLinuxVzTelemetryEvidenceErrorV1 {
             Self::RunSpecMismatch => "macos_linux_vz_telemetry_evidence_run_spec_mismatch",
             Self::BackendMismatch => "macos_linux_vz_telemetry_evidence_backend_mismatch",
             Self::CloneMismatch => "macos_linux_vz_telemetry_evidence_clone_mismatch",
+            Self::InvalidReceipt => "macos_linux_vz_telemetry_evidence_receipt_invalid",
+            Self::PublicKeyMismatch => "macos_linux_vz_telemetry_evidence_public_key_mismatch",
+            Self::SignatureFailed => "macos_linux_vz_telemetry_evidence_signature_failed",
+            Self::ConformanceFailed => "macos_linux_vz_telemetry_conformance_failed",
             Self::NonCanonical => "macos_linux_vz_telemetry_evidence_noncanonical",
             Self::Serialization => "macos_linux_vz_telemetry_evidence_serialization_failed",
         }
@@ -179,6 +198,165 @@ impl fmt::Display for MacosLinuxVzTelemetryEvidenceErrorV1 {
 }
 
 impl std::error::Error for MacosLinuxVzTelemetryEvidenceErrorV1 {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedLinuxVzTelemetryConformanceCaseV1 {
+    challenge_sha256: Sha256Digest,
+    fixture_case: crate::LinuxVzTelemetryConformanceCaseV1,
+    guest_receipt_present: bool,
+}
+
+impl VerifiedLinuxVzTelemetryConformanceCaseV1 {
+    pub fn challenge_sha256(&self) -> &Sha256Digest {
+        &self.challenge_sha256
+    }
+
+    pub fn fixture_case(&self) -> crate::LinuxVzTelemetryConformanceCaseV1 {
+        self.fixture_case
+    }
+
+    pub fn guest_receipt_present(&self) -> bool {
+        self.guest_receipt_present
+    }
+
+    pub const fn package_execution_authority_permitted(&self) -> bool {
+        false
+    }
+}
+
+pub fn verify_macos_linux_vz_telemetry_conformance_case_v1(
+    challenge: &MacosLinuxVzTelemetryConformanceChallengeV1,
+    run_spec: &MacosLinuxVzTelemetryConformanceRunSpecV1,
+    guest: Option<&crate::VerifiedLinuxVzTelemetryGuestReceiptV1>,
+    host: &crate::VerifiedLinuxVzTelemetryHostReceiptV1,
+) -> Result<VerifiedLinuxVzTelemetryConformanceCaseV1, MacosLinuxVzTelemetryEvidenceErrorV1> {
+    use crate::LinuxVzTelemetryConformanceCaseV1 as Case;
+    use crate::LinuxVzTelemetryConformanceExpectedTerminalV1 as Expected;
+    if challenge.run_spec_sha256() != run_spec.run_spec_sha256()
+        || host.challenge_sha256() != challenge.challenge_sha256()
+        || guest.is_some_and(|receipt| receipt.challenge_sha256() != challenge.challenge_sha256())
+        || host.package_execution_authority_permitted()
+        || guest.is_some_and(|receipt| receipt.package_execution_authority_permitted())
+    {
+        return Err(MacosLinuxVzTelemetryEvidenceErrorV1::ConformanceFailed);
+    }
+    let case = run_spec.fixture_case();
+    let guest_may_be_absent = matches!(
+        case,
+        Case::GuestSensorDeath | Case::ChannelInterruption | Case::VmStop
+    );
+    if (guest.is_none() && !guest_may_be_absent)
+        || (case == Case::GuestSensorDeath && guest.is_some())
+    {
+        return Err(MacosLinuxVzTelemetryEvidenceErrorV1::ConformanceFailed);
+    }
+    let host_claims = host.claims();
+    if host_claims.evidence_truncated()
+        || !host_claims.guest_channel_terminated()
+        || !host_claims.vm_started()
+        || !host_claims.vm_stopped()
+        || !host_claims.clone_destroyed()
+        || host_claims.external_frames_forwarded() != 0
+    {
+        return Err(MacosLinuxVzTelemetryEvidenceErrorV1::ConformanceFailed);
+    }
+    if let Some(guest) = guest {
+        let claims = guest.claims();
+        if claims.evidence_truncated() || !claims.descendant_teardown_complete() {
+            return Err(MacosLinuxVzTelemetryEvidenceErrorV1::ConformanceFailed);
+        }
+    }
+    let terminals_match = host_claims.observed_terminal()
+        == observed_for_expected_v1(run_spec.expected_terminal())
+        && guest.is_none_or(|receipt| {
+            receipt.claims().observed_terminal()
+                == observed_for_expected_v1(run_spec.expected_terminal())
+        });
+    if !terminals_match {
+        return Err(MacosLinuxVzTelemetryEvidenceErrorV1::ConformanceFailed);
+    }
+    match run_spec.expected_terminal() {
+        Expected::ObservationComplete
+        | Expected::TimeoutWithTeardown
+        | Expected::AccessDeniedWithCompleteEvidence => {
+            let guest = guest.ok_or(MacosLinuxVzTelemetryEvidenceErrorV1::ConformanceFailed)?;
+            if !guest.claims().sensor_healthy()
+                || guest.claims().dropped_event_count() != 0
+                || !host_claims.packet_sensor_healthy()
+                || host_claims.dropped_frame_count() != 0
+            {
+                return Err(MacosLinuxVzTelemetryEvidenceErrorV1::ConformanceFailed);
+            }
+        }
+        Expected::IncompleteOnInjectedGap => {
+            let guest = guest.ok_or(MacosLinuxVzTelemetryEvidenceErrorV1::ConformanceFailed)?;
+            if !guest.claims().sensor_healthy() || !host_claims.packet_sensor_healthy() {
+                return Err(MacosLinuxVzTelemetryEvidenceErrorV1::ConformanceFailed);
+            }
+            let exact_gap = match case {
+                Case::BpfReservationFailure | Case::FanotifyQueueOverflow => {
+                    guest.claims().dropped_event_count() > 0
+                        && host_claims.dropped_frame_count() == 0
+                }
+                Case::HostFrameOverflow => {
+                    guest.claims().dropped_event_count() == 0
+                        && host_claims.dropped_frame_count() > 0
+                }
+                _ => false,
+            };
+            if !exact_gap {
+                return Err(MacosLinuxVzTelemetryEvidenceErrorV1::ConformanceFailed);
+            }
+        }
+        Expected::InfrastructureErrorWithTeardown => {
+            let health_matches = match case {
+                Case::GuestSensorDeath => host_claims.packet_sensor_healthy(),
+                Case::HostSensorDeath => {
+                    guest.is_some_and(|receipt| receipt.claims().sensor_healthy())
+                        && !host_claims.packet_sensor_healthy()
+                }
+                Case::ChannelInterruption | Case::VmStop => {
+                    guest.is_none_or(|receipt| receipt.claims().sensor_healthy())
+                        && host_claims.packet_sensor_healthy()
+                }
+                _ => false,
+            };
+            if !health_matches
+                || guest.is_some_and(|receipt| receipt.claims().dropped_event_count() != 0)
+                || host_claims.dropped_frame_count() != 0
+            {
+                return Err(MacosLinuxVzTelemetryEvidenceErrorV1::ConformanceFailed);
+            }
+        }
+    }
+    Ok(VerifiedLinuxVzTelemetryConformanceCaseV1 {
+        challenge_sha256: challenge.challenge_sha256().clone(),
+        fixture_case: case,
+        guest_receipt_present: guest.is_some(),
+    })
+}
+
+fn observed_for_expected_v1(
+    expected: crate::LinuxVzTelemetryConformanceExpectedTerminalV1,
+) -> LinuxVzTelemetryConformanceObservedTerminalV1 {
+    match expected {
+        crate::LinuxVzTelemetryConformanceExpectedTerminalV1::ObservationComplete => {
+            LinuxVzTelemetryConformanceObservedTerminalV1::ObservationComplete
+        }
+        crate::LinuxVzTelemetryConformanceExpectedTerminalV1::IncompleteOnInjectedGap => {
+            LinuxVzTelemetryConformanceObservedTerminalV1::IncompleteOnInjectedGap
+        }
+        crate::LinuxVzTelemetryConformanceExpectedTerminalV1::TimeoutWithTeardown => {
+            LinuxVzTelemetryConformanceObservedTerminalV1::TimeoutWithTeardown
+        }
+        crate::LinuxVzTelemetryConformanceExpectedTerminalV1::InfrastructureErrorWithTeardown => {
+            LinuxVzTelemetryConformanceObservedTerminalV1::InfrastructureErrorWithTeardown
+        }
+        crate::LinuxVzTelemetryConformanceExpectedTerminalV1::AccessDeniedWithCompleteEvidence => {
+            LinuxVzTelemetryConformanceObservedTerminalV1::AccessDeniedWithCompleteEvidence
+        }
+    }
+}
 
 pub fn decode_and_validate_macos_linux_vz_telemetry_conformance_challenge_v1(
     bytes: &[u8],

@@ -3,8 +3,9 @@
 Date: 2026-07-11
 
 Status: macOS-native is not qualified as the bulk detection lane; a lightweight Linux guest on the
-Mac is selected as the bulk-lane candidate, its requirements, unqualified identity, and inert
-conformance run-spec schemas are implemented, and measured conformance remains pending
+Mac is selected as the bulk-lane candidate, its requirements, unqualified identity, run spec,
+challenge, and authenticated receipt schemas are implemented, and measured conformance remains
+pending
 
 Canonical references:
 
@@ -145,6 +146,10 @@ adds a cross-language, trusted-inert-fixture-only request that binds that identi
 requirements. It has no package coordinate or arbitrary command, fixes no external route and
 structurally absent sync-back, and still proves no sensor or VM behavior until measured receipts
 exist.
+
+The follow-on [authenticated conformance-evidence checkpoint](artifact-native-linux-vz-authenticated-conformance-evidence-checkpoint-2026-07-11.md)
+adds independently signed guest and host receipts plus fail-closed single-case semantics. It does
+not qualify a backend; the complete matrix and real measured receipts remain open.
 
 No restricted sample, package lifecycle, package manager, VM, live network target, or malware was
 executed while making this decision.

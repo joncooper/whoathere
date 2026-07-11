@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Testing
 @testable import WhoaThereMacosVmHelperCore
@@ -88,6 +89,240 @@ import Testing
             try canonicalJSONData(challenge),
             expectedRunSpec: runSpec,
             expectedBackend: backend
+        )
+    }
+}
+
+@Test func linuxVzGuestAndHostReceiptsMatchRustSignaturesAndRejectCrossAuthority() throws {
+    let guestSeed = Data(repeating: 0x11, count: 32)
+    let hostSeed = Data(repeating: 0x22, count: 32)
+    let guestPrivate = try Curve25519.Signing.PrivateKey(rawRepresentation: guestSeed)
+    let hostPrivate = try Curve25519.Signing.PrivateKey(rawRepresentation: hostSeed)
+    var runValue = try linuxVzConformanceFixture(
+        runID: "linux-vz-conformance-run-receipt-golden",
+        evidenceID: "linux-vz-conformance-evidence-receipt-golden"
+    )
+    var backendValue = try #require(runValue["backend_identity"] as? [String: Any])
+    backendValue["guest_evidence_public_key_sha256"] = sha256(
+        guestPrivate.publicKey.rawRepresentation
+    )
+    backendValue["host_evidence_public_key_sha256"] = sha256(
+        hostPrivate.publicKey.rawRepresentation
+    )
+    runValue["backend_identity"] = backendValue
+    runValue["backend_identity_sha256"] = sha256(try canonicalJSONData(backendValue))
+    let runSpec = try decodeLinuxVzTelemetryConformanceRunSpec(
+        try canonicalJSONData(runValue)
+    )
+    let requirementsSHA256 = try #require(
+        runValue["telemetry_requirements_sha256"] as? String
+    )
+    let backend = try decodeUnqualifiedLinuxVzTelemetryBackendIdentity(
+        try canonicalJSONData(backendValue),
+        expectedTelemetryRequirementsSHA256: requirementsSHA256
+    )
+    #expect(
+        backend.identitySHA256
+            == "sha256:d189e21f9a0fd1277e552db580414b6b572cebe3ce795c0f0da1acce87116088"
+    )
+    #expect(
+        runSpec.runSpecSHA256
+            == "sha256:9c1db6610378d3c0533024f32acf4a656ed8c0ad3a158a0b9b856451f004db9d"
+    )
+    #expect(
+        backend.guestEvidencePublicKeySHA256
+            == "sha256:10ba682c8ad13513971e8b56881aab8bd702bb807796eca81932c735a94d6e6d"
+    )
+    #expect(
+        backend.hostEvidencePublicKeySHA256
+            == "sha256:1325b850c2871916eae203f0efc3c8987f64e5e3cdb27679e6d1fa97808357e6"
+    )
+    let challengeValue: [String: Any] = [
+        "schema_version": linuxVzTelemetryConformanceChallengeSchemaV1,
+        "nonce_hex": String(repeating: "33", count: 32),
+        "challenge_purpose": "trusted_inert_telemetry_conformance_only",
+        "run_spec_sha256": runSpec.runSpecSHA256,
+        "backend_identity_sha256": backend.identitySHA256,
+        "telemetry_requirements_sha256": requirementsSHA256,
+        "clone_binding_sha256": sha256(Data("receipt disposable clone binding".utf8)),
+        "guest_evidence_public_key_sha256": backend.guestEvidencePublicKeySHA256,
+        "host_evidence_public_key_sha256": backend.hostEvidencePublicKeySHA256,
+        "package_execution": "disabled",
+        "sync_back_policy": "structurally_absent"
+    ]
+    let challenge = try decodeLinuxVzTelemetryConformanceChallenge(
+        try canonicalJSONData(challengeValue),
+        expectedRunSpec: runSpec,
+        expectedBackend: backend
+    )
+    #expect(
+        challenge.challengeSHA256
+            == "sha256:2979ab81d5382b8fd89eaddf5b303c227b8d267890311d975dc9830a918408ec"
+    )
+    let guestClaims = LinuxVzTelemetryGuestObservationClaims(
+        evidencePayloadSHA256: sha256(
+            Data("canonical guest telemetry evidence payload".utf8)
+        ),
+        evidenceByteLength: 4096,
+        eventSequenceStart: 10,
+        eventSequenceEnd: 89,
+        eventCount: 80,
+        heartbeatCount: 4,
+        droppedEventCount: 0,
+        sensorHealthy: true,
+        evidenceTruncated: false,
+        descendantTeardownComplete: true,
+        observedTerminal: "observation_complete"
+    )
+    let hostClaims = LinuxVzTelemetryHostObservationClaims(
+        evidencePayloadSHA256: sha256(
+            Data("canonical host telemetry evidence payload".utf8)
+        ),
+        evidenceByteLength: 2048,
+        eventSequenceStart: 100,
+        eventSequenceEnd: 139,
+        eventCount: 40,
+        heartbeatCount: 4,
+        droppedFrameCount: 0,
+        packetSensorHealthy: true,
+        evidenceTruncated: false,
+        guestChannelTerminated: true,
+        vmStarted: true,
+        vmStopped: true,
+        cloneDestroyed: true,
+        externalFramesForwarded: 0,
+        observedTerminal: "observation_complete"
+    )
+    let guestUnsigned = try linuxVzGuestUnsignedReceipt(
+        challenge: challenge,
+        runSpec: runSpec,
+        backend: backend,
+        claims: guestClaims
+    )
+    let hostUnsigned = try linuxVzHostUnsignedReceipt(
+        challenge: challenge,
+        runSpec: runSpec,
+        backend: backend,
+        claims: hostClaims
+    )
+    #expect(
+        sha256(try canonicalJSONData(guestUnsigned))
+            == "sha256:a6a9a44200b03f9865b8ad1a7d5eb58c6bcadd39499f13a22856926e65acec92"
+    )
+    #expect(
+        sha256(try canonicalJSONData(hostUnsigned))
+            == "sha256:e983821449e2c24ecd5fb70e7f214fce38f8471314ac0e61f4b5647cc3c3d979"
+    )
+    var guestReceipt = guestUnsigned
+    guestReceipt["signature_ed25519_hex"] =
+        "ee436ec19f563a3ac7d93b7f3cf39c36760bb89cdd3e86723dadba2110647c63483a12cb4c851cb3ff1c52b2a25882417cd7bb63c47232cbfde5d40ce6200000"
+    var hostReceipt = hostUnsigned
+    hostReceipt["signature_ed25519_hex"] =
+        "0e3afa3b996a496da21b4ec0851f41288e9f3705fd84edea01aa75afb44fbacdf43ab65735f9ff0fb635818970d024aa5eefb1b3526b4e282369b9268e98040c"
+    let guestData = try canonicalJSONData(guestReceipt)
+    let hostData = try canonicalJSONData(hostReceipt)
+    #expect(
+        sha256(guestData)
+            == "sha256:9bad56c2d3def2391e9f164f7262963c83ec7ba2fe3946e7301bc3d7122224ef"
+    )
+    #expect(
+        sha256(hostData)
+            == "sha256:48a21bb1719681148070688cbf3bf890ca7c84c735eb5ba954558179608dac43"
+    )
+    let guest = try verifyLinuxVzTelemetryGuestReceipt(
+        guestData,
+        challenge: challenge,
+        runSpec: runSpec,
+        backend: backend,
+        verifyingKey: guestPrivate.publicKey.rawRepresentation,
+        expectedClaims: guestClaims
+    )
+    let host = try verifyLinuxVzTelemetryHostReceipt(
+        hostData,
+        challenge: challenge,
+        runSpec: runSpec,
+        backend: backend,
+        verifyingKey: hostPrivate.publicKey.rawRepresentation,
+        expectedClaims: hostClaims
+    )
+    #expect(!guest.packageExecutionAuthorityPermitted)
+    #expect(!host.packageExecutionAuthorityPermitted)
+    #expect(guest.challengeSHA256 == challenge.challengeSHA256)
+    #expect(host.challengeSHA256 == challenge.challengeSHA256)
+
+    #expect(throws: LinuxVzTelemetryConformanceEvidenceError.invalidReceipt) {
+        try verifyLinuxVzTelemetryHostReceipt(
+            guestData,
+            challenge: challenge,
+            runSpec: runSpec,
+            backend: backend,
+            verifyingKey: hostPrivate.publicKey.rawRepresentation,
+            expectedClaims: hostClaims
+        )
+    }
+
+    var executing = guestReceipt
+    executing["package_execution"] = "enabled"
+    #expect(throws: LinuxVzTelemetryConformanceEvidenceError.invalidReceipt) {
+        try verifyLinuxVzTelemetryGuestReceipt(
+            try canonicalJSONData(executing),
+            challenge: challenge,
+            runSpec: runSpec,
+            backend: backend,
+            verifyingKey: guestPrivate.publicKey.rawRepresentation,
+            expectedClaims: guestClaims
+        )
+    }
+
+    var missingSensor = guestReceipt
+    var sensors = try #require(missingSensor["observed_sensors"] as? [String])
+    sensors.removeLast()
+    missingSensor["observed_sensors"] = sensors
+    #expect(throws: LinuxVzTelemetryConformanceEvidenceError.invalidReceipt) {
+        try verifyLinuxVzTelemetryGuestReceipt(
+            try canonicalJSONData(missingSensor),
+            challenge: challenge,
+            runSpec: runSpec,
+            backend: backend,
+            verifyingKey: guestPrivate.publicKey.rawRepresentation,
+            expectedClaims: guestClaims
+        )
+    }
+
+    var forwarded = hostReceipt
+    forwarded["external_frames_forwarded"] = "1"
+    #expect(throws: LinuxVzTelemetryConformanceEvidenceError.invalidReceipt) {
+        try verifyLinuxVzTelemetryHostReceipt(
+            try canonicalJSONData(forwarded),
+            challenge: challenge,
+            runSpec: runSpec,
+            backend: backend,
+            verifyingKey: hostPrivate.publicKey.rawRepresentation,
+            expectedClaims: hostClaims
+        )
+    }
+
+    var badSignature = guestReceipt
+    badSignature["signature_ed25519_hex"] = String(repeating: "00", count: 64)
+    #expect(throws: LinuxVzTelemetryConformanceEvidenceError.signatureFailed) {
+        try verifyLinuxVzTelemetryGuestReceipt(
+            try canonicalJSONData(badSignature),
+            challenge: challenge,
+            runSpec: runSpec,
+            backend: backend,
+            verifyingKey: guestPrivate.publicKey.rawRepresentation,
+            expectedClaims: guestClaims
+        )
+    }
+
+    #expect(throws: LinuxVzTelemetryConformanceEvidenceError.publicKeyMismatch) {
+        try verifyLinuxVzTelemetryGuestReceipt(
+            guestData,
+            challenge: challenge,
+            runSpec: runSpec,
+            backend: backend,
+            verifyingKey: hostPrivate.publicKey.rawRepresentation,
+            expectedClaims: guestClaims
         )
     }
 }

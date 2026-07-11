@@ -227,6 +227,29 @@ impl MacosLinuxVzTelemetryConformanceRunSpecV1 {
         &self.expected_sensors
     }
 
+    pub fn expected_guest_sensors_v1(&self) -> Vec<ArtifactProtectedTelemetrySensorV1> {
+        self.expected_sensors
+            .iter()
+            .copied()
+            .filter(|sensor| !host_only_sensor_v1(*sensor))
+            .collect()
+    }
+
+    pub fn expected_host_sensors_v1(&self) -> Vec<ArtifactProtectedTelemetrySensorV1> {
+        self.expected_sensors
+            .iter()
+            .copied()
+            .filter(|sensor| {
+                host_only_sensor_v1(*sensor)
+                    || matches!(
+                        sensor,
+                        ArtifactProtectedTelemetrySensorV1::SensorHealthHeartbeat
+                            | ArtifactProtectedTelemetrySensorV1::DroppedEventAccounting
+                    )
+            })
+            .collect()
+    }
+
     pub fn telemetry_requirements_sha256(&self) -> &Sha256Digest {
         &self.telemetry_requirements_sha256
     }
@@ -620,6 +643,16 @@ fn expected_fixture_sensors_v1(
             Sensor::VmCloneLifecycle,
         ],
     }
+}
+
+fn host_only_sensor_v1(sensor: ArtifactProtectedTelemetrySensorV1) -> bool {
+    matches!(
+        sensor,
+        ArtifactProtectedTelemetrySensorV1::HostRawFrames
+            | ArtifactProtectedTelemetrySensorV1::DnsSinkhole
+            | ArtifactProtectedTelemetrySensorV1::HttpSinkhole
+            | ArtifactProtectedTelemetrySensorV1::VmCloneLifecycle
+    )
 }
 
 fn valid_conformance_identity_v1(value: &str) -> bool {
