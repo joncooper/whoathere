@@ -35,7 +35,9 @@ public final class SdistGuestSubmissionForwarder {
         self.authorized = authorized
     }
 
-    public func forward() throws -> SdistRunTransportObservation {
+    public func forward(
+        shutdownWriteSide: Bool = true
+    ) throws -> SdistRunTransportObservation {
         guard !started else { throw SdistGuestTransportError.writeFailed }
         started = true
         let reader = authorized.submissionReader
@@ -56,8 +58,10 @@ public final class SdistGuestSubmissionForwarder {
             let observation = try authorized.consumeArtifact { [self] chunk in
                 try sendAll(chunk)
             }
-            guard shutdown(descriptor, SHUT_WR) == 0 else {
-                throw SdistGuestTransportError.writeShutdownFailed
+            if shutdownWriteSide {
+                guard shutdown(descriptor, SHUT_WR) == 0 else {
+                    throw SdistGuestTransportError.writeShutdownFailed
+                }
             }
             return observation
         } catch {

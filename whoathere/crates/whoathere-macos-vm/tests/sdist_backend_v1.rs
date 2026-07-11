@@ -29,6 +29,7 @@ use whoathere_macos_vm::{
     prepare_macos_sdist_launch_v1, read_macos_sdist_guest_control_frame_v1,
     require_macos_sdist_guest_control_eof_v1, run_macos_sdist_guest_nonexecuting_session_v1,
     sign_macos_sdist_guest_auth_response_v1, sign_macos_sdist_guest_staging_receipt_v1,
+    stage_macos_sdist_guest_submission_followed_by_closure_v1,
     stage_macos_sdist_guest_submission_v1, stream_macos_sdist_guest_build_closure_v1,
     stream_macos_sdist_guest_submission_v1, verify_macos_sdist_guest_auth_response_v1,
     verify_macos_sdist_guest_staging_receipt_v1, write_macos_sdist_guest_control_frame_v1,
@@ -751,6 +752,84 @@ fn sdist_guest_staging_is_exclusive_read_only_rehashed_and_removed() {
 }
 
 #[test]
+fn sdist_guest_stages_rehashes_and_cleans_target_plus_exact_closure_without_materializing() {
+    let (templates, artifact) = compiled_templates(b"VALUE = 'combined closure staging inert'\n");
+    let run_spec =
+        compile_macos_sdist_run_spec_v1(&templates[0], &backend(digest(b"measured pip")))
+            .expect("combined run spec");
+    let bindings =
+        MacosSdistSubmissionBindingsV1::for_run_spec(digest(b"combined challenge"), &run_spec);
+    let header =
+        MacosSdistSubmissionHeaderV1::new(run_spec.clone(), bindings).expect("combined header");
+    let mut target =
+        encode_macos_sdist_submission_frame_v1(&header, &artifact).expect("combined target");
+    target[..8].copy_from_slice(&MACOS_SDIST_GUEST_SUBMISSION_MAGIC_V1);
+    let closure_bytes = build_closure_artifact_bytes();
+    let closure =
+        encode_macos_sdist_guest_build_closure_frame_v1(run_spec.build_closure(), &closure_bytes)
+            .expect("combined closure");
+    let mut input = target;
+    input.extend_from_slice(&closure);
+    let mut reader = FragmentedReader::new(input, 11);
+    let root = temporary_sdist_staging_root("combined-closure");
+    let policy = sdist_staging_policy(&root);
+    let mut staged =
+        stage_macos_sdist_guest_submission_followed_by_closure_v1(&mut reader, &policy)
+            .expect("stage target before closure");
+    let observation = staged
+        .stage_build_closure(&mut reader)
+        .expect("stage exact closure");
+    assert_eq!(
+        observation.transport().closure_sha256(),
+        run_spec.build_closure_sha256()
+    );
+    assert_eq!(
+        observation.transport().artifact_count(),
+        closure_bytes.len()
+    );
+    assert_eq!(
+        observation.transport().payload_byte_length(),
+        closure_bytes.iter().map(Vec::len).sum::<usize>() as u64
+    );
+    let payload_path = staged
+        .closure_payload_path()
+        .expect("closure payload path")
+        .to_path_buf();
+    let manifest_path = staged
+        .closure_manifest_path()
+        .expect("closure manifest path")
+        .to_path_buf();
+    assert_eq!(
+        fs::read(&payload_path).expect("closure payload"),
+        closure_bytes.concat()
+    );
+    assert_eq!(
+        fs::read(&manifest_path).expect("closure manifest"),
+        run_spec
+            .build_closure()
+            .canonical_json_v1()
+            .expect("canonical closure")
+    );
+    assert_eq!(
+        fs::symlink_metadata(&payload_path)
+            .expect("payload metadata")
+            .mode()
+            & 0o777,
+        0o444
+    );
+    assert_eq!(
+        fs::symlink_metadata(&manifest_path)
+            .expect("manifest metadata")
+            .mode()
+            & 0o777,
+        0o444
+    );
+    staged.cleanup().expect("combined cleanup");
+    assert_eq!(fs::read_dir(&root).expect("clean root").count(), 0);
+    fs::remove_dir(root).expect("remove combined root");
+}
+
+#[test]
 fn sdist_guest_staging_discards_bad_transport_and_detects_path_replacement() {
     let (mut guest, _, _) = sdist_guest_staging_frame();
     let root = temporary_sdist_staging_root("failure");
@@ -972,6 +1051,12 @@ fn signed_sdist_staging_receipt_binds_closure_inode_and_no_execution_posture() {
         4096,
         123,
         456,
+        digest(b"exact inert closure payload"),
+        2,
+        8192,
+        digest(b"exact inert closure manifest"),
+        789,
+        987,
     )
     .expect("staging claims");
     let receipt =
@@ -1000,6 +1085,18 @@ fn signed_sdist_staging_receipt_binds_closure_inode_and_no_execution_posture() {
             .and_then(serde_json::Value::as_bool),
         Some(false)
     );
+    assert_eq!(
+        value
+            .get("closure_transport_verified")
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        value
+            .get("closure_artifact_count")
+            .and_then(serde_json::Value::as_str),
+        Some("2")
+    );
     let observation = verify_macos_sdist_guest_staging_receipt_v1(
         &challenge,
         &receipt,
@@ -1011,6 +1108,8 @@ fn signed_sdist_staging_receipt_binds_closure_inode_and_no_execution_posture() {
     assert_eq!(observation.build_closure_sha256(), &closure);
     assert_eq!(observation.claims().staged_device(), 123);
     assert_eq!(observation.claims().staged_inode(), 456);
+    assert_eq!(observation.claims().closure_staged_device(), 789);
+    assert_eq!(observation.claims().closure_staged_inode(), 987);
     assert!(!observation.package_execution_enabled());
     assert!(!observation.sync_back_enabled());
     assert!(!observation.build_closure_materialized());
@@ -1024,6 +1123,12 @@ fn signed_sdist_staging_receipt_binds_closure_inode_and_no_execution_posture() {
         4096,
         123,
         456,
+        digest(b"exact inert closure payload"),
+        2,
+        8192,
+        digest(b"exact inert closure manifest"),
+        789,
+        987,
     )
     .expect("wrong closure claims");
     assert_eq!(
@@ -1101,6 +1206,13 @@ fn sdist_guest_supervisor_authenticates_stages_cleans_attests_and_never_executes
     )
     .expect("write challenge");
     input.extend_from_slice(&guest);
+    input.extend_from_slice(
+        &encode_macos_sdist_guest_build_closure_frame_v1(
+            run_spec.build_closure(),
+            &build_closure_artifact_bytes(),
+        )
+        .expect("session closure frame"),
+    );
     let mut output = Vec::new();
     let observation = run_macos_sdist_guest_nonexecuting_session_v1(
         &mut FragmentedReader::new(input, 11),
@@ -1114,6 +1226,17 @@ fn sdist_guest_supervisor_authenticates_stages_cleans_attests_and_never_executes
     assert_eq!(
         observation.build_closure_sha256(),
         run_spec.build_closure_sha256()
+    );
+    assert_eq!(
+        observation.closure_artifact_count() as usize,
+        run_spec.build_closure().artifacts().len()
+    );
+    assert_eq!(
+        observation.closure_payload_byte_length(),
+        build_closure_artifact_bytes()
+            .iter()
+            .map(Vec::len)
+            .sum::<usize>() as u64
     );
     assert!(observation.staging_cleanup_succeeded());
     assert!(!observation.package_execution_enabled());
@@ -1144,6 +1267,12 @@ fn sdist_guest_supervisor_authenticates_stages_cleans_attests_and_never_executes
         observation.first_rehash_byte_length(),
         observation.staged_device(),
         observation.staged_inode(),
+        observation.closure_payload_sha256().clone(),
+        observation.closure_artifact_count(),
+        observation.closure_payload_byte_length(),
+        observation.closure_manifest_sha256().clone(),
+        observation.closure_staged_device(),
+        observation.closure_staged_inode(),
     )
     .expect("expected staging claims");
     verify_macos_sdist_guest_staging_receipt_v1(
@@ -1203,6 +1332,13 @@ fn sdist_guest_supervisor_rejects_closure_rebinding_and_cleans_staging() {
     )
     .expect("challenge frame");
     input.extend_from_slice(&guest);
+    input.extend_from_slice(
+        &encode_macos_sdist_guest_build_closure_frame_v1(
+            run_spec.build_closure(),
+            &build_closure_artifact_bytes(),
+        )
+        .expect("rebind closure frame"),
+    );
     let failure = run_macos_sdist_guest_nonexecuting_session_v1(
         &mut Cursor::new(input),
         &mut Vec::new(),

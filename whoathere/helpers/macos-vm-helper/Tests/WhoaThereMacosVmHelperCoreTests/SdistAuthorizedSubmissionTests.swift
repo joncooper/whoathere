@@ -248,6 +248,7 @@ import Testing
         challenge: challenge, observation: authObservation
     )
     let transport = try authorized.consumeArtifact()
+    let closureTransport = sdistTestClosureTransport(prelude: prelude)
     let unsigned: [String: Any] = [
         "schema_version": sdistGuestStagingReceiptSchemaV1,
         "status": "staged_no_execution_no_closure_materialization",
@@ -262,6 +263,16 @@ import Testing
         "first_rehash_byte_length": String(transport.artifactByteLength),
         "staged_device": "42",
         "staged_inode": "84",
+        "closure_payload_sha256": closureTransport.payloadSHA256,
+        "closure_artifact_count": String(closureTransport.artifactCount),
+        "closure_payload_byte_length": String(closureTransport.payloadByteLength),
+        "closure_manifest_sha256": sha256(prelude.buildClosure.canonicalJSON),
+        "closure_staged_device": "43",
+        "closure_staged_inode": "85",
+        "closure_payload_file_name": "build-closure.payload",
+        "closure_manifest_file_name": "build-closure.manifest.json",
+        "closure_file_mode": "0444",
+        "closure_transport_verified": true,
         "artifact_file_name": "artifact.sdist",
         "artifact_file_mode": "0444",
         "staging_directory_mode": "0711",
@@ -285,6 +296,7 @@ import Testing
         authenticated: authenticated,
         authorized: authorized,
         transport: transport,
+        closureTransport: closureTransport,
         guestAuthPublicKey: publicKey
     )
     #expect(observation.signatureVerified)
@@ -301,6 +313,7 @@ import Testing
             authenticated: authenticated,
             authorized: authorized,
             transport: transport,
+            closureTransport: closureTransport,
             guestAuthPublicKey: publicKey
         )
     }
@@ -331,6 +344,11 @@ import Testing
     let cloneBinding = sha256(Data("sdist session clone".utf8))
     let expectedBuildClosureSHA256 = fixture.buildClosureSHA256
     let expectedChallengeBindingSHA256 = fixture.challengeBindingSHA256
+    let closureFrame = try sdistTestClosureFrame(prelude: prelude)
+    let authorizedClosure = try beginAuthorizedSdistBuildClosureSubmission(
+        from: sdistFileHandle(closureFrame),
+        authorized: authorized
+    )
 
     var sockets: [Int32] = [-1, -1]
     #expect(socketpair(AF_UNIX, SOCK_STREAM, 0, &sockets) == 0)
@@ -364,11 +382,11 @@ import Testing
                 timeoutMillis: 5_000
             )
 
-            var guestFrame = try readSdistSessionToEOF(guestDescriptor)
-            guard guestFrame.prefix(8) == sdistGuestSubmissionMagicV1 else {
-                throw SdistGuestTransportError.writeFailed
-            }
-            guestFrame.replaceSubrange(0..<8, with: sdistSubmissionMagicV1)
+            let combined = try readSdistSessionToEOF(guestDescriptor)
+            let (guestFrame, closureTransport) = try splitSdistSessionFrames(
+                combined,
+                prelude: prelude
+            )
             let transport = try inspectSdistSubmission(
                 from: sdistFileHandle(guestFrame),
                 expectedChallengeBindingSHA256: expectedChallengeBindingSHA256
@@ -380,6 +398,7 @@ import Testing
                     challenge: challenge,
                     prelude: prelude,
                     transport: transport,
+                    closureTransport: closureTransport,
                     privateKey: privateKey,
                     device: 321,
                     inode: 654
@@ -399,6 +418,7 @@ import Testing
     let observation = try runNonExecutingSdistGuestSession(
         descriptor: sockets[0],
         authorized: authorized,
+        closure: authorizedClosure,
         cloneBindingSHA256: cloneBinding,
         guestAuthPublicKey: publicKey,
         timeoutMillis: 5_000
@@ -406,6 +426,7 @@ import Testing
     #expect(observation.authentication.signatureVerified)
     #expect(observation.transport.artifactSHA256 == fixture.artifactSHA256)
     #expect(observation.transport.buildClosureSHA256 == fixture.buildClosureSHA256)
+    #expect(observation.closureTransport.closureSHA256 == fixture.buildClosureSHA256)
     #expect(observation.stagingReceipt.signatureVerified)
     #expect(observation.stagingReceipt.stagedDevice == 321)
     #expect(observation.stagingReceipt.stagedInode == 654)
@@ -548,6 +569,7 @@ private func signedSdistSessionStagingReceipt(
     challenge: SdistGuestAuthChallenge,
     prelude: SdistRunSubmissionPrelude,
     transport: SdistRunTransportObservation,
+    closureTransport: SdistBuildClosureTransportObservation,
     privateKey: Curve25519.Signing.PrivateKey,
     device: UInt64,
     inode: UInt64
@@ -566,6 +588,16 @@ private func signedSdistSessionStagingReceipt(
         "first_rehash_byte_length": String(transport.artifactByteLength),
         "staged_device": String(device),
         "staged_inode": String(inode),
+        "closure_payload_sha256": closureTransport.payloadSHA256,
+        "closure_artifact_count": String(closureTransport.artifactCount),
+        "closure_payload_byte_length": String(closureTransport.payloadByteLength),
+        "closure_manifest_sha256": sha256(prelude.buildClosure.canonicalJSON),
+        "closure_staged_device": String(device + 1),
+        "closure_staged_inode": String(inode + 1),
+        "closure_payload_file_name": "build-closure.payload",
+        "closure_manifest_file_name": "build-closure.manifest.json",
+        "closure_file_mode": "0444",
+        "closure_transport_verified": true,
         "artifact_file_name": "artifact.sdist",
         "artifact_file_mode": "0444",
         "staging_directory_mode": "0711",
@@ -599,4 +631,78 @@ private func readSdistSessionToEOF(_ descriptor: Int32) throws -> Data {
         }
         result.append(contentsOf: buffer[0..<count])
     }
+}
+
+private func sdistTestClosureFrame(prelude: SdistRunSubmissionPrelude) throws -> Data {
+    try sdistClosureFrame(
+        manifest: prelude.buildClosure,
+        payloads: [sdistBuildClosureArtifactBytes()]
+    )
+}
+
+private func sdistTestClosureTransport(
+    prelude: SdistRunSubmissionPrelude
+) -> SdistBuildClosureTransportObservation {
+    let payload = sdistBuildClosureArtifactBytes()
+    return SdistBuildClosureTransportObservation(
+        closureSHA256: prelude.buildClosureSHA256,
+        payloadSHA256: sha256(payload),
+        artifactCount: prelude.buildClosure.artifacts.count,
+        payloadByteLength: UInt64(payload.count)
+    )
+}
+
+private func splitSdistSessionFrames(
+    _ combined: Data,
+    prelude: SdistRunSubmissionPrelude
+) throws -> (Data, SdistBuildClosureTransportObservation) {
+    guard combined.count >= sdistSubmissionPrefixBytesV1,
+          combined.prefix(8) == sdistGuestSubmissionMagicV1 else {
+        throw SdistGuestTransportError.writeFailed
+    }
+    let headerLength = Int(sdistTestUInt32(combined, at: 12))
+    let artifactLength = Int(sdistTestUInt64(combined, at: 16))
+    let targetLength = sdistSubmissionPrefixBytesV1 + headerLength + artifactLength
+    guard targetLength <= combined.count else { throw SdistGuestTransportError.writeFailed }
+    var target = Data(combined[..<targetLength])
+    target.replaceSubrange(0..<8, with: sdistSubmissionMagicV1)
+    let closure = Data(combined[targetLength...])
+    guard closure.count >= sdistBuildClosurePrefixBytesV1,
+          closure.prefix(8) == sdistGuestBuildClosureMagicV1 else {
+        throw SdistBuildClosureTransportError.invalidMagic
+    }
+    let manifestLength = Int(sdistTestUInt32(closure, at: 12))
+    let artifactCount = Int(sdistTestUInt32(closure, at: 16))
+    let payloadLength = Int(sdistTestUInt64(closure, at: 24))
+    let manifestStart = sdistBuildClosurePrefixBytesV1
+    let payloadStart = manifestStart + manifestLength
+    guard payloadStart + payloadLength == closure.count,
+          Data(closure[manifestStart..<payloadStart]) == prelude.buildClosure.canonicalJSON,
+          artifactCount == prelude.buildClosure.artifacts.count else {
+        throw SdistBuildClosureTransportError.bindingMismatch
+    }
+    let payload = Data(closure[payloadStart...])
+    guard sha256(payload) == prelude.buildClosure.artifacts.first?.artifactSHA256,
+          sha256(payload) == "sha256:" + closure[64..<96].map({
+              String(format: "%02x", $0)
+          }).joined() else {
+        throw SdistBuildClosureTransportError.artifactDigestMismatch
+    }
+    return (
+        target,
+        SdistBuildClosureTransportObservation(
+            closureSHA256: prelude.buildClosureSHA256,
+            payloadSHA256: sha256(payload),
+            artifactCount: artifactCount,
+            payloadByteLength: UInt64(payloadLength)
+        )
+    )
+}
+
+private func sdistTestUInt32(_ data: Data, at offset: Int) -> UInt32 {
+    data[offset..<offset + 4].reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+}
+
+private func sdistTestUInt64(_ data: Data, at offset: Int) -> UInt64 {
+    data[offset..<offset + 8].reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
 }

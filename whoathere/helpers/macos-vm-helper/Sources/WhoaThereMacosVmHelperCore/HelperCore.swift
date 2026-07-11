@@ -54,6 +54,7 @@ public struct SdistRunOptions: Equatable, Sendable {
     public var stateDir: String?
     public var authorityID: String
     public var authorityRecordSHA256: String
+    public var buildClosureFD: Int32
     public var execute: Bool
     public var json: Bool
 
@@ -61,12 +62,14 @@ public struct SdistRunOptions: Equatable, Sendable {
         stateDir: String? = nil,
         authorityID: String,
         authorityRecordSHA256: String,
+        buildClosureFD: Int32,
         execute: Bool = false,
         json: Bool = false
     ) {
         self.stateDir = stateDir
         self.authorityID = authorityID
         self.authorityRecordSHA256 = authorityRecordSHA256
+        self.buildClosureFD = buildClosureFD
         self.execute = execute
         self.json = json
     }
@@ -304,6 +307,7 @@ public func parseHelperInvocation(_ arguments: [String]) throws -> HelperInvocat
     var stateDir: String?
     var authorityID: String?
     var authorityRecordSHA256: String?
+    var buildClosureFD: Int32?
     var execute = false
     var json = false
     var index = arguments.index(after: arguments.startIndex)
@@ -322,6 +326,10 @@ public func parseHelperInvocation(_ arguments: [String]) throws -> HelperInvocat
             authorityID = try value(after: token, in: arguments, at: &index)
         case "--authority-record-sha256" where command == "sdist-run":
             authorityRecordSHA256 = try value(after: token, in: arguments, at: &index)
+        case "--build-closure-fd" where command == "sdist-run":
+            let rawValue = try value(after: token, in: arguments, at: &index)
+            guard rawValue == "3" else { throw ArgumentError.invalidInteger(token) }
+            buildClosureFD = 3
         default:
             if let split = token.firstIndex(of: "="), token.starts(with: "--") {
                 let flag = String(token[..<split])
@@ -342,6 +350,9 @@ public func parseHelperInvocation(_ arguments: [String]) throws -> HelperInvocat
                         throw ArgumentError.valueRequired(flag)
                     }
                     authorityRecordSHA256 = rawValue
+                case "--build-closure-fd" where command == "sdist-run":
+                    guard rawValue == "3" else { throw ArgumentError.invalidInteger(flag) }
+                    buildClosureFD = 3
                 case "--execute":
                     guard rawValue == "true" else {
                         throw ArgumentError.unknownFlag(token)
@@ -379,10 +390,14 @@ public func parseHelperInvocation(_ arguments: [String]) throws -> HelperInvocat
         guard let authorityRecordSHA256 else {
             throw ArgumentError.valueRequired("--authority-record-sha256")
         }
+        guard let buildClosureFD else {
+            throw ArgumentError.valueRequired("--build-closure-fd")
+        }
         return .sdistRun(SdistRunOptions(
             stateDir: stateDir,
             authorityID: authorityID,
             authorityRecordSHA256: authorityRecordSHA256,
+            buildClosureFD: buildClosureFD,
             execute: execute,
             json: json
         ))

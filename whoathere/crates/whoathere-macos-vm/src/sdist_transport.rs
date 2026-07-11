@@ -461,6 +461,24 @@ pub fn stream_macos_sdist_guest_submission_v1<R: Read, W: Write>(
     reader: &mut R,
     artifact_sink: &mut W,
 ) -> Result<MacosSdistGuestSubmissionObservationV1, MacosSdistSubmissionErrorV1> {
+    stream_macos_sdist_guest_submission_internal_v1(reader, artifact_sink, true)
+}
+
+/// Decode the exact target sdist while leaving the reader positioned at the next independently
+/// framed build-closure channel. The combined supervisor must parse that channel immediately and
+/// require its EOF; callers that accept only a target frame must use the strict API above.
+pub fn stream_macos_sdist_guest_submission_followed_by_closure_v1<R: Read, W: Write>(
+    reader: &mut R,
+    artifact_sink: &mut W,
+) -> Result<MacosSdistGuestSubmissionObservationV1, MacosSdistSubmissionErrorV1> {
+    stream_macos_sdist_guest_submission_internal_v1(reader, artifact_sink, false)
+}
+
+fn stream_macos_sdist_guest_submission_internal_v1<R: Read, W: Write>(
+    reader: &mut R,
+    artifact_sink: &mut W,
+    require_eof: bool,
+) -> Result<MacosSdistGuestSubmissionObservationV1, MacosSdistSubmissionErrorV1> {
     let mut prefix = [0_u8; MACOS_SDIST_SUBMISSION_FIXED_PREFIX_BYTES_V1];
     read_exact_sdist_submission_v1(reader, &mut prefix)?;
     if prefix[..8] != MACOS_SDIST_GUEST_SUBMISSION_MAGIC_V1 {
@@ -522,13 +540,15 @@ pub fn stream_macos_sdist_guest_submission_v1<R: Read, W: Write>(
     if observed_raw != raw_digest {
         return Err(MacosSdistSubmissionErrorV1::ArtifactDigestMismatch);
     }
-    let mut trailing = [0_u8; 1];
-    loop {
-        match reader.read(&mut trailing) {
-            Ok(0) => break,
-            Ok(_) => return Err(MacosSdistSubmissionErrorV1::TrailingData),
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            Err(_) => return Err(MacosSdistSubmissionErrorV1::IoFailed),
+    if require_eof {
+        let mut trailing = [0_u8; 1];
+        loop {
+            match reader.read(&mut trailing) {
+                Ok(0) => break,
+                Ok(_) => return Err(MacosSdistSubmissionErrorV1::TrailingData),
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(_) => return Err(MacosSdistSubmissionErrorV1::IoFailed),
+            }
         }
     }
     artifact_sink.flush()?;

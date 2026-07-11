@@ -405,6 +405,7 @@ private final class SdistGuestRunListener: NSObject, VZVirtioSocketListenerDeleg
     private let lock = NSLock()
     private var accepted = false
     private let authorized: AuthorizedSdistRunSubmission
+    private let closure: AuthorizedSdistBuildClosureSubmission
     private let base: LockedSdistRunBase
     private let clone: DisposableSdistRunClone
     private let resultBox: LockedResultBox<SdistGuestNonExecutingSessionObservation>
@@ -412,12 +413,14 @@ private final class SdistGuestRunListener: NSObject, VZVirtioSocketListenerDeleg
 
     init(
         authorized: AuthorizedSdistRunSubmission,
+        closure: AuthorizedSdistBuildClosureSubmission,
         base: LockedSdistRunBase,
         clone: DisposableSdistRunClone,
         resultBox: LockedResultBox<SdistGuestNonExecutingSessionObservation>,
         completion: DispatchSemaphore
     ) {
         self.authorized = authorized
+        self.closure = closure
         self.base = base
         self.clone = clone
         self.resultBox = resultBox
@@ -459,6 +462,7 @@ private final class SdistGuestRunListener: NSObject, VZVirtioSocketListenerDeleg
             let observation = try runNonExecutingSdistGuestSession(
                 descriptor: connection.fileDescriptor,
                 authorized: authorized,
+                closure: closure,
                 cloneBindingSHA256: cloneBinding,
                 guestAuthPublicKey: base.guestAuthPublicKeyData,
                 timeoutMillis: 90_000
@@ -700,6 +704,9 @@ private func intField(_ fields: [String: Any], _ key: String) -> Int? {
 
 @main
 struct WhoaThereMacosVmHelper {
+    nonisolated(unsafe) private static var activeSdistCancellationSignalSources:
+        [DispatchSourceSignal] = []
+
     static func main() {
         do {
             let invocation = try parseHelperInvocation(Array(CommandLine.arguments.dropFirst()))
@@ -1262,6 +1269,27 @@ struct WhoaThereMacosVmHelper {
             }
             try cancellation.throwIfRequested()
             let prelude = authorized.prelude
+            guard fcntl(options.buildClosureFD, F_GETFD) >= 0 else {
+                throw helperError("sdist_run_build_closure_descriptor_invalid")
+            }
+            var targetStatus = stat()
+            var closureStatus = stat()
+            guard fstat(STDIN_FILENO, &targetStatus) == 0,
+                  fstat(options.buildClosureFD, &closureStatus) == 0,
+                  targetStatus.st_dev != closureStatus.st_dev
+                    || targetStatus.st_ino != closureStatus.st_ino else {
+                throw helperError("sdist_run_build_closure_descriptor_not_distinct")
+            }
+            let closureHandle = FileHandle(
+                fileDescriptor: options.buildClosureFD,
+                closeOnDealloc: false
+            )
+            let authorizedClosure = try beginAuthorizedSdistBuildClosureSubmission(
+                from: closureHandle,
+                authorized: authorized,
+                cancellation: cancellation
+            )
+            try cancellation.throwIfRequested()
             let layout = SdistRunBaseLayout(stateDirectory: stateDirectory)
             let helperURL = URL(
                 fileURLWithPath: absoluteExecutablePath(CommandLine.arguments[0])
@@ -1289,6 +1317,7 @@ struct WhoaThereMacosVmHelper {
             let sessionCompletion = DispatchSemaphore(value: 0)
             let listenerDelegate = SdistGuestRunListener(
                 authorized: authorized,
+                closure: authorizedClosure,
                 base: base,
                 clone: clone,
                 resultBox: sessionResult,
@@ -1415,6 +1444,8 @@ struct WhoaThereMacosVmHelper {
                         "guest_session_completed": sessionCompleted,
                         "guest_channel_terminated": guestSessionTerminated,
                         "clone_cleanup_succeeded": cloneCleanupSucceeded,
+                        "build_closure_transport_verified": false,
+                        "build_closure_staged": false,
                         "cancellation_requested": cancellation.reason != nil,
                         "cancellation_reason": cancellation.reason?.rawValue ?? NSNull(),
                         "package_execution_enabled": false,
@@ -1443,6 +1474,12 @@ struct WhoaThereMacosVmHelper {
                     "run_spec_sha256": prelude.runSpecSHA256,
                     "template_sha256": prelude.templateSHA256,
                     "build_closure_sha256": observation.stagingReceipt.buildClosureSHA256,
+                    "build_closure_payload_sha256": observation.closureTransport.payloadSHA256,
+                    "build_closure_artifact_count": observation.closureTransport.artifactCount,
+                    "build_closure_payload_byte_length": observation.closureTransport.payloadByteLength,
+                    "build_closure_manifest_sha256": observation.stagingReceipt.closureManifestSHA256,
+                    "build_closure_staged_device": observation.stagingReceipt.closureStagedDevice,
+                    "build_closure_staged_inode": observation.stagingReceipt.closureStagedInode,
                     "challenge_binding_sha256": authorized.authority.challengeBindingSHA256,
                     "execution_binding_sha256": observation.stagingReceipt.executionBindingSHA256,
                     "clone_binding_sha256": observation.stagingReceipt.cloneBindingSHA256,
@@ -1457,6 +1494,8 @@ struct WhoaThereMacosVmHelper {
                     "guest_authentication_verified": observation.authentication.signatureVerified,
                     "guest_staging_receipt_verified": observation.stagingReceipt.signatureVerified,
                     "guest_staging_cleanup_succeeded": true,
+                    "build_closure_transport_verified": true,
+                    "build_closure_staged": true,
                     "guest_channel_terminated": true,
                     "clone_cleanup_succeeded": true,
                     "cancellation_requested": false,
@@ -1493,6 +1532,8 @@ struct WhoaThereMacosVmHelper {
                     "authority_replay_state_persisted": authorityReplayStatePersisted,
                     "transport_verified": false,
                     "clone_cleanup_succeeded": cloneCleanupSucceeded,
+                    "build_closure_transport_verified": false,
+                    "build_closure_staged": false,
                     "cancellation_requested": cancellation.reason != nil,
                     "cancellation_reason": cancellation.reason?.rawValue ?? NSNull(),
                     "package_execution_enabled": false,
@@ -1553,15 +1594,17 @@ struct WhoaThereMacosVmHelper {
             (SIGINT, .interruptSignal),
             (SIGTERM, .terminationSignal)
         ]
-        return definitions.map { signalNumber, reason in
-            _ = Darwin.signal(signalNumber, SIG_IGN)
+        let sources = definitions.map { signalNumber, reason in
             let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: queue)
+            _ = Darwin.signal(signalNumber, SIG_IGN)
             source.setEventHandler {
                 cancellation.request(reason)
             }
             source.resume()
             return source
         }
+        activeSdistCancellationSignalSources = sources
+        return sources
     }
 
     private static func stopArtifactVirtualMachine(

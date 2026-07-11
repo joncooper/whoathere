@@ -179,7 +179,7 @@ private func authorizedClosureFixture(
     return (authorized, authorityFixture)
 }
 
-private func sdistClosureFrame(
+func sdistClosureFrame(
     manifest: SdistBuildClosureManifest,
     payloads: [Data]
 ) throws -> Data {

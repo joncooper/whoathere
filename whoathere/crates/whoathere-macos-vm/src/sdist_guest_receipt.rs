@@ -22,6 +22,12 @@ pub struct MacosSdistGuestStagingReceiptClaimsV1 {
     first_rehash_byte_length: u64,
     staged_device: u64,
     staged_inode: u64,
+    closure_payload_sha256: Sha256Digest,
+    closure_artifact_count: u32,
+    closure_payload_byte_length: u64,
+    closure_manifest_sha256: Sha256Digest,
+    closure_staged_device: u64,
+    closure_staged_inode: u64,
 }
 
 impl MacosSdistGuestStagingReceiptClaimsV1 {
@@ -34,12 +40,22 @@ impl MacosSdistGuestStagingReceiptClaimsV1 {
         first_rehash_byte_length: u64,
         staged_device: u64,
         staged_inode: u64,
+        closure_payload_sha256: Sha256Digest,
+        closure_artifact_count: u32,
+        closure_payload_byte_length: u64,
+        closure_manifest_sha256: Sha256Digest,
+        closure_staged_device: u64,
+        closure_staged_inode: u64,
     ) -> Result<Self, MacosSdistGuestAuthErrorV1> {
         if artifact_byte_length == 0
             || first_rehash_byte_length != artifact_byte_length
             || first_rehash_sha256 != artifact_sha256
             || staged_device == 0
             || staged_inode == 0
+            || (closure_artifact_count == 0 && closure_payload_byte_length != 0)
+            || (closure_artifact_count > 0 && closure_payload_byte_length == 0)
+            || closure_staged_device == 0
+            || closure_staged_inode == 0
         {
             return Err(MacosSdistGuestAuthErrorV1::InvalidResponse);
         }
@@ -51,6 +67,12 @@ impl MacosSdistGuestStagingReceiptClaimsV1 {
             first_rehash_byte_length,
             staged_device,
             staged_inode,
+            closure_payload_sha256,
+            closure_artifact_count,
+            closure_payload_byte_length,
+            closure_manifest_sha256,
+            closure_staged_device,
+            closure_staged_inode,
         })
     }
 
@@ -81,6 +103,30 @@ impl MacosSdistGuestStagingReceiptClaimsV1 {
     pub fn staged_inode(&self) -> u64 {
         self.staged_inode
     }
+
+    pub fn closure_payload_sha256(&self) -> &Sha256Digest {
+        &self.closure_payload_sha256
+    }
+
+    pub fn closure_artifact_count(&self) -> u32 {
+        self.closure_artifact_count
+    }
+
+    pub fn closure_payload_byte_length(&self) -> u64 {
+        self.closure_payload_byte_length
+    }
+
+    pub fn closure_manifest_sha256(&self) -> &Sha256Digest {
+        &self.closure_manifest_sha256
+    }
+
+    pub fn closure_staged_device(&self) -> u64 {
+        self.closure_staged_device
+    }
+
+    pub fn closure_staged_inode(&self) -> u64 {
+        self.closure_staged_inode
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -99,6 +145,16 @@ struct UnsignedSdistStagingReceiptWireV1 {
     first_rehash_byte_length: String,
     staged_device: String,
     staged_inode: String,
+    closure_payload_sha256: Sha256Digest,
+    closure_artifact_count: String,
+    closure_payload_byte_length: String,
+    closure_manifest_sha256: Sha256Digest,
+    closure_staged_device: String,
+    closure_staged_inode: String,
+    closure_payload_file_name: String,
+    closure_manifest_file_name: String,
+    closure_file_mode: String,
+    closure_transport_verified: bool,
     artifact_file_name: String,
     artifact_file_mode: String,
     staging_directory_mode: String,
@@ -125,6 +181,16 @@ struct SdistStagingReceiptWireV1 {
     first_rehash_byte_length: String,
     staged_device: String,
     staged_inode: String,
+    closure_payload_sha256: Sha256Digest,
+    closure_artifact_count: String,
+    closure_payload_byte_length: String,
+    closure_manifest_sha256: Sha256Digest,
+    closure_staged_device: String,
+    closure_staged_inode: String,
+    closure_payload_file_name: String,
+    closure_manifest_file_name: String,
+    closure_file_mode: String,
+    closure_transport_verified: bool,
     artifact_file_name: String,
     artifact_file_mode: String,
     staging_directory_mode: String,
@@ -234,6 +300,16 @@ pub fn sign_macos_sdist_guest_staging_receipt_v1(
         first_rehash_byte_length: unsigned.first_rehash_byte_length,
         staged_device: unsigned.staged_device,
         staged_inode: unsigned.staged_inode,
+        closure_payload_sha256: unsigned.closure_payload_sha256,
+        closure_artifact_count: unsigned.closure_artifact_count,
+        closure_payload_byte_length: unsigned.closure_payload_byte_length,
+        closure_manifest_sha256: unsigned.closure_manifest_sha256,
+        closure_staged_device: unsigned.closure_staged_device,
+        closure_staged_inode: unsigned.closure_staged_inode,
+        closure_payload_file_name: unsigned.closure_payload_file_name,
+        closure_manifest_file_name: unsigned.closure_manifest_file_name,
+        closure_file_mode: unsigned.closure_file_mode,
+        closure_transport_verified: unsigned.closure_transport_verified,
         artifact_file_name: unsigned.artifact_file_name,
         artifact_file_mode: unsigned.artifact_file_mode,
         staging_directory_mode: unsigned.staging_directory_mode,
@@ -296,6 +372,16 @@ pub fn verify_macos_sdist_guest_staging_receipt_v1(
         first_rehash_byte_length: receipt.first_rehash_byte_length,
         staged_device: receipt.staged_device,
         staged_inode: receipt.staged_inode,
+        closure_payload_sha256: receipt.closure_payload_sha256,
+        closure_artifact_count: receipt.closure_artifact_count,
+        closure_payload_byte_length: receipt.closure_payload_byte_length,
+        closure_manifest_sha256: receipt.closure_manifest_sha256,
+        closure_staged_device: receipt.closure_staged_device,
+        closure_staged_inode: receipt.closure_staged_inode,
+        closure_payload_file_name: receipt.closure_payload_file_name,
+        closure_manifest_file_name: receipt.closure_manifest_file_name,
+        closure_file_mode: receipt.closure_file_mode,
+        closure_transport_verified: receipt.closure_transport_verified,
         artifact_file_name: receipt.artifact_file_name,
         artifact_file_mode: receipt.artifact_file_mode,
         staging_directory_mode: receipt.staging_directory_mode,
@@ -352,6 +438,16 @@ fn unsigned_receipt_v1(
         first_rehash_byte_length: staging_claims.first_rehash_byte_length.to_string(),
         staged_device: staging_claims.staged_device.to_string(),
         staged_inode: staging_claims.staged_inode.to_string(),
+        closure_payload_sha256: staging_claims.closure_payload_sha256.clone(),
+        closure_artifact_count: staging_claims.closure_artifact_count.to_string(),
+        closure_payload_byte_length: staging_claims.closure_payload_byte_length.to_string(),
+        closure_manifest_sha256: staging_claims.closure_manifest_sha256.clone(),
+        closure_staged_device: staging_claims.closure_staged_device.to_string(),
+        closure_staged_inode: staging_claims.closure_staged_inode.to_string(),
+        closure_payload_file_name: "build-closure.payload".to_string(),
+        closure_manifest_file_name: "build-closure.manifest.json".to_string(),
+        closure_file_mode: "0444".to_string(),
+        closure_transport_verified: true,
         artifact_file_name: "artifact.sdist".to_string(),
         artifact_file_mode: "0444".to_string(),
         staging_directory_mode: "0711".to_string(),

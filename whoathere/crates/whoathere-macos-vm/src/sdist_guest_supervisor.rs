@@ -1,11 +1,11 @@
 use crate::{
     decode_macos_sdist_guest_auth_challenge_v1, read_macos_sdist_guest_control_frame_v1,
     sign_macos_sdist_guest_auth_response_v1, sign_macos_sdist_guest_staging_receipt_v1,
-    stage_macos_sdist_guest_submission_v1, write_macos_sdist_guest_control_frame_v1,
-    MacosSdistGuestAuthClaimsV1, MacosSdistGuestAuthErrorV1, MacosSdistGuestControlErrorV1,
-    MacosSdistGuestControlFrameTypeV1, MacosSdistGuestStagingErrorV1,
-    MacosSdistGuestStagingPolicyV1, MacosSdistGuestStagingReceiptClaimsV1,
-    MAX_MACOS_SDIST_GUEST_AUTH_BYTES_V1,
+    stage_macos_sdist_guest_submission_followed_by_closure_v1,
+    write_macos_sdist_guest_control_frame_v1, MacosSdistGuestAuthClaimsV1,
+    MacosSdistGuestAuthErrorV1, MacosSdistGuestControlErrorV1, MacosSdistGuestControlFrameTypeV1,
+    MacosSdistGuestStagingErrorV1, MacosSdistGuestStagingPolicyV1,
+    MacosSdistGuestStagingReceiptClaimsV1, MAX_MACOS_SDIST_GUEST_AUTH_BYTES_V1,
 };
 use std::fmt;
 use std::io::{Read, Write};
@@ -81,6 +81,12 @@ pub struct MacosSdistGuestNonExecutingSessionObservationV1 {
     first_rehash_byte_length: u64,
     staged_device: u64,
     staged_inode: u64,
+    closure_payload_sha256: Sha256Digest,
+    closure_artifact_count: u32,
+    closure_payload_byte_length: u64,
+    closure_manifest_sha256: Sha256Digest,
+    closure_staged_device: u64,
+    closure_staged_inode: u64,
     package_uid: u32,
     package_gid: u32,
     staging_cleanup_succeeded: bool,
@@ -132,6 +138,30 @@ impl MacosSdistGuestNonExecutingSessionObservationV1 {
 
     pub fn staged_inode(&self) -> u64 {
         self.staged_inode
+    }
+
+    pub fn closure_payload_sha256(&self) -> &Sha256Digest {
+        &self.closure_payload_sha256
+    }
+
+    pub fn closure_artifact_count(&self) -> u32 {
+        self.closure_artifact_count
+    }
+
+    pub fn closure_payload_byte_length(&self) -> u64 {
+        self.closure_payload_byte_length
+    }
+
+    pub fn closure_manifest_sha256(&self) -> &Sha256Digest {
+        &self.closure_manifest_sha256
+    }
+
+    pub fn closure_staged_device(&self) -> u64 {
+        self.closure_staged_device
+    }
+
+    pub fn closure_staged_inode(&self) -> u64 {
+        self.closure_staged_inode
     }
 
     pub fn package_uid(&self) -> u32 {
@@ -210,11 +240,23 @@ pub fn run_macos_sdist_guest_nonexecuting_session_v1<R: Read, W: Write>(
     })?;
 
     let mut staged =
-        stage_macos_sdist_guest_submission_v1(reader, staging_policy).map_err(|error| {
-            MacosSdistGuestSupervisorFailureV1::new(
-                MacosSdistGuestSupervisorPrimaryErrorV1::Staging(error),
-            )
-        })?;
+        stage_macos_sdist_guest_submission_followed_by_closure_v1(reader, staging_policy).map_err(
+            |error| {
+                MacosSdistGuestSupervisorFailureV1::new(
+                    MacosSdistGuestSupervisorPrimaryErrorV1::Staging(error),
+                )
+            },
+        )?;
+    let closure_staging = match staged.stage_build_closure(reader) {
+        Ok(observation) => observation,
+        Err(error) => {
+            let cleanup_failed = staged.cleanup().is_err();
+            return Err(MacosSdistGuestSupervisorFailureV1 {
+                primary: MacosSdistGuestSupervisorPrimaryErrorV1::Staging(error),
+                staging_cleanup_failed: cleanup_failed,
+            });
+        }
+    };
     let prepared = (|| {
         let transport = staged.transport();
         let run_spec = transport.header().run_spec();
@@ -243,6 +285,13 @@ pub fn run_macos_sdist_guest_nonexecuting_session_v1<R: Read, W: Write>(
             rehash.artifact_byte_length(),
             rehash.device(),
             rehash.inode(),
+            closure_staging.transport().payload_sha256().clone(),
+            u32::try_from(closure_staging.transport().artifact_count())
+                .map_err(|_| MacosSdistGuestSupervisorPrimaryErrorV1::BindingMismatch)?,
+            closure_staging.transport().payload_byte_length(),
+            closure_staging.manifest_sha256().clone(),
+            closure_staging.payload_device(),
+            closure_staging.payload_inode(),
         )
         .map_err(MacosSdistGuestSupervisorPrimaryErrorV1::Authentication)?;
         let receipt = sign_macos_sdist_guest_staging_receipt_v1(
@@ -264,6 +313,12 @@ pub fn run_macos_sdist_guest_nonexecuting_session_v1<R: Read, W: Write>(
             first_rehash_byte_length: staging_claims.first_rehash_byte_length(),
             staged_device: staging_claims.staged_device(),
             staged_inode: staging_claims.staged_inode(),
+            closure_payload_sha256: staging_claims.closure_payload_sha256().clone(),
+            closure_artifact_count: staging_claims.closure_artifact_count(),
+            closure_payload_byte_length: staging_claims.closure_payload_byte_length(),
+            closure_manifest_sha256: staging_claims.closure_manifest_sha256().clone(),
+            closure_staged_device: staging_claims.closure_staged_device(),
+            closure_staged_inode: staging_claims.closure_staged_inode(),
             package_uid: auth_claims.package_uid(),
             package_gid: auth_claims.package_gid(),
             staging_cleanup_succeeded: true,

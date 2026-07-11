@@ -3,6 +3,7 @@ import Foundation
 public struct SdistGuestNonExecutingSessionObservation: Equatable, Sendable {
     public let authentication: SdistGuestAuthObservation
     public let transport: SdistRunTransportObservation
+    public let closureTransport: SdistBuildClosureTransportObservation
     public let stagingReceipt: SdistGuestStagingReceiptObservation
     public let packageExecutionEnabled: Bool
     public let syncBackEnabled: Bool
@@ -50,6 +51,7 @@ public func receiveSdistGuestStagingReceipt(
     authenticated: SdistGuestAuthenticatedSession,
     authorized: AuthorizedSdistRunSubmission,
     transport: SdistRunTransportObservation,
+    closureTransport: SdistBuildClosureTransportObservation,
     guestAuthPublicKey: Data,
     timeoutMillis: Int32 = 10_000
 ) throws -> SdistGuestStagingReceiptObservation {
@@ -64,6 +66,7 @@ public func receiveSdistGuestStagingReceipt(
         authenticated: authenticated,
         authorized: authorized,
         transport: transport,
+        closureTransport: closureTransport,
         guestAuthPublicKey: guestAuthPublicKey
     )
     try requireSdistGuestControlEOF(
@@ -78,6 +81,7 @@ public func receiveSdistGuestStagingReceipt(
 public func runNonExecutingSdistGuestSession(
     descriptor: Int32,
     authorized: AuthorizedSdistRunSubmission,
+    closure: AuthorizedSdistBuildClosureSubmission,
     cloneBindingSHA256: String,
     guestAuthPublicKey: Data,
     timeoutMillis: Int32 = 10_000
@@ -92,18 +96,24 @@ public func runNonExecutingSdistGuestSession(
     let transport = try SdistGuestSubmissionForwarder(
         descriptor: descriptor,
         authorized: authorized
+    ).forward(shutdownWriteSide: false)
+    let closureTransport = try SdistGuestBuildClosureForwarder(
+        descriptor: descriptor,
+        authorized: closure
     ).forward()
     let receipt = try receiveSdistGuestStagingReceipt(
         descriptor: descriptor,
         authenticated: authenticated,
         authorized: authorized,
         transport: transport,
+        closureTransport: closureTransport,
         guestAuthPublicKey: guestAuthPublicKey,
         timeoutMillis: timeoutMillis
     )
     return SdistGuestNonExecutingSessionObservation(
         authentication: authenticated.observation,
         transport: transport,
+        closureTransport: closureTransport,
         stagingReceipt: receipt,
         packageExecutionEnabled: false,
         syncBackEnabled: false,

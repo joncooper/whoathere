@@ -9,6 +9,7 @@ import Testing
         "--state-dir", "/tmp/whoathere-sdist-runs",
         "--authority-id", "sdist-authority-" + String(repeating: "a", count: 64),
         "--authority-record-sha256", recordSHA256,
+        "--build-closure-fd", "3",
         "--execute",
         "--json"
     ])
@@ -18,19 +19,38 @@ import Testing
     }
     #expect(options.stateDir == "/tmp/whoathere-sdist-runs")
     #expect(options.authorityRecordSHA256 == recordSHA256)
+    #expect(options.buildClosureFD == 3)
     #expect(options.execute)
     #expect(options.json)
 
     #expect(throws: ArgumentError.valueRequired("--authority-id")) {
         _ = try parseHelperInvocation([
-            "sdist-run", "--authority-record-sha256", recordSHA256, "--execute"
+            "sdist-run", "--authority-record-sha256", recordSHA256,
+            "--build-closure-fd", "3", "--execute"
         ])
     }
     #expect(throws: ArgumentError.valueRequired("--authority-record-sha256")) {
         _ = try parseHelperInvocation([
             "sdist-run",
             "--authority-id", "sdist-authority-" + String(repeating: "a", count: 64),
+            "--build-closure-fd", "3",
             "--execute"
+        ])
+    }
+    #expect(throws: ArgumentError.valueRequired("--build-closure-fd")) {
+        _ = try parseHelperInvocation([
+            "sdist-run",
+            "--authority-id", "sdist-authority-" + String(repeating: "a", count: 64),
+            "--authority-record-sha256", recordSHA256,
+            "--execute"
+        ])
+    }
+    #expect(throws: ArgumentError.invalidInteger("--build-closure-fd")) {
+        _ = try parseHelperInvocation([
+            "sdist-run",
+            "--authority-id", "sdist-authority-" + String(repeating: "a", count: 64),
+            "--authority-record-sha256", recordSHA256,
+            "--build-closure-fd", "4"
         ])
     }
     for forbidden in ["--sync-back", "--tool=pip", "--", "--project-payload-path=/tmp/x"] {
@@ -39,6 +59,7 @@ import Testing
                 "sdist-run",
                 "--authority-id", "sdist-authority-" + String(repeating: "a", count: 64),
                 "--authority-record-sha256", recordSHA256,
+                "--build-closure-fd", "3",
                 forbidden
             ])
         }

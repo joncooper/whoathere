@@ -18,6 +18,12 @@ public struct SdistGuestStagingReceiptObservation: Equatable, Sendable {
     public let firstRehashByteLength: UInt64
     public let stagedDevice: UInt64
     public let stagedInode: UInt64
+    public let closurePayloadSHA256: String
+    public let closureArtifactCount: UInt32
+    public let closurePayloadByteLength: UInt64
+    public let closureManifestSHA256: String
+    public let closureStagedDevice: UInt64
+    public let closureStagedInode: UInt64
     public let packageUID: UInt32
     public let packageGID: UInt32
     public let packageExecutionEnabled: Bool
@@ -31,6 +37,7 @@ public func verifySdistGuestStagingReceipt(
     authenticated: SdistGuestAuthenticatedSession,
     authorized: AuthorizedSdistRunSubmission,
     transport: SdistRunTransportObservation,
+    closureTransport: SdistBuildClosureTransportObservation,
     guestAuthPublicKey: Data
 ) throws -> SdistGuestStagingReceiptObservation {
     guard !receiptData.isEmpty, receiptData.count <= maximumSdistGuestAuthBytesV1 else {
@@ -57,7 +64,10 @@ public func verifySdistGuestStagingReceipt(
           transport.runSpecSHA256 == authority.runSpecSHA256,
           transport.buildClosureSHA256 == authority.buildClosureSHA256,
           transport.artifactSHA256 == authority.artifactSHA256,
-          transport.artifactByteLength == prelude.artifactByteLength else {
+          transport.artifactByteLength == prelude.artifactByteLength,
+          closureTransport.closureSHA256 == authority.buildClosureSHA256,
+          closureTransport.artifactCount == prelude.buildClosure.artifacts.count,
+          closureTransport.payloadByteLength == prelude.buildClosure.payloadByteLength else {
         throw SdistGuestAuthenticationError.invalidResponse
     }
     guard let receipt = try? JSONSerialization.jsonObject(with: receiptData) as? [String: Any],
@@ -67,6 +77,10 @@ public func verifySdistGuestStagingReceipt(
               "run_spec_sha256", "build_closure_sha256", "clone_binding_sha256",
               "artifact_sha256", "artifact_byte_length", "first_rehash_sha256",
               "first_rehash_byte_length", "staged_device", "staged_inode",
+              "closure_payload_sha256", "closure_artifact_count",
+              "closure_payload_byte_length", "closure_manifest_sha256",
+              "closure_staged_device", "closure_staged_inode", "closure_payload_file_name",
+              "closure_manifest_file_name", "closure_file_mode", "closure_transport_verified",
               "artifact_file_name", "artifact_file_mode", "staging_directory_mode",
               "package_uid", "package_gid", "package_execution_enabled", "sync_back_enabled",
               "build_closure_materialized", "signature_ed25519_hex"
@@ -80,6 +94,13 @@ public func verifySdistGuestStagingReceipt(
           receipt["clone_binding_sha256"] as? String == challenge.cloneBindingSHA256,
           receipt["artifact_sha256"] as? String == transport.artifactSHA256,
           receipt["first_rehash_sha256"] as? String == transport.artifactSHA256,
+          receipt["closure_payload_sha256"] as? String == closureTransport.payloadSHA256,
+          receipt["closure_manifest_sha256"] as? String
+            == sha256(prelude.buildClosure.canonicalJSON),
+          receipt["closure_payload_file_name"] as? String == "build-closure.payload",
+          receipt["closure_manifest_file_name"] as? String == "build-closure.manifest.json",
+          receipt["closure_file_mode"] as? String == "0444",
+          receipt["closure_transport_verified"] as? Bool == true,
           receipt["artifact_file_name"] as? String == "artifact.sdist",
           receipt["artifact_file_mode"] as? String == "0444",
           receipt["staging_directory_mode"] as? String == "0711",
@@ -92,13 +113,25 @@ public func verifySdistGuestStagingReceipt(
           let rehashLengthText = receipt["first_rehash_byte_length"] as? String,
           let deviceText = receipt["staged_device"] as? String,
           let inodeText = receipt["staged_inode"] as? String,
+          let closureCountText = receipt["closure_artifact_count"] as? String,
+          let closureLengthText = receipt["closure_payload_byte_length"] as? String,
+          let closureDeviceText = receipt["closure_staged_device"] as? String,
+          let closureInodeText = receipt["closure_staged_inode"] as? String,
           let artifactLength = sdistReceiptUInt64(artifactLengthText),
           let rehashLength = sdistReceiptUInt64(rehashLengthText),
           let device = sdistReceiptUInt64(deviceText),
           let inode = sdistReceiptUInt64(inodeText),
+          let closureCount = sdistReceiptUInt64(closureCountText),
+          let closureLength = sdistReceiptUInt64(closureLengthText),
+          let closureDevice = sdistReceiptUInt64(closureDeviceText),
+          let closureInode = sdistReceiptUInt64(closureInodeText),
           artifactLength == transport.artifactByteLength,
           rehashLength == transport.artifactByteLength,
           device > 0, inode > 0,
+          closureCount == UInt64(closureTransport.artifactCount),
+          closureCount <= UInt64(UInt32.max),
+          closureLength == closureTransport.payloadByteLength,
+          closureDevice > 0, closureInode > 0,
           let signatureHex = receipt["signature_ed25519_hex"] as? String,
           let signature = sdistReceiptSignatureData(signatureHex) else {
         throw SdistGuestAuthenticationError.invalidResponse
@@ -131,6 +164,12 @@ public func verifySdistGuestStagingReceipt(
         firstRehashByteLength: rehashLength,
         stagedDevice: device,
         stagedInode: inode,
+        closurePayloadSHA256: closureTransport.payloadSHA256,
+        closureArtifactCount: UInt32(closureCount),
+        closurePayloadByteLength: closureLength,
+        closureManifestSHA256: sha256(prelude.buildClosure.canonicalJSON),
+        closureStagedDevice: closureDevice,
+        closureStagedInode: closureInode,
         packageUID: prelude.backendIdentity.packageUID,
         packageGID: prelude.backendIdentity.packageGID,
         packageExecutionEnabled: false,
