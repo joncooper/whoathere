@@ -6,6 +6,7 @@ use std::fs;
 use std::io::{Cursor, Read};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::PathBuf;
+use std::sync::{Arc, Barrier};
 use std::time::{SystemTime, UNIX_EPOCH};
 use whoathere_artifact::{
     normalize_artifact, AcquisitionMethod, ArtifactEnvelope, ArtifactEnvelopeInput, ArtifactFormat,
@@ -19,7 +20,8 @@ use whoathere_detonation::{
 };
 use whoathere_evidence::v2::{canonical_cas_object_key_for_artifact, ArtifactEvidenceSubjectV2};
 use whoathere_macos_vm::{
-    compile_macos_sdist_run_spec_v1, decode_and_validate_macos_artifact_run_spec_v1,
+    compile_macos_sdist_run_spec_v1, consume_and_authorize_macos_sdist_guest_session_v1,
+    consume_macos_sdist_launch_authority_v1, decode_and_validate_macos_artifact_run_spec_v1,
     decode_and_validate_macos_sdist_run_spec_v1, decode_and_validate_macos_wheel_run_spec_v1,
     decode_macos_sdist_guest_auth_challenge_v1, decode_macos_sdist_submission_frame_v1,
     encode_macos_sdist_submission_frame_v1, prepare_macos_sdist_launch_v1,
@@ -33,11 +35,11 @@ use whoathere_macos_vm::{
     MacosSdistGuestControlErrorV1, MacosSdistGuestControlFrameTypeV1,
     MacosSdistGuestStagingErrorV1, MacosSdistGuestStagingPolicyV1,
     MacosSdistGuestStagingReceiptClaimsV1, MacosSdistGuestSupervisorPrimaryErrorV1,
-    MacosSdistLaunchAuthorityErrorV1, MacosSdistSubmissionBindingsV1, MacosSdistSubmissionErrorV1,
-    MacosSdistSubmissionHeaderV1, SdistGuestRehashPhaseV1, MACOS_SDIST_GUEST_PROTOCOL_V1,
-    MACOS_SDIST_GUEST_SUBMISSION_MAGIC_V1, MACOS_SDIST_RUN_SPEC_SCHEMA_V1,
-    MACOS_SDIST_SUBMISSION_FIXED_PREFIX_BYTES_V1, MACOS_SDIST_SUBMISSION_MAGIC_V1,
-    MAX_MACOS_SDIST_LAUNCH_AUTHORITY_LIFETIME_SECONDS_V1,
+    MacosSdistLaunchAuthorityConsumptionRequestV1, MacosSdistLaunchAuthorityErrorV1,
+    MacosSdistSubmissionBindingsV1, MacosSdistSubmissionErrorV1, MacosSdistSubmissionHeaderV1,
+    SdistGuestRehashPhaseV1, MACOS_SDIST_GUEST_PROTOCOL_V1, MACOS_SDIST_GUEST_SUBMISSION_MAGIC_V1,
+    MACOS_SDIST_RUN_SPEC_SCHEMA_V1, MACOS_SDIST_SUBMISSION_FIXED_PREFIX_BYTES_V1,
+    MACOS_SDIST_SUBMISSION_MAGIC_V1, MAX_MACOS_SDIST_LAUNCH_AUTHORITY_LIFETIME_SECONDS_V1,
 };
 
 fn digest(bytes: &[u8]) -> Sha256Digest {
@@ -1187,4 +1189,224 @@ fn sdist_launch_authority_is_random_expiring_and_bound_to_artifact_run_spec_and_
         .expect("restore authority root");
     fs::remove_dir(unsafe_root).expect("remove unsafe authority root");
     fs::remove_dir_all(root).expect("remove authority tree");
+}
+
+#[test]
+fn sdist_launch_authority_consumption_is_atomic_single_use_and_exactly_bound() {
+    let (templates, _) = compiled_templates(b"VALUE = 'consume inert'\n");
+    let run_spec =
+        compile_macos_sdist_run_spec_v1(&templates[0], &backend(digest(b"measured pip")))
+            .expect("consume run spec");
+    let root = temporary_sdist_staging_root("authority-consume");
+    let prepared = prepare_macos_sdist_launch_v1(&root, run_spec.clone(), 2_100_000_000, 120)
+        .expect("prepared authority");
+    let request = MacosSdistLaunchAuthorityConsumptionRequestV1::for_prepared(&prepared)
+        .expect("consumption request");
+    let pending_path = prepared.authority().pending_path().to_path_buf();
+    let consumed = consume_macos_sdist_launch_authority_v1(&root, &request, 2_100_000_001)
+        .expect("consumed authority");
+    assert!(!pending_path.exists());
+    assert!(consumed.consumed_path().exists());
+    assert_eq!(consumed.record_sha256(), request.record_sha256());
+    assert_eq!(
+        consumed.record().run_spec_sha256(),
+        run_spec.run_spec_sha256()
+    );
+    assert_eq!(
+        consumed.record().artifact_sha256(),
+        run_spec.artifact_sha256()
+    );
+    assert_eq!(
+        consumed.record().build_closure_sha256(),
+        run_spec.build_closure_sha256()
+    );
+    assert_eq!(consumed.consumed_at_unix_seconds(), 2_100_000_001);
+    assert_eq!(
+        consume_macos_sdist_launch_authority_v1(&root, &request, 2_100_000_002),
+        Err(MacosSdistLaunchAuthorityErrorV1::AuthorityUnavailable)
+    );
+    fs::remove_dir_all(root).expect("remove consumed authority tree");
+}
+
+#[test]
+fn expired_or_header_rebound_sdist_authorities_are_burned_before_rejection() {
+    let (templates, _) = compiled_templates(b"VALUE = 'authority rejection inert'\n");
+    let run_spec =
+        compile_macos_sdist_run_spec_v1(&templates[0], &backend(digest(b"measured pip")))
+            .expect("rejection run spec");
+    let root = temporary_sdist_staging_root("authority-rejection");
+
+    let expired = prepare_macos_sdist_launch_v1(&root, run_spec.clone(), 2_200_000_000, 10)
+        .expect("expired authority");
+    let expired_request = MacosSdistLaunchAuthorityConsumptionRequestV1::for_prepared(&expired)
+        .expect("expired request");
+    assert_eq!(
+        consume_macos_sdist_launch_authority_v1(&root, &expired_request, 2_200_000_010),
+        Err(MacosSdistLaunchAuthorityErrorV1::AuthorityExpired)
+    );
+    assert!(!expired.authority().pending_path().exists());
+    assert_eq!(
+        consume_macos_sdist_launch_authority_v1(&root, &expired_request, 2_200_000_005),
+        Err(MacosSdistLaunchAuthorityErrorV1::AuthorityUnavailable)
+    );
+
+    let first = prepare_macos_sdist_launch_v1(&root, run_spec.clone(), 2_200_000_020, 120)
+        .expect("first authority");
+    let second = prepare_macos_sdist_launch_v1(&root, run_spec, 2_200_000_020, 120)
+        .expect("second authority");
+    let rebound = MacosSdistLaunchAuthorityConsumptionRequestV1::new(
+        first.authority().record().authority_id(),
+        first.authority().record_sha256().clone(),
+        second.header().clone(),
+    )
+    .expect("rebound request");
+    assert_eq!(
+        consume_macos_sdist_launch_authority_v1(&root, &rebound, 2_200_000_021),
+        Err(MacosSdistLaunchAuthorityErrorV1::AuthorityBindingMismatch)
+    );
+    assert!(!first.authority().pending_path().exists());
+    assert_eq!(
+        consume_macos_sdist_launch_authority_v1(&root, &rebound, 2_200_000_022),
+        Err(MacosSdistLaunchAuthorityErrorV1::AuthorityUnavailable)
+    );
+    fs::remove_dir_all(root).expect("remove rejected authority tree");
+}
+
+#[test]
+fn mutated_sdist_authority_record_is_consumed_and_rejected_without_retry() {
+    let (templates, _) = compiled_templates(b"VALUE = 'authority mutation inert'\n");
+    let run_spec =
+        compile_macos_sdist_run_spec_v1(&templates[0], &backend(digest(b"measured pip")))
+            .expect("mutation run spec");
+    let root = temporary_sdist_staging_root("authority-mutation");
+    let prepared = prepare_macos_sdist_launch_v1(&root, run_spec, 2_300_000_000, 120)
+        .expect("mutation authority");
+    let request = MacosSdistLaunchAuthorityConsumptionRequestV1::for_prepared(&prepared)
+        .expect("mutation request");
+    let mut bytes = fs::read(prepared.authority().pending_path()).expect("authority bytes");
+    *bytes.last_mut().expect("authority byte") ^= 1;
+    fs::write(prepared.authority().pending_path(), bytes).expect("mutate authority record");
+    assert_eq!(
+        consume_macos_sdist_launch_authority_v1(&root, &request, 2_300_000_001),
+        Err(MacosSdistLaunchAuthorityErrorV1::AuthorityRecordInvalid)
+    );
+    assert!(!prepared.authority().pending_path().exists());
+    assert_eq!(
+        consume_macos_sdist_launch_authority_v1(&root, &request, 2_300_000_002),
+        Err(MacosSdistLaunchAuthorityErrorV1::AuthorityUnavailable)
+    );
+    fs::remove_dir_all(root).expect("remove mutated authority tree");
+}
+
+#[test]
+fn concurrent_sdist_authority_consumers_have_exactly_one_winner() {
+    let (templates, _) = compiled_templates(b"VALUE = 'authority race inert'\n");
+    let run_spec =
+        compile_macos_sdist_run_spec_v1(&templates[0], &backend(digest(b"measured pip")))
+            .expect("race run spec");
+    let root = temporary_sdist_staging_root("authority-race");
+    let prepared =
+        prepare_macos_sdist_launch_v1(&root, run_spec, 2_400_000_000, 120).expect("race authority");
+    let request = Arc::new(
+        MacosSdistLaunchAuthorityConsumptionRequestV1::for_prepared(&prepared)
+            .expect("race request"),
+    );
+    let barrier = Arc::new(Barrier::new(3));
+    let handles = (0..2)
+        .map(|_| {
+            let root = root.clone();
+            let request = Arc::clone(&request);
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                consume_macos_sdist_launch_authority_v1(&root, &request, 2_400_000_001)
+            })
+        })
+        .collect::<Vec<_>>();
+    barrier.wait();
+    let results = handles
+        .into_iter()
+        .map(|handle| handle.join().expect("consumer thread"))
+        .collect::<Vec<_>>();
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| {
+                matches!(
+                    result,
+                    Err(MacosSdistLaunchAuthorityErrorV1::AuthorityUnavailable)
+                )
+            })
+            .count(),
+        1
+    );
+    fs::remove_dir_all(root).expect("remove raced authority tree");
+}
+
+#[test]
+fn consumed_sdist_authority_constructs_the_exact_guest_challenge() {
+    let seed = [59_u8; 32];
+    let verifying_key = SigningKey::from_bytes(&seed).verifying_key().to_bytes();
+    let backend = backend_with_guest_identity(
+        digest(b"measured pip"),
+        digest(&verifying_key),
+        digest(b"authorized supervisor"),
+        digest(b"authorized runner"),
+        501,
+        20,
+    );
+    let (templates, _) = compiled_templates(b"VALUE = 'authorize inert'\n");
+    let run_spec =
+        compile_macos_sdist_run_spec_v1(&templates[0], &backend).expect("authorized run spec");
+    let root = temporary_sdist_staging_root("authority-authorize");
+    let prepared = prepare_macos_sdist_launch_v1(&root, run_spec.clone(), 2_500_000_000, 120)
+        .expect("prepared authorized launch");
+    let request = MacosSdistLaunchAuthorityConsumptionRequestV1::for_prepared(&prepared)
+        .expect("authorized request");
+    let clone_binding = digest(b"authorized clone binding");
+    let authorized = consume_and_authorize_macos_sdist_guest_session_v1(
+        &root,
+        &request,
+        2_500_000_001,
+        [29_u8; 32],
+        clone_binding.clone(),
+    )
+    .expect("authorized guest session");
+    assert!(authorized.consumed_authority().consumed_path().exists());
+    assert_eq!(
+        authorized.header().run_spec().run_spec_sha256(),
+        run_spec.run_spec_sha256()
+    );
+    assert_eq!(
+        authorized.challenge().execution_binding_sha256(),
+        prepared.header().bindings().execution_binding_sha256()
+    );
+    assert_eq!(
+        authorized.challenge().run_spec_sha256(),
+        run_spec.run_spec_sha256()
+    );
+    assert_eq!(
+        authorized.challenge().build_closure_sha256(),
+        run_spec.build_closure_sha256()
+    );
+    assert_eq!(
+        authorized.challenge().clone_binding_sha256(),
+        &clone_binding
+    );
+    assert_eq!(
+        authorized.challenge().guest_auth_public_key_sha256(),
+        &digest(&verifying_key)
+    );
+    assert_eq!(
+        consume_and_authorize_macos_sdist_guest_session_v1(
+            &root,
+            &request,
+            2_500_000_002,
+            [31_u8; 32],
+            clone_binding,
+        ),
+        Err(MacosSdistLaunchAuthorityErrorV1::AuthorityUnavailable)
+    );
+    fs::remove_dir_all(root).expect("remove authorized authority tree");
 }

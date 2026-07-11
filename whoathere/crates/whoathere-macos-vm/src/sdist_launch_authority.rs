@@ -1,12 +1,12 @@
 use crate::{
-    MacosSdistRunSpecV1, MacosSdistSubmissionBindingsV1, MacosSdistSubmissionErrorV1,
-    MacosSdistSubmissionHeaderV1,
+    MacosSdistGuestAuthChallengeV1, MacosSdistRunSpecV1, MacosSdistSubmissionBindingsV1,
+    MacosSdistSubmissionErrorV1, MacosSdistSubmissionHeaderV1,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::ffi::CString;
 use std::fmt;
 use std::fs::File;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::os::fd::{FromRawFd, RawFd};
 use std::path::{Path, PathBuf};
 use whoathere_artifact::Sha256Digest;
@@ -17,6 +17,7 @@ const AUTHORITY_ROOT_NAME_V1: &str = "sdist-authorities";
 const AUTHORITY_PENDING_NAME_V1: &str = "pending";
 const AUTHORITY_CONSUMED_NAME_V1: &str = "consumed";
 const MAX_AUTHORITY_ISSUE_ATTEMPTS_V1: usize = 8;
+const MAX_AUTHORITY_RECORD_BYTES_V1: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MacosSdistLaunchAuthorityErrorV1 {
@@ -31,6 +32,10 @@ pub enum MacosSdistLaunchAuthorityErrorV1 {
     AuthorityWriteFailed,
     AuthorityVerificationFailed,
     AuthorityPersistenceFailed,
+    AuthorityUnavailable,
+    AuthorityExpired,
+    AuthorityBindingMismatch,
+    AuthorityRecordInvalid,
     Serialization,
     Submission(MacosSdistSubmissionErrorV1),
 }
@@ -51,6 +56,10 @@ impl MacosSdistLaunchAuthorityErrorV1 {
             Self::AuthorityWriteFailed => "macos_sdist_launch_authority_write_failed",
             Self::AuthorityVerificationFailed => "macos_sdist_launch_authority_verification_failed",
             Self::AuthorityPersistenceFailed => "macos_sdist_launch_authority_persistence_failed",
+            Self::AuthorityUnavailable => "macos_sdist_launch_authority_unavailable",
+            Self::AuthorityExpired => "macos_sdist_launch_authority_expired",
+            Self::AuthorityBindingMismatch => "macos_sdist_launch_authority_binding_mismatch",
+            Self::AuthorityRecordInvalid => "macos_sdist_launch_authority_record_invalid",
             Self::Serialization => "macos_sdist_launch_authority_serialization_failed",
             Self::Submission(error) => error.reason_code(),
         }
@@ -71,7 +80,7 @@ impl From<MacosSdistSubmissionErrorV1> for MacosSdistLaunchAuthorityErrorV1 {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MacosSdistLaunchAuthorityRecordV1 {
     artifact_sha256: Sha256Digest,
@@ -169,6 +178,116 @@ impl PreparedMacosSdistLaunchV1 {
     }
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub struct MacosSdistLaunchAuthorityConsumptionRequestV1 {
+    authority_id: String,
+    record_sha256: Sha256Digest,
+    header: MacosSdistSubmissionHeaderV1,
+}
+
+impl fmt::Debug for MacosSdistLaunchAuthorityConsumptionRequestV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("MacosSdistLaunchAuthorityConsumptionRequestV1")
+            .field("authority_id", &self.authority_id)
+            .field("record_sha256", &self.record_sha256)
+            .field("run_spec_sha256", &self.header.run_spec().run_spec_sha256())
+            .field("artifact_sha256", &self.header.run_spec().artifact_sha256())
+            .field(
+                "build_closure_sha256",
+                &self.header.run_spec().build_closure_sha256(),
+            )
+            .finish()
+    }
+}
+
+impl MacosSdistLaunchAuthorityConsumptionRequestV1 {
+    pub fn new(
+        authority_id: impl Into<String>,
+        record_sha256: Sha256Digest,
+        header: MacosSdistSubmissionHeaderV1,
+    ) -> Result<Self, MacosSdistLaunchAuthorityErrorV1> {
+        let authority_id = authority_id.into();
+        if !valid_authority_id(&authority_id) {
+            return Err(MacosSdistLaunchAuthorityErrorV1::AuthorityRecordInvalid);
+        }
+        Ok(Self {
+            authority_id,
+            record_sha256,
+            header,
+        })
+    }
+
+    pub fn for_prepared(
+        prepared: &PreparedMacosSdistLaunchV1,
+    ) -> Result<Self, MacosSdistLaunchAuthorityErrorV1> {
+        Self::new(
+            prepared.authority.record.authority_id.clone(),
+            prepared.authority.record_sha256.clone(),
+            prepared.header.clone(),
+        )
+    }
+
+    pub fn authority_id(&self) -> &str {
+        &self.authority_id
+    }
+
+    pub fn record_sha256(&self) -> &Sha256Digest {
+        &self.record_sha256
+    }
+
+    pub fn header(&self) -> &MacosSdistSubmissionHeaderV1 {
+        &self.header
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConsumedMacosSdistLaunchAuthorityV1 {
+    record: MacosSdistLaunchAuthorityRecordV1,
+    record_sha256: Sha256Digest,
+    consumed_path: PathBuf,
+    consumed_at_unix_seconds: u64,
+}
+
+impl ConsumedMacosSdistLaunchAuthorityV1 {
+    pub fn record(&self) -> &MacosSdistLaunchAuthorityRecordV1 {
+        &self.record
+    }
+
+    pub fn record_sha256(&self) -> &Sha256Digest {
+        &self.record_sha256
+    }
+
+    pub fn consumed_path(&self) -> &Path {
+        &self.consumed_path
+    }
+
+    pub fn consumed_at_unix_seconds(&self) -> u64 {
+        self.consumed_at_unix_seconds
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthorizedMacosSdistGuestSessionV1 {
+    consumed_authority: ConsumedMacosSdistLaunchAuthorityV1,
+    header: MacosSdistSubmissionHeaderV1,
+    challenge: MacosSdistGuestAuthChallengeV1,
+}
+
+impl AuthorizedMacosSdistGuestSessionV1 {
+    pub fn consumed_authority(&self) -> &ConsumedMacosSdistLaunchAuthorityV1 {
+        &self.consumed_authority
+    }
+
+    pub fn header(&self) -> &MacosSdistSubmissionHeaderV1 {
+        &self.header
+    }
+
+    pub fn challenge(&self) -> &MacosSdistGuestAuthChallengeV1 {
+        &self.challenge
+    }
+}
+
 /// Persist one unpredictable, expiring sdist launch authority before returning its bound header.
 ///
 /// A helper must atomically consume the pending authority before guest authentication or receipt
@@ -223,6 +342,56 @@ pub fn prepare_macos_sdist_launch_v1(
     Err(MacosSdistLaunchAuthorityErrorV1::AuthorityCollision)
 }
 
+/// Irreversibly consume one pending authority before guest authentication or artifact receipt.
+///
+/// The pending record is moved to the consumed directory before its time and binding checks. Any
+/// expired, tampered, or mismatched attempt therefore burns the authority and cannot be retried.
+pub fn consume_macos_sdist_launch_authority_v1(
+    state_directory: &Path,
+    request: &MacosSdistLaunchAuthorityConsumptionRequestV1,
+    now_unix_seconds: u64,
+) -> Result<ConsumedMacosSdistLaunchAuthorityV1, MacosSdistLaunchAuthorityErrorV1> {
+    if now_unix_seconds == 0 {
+        return Err(MacosSdistLaunchAuthorityErrorV1::InvalidTime);
+    }
+    let directories = AuthorityDirectoriesV1::open_or_create(state_directory)?;
+    directories.consume(request, now_unix_seconds)
+}
+
+/// Consume an authority and only then construct the exact guest-authentication challenge.
+pub fn consume_and_authorize_macos_sdist_guest_session_v1(
+    state_directory: &Path,
+    request: &MacosSdistLaunchAuthorityConsumptionRequestV1,
+    now_unix_seconds: u64,
+    guest_nonce: [u8; 32],
+    clone_binding_sha256: Sha256Digest,
+) -> Result<AuthorizedMacosSdistGuestSessionV1, MacosSdistLaunchAuthorityErrorV1> {
+    let consumed_authority =
+        consume_macos_sdist_launch_authority_v1(state_directory, request, now_unix_seconds)?;
+    let run_spec = request.header().run_spec();
+    let challenge = MacosSdistGuestAuthChallengeV1::new(
+        guest_nonce,
+        request
+            .header()
+            .bindings()
+            .execution_binding_sha256()
+            .clone(),
+        run_spec.run_spec_sha256().clone(),
+        run_spec.build_closure_sha256().clone(),
+        clone_binding_sha256,
+        run_spec
+            .backend_identity()
+            .guest_auth_public_key_sha256()
+            .clone(),
+    )
+    .map_err(|_| MacosSdistLaunchAuthorityErrorV1::AuthorityBindingMismatch)?;
+    Ok(AuthorizedMacosSdistGuestSessionV1 {
+        consumed_authority,
+        header: request.header().clone(),
+        challenge,
+    })
+}
+
 struct DirectoryFdV1(RawFd);
 
 impl Drop for DirectoryFdV1 {
@@ -238,6 +407,7 @@ struct AuthorityDirectoriesV1 {
     pending: DirectoryFdV1,
     consumed: DirectoryFdV1,
     pending_path: PathBuf,
+    consumed_path: PathBuf,
 }
 
 impl AuthorityDirectoriesV1 {
@@ -256,6 +426,9 @@ impl AuthorityDirectoriesV1 {
             pending_path: state_directory
                 .join(AUTHORITY_ROOT_NAME_V1)
                 .join(AUTHORITY_PENDING_NAME_V1),
+            consumed_path: state_directory
+                .join(AUTHORITY_ROOT_NAME_V1)
+                .join(AUTHORITY_CONSUMED_NAME_V1),
         })
     }
 
@@ -308,6 +481,135 @@ impl AuthorityDirectoriesV1 {
                 .pending_path
                 .join(format!("{}.json", record.authority_id())),
         })
+    }
+
+    fn consume(
+        &self,
+        request: &MacosSdistLaunchAuthorityConsumptionRequestV1,
+        now_unix_seconds: u64,
+    ) -> Result<ConsumedMacosSdistLaunchAuthorityV1, MacosSdistLaunchAuthorityErrorV1> {
+        let name = CString::new(format!("{}.json", request.authority_id()))
+            .map_err(|_| MacosSdistLaunchAuthorityErrorV1::AuthorityRecordInvalid)?;
+        if child_exists(self.consumed.0, &name)? {
+            return Err(MacosSdistLaunchAuthorityErrorV1::AuthorityUnavailable);
+        }
+        atomic_move_no_replace(self.pending.0, self.consumed.0, &name)?;
+        fsync_directory(self.pending.0)?;
+        fsync_directory(self.consumed.0)?;
+        fsync_directory(self.root.0)?;
+
+        let descriptor = unsafe {
+            libc::openat(
+                self.consumed.0,
+                name.as_ptr(),
+                libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            )
+        };
+        if descriptor < 0 {
+            return Err(MacosSdistLaunchAuthorityErrorV1::AuthorityVerificationFailed);
+        }
+        let mut file = unsafe { File::from_raw_fd(descriptor) };
+        let metadata = file
+            .metadata()
+            .map_err(|_| MacosSdistLaunchAuthorityErrorV1::AuthorityVerificationFailed)?;
+        let length = usize::try_from(metadata.len())
+            .map_err(|_| MacosSdistLaunchAuthorityErrorV1::AuthorityRecordInvalid)?;
+        if length == 0 || length > MAX_AUTHORITY_RECORD_BYTES_V1 {
+            return Err(MacosSdistLaunchAuthorityErrorV1::AuthorityRecordInvalid);
+        }
+        verify_authority_file(&file, length)?;
+        let mut canonical = Vec::with_capacity(length);
+        file.read_to_end(&mut canonical)
+            .map_err(|_| MacosSdistLaunchAuthorityErrorV1::AuthorityVerificationFailed)?;
+        if canonical.len() != length
+            || Sha256Digest::from_bytes(&canonical) != *request.record_sha256()
+        {
+            return Err(MacosSdistLaunchAuthorityErrorV1::AuthorityRecordInvalid);
+        }
+        let mut deserializer = serde_json::Deserializer::from_slice(&canonical);
+        let record = MacosSdistLaunchAuthorityRecordV1::deserialize(&mut deserializer)
+            .map_err(|_| MacosSdistLaunchAuthorityErrorV1::AuthorityRecordInvalid)?;
+        deserializer
+            .end()
+            .map_err(|_| MacosSdistLaunchAuthorityErrorV1::AuthorityRecordInvalid)?;
+        if serde_json_canonicalizer::to_vec(&record)
+            .map_err(|_| MacosSdistLaunchAuthorityErrorV1::Serialization)?
+            != canonical
+            || record.schema_version != MACOS_SDIST_LAUNCH_AUTHORITY_SCHEMA_V1
+            || record.authority_id != request.authority_id
+            || !valid_authority_record_times(&record)
+        {
+            return Err(MacosSdistLaunchAuthorityErrorV1::AuthorityRecordInvalid);
+        }
+        let issued_at = record.issued_at_unix_seconds();
+        let expires_at = record.expires_at_unix_seconds();
+        if now_unix_seconds < issued_at || now_unix_seconds >= expires_at {
+            return Err(MacosSdistLaunchAuthorityErrorV1::AuthorityExpired);
+        }
+        let run_spec = request.header().run_spec();
+        if request.header().bindings().challenge_binding_sha256()
+            != record.challenge_binding_sha256()
+            || run_spec.run_spec_sha256() != record.run_spec_sha256()
+            || run_spec.artifact_sha256() != record.artifact_sha256()
+            || run_spec.build_closure_sha256() != record.build_closure_sha256()
+        {
+            return Err(MacosSdistLaunchAuthorityErrorV1::AuthorityBindingMismatch);
+        }
+        Ok(ConsumedMacosSdistLaunchAuthorityV1 {
+            record,
+            record_sha256: Sha256Digest::from_bytes(&canonical),
+            consumed_path: self
+                .consumed_path
+                .join(format!("{}.json", request.authority_id())),
+            consumed_at_unix_seconds: now_unix_seconds,
+        })
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn atomic_move_no_replace(
+    pending: RawFd,
+    consumed: RawFd,
+    name: &CString,
+) -> Result<(), MacosSdistLaunchAuthorityErrorV1> {
+    let result = unsafe {
+        libc::renameatx_np(
+            pending,
+            name.as_ptr(),
+            consumed,
+            name.as_ptr(),
+            libc::RENAME_EXCL,
+        )
+    };
+    if result == 0 {
+        return Ok(());
+    }
+    match io::Error::last_os_error().kind() {
+        io::ErrorKind::NotFound | io::ErrorKind::AlreadyExists => {
+            Err(MacosSdistLaunchAuthorityErrorV1::AuthorityUnavailable)
+        }
+        _ => Err(MacosSdistLaunchAuthorityErrorV1::AuthorityPersistenceFailed),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn atomic_move_no_replace(
+    pending: RawFd,
+    consumed: RawFd,
+    name: &CString,
+) -> Result<(), MacosSdistLaunchAuthorityErrorV1> {
+    if child_exists(consumed, name)? {
+        return Err(MacosSdistLaunchAuthorityErrorV1::AuthorityUnavailable);
+    }
+    let result = unsafe { libc::renameat(pending, name.as_ptr(), consumed, name.as_ptr()) };
+    if result == 0 {
+        return Ok(());
+    }
+    match io::Error::last_os_error().kind() {
+        io::ErrorKind::NotFound | io::ErrorKind::AlreadyExists => {
+            Err(MacosSdistLaunchAuthorityErrorV1::AuthorityUnavailable)
+        }
+        _ => Err(MacosSdistLaunchAuthorityErrorV1::AuthorityPersistenceFailed),
     }
 }
 
@@ -433,4 +735,29 @@ fn lower_hex(bytes: &[u8]) -> String {
         write!(&mut output, "{byte:02x}").expect("writing to String cannot fail");
     }
     output
+}
+
+fn valid_authority_id(value: &str) -> bool {
+    value
+        .strip_prefix("sdist-authority-")
+        .is_some_and(|suffix| {
+            suffix.len() == 64
+                && suffix
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
+}
+
+fn valid_authority_record_times(record: &MacosSdistLaunchAuthorityRecordV1) -> bool {
+    let Ok(issued_at) = record.issued_at_unix_seconds.parse::<u64>() else {
+        return false;
+    };
+    let Ok(expires_at) = record.expires_at_unix_seconds.parse::<u64>() else {
+        return false;
+    };
+    issued_at != 0
+        && issued_at.to_string() == record.issued_at_unix_seconds
+        && expires_at.to_string() == record.expires_at_unix_seconds
+        && expires_at > issued_at
+        && expires_at - issued_at <= MAX_MACOS_SDIST_LAUNCH_AUTHORITY_LIFETIME_SECONDS_V1
 }
