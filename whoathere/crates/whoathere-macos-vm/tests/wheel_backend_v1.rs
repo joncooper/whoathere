@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::io::{Cursor, Write};
+use std::io::{Cursor, Read, Write};
 use whoathere_artifact::{
     normalize_artifact, AcquisitionMethod, ArtifactEnvelope, ArtifactEnvelopeInput, ArtifactFormat,
     ArtifactSourceType, Ecosystem, NormalizationLimits, Sha256Digest,
@@ -14,9 +14,11 @@ use whoathere_macos_vm::{
     compile_macos_wheel_run_spec_v1, decode_and_validate_macos_artifact_run_spec_v1,
     decode_and_validate_macos_wheel_run_spec_v1, decode_macos_wheel_submission_frame_v1,
     encode_macos_wheel_submission_frame_v1, macos_wheel_execution_binding_sha256_v1,
-    MacosArtifactRunErrorV1, MacosWheelBackendCapabilitiesV1, MacosWheelBackendIdentityV1,
-    MacosWheelSubmissionBindingsV1, MacosWheelSubmissionErrorV1, MacosWheelSubmissionHeaderV1,
-    MACOS_WHEEL_SUBMISSION_FIXED_PREFIX_BYTES_V1, MACOS_WHEEL_SUBMISSION_MAGIC_V1,
+    stream_macos_wheel_guest_submission_v1, MacosArtifactRunErrorV1,
+    MacosWheelBackendCapabilitiesV1, MacosWheelBackendIdentityV1, MacosWheelSubmissionBindingsV1,
+    MacosWheelSubmissionErrorV1, MacosWheelSubmissionHeaderV1,
+    MACOS_WHEEL_GUEST_SUBMISSION_MAGIC_V1, MACOS_WHEEL_SUBMISSION_FIXED_PREFIX_BYTES_V1,
+    MACOS_WHEEL_SUBMISSION_MAGIC_V1,
 };
 use zip::write::SimpleFileOptions;
 
@@ -383,6 +385,98 @@ fn exact_wheel_round_trips_through_a_distinct_challenge_bound_binary_frame() {
         decode_macos_wheel_submission_frame_v1(&rebuilt, &bindings),
         Err(MacosWheelSubmissionErrorV1::InvalidHeader)
     );
+}
+
+#[test]
+fn wheel_guest_submission_streams_exact_bytes_and_rejects_other_transport_domains() {
+    let (template, artifact) = compiled_template(b"VALUE = 'inert'\n");
+    let run_spec = compile_macos_wheel_run_spec_v1(&template, &backend(digest(b"measured pip")))
+        .expect("Mac wheel run spec");
+    let bindings =
+        MacosWheelSubmissionBindingsV1::for_run_spec(digest(b"wheel challenge"), &run_spec);
+    let header =
+        MacosWheelSubmissionHeaderV1::new(run_spec.clone(), bindings).expect("wheel header");
+    let mut guest =
+        encode_macos_wheel_submission_frame_v1(&header, &artifact).expect("host wheel frame");
+    guest[..8].copy_from_slice(&MACOS_WHEEL_GUEST_SUBMISSION_MAGIC_V1);
+
+    let mut fragmented = FragmentedReader::new(&guest, 3);
+    let mut staged = Vec::new();
+    let observation = stream_macos_wheel_guest_submission_v1(&mut fragmented, &mut staged)
+        .expect("streamed wheel guest frame");
+    assert_eq!(staged, artifact);
+    assert_eq!(observation.artifact_sha256(), run_spec.artifact_sha256());
+    assert_eq!(observation.artifact_byte_length(), artifact.len() as u64);
+    assert_eq!(observation.header().run_spec(), &run_spec);
+
+    for wrong_magic in [MACOS_WHEEL_SUBMISSION_MAGIC_V1, *b"WHOAGST1"] {
+        let mut wrong = guest.clone();
+        wrong[..8].copy_from_slice(&wrong_magic);
+        let mut staged = Vec::new();
+        assert_eq!(
+            stream_macos_wheel_guest_submission_v1(&mut Cursor::new(wrong), &mut staged),
+            Err(MacosWheelSubmissionErrorV1::InvalidMagic)
+        );
+        assert!(staged.is_empty());
+    }
+
+    let mut mutated = guest.clone();
+    *mutated.last_mut().expect("artifact byte") ^= 1;
+    let mut staged = Vec::new();
+    assert_eq!(
+        stream_macos_wheel_guest_submission_v1(&mut Cursor::new(mutated), &mut staged),
+        Err(MacosWheelSubmissionErrorV1::ArtifactDigestMismatch)
+    );
+    assert_eq!(staged.len(), artifact.len());
+
+    let mut trailing = guest.clone();
+    trailing.push(0);
+    let mut staged = Vec::new();
+    assert_eq!(
+        stream_macos_wheel_guest_submission_v1(&mut Cursor::new(trailing), &mut staged),
+        Err(MacosWheelSubmissionErrorV1::TrailingData)
+    );
+    assert_eq!(staged, artifact);
+
+    let mut staged = Vec::new();
+    assert_eq!(
+        stream_macos_wheel_guest_submission_v1(
+            &mut Cursor::new(&guest[..guest.len() - 1]),
+            &mut staged
+        ),
+        Err(MacosWheelSubmissionErrorV1::Truncated)
+    );
+}
+
+struct FragmentedReader<'a> {
+    bytes: &'a [u8],
+    offset: usize,
+    maximum_chunk: usize,
+}
+
+impl<'a> FragmentedReader<'a> {
+    fn new(bytes: &'a [u8], maximum_chunk: usize) -> Self {
+        Self {
+            bytes,
+            offset: 0,
+            maximum_chunk,
+        }
+    }
+}
+
+impl Read for FragmentedReader<'_> {
+    fn read(&mut self, destination: &mut [u8]) -> std::io::Result<usize> {
+        if self.offset == self.bytes.len() {
+            return Ok(0);
+        }
+        let count = destination
+            .len()
+            .min(self.maximum_chunk)
+            .min(self.bytes.len() - self.offset);
+        destination[..count].copy_from_slice(&self.bytes[self.offset..self.offset + count]);
+        self.offset += count;
+        Ok(count)
+    }
 }
 
 fn rebuild_wheel_frame(frame: &[u8], header: &[u8]) -> Vec<u8> {

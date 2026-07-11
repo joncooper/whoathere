@@ -3,14 +3,16 @@ use crate::{
     MAX_MACOS_WHEEL_RUN_SPEC_BYTES_V1,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::fmt;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use whoathere_artifact::Sha256Digest;
 use whoathere_detonation::MAX_ARTIFACT_SCENARIO_BYTES_V1;
 
 pub const MACOS_WHEEL_SUBMISSION_HEADER_SCHEMA_V1: &str =
     "whoathere.macos_wheel_submission_header.v1";
 pub const MACOS_WHEEL_SUBMISSION_MAGIC_V1: [u8; 8] = *b"WHOAWHE1";
+pub const MACOS_WHEEL_GUEST_SUBMISSION_MAGIC_V1: [u8; 8] = *b"WHOWGST1";
 pub const MACOS_WHEEL_SUBMISSION_VERSION_V1: u16 = 1;
 pub const MACOS_WHEEL_SUBMISSION_FRAME_TYPE_V1: u16 = 1;
 pub const MAX_MACOS_WHEEL_SUBMISSION_HEADER_BYTES_V1: usize =
@@ -339,7 +341,7 @@ pub fn decode_macos_wheel_submission_frame_v1(
         &encoded[header_start..artifact_start],
         artifact_len,
         &prefix_digest,
-        expected_bindings,
+        Some(expected_bindings),
     )?;
     let artifact_bytes = &encoded[artifact_start..];
     if Sha256Digest::from_bytes(artifact_bytes) != prefix_digest {
@@ -355,7 +357,7 @@ fn decode_wheel_submission_header_v1(
     header_bytes: &[u8],
     artifact_len: u64,
     prefix_digest: &Sha256Digest,
-    expected_bindings: &MacosWheelSubmissionBindingsV1,
+    expected_bindings: Option<&MacosWheelSubmissionBindingsV1>,
 ) -> Result<MacosWheelSubmissionHeaderV1, MacosWheelSubmissionErrorV1> {
     let mut deserializer = serde_json::Deserializer::from_slice(header_bytes);
     let wire = MacosWheelSubmissionHeaderWireV1::deserialize(&mut deserializer)
@@ -371,10 +373,12 @@ fn decode_wheel_submission_header_v1(
     {
         return Err(MacosWheelSubmissionErrorV1::InvalidHeader);
     }
-    if wire.challenge_binding_sha256 != expected_bindings.challenge_binding_sha256
-        || wire.execution_binding_sha256 != expected_bindings.execution_binding_sha256
-    {
-        return Err(MacosWheelSubmissionErrorV1::BindingMismatch);
+    if let Some(expected) = expected_bindings {
+        if wire.challenge_binding_sha256 != expected.challenge_binding_sha256
+            || wire.execution_binding_sha256 != expected.execution_binding_sha256
+        {
+            return Err(MacosWheelSubmissionErrorV1::BindingMismatch);
+        }
     }
     let run_spec_bytes = serde_json_canonicalizer::to_vec(&wire.run_spec)
         .map_err(|_| MacosWheelSubmissionErrorV1::Serialization)?;
@@ -407,6 +411,141 @@ fn decode_wheel_submission_header_v1(
         bindings,
         canonical_json: canonical,
     })
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct MacosWheelGuestSubmissionObservationV1 {
+    header: MacosWheelSubmissionHeaderV1,
+    artifact_sha256: Sha256Digest,
+    artifact_byte_length: u64,
+}
+
+impl fmt::Debug for MacosWheelGuestSubmissionObservationV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("MacosWheelGuestSubmissionObservationV1")
+            .field("header", &self.header)
+            .field("artifact_sha256", &self.artifact_sha256)
+            .field("artifact_byte_length", &self.artifact_byte_length)
+            .finish()
+    }
+}
+
+impl MacosWheelGuestSubmissionObservationV1 {
+    pub fn header(&self) -> &MacosWheelSubmissionHeaderV1 {
+        &self.header
+    }
+
+    pub fn artifact_sha256(&self) -> &Sha256Digest {
+        &self.artifact_sha256
+    }
+
+    pub fn artifact_byte_length(&self) -> u64 {
+        self.artifact_byte_length
+    }
+}
+
+/// Decode one authenticated helper-to-guest wheel frame without buffering the artifact.
+///
+/// The caller owns the sink and must discard it on every error. Success proves the complete
+/// declared body, SHA-256, canonical wheel run spec, and transport EOF. Challenge authority must
+/// already have been established by the wheel-specific authenticated guest session before the
+/// helper forwards this frame.
+pub fn stream_macos_wheel_guest_submission_v1<R: Read, W: Write>(
+    reader: &mut R,
+    artifact_sink: &mut W,
+) -> Result<MacosWheelGuestSubmissionObservationV1, MacosWheelSubmissionErrorV1> {
+    let mut prefix = [0_u8; MACOS_WHEEL_SUBMISSION_FIXED_PREFIX_BYTES_V1];
+    read_exact_wheel_submission_v1(reader, &mut prefix)?;
+    if prefix[..8] != MACOS_WHEEL_GUEST_SUBMISSION_MAGIC_V1 {
+        return Err(MacosWheelSubmissionErrorV1::InvalidMagic);
+    }
+    let version = u16::from_be_bytes(
+        prefix[8..10]
+            .try_into()
+            .map_err(|_| MacosWheelSubmissionErrorV1::Truncated)?,
+    );
+    if version != MACOS_WHEEL_SUBMISSION_VERSION_V1 {
+        return Err(MacosWheelSubmissionErrorV1::UnsupportedVersion);
+    }
+    let frame_type = u16::from_be_bytes(
+        prefix[10..12]
+            .try_into()
+            .map_err(|_| MacosWheelSubmissionErrorV1::Truncated)?,
+    );
+    if frame_type != MACOS_WHEEL_SUBMISSION_FRAME_TYPE_V1 {
+        return Err(MacosWheelSubmissionErrorV1::UnsupportedFrameType);
+    }
+    let header_len = u32::from_be_bytes(
+        prefix[12..16]
+            .try_into()
+            .map_err(|_| MacosWheelSubmissionErrorV1::Truncated)?,
+    ) as usize;
+    if header_len == 0 || header_len > MAX_MACOS_WHEEL_SUBMISSION_HEADER_BYTES_V1 {
+        return Err(MacosWheelSubmissionErrorV1::HeaderLimitExceeded);
+    }
+    let artifact_len = u64::from_be_bytes(
+        prefix[16..24]
+            .try_into()
+            .map_err(|_| MacosWheelSubmissionErrorV1::Truncated)?,
+    );
+    if artifact_len == 0 || artifact_len > MAX_ARTIFACT_SCENARIO_BYTES_V1 {
+        return Err(MacosWheelSubmissionErrorV1::ArtifactLimitExceeded);
+    }
+    let raw_digest: [u8; 32] = prefix[24..56]
+        .try_into()
+        .map_err(|_| MacosWheelSubmissionErrorV1::Truncated)?;
+    let prefix_digest = wheel_raw_to_digest_v1(raw_digest);
+    let mut header_bytes = vec![0_u8; header_len];
+    read_exact_wheel_submission_v1(reader, &mut header_bytes)?;
+    let header =
+        decode_wheel_submission_header_v1(&header_bytes, artifact_len, &prefix_digest, None)?;
+
+    let mut hasher = Sha256::new();
+    let mut remaining = artifact_len;
+    let mut buffer = [0_u8; 64 * 1024];
+    while remaining > 0 {
+        let requested = usize::try_from(remaining.min(buffer.len() as u64))
+            .map_err(|_| MacosWheelSubmissionErrorV1::ArtifactLimitExceeded)?;
+        read_exact_wheel_submission_v1(reader, &mut buffer[..requested])?;
+        hasher.update(&buffer[..requested]);
+        artifact_sink.write_all(&buffer[..requested])?;
+        remaining -= requested as u64;
+    }
+    let observed_raw: [u8; 32] = hasher.finalize().into();
+    if observed_raw != raw_digest {
+        return Err(MacosWheelSubmissionErrorV1::ArtifactDigestMismatch);
+    }
+    let mut trailing = [0_u8; 1];
+    loop {
+        match reader.read(&mut trailing) {
+            Ok(0) => break,
+            Ok(_) => return Err(MacosWheelSubmissionErrorV1::TrailingData),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(_) => return Err(MacosWheelSubmissionErrorV1::IoFailed),
+        }
+    }
+    artifact_sink.flush()?;
+    Ok(MacosWheelGuestSubmissionObservationV1 {
+        header,
+        artifact_sha256: prefix_digest,
+        artifact_byte_length: artifact_len,
+    })
+}
+
+fn read_exact_wheel_submission_v1<R: Read>(
+    reader: &mut R,
+    mut destination: &mut [u8],
+) -> Result<(), MacosWheelSubmissionErrorV1> {
+    while !destination.is_empty() {
+        match reader.read(destination) {
+            Ok(0) => return Err(MacosWheelSubmissionErrorV1::Truncated),
+            Ok(count) => destination = &mut destination[count..],
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(_) => return Err(MacosWheelSubmissionErrorV1::IoFailed),
+        }
+    }
+    Ok(())
 }
 
 pub fn macos_wheel_execution_binding_sha256_v1(
