@@ -51,3 +51,25 @@ The generated manifest remains `candidate_unqualified`. A successful boot marker
 telemetry conformance, does not qualify the backend, and cannot authorize package execution. Only
 the complete authenticated 38-case inert conformance matrix can construct the distinct qualified
 backend type.
+
+## Closed fixture contract
+
+`guest/fixture_cases.def` is the single ordered action table for the canonical 38-case matrix. It
+fixes each case's fixture family, terminal semantics, trigger owner, inert action name, and network
+policy. The only network policies are no network, the no-route guest sinkhole, and injected host
+sinkhole overflow.
+
+The accompanying inspector is intentionally non-executing. Its only operations are `--list` and
+`--describe CASE`; it has no command, path, environment, package-byte, or execution input. Verify
+the table against the canonical Rust enums and build the deterministic static aarch64 descriptor:
+
+```sh
+scripts/verify-fixture-contract.sh
+cargo test --manifest-path ../../../Cargo.toml \
+  -p whoathere-macos-vm \
+  --test linux_vz_fixture_contract_v1
+```
+
+The descriptor is not the guest runner and is not bound as one. It cannot run a fixture, emit a
+receipt, qualify telemetry, or authorize package code. Implementing each named action remains a
+separate measured step after the inert image boots.
