@@ -2,6 +2,40 @@ import Foundation
 import Testing
 @testable import WhoaThereMacosVmHelperCore
 
+@Test func wheelRunUsesDistinctAuthorityBoundNoSyncOptions() throws {
+    let parsed = try parseHelperInvocation([
+        "wheel-run",
+        "--state-dir", "/tmp/whoathere-wheel-runs",
+        "--authority-id", "wheel-authority-1",
+        "--execute",
+        "--json"
+    ])
+    guard case .wheelRun(let options) = parsed else {
+        Issue.record("expected wheel-run invocation")
+        return
+    }
+    #expect(options.stateDir == "/tmp/whoathere-wheel-runs")
+    #expect(options.authorityID == "wheel-authority-1")
+    #expect(options.execute)
+    #expect(options.json)
+
+    #expect(throws: ArgumentError.valueRequired("--authority-id")) {
+        _ = try parseHelperInvocation(["wheel-run", "--execute"])
+    }
+    for forbidden in ["--sync-back", "--tool=pip", "--", "--project-payload-path=/tmp/x"] {
+        do {
+            _ = try parseHelperInvocation([
+                "wheel-run", "--authority-id", "wheel-authority-1", forbidden
+            ])
+            Issue.record("expected wheel-run flag rejection: \(forbidden)")
+        } catch let error as ArgumentError {
+            let expected = forbidden.split(separator: "=", maxSplits: 1).first.map(String.init)
+                ?? forbidden
+            #expect(error == .unknownFlag(expected))
+        }
+    }
+}
+
 @Test func strictWheelSubmissionParserAcceptsEveryTypedScenarioVariant() throws {
     let scenarios: [[String: Any]] = [
         ["kind": "install_exact_wheel"],
@@ -197,7 +231,8 @@ struct WheelSubmissionFixture {
 func wheelSubmissionFixture(
     scenario: [String: Any],
     scenarioIndex: Int,
-    guestAuthPublicKeySHA256: String? = nil
+    guestAuthPublicKeySHA256: String? = nil,
+    postProvisioningReceiptSHA256: String? = nil
 ) throws -> WheelSubmissionFixture {
     let artifact = Data([0x50, 0x4b, 0x03, 0x04, 0x57, 0x48, 0x4f, 0x41])
     let artifactSHA256 = sha256(artifact)
@@ -305,7 +340,8 @@ func wheelSubmissionFixture(
             "machine_identifier_sha256": sha256(Data("machine identifier".utf8)),
             "cpu_count": UInt64(4),
             "memory_mib": UInt64(6_144),
-            "post_provisioning_receipt_sha256": sha256(Data("wheel receipt".utf8)),
+            "post_provisioning_receipt_sha256": postProvisioningReceiptSHA256
+                ?? sha256(Data("wheel receipt".utf8)),
             "helper_sha256": sha256(Data("helper".utf8)),
             "guest_supervisor_sha256": sha256(Data("wheel supervisor".utf8)),
             "guest_auth_public_key_sha256": guestAuthPublicKeySHA256

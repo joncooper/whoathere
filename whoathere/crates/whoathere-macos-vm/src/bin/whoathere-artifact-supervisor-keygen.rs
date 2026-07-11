@@ -5,8 +5,42 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::Path;
 use zeroize::Zeroize;
 
-const SEED_NAME: &str = "artifact-supervisor-ed25519.seed";
-const PUBLIC_KEY_NAME: &str = "artifact-supervisor-public-key.bin";
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeyKind {
+    Artifact,
+    Wheel,
+}
+
+impl KeyKind {
+    fn compiled() -> Result<Self, &'static str> {
+        match env!("CARGO_BIN_NAME") {
+            "whoathere-artifact-supervisor-keygen" => Ok(Self::Artifact),
+            "whoathere-wheel-supervisor-keygen" => Ok(Self::Wheel),
+            _ => Err("guest_supervisor_keygen_binary_identity_invalid"),
+        }
+    }
+
+    const fn seed_name(self) -> &'static str {
+        match self {
+            Self::Artifact => "artifact-supervisor-ed25519.seed",
+            Self::Wheel => "wheel-supervisor-ed25519.seed",
+        }
+    }
+
+    const fn public_key_name(self) -> &'static str {
+        match self {
+            Self::Artifact => "artifact-supervisor-public-key.bin",
+            Self::Wheel => "wheel-supervisor-public-key.bin",
+        }
+    }
+
+    const fn reason(self, artifact: &'static str, wheel: &'static str) -> &'static str {
+        match self {
+            Self::Artifact => artifact,
+            Self::Wheel => wheel,
+        }
+    }
+}
 
 fn main() {
     if let Err(reason) = run() {
@@ -16,18 +50,28 @@ fn main() {
 }
 
 fn run() -> Result<(), &'static str> {
+    let kind = KeyKind::compiled()?;
     let mut arguments = std::env::args_os();
     let _program = arguments.next();
-    let output = arguments
-        .next()
-        .ok_or("artifact_supervisor_keygen_output_required")?;
+    let output = arguments.next().ok_or(kind.reason(
+        "artifact_supervisor_keygen_output_required",
+        "wheel_supervisor_keygen_output_required",
+    ))?;
     if arguments.next().is_some() {
-        return Err("artifact_supervisor_keygen_arguments_invalid");
+        return Err(kind.reason(
+            "artifact_supervisor_keygen_arguments_invalid",
+            "wheel_supervisor_keygen_arguments_invalid",
+        ));
     }
-    generate_key_pair(Path::new(&output)).map_err(|_| "artifact_supervisor_keygen_failed")
+    generate_key_pair(Path::new(&output), kind).map_err(|_| {
+        kind.reason(
+            "artifact_supervisor_keygen_failed",
+            "wheel_supervisor_keygen_failed",
+        )
+    })
 }
 
-fn generate_key_pair(output: &Path) -> io::Result<()> {
+fn generate_key_pair(output: &Path, kind: KeyKind) -> io::Result<()> {
     let metadata = fs::symlink_metadata(output)?;
     if !output.is_absolute()
         || !metadata.file_type().is_dir()
@@ -36,8 +80,8 @@ fn generate_key_pair(output: &Path) -> io::Result<()> {
     {
         return Err(io::Error::other("key output directory unsafe"));
     }
-    let seed_path = output.join(SEED_NAME);
-    let public_key_path = output.join(PUBLIC_KEY_NAME);
+    let seed_path = output.join(kind.seed_name());
+    let public_key_path = output.join(kind.public_key_name());
     if fs::symlink_metadata(&seed_path).is_ok() || fs::symlink_metadata(&public_key_path).is_ok() {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
@@ -103,9 +147,10 @@ mod tests {
         ));
         fs::create_dir(&root).expect("create keygen root");
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).expect("protect keygen root");
-        generate_key_pair(&root).expect("generate key pair");
-        let mut seed = fs::read(root.join(SEED_NAME)).expect("read seed");
-        let public_key = fs::read(root.join(PUBLIC_KEY_NAME)).expect("read public key");
+        generate_key_pair(&root, KeyKind::Artifact).expect("generate key pair");
+        let mut seed = fs::read(root.join(KeyKind::Artifact.seed_name())).expect("read seed");
+        let public_key =
+            fs::read(root.join(KeyKind::Artifact.public_key_name())).expect("read public key");
         assert_eq!(seed.len(), 32);
         assert_eq!(public_key.len(), 32);
         let seed_array: [u8; 32] = seed.as_slice().try_into().expect("seed array");
@@ -116,10 +161,16 @@ mod tests {
                 .as_slice(),
             public_key
         );
-        assert!(generate_key_pair(&root).is_err());
+        assert!(generate_key_pair(&root, KeyKind::Artifact).is_err());
         seed.zeroize();
-        fs::remove_file(root.join(SEED_NAME)).expect("remove seed");
-        fs::remove_file(root.join(PUBLIC_KEY_NAME)).expect("remove public key");
+        fs::remove_file(root.join(KeyKind::Artifact.seed_name())).expect("remove seed");
+        fs::remove_file(root.join(KeyKind::Artifact.public_key_name())).expect("remove public key");
+        generate_key_pair(&root, KeyKind::Wheel).expect("generate wheel key pair");
+        assert!(root.join(KeyKind::Wheel.seed_name()).is_file());
+        assert!(root.join(KeyKind::Wheel.public_key_name()).is_file());
+        fs::remove_file(root.join(KeyKind::Wheel.seed_name())).expect("remove wheel seed");
+        fs::remove_file(root.join(KeyKind::Wheel.public_key_name()))
+            .expect("remove wheel public key");
         fs::remove_dir(root).expect("remove keygen root");
     }
 }

@@ -10,22 +10,80 @@ mod macos {
     use std::time::{Duration, Instant};
     use whoathere_artifact::Sha256Digest;
     use whoathere_macos_vm::{
-        run_macos_artifact_guest_nonexecuting_session_v1, MacosArtifactGuestAuthClaimsV1,
-        MacosArtifactGuestStagingPolicyV1,
+        run_macos_artifact_guest_nonexecuting_session_v1,
+        run_macos_wheel_guest_nonexecuting_session_v1, MacosArtifactGuestAuthClaimsV1,
+        MacosArtifactGuestStagingPolicyV1, MacosWheelGuestAuthClaimsV1,
+        MacosWheelGuestStagingPolicyV1,
     };
     use zeroize::Zeroizing;
 
-    const CONFIG_SCHEMA_V1: &str = "whoathere.artifact_guest_supervisor_config.v1";
     const PACKAGE_USERNAME_V1: &str = "_whoatherepkg";
-    const CONFIG_PATH: &str = "/Library/Application Support/WhoaThere/artifact-supervisor.json";
-    const SIGNING_SEED_PATH: &str =
-        "/Library/Application Support/WhoaThere/artifact-supervisor-ed25519.seed";
-    const STAGING_ROOT: &str = "/var/db/whoathere/artifact-staging";
-    const ARTIFACT_VSOCK_PORT: u32 = 47_079;
     const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
     const SESSION_TIMEOUT: Duration = Duration::from_secs(90);
     const MAX_CONFIG_BYTES: usize = 4 * 1024;
     const MAX_SUPERVISOR_BYTES: usize = 64 * 1024 * 1024;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum SupervisorKind {
+        Artifact,
+        Wheel,
+    }
+
+    impl SupervisorKind {
+        fn compiled() -> Result<Self, &'static str> {
+            match env!("CARGO_BIN_NAME") {
+                "whoathere-artifact-supervisor" => Ok(Self::Artifact),
+                "whoathere-wheel-supervisor" => Ok(Self::Wheel),
+                _ => Err("guest_supervisor_binary_identity_invalid"),
+            }
+        }
+
+        const fn config_schema(self) -> &'static str {
+            match self {
+                Self::Artifact => "whoathere.artifact_guest_supervisor_config.v1",
+                Self::Wheel => "whoathere.wheel_guest_supervisor_config.v1",
+            }
+        }
+
+        const fn config_path(self) -> &'static str {
+            match self {
+                Self::Artifact => "/Library/Application Support/WhoaThere/artifact-supervisor.json",
+                Self::Wheel => "/Library/Application Support/WhoaThere/wheel-supervisor.json",
+            }
+        }
+
+        const fn signing_seed_path(self) -> &'static str {
+            match self {
+                Self::Artifact => {
+                    "/Library/Application Support/WhoaThere/artifact-supervisor-ed25519.seed"
+                }
+                Self::Wheel => {
+                    "/Library/Application Support/WhoaThere/wheel-supervisor-ed25519.seed"
+                }
+            }
+        }
+
+        const fn staging_root(self) -> &'static str {
+            match self {
+                Self::Artifact => "/var/db/whoathere/artifact-staging",
+                Self::Wheel => "/var/db/whoathere/wheel-staging",
+            }
+        }
+
+        const fn vsock_port(self) -> u32 {
+            match self {
+                Self::Artifact => 47_079,
+                Self::Wheel => 47_080,
+            }
+        }
+
+        const fn reason(self, artifact: &'static str, wheel: &'static str) -> &'static str {
+            match self {
+                Self::Artifact => artifact,
+                Self::Wheel => wheel,
+            }
+        }
+    }
 
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(deny_unknown_fields)]
@@ -253,44 +311,74 @@ mod macos {
     }
 
     pub fn run() -> Result<(), &'static str> {
+        let kind = SupervisorKind::compiled()?;
         if std::env::args_os().len() != 1 {
-            return Err("artifact_guest_supervisor_arguments_rejected");
+            return Err(kind.reason(
+                "artifact_guest_supervisor_arguments_rejected",
+                "wheel_guest_supervisor_arguments_rejected",
+            ));
         }
         if unsafe { libc::geteuid() } != 0 {
-            return Err("artifact_guest_supervisor_root_required");
+            return Err(kind.reason(
+                "artifact_guest_supervisor_root_required",
+                "wheel_guest_supervisor_root_required",
+            ));
         }
-        let config_bytes =
-            read_trusted_file(Path::new(CONFIG_PATH), 0, MAX_CONFIG_BYTES, Some(0o400))
-                .map_err(|_| "artifact_guest_supervisor_config_untrusted")?;
-        let config =
-            decode_config(&config_bytes).map_err(|_| "artifact_guest_supervisor_config_invalid")?;
+        let config_bytes = read_trusted_file(
+            Path::new(kind.config_path()),
+            0,
+            MAX_CONFIG_BYTES,
+            Some(0o400),
+        )
+        .map_err(|_| {
+            kind.reason(
+                "artifact_guest_supervisor_config_untrusted",
+                "wheel_guest_supervisor_config_untrusted",
+            )
+        })?;
+        let config = decode_config(&config_bytes, kind.config_schema()).map_err(|_| {
+            kind.reason(
+                "artifact_guest_supervisor_config_invalid",
+                "wheel_guest_supervisor_config_invalid",
+            )
+        })?;
         let seed_bytes = Zeroizing::new(
-            read_trusted_file(Path::new(SIGNING_SEED_PATH), 0, 32, Some(0o400))
-                .map_err(|_| "artifact_guest_supervisor_key_untrusted")?,
+            read_trusted_file(Path::new(kind.signing_seed_path()), 0, 32, Some(0o400)).map_err(
+                |_| {
+                    kind.reason(
+                        "artifact_guest_supervisor_key_untrusted",
+                        "wheel_guest_supervisor_key_untrusted",
+                    )
+                },
+            )?,
         );
-        let seed_array: [u8; 32] = seed_bytes
-            .as_slice()
-            .try_into()
-            .map_err(|_| "artifact_guest_supervisor_key_invalid")?;
+        let seed_array: [u8; 32] = seed_bytes.as_slice().try_into().map_err(|_| {
+            kind.reason(
+                "artifact_guest_supervisor_key_invalid",
+                "wheel_guest_supervisor_key_invalid",
+            )
+        })?;
         let signing_seed = Zeroizing::new(seed_array);
-        let executable = std::env::current_exe()
-            .map_err(|_| "artifact_guest_supervisor_identity_unavailable")?;
+        let executable = std::env::current_exe().map_err(|_| {
+            kind.reason(
+                "artifact_guest_supervisor_identity_unavailable",
+                "wheel_guest_supervisor_identity_unavailable",
+            )
+        })?;
         let supervisor_bytes = read_trusted_file(&executable, 0, MAX_SUPERVISOR_BYTES, None)
-            .map_err(|_| "artifact_guest_supervisor_identity_untrusted")?;
-        let claims = MacosArtifactGuestAuthClaimsV1::new(
-            Sha256Digest::from_bytes(&supervisor_bytes),
-            config.canonical_sha256,
-            config.package_uid,
-            config.package_gid,
-        )
-        .map_err(|_| "artifact_guest_supervisor_claims_invalid")?;
-        let policy = MacosArtifactGuestStagingPolicyV1::for_current_supervisor(
-            PathBuf::from(STAGING_ROOT),
-            config.package_uid,
-        )
-        .map_err(|_| "artifact_guest_supervisor_staging_policy_invalid")?;
-        let connection = VsockConnection::connect_host(ARTIFACT_VSOCK_PORT, CONNECT_TIMEOUT)
-            .map_err(|_| "artifact_guest_supervisor_vsock_connect_failed")?;
+            .map_err(|_| {
+                kind.reason(
+                    "artifact_guest_supervisor_identity_untrusted",
+                    "wheel_guest_supervisor_identity_untrusted",
+                )
+            })?;
+        let connection = VsockConnection::connect_host(kind.vsock_port(), CONNECT_TIMEOUT)
+            .map_err(|_| {
+                kind.reason(
+                    "artifact_guest_supervisor_vsock_connect_failed",
+                    "wheel_guest_supervisor_vsock_connect_failed",
+                )
+            })?;
         let deadline = Instant::now() + SESSION_TIMEOUT;
         let mut reader = DeadlineReader {
             descriptor: connection.descriptor,
@@ -300,26 +388,67 @@ mod macos {
             descriptor: connection.descriptor,
             deadline,
         };
-        run_macos_artifact_guest_nonexecuting_session_v1(
-            &mut reader,
-            &mut writer,
-            *signing_seed,
-            &claims,
-            &policy,
-        )
-        .map_err(|failure| failure.reason_code())?;
-        connection
-            .shutdown_write()
-            .map_err(|_| "artifact_guest_supervisor_shutdown_failed")?;
+        match kind {
+            SupervisorKind::Artifact => {
+                let claims = MacosArtifactGuestAuthClaimsV1::new(
+                    Sha256Digest::from_bytes(&supervisor_bytes),
+                    config.canonical_sha256,
+                    config.package_uid,
+                    config.package_gid,
+                )
+                .map_err(|_| "artifact_guest_supervisor_claims_invalid")?;
+                let policy = MacosArtifactGuestStagingPolicyV1::for_current_supervisor(
+                    PathBuf::from(kind.staging_root()),
+                    config.package_uid,
+                )
+                .map_err(|_| "artifact_guest_supervisor_staging_policy_invalid")?;
+                run_macos_artifact_guest_nonexecuting_session_v1(
+                    &mut reader,
+                    &mut writer,
+                    *signing_seed,
+                    &claims,
+                    &policy,
+                )
+                .map_err(|failure| failure.reason_code())?;
+            }
+            SupervisorKind::Wheel => {
+                let claims = MacosWheelGuestAuthClaimsV1::new(
+                    Sha256Digest::from_bytes(&supervisor_bytes),
+                    config.canonical_sha256,
+                    config.package_uid,
+                    config.package_gid,
+                )
+                .map_err(|_| "wheel_guest_supervisor_claims_invalid")?;
+                let policy = MacosWheelGuestStagingPolicyV1::for_current_supervisor(
+                    PathBuf::from(kind.staging_root()),
+                    config.package_uid,
+                )
+                .map_err(|_| "wheel_guest_supervisor_staging_policy_invalid")?;
+                run_macos_wheel_guest_nonexecuting_session_v1(
+                    &mut reader,
+                    &mut writer,
+                    *signing_seed,
+                    &claims,
+                    &policy,
+                )
+                .map_err(|failure| failure.reason_code())?;
+            }
+        }
+        connection.shutdown_write().map_err(|_| {
+            kind.reason(
+                "artifact_guest_supervisor_shutdown_failed",
+                "wheel_guest_supervisor_shutdown_failed",
+            )
+        })?;
         Ok(())
     }
 
-    fn decode_config(bytes: &[u8]) -> Result<SupervisorConfigV1, ()> {
+    fn decode_config(bytes: &[u8], expected_schema: &str) -> Result<SupervisorConfigV1, ()> {
         let mut deserializer = serde_json::Deserializer::from_slice(bytes);
         let wire = SupervisorConfigWireV1::deserialize(&mut deserializer).map_err(|_| ())?;
         deserializer.end().map_err(|_| ())?;
         let canonical = serde_json_canonicalizer::to_vec(&wire).map_err(|_| ())?;
-        if canonical != bytes || wire.schema_version != CONFIG_SCHEMA_V1 {
+        if canonical != bytes || wire.schema_version != expected_schema {
             return Err(());
         }
         if wire.package_username != PACKAGE_USERNAME_V1 {
@@ -413,20 +542,35 @@ mod macos {
         #[test]
         fn supervisor_config_is_closed_canonical_and_nonzero() {
             let bytes = br#"{"package_gid":"502","package_uid":"502","package_username":"_whoatherepkg","schema_version":"whoathere.artifact_guest_supervisor_config.v1"}"#;
-            let decoded = decode_config(bytes).expect("valid config");
+            let decoded = decode_config(bytes, "whoathere.artifact_guest_supervisor_config.v1")
+                .expect("valid config");
             assert_eq!(decoded.package_uid, 502);
             assert_eq!(decoded.package_gid, 502);
             assert_eq!(decoded.canonical_sha256, Sha256Digest::from_bytes(bytes));
 
             let mut noncanonical = b" ".to_vec();
             noncanonical.extend_from_slice(bytes);
-            assert!(decode_config(&noncanonical).is_err());
+            assert!(decode_config(
+                &noncanonical,
+                "whoathere.artifact_guest_supervisor_config.v1",
+            )
+            .is_err());
             let zero = br#"{"package_gid":"502","package_uid":"0","package_username":"_whoatherepkg","schema_version":"whoathere.artifact_guest_supervisor_config.v1"}"#;
-            assert!(decode_config(zero).is_err());
+            assert!(decode_config(zero, "whoathere.artifact_guest_supervisor_config.v1").is_err());
             let privileged = br#"{"package_gid":"502","package_uid":"502","package_username":"admin","schema_version":"whoathere.artifact_guest_supervisor_config.v1"}"#;
-            assert!(decode_config(privileged).is_err());
+            assert!(
+                decode_config(privileged, "whoathere.artifact_guest_supervisor_config.v1",)
+                    .is_err()
+            );
             let unknown = br#"{"extra":false,"package_gid":"502","package_uid":"502","package_username":"_whoatherepkg","schema_version":"whoathere.artifact_guest_supervisor_config.v1"}"#;
-            assert!(decode_config(unknown).is_err());
+            assert!(
+                decode_config(unknown, "whoathere.artifact_guest_supervisor_config.v1").is_err()
+            );
+            let wheel = br#"{"package_gid":"499","package_uid":"499","package_username":"_whoatherepkg","schema_version":"whoathere.wheel_guest_supervisor_config.v1"}"#;
+            assert!(decode_config(wheel, "whoathere.wheel_guest_supervisor_config.v1",).is_ok());
+            assert!(
+                decode_config(wheel, "whoathere.artifact_guest_supervisor_config.v1",).is_err()
+            );
         }
 
         #[test]

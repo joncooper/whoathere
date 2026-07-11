@@ -31,9 +31,29 @@ public struct ArtifactRunOptions: Equatable, Sendable {
     }
 }
 
+public struct WheelRunOptions: Equatable, Sendable {
+    public var stateDir: String?
+    public var authorityID: String
+    public var execute: Bool
+    public var json: Bool
+
+    public init(
+        stateDir: String? = nil,
+        authorityID: String,
+        execute: Bool = false,
+        json: Bool = false
+    ) {
+        self.stateDir = stateDir
+        self.authorityID = authorityID
+        self.execute = execute
+        self.json = json
+    }
+}
+
 public enum HelperInvocation: Equatable, Sendable {
     case legacy(HelperOptions)
     case artifactRun(ArtifactRunOptions)
+    case wheelRun(WheelRunOptions)
 }
 
 public struct HelperOptions: Equatable, Sendable {
@@ -254,23 +274,28 @@ public func parseHelperInvocation(_ arguments: [String]) throws -> HelperInvocat
     guard let command = arguments.first else {
         throw ArgumentError.commandRequired
     }
-    guard command == "artifact-run" else {
+    guard command == "artifact-run" || command == "wheel-run" else {
         return .legacy(try parseArguments(arguments))
     }
 
-    var options = ArtifactRunOptions()
+    var stateDir: String?
+    var authorityID: String?
+    var execute = false
+    var json = false
     var index = arguments.index(after: arguments.startIndex)
     while index < arguments.endIndex {
         let token = arguments[index]
         switch token {
         case "--execute":
-            options.execute = true
+            execute = true
             index += 1
         case "--json":
-            options.json = true
+            json = true
             index += 1
         case "--state-dir":
-            options.stateDir = try value(after: token, in: arguments, at: &index)
+            stateDir = try value(after: token, in: arguments, at: &index)
+        case "--authority-id" where command == "wheel-run":
+            authorityID = try value(after: token, in: arguments, at: &index)
         default:
             if let split = token.firstIndex(of: "="), token.starts(with: "--") {
                 let flag = String(token[..<split])
@@ -280,17 +305,22 @@ public func parseHelperInvocation(_ arguments: [String]) throws -> HelperInvocat
                     guard !rawValue.isEmpty else {
                         throw ArgumentError.valueRequired(flag)
                     }
-                    options.stateDir = rawValue
+                    stateDir = rawValue
+                case "--authority-id" where command == "wheel-run":
+                    guard !rawValue.isEmpty else {
+                        throw ArgumentError.valueRequired(flag)
+                    }
+                    authorityID = rawValue
                 case "--execute":
                     guard rawValue == "true" else {
                         throw ArgumentError.unknownFlag(token)
                     }
-                    options.execute = true
+                    execute = true
                 case "--json":
                     guard rawValue == "true" else {
                         throw ArgumentError.unknownFlag(token)
                     }
-                    options.json = true
+                    json = true
                 default:
                     throw ArgumentError.unknownFlag(flag)
                 }
@@ -300,7 +330,22 @@ public func parseHelperInvocation(_ arguments: [String]) throws -> HelperInvocat
             }
         }
     }
-    return .artifactRun(options)
+    if command == "wheel-run" {
+        guard let authorityID else {
+            throw ArgumentError.valueRequired("--authority-id")
+        }
+        return .wheelRun(WheelRunOptions(
+            stateDir: stateDir,
+            authorityID: authorityID,
+            execute: execute,
+            json: json
+        ))
+    }
+    return .artifactRun(ArtifactRunOptions(
+        stateDir: stateDir,
+        execute: execute,
+        json: json
+    ))
 }
 
 public struct BundleLayout: Equatable, Sendable {

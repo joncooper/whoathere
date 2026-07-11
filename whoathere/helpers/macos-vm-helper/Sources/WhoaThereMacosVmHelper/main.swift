@@ -334,6 +334,73 @@ private final class ArtifactGuestRunListener: NSObject, VZVirtioSocketListenerDe
     }
 }
 
+private final class WheelGuestRunListener: NSObject, VZVirtioSocketListenerDelegate {
+    private let lock = NSLock()
+    private var accepted = false
+    private let reader: WheelRunSubmissionReader
+    private let authority: ConsumedWheelRunAuthority
+    private let base: LockedWheelRunBase
+    private let clone: DisposableWheelRunClone
+    private let resultBox: LockedResultBox<WheelGuestNonExecutingSessionObservation>
+    private let completion: DispatchSemaphore
+
+    init(
+        reader: WheelRunSubmissionReader,
+        authority: ConsumedWheelRunAuthority,
+        base: LockedWheelRunBase,
+        clone: DisposableWheelRunClone,
+        resultBox: LockedResultBox<WheelGuestNonExecutingSessionObservation>,
+        completion: DispatchSemaphore
+    ) {
+        self.reader = reader
+        self.authority = authority
+        self.base = base
+        self.clone = clone
+        self.resultBox = resultBox
+        self.completion = completion
+    }
+
+    func listener(
+        _ listener: VZVirtioSocketListener,
+        shouldAcceptNewConnection connection: VZVirtioSocketConnection,
+        from socketDevice: VZVirtioSocketDevice
+    ) -> Bool {
+        guard connection.destinationPort == wheelGuestVSOCKPortV1 else { return false }
+        lock.lock()
+        let shouldAccept = !accepted
+        if shouldAccept { accepted = true }
+        lock.unlock()
+        guard shouldAccept else { return false }
+
+        let listenerBox = UncheckedSendableBox(value: self)
+        let connectionBox = UncheckedSendableBox(value: connection)
+        DispatchQueue.global(qos: .userInitiated).async {
+            listenerBox.value.handle(connectionBox.value)
+        }
+        return true
+    }
+
+    private func handle(_ connection: VZVirtioSocketConnection) {
+        defer {
+            connection.close()
+            completion.signal()
+        }
+        do {
+            let observation = try runNonExecutingWheelGuestSession(
+                descriptor: connection.fileDescriptor,
+                reader: reader,
+                authority: authority,
+                base: base,
+                clone: clone,
+                timeoutMillis: 90_000
+            )
+            resultBox.store(.success(observation))
+        } catch {
+            resultBox.store(.failure(error))
+        }
+    }
+}
+
 private struct DetonationRequestFile {
     var jobID: String
     var url: URL
@@ -566,6 +633,8 @@ struct WhoaThereMacosVmHelper {
                 run(options)
             case .artifactRun(let options):
                 artifactRun(options)
+            case .wheelRun(let options):
+                wheelRun(options)
             }
         } catch {
             emit(
@@ -781,6 +850,269 @@ struct WhoaThereMacosVmHelper {
                     "helper_version": helperVersion,
                     "status": "error",
                     "execution_requested": true,
+                    "transport_verified": false,
+                    "clone_cleanup_succeeded": cloneCleanupSucceeded,
+                    "package_execution_enabled": false,
+                    "sync_back_enabled": false,
+                    "reason_codes": reasonArray(reasons),
+                    "exit_code": 65
+                ],
+                exitCode: 65
+            )
+        }
+    }
+
+    private static func wheelRun(_ options: WheelRunOptions) {
+        guard options.execute else {
+            emit(
+                fields: [
+                    "schema_version": "whoathere.macos_wheel_run_nonexecuting.v1",
+                    "helper_version": helperVersion,
+                    "status": "blocked",
+                    "execution_requested": false,
+                    "vm_execution_enabled": false,
+                    "package_execution_enabled": false,
+                    "sync_back_enabled": false,
+                    "reason_codes": ["execute_required_for_wheel_vm_run"],
+                    "exit_code": 78
+                ],
+                exitCode: 78
+            )
+        }
+        var pendingClone: DisposableWheelRunClone?
+        var consumedAuthority: ConsumedWheelRunAuthority?
+        var authorityReplayStatePersisted = false
+        do {
+            let reader = try beginWheelSubmission(from: FileHandle.standardInput)
+            let prelude = reader.prelude
+            let stateDirectory = options.stateDir.map {
+                URL(fileURLWithPath: $0, isDirectory: true)
+            } ?? defaultStateDir()
+            let authorityLayout = WheelRunAuthorityLayout(stateDirectory: stateDirectory)
+            let timestamp = Date().timeIntervalSince1970
+            guard timestamp.isFinite, timestamp >= 0, timestamp <= Double(UInt64.max) else {
+                throw helperError("wheel_run_trusted_time_unavailable")
+            }
+            let authority: ConsumedWheelRunAuthority
+            do {
+                authority = try consumeWheelRunAuthority(
+                    layout: authorityLayout,
+                    authorityID: options.authorityID,
+                    prelude: prelude,
+                    nowUnixSeconds: UInt64(timestamp.rounded(.down))
+                )
+                authorityReplayStatePersisted = authority.replayStatePersisted
+            } catch {
+                authorityReplayStatePersisted = FileManager.default.fileExists(
+                    atPath: authorityLayout.consumedURL(
+                        authorityID: options.authorityID
+                    ).path
+                )
+                throw error
+            }
+            consumedAuthority = authority
+            let layout = WheelRunBaseLayout(stateDirectory: stateDirectory)
+            let helperURL = URL(
+                fileURLWithPath: absoluteExecutablePath(CommandLine.arguments[0])
+            )
+            let base = try verifyAndLockWheelRunBase(
+                layout: layout,
+                identity: prelude.backendIdentity,
+                helperURL: helperURL
+            )
+            let clone = try base.createDisposableClone()
+            pendingClone = clone
+            let configuration = try buildWheelScenarioConfiguration(base: base, clone: clone)
+            guard configuration.networkDevices.isEmpty,
+                  configuration.socketDevices.count == 1 else {
+                throw helperError("wheel_run_vm_configuration_contract_mismatch")
+            }
+            let queue = DispatchQueue(label: "whoathere.macos.wheel-run")
+            let virtualMachine = VZVirtualMachine(configuration: configuration, queue: queue)
+            guard let socketDevice = virtualMachine.socketDevices.first as? VZVirtioSocketDevice else {
+                throw helperError("wheel_run_socket_device_missing")
+            }
+            let sessionResult = LockedResultBox<WheelGuestNonExecutingSessionObservation>()
+            let sessionCompletion = DispatchSemaphore(value: 0)
+            let listenerDelegate = WheelGuestRunListener(
+                reader: reader,
+                authority: authority,
+                base: base,
+                clone: clone,
+                resultBox: sessionResult,
+                completion: sessionCompletion
+            )
+            let socketListener = VZVirtioSocketListener()
+            socketListener.delegate = listenerDelegate
+            queue.sync {
+                socketDevice.setSocketListener(
+                    socketListener,
+                    forPort: wheelGuestVSOCKPortV1
+                )
+            }
+
+            var primaryError: Error?
+            var sessionObservation: WheelGuestNonExecutingSessionObservation?
+            var vmStartSucceeded = false
+            var sessionCompleted = false
+            do {
+                try startArtifactVirtualMachine(virtualMachine, queue: queue)
+                vmStartSucceeded = true
+                guard sessionCompletion.wait(timeout: .now() + .seconds(120)) == .success else {
+                    throw helperError("wheel_run_guest_session_timeout")
+                }
+                sessionCompleted = true
+                guard let result = sessionResult.load() else {
+                    throw helperError("wheel_run_guest_session_result_missing")
+                }
+                sessionObservation = try result.get()
+            } catch {
+                primaryError = error
+            }
+
+            queue.sync {
+                socketDevice.removeSocketListener(forPort: wheelGuestVSOCKPortV1)
+            }
+            let stopResult = stopArtifactVirtualMachine(virtualMachine, queue: queue)
+            if !sessionCompleted {
+                sessionCompleted = sessionCompletion.wait(
+                    timeout: .now() + .seconds(10)
+                ) == .success
+            }
+            var cloneCleanupSucceeded = false
+            var cleanupError: Error?
+            let vmStopSucceeded: Bool
+            switch stopResult {
+            case .success: vmStopSucceeded = true
+            case .failure: vmStopSucceeded = false
+            }
+            let cleanupDisposition = wheelRunCloneCleanupDisposition(
+                vmStopSucceeded: vmStopSucceeded,
+                guestSessionTerminated: sessionCompleted
+            )
+            switch cleanupDisposition {
+            case .cleanupAuthorized:
+                do {
+                    try clone.cleanup()
+                    cloneCleanupSucceeded = true
+                    pendingClone = nil
+                } catch {
+                    cleanupError = error
+                }
+            case .retainBecauseVMStopUnproven:
+                if case .failure(let error) = stopResult {
+                    cleanupError = error
+                } else {
+                    cleanupError = helperError(
+                        cleanupDisposition.reasonCode
+                            ?? "wheel_run_clone_cleanup_disposition_invalid"
+                    )
+                }
+            case .retainBecauseGuestSessionUnterminated:
+                cleanupError = helperError(
+                    cleanupDisposition.reasonCode
+                        ?? "wheel_run_clone_cleanup_disposition_invalid"
+                )
+            }
+
+            if primaryError != nil || cleanupError != nil {
+                var reasons: [String] = []
+                if let primaryError { reasons.append(String(describing: primaryError)) }
+                if let cleanupError { reasons.append(String(describing: cleanupError)) }
+                if !sessionCompleted {
+                    reasons.append("wheel_run_guest_session_not_terminated")
+                }
+                if !cloneCleanupSucceeded {
+                    reasons.append("wheel_run_clone_cleanup_unproven")
+                }
+                emit(
+                    fields: [
+                        "schema_version": "whoathere.macos_wheel_run_nonexecuting.v1",
+                        "helper_version": helperVersion,
+                        "status": "error",
+                        "execution_requested": true,
+                        "authority_id": authority.authorityID,
+                        "authority_consumed": true,
+                        "authority_replay_state_persisted": authority.replayStatePersisted,
+                        "submission_prelude_verified": true,
+                        "run_spec_sha256": prelude.runSpecSHA256,
+                        "artifact_sha256": prelude.artifactSHA256,
+                        "network_device_count": 0,
+                        "wheel_vsock_port": wheelGuestVSOCKPortV1,
+                        "vm_start_succeeded": vmStartSucceeded,
+                        "vm_stop_succeeded": vmStopSucceeded,
+                        "guest_session_completed": sessionCompleted,
+                        "guest_channel_terminated": sessionCompleted,
+                        "clone_cleanup_succeeded": cloneCleanupSucceeded,
+                        "package_execution_enabled": false,
+                        "sync_back_enabled": false,
+                        "reason_codes": reasonArray(reasons),
+                        "exit_code": 70
+                    ],
+                    exitCode: 70
+                )
+            }
+            guard let observation = sessionObservation else {
+                throw helperError("wheel_run_guest_session_observation_missing")
+            }
+            emit(
+                fields: [
+                    "schema_version": "whoathere.macos_wheel_run_nonexecuting.v1",
+                    "helper_version": helperVersion,
+                    "status": "staged_no_execution",
+                    "execution_requested": true,
+                    "authority_id": authority.authorityID,
+                    "authority_record_sha256": authority.authorityRecordSHA256,
+                    "authority_consumed": true,
+                    "authority_replay_state_persisted": authority.replayStatePersisted,
+                    "transport_verified": true,
+                    "run_spec_sha256": prelude.runSpecSHA256,
+                    "template_sha256": prelude.templateSHA256,
+                    "challenge_binding_sha256": authority.challengeBindingSHA256,
+                    "execution_binding_sha256": observation.stagingReceipt.executionBindingSHA256,
+                    "clone_binding_sha256": observation.stagingReceipt.cloneBindingSHA256,
+                    "artifact_sha256": observation.stagingReceipt.artifactSHA256,
+                    "artifact_byte_length": observation.stagingReceipt.artifactByteLength,
+                    "scenario_id": prelude.scenarioID,
+                    "scenario_kind": prelude.scenarioKind,
+                    "network_device_count": 0,
+                    "wheel_vsock_port": wheelGuestVSOCKPortV1,
+                    "vm_start_succeeded": true,
+                    "vm_stop_succeeded": true,
+                    "guest_authentication_verified": observation.authentication.signatureVerified,
+                    "guest_staging_receipt_verified": observation.stagingReceipt.signatureVerified,
+                    "guest_staging_cleanup_succeeded": true,
+                    "guest_channel_terminated": true,
+                    "clone_cleanup_succeeded": true,
+                    "package_execution_enabled": false,
+                    "sync_back_enabled": false,
+                    "reason_codes": ["wheel_staged_and_destroyed_without_execution"],
+                    "exit_code": 0
+                ],
+                exitCode: 0
+            )
+        } catch {
+            var cloneCleanupSucceeded = pendingClone == nil
+            var reasons = [String(describing: error)]
+            if let clone = pendingClone {
+                do {
+                    try clone.cleanup()
+                    pendingClone = nil
+                    cloneCleanupSucceeded = true
+                } catch {
+                    reasons.append(String(describing: error))
+                }
+            }
+            emit(
+                fields: [
+                    "schema_version": "whoathere.macos_wheel_run_nonexecuting.v1",
+                    "helper_version": helperVersion,
+                    "status": "error",
+                    "execution_requested": true,
+                    "authority_id": options.authorityID,
+                    "authority_consumed": consumedAuthority != nil
+                        || authorityReplayStatePersisted,
+                    "authority_replay_state_persisted": authorityReplayStatePersisted,
                     "transport_verified": false,
                     "clone_cleanup_succeeded": cloneCleanupSucceeded,
                     "package_execution_enabled": false,

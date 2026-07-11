@@ -111,3 +111,35 @@ public func runNonExecutingWheelGuestSession(
         packageExecutionEnabled: false
     )
 }
+
+public func runNonExecutingWheelGuestSession(
+    descriptor: Int32,
+    reader: WheelRunSubmissionReader,
+    authority: ConsumedWheelRunAuthority,
+    base: LockedWheelRunBase,
+    clone: DisposableWheelRunClone,
+    timeoutMillis: Int32 = 10_000
+) throws -> WheelGuestNonExecutingSessionObservation {
+    let prelude = reader.prelude
+    guard authority.replayStatePersisted,
+          authority.challengeBindingSHA256 == prelude.challengeBindingSHA256,
+          authority.runSpecSHA256 == prelude.runSpecSHA256,
+          authority.artifactSHA256 == prelude.artifactSHA256,
+          base.identity == prelude.backendIdentity else {
+        throw WheelGuestAuthenticationError.invalidChallenge
+    }
+    let cloneBinding = wheelCloneBindingSHA256(
+        baseGenerationID: base.identity.baseGenerationID,
+        runID: clone.runID,
+        diskSHA256: clone.diskSHA256,
+        auxiliaryStorageSHA256: clone.auxiliaryStorageSHA256
+    )
+    return try runNonExecutingWheelGuestSession(
+        descriptor: descriptor,
+        reader: reader,
+        expectedChallengeBindingSHA256: authority.challengeBindingSHA256,
+        cloneBindingSHA256: cloneBinding,
+        guestAuthPublicKey: base.guestAuthPublicKeyData,
+        timeoutMillis: timeoutMillis
+    )
+}
