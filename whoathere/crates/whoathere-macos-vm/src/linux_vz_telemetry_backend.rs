@@ -69,6 +69,7 @@ pub struct UnqualifiedMacosLinuxVzTelemetryBackendIdentityV1 {
     host_helper_sha256: Sha256Digest,
     host_packet_sensor_sha256: Sha256Digest,
     host_packet_sensor_configuration_sha256: Sha256Digest,
+    host_evidence_public_key_sha256: Sha256Digest,
     telemetry_requirements_sha256: Sha256Digest,
     package_uid: String,
     package_gid: String,
@@ -93,6 +94,7 @@ impl UnqualifiedMacosLinuxVzTelemetryBackendIdentityV1 {
         host_helper_sha256: Sha256Digest,
         host_packet_sensor_sha256: Sha256Digest,
         host_packet_sensor_configuration_sha256: Sha256Digest,
+        host_evidence_public_key_sha256: Sha256Digest,
         telemetry_requirements: &ArtifactProtectedTelemetryRequirementsV1,
         package_uid: u32,
         package_gid: u32,
@@ -116,6 +118,7 @@ impl UnqualifiedMacosLinuxVzTelemetryBackendIdentityV1 {
             host_helper_sha256,
             host_packet_sensor_sha256,
             host_packet_sensor_configuration_sha256,
+            host_evidence_public_key_sha256,
             telemetry_requirements_sha256: telemetry_requirements
                 .requirements_sha256_v1()
                 .map_err(|_| MacosLinuxVzTelemetryBackendErrorV1::RequirementsMismatch)?,
@@ -154,8 +157,20 @@ impl UnqualifiedMacosLinuxVzTelemetryBackendIdentityV1 {
         &self.root_disk_sha256
     }
 
+    pub fn guest_runner_sha256(&self) -> &Sha256Digest {
+        &self.guest_runner_sha256
+    }
+
     pub fn telemetry_requirements_sha256(&self) -> &Sha256Digest {
         &self.telemetry_requirements_sha256
+    }
+
+    pub fn guest_evidence_public_key_sha256(&self) -> &Sha256Digest {
+        &self.guest_evidence_public_key_sha256
+    }
+
+    pub fn host_evidence_public_key_sha256(&self) -> &Sha256Digest {
+        &self.host_evidence_public_key_sha256
     }
 
     pub fn package_uid(&self) -> u32 {

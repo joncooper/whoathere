@@ -20,12 +20,67 @@ pub const MAX_MACOS_LINUX_VZ_TELEMETRY_CONFORMANCE_RUN_SPEC_BYTES_V1: usize = 25
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LinuxVzTelemetryConformanceFixtureV1 {
+    PlatformCapabilities,
     ProcessLineage,
     FileCanary,
     NetworkIntent,
     DropAccounting,
     TeardownStress,
     SensorTamper,
+    PackageIsolation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LinuxVzTelemetryConformanceCaseV1 {
+    KernelConfigAndBtf,
+    CgroupV2,
+    FanotifyPermission,
+    BpfProgramTypes,
+    RawFrameAttachment,
+    ForkExecExit,
+    Reparenting,
+    DoubleForkDaemonization,
+    SetsidEscape,
+    CredentialChange,
+    DynamicLibraryLoad,
+    ProtectedOpenReadWriteRenameDelete,
+    MmapAccess,
+    Ipv4Connect,
+    Ipv6Connect,
+    UdpSend,
+    LoopbackConnect,
+    PrivateAddressConnect,
+    LinkLocalConnect,
+    MetadataAddressConnect,
+    PublicAddressConnect,
+    DnsPlaintext,
+    DnsMalformed,
+    EncryptedDnsConnect,
+    BpfReservationFailure,
+    FanotifyQueueOverflow,
+    HostFrameOverflow,
+    NormalExit,
+    Timeout,
+    TermResistance,
+    EscapedSession,
+    ReparentedChild,
+    BackgroundListener,
+    ChannelInterruption,
+    VmStop,
+    GuestSensorDeath,
+    HostSensorDeath,
+    AllProtectedAssetsDenied,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LinuxVzTelemetryConformanceExpectedTerminalV1 {
+    ObservationComplete,
+    IncompleteOnInjectedGap,
+    TimeoutWithTeardown,
+    InfrastructureErrorWithTeardown,
+    AccessDeniedWithCompleteEvidence,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,7 +135,9 @@ struct LinuxVzTelemetryConformanceRunSpecWireV1 {
     conformance_run_id: String,
     evidence_id: String,
     fixture: LinuxVzTelemetryConformanceFixtureV1,
+    fixture_case: LinuxVzTelemetryConformanceCaseV1,
     fixture_binary_sha256: Sha256Digest,
+    expected_terminal: LinuxVzTelemetryConformanceExpectedTerminalV1,
     expected_sensors: Vec<ArtifactProtectedTelemetrySensorV1>,
     telemetry_requirements: serde_json::Value,
     telemetry_requirements_sha256: Sha256Digest,
@@ -103,7 +160,9 @@ pub struct MacosLinuxVzTelemetryConformanceRunSpecV1 {
     conformance_run_id: String,
     evidence_id: String,
     fixture: LinuxVzTelemetryConformanceFixtureV1,
+    fixture_case: LinuxVzTelemetryConformanceCaseV1,
     fixture_binary_sha256: Sha256Digest,
+    expected_terminal: LinuxVzTelemetryConformanceExpectedTerminalV1,
     expected_sensors: Vec<ArtifactProtectedTelemetrySensorV1>,
     telemetry_requirements_sha256: Sha256Digest,
     backend_identity_sha256: Sha256Digest,
@@ -117,7 +176,9 @@ impl fmt::Debug for MacosLinuxVzTelemetryConformanceRunSpecV1 {
             .field("conformance_run_id", &self.conformance_run_id)
             .field("evidence_id", &self.evidence_id)
             .field("fixture", &self.fixture)
+            .field("fixture_case", &self.fixture_case)
             .field("fixture_binary_sha256", &self.fixture_binary_sha256)
+            .field("expected_terminal", &self.expected_terminal)
             .field("expected_sensors", &self.expected_sensors)
             .field(
                 "telemetry_requirements_sha256",
@@ -150,8 +211,16 @@ impl MacosLinuxVzTelemetryConformanceRunSpecV1 {
         self.fixture
     }
 
+    pub fn fixture_case(&self) -> LinuxVzTelemetryConformanceCaseV1 {
+        self.fixture_case
+    }
+
     pub fn fixture_binary_sha256(&self) -> &Sha256Digest {
         &self.fixture_binary_sha256
+    }
+
+    pub fn expected_terminal(&self) -> LinuxVzTelemetryConformanceExpectedTerminalV1 {
+        self.expected_terminal
     }
 
     pub fn expected_sensors(&self) -> &[ArtifactProtectedTelemetrySensorV1] {
@@ -217,8 +286,7 @@ impl std::error::Error for MacosLinuxVzTelemetryConformanceRunSpecErrorV1 {}
 pub fn compile_macos_linux_vz_telemetry_conformance_run_spec_v1(
     conformance_run_id: impl Into<String>,
     evidence_id: impl Into<String>,
-    fixture: LinuxVzTelemetryConformanceFixtureV1,
-    fixture_binary_sha256: Sha256Digest,
+    fixture_case: LinuxVzTelemetryConformanceCaseV1,
     telemetry_requirements: &ArtifactProtectedTelemetryRequirementsV1,
     backend_identity: &UnqualifiedMacosLinuxVzTelemetryBackendIdentityV1,
 ) -> Result<MacosLinuxVzTelemetryConformanceRunSpecV1, MacosLinuxVzTelemetryConformanceRunSpecErrorV1>
@@ -243,13 +311,16 @@ pub fn compile_macos_linux_vz_telemetry_conformance_run_spec_v1(
         .canonical_json_v1()
         .map_err(MacosLinuxVzTelemetryConformanceRunSpecErrorV1::Backend)?;
     let backend_identity_sha256 = Sha256Digest::from_bytes(&backend_bytes);
+    let fixture = fixture_for_case_v1(fixture_case);
     let wire = LinuxVzTelemetryConformanceRunSpecWireV1 {
         schema_version: MACOS_LINUX_VZ_TELEMETRY_CONFORMANCE_RUN_SPEC_SCHEMA_V1.to_string(),
         canonicalization: "rfc8785.jcs.v1".to_string(),
         conformance_run_id,
         evidence_id,
         fixture,
-        fixture_binary_sha256,
+        fixture_case,
+        fixture_binary_sha256: backend_identity.guest_runner_sha256().clone(),
+        expected_terminal: expected_terminal_for_case_v1(fixture_case),
         expected_sensors: expected_fixture_sensors_v1(fixture),
         telemetry_requirements: serde_json::from_slice(&requirements_bytes)
             .map_err(|_| MacosLinuxVzTelemetryConformanceRunSpecErrorV1::Serialization)?,
@@ -320,7 +391,10 @@ fn validate_and_build_run_spec_v1(
     {
         return Err(MacosLinuxVzTelemetryConformanceRunSpecErrorV1::InvalidIdentity);
     }
-    if wire.expected_sensors != expected_fixture_sensors_v1(wire.fixture) {
+    if wire.fixture != fixture_for_case_v1(wire.fixture_case)
+        || wire.expected_terminal != expected_terminal_for_case_v1(wire.fixture_case)
+        || wire.expected_sensors != expected_fixture_sensors_v1(wire.fixture)
+    {
         return Err(MacosLinuxVzTelemetryConformanceRunSpecErrorV1::InvalidFixture);
     }
     let requirements_bytes = serde_json_canonicalizer::to_vec(&wire.telemetry_requirements)
@@ -341,7 +415,10 @@ fn validate_and_build_run_spec_v1(
     )
     .map_err(MacosLinuxVzTelemetryConformanceRunSpecErrorV1::Backend)?;
     let backend_sha256 = Sha256Digest::from_bytes(&backend_bytes);
-    if wire.backend_identity_sha256 != backend_sha256 || backend.execution_authority_permitted() {
+    if wire.backend_identity_sha256 != backend_sha256
+        || wire.fixture_binary_sha256 != *backend.guest_runner_sha256()
+        || backend.execution_authority_permitted()
+    {
         return Err(MacosLinuxVzTelemetryConformanceRunSpecErrorV1::RequirementsMismatch);
     }
     let canonical_json = serde_json_canonicalizer::to_vec(&wire)
@@ -355,11 +432,130 @@ fn validate_and_build_run_spec_v1(
         conformance_run_id: wire.conformance_run_id,
         evidence_id: wire.evidence_id,
         fixture: wire.fixture,
+        fixture_case: wire.fixture_case,
         fixture_binary_sha256: wire.fixture_binary_sha256,
+        expected_terminal: wire.expected_terminal,
         expected_sensors: wire.expected_sensors,
         telemetry_requirements_sha256: wire.telemetry_requirements_sha256,
         backend_identity_sha256: wire.backend_identity_sha256,
     })
+}
+
+pub const ALL_LINUX_VZ_TELEMETRY_CONFORMANCE_CASES_V1: [LinuxVzTelemetryConformanceCaseV1; 38] = [
+    LinuxVzTelemetryConformanceCaseV1::KernelConfigAndBtf,
+    LinuxVzTelemetryConformanceCaseV1::CgroupV2,
+    LinuxVzTelemetryConformanceCaseV1::FanotifyPermission,
+    LinuxVzTelemetryConformanceCaseV1::BpfProgramTypes,
+    LinuxVzTelemetryConformanceCaseV1::RawFrameAttachment,
+    LinuxVzTelemetryConformanceCaseV1::ForkExecExit,
+    LinuxVzTelemetryConformanceCaseV1::Reparenting,
+    LinuxVzTelemetryConformanceCaseV1::DoubleForkDaemonization,
+    LinuxVzTelemetryConformanceCaseV1::SetsidEscape,
+    LinuxVzTelemetryConformanceCaseV1::CredentialChange,
+    LinuxVzTelemetryConformanceCaseV1::DynamicLibraryLoad,
+    LinuxVzTelemetryConformanceCaseV1::ProtectedOpenReadWriteRenameDelete,
+    LinuxVzTelemetryConformanceCaseV1::MmapAccess,
+    LinuxVzTelemetryConformanceCaseV1::Ipv4Connect,
+    LinuxVzTelemetryConformanceCaseV1::Ipv6Connect,
+    LinuxVzTelemetryConformanceCaseV1::UdpSend,
+    LinuxVzTelemetryConformanceCaseV1::LoopbackConnect,
+    LinuxVzTelemetryConformanceCaseV1::PrivateAddressConnect,
+    LinuxVzTelemetryConformanceCaseV1::LinkLocalConnect,
+    LinuxVzTelemetryConformanceCaseV1::MetadataAddressConnect,
+    LinuxVzTelemetryConformanceCaseV1::PublicAddressConnect,
+    LinuxVzTelemetryConformanceCaseV1::DnsPlaintext,
+    LinuxVzTelemetryConformanceCaseV1::DnsMalformed,
+    LinuxVzTelemetryConformanceCaseV1::EncryptedDnsConnect,
+    LinuxVzTelemetryConformanceCaseV1::BpfReservationFailure,
+    LinuxVzTelemetryConformanceCaseV1::FanotifyQueueOverflow,
+    LinuxVzTelemetryConformanceCaseV1::HostFrameOverflow,
+    LinuxVzTelemetryConformanceCaseV1::NormalExit,
+    LinuxVzTelemetryConformanceCaseV1::Timeout,
+    LinuxVzTelemetryConformanceCaseV1::TermResistance,
+    LinuxVzTelemetryConformanceCaseV1::EscapedSession,
+    LinuxVzTelemetryConformanceCaseV1::ReparentedChild,
+    LinuxVzTelemetryConformanceCaseV1::BackgroundListener,
+    LinuxVzTelemetryConformanceCaseV1::ChannelInterruption,
+    LinuxVzTelemetryConformanceCaseV1::VmStop,
+    LinuxVzTelemetryConformanceCaseV1::GuestSensorDeath,
+    LinuxVzTelemetryConformanceCaseV1::HostSensorDeath,
+    LinuxVzTelemetryConformanceCaseV1::AllProtectedAssetsDenied,
+];
+
+pub const fn fixture_for_case_v1(
+    fixture_case: LinuxVzTelemetryConformanceCaseV1,
+) -> LinuxVzTelemetryConformanceFixtureV1 {
+    use LinuxVzTelemetryConformanceCaseV1 as Case;
+    match fixture_case {
+        Case::KernelConfigAndBtf
+        | Case::CgroupV2
+        | Case::FanotifyPermission
+        | Case::BpfProgramTypes
+        | Case::RawFrameAttachment => LinuxVzTelemetryConformanceFixtureV1::PlatformCapabilities,
+        Case::ForkExecExit
+        | Case::Reparenting
+        | Case::DoubleForkDaemonization
+        | Case::SetsidEscape
+        | Case::CredentialChange
+        | Case::DynamicLibraryLoad => LinuxVzTelemetryConformanceFixtureV1::ProcessLineage,
+        Case::ProtectedOpenReadWriteRenameDelete | Case::MmapAccess => {
+            LinuxVzTelemetryConformanceFixtureV1::FileCanary
+        }
+        Case::Ipv4Connect
+        | Case::Ipv6Connect
+        | Case::UdpSend
+        | Case::LoopbackConnect
+        | Case::PrivateAddressConnect
+        | Case::LinkLocalConnect
+        | Case::MetadataAddressConnect
+        | Case::PublicAddressConnect
+        | Case::DnsPlaintext
+        | Case::DnsMalformed
+        | Case::EncryptedDnsConnect => LinuxVzTelemetryConformanceFixtureV1::NetworkIntent,
+        Case::BpfReservationFailure | Case::FanotifyQueueOverflow | Case::HostFrameOverflow => {
+            LinuxVzTelemetryConformanceFixtureV1::DropAccounting
+        }
+        Case::NormalExit
+        | Case::Timeout
+        | Case::TermResistance
+        | Case::EscapedSession
+        | Case::ReparentedChild
+        | Case::BackgroundListener
+        | Case::ChannelInterruption
+        | Case::VmStop => LinuxVzTelemetryConformanceFixtureV1::TeardownStress,
+        Case::GuestSensorDeath | Case::HostSensorDeath => {
+            LinuxVzTelemetryConformanceFixtureV1::SensorTamper
+        }
+        Case::AllProtectedAssetsDenied => LinuxVzTelemetryConformanceFixtureV1::PackageIsolation,
+    }
+}
+
+pub const fn expected_terminal_for_case_v1(
+    fixture_case: LinuxVzTelemetryConformanceCaseV1,
+) -> LinuxVzTelemetryConformanceExpectedTerminalV1 {
+    use LinuxVzTelemetryConformanceCaseV1 as Case;
+    match fixture_case {
+        Case::BpfReservationFailure | Case::FanotifyQueueOverflow | Case::HostFrameOverflow => {
+            LinuxVzTelemetryConformanceExpectedTerminalV1::IncompleteOnInjectedGap
+        }
+        Case::Timeout
+        | Case::TermResistance
+        | Case::EscapedSession
+        | Case::ReparentedChild
+        | Case::BackgroundListener => {
+            LinuxVzTelemetryConformanceExpectedTerminalV1::TimeoutWithTeardown
+        }
+        Case::ChannelInterruption
+        | Case::VmStop
+        | Case::GuestSensorDeath
+        | Case::HostSensorDeath => {
+            LinuxVzTelemetryConformanceExpectedTerminalV1::InfrastructureErrorWithTeardown
+        }
+        Case::AllProtectedAssetsDenied => {
+            LinuxVzTelemetryConformanceExpectedTerminalV1::AccessDeniedWithCompleteEvidence
+        }
+        _ => LinuxVzTelemetryConformanceExpectedTerminalV1::ObservationComplete,
+    }
 }
 
 fn expected_fixture_sensors_v1(
@@ -367,6 +563,11 @@ fn expected_fixture_sensors_v1(
 ) -> Vec<ArtifactProtectedTelemetrySensorV1> {
     use ArtifactProtectedTelemetrySensorV1 as Sensor;
     match fixture {
+        LinuxVzTelemetryConformanceFixtureV1::PlatformCapabilities => vec![
+            Sensor::SensorHealthHeartbeat,
+            Sensor::DroppedEventAccounting,
+            Sensor::VmCloneLifecycle,
+        ],
         LinuxVzTelemetryConformanceFixtureV1::ProcessLineage => vec![
             Sensor::ProcessForkExecExit,
             Sensor::ProcessCredentials,
@@ -404,6 +605,14 @@ fn expected_fixture_sensors_v1(
             Sensor::VmCloneLifecycle,
         ],
         LinuxVzTelemetryConformanceFixtureV1::SensorTamper => vec![
+            Sensor::ProcessCredentials,
+            Sensor::FileOpenReadWrite,
+            Sensor::HostRawFrames,
+            Sensor::SensorHealthHeartbeat,
+            Sensor::DroppedEventAccounting,
+            Sensor::VmCloneLifecycle,
+        ],
+        LinuxVzTelemetryConformanceFixtureV1::PackageIsolation => vec![
             Sensor::ProcessCredentials,
             Sensor::FileOpenReadWrite,
             Sensor::SensorHealthHeartbeat,

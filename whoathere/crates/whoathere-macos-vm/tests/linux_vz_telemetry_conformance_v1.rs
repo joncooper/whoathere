@@ -5,8 +5,9 @@ use whoathere_detonation::{
 use whoathere_macos_vm::{
     compile_macos_linux_vz_telemetry_conformance_run_spec_v1,
     decode_and_validate_macos_linux_vz_telemetry_conformance_run_spec_v1,
-    LinuxVzTelemetryConformanceFixtureV1, MacosLinuxVzTelemetryConformanceRunSpecErrorV1,
-    UnqualifiedMacosLinuxVzTelemetryBackendIdentityV1,
+    expected_terminal_for_case_v1, fixture_for_case_v1, LinuxVzTelemetryConformanceCaseV1,
+    MacosLinuxVzTelemetryConformanceRunSpecErrorV1,
+    UnqualifiedMacosLinuxVzTelemetryBackendIdentityV1, ALL_LINUX_VZ_TELEMETRY_CONFORMANCE_CASES_V1,
 };
 
 fn digest(label: &[u8]) -> Sha256Digest {
@@ -33,6 +34,7 @@ fn backend(
         digest(b"inert host helper"),
         digest(b"inert host packet sensor"),
         digest(b"inert host packet configuration"),
+        digest(b"inert host evidence public key"),
         requirements,
         499,
         499,
@@ -41,29 +43,29 @@ fn backend(
 }
 
 #[test]
-fn every_inert_conformance_fixture_is_exact_bound_and_package_execution_disabled() {
+fn every_inert_conformance_case_is_exact_bound_and_package_execution_disabled() {
     let requirements = ArtifactProtectedTelemetryRequirementsV1::linux_vz_bulk_v1();
     let backend = backend(&requirements);
-    let fixtures = [
-        LinuxVzTelemetryConformanceFixtureV1::ProcessLineage,
-        LinuxVzTelemetryConformanceFixtureV1::FileCanary,
-        LinuxVzTelemetryConformanceFixtureV1::NetworkIntent,
-        LinuxVzTelemetryConformanceFixtureV1::DropAccounting,
-        LinuxVzTelemetryConformanceFixtureV1::TeardownStress,
-        LinuxVzTelemetryConformanceFixtureV1::SensorTamper,
-    ];
     let mut digests = Vec::new();
-    for (index, fixture) in fixtures.into_iter().enumerate() {
+    for (index, fixture_case) in ALL_LINUX_VZ_TELEMETRY_CONFORMANCE_CASES_V1
+        .into_iter()
+        .enumerate()
+    {
         let spec = compile_macos_linux_vz_telemetry_conformance_run_spec_v1(
             format!("linux-vz-conformance-run-{index}"),
             format!("linux-vz-conformance-evidence-{index}"),
-            fixture,
-            digest(format!("inert fixture binary {index}").as_bytes()),
+            fixture_case,
             &requirements,
             &backend,
         )
         .expect("compile conformance spec");
-        assert_eq!(spec.fixture(), fixture);
+        assert_eq!(spec.fixture(), fixture_for_case_v1(fixture_case));
+        assert_eq!(spec.fixture_case(), fixture_case);
+        assert_eq!(
+            spec.expected_terminal(),
+            expected_terminal_for_case_v1(fixture_case)
+        );
+        assert_eq!(spec.fixture_binary_sha256(), backend.guest_runner_sha256());
         assert!(!spec.package_execution_authority_permitted());
         assert!(!spec.expected_sensors().is_empty());
         assert!(spec
@@ -87,7 +89,10 @@ fn every_inert_conformance_fixture_is_exact_bound_and_package_execution_disabled
     }
     digests.sort();
     digests.dedup();
-    assert_eq!(digests.len(), fixtures.len());
+    assert_eq!(
+        digests.len(),
+        ALL_LINUX_VZ_TELEMETRY_CONFORMANCE_CASES_V1.len()
+    );
 }
 
 #[test]
@@ -97,8 +102,7 @@ fn conformance_run_spec_matches_independent_swift_golden() {
     let spec = compile_macos_linux_vz_telemetry_conformance_run_spec_v1(
         "linux-vz-conformance-run-golden",
         "linux-vz-conformance-evidence-golden",
-        LinuxVzTelemetryConformanceFixtureV1::NetworkIntent,
-        digest(b"inert golden conformance fixture"),
+        LinuxVzTelemetryConformanceCaseV1::DnsPlaintext,
         &requirements,
         &backend,
     )
@@ -106,7 +110,7 @@ fn conformance_run_spec_matches_independent_swift_golden() {
 
     assert_eq!(
         spec.run_spec_sha256().as_str(),
-        "sha256:325a67c4e1690f2b04b6735d5f4463beb248ce68e15868e0337d4b0443ddd671"
+        "sha256:4fd12743b8a404e68e171058b13c4ae797d35548cad068fc6a08fd23c410bf4b"
     );
 }
 
@@ -117,8 +121,7 @@ fn conformance_run_spec_rejects_sensor_gaps_backend_rebinding_unknowns_and_cross
     let spec = compile_macos_linux_vz_telemetry_conformance_run_spec_v1(
         "linux-vz-conformance-run-adversarial",
         "linux-vz-conformance-evidence-adversarial",
-        LinuxVzTelemetryConformanceFixtureV1::NetworkIntent,
-        digest(b"inert adversarial fixture binary"),
+        LinuxVzTelemetryConformanceCaseV1::Ipv4Connect,
         &requirements,
         &backend,
     )
@@ -135,6 +138,26 @@ fn conformance_run_spec_rejects_sensor_gaps_backend_rebinding_unknowns_and_cross
     assert_eq!(
         decode_and_validate_macos_linux_vz_telemetry_conformance_run_spec_v1(&missing),
         Err(MacosLinuxVzTelemetryConformanceRunSpecErrorV1::InvalidFixture)
+    );
+
+    let mut relabeled: serde_json::Value =
+        serde_json::from_slice(bytes).expect("relabeled case value");
+    relabeled["fixture_case"] = serde_json::json!("mmap_access");
+    let relabeled = serde_json_canonicalizer::to_vec(&relabeled).expect("relabeled case wire");
+    assert_eq!(
+        decode_and_validate_macos_linux_vz_telemetry_conformance_run_spec_v1(&relabeled),
+        Err(MacosLinuxVzTelemetryConformanceRunSpecErrorV1::InvalidFixture)
+    );
+
+    let mut substituted: serde_json::Value =
+        serde_json::from_slice(bytes).expect("substituted runner value");
+    substituted["fixture_binary_sha256"] =
+        serde_json::json!(digest(b"unmeasured fixture binary").as_str());
+    let substituted =
+        serde_json_canonicalizer::to_vec(&substituted).expect("substituted runner wire");
+    assert_eq!(
+        decode_and_validate_macos_linux_vz_telemetry_conformance_run_spec_v1(&substituted),
+        Err(MacosLinuxVzTelemetryConformanceRunSpecErrorV1::RequirementsMismatch)
     );
 
     let mut rebound: serde_json::Value =

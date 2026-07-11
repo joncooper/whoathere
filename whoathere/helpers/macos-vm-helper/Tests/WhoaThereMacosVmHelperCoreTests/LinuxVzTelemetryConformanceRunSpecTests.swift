@@ -8,11 +8,38 @@ import Testing
     let spec = try decodeLinuxVzTelemetryConformanceRunSpec(data)
     #expect(
         spec.runSpecSHA256
-            == "sha256:325a67c4e1690f2b04b6735d5f4463beb248ce68e15868e0337d4b0443ddd671"
+            == "sha256:4fd12743b8a404e68e171058b13c4ae797d35548cad068fc6a08fd23c410bf4b"
     )
     #expect(spec.fixture == "network_intent")
+    #expect(spec.fixtureCase == "dns_plaintext")
+    #expect(spec.expectedTerminal == "observation_complete")
     #expect(spec.expectedSensors.count == 7)
     #expect(!spec.packageExecutionAuthorityPermitted)
+}
+
+@Test func linuxVzConformanceRunSpecAcceptsEveryClosedCaseExactly() throws {
+    let base = try linuxVzConformanceFixture()
+    let cases = linuxVzAllTelemetryConformanceCasesV1()
+    #expect(cases.count == 38)
+    #expect(Set(cases).count == cases.count)
+    for fixtureCase in cases {
+        let fixture = try #require(linuxVzConformanceFixture(fixtureCase))
+        let expectedTerminal = try #require(
+            linuxVzConformanceExpectedTerminal(fixtureCase)
+        )
+        let expectedSensors = try #require(linuxVzConformanceExpectedSensors(fixture))
+        var value = base
+        value["fixture_case"] = fixtureCase
+        value["fixture"] = fixture
+        value["expected_terminal"] = expectedTerminal
+        value["expected_sensors"] = expectedSensors
+        let decoded = try decodeLinuxVzTelemetryConformanceRunSpec(
+            try canonicalJSONData(value)
+        )
+        #expect(decoded.fixtureCase == fixtureCase)
+        #expect(decoded.expectedTerminal == expectedTerminal)
+        #expect(!decoded.packageExecutionAuthorityPermitted)
+    }
 }
 
 @Test func linuxVzConformanceRunSpecRejectsSensorGapsExecutionAndRebinding() throws {
@@ -30,6 +57,18 @@ import Testing
     executing["package_execution"] = "enabled"
     #expect(throws: LinuxVzTelemetryConformanceRunSpecError.invalidSchema) {
         try decodeLinuxVzTelemetryConformanceRunSpec(try canonicalJSONData(executing))
+    }
+
+    var relabeled = fixture
+    relabeled["fixture_case"] = "mmap_access"
+    #expect(throws: LinuxVzTelemetryConformanceRunSpecError.invalidSchema) {
+        try decodeLinuxVzTelemetryConformanceRunSpec(try canonicalJSONData(relabeled))
+    }
+
+    var substituted = fixture
+    substituted["fixture_binary_sha256"] = sha256(Data("unmeasured fixture binary".utf8))
+    #expect(throws: LinuxVzTelemetryConformanceRunSpecError.requirementsMismatch) {
+        try decodeLinuxVzTelemetryConformanceRunSpec(try canonicalJSONData(substituted))
     }
 
     var unknown = fixture
@@ -68,13 +107,16 @@ private func linuxVzConformanceFixture() throws -> [String: Any] {
         requirementsSHA256: requirementsSHA256
     )
     let backendData = try canonicalJSONData(backend)
+    let fixtureBinarySHA256 = try #require(backend["guest_runner_sha256"] as? String)
     return [
         "schema_version": linuxVzTelemetryConformanceRunSpecSchemaV1,
         "canonicalization": "rfc8785.jcs.v1",
         "conformance_run_id": "linux-vz-conformance-run-golden",
         "evidence_id": "linux-vz-conformance-evidence-golden",
         "fixture": "network_intent",
-        "fixture_binary_sha256": sha256(Data("inert golden conformance fixture".utf8)),
+        "fixture_case": "dns_plaintext",
+        "fixture_binary_sha256": fixtureBinarySHA256,
+        "expected_terminal": "observation_complete",
         "expected_sensors": [
             "guest_network_intent", "host_raw_frames", "dns_sinkhole", "http_sinkhole",
             "process_listener_diff", "sensor_health_heartbeat", "dropped_event_accounting"
@@ -147,6 +189,9 @@ private func linuxVzConformanceBackendFixture(
         "host_packet_sensor_sha256": sha256(Data("inert host packet sensor".utf8)),
         "host_packet_sensor_configuration_sha256": sha256(
             Data("inert host packet configuration".utf8)
+        ),
+        "host_evidence_public_key_sha256": sha256(
+            Data("inert host evidence public key".utf8)
         ),
         "telemetry_requirements_sha256": requirementsSHA256,
         "package_uid": "499",

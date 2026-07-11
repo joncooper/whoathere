@@ -18,7 +18,7 @@ Canonical references:
 - base generation, Linux distribution, and kernel release identifiers;
 - kernel image, initramfs, root disk, kernel configuration, and BTF digests;
 - root-owned guest runner, sensor, BPF bundle, and sensor-configuration digests;
-- guest evidence public-key digest;
+- guest and host evidence public-key digests;
 - macOS host helper, packet sensor, and packet-sensor configuration digests;
 - protected-telemetry requirements digest; and
 - dedicated package UID and GID.

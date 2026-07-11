@@ -13,7 +13,7 @@ private let linuxVzRequirementsSHA256 =
     )
     #expect(
         identity.identitySHA256
-            == "sha256:45c12920320ff882bf39fa45a9a746d51d635973843d05817939df0afdf3fdc6"
+            == "sha256:216bab68b7bb40cbcc999112f7f4d823cdeb4ffc05990c4f73e6b36977e438b1"
     )
     #expect(identity.baseGenerationID == "linux-vz-base-generation-inert-v1")
     #expect(identity.linuxDistributionID == "whoathere-linux-inert-v1")
@@ -87,6 +87,9 @@ private func linuxVzIdentityFixture() -> [String: Any] {
         "host_packet_sensor_sha256": sha256(Data("inert host packet sensor".utf8)),
         "host_packet_sensor_configuration_sha256": sha256(
             Data("inert host packet configuration".utf8)
+        ),
+        "host_evidence_public_key_sha256": sha256(
+            Data("inert host evidence public key".utf8)
         ),
         "telemetry_requirements_sha256": linuxVzRequirementsSHA256,
         "package_uid": "499",

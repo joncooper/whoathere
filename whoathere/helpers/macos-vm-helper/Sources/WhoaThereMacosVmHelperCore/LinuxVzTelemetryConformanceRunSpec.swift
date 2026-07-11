@@ -37,7 +37,9 @@ public struct LinuxVzTelemetryConformanceRunSpec: Equatable, Sendable {
     public let conformanceRunID: String
     public let evidenceID: String
     public let fixture: String
+    public let fixtureCase: String
     public let fixtureBinarySHA256: String
+    public let expectedTerminal: String
     public let expectedSensors: [String]
     public let telemetryRequirementsSHA256: String
     public let backendIdentitySHA256: String
@@ -60,7 +62,8 @@ public func decodeLinuxVzTelemetryConformanceRunSpec(
     }
     guard Set(value.keys) == Set([
         "schema_version", "canonicalization", "conformance_run_id", "evidence_id",
-        "fixture", "fixture_binary_sha256", "expected_sensors", "telemetry_requirements",
+        "fixture", "fixture_case", "fixture_binary_sha256", "expected_terminal",
+        "expected_sensors", "telemetry_requirements",
         "telemetry_requirements_sha256", "backend_identity", "backend_identity_sha256",
         "execution_posture", "package_execution", "network_topology", "external_network",
         "clone_policy", "sync_back_policy", "limits", "guest_protocol"
@@ -83,6 +86,10 @@ public func decodeLinuxVzTelemetryConformanceRunSpec(
           linuxVzConformanceValidIdentity(runID),
           linuxVzConformanceValidIdentity(evidenceID),
           let fixture = value["fixture"] as? String,
+          let fixtureCase = value["fixture_case"] as? String,
+          fixture == linuxVzConformanceFixture(fixtureCase),
+          let expectedTerminal = value["expected_terminal"] as? String,
+          expectedTerminal == linuxVzConformanceExpectedTerminal(fixtureCase),
           let expectedSensors = value["expected_sensors"] as? [String],
           expectedSensors == linuxVzConformanceExpectedSensors(fixture),
           let fixtureDigest = value["fixture_binary_sha256"] as? String,
@@ -126,21 +133,107 @@ public func decodeLinuxVzTelemetryConformanceRunSpec(
     guard backend.identitySHA256 == backendDigest, !backend.executionAuthorityPermitted else {
         throw LinuxVzTelemetryConformanceRunSpecError.requirementsMismatch
     }
+    guard fixtureDigest == backend.guestRunnerSHA256 else {
+        throw LinuxVzTelemetryConformanceRunSpecError.requirementsMismatch
+    }
     return LinuxVzTelemetryConformanceRunSpec(
         canonicalJSON: data,
         runSpecSHA256: sha256(data),
         conformanceRunID: runID,
         evidenceID: evidenceID,
         fixture: fixture,
+        fixtureCase: fixtureCase,
         fixtureBinarySHA256: fixtureDigest,
+        expectedTerminal: expectedTerminal,
         expectedSensors: expectedSensors,
         telemetryRequirementsSHA256: requirementsDigest,
         backendIdentitySHA256: backendDigest
     )
 }
 
-private func linuxVzConformanceExpectedSensors(_ fixture: String) -> [String]? {
+func linuxVzAllTelemetryConformanceCasesV1() -> [String] {
+    [
+        "kernel_config_and_btf", "cgroup_v2", "fanotify_permission",
+        "bpf_program_types", "raw_frame_attachment", "fork_exec_exit", "reparenting",
+        "double_fork_daemonization", "setsid_escape", "credential_change",
+        "dynamic_library_load", "protected_open_read_write_rename_delete", "mmap_access",
+        "ipv4_connect", "ipv6_connect", "udp_send", "loopback_connect",
+        "private_address_connect", "link_local_connect", "metadata_address_connect",
+        "public_address_connect", "dns_plaintext", "dns_malformed", "encrypted_dns_connect",
+        "bpf_reservation_failure", "fanotify_queue_overflow", "host_frame_overflow",
+        "normal_exit", "timeout", "term_resistance", "escaped_session", "reparented_child",
+        "background_listener", "channel_interruption", "vm_stop", "guest_sensor_death",
+        "host_sensor_death", "all_protected_assets_denied"
+    ]
+}
+
+func linuxVzConformanceFixture(_ fixtureCase: String) -> String? {
+    let platform = Set([
+        "kernel_config_and_btf", "cgroup_v2", "fanotify_permission", "bpf_program_types",
+        "raw_frame_attachment"
+    ])
+    let process = Set([
+        "fork_exec_exit", "reparenting", "double_fork_daemonization", "setsid_escape",
+        "credential_change", "dynamic_library_load"
+    ])
+    let file = Set(["protected_open_read_write_rename_delete", "mmap_access"])
+    let network = Set([
+        "ipv4_connect", "ipv6_connect", "udp_send", "loopback_connect",
+        "private_address_connect", "link_local_connect", "metadata_address_connect",
+        "public_address_connect", "dns_plaintext", "dns_malformed", "encrypted_dns_connect"
+    ])
+    let drops = Set([
+        "bpf_reservation_failure", "fanotify_queue_overflow", "host_frame_overflow"
+    ])
+    let teardown = Set([
+        "normal_exit", "timeout", "term_resistance", "escaped_session", "reparented_child",
+        "background_listener", "channel_interruption", "vm_stop"
+    ])
+    if platform.contains(fixtureCase) { return "platform_capabilities" }
+    if process.contains(fixtureCase) { return "process_lineage" }
+    if file.contains(fixtureCase) { return "file_canary" }
+    if network.contains(fixtureCase) { return "network_intent" }
+    if drops.contains(fixtureCase) { return "drop_accounting" }
+    if teardown.contains(fixtureCase) { return "teardown_stress" }
+    if ["guest_sensor_death", "host_sensor_death"].contains(fixtureCase) {
+        return "sensor_tamper"
+    }
+    if fixtureCase == "all_protected_assets_denied" { return "package_isolation" }
+    return nil
+}
+
+func linuxVzConformanceExpectedTerminal(_ fixtureCase: String) -> String? {
+    if [
+        "bpf_reservation_failure", "fanotify_queue_overflow", "host_frame_overflow"
+    ].contains(fixtureCase) {
+        return "incomplete_on_injected_gap"
+    }
+    if [
+        "timeout", "term_resistance", "escaped_session", "reparented_child",
+        "background_listener"
+    ].contains(fixtureCase) {
+        return "timeout_with_teardown"
+    }
+    if [
+        "channel_interruption", "vm_stop", "guest_sensor_death", "host_sensor_death"
+    ].contains(fixtureCase) {
+        return "infrastructure_error_with_teardown"
+    }
+    if fixtureCase == "all_protected_assets_denied" {
+        return "access_denied_with_complete_evidence"
+    }
+    if linuxVzAllTelemetryConformanceCasesV1().contains(fixtureCase) {
+        return "observation_complete"
+    }
+    return nil
+}
+
+func linuxVzConformanceExpectedSensors(_ fixture: String) -> [String]? {
     switch fixture {
+    case "platform_capabilities":
+        return [
+            "sensor_health_heartbeat", "dropped_event_accounting", "vm_clone_lifecycle"
+        ]
     case "process_lineage":
         return [
             "process_fork_exec_exit", "process_credentials", "dynamic_library_load",
@@ -164,6 +257,11 @@ private func linuxVzConformanceExpectedSensors(_ fixture: String) -> [String]? {
             "sensor_health_heartbeat", "dropped_event_accounting", "vm_clone_lifecycle"
         ]
     case "sensor_tamper":
+        return [
+            "process_credentials", "file_open_read_write", "host_raw_frames",
+            "sensor_health_heartbeat", "dropped_event_accounting", "vm_clone_lifecycle"
+        ]
+    case "package_isolation":
         return [
             "process_credentials", "file_open_read_write", "sensor_health_heartbeat",
             "dropped_event_accounting", "vm_clone_lifecycle"

@@ -19,7 +19,7 @@ for exercising one trusted inert telemetry fixture against one exact unqualified
 It nests and binds the full protected-telemetry requirements object and the full measured backend
 identity rather than accepting mutable readiness flags or ambient host configuration.
 
-The closed fixture set is:
+The closed fixture families are:
 
 | Fixture | Required observations |
 | --- | --- |
@@ -29,6 +29,27 @@ The closed fixture set is:
 | `drop_accounting` | sensor heartbeat and dropped-event accounting |
 | `teardown_stress` | lineage, listener diff, descendant teardown, heartbeat, drops, clone lifecycle |
 | `sensor_tamper` | credentials, protected file access, heartbeat, drops, clone lifecycle |
+| `platform_capabilities` | kernel/BTF, cgroup, fanotify, BPF, raw-frame attachment |
+| `package_isolation` | denial of access to every protected sensor and evidence asset |
+
+The families expand to a closed 38-case matrix. It covers:
+
+- kernel configuration/BTF, cgroup v2, fanotify permissions, required BPF program types, and the
+  raw-frame attachment;
+- fork/exec/exit, reparenting, double-fork daemonization, `setsid`, credentials, and dynamic
+  libraries;
+- protected open/read/write/rename/delete and mmap access;
+- IPv4, IPv6, UDP, loopback, private, link-local, metadata, public-address, plaintext DNS,
+  malformed DNS, and encrypted-DNS connection intent;
+- BPF reservation failure, fanotify overflow, and host-frame overflow;
+- normal exit, timeout, TERM resistance, escaped sessions, reparented children, background
+  listeners, channel interruption, and VM stop;
+- guest and host sensor death; and
+- denial of package-UID access to all protected assets.
+
+Each case fixes one of five expected terminal semantics: complete observation, incomplete on an
+injected gap, timeout with teardown, infrastructure error with teardown, or denied access with
+complete evidence. A category, case, terminal, or sensor-list mismatch is invalid.
 
 Every run spec fixes all of the following:
 
@@ -39,6 +60,10 @@ Every run spec fixes all of the following:
 - sync-back is `structurally_absent`;
 - wall-clock, guest-event, host-frame, and evidence-byte limits are fixed; and
 - the guest protocol is independently domain-separated from npm, wheel, and sdist protocols.
+
+The fixture binary digest is no longer caller-selected. It must equal the `guest_runner_sha256`
+measurement nested in the backend identity, so relabeling an unmeasured executable as a trusted
+fixture fails validation.
 
 There is no artifact coordinate, artifact digest, package-manager command, arbitrary command,
 environment injection, execution-authority token, clean/allow result, qualification state, or
@@ -59,9 +84,9 @@ The shared `network_intent` golden binds:
 - protected-telemetry requirements:
   `sha256:3ff8c862243232fbc48ec91d5926e587bf9817f678853d02d9730cde2c464946`;
 - unqualified backend identity:
-  `sha256:45c12920320ff882bf39fa45a9a746d51d635973843d05817939df0afdf3fdc6`;
+  `sha256:216bab68b7bb40cbcc999112f7f4d823cdeb4ffc05990c4f73e6b36977e438b1`;
 - conformance run spec:
-  `sha256:325a67c4e1690f2b04b6735d5f4463beb248ce68e15868e0337d4b0443ddd671`.
+  `sha256:4fd12743b8a404e68e171058b13c4ae797d35548cad068fc6a08fd23c410bf4b`.
 
 Tests reject missing or reordered fixture sensors, backend digest rebinding, requirements sensor
 gaps, enabled package execution, unknown execution fields, cross-schema replay, trailing bytes, and
@@ -79,14 +104,14 @@ swift test
 ```
 
 The Rust macOS VM package passed 82 tests, including three conformance run-spec tests. The Swift
-helper passed 90 tests, including two independent conformance parser tests. No VM, package manager,
-package code, public network target, restricted sample, or malware was used.
+helper passed 91 tests, including three independent conformance parser tests. No VM, package
+manager, package code, public network target, restricted sample, or malware was used.
 
 ## Next gate
 
 Build and measure a minimal Linux VZ image containing only the root-owned runner, protected sensors,
 BPF objects, configuration, evidence key, and trusted inert fixtures. Implement separately
-authenticated guest and host conformance evidence, then run the six fixtures with fault injection
+authenticated guest and host conformance evidence, then run the 38-case matrix with fault injection
 for drop, sensor-death, channel-loss, timeout, and teardown paths.
 
 A distinct qualified-backend type may be constructed only from verified conformance receipts that

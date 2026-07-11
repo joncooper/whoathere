@@ -43,6 +43,7 @@ public struct UnqualifiedLinuxVzTelemetryBackendIdentity: Equatable, Sendable {
     public let hostHelperSHA256: String
     public let hostPacketSensorSHA256: String
     public let hostPacketSensorConfigurationSHA256: String
+    public let hostEvidencePublicKeySHA256: String
     public let telemetryRequirementsSHA256: String
     public let packageUID: UInt32
     public let packageGID: UInt32
@@ -74,7 +75,8 @@ public func decodeUnqualifiedLinuxVzTelemetryBackendIdentity(
         "guest_runner_sha256", "guest_sensor_sha256", "guest_bpf_bundle_sha256",
         "guest_sensor_configuration_sha256", "guest_evidence_public_key_sha256",
         "host_helper_sha256", "host_packet_sensor_sha256",
-        "host_packet_sensor_configuration_sha256", "telemetry_requirements_sha256",
+        "host_packet_sensor_configuration_sha256", "host_evidence_public_key_sha256",
+        "telemetry_requirements_sha256",
         "package_uid", "package_gid"
     ])
     guard Set(value.keys) == expectedKeys else {
@@ -102,7 +104,8 @@ public func decodeUnqualifiedLinuxVzTelemetryBackendIdentity(
         "guest_sensor_sha256", "guest_bpf_bundle_sha256",
         "guest_sensor_configuration_sha256", "guest_evidence_public_key_sha256",
         "host_helper_sha256", "host_packet_sensor_sha256",
-        "host_packet_sensor_configuration_sha256", "telemetry_requirements_sha256"
+        "host_packet_sensor_configuration_sha256", "host_evidence_public_key_sha256",
+        "telemetry_requirements_sha256"
     ]
     var digests: [String: String] = [:]
     for key in digestKeys {
@@ -135,6 +138,7 @@ public func decodeUnqualifiedLinuxVzTelemetryBackendIdentity(
         hostPacketSensorSHA256: digests["host_packet_sensor_sha256"]!,
         hostPacketSensorConfigurationSHA256:
             digests["host_packet_sensor_configuration_sha256"]!,
+        hostEvidencePublicKeySHA256: digests["host_evidence_public_key_sha256"]!,
         telemetryRequirementsSHA256: digests["telemetry_requirements_sha256"]!,
         packageUID: packageUID,
         packageGID: packageGID

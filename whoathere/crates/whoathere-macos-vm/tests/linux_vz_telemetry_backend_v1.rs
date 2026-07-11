@@ -30,6 +30,7 @@ fn identity(
         digest(b"inert host helper"),
         digest(b"inert host packet sensor"),
         digest(b"inert host packet configuration"),
+        digest(b"inert host evidence public key"),
         requirements,
         499,
         499,
@@ -75,7 +76,7 @@ fn unqualified_linux_vz_identity_binds_every_measured_component_and_never_execut
             .identity_sha256_v1()
             .expect("cross-language identity digest")
             .as_str(),
-        "sha256:45c12920320ff882bf39fa45a9a746d51d635973843d05817939df0afdf3fdc6"
+        "sha256:216bab68b7bb40cbcc999112f7f4d823cdeb4ffc05990c4f73e6b36977e438b1"
     );
     let text = String::from_utf8(bytes).expect("identity UTF-8");
     assert!(text.contains("candidate_unqualified"));
@@ -100,6 +101,7 @@ fn unqualified_linux_vz_identity_binds_every_measured_component_and_never_execut
         digest(b"inert host helper"),
         digest(b"inert host packet sensor"),
         digest(b"inert host packet configuration"),
+        digest(b"inert host evidence public key"),
         &requirements,
         499,
         499,
