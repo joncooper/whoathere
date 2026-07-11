@@ -135,5 +135,9 @@ one-boot/one-scenario teardown, incomplete-on-any-gap policy, and structurally a
 The contract has no readiness, clean, allow, or qualification field; a backend cannot make itself
 eligible merely by serializing the requirements.
 
+The follow-on [unqualified backend checkpoint](artifact-native-linux-vz-unqualified-backend-checkpoint-2026-07-11.md)
+adds a cross-language measured identity whose only state is `candidate_unqualified` and whose API
+always denies execution authority until a future conformance receipt constructs a distinct type.
+
 No restricted sample, package lifecycle, package manager, VM, live network target, or malware was
 executed while making this decision.
