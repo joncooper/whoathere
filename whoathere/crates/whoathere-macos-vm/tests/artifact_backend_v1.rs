@@ -1,6 +1,6 @@
 use flate2::write::GzEncoder;
 use flate2::Compression;
-use std::io::{self, Cursor, Write};
+use std::io::{self, Cursor, Read, Write};
 use whoathere_artifact::{
     normalize_artifact, AcquisitionMethod, ArtifactEnvelope, ArtifactEnvelopeInput, ArtifactFormat,
     ArtifactSourceType, Ecosystem, NormalizationLimits, Sha256Digest,
@@ -14,9 +14,10 @@ use whoathere_evidence::v2::{canonical_cas_object_key_for_artifact, ArtifactEvid
 use whoathere_macos_vm::{
     compile_macos_artifact_run_spec_v1, decode_and_validate_macos_artifact_run_spec_v1,
     decode_macos_artifact_submission_frame_v1, encode_macos_artifact_submission_frame_v1,
-    write_macos_artifact_submission_frame_v1, MacosArtifactBackendCapabilitiesV1,
-    MacosArtifactBackendIdentityV1, MacosArtifactRunErrorV1, MacosArtifactSubmissionBindingsV1,
-    MacosArtifactSubmissionErrorV1, MacosArtifactSubmissionHeaderV1,
+    stream_macos_artifact_guest_submission_v1, write_macos_artifact_submission_frame_v1,
+    MacosArtifactBackendCapabilitiesV1, MacosArtifactBackendIdentityV1, MacosArtifactRunErrorV1,
+    MacosArtifactSubmissionBindingsV1, MacosArtifactSubmissionErrorV1,
+    MacosArtifactSubmissionHeaderV1, MACOS_ARTIFACT_GUEST_SUBMISSION_MAGIC_V1,
     MACOS_ARTIFACT_SUBMISSION_FIXED_PREFIX_BYTES_V1,
 };
 
@@ -301,6 +302,95 @@ fn submission_rejects_truncation_trailing_mutation_unknown_fields_and_rebinding(
         decode_macos_artifact_submission_frame_v1(&rebuilt, &bindings),
         Err(MacosArtifactSubmissionErrorV1::BindingMismatch)
     );
+}
+
+#[test]
+fn guest_submission_streams_exact_bytes_and_rejects_wrong_domain_corruption_and_trailing_data() {
+    let (template, artifact) = compiled_template();
+    let run_spec = compile_macos_artifact_run_spec_v1(&template, &backend(digest(b"measured npm")))
+        .expect("Mac run spec");
+    let bindings = MacosArtifactSubmissionBindingsV1::for_run_spec(digest(b"challenge"), &run_spec);
+    let header = MacosArtifactSubmissionHeaderV1::new(run_spec.clone(), bindings)
+        .expect("submission header");
+    let mut guest =
+        encode_macos_artifact_submission_frame_v1(&header, &artifact).expect("host frame");
+    guest[..8].copy_from_slice(&MACOS_ARTIFACT_GUEST_SUBMISSION_MAGIC_V1);
+
+    let mut fragmented = FragmentedReader::new(&guest, 3);
+    let mut staged = Vec::new();
+    let observation = stream_macos_artifact_guest_submission_v1(&mut fragmented, &mut staged)
+        .expect("streamed guest frame");
+    assert_eq!(staged, artifact);
+    assert_eq!(observation.artifact_sha256(), run_spec.artifact_sha256());
+    assert_eq!(observation.artifact_byte_length(), artifact.len() as u64);
+    assert_eq!(observation.header().run_spec(), &run_spec);
+
+    let mut wrong_domain = guest.clone();
+    wrong_domain[..8].copy_from_slice(b"WHOAART1");
+    let mut staged = Vec::new();
+    assert_eq!(
+        stream_macos_artifact_guest_submission_v1(&mut Cursor::new(wrong_domain), &mut staged),
+        Err(MacosArtifactSubmissionErrorV1::InvalidMagic)
+    );
+    assert!(staged.is_empty());
+
+    let mut mutated = guest.clone();
+    *mutated.last_mut().expect("artifact byte") ^= 1;
+    let mut staged = Vec::new();
+    assert_eq!(
+        stream_macos_artifact_guest_submission_v1(&mut Cursor::new(mutated), &mut staged),
+        Err(MacosArtifactSubmissionErrorV1::ArtifactDigestMismatch)
+    );
+    assert_eq!(staged.len(), artifact.len());
+
+    let mut trailing = guest.clone();
+    trailing.push(0);
+    let mut staged = Vec::new();
+    assert_eq!(
+        stream_macos_artifact_guest_submission_v1(&mut Cursor::new(trailing), &mut staged),
+        Err(MacosArtifactSubmissionErrorV1::TrailingData)
+    );
+    assert_eq!(staged, artifact);
+
+    let mut staged = Vec::new();
+    assert_eq!(
+        stream_macos_artifact_guest_submission_v1(
+            &mut Cursor::new(&guest[..guest.len() - 1]),
+            &mut staged
+        ),
+        Err(MacosArtifactSubmissionErrorV1::Truncated)
+    );
+}
+
+struct FragmentedReader<'a> {
+    input: &'a [u8],
+    offset: usize,
+    maximum_read: usize,
+}
+
+impl<'a> FragmentedReader<'a> {
+    fn new(input: &'a [u8], maximum_read: usize) -> Self {
+        Self {
+            input,
+            offset: 0,
+            maximum_read,
+        }
+    }
+}
+
+impl Read for FragmentedReader<'_> {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        if self.offset == self.input.len() {
+            return Ok(0);
+        }
+        let count = output
+            .len()
+            .min(self.maximum_read)
+            .min(self.input.len() - self.offset);
+        output[..count].copy_from_slice(&self.input[self.offset..self.offset + count]);
+        self.offset += count;
+        Ok(count)
+    }
 }
 
 fn rebuild_with_header(original: &[u8], replacement: &[u8]) -> Vec<u8> {

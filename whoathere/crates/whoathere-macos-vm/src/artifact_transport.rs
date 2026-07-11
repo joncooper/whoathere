@@ -3,14 +3,16 @@ use crate::{
     MAX_MACOS_ARTIFACT_RUN_SPEC_BYTES_V1,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::fmt;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use whoathere_artifact::Sha256Digest;
 use whoathere_detonation::MAX_ARTIFACT_SCENARIO_BYTES_V1;
 
 pub const MACOS_ARTIFACT_SUBMISSION_HEADER_SCHEMA_V1: &str =
     "whoathere.macos_artifact_submission_header.v1";
 pub const MACOS_ARTIFACT_SUBMISSION_MAGIC_V1: [u8; 8] = *b"WHOAART1";
+pub const MACOS_ARTIFACT_GUEST_SUBMISSION_MAGIC_V1: [u8; 8] = *b"WHOAGST1";
 pub const MACOS_ARTIFACT_SUBMISSION_VERSION_V1: u16 = 1;
 pub const MACOS_ARTIFACT_SUBMISSION_FRAME_TYPE_V1: u16 = 1;
 pub const MAX_MACOS_ARTIFACT_SUBMISSION_HEADER_BYTES_V1: usize =
@@ -335,6 +337,27 @@ pub fn decode_macos_artifact_submission_frame_v1(
     let header_bytes = &encoded[header_start..artifact_start];
     let artifact_bytes = &encoded[artifact_start..];
 
+    let header = decode_submission_header_v1(
+        header_bytes,
+        artifact_len,
+        &prefix_digest,
+        Some(expected_bindings),
+    )?;
+    if Sha256Digest::from_bytes(artifact_bytes) != prefix_digest {
+        return Err(MacosArtifactSubmissionErrorV1::ArtifactDigestMismatch);
+    }
+    Ok(MacosArtifactSubmissionFrameV1 {
+        header,
+        artifact_bytes: artifact_bytes.to_vec(),
+    })
+}
+
+fn decode_submission_header_v1(
+    header_bytes: &[u8],
+    artifact_len: u64,
+    prefix_digest: &Sha256Digest,
+    expected_bindings: Option<&MacosArtifactSubmissionBindingsV1>,
+) -> Result<MacosArtifactSubmissionHeaderV1, MacosArtifactSubmissionErrorV1> {
     let mut deserializer = serde_json::Deserializer::from_slice(header_bytes);
     let wire = MacosArtifactSubmissionHeaderWireV1::deserialize(&mut deserializer)
         .map_err(|_| MacosArtifactSubmissionErrorV1::InvalidHeader)?;
@@ -349,9 +372,10 @@ pub fn decode_macos_artifact_submission_frame_v1(
     {
         return Err(MacosArtifactSubmissionErrorV1::InvalidHeader);
     }
-    if wire.challenge_binding_sha256 != expected_bindings.challenge_binding_sha256
-        || wire.execution_binding_sha256 != expected_bindings.execution_binding_sha256
-    {
+    if expected_bindings.is_some_and(|expected| {
+        wire.challenge_binding_sha256 != expected.challenge_binding_sha256
+            || wire.execution_binding_sha256 != expected.execution_binding_sha256
+    }) {
         return Err(MacosArtifactSubmissionErrorV1::BindingMismatch);
     }
     let run_spec_bytes = serde_json_canonicalizer::to_vec(&wire.run_spec)
@@ -370,20 +394,154 @@ pub fn decode_macos_artifact_submission_frame_v1(
         || wire.artifact_sha256 != *run_spec.artifact_sha256()
         || wire.artifact_byte_length != run_spec.artifact_byte_length()
         || wire.artifact_byte_length != artifact_len
-        || wire.artifact_sha256 != prefix_digest
-        || Sha256Digest::from_bytes(artifact_bytes) != prefix_digest
+        || wire.artifact_sha256 != *prefix_digest
     {
         return Err(MacosArtifactSubmissionErrorV1::ArtifactDigestMismatch);
     }
-    let header = MacosArtifactSubmissionHeaderV1 {
-        run_spec,
-        bindings: expected_bindings.clone(),
-        canonical_json: canonical,
+    let bindings = MacosArtifactSubmissionBindingsV1 {
+        challenge_binding_sha256: wire.challenge_binding_sha256,
+        execution_binding_sha256: wire.execution_binding_sha256,
     };
-    Ok(MacosArtifactSubmissionFrameV1 {
-        header,
-        artifact_bytes: artifact_bytes.to_vec(),
+    Ok(MacosArtifactSubmissionHeaderV1 {
+        run_spec,
+        bindings,
+        canonical_json: canonical,
     })
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct MacosArtifactGuestSubmissionObservationV1 {
+    header: MacosArtifactSubmissionHeaderV1,
+    artifact_sha256: Sha256Digest,
+    artifact_byte_length: u64,
+}
+
+impl fmt::Debug for MacosArtifactGuestSubmissionObservationV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("MacosArtifactGuestSubmissionObservationV1")
+            .field("header", &self.header)
+            .field("artifact_sha256", &self.artifact_sha256)
+            .field("artifact_byte_length", &self.artifact_byte_length)
+            .finish()
+    }
+}
+
+impl MacosArtifactGuestSubmissionObservationV1 {
+    pub fn header(&self) -> &MacosArtifactSubmissionHeaderV1 {
+        &self.header
+    }
+
+    pub fn artifact_sha256(&self) -> &Sha256Digest {
+        &self.artifact_sha256
+    }
+
+    pub fn artifact_byte_length(&self) -> u64 {
+        self.artifact_byte_length
+    }
+}
+
+/// Decode one helper-to-guest artifact frame without buffering the artifact.
+///
+/// The caller owns the sink and must discard it on every error. A successful
+/// return proves the complete declared body, SHA-256, and transport EOF. The
+/// challenge binding is checked for internal consistency here; its authority
+/// is inherited from the dedicated host-to-guest channel and must already have
+/// been authenticated by the host helper before that channel is opened.
+pub fn stream_macos_artifact_guest_submission_v1<R: Read, W: Write>(
+    reader: &mut R,
+    artifact_sink: &mut W,
+) -> Result<MacosArtifactGuestSubmissionObservationV1, MacosArtifactSubmissionErrorV1> {
+    let mut prefix = [0_u8; MACOS_ARTIFACT_SUBMISSION_FIXED_PREFIX_BYTES_V1];
+    read_exact_submission_v1(reader, &mut prefix)?;
+    if prefix[..8] != MACOS_ARTIFACT_GUEST_SUBMISSION_MAGIC_V1 {
+        return Err(MacosArtifactSubmissionErrorV1::InvalidMagic);
+    }
+    let version = u16::from_be_bytes(
+        prefix[8..10]
+            .try_into()
+            .map_err(|_| MacosArtifactSubmissionErrorV1::Truncated)?,
+    );
+    if version != MACOS_ARTIFACT_SUBMISSION_VERSION_V1 {
+        return Err(MacosArtifactSubmissionErrorV1::UnsupportedVersion);
+    }
+    let frame_type = u16::from_be_bytes(
+        prefix[10..12]
+            .try_into()
+            .map_err(|_| MacosArtifactSubmissionErrorV1::Truncated)?,
+    );
+    if frame_type != MACOS_ARTIFACT_SUBMISSION_FRAME_TYPE_V1 {
+        return Err(MacosArtifactSubmissionErrorV1::UnsupportedFrameType);
+    }
+    let header_len = u32::from_be_bytes(
+        prefix[12..16]
+            .try_into()
+            .map_err(|_| MacosArtifactSubmissionErrorV1::Truncated)?,
+    ) as usize;
+    if header_len == 0 || header_len > MAX_MACOS_ARTIFACT_SUBMISSION_HEADER_BYTES_V1 {
+        return Err(MacosArtifactSubmissionErrorV1::HeaderLimitExceeded);
+    }
+    let artifact_len = u64::from_be_bytes(
+        prefix[16..24]
+            .try_into()
+            .map_err(|_| MacosArtifactSubmissionErrorV1::Truncated)?,
+    );
+    if artifact_len == 0 || artifact_len > MAX_ARTIFACT_SCENARIO_BYTES_V1 {
+        return Err(MacosArtifactSubmissionErrorV1::ArtifactLimitExceeded);
+    }
+    let raw_digest: [u8; 32] = prefix[24..56]
+        .try_into()
+        .map_err(|_| MacosArtifactSubmissionErrorV1::Truncated)?;
+    let prefix_digest = raw_to_digest_v1(raw_digest)?;
+    let mut header_bytes = vec![0_u8; header_len];
+    read_exact_submission_v1(reader, &mut header_bytes)?;
+    let header = decode_submission_header_v1(&header_bytes, artifact_len, &prefix_digest, None)?;
+
+    let mut hasher = Sha256::new();
+    let mut remaining = artifact_len;
+    let mut buffer = [0_u8; 64 * 1024];
+    while remaining > 0 {
+        let requested = usize::try_from(remaining.min(buffer.len() as u64))
+            .map_err(|_| MacosArtifactSubmissionErrorV1::ArtifactLimitExceeded)?;
+        read_exact_submission_v1(reader, &mut buffer[..requested])?;
+        hasher.update(&buffer[..requested]);
+        artifact_sink.write_all(&buffer[..requested])?;
+        remaining -= requested as u64;
+    }
+    let observed_raw: [u8; 32] = hasher.finalize().into();
+    if observed_raw != raw_digest {
+        return Err(MacosArtifactSubmissionErrorV1::ArtifactDigestMismatch);
+    }
+    let mut trailing = [0_u8; 1];
+    loop {
+        match reader.read(&mut trailing) {
+            Ok(0) => break,
+            Ok(_) => return Err(MacosArtifactSubmissionErrorV1::TrailingData),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(_) => return Err(MacosArtifactSubmissionErrorV1::IoFailed),
+        }
+    }
+    artifact_sink.flush()?;
+    Ok(MacosArtifactGuestSubmissionObservationV1 {
+        header,
+        artifact_sha256: prefix_digest,
+        artifact_byte_length: artifact_len,
+    })
+}
+
+fn read_exact_submission_v1<R: Read>(
+    reader: &mut R,
+    mut destination: &mut [u8],
+) -> Result<(), MacosArtifactSubmissionErrorV1> {
+    while !destination.is_empty() {
+        match reader.read(destination) {
+            Ok(0) => return Err(MacosArtifactSubmissionErrorV1::Truncated),
+            Ok(count) => destination = &mut destination[count..],
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(_) => return Err(MacosArtifactSubmissionErrorV1::IoFailed),
+        }
+    }
+    Ok(())
 }
 
 fn execution_binding_sha256_v1(
