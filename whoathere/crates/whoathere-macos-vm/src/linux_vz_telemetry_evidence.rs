@@ -202,6 +202,10 @@ impl std::error::Error for MacosLinuxVzTelemetryEvidenceErrorV1 {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedLinuxVzTelemetryConformanceCaseV1 {
     challenge_sha256: Sha256Digest,
+    run_spec_sha256: Sha256Digest,
+    backend_identity_sha256: Sha256Digest,
+    telemetry_requirements_sha256: Sha256Digest,
+    clone_binding_sha256: Sha256Digest,
     fixture_case: crate::LinuxVzTelemetryConformanceCaseV1,
     guest_receipt_present: bool,
 }
@@ -209,6 +213,22 @@ pub struct VerifiedLinuxVzTelemetryConformanceCaseV1 {
 impl VerifiedLinuxVzTelemetryConformanceCaseV1 {
     pub fn challenge_sha256(&self) -> &Sha256Digest {
         &self.challenge_sha256
+    }
+
+    pub fn run_spec_sha256(&self) -> &Sha256Digest {
+        &self.run_spec_sha256
+    }
+
+    pub fn backend_identity_sha256(&self) -> &Sha256Digest {
+        &self.backend_identity_sha256
+    }
+
+    pub fn telemetry_requirements_sha256(&self) -> &Sha256Digest {
+        &self.telemetry_requirements_sha256
+    }
+
+    pub fn clone_binding_sha256(&self) -> &Sha256Digest {
+        &self.clone_binding_sha256
     }
 
     pub fn fixture_case(&self) -> crate::LinuxVzTelemetryConformanceCaseV1 {
@@ -331,6 +351,10 @@ pub fn verify_macos_linux_vz_telemetry_conformance_case_v1(
     }
     Ok(VerifiedLinuxVzTelemetryConformanceCaseV1 {
         challenge_sha256: challenge.challenge_sha256().clone(),
+        run_spec_sha256: run_spec.run_spec_sha256().clone(),
+        backend_identity_sha256: run_spec.backend_identity_sha256().clone(),
+        telemetry_requirements_sha256: run_spec.telemetry_requirements_sha256().clone(),
+        clone_binding_sha256: challenge.clone_binding_sha256().clone(),
         fixture_case: case,
         guest_receipt_present: guest.is_some(),
     })

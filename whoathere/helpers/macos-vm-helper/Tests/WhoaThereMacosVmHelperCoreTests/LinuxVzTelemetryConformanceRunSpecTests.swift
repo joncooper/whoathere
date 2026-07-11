@@ -327,6 +327,131 @@ import Testing
     }
 }
 
+@Test func linuxVzQualificationRecordMatchesRustButParsingCannotGrantAuthority() throws {
+    let guestPrivate = try Curve25519.Signing.PrivateKey(
+        rawRepresentation: Data(repeating: 0x61, count: 32)
+    )
+    let hostPrivate = try Curve25519.Signing.PrivateKey(
+        rawRepresentation: Data(repeating: 0x62, count: 32)
+    )
+    let base = try linuxVzConformanceFixture()
+    let requirementsSHA256 = try #require(
+        base["telemetry_requirements_sha256"] as? String
+    )
+    var backendValue = try #require(base["backend_identity"] as? [String: Any])
+    backendValue["guest_evidence_public_key_sha256"] = sha256(
+        guestPrivate.publicKey.rawRepresentation
+    )
+    backendValue["host_evidence_public_key_sha256"] = sha256(
+        hostPrivate.publicKey.rawRepresentation
+    )
+    let backendData = try canonicalJSONData(backendValue)
+    let backendSHA256 = sha256(backendData)
+    let backend = try decodeUnqualifiedLinuxVzTelemetryBackendIdentity(
+        backendData,
+        expectedTelemetryRequirementsSHA256: requirementsSHA256
+    )
+    var bindings: [[String: Any]] = []
+    for (index, fixtureCase) in linuxVzAllTelemetryConformanceCasesV1().enumerated() {
+        let fixture = try #require(linuxVzConformanceFixture(fixtureCase))
+        let terminal = try #require(linuxVzConformanceExpectedTerminal(fixtureCase))
+        var runValue = try linuxVzConformanceFixture(
+            runID: "linux-vz-qualification-run-\(index)",
+            evidenceID: "linux-vz-qualification-evidence-\(index)"
+        )
+        runValue["backend_identity"] = backendValue
+        runValue["backend_identity_sha256"] = backendSHA256
+        runValue["fixture_case"] = fixtureCase
+        runValue["fixture"] = fixture
+        runValue["expected_terminal"] = terminal
+        let expectedSensors = linuxVzConformanceExpectedSensors(fixture) ?? []
+        #expect(!expectedSensors.isEmpty)
+        runValue["expected_sensors"] = expectedSensors
+        let runSpec = try decodeLinuxVzTelemetryConformanceRunSpec(
+            try canonicalJSONData(runValue)
+        )
+        let nonceByte = String(format: "%02x", index + 1)
+        let challengeValue: [String: Any] = [
+            "schema_version": linuxVzTelemetryConformanceChallengeSchemaV1,
+            "nonce_hex": String(repeating: nonceByte, count: 32),
+            "challenge_purpose": "trusted_inert_telemetry_conformance_only",
+            "run_spec_sha256": runSpec.runSpecSHA256,
+            "backend_identity_sha256": backend.identitySHA256,
+            "telemetry_requirements_sha256": requirementsSHA256,
+            "clone_binding_sha256": sha256(
+                Data("qualification clone \(index)".utf8)
+            ),
+            "guest_evidence_public_key_sha256": backend.guestEvidencePublicKeySHA256,
+            "host_evidence_public_key_sha256": backend.hostEvidencePublicKeySHA256,
+            "package_execution": "disabled",
+            "sync_back_policy": "structurally_absent"
+        ]
+        let challenge = try decodeLinuxVzTelemetryConformanceChallenge(
+            try canonicalJSONData(challengeValue),
+            expectedRunSpec: runSpec,
+            expectedBackend: backend
+        )
+        bindings.append([
+            "fixture_case": fixtureCase,
+            "challenge_sha256": challenge.challengeSHA256,
+            "run_spec_sha256": runSpec.runSpecSHA256,
+            "clone_binding_sha256": challenge.cloneBindingSHA256,
+            "guest_receipt_present": ![
+                "guest_sensor_death", "channel_interruption", "vm_stop"
+            ].contains(fixtureCase)
+        ])
+    }
+    let evidenceSetSHA256 = sha256(try canonicalJSONData(bindings))
+    var record: [String: Any] = [
+        "schema_version": linuxVzQualifiedTelemetryBackendSchemaV1,
+        "qualification_state": "complete_inert_conformance_matrix_verified",
+        "backend_identity": backendValue,
+        "backend_identity_sha256": backendSHA256,
+        "telemetry_requirements_sha256": requirementsSHA256,
+        "conformance_cases": bindings,
+        "conformance_case_count": "38",
+        "conformance_evidence_set_sha256": evidenceSetSHA256,
+        "clone_policy": "one_unique_clone_per_case_destroyed",
+        "execution_eligibility": "typed_package_scenario_authority_request_only",
+        "execution_authority_issued": false,
+        "sync_back_policy": "structurally_absent"
+    ]
+    let data = try canonicalJSONData(record)
+    let parsed = try decodeLinuxVzTelemetryQualificationRecord(data)
+    #expect(
+        parsed.recordSHA256
+            == "sha256:455c3566f07451d9a763ba594652938aced20bd8f90eb7c712995a8e13e91c1a"
+    )
+    #expect(parsed.caseCount == 38)
+    #expect(!parsed.executionAuthorityRequestPermitted)
+    #expect(!parsed.packageExecutionAuthorityPermitted)
+    #expect(!parsed.syncBackPermitted)
+
+    var missing = record
+    var missingCases = bindings
+    missingCases.removeLast()
+    missing["conformance_cases"] = missingCases
+    #expect(throws: LinuxVzTelemetryQualificationRecordError.incompleteMatrix) {
+        try decodeLinuxVzTelemetryQualificationRecord(try canonicalJSONData(missing))
+    }
+
+    var reused = record
+    var reusedCases = bindings
+    reusedCases[1]["clone_binding_sha256"] = reusedCases[0]["clone_binding_sha256"]
+    reused["conformance_cases"] = reusedCases
+    reused["conformance_evidence_set_sha256"] = sha256(
+        try canonicalJSONData(reusedCases)
+    )
+    #expect(throws: LinuxVzTelemetryQualificationRecordError.reusedIdentity) {
+        try decodeLinuxVzTelemetryQualificationRecord(try canonicalJSONData(reused))
+    }
+
+    record["execution_authority_issued"] = true
+    #expect(throws: LinuxVzTelemetryQualificationRecordError.invalidSchema) {
+        try decodeLinuxVzTelemetryQualificationRecord(try canonicalJSONData(record))
+    }
+}
+
 @Test func linuxVzConformanceRunSpecRejectsSensorGapsExecutionAndRebinding() throws {
     let fixture = try linuxVzConformanceFixture()
 

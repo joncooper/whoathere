@@ -69,8 +69,9 @@ terminal class:
 All cases require zero externally forwarded frames. The verified receipt and verified-case types
 remain structurally unable to authorize package execution.
 
-This is not yet the complete 38-case qualification aggregate. No receipt or one valid case can
-construct a qualified backend.
+The follow-on [complete-matrix qualification checkpoint](artifact-native-linux-vz-complete-matrix-qualification-checkpoint-2026-07-11.md)
+now requires all 38 verified cases before constructing a distinct qualified type. No receipt or one
+valid case can construct it, and no real measured receipt exists yet.
 
 ## Cross-language verification
 
@@ -107,12 +108,6 @@ package manager, package code, public network target, restricted sample, or malw
 
 ## Next gate
 
-Implement the complete-matrix qualification aggregate. It must require exactly one verified result
-for every closed conformance case, reject duplicates, omissions, backend or requirements mixing,
-clone reuse, unexpected terminals, unhealthy/truncated evidence, unexplained drops, incomplete
-teardown, and any external frame forwarding. Only that aggregate may construct a distinct qualified
-backend type.
-
-After the aggregate is complete, build and measure the Linux image, guest sensors, host packet
+Build and measure the Linux image, guest sensors, host packet
 sensor, evidence keys, and trusted runner; then execute the inert conformance matrix. Until measured
 receipts pass, the candidate backend remains unqualified and package execution remains disabled.

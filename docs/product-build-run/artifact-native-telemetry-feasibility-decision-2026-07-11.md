@@ -3,9 +3,9 @@
 Date: 2026-07-11
 
 Status: macOS-native is not qualified as the bulk detection lane; a lightweight Linux guest on the
-Mac is selected as the bulk-lane candidate, its requirements, unqualified identity, run spec,
-challenge, and authenticated receipt schemas are implemented, and measured conformance remains
-pending
+Mac is selected as the bulk-lane candidate, its requirements, identity, run spec, challenge,
+authenticated receipts, and complete-matrix qualification mechanism are implemented, and measured
+conformance remains pending
 
 Canonical references:
 
@@ -149,7 +149,11 @@ exist.
 
 The follow-on [authenticated conformance-evidence checkpoint](artifact-native-linux-vz-authenticated-conformance-evidence-checkpoint-2026-07-11.md)
 adds independently signed guest and host receipts plus fail-closed single-case semantics. It does
-not qualify a backend; the complete matrix and real measured receipts remain open.
+not qualify a backend from one case.
+
+The follow-on [complete-matrix qualification checkpoint](artifact-native-linux-vz-complete-matrix-qualification-checkpoint-2026-07-11.md)
+adds a distinct qualified type constructible only from all 38 verified cases. The mechanism passes
+synthetic tests, but no real measured receipt or qualified backend exists.
 
 No restricted sample, package lifecycle, package manager, VM, live network target, or malware was
 executed while making this decision.

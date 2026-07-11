@@ -773,8 +773,9 @@ Work packages:
   guest on the Mac as the candidate. The closed cross-language
   [telemetry-conformance run spec](artifact-native-linux-vz-telemetry-conformance-run-spec-checkpoint-2026-07-11.md)
   and [authenticated receipt schemas](artifact-native-linux-vz-authenticated-conformance-evidence-checkpoint-2026-07-11.md)
-  now exist, but the complete qualification aggregate, measured image, sensors, actual receipts,
-  and required inert Linux conformance run remain open.
+  plus the [complete-matrix qualification mechanism](artifact-native-linux-vz-complete-matrix-qualification-checkpoint-2026-07-11.md)
+  now exist, but the measured image, sensors, actual receipts, and required inert Linux conformance
+  run remain open.
 - **AN-008 Artifact transport feasibility spike:** replace or prototype beyond the current bounded
   hex-in-JSON project payload so realistic tgz/wheel/sdist sizes can be transported as exact bytes
   with streaming or bounded-memory behavior and end-to-end digest verification.
