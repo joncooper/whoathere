@@ -270,11 +270,12 @@ func sdistSubmissionFixture(
     ]
     let runtimeProfileSHA256 = sha256(try canonicalJSONData(runtimeProfile))
     let declaration = declarationSetSHA256 ?? sha256(Data("setuptools>=75".utf8))
+    let closureArtifactBytes = sdistBuildClosureArtifactBytes()
     let closureArtifacts: [[String: Any]] = [[
         "normalized_name": "setuptools",
         "version": "75.0.0",
-        "artifact_sha256": sha256(Data("setuptools wheel".utf8)),
-        "artifact_byte_length": UInt64(4_096)
+        "artifact_sha256": sha256(closureArtifactBytes),
+        "artifact_byte_length": UInt64(closureArtifactBytes.count)
     ]]
     let closureDigestWire: [String: Any] = [
         "schema_version": "whoathere.sdist_build_closure.v1",
@@ -424,6 +425,10 @@ func sdistSubmissionFixture(
         challengeBindingSHA256: challenge,
         executionBindingSHA256: execution
     )
+}
+
+func sdistBuildClosureArtifactBytes() -> Data {
+    Data(repeating: 0x5a, count: 4_096)
 }
 
 func rebindSdistHeader(

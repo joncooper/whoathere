@@ -38,6 +38,7 @@ public struct SdistRunSubmissionPrelude: Equatable, Sendable {
     public let runSpecSHA256: String
     public let templateSHA256: String
     public let buildClosureSHA256: String
+    public let buildClosure: SdistBuildClosureManifest
     public let challengeBindingSHA256: String
     public let executionBindingSHA256: String
     public let artifactSHA256: String
@@ -46,6 +47,35 @@ public struct SdistRunSubmissionPrelude: Equatable, Sendable {
     public let scenarioID: String
     public let scenarioKind: String
     public let backendIdentity: SdistRunBackendIdentity
+}
+
+public struct SdistBuildClosureArtifact: Comparable, Equatable, Sendable {
+    public let normalizedName: String
+    public let version: String
+    public let artifactSHA256: String
+    public let artifactByteLength: UInt64
+
+    public static func < (lhs: Self, rhs: Self) -> Bool {
+        if lhs.normalizedName != rhs.normalizedName {
+            return lhs.normalizedName < rhs.normalizedName
+        }
+        if lhs.version != rhs.version { return lhs.version < rhs.version }
+        if lhs.artifactSHA256 != rhs.artifactSHA256 {
+            return lhs.artifactSHA256 < rhs.artifactSHA256
+        }
+        return lhs.artifactByteLength < rhs.artifactByteLength
+    }
+}
+
+public struct SdistBuildClosureManifest: Equatable, Sendable {
+    public let declarationSetSHA256: String
+    public let closureSHA256: String
+    public let artifacts: [SdistBuildClosureArtifact]
+    public let canonicalJSON: Data
+
+    public var payloadByteLength: UInt64 {
+        artifacts.reduce(UInt64(0)) { $0 + $1.artifactByteLength }
+    }
 }
 
 public struct SdistRunTransportObservation: Equatable, Sendable {
@@ -190,6 +220,7 @@ public func beginSdistSubmission(
         runSpecSHA256: validated.runSpecSHA256,
         templateSHA256: validated.templateSHA256,
         buildClosureSHA256: validated.buildClosureSHA256,
+        buildClosure: validated.buildClosure,
         challengeBindingSHA256: validated.challengeBindingSHA256,
         executionBindingSHA256: validated.executionBindingSHA256,
         artifactSHA256: validated.artifactSHA256,
@@ -212,6 +243,7 @@ private struct ValidatedSdistHeader {
     let runSpecSHA256: String
     let templateSHA256: String
     let buildClosureSHA256: String
+    let buildClosure: SdistBuildClosureManifest
     let challengeBindingSHA256: String
     let executionBindingSHA256: String
     let artifactSHA256: String
@@ -287,6 +319,7 @@ private func validateSdistHeader(
         runSpecSHA256: runSpecSHA256,
         templateSHA256: fields.templateSHA256,
         buildClosureSHA256: fields.buildClosureSHA256,
+        buildClosure: fields.buildClosure,
         challengeBindingSHA256: challenge,
         executionBindingSHA256: execution,
         artifactSHA256: artifactSHA256,
@@ -299,6 +332,7 @@ private func validateSdistHeader(
 private struct ValidatedSdistRunSpec {
     let templateSHA256: String
     let buildClosureSHA256: String
+    let buildClosure: SdistBuildClosureManifest
     let artifactSHA256: String
     let artifactByteLength: UInt64
     let scenarioID: String
@@ -343,6 +377,7 @@ private func validateSdistRunSpec(_ runSpec: [String: Any]) throws -> ValidatedS
     return ValidatedSdistRunSpec(
         templateSHA256: templateSHA256,
         buildClosureSHA256: runSpecClosure,
+        buildClosure: templateFields.buildClosure,
         artifactSHA256: templateFields.artifactSHA256,
         artifactByteLength: templateFields.artifactByteLength,
         scenarioID: templateFields.scenarioID,
@@ -361,6 +396,7 @@ private struct ValidatedSdistTemplate {
     let pipVersion: String
     let pipSHA256: String
     let buildClosureSHA256: String
+    let buildClosure: SdistBuildClosureManifest
 }
 
 private func validateSdistTemplate(_ template: [String: Any]) throws -> ValidatedSdistTemplate {
@@ -445,7 +481,8 @@ private func validateSdistTemplate(_ template: [String: Any]) throws -> Validate
         pythonSHA256: runtimeFields.pythonSHA256,
         pipVersion: runtimeFields.pipVersion,
         pipSHA256: runtimeFields.pipSHA256,
-        buildClosureSHA256: closureFields.closureSHA256
+        buildClosureSHA256: closureFields.closureSHA256,
+        buildClosure: closureFields.manifest
     )
 }
 
@@ -562,24 +599,7 @@ private func validateSdistRuntime(_ value: [String: Any]) throws -> SdistRuntime
 private struct SdistClosureFields {
     let declarationSetSHA256: String
     let closureSHA256: String
-}
-
-private struct SdistClosureArtifact: Comparable {
-    let normalizedName: String
-    let version: String
-    let artifactSHA256: String
-    let artifactByteLength: UInt64
-
-    static func < (lhs: Self, rhs: Self) -> Bool {
-        if lhs.normalizedName != rhs.normalizedName {
-            return lhs.normalizedName < rhs.normalizedName
-        }
-        if lhs.version != rhs.version { return lhs.version < rhs.version }
-        if lhs.artifactSHA256 != rhs.artifactSHA256 {
-            return lhs.artifactSHA256 < rhs.artifactSHA256
-        }
-        return lhs.artifactByteLength < rhs.artifactByteLength
-    }
+    let manifest: SdistBuildClosureManifest
 }
 
 private func validateSdistClosure(_ value: [String: Any]) throws -> SdistClosureFields {
@@ -588,14 +608,16 @@ private func validateSdistClosure(_ value: [String: Any]) throws -> SdistClosure
     ], error: .templateInvalid)
     guard try sdistString(value, "schema_version", error: .templateInvalid)
             == "whoathere.sdist_build_closure.v1",
-          let artifacts = value["artifacts"] as? [Any] else {
+          let artifacts = value["artifacts"] as? [Any],
+          artifacts.count <= maximumSdistBuildClosureArtifactsV1 else {
         throw ArtifactRunProtocolError.templateInvalid
     }
     let declaration = try sdistDigest(
         value, "declaration_set_sha256", error: .templateInvalid
     )
     let observedClosure = try sdistDigest(value, "closure_sha256", error: .templateInvalid)
-    var previous: SdistClosureArtifact?
+    var previous: SdistBuildClosureArtifact?
+    var validatedArtifacts: [SdistBuildClosureArtifact] = []
     for raw in artifacts {
         guard let artifact = raw as? [String: Any] else {
             throw ArtifactRunProtocolError.templateInvalid
@@ -616,7 +638,7 @@ private func validateSdistClosure(_ value: [String: Any]) throws -> SdistClosure
               length <= maximumSdistSubmissionBytesV1 else {
             throw ArtifactRunProtocolError.templateInvalid
         }
-        let item = SdistClosureArtifact(
+        let item = SdistBuildClosureArtifact(
             normalizedName: normalizedName,
             version: version,
             artifactSHA256: digest,
@@ -626,6 +648,7 @@ private func validateSdistClosure(_ value: [String: Any]) throws -> SdistClosure
             throw ArtifactRunProtocolError.templateInvalid
         }
         previous = item
+        validatedArtifacts.append(item)
     }
     let digestWire: [String: Any] = [
         "schema_version": "whoathere.sdist_build_closure.v1",
@@ -638,7 +661,13 @@ private func validateSdistClosure(_ value: [String: Any]) throws -> SdistClosure
     }
     return SdistClosureFields(
         declarationSetSHA256: declaration,
-        closureSHA256: observedClosure
+        closureSHA256: observedClosure,
+        manifest: SdistBuildClosureManifest(
+            declarationSetSHA256: declaration,
+            closureSHA256: observedClosure,
+            artifacts: validatedArtifacts,
+            canonicalJSON: try canonicalJSONData(value)
+        )
     )
 }
 

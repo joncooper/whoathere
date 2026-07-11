@@ -274,6 +274,12 @@ impl SdistBuildClosureV1 {
         &self.closure_sha256
     }
 
+    pub fn canonical_json_v1(&self) -> Result<Vec<u8>, ArtifactScenarioCompileErrorV1> {
+        self.validate()?;
+        serde_json_canonicalizer::to_vec(self)
+            .map_err(|_| ArtifactScenarioCompileErrorV1::Serialization)
+    }
+
     fn validate(&self) -> Result<(), ArtifactScenarioCompileErrorV1> {
         if self.schema_version != SDIST_BUILD_CLOSURE_SCHEMA_V1
             || self.artifacts.windows(2).any(|pair| pair[0] >= pair[1])
@@ -571,6 +577,9 @@ impl SdistScenarioTemplateV1 {
     }
     pub fn policy_sha256(&self) -> &Sha256Digest {
         &self.policy_sha256
+    }
+    pub fn build_closure(&self) -> &SdistBuildClosureV1 {
+        &self.build_closure
     }
     pub fn scenario_kind(&self) -> &SdistScenarioKindV1 {
         &self.scenario_kind
@@ -986,6 +995,7 @@ pub struct ValidatedSdistScenarioTemplateWireV1 {
     pip_version: String,
     pip_cli_sha256: Sha256Digest,
     build_closure_sha256: Sha256Digest,
+    build_closure: SdistBuildClosureV1,
 }
 
 impl ValidatedSdistScenarioTemplateWireV1 {
@@ -1022,6 +1032,9 @@ impl ValidatedSdistScenarioTemplateWireV1 {
     pub fn build_closure_sha256(&self) -> &Sha256Digest {
         &self.build_closure_sha256
     }
+    pub fn build_closure(&self) -> &SdistBuildClosureV1 {
+        &self.build_closure
+    }
 }
 
 pub fn decode_and_validate_sdist_scenario_template_v1(
@@ -1054,7 +1067,8 @@ pub fn decode_and_validate_sdist_scenario_template_v1(
         python_executable_sha256: wire.runtime_profile.python_executable_sha256,
         pip_version: wire.runtime_profile.pip_version,
         pip_cli_sha256: wire.runtime_profile.pip_cli_sha256,
-        build_closure_sha256: wire.build_closure.closure_sha256,
+        build_closure_sha256: wire.build_closure.closure_sha256.clone(),
+        build_closure: wire.build_closure,
     })
 }
 

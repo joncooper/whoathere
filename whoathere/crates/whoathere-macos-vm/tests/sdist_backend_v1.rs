@@ -23,11 +23,13 @@ use whoathere_macos_vm::{
     compile_macos_sdist_run_spec_v1, consume_and_authorize_macos_sdist_guest_session_v1,
     consume_macos_sdist_launch_authority_v1, decode_and_validate_macos_artifact_run_spec_v1,
     decode_and_validate_macos_sdist_run_spec_v1, decode_and_validate_macos_wheel_run_spec_v1,
-    decode_macos_sdist_guest_auth_challenge_v1, decode_macos_sdist_submission_frame_v1,
-    encode_macos_sdist_submission_frame_v1, prepare_macos_sdist_launch_v1,
-    read_macos_sdist_guest_control_frame_v1, require_macos_sdist_guest_control_eof_v1,
-    run_macos_sdist_guest_nonexecuting_session_v1, sign_macos_sdist_guest_auth_response_v1,
-    sign_macos_sdist_guest_staging_receipt_v1, stage_macos_sdist_guest_submission_v1,
+    decode_macos_sdist_build_closure_frame_v1, decode_macos_sdist_guest_auth_challenge_v1,
+    decode_macos_sdist_submission_frame_v1, encode_macos_sdist_build_closure_frame_v1,
+    encode_macos_sdist_guest_build_closure_frame_v1, encode_macos_sdist_submission_frame_v1,
+    prepare_macos_sdist_launch_v1, read_macos_sdist_guest_control_frame_v1,
+    require_macos_sdist_guest_control_eof_v1, run_macos_sdist_guest_nonexecuting_session_v1,
+    sign_macos_sdist_guest_auth_response_v1, sign_macos_sdist_guest_staging_receipt_v1,
+    stage_macos_sdist_guest_submission_v1, stream_macos_sdist_guest_build_closure_v1,
     stream_macos_sdist_guest_submission_v1, verify_macos_sdist_guest_auth_response_v1,
     verify_macos_sdist_guest_staging_receipt_v1, write_macos_sdist_guest_control_frame_v1,
     MacosArtifactRunErrorV1, MacosSdistBackendCapabilitiesV1, MacosSdistBackendIdentityV1,
@@ -37,13 +39,21 @@ use whoathere_macos_vm::{
     MacosSdistGuestStagingReceiptClaimsV1, MacosSdistGuestSupervisorPrimaryErrorV1,
     MacosSdistLaunchAuthorityConsumptionRequestV1, MacosSdistLaunchAuthorityErrorV1,
     MacosSdistSubmissionBindingsV1, MacosSdistSubmissionErrorV1, MacosSdistSubmissionHeaderV1,
-    SdistGuestRehashPhaseV1, MACOS_SDIST_GUEST_PROTOCOL_V1, MACOS_SDIST_GUEST_SUBMISSION_MAGIC_V1,
-    MACOS_SDIST_RUN_SPEC_SCHEMA_V1, MACOS_SDIST_SUBMISSION_FIXED_PREFIX_BYTES_V1,
-    MACOS_SDIST_SUBMISSION_MAGIC_V1, MAX_MACOS_SDIST_LAUNCH_AUTHORITY_LIFETIME_SECONDS_V1,
+    SdistGuestRehashPhaseV1, MACOS_SDIST_BUILD_CLOSURE_MAGIC_V1, MACOS_SDIST_GUEST_PROTOCOL_V1,
+    MACOS_SDIST_GUEST_SUBMISSION_MAGIC_V1, MACOS_SDIST_RUN_SPEC_SCHEMA_V1,
+    MACOS_SDIST_SUBMISSION_FIXED_PREFIX_BYTES_V1, MACOS_SDIST_SUBMISSION_MAGIC_V1,
+    MAX_MACOS_SDIST_LAUNCH_AUTHORITY_LIFETIME_SECONDS_V1,
 };
 
 fn digest(bytes: &[u8]) -> Sha256Digest {
     Sha256Digest::from_bytes(bytes)
+}
+
+fn build_closure_artifact_bytes() -> Vec<Vec<u8>> {
+    vec![
+        b"inert exact setuptools wheel bytes".to_vec(),
+        b"inert exact wheel project artifact bytes".to_vec(),
+    ]
 }
 
 fn tar_gzip(entries: &[(String, Vec<u8>)]) -> Vec<u8> {
@@ -147,21 +157,22 @@ fn compiled_templates(init_bytes: &[u8]) -> (Vec<SdistScenarioTemplateV1>, Vec<u
         .expect("sdist metadata")
         .build_requires
         .clone();
+    let closure_bytes = build_closure_artifact_bytes();
     let closure = SdistBuildClosureV1::new(
         &build_requires,
         vec![
             SdistBuildClosureArtifactV1::new(
                 "setuptools",
                 "75.0.0",
-                digest(b"exact setuptools closure artifact"),
-                12_345,
+                digest(&closure_bytes[0]),
+                closure_bytes[0].len() as u64,
             )
             .expect("setuptools closure"),
             SdistBuildClosureArtifactV1::new(
                 "wheel",
                 "0.44.0",
-                digest(b"exact wheel closure artifact"),
-                6_789,
+                digest(&closure_bytes[1]),
+                closure_bytes[1].len() as u64,
             )
             .expect("wheel closure"),
         ],
@@ -202,6 +213,103 @@ fn compiled_templates(init_bytes: &[u8]) -> (Vec<SdistScenarioTemplateV1>, Vec<u
     })
     .expect("sdist plan");
     (plan.templates().to_vec(), bytes)
+}
+
+#[test]
+fn sdist_build_closure_transport_is_distinct_bounded_exact_and_digest_bound() {
+    let (templates, _) = compiled_templates(b"VALUE = 'closure transport inert'\n");
+    let run_spec =
+        compile_macos_sdist_run_spec_v1(&templates[0], &backend(digest(b"measured pip")))
+            .expect("closure run spec");
+    let closure = run_spec.build_closure();
+    let closure_bytes = build_closure_artifact_bytes();
+
+    let host = encode_macos_sdist_build_closure_frame_v1(closure, &closure_bytes)
+        .expect("host closure frame");
+    assert_eq!(&host[..8], MACOS_SDIST_BUILD_CLOSURE_MAGIC_V1);
+    let (payload, host_observation) =
+        decode_macos_sdist_build_closure_frame_v1(&host, closure).expect("decode host closure");
+    assert_eq!(payload, closure_bytes.concat());
+    assert_eq!(
+        host_observation.closure_sha256(),
+        run_spec.build_closure_sha256()
+    );
+    assert_eq!(host_observation.artifact_count(), closure_bytes.len());
+    assert_eq!(
+        host_observation.payload_byte_length(),
+        closure_bytes.iter().map(Vec::len).sum::<usize>() as u64
+    );
+
+    let guest = encode_macos_sdist_guest_build_closure_frame_v1(closure, &closure_bytes)
+        .expect("guest closure frame");
+    let mut guest_payload = Vec::new();
+    let guest_observation = stream_macos_sdist_guest_build_closure_v1(
+        &mut FragmentedReader::new(guest.clone(), 3),
+        &mut guest_payload,
+        closure,
+    )
+    .expect("stream guest closure");
+    assert_eq!(guest_payload, payload);
+    assert_eq!(guest_observation, host_observation);
+
+    assert_eq!(
+        stream_macos_sdist_guest_build_closure_v1(&mut Cursor::new(host), &mut Vec::new(), closure,),
+        Err(whoathere_macos_vm::MacosSdistBuildClosureTransportErrorV1::InvalidMagic)
+    );
+    let mut mutated = guest.clone();
+    *mutated.last_mut().expect("closure payload byte") ^= 1;
+    assert_eq!(
+        stream_macos_sdist_guest_build_closure_v1(
+            &mut Cursor::new(mutated),
+            &mut Vec::new(),
+            closure,
+        ),
+        Err(whoathere_macos_vm::MacosSdistBuildClosureTransportErrorV1::ArtifactDigestMismatch)
+    );
+    let mut trailing = guest.clone();
+    trailing.push(0);
+    assert_eq!(
+        stream_macos_sdist_guest_build_closure_v1(
+            &mut Cursor::new(trailing),
+            &mut Vec::new(),
+            closure,
+        ),
+        Err(whoathere_macos_vm::MacosSdistBuildClosureTransportErrorV1::TrailingData)
+    );
+    let mut truncated = guest;
+    truncated.pop();
+    assert_eq!(
+        stream_macos_sdist_guest_build_closure_v1(
+            &mut Cursor::new(truncated),
+            &mut Vec::new(),
+            closure,
+        ),
+        Err(whoathere_macos_vm::MacosSdistBuildClosureTransportErrorV1::Truncated)
+    );
+
+    let mut rebound = encode_macos_sdist_build_closure_frame_v1(closure, &closure_bytes)
+        .expect("rebound fixture");
+    rebound[32] ^= 1;
+    assert_eq!(
+        decode_macos_sdist_build_closure_frame_v1(&rebound, closure),
+        Err(whoathere_macos_vm::MacosSdistBuildClosureTransportErrorV1::BindingMismatch)
+    );
+    let mut wrong_bytes = closure_bytes.clone();
+    wrong_bytes[0][0] ^= 1;
+    assert_eq!(
+        encode_macos_sdist_build_closure_frame_v1(closure, &wrong_bytes),
+        Err(whoathere_macos_vm::MacosSdistBuildClosureTransportErrorV1::ArtifactDigestMismatch)
+    );
+
+    let empty = SdistBuildClosureV1::new(&[], Vec::new()).expect("empty fixed closure");
+    let empty_frame =
+        encode_macos_sdist_build_closure_frame_v1(&empty, &[]).expect("empty closure frame");
+    let (empty_payload, empty_observation) =
+        decode_macos_sdist_build_closure_frame_v1(&empty_frame, &empty)
+            .expect("empty closure decode");
+    assert!(empty_payload.is_empty());
+    assert_eq!(empty_observation.artifact_count(), 0);
+    assert_eq!(empty_observation.payload_byte_length(), 0);
 }
 
 fn backend(pip_cli_sha256: Sha256Digest) -> MacosSdistBackendCapabilitiesV1 {

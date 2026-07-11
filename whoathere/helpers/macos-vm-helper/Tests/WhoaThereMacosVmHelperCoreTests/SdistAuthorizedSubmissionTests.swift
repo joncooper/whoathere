@@ -416,7 +416,7 @@ import Testing
     try resultBox.load()?.get()
 }
 
-private struct AuthorizedSdistAuthorityFixture {
+struct AuthorizedSdistAuthorityFixture {
     let root: URL
     let layout: SdistRunAuthorityLayout
     let authorityID: String
@@ -426,7 +426,7 @@ private struct AuthorizedSdistAuthorityFixture {
     let now: UInt64
 }
 
-private func authorizedSdistAuthorityFixture(
+func authorizedSdistAuthorityFixture(
     authorityID: String,
     prelude: SdistRunSubmissionPrelude,
     buildClosureSHA256: String? = nil
@@ -475,7 +475,7 @@ private func authorizedSdistAuthorityFixture(
     )
 }
 
-private func authorizedSdistAuthorityID(_ digit: Character) -> String {
+func authorizedSdistAuthorityID(_ digit: Character) -> String {
     "sdist-authority-" + String(repeating: String(digit), count: 64)
 }
 

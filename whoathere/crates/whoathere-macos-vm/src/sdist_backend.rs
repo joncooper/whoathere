@@ -263,6 +263,7 @@ pub struct MacosSdistRunSpecV1 {
     artifact_sha256: Sha256Digest,
     artifact_byte_length: u64,
     build_closure_sha256: Sha256Digest,
+    build_closure: whoathere_detonation::SdistBuildClosureV1,
     scenario_id: String,
     scenario_kind: SdistScenarioKindV1,
     backend_identity: MacosSdistBackendIdentityV1,
@@ -308,6 +309,10 @@ impl MacosSdistRunSpecV1 {
 
     pub fn build_closure_sha256(&self) -> &Sha256Digest {
         &self.build_closure_sha256
+    }
+
+    pub fn build_closure(&self) -> &whoathere_detonation::SdistBuildClosureV1 {
+        &self.build_closure
     }
 
     pub fn scenario_id(&self) -> &str {
@@ -363,6 +368,7 @@ pub fn compile_macos_sdist_run_spec_v1(
         artifact_sha256: validated.artifact_sha256().clone(),
         artifact_byte_length: validated.artifact_byte_length(),
         build_closure_sha256: validated.build_closure_sha256().clone(),
+        build_closure: validated.build_closure().clone(),
         scenario_id: validated.scenario_id().to_string(),
         scenario_kind: validated.scenario_kind().clone(),
         backend_identity: backend.identity.clone(),
@@ -412,6 +418,7 @@ pub fn decode_and_validate_macos_sdist_run_spec_v1(
         artifact_sha256: validated.artifact_sha256().clone(),
         artifact_byte_length: validated.artifact_byte_length(),
         build_closure_sha256: wire.build_closure_sha256,
+        build_closure: validated.build_closure().clone(),
         scenario_id: validated.scenario_id().to_string(),
         scenario_kind: validated.scenario_kind().clone(),
         backend_identity: wire.backend_identity,
