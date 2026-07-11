@@ -66,6 +66,19 @@ public struct WheelGuestAuthObservation: Equatable, Sendable {
     public let signatureVerified: Bool
 }
 
+public struct WheelGuestAuthenticatedSession: Equatable, Sendable {
+    public let challenge: WheelGuestAuthChallenge
+    public let observation: WheelGuestAuthObservation
+
+    public init(
+        challenge: WheelGuestAuthChallenge,
+        observation: WheelGuestAuthObservation
+    ) {
+        self.challenge = challenge
+        self.observation = observation
+    }
+}
+
 public func wheelCloneBindingSHA256(
     baseGenerationID: String,
     runID: String,

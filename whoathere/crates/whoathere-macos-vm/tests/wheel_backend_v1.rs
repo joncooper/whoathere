@@ -21,12 +21,14 @@ use whoathere_macos_vm::{
     decode_macos_wheel_submission_frame_v1, encode_macos_wheel_submission_frame_v1,
     macos_wheel_execution_binding_sha256_v1, read_macos_wheel_guest_control_frame_v1,
     require_macos_wheel_guest_control_eof_v1, sign_macos_wheel_guest_auth_response_v1,
-    stage_macos_wheel_guest_submission_v1, stream_macos_wheel_guest_submission_v1,
-    verify_macos_wheel_guest_auth_response_v1, write_macos_wheel_guest_control_frame_v1,
+    sign_macos_wheel_guest_staging_receipt_v1, stage_macos_wheel_guest_submission_v1,
+    stream_macos_wheel_guest_submission_v1, verify_macos_wheel_guest_auth_response_v1,
+    verify_macos_wheel_guest_staging_receipt_v1, write_macos_wheel_guest_control_frame_v1,
     MacosArtifactRunErrorV1, MacosWheelBackendCapabilitiesV1, MacosWheelBackendIdentityV1,
     MacosWheelGuestAuthChallengeV1, MacosWheelGuestAuthClaimsV1, MacosWheelGuestAuthErrorV1,
     MacosWheelGuestControlErrorV1, MacosWheelGuestControlFrameTypeV1,
-    MacosWheelGuestStagingErrorV1, MacosWheelGuestStagingPolicyV1, MacosWheelSubmissionBindingsV1,
+    MacosWheelGuestStagingErrorV1, MacosWheelGuestStagingPolicyV1,
+    MacosWheelGuestStagingReceiptClaimsV1, MacosWheelSubmissionBindingsV1,
     MacosWheelSubmissionErrorV1, MacosWheelSubmissionHeaderV1, WheelGuestRehashPhaseV1,
     MACOS_WHEEL_GUEST_SUBMISSION_MAGIC_V1, MACOS_WHEEL_SUBMISSION_FIXED_PREFIX_BYTES_V1,
     MACOS_WHEEL_SUBMISSION_MAGIC_V1,
@@ -778,6 +780,91 @@ fn wheel_guest_staging_discards_bad_transport_and_detects_path_replacement() {
     staged.cleanup().expect("retry wheel cleanup");
     assert_eq!(fs::read_dir(&root).expect("clean wheel root").count(), 0);
     fs::remove_dir(root).expect("remove wheel staging root");
+}
+
+#[test]
+fn signed_wheel_staging_receipt_binds_held_inode_and_no_execution_posture() {
+    let seed = [7_u8; 32];
+    let verifying_key = SigningKey::from_bytes(&seed).verifying_key().to_bytes();
+    let challenge = MacosWheelGuestAuthChallengeV1::new(
+        [11_u8; 32],
+        digest(b"wheel execution binding"),
+        digest(b"wheel run spec"),
+        digest(b"wheel clone binding"),
+        Sha256Digest::from_bytes(&verifying_key),
+    )
+    .expect("wheel receipt challenge");
+    let auth_claims = MacosWheelGuestAuthClaimsV1::new(
+        digest(b"wheel guest supervisor"),
+        digest(b"wheel runner configuration"),
+        499,
+        499,
+    )
+    .expect("wheel auth claims");
+    let staging_claims = MacosWheelGuestStagingReceiptClaimsV1::new(
+        digest(b"wheel artifact"),
+        205,
+        digest(b"wheel artifact"),
+        205,
+        123,
+        456,
+    )
+    .expect("wheel staging claims");
+    let receipt =
+        sign_macos_wheel_guest_staging_receipt_v1(&challenge, seed, &auth_claims, &staging_claims)
+            .expect("signed wheel staging receipt");
+    let observation = verify_macos_wheel_guest_staging_receipt_v1(
+        &challenge,
+        &receipt,
+        verifying_key,
+        &auth_claims,
+        &staging_claims,
+    )
+    .expect("verified wheel staging receipt");
+    assert_eq!(observation.package_uid(), 499);
+    assert_eq!(observation.package_gid(), 499);
+    assert_eq!(observation.claims().staged_device(), 123);
+    assert_eq!(observation.claims().staged_inode(), 456);
+    assert_eq!(
+        std::str::from_utf8(&receipt).expect("receipt UTF-8"),
+        r#"{"artifact_byte_length":"205","artifact_file_mode":"0444","artifact_file_name":"artifact.whl","artifact_sha256":"sha256:b0d81135ac556bd1bd195274005aed8ae034601b9393d1900347076a4e8928b1","challenge_sha256":"sha256:763b43adeed736fc4fe75497780a71f412e4ea13628f50b63e0448c44e1c6d41","clone_binding_sha256":"sha256:29bea0252f37265b288224ebf9b5220fd7d9696fc64aa65f4d6322560182cb51","execution_binding_sha256":"sha256:26ba19f41ff9747505dcbc06292c2debb15a97fe8cb80f2a7625ceba0653356d","first_rehash_byte_length":"205","first_rehash_sha256":"sha256:b0d81135ac556bd1bd195274005aed8ae034601b9393d1900347076a4e8928b1","package_execution_enabled":false,"package_gid":"499","package_uid":"499","run_spec_sha256":"sha256:6ed9490f306948340b695150470fee00b434f28442914867c0750b067abf228e","schema_version":"whoathere.wheel_guest_staging_receipt.v1","signature_ed25519_hex":"4a5e8648d3d1757c69af3c66bfc6bfdd50ac12af8bbe3cc59219a0810f224e14836e5836d7f33830594d7d777125ef2e67cde9019790635be978868fa51fdf04","staged_device":"123","staged_inode":"456","staging_directory_mode":"0711","status":"staged_no_execution"}"#
+    );
+
+    let mut execution_enabled: serde_json::Value =
+        serde_json::from_slice(&receipt).expect("receipt JSON");
+    execution_enabled["package_execution_enabled"] = serde_json::json!(true);
+    let execution_enabled =
+        serde_json_canonicalizer::to_vec(&execution_enabled).expect("enabled receipt");
+    assert_eq!(
+        verify_macos_wheel_guest_staging_receipt_v1(
+            &challenge,
+            &execution_enabled,
+            verifying_key,
+            &auth_claims,
+            &staging_claims,
+        ),
+        Err(MacosWheelGuestAuthErrorV1::InvalidResponse)
+    );
+
+    let wrong_inode = MacosWheelGuestStagingReceiptClaimsV1::new(
+        digest(b"wheel artifact"),
+        205,
+        digest(b"wheel artifact"),
+        205,
+        123,
+        457,
+    )
+    .expect("wrong inode claims");
+    assert_eq!(
+        verify_macos_wheel_guest_staging_receipt_v1(
+            &challenge,
+            &receipt,
+            verifying_key,
+            &auth_claims,
+            &wrong_inode,
+        ),
+        Err(MacosWheelGuestAuthErrorV1::InvalidResponse)
+    );
 }
 
 fn wheel_guest_staging_frame() -> (Vec<u8>, Vec<u8>, whoathere_macos_vm::MacosWheelRunSpecV1) {

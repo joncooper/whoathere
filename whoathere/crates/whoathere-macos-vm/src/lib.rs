@@ -8,6 +8,7 @@ mod artifact_transport;
 mod wheel_backend;
 mod wheel_guest_auth;
 mod wheel_guest_control;
+mod wheel_guest_receipt;
 mod wheel_guest_staging;
 mod wheel_transport;
 
@@ -21,6 +22,7 @@ pub use artifact_transport::*;
 pub use wheel_backend::*;
 pub use wheel_guest_auth::*;
 pub use wheel_guest_control::*;
+pub use wheel_guest_receipt::*;
 pub use wheel_guest_staging::*;
 pub use wheel_transport::*;
 

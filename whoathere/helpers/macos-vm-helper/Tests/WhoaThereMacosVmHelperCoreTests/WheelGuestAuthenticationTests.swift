@@ -3,9 +3,9 @@ import Foundation
 import Testing
 @testable import WhoaThereMacosVmHelperCore
 
-private let wheelAuthGoldenChallenge = Data(#"{"clone_binding_sha256":"sha256:29bea0252f37265b288224ebf9b5220fd7d9696fc64aa65f4d6322560182cb51","execution_binding_sha256":"sha256:26ba19f41ff9747505dcbc06292c2debb15a97fe8cb80f2a7625ceba0653356d","guest_auth_public_key_sha256":"sha256:fe812c12f3ab4ce6ac5db69ac352f906cb1b11ef43fb33e252ef7ff552263889","nonce_hex":"0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b","run_spec_sha256":"sha256:6ed9490f306948340b695150470fee00b434f28442914867c0750b067abf228e","schema_version":"whoathere.wheel_guest_auth_challenge.v1"}"#.utf8)
+let wheelAuthGoldenChallenge = Data(#"{"clone_binding_sha256":"sha256:29bea0252f37265b288224ebf9b5220fd7d9696fc64aa65f4d6322560182cb51","execution_binding_sha256":"sha256:26ba19f41ff9747505dcbc06292c2debb15a97fe8cb80f2a7625ceba0653356d","guest_auth_public_key_sha256":"sha256:fe812c12f3ab4ce6ac5db69ac352f906cb1b11ef43fb33e252ef7ff552263889","nonce_hex":"0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b","run_spec_sha256":"sha256:6ed9490f306948340b695150470fee00b434f28442914867c0750b067abf228e","schema_version":"whoathere.wheel_guest_auth_challenge.v1"}"#.utf8)
 
-private let wheelAuthGoldenResponse = Data(#"{"challenge_sha256":"sha256:763b43adeed736fc4fe75497780a71f412e4ea13628f50b63e0448c44e1c6d41","clone_binding_sha256":"sha256:29bea0252f37265b288224ebf9b5220fd7d9696fc64aa65f4d6322560182cb51","execution_binding_sha256":"sha256:26ba19f41ff9747505dcbc06292c2debb15a97fe8cb80f2a7625ceba0653356d","guest_supervisor_sha256":"sha256:0d2f2274c6f58bd4cc5430838896cc59b5e5ed4840de084cea26af903f93276e","package_gid":"499","package_uid":"499","run_spec_sha256":"sha256:6ed9490f306948340b695150470fee00b434f28442914867c0750b067abf228e","runner_configuration_sha256":"sha256:0e539a3c126c40c4efdfae8fb67ad5fb81f57660a4de665743586531faafc67b","schema_version":"whoathere.wheel_guest_auth_response.v1","signature_ed25519_hex":"deca32783d5e3774da376dad89cce630f9c9ddc69cf14abffcb921213e6fc9c2832f3d97c7b6d62062829f74843281aa8ebbe52f0876199871dcbd461dc6bb01"}"#.utf8)
+let wheelAuthGoldenResponse = Data(#"{"challenge_sha256":"sha256:763b43adeed736fc4fe75497780a71f412e4ea13628f50b63e0448c44e1c6d41","clone_binding_sha256":"sha256:29bea0252f37265b288224ebf9b5220fd7d9696fc64aa65f4d6322560182cb51","execution_binding_sha256":"sha256:26ba19f41ff9747505dcbc06292c2debb15a97fe8cb80f2a7625ceba0653356d","guest_supervisor_sha256":"sha256:0d2f2274c6f58bd4cc5430838896cc59b5e5ed4840de084cea26af903f93276e","package_gid":"499","package_uid":"499","run_spec_sha256":"sha256:6ed9490f306948340b695150470fee00b434f28442914867c0750b067abf228e","runner_configuration_sha256":"sha256:0e539a3c126c40c4efdfae8fb67ad5fb81f57660a4de665743586531faafc67b","schema_version":"whoathere.wheel_guest_auth_response.v1","signature_ed25519_hex":"deca32783d5e3774da376dad89cce630f9c9ddc69cf14abffcb921213e6fc9c2832f3d97c7b6d62062829f74843281aa8ebbe52f0876199871dcbd461dc6bb01"}"#.utf8)
 
 @Test func rustWheelGuestAuthGoldenIsEncodedAndVerifiedBySwift() throws {
     let publicKey = try guestAuthTestPublicKey()
@@ -118,7 +118,7 @@ private let wheelAuthGoldenResponse = Data(#"{"challenge_sha256":"sha256:763b43a
     #expect(first != changedDisk)
 }
 
-private func goldenWheelAuthPrelude(publicKey: Data) -> WheelRunSubmissionPrelude {
+func goldenWheelAuthPrelude(publicKey: Data) -> WheelRunSubmissionPrelude {
     let backend = WheelRunBackendIdentity(
         baseGenerationID: "wheel-golden-base",
         baseDiskSHA256: sha256(Data("wheel base disk".utf8)),
@@ -148,7 +148,7 @@ private func goldenWheelAuthPrelude(publicKey: Data) -> WheelRunSubmissionPrelud
         challengeBindingSHA256: sha256(Data("wheel challenge binding".utf8)),
         executionBindingSHA256: sha256(Data("wheel execution binding".utf8)),
         artifactSHA256: sha256(Data("wheel artifact".utf8)),
-        artifactByteLength: 8,
+        artifactByteLength: 205,
         headerByteLength: 1,
         scenarioID: "wheel-golden-scenario",
         scenarioKind: "install_exact_wheel",
