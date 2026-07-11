@@ -22,21 +22,22 @@ use whoathere_macos_vm::{
     compile_macos_sdist_run_spec_v1, decode_and_validate_macos_artifact_run_spec_v1,
     decode_and_validate_macos_sdist_run_spec_v1, decode_and_validate_macos_wheel_run_spec_v1,
     decode_macos_sdist_guest_auth_challenge_v1, decode_macos_sdist_submission_frame_v1,
-    encode_macos_sdist_submission_frame_v1, read_macos_sdist_guest_control_frame_v1,
-    require_macos_sdist_guest_control_eof_v1, run_macos_sdist_guest_nonexecuting_session_v1,
-    sign_macos_sdist_guest_auth_response_v1, sign_macos_sdist_guest_staging_receipt_v1,
-    stage_macos_sdist_guest_submission_v1, stream_macos_sdist_guest_submission_v1,
-    verify_macos_sdist_guest_auth_response_v1, verify_macos_sdist_guest_staging_receipt_v1,
-    write_macos_sdist_guest_control_frame_v1, MacosArtifactRunErrorV1,
-    MacosSdistBackendCapabilitiesV1, MacosSdistBackendIdentityV1, MacosSdistGuestAuthChallengeV1,
-    MacosSdistGuestAuthClaimsV1, MacosSdistGuestAuthErrorV1, MacosSdistGuestControlErrorV1,
-    MacosSdistGuestControlFrameTypeV1, MacosSdistGuestStagingErrorV1,
-    MacosSdistGuestStagingPolicyV1, MacosSdistGuestStagingReceiptClaimsV1,
-    MacosSdistGuestSupervisorPrimaryErrorV1, MacosSdistSubmissionBindingsV1,
-    MacosSdistSubmissionErrorV1, MacosSdistSubmissionHeaderV1, SdistGuestRehashPhaseV1,
-    MACOS_SDIST_GUEST_PROTOCOL_V1, MACOS_SDIST_GUEST_SUBMISSION_MAGIC_V1,
-    MACOS_SDIST_RUN_SPEC_SCHEMA_V1, MACOS_SDIST_SUBMISSION_FIXED_PREFIX_BYTES_V1,
-    MACOS_SDIST_SUBMISSION_MAGIC_V1,
+    encode_macos_sdist_submission_frame_v1, prepare_macos_sdist_launch_v1,
+    read_macos_sdist_guest_control_frame_v1, require_macos_sdist_guest_control_eof_v1,
+    run_macos_sdist_guest_nonexecuting_session_v1, sign_macos_sdist_guest_auth_response_v1,
+    sign_macos_sdist_guest_staging_receipt_v1, stage_macos_sdist_guest_submission_v1,
+    stream_macos_sdist_guest_submission_v1, verify_macos_sdist_guest_auth_response_v1,
+    verify_macos_sdist_guest_staging_receipt_v1, write_macos_sdist_guest_control_frame_v1,
+    MacosArtifactRunErrorV1, MacosSdistBackendCapabilitiesV1, MacosSdistBackendIdentityV1,
+    MacosSdistGuestAuthChallengeV1, MacosSdistGuestAuthClaimsV1, MacosSdistGuestAuthErrorV1,
+    MacosSdistGuestControlErrorV1, MacosSdistGuestControlFrameTypeV1,
+    MacosSdistGuestStagingErrorV1, MacosSdistGuestStagingPolicyV1,
+    MacosSdistGuestStagingReceiptClaimsV1, MacosSdistGuestSupervisorPrimaryErrorV1,
+    MacosSdistLaunchAuthorityErrorV1, MacosSdistSubmissionBindingsV1, MacosSdistSubmissionErrorV1,
+    MacosSdistSubmissionHeaderV1, SdistGuestRehashPhaseV1, MACOS_SDIST_GUEST_PROTOCOL_V1,
+    MACOS_SDIST_GUEST_SUBMISSION_MAGIC_V1, MACOS_SDIST_RUN_SPEC_SCHEMA_V1,
+    MACOS_SDIST_SUBMISSION_FIXED_PREFIX_BYTES_V1, MACOS_SDIST_SUBMISSION_MAGIC_V1,
+    MAX_MACOS_SDIST_LAUNCH_AUTHORITY_LIFETIME_SECONDS_V1,
 };
 
 fn digest(bytes: &[u8]) -> Sha256Digest {
@@ -1107,4 +1108,83 @@ fn sdist_guest_supervisor_rejects_closure_rebinding_and_cleans_staging() {
     assert!(!failure.staging_cleanup_failed());
     assert_eq!(fs::read_dir(&root).expect("clean root").count(), 0);
     fs::remove_dir(root).expect("remove rebind root");
+}
+
+#[test]
+fn sdist_launch_authority_is_random_expiring_and_bound_to_artifact_run_spec_and_closure() {
+    let (templates, _) = compiled_templates(b"VALUE = 'authority inert'\n");
+    let run_spec =
+        compile_macos_sdist_run_spec_v1(&templates[0], &backend(digest(b"measured pip")))
+            .expect("authority run spec");
+    let root = temporary_sdist_staging_root("authority");
+    let first = prepare_macos_sdist_launch_v1(&root, run_spec.clone(), 2_000_000_000, 120)
+        .expect("first authority");
+    let second = prepare_macos_sdist_launch_v1(&root, run_spec.clone(), 2_000_000_001, 120)
+        .expect("second authority");
+    assert_ne!(
+        first.authority().record().authority_id(),
+        second.authority().record().authority_id()
+    );
+    assert_ne!(
+        first.authority().record().challenge_binding_sha256(),
+        second.authority().record().challenge_binding_sha256()
+    );
+    assert_eq!(
+        first.header().bindings().challenge_binding_sha256(),
+        first.authority().record().challenge_binding_sha256()
+    );
+    assert_eq!(
+        first.authority().record().run_spec_sha256(),
+        run_spec.run_spec_sha256()
+    );
+    assert_eq!(
+        first.authority().record().artifact_sha256(),
+        run_spec.artifact_sha256()
+    );
+    assert_eq!(
+        first.authority().record().build_closure_sha256(),
+        run_spec.build_closure_sha256()
+    );
+    assert_eq!(
+        first.authority().record().issued_at_unix_seconds(),
+        2_000_000_000
+    );
+    assert_eq!(
+        first.authority().record().expires_at_unix_seconds(),
+        2_000_000_120
+    );
+    let bytes = fs::read(first.authority().pending_path()).expect("authority bytes");
+    assert_eq!(
+        first.authority().record_sha256(),
+        &Sha256Digest::from_bytes(&bytes)
+    );
+    assert_eq!(
+        fs::metadata(first.authority().pending_path())
+            .expect("authority metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+    assert_eq!(
+        prepare_macos_sdist_launch_v1(
+            &root,
+            run_spec.clone(),
+            2_000_000_000,
+            MAX_MACOS_SDIST_LAUNCH_AUTHORITY_LIFETIME_SECONDS_V1 + 1,
+        ),
+        Err(MacosSdistLaunchAuthorityErrorV1::InvalidTime)
+    );
+
+    let unsafe_root = temporary_sdist_staging_root("authority-unsafe");
+    fs::set_permissions(&unsafe_root, fs::Permissions::from_mode(0o777))
+        .expect("make unsafe authority root");
+    assert_eq!(
+        prepare_macos_sdist_launch_v1(&unsafe_root, run_spec, 2_000_000_000, 120),
+        Err(MacosSdistLaunchAuthorityErrorV1::UnsafeStateDirectory)
+    );
+    fs::set_permissions(&unsafe_root, fs::Permissions::from_mode(0o700))
+        .expect("restore authority root");
+    fs::remove_dir(unsafe_root).expect("remove unsafe authority root");
+    fs::remove_dir_all(root).expect("remove authority tree");
 }
