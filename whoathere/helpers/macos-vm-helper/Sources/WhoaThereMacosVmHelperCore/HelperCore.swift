@@ -19,6 +19,23 @@ public enum HelperCommand: String, Sendable {
     case detonate
 }
 
+public struct ArtifactRunOptions: Equatable, Sendable {
+    public var stateDir: String?
+    public var execute: Bool
+    public var json: Bool
+
+    public init(stateDir: String? = nil, execute: Bool = false, json: Bool = false) {
+        self.stateDir = stateDir
+        self.execute = execute
+        self.json = json
+    }
+}
+
+public enum HelperInvocation: Equatable, Sendable {
+    case legacy(HelperOptions)
+    case artifactRun(ArtifactRunOptions)
+}
+
 public struct HelperOptions: Equatable, Sendable {
     public var command: HelperCommand
     public var stateDir: String?
@@ -231,6 +248,59 @@ public func parseArguments(_ arguments: [String]) throws -> HelperOptions {
         }
     }
     return options
+}
+
+public func parseHelperInvocation(_ arguments: [String]) throws -> HelperInvocation {
+    guard let command = arguments.first else {
+        throw ArgumentError.commandRequired
+    }
+    guard command == "artifact-run" else {
+        return .legacy(try parseArguments(arguments))
+    }
+
+    var options = ArtifactRunOptions()
+    var index = arguments.index(after: arguments.startIndex)
+    while index < arguments.endIndex {
+        let token = arguments[index]
+        switch token {
+        case "--execute":
+            options.execute = true
+            index += 1
+        case "--json":
+            options.json = true
+            index += 1
+        case "--state-dir":
+            options.stateDir = try value(after: token, in: arguments, at: &index)
+        default:
+            if let split = token.firstIndex(of: "="), token.starts(with: "--") {
+                let flag = String(token[..<split])
+                let rawValue = String(token[token.index(after: split)...])
+                switch flag {
+                case "--state-dir":
+                    guard !rawValue.isEmpty else {
+                        throw ArgumentError.valueRequired(flag)
+                    }
+                    options.stateDir = rawValue
+                case "--execute":
+                    guard rawValue == "true" else {
+                        throw ArgumentError.unknownFlag(token)
+                    }
+                    options.execute = true
+                case "--json":
+                    guard rawValue == "true" else {
+                        throw ArgumentError.unknownFlag(token)
+                    }
+                    options.json = true
+                default:
+                    throw ArgumentError.unknownFlag(flag)
+                }
+                index += 1
+            } else {
+                throw ArgumentError.unknownFlag(token)
+            }
+        }
+    }
+    return .artifactRun(options)
 }
 
 public struct BundleLayout: Equatable, Sendable {

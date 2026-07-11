@@ -496,8 +496,13 @@ private func intField(_ fields: [String: Any], _ key: String) -> Int? {
 struct WhoaThereMacosVmHelper {
     static func main() {
         do {
-            let options = try parseArguments(Array(CommandLine.arguments.dropFirst()))
-            run(options)
+            let invocation = try parseHelperInvocation(Array(CommandLine.arguments.dropFirst()))
+            switch invocation {
+            case .legacy(let options):
+                run(options)
+            case .artifactRun(let options):
+                artifactRun(options)
+            }
         } catch {
             emit(
                 fields: [
@@ -508,6 +513,65 @@ struct WhoaThereMacosVmHelper {
                     "exit_code": 64
                 ],
                 exitCode: 64
+            )
+        }
+    }
+
+    private static func artifactRun(_ options: ArtifactRunOptions) {
+        guard options.execute else {
+            emit(
+                fields: [
+                    "schema_version": "whoathere.macos_artifact_run_parser.v1",
+                    "helper_version": helperVersion,
+                    "status": "blocked",
+                    "execution_requested": false,
+                    "vm_execution_enabled": false,
+                    "package_execution_enabled": false,
+                    "reason_codes": ["execute_required_for_artifact_submission_parse"],
+                    "exit_code": 78
+                ],
+                exitCode: 78
+            )
+        }
+        do {
+            let observation = try inspectArtifactSubmission(from: FileHandle.standardInput)
+            emit(
+                fields: [
+                    "schema_version": "whoathere.macos_artifact_run_parser.v1",
+                    "helper_version": helperVersion,
+                    "status": "blocked",
+                    "execution_requested": true,
+                    "transport_verified": true,
+                    "run_spec_sha256": observation.runSpecSHA256,
+                    "template_sha256": observation.templateSHA256,
+                    "challenge_binding_sha256": observation.challengeBindingSHA256,
+                    "execution_binding_sha256": observation.executionBindingSHA256,
+                    "artifact_sha256": observation.artifactSHA256,
+                    "artifact_byte_length": observation.artifactByteLength,
+                    "header_byte_length": observation.headerByteLength,
+                    "scenario_id": observation.scenarioID,
+                    "environment": observation.environment,
+                    "vm_execution_enabled": false,
+                    "package_execution_enabled": false,
+                    "reason_codes": ["artifact_run_disposable_vm_lifecycle_not_implemented"],
+                    "exit_code": 78
+                ],
+                exitCode: 78
+            )
+        } catch {
+            emit(
+                fields: [
+                    "schema_version": "whoathere.macos_artifact_run_parser.v1",
+                    "helper_version": helperVersion,
+                    "status": "error",
+                    "execution_requested": true,
+                    "transport_verified": false,
+                    "vm_execution_enabled": false,
+                    "package_execution_enabled": false,
+                    "reason_codes": [String(describing: error)],
+                    "exit_code": 65
+                ],
+                exitCode: 65
             )
         }
     }
