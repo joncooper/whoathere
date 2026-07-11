@@ -21,6 +21,7 @@ pub enum MacosSdistGuestStagingErrorV1 {
     CreateFailed,
     Transport(MacosSdistSubmissionErrorV1),
     BuildClosureTransport(MacosSdistBuildClosureTransportErrorV1),
+    BuildClosureMaterializationFailed,
     SyncFailed,
     VerificationFailed,
     CleanupFailed,
@@ -36,6 +37,9 @@ impl MacosSdistGuestStagingErrorV1 {
             Self::Transport(_) => "macos_sdist_guest_staging_transport_failed",
             Self::BuildClosureTransport(_) => {
                 "macos_sdist_guest_staging_build_closure_transport_failed"
+            }
+            Self::BuildClosureMaterializationFailed => {
+                "macos_sdist_guest_staging_build_closure_materialization_failed"
             }
             Self::SyncFailed => "macos_sdist_guest_staging_sync_failed",
             Self::VerificationFailed => "macos_sdist_guest_staging_verification_failed",
@@ -160,11 +164,21 @@ pub struct StagedMacosSdistGuestV1 {
     closure_manifest_path: Option<PathBuf>,
     closure_payload_path: Option<PathBuf>,
     closure_payload_file: Option<File>,
+    closure_materialization_directory_path: Option<PathBuf>,
+    closure_materialization_created_paths: Vec<PathBuf>,
+    closure_materialized_artifacts: Vec<MaterializedSdistBuildClosureArtifactV1>,
     transport: MacosSdistGuestSubmissionObservationV1,
     supervisor_uid: u32,
     device: u64,
     inode: u64,
     cleaned: bool,
+}
+
+struct MaterializedSdistBuildClosureArtifactV1 {
+    path: PathBuf,
+    file: File,
+    device: u64,
+    inode: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -173,6 +187,58 @@ pub struct SdistGuestBuildClosureStagingObservationV1 {
     manifest_sha256: Sha256Digest,
     payload_device: u64,
     payload_inode: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SdistGuestBuildClosureMaterializedArtifactObservationV1 {
+    artifact_filename: String,
+    artifact_sha256: Sha256Digest,
+    artifact_byte_length: u64,
+    device: u64,
+    inode: u64,
+}
+
+impl SdistGuestBuildClosureMaterializedArtifactObservationV1 {
+    pub fn artifact_filename(&self) -> &str {
+        &self.artifact_filename
+    }
+
+    pub fn artifact_sha256(&self) -> &Sha256Digest {
+        &self.artifact_sha256
+    }
+
+    pub fn artifact_byte_length(&self) -> u64 {
+        self.artifact_byte_length
+    }
+
+    pub fn device(&self) -> u64 {
+        self.device
+    }
+
+    pub fn inode(&self) -> u64 {
+        self.inode
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SdistGuestBuildClosureMaterializationObservationV1 {
+    directory_device: u64,
+    directory_inode: u64,
+    artifacts: Vec<SdistGuestBuildClosureMaterializedArtifactObservationV1>,
+}
+
+impl SdistGuestBuildClosureMaterializationObservationV1 {
+    pub fn directory_device(&self) -> u64 {
+        self.directory_device
+    }
+
+    pub fn directory_inode(&self) -> u64 {
+        self.directory_inode
+    }
+
+    pub fn artifacts(&self) -> &[SdistGuestBuildClosureMaterializedArtifactObservationV1] {
+        &self.artifacts
+    }
 }
 
 impl SdistGuestBuildClosureStagingObservationV1 {
@@ -217,6 +283,10 @@ impl StagedMacosSdistGuestV1 {
 
     pub fn closure_payload_path(&self) -> Option<&Path> {
         self.closure_payload_path.as_deref()
+    }
+
+    pub fn closure_materialization_directory_path(&self) -> Option<&Path> {
+        self.closure_materialization_directory_path.as_deref()
     }
 
     pub fn transport(&self) -> &MacosSdistGuestSubmissionObservationV1 {
@@ -350,6 +420,204 @@ impl StagedMacosSdistGuestV1 {
         }
     }
 
+    pub fn materialize_build_closure(
+        &mut self,
+    ) -> Result<SdistGuestBuildClosureMaterializationObservationV1, MacosSdistGuestStagingErrorV1>
+    {
+        if self.closure_materialization_directory_path.is_some()
+            || !self.closure_materialization_created_paths.is_empty()
+            || !self.closure_materialized_artifacts.is_empty()
+        {
+            return Err(MacosSdistGuestStagingErrorV1::InvalidPolicy);
+        }
+        let manifest = self.transport.header().run_spec().build_closure().clone();
+        let payload_path = self
+            .closure_payload_path
+            .as_ref()
+            .ok_or(MacosSdistGuestStagingErrorV1::InvalidPolicy)?;
+        let payload_file = self
+            .closure_payload_file
+            .as_mut()
+            .ok_or(MacosSdistGuestStagingErrorV1::InvalidPolicy)?;
+        let expected_payload_length = manifest
+            .artifacts()
+            .iter()
+            .try_fold(0_u64, |length, artifact| {
+                length.checked_add(artifact.artifact_byte_length())
+            })
+            .ok_or(MacosSdistGuestStagingErrorV1::BuildClosureMaterializationFailed)?;
+        let payload_metadata = payload_file
+            .metadata()
+            .map_err(|_| MacosSdistGuestStagingErrorV1::BuildClosureMaterializationFailed)?;
+        let payload_path_metadata = fs::symlink_metadata(payload_path)
+            .map_err(|_| MacosSdistGuestStagingErrorV1::BuildClosureMaterializationFailed)?;
+        if !payload_metadata.file_type().is_file()
+            || !payload_path_metadata.file_type().is_file()
+            || payload_metadata.uid() != self.supervisor_uid
+            || payload_path_metadata.uid() != self.supervisor_uid
+            || payload_metadata.nlink() != 1
+            || payload_path_metadata.nlink() != 1
+            || payload_metadata.mode() & 0o777 != 0o444
+            || payload_path_metadata.mode() & 0o777 != 0o444
+            || payload_metadata.len() != expected_payload_length
+            || payload_path_metadata.len() != expected_payload_length
+            || payload_metadata.dev() != payload_path_metadata.dev()
+            || payload_metadata.ino() != payload_path_metadata.ino()
+        {
+            return Err(MacosSdistGuestStagingErrorV1::BuildClosureMaterializationFailed);
+        }
+
+        let directory = self.directory.join("build-closure");
+        let mut builder = DirBuilder::new();
+        builder.mode(0o700);
+        builder
+            .create(&directory)
+            .map_err(|_| MacosSdistGuestStagingErrorV1::BuildClosureMaterializationFailed)?;
+        let directory_metadata = match fs::symlink_metadata(&directory) {
+            Ok(metadata)
+                if metadata.file_type().is_dir()
+                    && metadata.uid() == self.supervisor_uid
+                    && metadata.mode() & 0o777 == 0o700 =>
+            {
+                metadata
+            }
+            _ => {
+                return match fs::remove_dir(&directory) {
+                    Ok(()) => Err(MacosSdistGuestStagingErrorV1::BuildClosureMaterializationFailed),
+                    Err(_) => {
+                        self.closure_materialization_directory_path = Some(directory);
+                        Err(MacosSdistGuestStagingErrorV1::CleanupFailed)
+                    }
+                };
+            }
+        };
+
+        let mut materialized = Vec::with_capacity(manifest.artifacts().len());
+        let mut created_paths = Vec::with_capacity(manifest.artifacts().len());
+        let result = (|| {
+            payload_file
+                .seek(SeekFrom::Start(0))
+                .map_err(|_| MacosSdistGuestStagingErrorV1::BuildClosureMaterializationFailed)?;
+            for artifact in manifest.artifacts() {
+                let path = directory.join(artifact.artifact_filename());
+                let mut writer = OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                    .open(&path)
+                    .map_err(|_| {
+                        MacosSdistGuestStagingErrorV1::BuildClosureMaterializationFailed
+                    })?;
+                created_paths.push(path.clone());
+                copy_exact_sdist_bytes_v1(
+                    payload_file,
+                    &mut writer,
+                    artifact.artifact_byte_length(),
+                )?;
+                writer.sync_all().map_err(|_| {
+                    MacosSdistGuestStagingErrorV1::BuildClosureMaterializationFailed
+                })?;
+                writer
+                    .set_permissions(fs::Permissions::from_mode(0o444))
+                    .map_err(|_| {
+                        MacosSdistGuestStagingErrorV1::BuildClosureMaterializationFailed
+                    })?;
+                writer.sync_all().map_err(|_| {
+                    MacosSdistGuestStagingErrorV1::BuildClosureMaterializationFailed
+                })?;
+                drop(writer);
+
+                let mut file = OpenOptions::new()
+                    .read(true)
+                    .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                    .open(&path)
+                    .map_err(|_| {
+                        MacosSdistGuestStagingErrorV1::BuildClosureMaterializationFailed
+                    })?;
+                let metadata = file.metadata().map_err(|_| {
+                    MacosSdistGuestStagingErrorV1::BuildClosureMaterializationFailed
+                })?;
+                let path_metadata = fs::symlink_metadata(&path).map_err(|_| {
+                    MacosSdistGuestStagingErrorV1::BuildClosureMaterializationFailed
+                })?;
+                if !metadata.file_type().is_file()
+                    || !path_metadata.file_type().is_file()
+                    || metadata.uid() != self.supervisor_uid
+                    || path_metadata.uid() != self.supervisor_uid
+                    || metadata.nlink() != 1
+                    || path_metadata.nlink() != 1
+                    || metadata.mode() & 0o777 != 0o444
+                    || path_metadata.mode() & 0o777 != 0o444
+                    || metadata.len() != artifact.artifact_byte_length()
+                    || path_metadata.len() != artifact.artifact_byte_length()
+                    || metadata.dev() != path_metadata.dev()
+                    || metadata.ino() != path_metadata.ino()
+                {
+                    return Err(MacosSdistGuestStagingErrorV1::BuildClosureMaterializationFailed);
+                }
+                let (digest, length) = hash_sdist_reader_v1(&mut file).map_err(|_| {
+                    MacosSdistGuestStagingErrorV1::BuildClosureMaterializationFailed
+                })?;
+                file.seek(SeekFrom::Start(0)).map_err(|_| {
+                    MacosSdistGuestStagingErrorV1::BuildClosureMaterializationFailed
+                })?;
+                if digest != *artifact.artifact_sha256()
+                    || length != artifact.artifact_byte_length()
+                {
+                    return Err(MacosSdistGuestStagingErrorV1::BuildClosureMaterializationFailed);
+                }
+                materialized.push(MaterializedSdistBuildClosureArtifactV1 {
+                    path,
+                    file,
+                    device: metadata.dev(),
+                    inode: metadata.ino(),
+                });
+            }
+            let mut trailing = [0_u8; 1];
+            if payload_file
+                .read(&mut trailing)
+                .map_err(|_| MacosSdistGuestStagingErrorV1::BuildClosureMaterializationFailed)?
+                != 0
+            {
+                return Err(MacosSdistGuestStagingErrorV1::BuildClosureMaterializationFailed);
+            }
+            Ok(())
+        })();
+
+        if let Err(error) = result {
+            if !cleanup_materialized_sdist_closure_v1(&mut materialized, &created_paths, &directory)
+            {
+                self.closure_materialization_directory_path = Some(directory);
+                self.closure_materialization_created_paths = created_paths;
+                return Err(MacosSdistGuestStagingErrorV1::CleanupFailed);
+            }
+            return Err(error);
+        }
+        let artifacts = manifest
+            .artifacts()
+            .iter()
+            .zip(&materialized)
+            .map(
+                |(artifact, staged)| SdistGuestBuildClosureMaterializedArtifactObservationV1 {
+                    artifact_filename: artifact.artifact_filename().to_string(),
+                    artifact_sha256: artifact.artifact_sha256().clone(),
+                    artifact_byte_length: artifact.artifact_byte_length(),
+                    device: staged.device,
+                    inode: staged.inode,
+                },
+            )
+            .collect();
+        self.closure_materialization_directory_path = Some(directory);
+        self.closure_materialization_created_paths = created_paths;
+        self.closure_materialized_artifacts = materialized;
+        Ok(SdistGuestBuildClosureMaterializationObservationV1 {
+            directory_device: directory_metadata.dev(),
+            directory_inode: directory_metadata.ino(),
+            artifacts,
+        })
+    }
+
     pub fn cleanup(&mut self) -> Result<(), MacosSdistGuestStagingErrorV1> {
         if self.cleaned {
             return Ok(());
@@ -357,6 +625,36 @@ impl StagedMacosSdistGuestV1 {
         drop(self.artifact_file.take());
         drop(self.closure_payload_file.take());
         let mut failed = false;
+        if !self.closure_materialized_artifacts.is_empty() {
+            for artifact in self.closure_materialized_artifacts.drain(..) {
+                let descriptor_metadata = artifact.file.metadata().ok();
+                let path_metadata = fs::symlink_metadata(&artifact.path).ok();
+                if descriptor_metadata.as_ref().is_none_or(|descriptor| {
+                    path_metadata.as_ref().is_none_or(|path| {
+                        descriptor.dev() != path.dev() || descriptor.ino() != path.ino()
+                    })
+                }) {
+                    failed = true;
+                }
+                drop(artifact.file);
+            }
+        }
+        for path in self.closure_materialization_created_paths.drain(..) {
+            if let Err(error) = fs::remove_file(path) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    failed = true;
+                }
+            }
+        }
+        if let Some(directory) = &self.closure_materialization_directory_path {
+            match fs::remove_dir(directory) {
+                Ok(()) => self.closure_materialization_directory_path = None,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    self.closure_materialization_directory_path = None;
+                }
+                Err(_) => failed = true,
+            }
+        }
         for path in [&self.closure_manifest_path, &self.closure_payload_path]
             .into_iter()
             .flatten()
@@ -594,12 +892,62 @@ fn stage_sdist_into_directory_v1<R: Read>(
         closure_manifest_path: None,
         closure_payload_path: None,
         closure_payload_file: None,
+        closure_materialization_directory_path: None,
+        closure_materialization_created_paths: Vec::new(),
+        closure_materialized_artifacts: Vec::new(),
         transport,
         supervisor_uid: policy.supervisor_uid,
         device: metadata.dev(),
         inode: metadata.ino(),
         cleaned: false,
     })
+}
+
+fn copy_exact_sdist_bytes_v1<R: Read, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    mut remaining: u64,
+) -> Result<(), MacosSdistGuestStagingErrorV1> {
+    let mut buffer = [0_u8; 64 * 1024];
+    while remaining > 0 {
+        let limit = usize::try_from(remaining.min(buffer.len() as u64))
+            .map_err(|_| MacosSdistGuestStagingErrorV1::BuildClosureMaterializationFailed)?;
+        let count = reader
+            .read(&mut buffer[..limit])
+            .map_err(|_| MacosSdistGuestStagingErrorV1::BuildClosureMaterializationFailed)?;
+        if count == 0 {
+            return Err(MacosSdistGuestStagingErrorV1::BuildClosureMaterializationFailed);
+        }
+        writer
+            .write_all(&buffer[..count])
+            .map_err(|_| MacosSdistGuestStagingErrorV1::BuildClosureMaterializationFailed)?;
+        remaining -= count as u64;
+    }
+    Ok(())
+}
+
+fn cleanup_materialized_sdist_closure_v1(
+    artifacts: &mut Vec<MaterializedSdistBuildClosureArtifactV1>,
+    created_paths: &[PathBuf],
+    directory: &Path,
+) -> bool {
+    let mut clean = true;
+    for artifact in artifacts.drain(..) {
+        drop(artifact.file);
+    }
+    for path in created_paths {
+        if let Err(error) = fs::remove_file(path) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                clean = false;
+            }
+        }
+    }
+    if let Err(error) = fs::remove_dir(directory) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            clean = false;
+        }
+    }
+    clean
 }
 
 fn hash_sdist_reader_v1<R: Read>(

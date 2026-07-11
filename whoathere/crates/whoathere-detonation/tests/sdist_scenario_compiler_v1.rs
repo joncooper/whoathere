@@ -10,9 +10,9 @@ use whoathere_detonation::{
     compile_sdist_scenarios_v1, decode_and_validate_sdist_scenario_plan_v1,
     decode_and_validate_sdist_scenario_template_v1, expected_sdist_scenario_kinds_v1,
     ArtifactScenarioCompileErrorV1, ArtifactScenarioExecutionIdentityV1,
-    SdistBuildClosureArtifactV1, SdistBuildClosureV1, SdistBuildModeV1, SdistRuntimeProfileV1,
-    SdistScenarioCompilationRequestV1, SdistScenarioIdentitySetV1, SdistScenarioKindV1,
-    SdistScenarioPlanV1, SdistScenarioPolicyV1,
+    SdistBuildClosureArtifactFormatV1, SdistBuildClosureArtifactV1, SdistBuildClosureV1,
+    SdistBuildModeV1, SdistRuntimeProfileV1, SdistScenarioCompilationRequestV1,
+    SdistScenarioIdentitySetV1, SdistScenarioKindV1, SdistScenarioPlanV1, SdistScenarioPolicyV1,
 };
 use whoathere_evidence::v2::ArtifactEvidenceSubjectV2;
 
@@ -158,12 +158,16 @@ fn build_closure(
             SdistBuildClosureArtifactV1::new(
                 "setuptools",
                 "75.0.0",
+                "setuptools-75.0.0-py3-none-any.whl",
+                SdistBuildClosureArtifactFormatV1::Wheel,
                 Sha256Digest::from_bytes(b"exact inert setuptools wheel"),
                 12_345,
             )?,
             SdistBuildClosureArtifactV1::new(
                 "wheel",
                 "0.44.0",
+                "wheel-0.44.0-py3-none-any.whl",
+                SdistBuildClosureArtifactFormatV1::Wheel,
                 Sha256Digest::from_bytes(b"exact inert wheel build dependency"),
                 6_789,
             )?,
@@ -384,6 +388,8 @@ fn fixed_build_closure_and_unsupported_sdist_classes_fail_closed() {
     let incomplete = vec![SdistBuildClosureArtifactV1::new(
         "setuptools",
         "75.0.0",
+        "setuptools-75.0.0-py3-none-any.whl",
+        SdistBuildClosureArtifactFormatV1::Wheel,
         Sha256Digest::from_bytes(b"only one build dependency"),
         100,
     )
@@ -453,6 +459,61 @@ fn fixed_build_closure_and_unsupported_sdist_classes_fail_closed() {
             &identities(&native, "native").expect("identities")
         ),
         Err(ArtifactScenarioCompileErrorV1::UnsupportedNativeArtifact)
+    );
+}
+
+#[test]
+fn build_closure_artifact_names_formats_and_materialization_names_fail_closed() {
+    let valid = SdistBuildClosureArtifactV1::new(
+        "setuptools",
+        "75.0.0",
+        "setuptools-75.0.0-py3-none-any.whl",
+        SdistBuildClosureArtifactFormatV1::Wheel,
+        Sha256Digest::from_bytes(b"valid exact wheel bytes"),
+        23,
+    )
+    .expect("valid closure artifact");
+    for filename in [
+        "../setuptools-75.0.0-py3-none-any.whl",
+        "nested/setuptools-75.0.0-py3-none-any.whl",
+        "nested\\setuptools-75.0.0-py3-none-any.whl",
+        "wheel-75.0.0-py3-none-any.whl",
+        "setuptools-74.0.0-py3-none-any.whl",
+        "setuptools-75.0.0-py3-none.whl",
+        "setuptools-75.0.0-build-py3-none-any.whl",
+        "setuptools-75.0.0-py3..py4-none-any.whl",
+        "setuptools-75.0.0-py3-none-any.tar.gz",
+    ] {
+        let mut value = serde_json::to_value(&valid).expect("closure artifact json");
+        value["artifact_filename"] = serde_json::json!(filename);
+        let invalid: SdistBuildClosureArtifactV1 =
+            serde_json::from_value(value).expect("typed malformed filename");
+        assert_eq!(
+            SdistBuildClosureV1::new(&[], vec![invalid]),
+            Err(ArtifactScenarioCompileErrorV1::InvalidPolicy),
+            "filename must fail closed: {filename}"
+        );
+    }
+
+    let mut unknown_format = serde_json::to_value(&valid).expect("format artifact json");
+    unknown_format["artifact_format"] = serde_json::json!("sdist");
+    assert!(serde_json::from_value::<SdistBuildClosureArtifactV1>(unknown_format).is_err());
+
+    let first = valid;
+    let second = SdistBuildClosureArtifactV1::new(
+        "setuptools",
+        "75.0.0",
+        "setuptools-75.0.0-py3-none-any.whl",
+        SdistBuildClosureArtifactFormatV1::Wheel,
+        Sha256Digest::from_bytes(b"different bytes at the same materialization name"),
+        48,
+    )
+    .expect("individually valid duplicate name");
+    let mut duplicates = vec![first, second];
+    duplicates.sort();
+    assert_eq!(
+        SdistBuildClosureV1::new(&[], duplicates),
+        Err(ArtifactScenarioCompileErrorV1::InvalidPolicy)
     );
 }
 

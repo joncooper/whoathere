@@ -52,6 +52,8 @@ public struct SdistRunSubmissionPrelude: Equatable, Sendable {
 public struct SdistBuildClosureArtifact: Comparable, Equatable, Sendable {
     public let normalizedName: String
     public let version: String
+    public let artifactFilename: String
+    public let artifactFormat: String
     public let artifactSHA256: String
     public let artifactByteLength: UInt64
 
@@ -60,6 +62,12 @@ public struct SdistBuildClosureArtifact: Comparable, Equatable, Sendable {
             return lhs.normalizedName < rhs.normalizedName
         }
         if lhs.version != rhs.version { return lhs.version < rhs.version }
+        if lhs.artifactFilename != rhs.artifactFilename {
+            return lhs.artifactFilename < rhs.artifactFilename
+        }
+        if lhs.artifactFormat != rhs.artifactFormat {
+            return lhs.artifactFormat < rhs.artifactFormat
+        }
         if lhs.artifactSHA256 != rhs.artifactSHA256 {
             return lhs.artifactSHA256 < rhs.artifactSHA256
         }
@@ -618,29 +626,42 @@ private func validateSdistClosure(_ value: [String: Any]) throws -> SdistClosure
     let observedClosure = try sdistDigest(value, "closure_sha256", error: .templateInvalid)
     var previous: SdistBuildClosureArtifact?
     var validatedArtifacts: [SdistBuildClosureArtifact] = []
+    var artifactFilenames = Set<String>()
     for raw in artifacts {
         guard let artifact = raw as? [String: Any] else {
             throw ArtifactRunProtocolError.templateInvalid
         }
         try sdistRequireExactKeys(artifact, [
-            "artifact_byte_length", "artifact_sha256", "normalized_name", "version"
+            "artifact_byte_length", "artifact_filename", "artifact_format", "artifact_sha256",
+            "normalized_name", "version"
         ], error: .templateInvalid)
         let normalizedName = try sdistString(
             artifact, "normalized_name", error: .templateInvalid
         )
         let version = try sdistString(artifact, "version", error: .templateInvalid)
+        let filename = try sdistString(
+            artifact, "artifact_filename", error: .templateInvalid
+        )
+        let format = try sdistString(artifact, "artifact_format", error: .templateInvalid)
         let digest = try sdistDigest(artifact, "artifact_sha256", error: .templateInvalid)
         let length = try sdistInteger(
             artifact, "artifact_byte_length", error: .templateInvalid
         )
         guard sdistNormalizeBuildName(normalizedName) == normalizedName,
-              sdistValidVersion(version), length > 0,
+              sdistValidVersion(version), format == "wheel",
+              sdistValidClosureWheelFilename(
+                  normalizedName: normalizedName,
+                  version: version,
+                  filename: filename
+              ), artifactFilenames.insert(filename).inserted, length > 0,
               length <= maximumSdistSubmissionBytesV1 else {
             throw ArtifactRunProtocolError.templateInvalid
         }
         let item = SdistBuildClosureArtifact(
             normalizedName: normalizedName,
             version: version,
+            artifactFilename: filename,
+            artifactFormat: format,
             artifactSHA256: digest,
             artifactByteLength: length
         )
@@ -669,6 +690,48 @@ private func validateSdistClosure(_ value: [String: Any]) throws -> SdistClosure
             canonicalJSON: try canonicalJSONData(value)
         )
     )
+}
+
+private func sdistValidClosureWheelFilename(
+    normalizedName: String,
+    version: String,
+    filename: String
+) -> Bool {
+    guard !filename.isEmpty, filename.utf8.count <= 255,
+          filename.unicodeScalars.allSatisfy({ $0.isASCII }),
+          !filename.contains("/"), !filename.contains("\\"),
+          filename.hasSuffix(".whl"),
+          filename.utf8.allSatisfy({
+              ($0 >= 48 && $0 <= 57) || ($0 >= 65 && $0 <= 90)
+                || ($0 >= 97 && $0 <= 122) || [46, 95, 45].contains($0)
+          }) else {
+        return false
+    }
+    let distribution = normalizedName.replacingOccurrences(of: "-", with: "_")
+    let prefix = "\(distribution)-\(version)-"
+    guard filename.hasPrefix(prefix) else { return false }
+    let tagStart = filename.index(filename.startIndex, offsetBy: prefix.count)
+    let tagEnd = filename.index(filename.endIndex, offsetBy: -4)
+    guard tagStart < tagEnd else { return false }
+    let tags = filename[tagStart..<tagEnd].split(separator: "-", omittingEmptySubsequences: false)
+    guard tags.count == 3 || tags.count == 4 else { return false }
+    if tags.count == 4 {
+        guard let first = tags[0].utf8.first, first >= 48, first <= 57,
+              tags[0].utf8.allSatisfy({
+                  ($0 >= 48 && $0 <= 57) || ($0 >= 65 && $0 <= 90)
+                    || ($0 >= 97 && $0 <= 122) || $0 == 95
+              }) else {
+            return false
+        }
+    }
+    return tags.suffix(3).allSatisfy { tag in
+        tag.split(separator: ".", omittingEmptySubsequences: false).allSatisfy { component in
+            !component.isEmpty && component.utf8.allSatisfy {
+                ($0 >= 48 && $0 <= 57) || ($0 >= 65 && $0 <= 90)
+                    || ($0 >= 97 && $0 <= 122) || $0 == 95
+            }
+        }
+    }
 }
 
 private func validateSdistScenario(

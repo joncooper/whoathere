@@ -250,6 +250,63 @@ import Testing
     }
 }
 
+@Test func sdistSubmissionRejectsUnsafeClosureArtifactNamesFormatsAndDuplicates() throws {
+    let fixture = try sdistSubmissionFixture(
+        scenario: ["kind": "install_derived_wheel"], scenarioIndex: 11
+    )
+    let mutations: [(inout [[String: Any]]) -> Void] = [
+        { $0[0]["artifact_filename"] = "../setuptools-75.0.0-py3-none-any.whl" },
+        { $0[0]["artifact_filename"] = "nested\\setuptools-75.0.0-py3-none-any.whl" },
+        { $0[0]["artifact_filename"] = "wheel-75.0.0-py3-none-any.whl" },
+        { $0[0]["artifact_filename"] = "setuptools-74.0.0-py3-none-any.whl" },
+        { $0[0]["artifact_filename"] = "setuptools-75.0.0-py3-none.whl" },
+        { $0[0]["artifact_filename"] = "setuptools-75.0.0-build-py3-none-any.whl" },
+        { $0[0]["artifact_filename"] = "setuptools-75.0.0-py3..py4-none-any.whl" },
+        { $0[0]["artifact_format"] = "sdist" },
+        {
+            var duplicate = $0[0]
+            duplicate["artifact_sha256"] = sha256(Data("duplicate name bytes".utf8))
+            duplicate["artifact_byte_length"] = UInt64(20)
+            $0.append(duplicate)
+            $0.sort {
+                (try? canonicalJSONData($0))?.lexicographicallyPrecedes(
+                    (try? canonicalJSONData($1)) ?? Data()
+                ) ?? false
+            }
+        }
+    ]
+    for mutate in mutations {
+        var header = fixture.header
+        var runSpec = try #require(header["run_spec"] as? [String: Any])
+        var template = try #require(runSpec["template"] as? [String: Any])
+        var closure = try #require(template["build_closure"] as? [String: Any])
+        var artifacts = try #require(closure["artifacts"] as? [[String: Any]])
+        mutate(&artifacts)
+        closure["artifacts"] = artifacts
+        let digestWire: [String: Any] = [
+            "schema_version": "whoathere.sdist_build_closure.v1",
+            "declaration_set_sha256": closure["declaration_set_sha256"] as Any,
+            "artifacts": artifacts,
+            "resolver_policy": "no_index_fixed_closure_only"
+        ]
+        let closureSHA256 = sha256(try canonicalJSONData(digestWire))
+        closure["closure_sha256"] = closureSHA256
+        template["build_closure"] = closure
+        runSpec["template"] = template
+        runSpec["template_sha256"] = sha256(try canonicalJSONData(template))
+        runSpec["build_closure_sha256"] = closureSHA256
+        try rebindSdistHeader(
+            &header, runSpec: runSpec, challenge: fixture.challengeBindingSHA256
+        )
+        header["build_closure_sha256"] = closureSHA256
+        #expect(throws: ArtifactRunProtocolError.templateInvalid) {
+            try inspectSdistSubmission(
+                from: sdistFileHandle(try rebuildSdistFrame(fixture, header: header))
+            )
+        }
+    }
+}
+
 struct SdistSubmissionFixture {
     let frame: Data
     let header: [String: Any]
@@ -295,6 +352,8 @@ func sdistSubmissionFixture(
     let closureArtifacts: [[String: Any]] = [[
         "normalized_name": "setuptools",
         "version": "75.0.0",
+        "artifact_filename": "setuptools-75.0.0-py3-none-any.whl",
+        "artifact_format": "wheel",
         "artifact_sha256": sha256(closureArtifactBytes),
         "artifact_byte_length": UInt64(closureArtifactBytes.count)
     ]]

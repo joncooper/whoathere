@@ -138,20 +138,32 @@ pub enum SdistInterpreterPolicyV1 {
 pub struct SdistBuildClosureArtifactV1 {
     normalized_name: String,
     version: String,
+    artifact_filename: String,
+    artifact_format: SdistBuildClosureArtifactFormatV1,
     artifact_sha256: Sha256Digest,
     artifact_byte_length: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SdistBuildClosureArtifactFormatV1 {
+    Wheel,
 }
 
 impl SdistBuildClosureArtifactV1 {
     pub fn new(
         normalized_name: impl Into<String>,
         version: impl Into<String>,
+        artifact_filename: impl Into<String>,
+        artifact_format: SdistBuildClosureArtifactFormatV1,
         artifact_sha256: Sha256Digest,
         artifact_byte_length: u64,
     ) -> Result<Self, ArtifactScenarioCompileErrorV1> {
         let value = Self {
             normalized_name: normalized_name.into(),
             version: version.into(),
+            artifact_filename: artifact_filename.into(),
+            artifact_format,
             artifact_sha256,
             artifact_byte_length,
         };
@@ -167,6 +179,14 @@ impl SdistBuildClosureArtifactV1 {
         &self.version
     }
 
+    pub fn artifact_filename(&self) -> &str {
+        &self.artifact_filename
+    }
+
+    pub fn artifact_format(&self) -> SdistBuildClosureArtifactFormatV1 {
+        self.artifact_format
+    }
+
     pub fn artifact_sha256(&self) -> &Sha256Digest {
         &self.artifact_sha256
     }
@@ -179,6 +199,11 @@ impl SdistBuildClosureArtifactV1 {
         if normalize_build_name(&self.normalized_name).as_deref()
             != Some(self.normalized_name.as_str())
             || !valid_version_component_v1(&self.version)
+            || !valid_closure_wheel_filename(
+                &self.normalized_name,
+                &self.version,
+                &self.artifact_filename,
+            )
             || self.artifact_byte_length == 0
             || self.artifact_byte_length > MAX_ARTIFACT_SCENARIO_BYTES_V1
         {
@@ -186,6 +211,51 @@ impl SdistBuildClosureArtifactV1 {
         }
         Ok(())
     }
+}
+
+fn valid_closure_wheel_filename(normalized_name: &str, version: &str, filename: &str) -> bool {
+    if filename.is_empty()
+        || filename.len() > 255
+        || !filename.is_ascii()
+        || filename.contains('/')
+        || filename.contains('\\')
+        || !filename.ends_with(".whl")
+        || !filename
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return false;
+    }
+    let distribution = normalized_name.replace('-', "_");
+    let prefix = format!("{distribution}-{version}-");
+    let Some(tags) = filename
+        .strip_prefix(&prefix)
+        .and_then(|value| value.strip_suffix(".whl"))
+    else {
+        return false;
+    };
+    let tag_count = tags.split('-').count();
+    if tag_count != 3 && tag_count != 4 {
+        return false;
+    }
+    let parts = tags.split('-').collect::<Vec<_>>();
+    if tag_count == 4
+        && (parts[0].is_empty()
+            || !parts[0].as_bytes()[0].is_ascii_digit()
+            || !parts[0]
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_'))
+    {
+        return false;
+    }
+    parts[tag_count - 3..].iter().all(|tag| {
+        tag.split('.').all(|component| {
+            !component.is_empty()
+                && component
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        })
+    })
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -230,7 +300,9 @@ impl SdistBuildClosureV1 {
         artifacts: Vec<SdistBuildClosureArtifactV1>,
     ) -> Result<Self, ArtifactScenarioCompileErrorV1> {
         validate_build_requirements(build_requires)?;
-        if artifacts.windows(2).any(|pair| pair[0] >= pair[1]) {
+        if artifacts.windows(2).any(|pair| pair[0] >= pair[1])
+            || closure_artifact_filenames_are_not_unique(&artifacts)
+        {
             return Err(ArtifactScenarioCompileErrorV1::InvalidPolicy);
         }
         for artifact in &artifacts {
@@ -283,6 +355,7 @@ impl SdistBuildClosureV1 {
     fn validate(&self) -> Result<(), ArtifactScenarioCompileErrorV1> {
         if self.schema_version != SDIST_BUILD_CLOSURE_SCHEMA_V1
             || self.artifacts.windows(2).any(|pair| pair[0] >= pair[1])
+            || closure_artifact_filenames_are_not_unique(&self.artifacts)
         {
             return Err(ArtifactScenarioCompileErrorV1::InvalidPolicy);
         }
@@ -301,6 +374,13 @@ impl SdistBuildClosureV1 {
         }
         Ok(())
     }
+}
+
+fn closure_artifact_filenames_are_not_unique(artifacts: &[SdistBuildClosureArtifactV1]) -> bool {
+    let mut filenames = BTreeSet::new();
+    artifacts
+        .iter()
+        .any(|artifact| !filenames.insert(artifact.artifact_filename.as_str()))
 }
 
 #[derive(Clone, PartialEq, Eq)]

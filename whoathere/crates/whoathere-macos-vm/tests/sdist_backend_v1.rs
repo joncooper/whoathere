@@ -14,9 +14,10 @@ use whoathere_artifact::{
 };
 use whoathere_detonation::{
     compile_sdist_scenarios_v1, expected_sdist_scenario_kinds_v1,
-    ArtifactScenarioExecutionIdentityV1, SdistBuildClosureArtifactV1, SdistBuildClosureV1,
-    SdistRuntimeProfileV1, SdistScenarioCompilationRequestV1, SdistScenarioIdentitySetV1,
-    SdistScenarioKindV1, SdistScenarioPolicyV1, SdistScenarioTemplateV1,
+    ArtifactScenarioExecutionIdentityV1, SdistBuildClosureArtifactFormatV1,
+    SdistBuildClosureArtifactV1, SdistBuildClosureV1, SdistRuntimeProfileV1,
+    SdistScenarioCompilationRequestV1, SdistScenarioIdentitySetV1, SdistScenarioKindV1,
+    SdistScenarioPolicyV1, SdistScenarioTemplateV1,
 };
 use whoathere_evidence::v2::{canonical_cas_object_key_for_artifact, ArtifactEvidenceSubjectV2};
 use whoathere_macos_vm::{
@@ -165,6 +166,8 @@ fn compiled_templates(init_bytes: &[u8]) -> (Vec<SdistScenarioTemplateV1>, Vec<u
             SdistBuildClosureArtifactV1::new(
                 "setuptools",
                 "75.0.0",
+                "setuptools-75.0.0-py3-none-any.whl",
+                SdistBuildClosureArtifactFormatV1::Wheel,
                 digest(&closure_bytes[0]),
                 closure_bytes[0].len() as u64,
             )
@@ -172,6 +175,8 @@ fn compiled_templates(init_bytes: &[u8]) -> (Vec<SdistScenarioTemplateV1>, Vec<u
             SdistBuildClosureArtifactV1::new(
                 "wheel",
                 "0.44.0",
+                "wheel-0.44.0-py3-none-any.whl",
+                SdistBuildClosureArtifactFormatV1::Wheel,
                 digest(&closure_bytes[1]),
                 closure_bytes[1].len() as u64,
             )
@@ -827,6 +832,156 @@ fn sdist_guest_stages_rehashes_and_cleans_target_plus_exact_closure_without_mate
     staged.cleanup().expect("combined cleanup");
     assert_eq!(fs::read_dir(&root).expect("clean root").count(), 0);
     fs::remove_dir(root).expect("remove combined root");
+}
+
+#[test]
+fn sdist_guest_materializes_exact_named_closure_wheels_and_cleans_them() {
+    let (templates, artifact) = compiled_templates(b"VALUE = 'materialization inert'\n");
+    let run_spec =
+        compile_macos_sdist_run_spec_v1(&templates[0], &backend(digest(b"measured pip")))
+            .expect("materialization run spec");
+    let bindings = MacosSdistSubmissionBindingsV1::for_run_spec(
+        digest(b"materialization challenge"),
+        &run_spec,
+    );
+    let header = MacosSdistSubmissionHeaderV1::new(run_spec.clone(), bindings)
+        .expect("materialization header");
+    let mut target =
+        encode_macos_sdist_submission_frame_v1(&header, &artifact).expect("materialization target");
+    target[..8].copy_from_slice(&MACOS_SDIST_GUEST_SUBMISSION_MAGIC_V1);
+    let closure_bytes = build_closure_artifact_bytes();
+    target.extend_from_slice(
+        &encode_macos_sdist_guest_build_closure_frame_v1(run_spec.build_closure(), &closure_bytes)
+            .expect("materialization closure"),
+    );
+    let root = temporary_sdist_staging_root("materialize-closure");
+    let policy = sdist_staging_policy(&root);
+    let mut reader = FragmentedReader::new(target, 13);
+    let mut staged =
+        stage_macos_sdist_guest_submission_followed_by_closure_v1(&mut reader, &policy)
+            .expect("stage target");
+    staged
+        .stage_build_closure(&mut reader)
+        .expect("stage closure payload");
+    let observation = staged
+        .materialize_build_closure()
+        .expect("materialize exact closure wheels");
+    let directory = staged
+        .closure_materialization_directory_path()
+        .expect("materialization directory")
+        .to_path_buf();
+    let directory_metadata = fs::symlink_metadata(&directory).expect("directory metadata");
+    assert_eq!(directory_metadata.mode() & 0o777, 0o700);
+    assert_eq!(observation.directory_device(), directory_metadata.dev());
+    assert_eq!(observation.directory_inode(), directory_metadata.ino());
+    assert_eq!(observation.artifacts().len(), closure_bytes.len());
+    for ((declared, observed), bytes) in run_spec
+        .build_closure()
+        .artifacts()
+        .iter()
+        .zip(observation.artifacts())
+        .zip(&closure_bytes)
+    {
+        let path = directory.join(declared.artifact_filename());
+        let metadata = fs::symlink_metadata(&path).expect("materialized wheel metadata");
+        assert_eq!(fs::read(&path).expect("materialized wheel bytes"), *bytes);
+        assert_eq!(metadata.mode() & 0o777, 0o444);
+        assert_eq!(metadata.nlink(), 1);
+        assert_eq!(observed.artifact_filename(), declared.artifact_filename());
+        assert_eq!(observed.artifact_sha256(), declared.artifact_sha256());
+        assert_eq!(observed.artifact_byte_length(), bytes.len() as u64);
+        assert_eq!(observed.device(), metadata.dev());
+        assert_eq!(observed.inode(), metadata.ino());
+    }
+    assert_eq!(
+        staged.materialize_build_closure(),
+        Err(MacosSdistGuestStagingErrorV1::InvalidPolicy)
+    );
+    staged.cleanup().expect("materialized closure cleanup");
+    assert_eq!(fs::read_dir(&root).expect("clean root").count(), 0);
+    fs::remove_dir(root).expect("remove materialization root");
+}
+
+#[test]
+fn sdist_guest_materialization_rejects_payload_replacement_and_cleanup_detects_wheel_replacement() {
+    fn staged_closure(label: &str) -> (PathBuf, whoathere_macos_vm::StagedMacosSdistGuestV1) {
+        let (templates, artifact) = compiled_templates(label.as_bytes());
+        let run_spec =
+            compile_macos_sdist_run_spec_v1(&templates[0], &backend(digest(b"measured pip")))
+                .expect("replacement run spec");
+        let bindings = MacosSdistSubmissionBindingsV1::for_run_spec(
+            digest(format!("{label}-challenge").as_bytes()),
+            &run_spec,
+        );
+        let header = MacosSdistSubmissionHeaderV1::new(run_spec.clone(), bindings)
+            .expect("replacement header");
+        let mut input =
+            encode_macos_sdist_submission_frame_v1(&header, &artifact).expect("replacement target");
+        input[..8].copy_from_slice(&MACOS_SDIST_GUEST_SUBMISSION_MAGIC_V1);
+        input.extend_from_slice(
+            &encode_macos_sdist_guest_build_closure_frame_v1(
+                run_spec.build_closure(),
+                &build_closure_artifact_bytes(),
+            )
+            .expect("replacement closure"),
+        );
+        let root = temporary_sdist_staging_root(label);
+        let policy = sdist_staging_policy(&root);
+        let mut reader = Cursor::new(input);
+        let mut staged =
+            stage_macos_sdist_guest_submission_followed_by_closure_v1(&mut reader, &policy)
+                .expect("replacement stage target");
+        staged
+            .stage_build_closure(&mut reader)
+            .expect("replacement stage closure");
+        (root, staged)
+    }
+
+    let (payload_root, mut payload_staged) = staged_closure("payload-replacement");
+    let payload_path = payload_staged
+        .closure_payload_path()
+        .expect("payload path")
+        .to_path_buf();
+    let held_payload = payload_path.with_file_name("held-build-closure.payload");
+    let payload_bytes = fs::read(&payload_path).expect("payload bytes");
+    fs::rename(&payload_path, &held_payload).expect("hold original payload");
+    fs::write(&payload_path, payload_bytes).expect("write replacement payload");
+    fs::set_permissions(&payload_path, fs::Permissions::from_mode(0o444))
+        .expect("protect replacement payload");
+    assert_eq!(
+        payload_staged.materialize_build_closure(),
+        Err(MacosSdistGuestStagingErrorV1::BuildClosureMaterializationFailed)
+    );
+    assert_eq!(
+        payload_staged.cleanup(),
+        Err(MacosSdistGuestStagingErrorV1::CleanupFailed)
+    );
+    fs::remove_file(held_payload).expect("remove held payload");
+    payload_staged.cleanup().expect("retry payload cleanup");
+    fs::remove_dir(payload_root).expect("remove payload replacement root");
+
+    let (wheel_root, mut wheel_staged) = staged_closure("wheel-replacement");
+    let observation = wheel_staged
+        .materialize_build_closure()
+        .expect("materialize replacement fixture");
+    let directory = wheel_staged
+        .closure_materialization_directory_path()
+        .expect("wheel directory")
+        .to_path_buf();
+    let wheel_path = directory.join(observation.artifacts()[0].artifact_filename());
+    let held_wheel = directory.join("held-original.whl");
+    fs::rename(&wheel_path, &held_wheel).expect("hold original wheel");
+    fs::write(&wheel_path, b"replacement").expect("write replacement wheel");
+    fs::set_permissions(&wheel_path, fs::Permissions::from_mode(0o444))
+        .expect("protect replacement wheel");
+    assert_eq!(
+        wheel_staged.cleanup(),
+        Err(MacosSdistGuestStagingErrorV1::CleanupFailed)
+    );
+    assert!(held_wheel.exists());
+    fs::remove_file(held_wheel).expect("remove held wheel");
+    wheel_staged.cleanup().expect("retry wheel cleanup");
+    fs::remove_dir(wheel_root).expect("remove wheel replacement root");
 }
 
 #[test]
