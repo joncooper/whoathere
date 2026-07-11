@@ -1,3 +1,4 @@
+use ed25519_dalek::SigningKey;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use std::fs;
@@ -17,14 +18,16 @@ use whoathere_detonation::{
 use whoathere_evidence::v2::{canonical_cas_object_key_for_artifact, ArtifactEvidenceSubjectV2};
 use whoathere_macos_vm::{
     compile_macos_artifact_run_spec_v1, decode_and_validate_macos_artifact_run_spec_v1,
-    decode_macos_artifact_submission_frame_v1, encode_macos_artifact_submission_frame_v1,
+    decode_macos_artifact_guest_auth_challenge_v1, decode_macos_artifact_submission_frame_v1,
+    encode_macos_artifact_submission_frame_v1, sign_macos_artifact_guest_auth_response_v1,
     stage_macos_artifact_guest_submission_v1, stream_macos_artifact_guest_submission_v1,
-    write_macos_artifact_submission_frame_v1, ArtifactGuestRehashPhaseV1,
-    MacosArtifactBackendCapabilitiesV1, MacosArtifactBackendIdentityV1,
-    MacosArtifactGuestStagingErrorV1, MacosArtifactGuestStagingPolicyV1, MacosArtifactRunErrorV1,
-    MacosArtifactSubmissionBindingsV1, MacosArtifactSubmissionErrorV1,
-    MacosArtifactSubmissionHeaderV1, MACOS_ARTIFACT_GUEST_SUBMISSION_MAGIC_V1,
-    MACOS_ARTIFACT_SUBMISSION_FIXED_PREFIX_BYTES_V1,
+    verify_macos_artifact_guest_auth_response_v1, write_macos_artifact_submission_frame_v1,
+    ArtifactGuestRehashPhaseV1, MacosArtifactBackendCapabilitiesV1, MacosArtifactBackendIdentityV1,
+    MacosArtifactGuestAuthChallengeV1, MacosArtifactGuestAuthClaimsV1,
+    MacosArtifactGuestAuthErrorV1, MacosArtifactGuestStagingErrorV1,
+    MacosArtifactGuestStagingPolicyV1, MacosArtifactRunErrorV1, MacosArtifactSubmissionBindingsV1,
+    MacosArtifactSubmissionErrorV1, MacosArtifactSubmissionHeaderV1,
+    MACOS_ARTIFACT_GUEST_SUBMISSION_MAGIC_V1, MACOS_ARTIFACT_SUBMISSION_FIXED_PREFIX_BYTES_V1,
 };
 
 fn digest(label: &[u8]) -> Sha256Digest {
@@ -204,7 +207,7 @@ fn complete_template_is_nested_in_a_closed_no_nic_one_clone_run_spec() {
         serde_json_canonicalizer::to_vec(&invalid_package_uid).expect("invalid UID run spec");
     assert_eq!(
         decode_and_validate_macos_artifact_run_spec_v1(&invalid_package_uid),
-        Err(MacosArtifactRunErrorV1::InvalidRunSpec)
+        Err(MacosArtifactRunErrorV1::InvalidBackendIdentity)
     );
     let mut duplicate = b"{\"canonicalization\":\"rfc8785.jcs.v1\",".to_vec();
     duplicate.extend_from_slice(&bytes[1..]);
@@ -450,6 +453,92 @@ fn guest_staging_discards_bad_transport_and_detects_path_replacement_before_laun
     staged.cleanup().expect("retry cleanup");
     assert_eq!(fs::read_dir(&root).expect("clean root").count(), 0);
     fs::remove_dir(root).expect("remove staging root");
+}
+
+#[test]
+fn guest_authentication_binds_fresh_challenge_signed_claims_and_measured_public_key() {
+    let seed = [7_u8; 32];
+    let verifying_key = SigningKey::from_bytes(&seed).verifying_key().to_bytes();
+    let challenge = MacosArtifactGuestAuthChallengeV1::new(
+        [9_u8; 32],
+        digest(b"execution binding"),
+        digest(b"run spec"),
+        digest(b"clone binding"),
+        Sha256Digest::from_bytes(&verifying_key),
+    )
+    .expect("guest auth challenge");
+    let decoded = decode_macos_artifact_guest_auth_challenge_v1(challenge.canonical_json_v1())
+        .expect("strict challenge decode");
+    assert_eq!(decoded, challenge);
+    let claims = MacosArtifactGuestAuthClaimsV1::new(
+        digest(b"guest supervisor"),
+        digest(b"runner configuration"),
+        502,
+        502,
+    )
+    .expect("guest claims");
+    let response = sign_macos_artifact_guest_auth_response_v1(&challenge, seed, &claims)
+        .expect("signed guest auth response");
+    assert_eq!(
+        std::str::from_utf8(challenge.canonical_json_v1()).expect("challenge UTF-8"),
+        r#"{"clone_binding_sha256":"sha256:92514cfc03f94cbbc544178a0e7b999522b708efd7db40bd0c3d3796f9515564","execution_binding_sha256":"sha256:0adeabc9b469d31f8f4074566c3aec953f83419cc5700ece10e2c6c63272daf2","guest_auth_public_key_sha256":"sha256:fe812c12f3ab4ce6ac5db69ac352f906cb1b11ef43fb33e252ef7ff552263889","nonce_hex":"0909090909090909090909090909090909090909090909090909090909090909","run_spec_sha256":"sha256:3626162ee4f7e66251d3d4fd61e2414e2153f65311611ebb72efc42565984fa3","schema_version":"whoathere.artifact_guest_auth_challenge.v1"}"#
+    );
+    assert_eq!(
+        std::str::from_utf8(&response).expect("response UTF-8"),
+        r#"{"challenge_sha256":"sha256:c5d93c1b625d9725401bbb47a3914fc65c54e74969e4c3031e2ac2565ee372cc","clone_binding_sha256":"sha256:92514cfc03f94cbbc544178a0e7b999522b708efd7db40bd0c3d3796f9515564","execution_binding_sha256":"sha256:0adeabc9b469d31f8f4074566c3aec953f83419cc5700ece10e2c6c63272daf2","guest_supervisor_sha256":"sha256:2c70f775aa20c6807b3fa4c5a05c8f5ab466d7c0c4e588280cd7ccbead6ae3a3","package_gid":"502","package_uid":"502","run_spec_sha256":"sha256:3626162ee4f7e66251d3d4fd61e2414e2153f65311611ebb72efc42565984fa3","runner_configuration_sha256":"sha256:153857d8963121612c0fff30058d06703606855e9bc96a83e45964ce0586dca3","schema_version":"whoathere.artifact_guest_auth_response.v1","signature_ed25519_hex":"e4096174087ef60f64ebf9ccadfaa2c13e214a9bfe391b8b8bac85f86f443e5e408fdff74cbb17c9672d895d7ef43446e710611c31415e9be4dc811c34e69709"}"#
+    );
+    verify_macos_artifact_guest_auth_response_v1(&challenge, &response, verifying_key, &claims)
+        .expect("verified guest auth response");
+
+    let mut noncanonical = b" ".to_vec();
+    noncanonical.extend_from_slice(challenge.canonical_json_v1());
+    assert_eq!(
+        decode_macos_artifact_guest_auth_challenge_v1(&noncanonical),
+        Err(MacosArtifactGuestAuthErrorV1::NonCanonical)
+    );
+
+    let fresh_challenge = MacosArtifactGuestAuthChallengeV1::new(
+        [10_u8; 32],
+        digest(b"execution binding"),
+        digest(b"run spec"),
+        digest(b"clone binding"),
+        Sha256Digest::from_bytes(&verifying_key),
+    )
+    .expect("fresh guest auth challenge");
+    assert_eq!(
+        verify_macos_artifact_guest_auth_response_v1(
+            &fresh_challenge,
+            &response,
+            verifying_key,
+            &claims
+        ),
+        Err(MacosArtifactGuestAuthErrorV1::InvalidResponse)
+    );
+
+    let forged_claims = MacosArtifactGuestAuthClaimsV1::new(
+        digest(b"guest supervisor"),
+        digest(b"runner configuration"),
+        503,
+        502,
+    )
+    .expect("forged claims");
+    let mut forged: serde_json::Value = serde_json::from_slice(&response).expect("response JSON");
+    forged["package_uid"] = serde_json::json!("503");
+    let forged = serde_json_canonicalizer::to_vec(&forged).expect("forged response");
+    assert_eq!(
+        verify_macos_artifact_guest_auth_response_v1(
+            &challenge,
+            &forged,
+            verifying_key,
+            &forged_claims
+        ),
+        Err(MacosArtifactGuestAuthErrorV1::SignatureFailed)
+    );
+
+    assert_eq!(
+        sign_macos_artifact_guest_auth_response_v1(&challenge, [8_u8; 32], &claims),
+        Err(MacosArtifactGuestAuthErrorV1::PublicKeyMismatch)
+    );
 }
 
 fn guest_frame() -> (Vec<u8>, Vec<u8>, whoathere_macos_vm::MacosArtifactRunSpecV1) {

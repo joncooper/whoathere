@@ -640,6 +640,7 @@ dependencies = [
 name = "whoathere-macos-vm"
 version = "0.1.0"
 dependencies = [
+ "ed25519-dalek",
  "flate2",
  "getrandom",
  "libc",
@@ -651,6 +652,7 @@ dependencies = [
  "whoathere-artifact",
  "whoathere-detonation",
  "whoathere-evidence",
+ "zeroize",
 ]
 
 [[package]]

@@ -112,7 +112,7 @@ import Testing
     #expect(lstatExists(clone.runDirectory.path) == false)
 }
 
-private struct LifecycleFixture {
+struct LifecycleFixture {
     let root: URL
     let layout: ArtifactRunBaseLayout
     let helperURL: URL
@@ -124,7 +124,7 @@ private struct LifecycleFixture {
     let guestAuthPublicKey: Data
 }
 
-private func lifecycleFixture(
+func lifecycleFixture(
     diskDigestOverride: String? = nil
 ) throws -> LifecycleFixture {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(

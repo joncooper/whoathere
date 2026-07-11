@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Testing
 @testable import WhoaThereMacosVmHelperCore
@@ -60,7 +61,7 @@ import Testing
     #expect(reader.prelude.backendIdentity.packageGID == 502)
     #expect(
         reader.prelude.backendIdentity.guestAuthPublicKeySHA256
-            == sha256(Data("guest auth public key".utf8))
+            == sha256(try guestAuthTestPublicKey())
     )
 
     var forwarded = Data()
@@ -134,6 +135,7 @@ func artifactSubmissionFixture() throws -> ArtifactSubmissionFixture {
     let manifestSHA256 = sha256(Data("manifest".utf8))
     let nodeSHA256 = sha256(Data("node executable".utf8))
     let npmSHA256 = sha256(Data("npm cli".utf8))
+    let guestAuthPublicKey = try guestAuthTestPublicKey()
     let commandTemplateSHA256 = sha256(
         Data("whoathere.npm_local_tarball_install.fixed_argv.v1".utf8)
     )
@@ -241,7 +243,7 @@ func artifactSubmissionFixture() throws -> ArtifactSubmissionFixture {
             "post_provisioning_receipt_sha256": sha256(Data("receipt".utf8)),
             "helper_sha256": sha256(Data("helper".utf8)),
             "guest_supervisor_sha256": sha256(Data("supervisor".utf8)),
-            "guest_auth_public_key_sha256": sha256(Data("guest auth public key".utf8)),
+            "guest_auth_public_key_sha256": sha256(guestAuthPublicKey),
             "runner_configuration_sha256": sha256(Data("runner".utf8)),
             "package_uid": UInt64(502),
             "package_gid": UInt64(502),
@@ -348,4 +350,10 @@ private func rawDigest(_ value: String) throws -> Data {
         index = next
     }
     return data
+}
+
+func guestAuthTestPublicKey() throws -> Data {
+    try Curve25519.Signing.PrivateKey(
+        rawRepresentation: Data(repeating: 7, count: 32)
+    ).publicKey.rawRepresentation
 }
