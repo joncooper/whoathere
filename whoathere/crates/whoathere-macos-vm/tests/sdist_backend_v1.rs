@@ -1,3 +1,4 @@
+use ed25519_dalek::SigningKey;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use std::collections::BTreeMap;
@@ -20,10 +21,18 @@ use whoathere_evidence::v2::{canonical_cas_object_key_for_artifact, ArtifactEvid
 use whoathere_macos_vm::{
     compile_macos_sdist_run_spec_v1, decode_and_validate_macos_artifact_run_spec_v1,
     decode_and_validate_macos_sdist_run_spec_v1, decode_and_validate_macos_wheel_run_spec_v1,
-    decode_macos_sdist_submission_frame_v1, encode_macos_sdist_submission_frame_v1,
+    decode_macos_sdist_guest_auth_challenge_v1, decode_macos_sdist_submission_frame_v1,
+    encode_macos_sdist_submission_frame_v1, read_macos_sdist_guest_control_frame_v1,
+    require_macos_sdist_guest_control_eof_v1, run_macos_sdist_guest_nonexecuting_session_v1,
+    sign_macos_sdist_guest_auth_response_v1, sign_macos_sdist_guest_staging_receipt_v1,
     stage_macos_sdist_guest_submission_v1, stream_macos_sdist_guest_submission_v1,
-    MacosArtifactRunErrorV1, MacosSdistBackendCapabilitiesV1, MacosSdistBackendIdentityV1,
-    MacosSdistGuestStagingErrorV1, MacosSdistGuestStagingPolicyV1, MacosSdistSubmissionBindingsV1,
+    verify_macos_sdist_guest_auth_response_v1, verify_macos_sdist_guest_staging_receipt_v1,
+    write_macos_sdist_guest_control_frame_v1, MacosArtifactRunErrorV1,
+    MacosSdistBackendCapabilitiesV1, MacosSdistBackendIdentityV1, MacosSdistGuestAuthChallengeV1,
+    MacosSdistGuestAuthClaimsV1, MacosSdistGuestAuthErrorV1, MacosSdistGuestControlErrorV1,
+    MacosSdistGuestControlFrameTypeV1, MacosSdistGuestStagingErrorV1,
+    MacosSdistGuestStagingPolicyV1, MacosSdistGuestStagingReceiptClaimsV1,
+    MacosSdistGuestSupervisorPrimaryErrorV1, MacosSdistSubmissionBindingsV1,
     MacosSdistSubmissionErrorV1, MacosSdistSubmissionHeaderV1, SdistGuestRehashPhaseV1,
     MACOS_SDIST_GUEST_PROTOCOL_V1, MACOS_SDIST_GUEST_SUBMISSION_MAGIC_V1,
     MACOS_SDIST_RUN_SPEC_SCHEMA_V1, MACOS_SDIST_SUBMISSION_FIXED_PREFIX_BYTES_V1,
@@ -193,6 +202,24 @@ fn compiled_templates(init_bytes: &[u8]) -> (Vec<SdistScenarioTemplateV1>, Vec<u
 }
 
 fn backend(pip_cli_sha256: Sha256Digest) -> MacosSdistBackendCapabilitiesV1 {
+    backend_with_guest_identity(
+        pip_cli_sha256,
+        digest(b"sdist guest auth public key"),
+        digest(b"sdist supervisor"),
+        digest(b"sdist runner configuration"),
+        501,
+        20,
+    )
+}
+
+fn backend_with_guest_identity(
+    pip_cli_sha256: Sha256Digest,
+    guest_auth_public_key_sha256: Sha256Digest,
+    guest_supervisor_sha256: Sha256Digest,
+    runner_configuration_sha256: Sha256Digest,
+    package_uid: u32,
+    package_gid: u32,
+) -> MacosSdistBackendCapabilitiesV1 {
     let identity = MacosSdistBackendIdentityV1::new(
         "base-generation-2026-07-11",
         digest(b"base disk"),
@@ -203,11 +230,11 @@ fn backend(pip_cli_sha256: Sha256Digest) -> MacosSdistBackendCapabilitiesV1 {
         8_192,
         digest(b"provisioning receipt"),
         digest(b"sdist helper"),
-        digest(b"sdist supervisor"),
-        digest(b"sdist guest auth public key"),
-        digest(b"sdist runner configuration"),
-        501,
-        20,
+        guest_supervisor_sha256,
+        guest_auth_public_key_sha256,
+        runner_configuration_sha256,
+        package_uid,
+        package_gid,
         "3.12.13",
         digest(b"measured python"),
         "26.1.2",
@@ -649,4 +676,435 @@ fn sdist_guest_staging_discards_bad_transport_and_detects_path_replacement() {
     staged.cleanup().expect("retry sdist cleanup");
     assert_eq!(fs::read_dir(&root).expect("clean sdist root").count(), 0);
     fs::remove_dir(root).expect("remove sdist staging root");
+}
+
+#[test]
+fn sdist_guest_authentication_binds_closure_challenge_claims_and_measured_key() {
+    let seed = [41_u8; 32];
+    let verifying_key = SigningKey::from_bytes(&seed).verifying_key().to_bytes();
+    let challenge = MacosSdistGuestAuthChallengeV1::new(
+        [13_u8; 32],
+        digest(b"sdist execution binding"),
+        digest(b"sdist run spec"),
+        digest(b"sdist build closure"),
+        digest(b"sdist clone binding"),
+        digest(&verifying_key),
+    )
+    .expect("sdist challenge");
+    let decoded = decode_macos_sdist_guest_auth_challenge_v1(challenge.canonical_json_v1())
+        .expect("decoded challenge");
+    assert_eq!(decoded.run_spec_sha256(), challenge.run_spec_sha256());
+    assert_eq!(
+        decoded.build_closure_sha256(),
+        challenge.build_closure_sha256()
+    );
+    let claims = MacosSdistGuestAuthClaimsV1::new(
+        digest(b"sdist guest supervisor"),
+        digest(b"sdist runner configuration"),
+        501,
+        20,
+    )
+    .expect("auth claims");
+    let response = sign_macos_sdist_guest_auth_response_v1(&challenge, seed, &claims)
+        .expect("signed response");
+    verify_macos_sdist_guest_auth_response_v1(&challenge, &response, verifying_key, &claims)
+        .expect("verified response");
+
+    let changed_closure = MacosSdistGuestAuthChallengeV1::new(
+        [13_u8; 32],
+        digest(b"sdist execution binding"),
+        digest(b"sdist run spec"),
+        digest(b"different build closure"),
+        digest(b"sdist clone binding"),
+        digest(&verifying_key),
+    )
+    .expect("changed challenge");
+    assert_eq!(
+        verify_macos_sdist_guest_auth_response_v1(
+            &changed_closure,
+            &response,
+            verifying_key,
+            &claims
+        ),
+        Err(MacosSdistGuestAuthErrorV1::InvalidResponse)
+    );
+
+    let mut tampered: serde_json::Value =
+        serde_json::from_slice(&response).expect("response value");
+    tampered["runner_configuration_sha256"] =
+        serde_json::json!(digest(b"forged runner configuration").as_str());
+    let tampered = serde_json_canonicalizer::to_vec(&tampered).expect("tampered response");
+    assert_eq!(
+        verify_macos_sdist_guest_auth_response_v1(&challenge, &tampered, verifying_key, &claims),
+        Err(MacosSdistGuestAuthErrorV1::InvalidResponse)
+    );
+
+    let mut wheel_schema: serde_json::Value =
+        serde_json::from_slice(challenge.canonical_json_v1()).expect("challenge value");
+    wheel_schema["schema_version"] = serde_json::json!("whoathere.wheel_guest_auth_challenge.v1");
+    let wheel_schema = serde_json_canonicalizer::to_vec(&wheel_schema).expect("wheel schema");
+    assert_eq!(
+        decode_macos_sdist_guest_auth_challenge_v1(&wheel_schema),
+        Err(MacosSdistGuestAuthErrorV1::NonCanonical)
+    );
+}
+
+#[test]
+fn sdist_guest_control_frames_are_bounded_ordered_and_cross_ecosystem_closed() {
+    let challenge = b"inert sdist challenge";
+    let response = b"inert sdist response";
+    let receipt = b"inert sdist receipt";
+    let mut wire = Vec::new();
+    write_macos_sdist_guest_control_frame_v1(
+        &mut wire,
+        MacosSdistGuestControlFrameTypeV1::AuthenticationChallenge,
+        challenge,
+    )
+    .expect("challenge frame");
+    write_macos_sdist_guest_control_frame_v1(
+        &mut wire,
+        MacosSdistGuestControlFrameTypeV1::AuthenticationResponse,
+        response,
+    )
+    .expect("response frame");
+    write_macos_sdist_guest_control_frame_v1(
+        &mut wire,
+        MacosSdistGuestControlFrameTypeV1::StagingReceipt,
+        receipt,
+    )
+    .expect("receipt frame");
+    let mut reader = FragmentedReader::new(wire.clone(), 3);
+    assert_eq!(
+        read_macos_sdist_guest_control_frame_v1(
+            &mut reader,
+            MacosSdistGuestControlFrameTypeV1::AuthenticationChallenge,
+            1024,
+        )
+        .expect("challenge"),
+        challenge
+    );
+    assert_eq!(
+        read_macos_sdist_guest_control_frame_v1(
+            &mut reader,
+            MacosSdistGuestControlFrameTypeV1::AuthenticationResponse,
+            1024,
+        )
+        .expect("response"),
+        response
+    );
+    assert_eq!(
+        read_macos_sdist_guest_control_frame_v1(
+            &mut reader,
+            MacosSdistGuestControlFrameTypeV1::StagingReceipt,
+            1024,
+        )
+        .expect("receipt"),
+        receipt
+    );
+    require_macos_sdist_guest_control_eof_v1(&mut reader).expect("control EOF");
+
+    let mut wheel_magic = wire.clone();
+    wheel_magic[..8].copy_from_slice(b"WHOWCTL1");
+    assert_eq!(
+        read_macos_sdist_guest_control_frame_v1(
+            &mut Cursor::new(wheel_magic),
+            MacosSdistGuestControlFrameTypeV1::AuthenticationChallenge,
+            1024,
+        ),
+        Err(MacosSdistGuestControlErrorV1::InvalidMagic)
+    );
+    assert_eq!(
+        read_macos_sdist_guest_control_frame_v1(
+            &mut Cursor::new(wire),
+            MacosSdistGuestControlFrameTypeV1::AuthenticationResponse,
+            1024,
+        ),
+        Err(MacosSdistGuestControlErrorV1::UnexpectedFrameType)
+    );
+    assert_eq!(
+        write_macos_sdist_guest_control_frame_v1(
+            &mut Vec::new(),
+            MacosSdistGuestControlFrameTypeV1::AuthenticationChallenge,
+            &[],
+        ),
+        Err(MacosSdistGuestControlErrorV1::BodyLimitExceeded)
+    );
+}
+
+#[test]
+fn signed_sdist_staging_receipt_binds_closure_inode_and_no_execution_posture() {
+    let seed = [43_u8; 32];
+    let verifying_key = SigningKey::from_bytes(&seed).verifying_key().to_bytes();
+    let closure = digest(b"sdist receipt build closure");
+    let challenge = MacosSdistGuestAuthChallengeV1::new(
+        [17_u8; 32],
+        digest(b"sdist receipt execution binding"),
+        digest(b"sdist receipt run spec"),
+        closure.clone(),
+        digest(b"sdist receipt clone binding"),
+        digest(&verifying_key),
+    )
+    .expect("receipt challenge");
+    let auth_claims = MacosSdistGuestAuthClaimsV1::new(
+        digest(b"sdist receipt supervisor"),
+        digest(b"sdist receipt runner configuration"),
+        501,
+        20,
+    )
+    .expect("receipt auth claims");
+    let artifact = digest(b"exact inert staged sdist");
+    let staging_claims = MacosSdistGuestStagingReceiptClaimsV1::new(
+        artifact.clone(),
+        4096,
+        closure.clone(),
+        artifact,
+        4096,
+        123,
+        456,
+    )
+    .expect("staging claims");
+    let receipt =
+        sign_macos_sdist_guest_staging_receipt_v1(&challenge, seed, &auth_claims, &staging_claims)
+            .expect("signed receipt");
+    let value: serde_json::Value = serde_json::from_slice(&receipt).expect("receipt value");
+    assert_eq!(
+        value.get("status").and_then(serde_json::Value::as_str),
+        Some("staged_no_execution_no_closure_materialization")
+    );
+    assert_eq!(
+        value
+            .get("package_execution_enabled")
+            .and_then(serde_json::Value::as_bool),
+        Some(false)
+    );
+    assert_eq!(
+        value
+            .get("sync_back_enabled")
+            .and_then(serde_json::Value::as_bool),
+        Some(false)
+    );
+    assert_eq!(
+        value
+            .get("build_closure_materialized")
+            .and_then(serde_json::Value::as_bool),
+        Some(false)
+    );
+    let observation = verify_macos_sdist_guest_staging_receipt_v1(
+        &challenge,
+        &receipt,
+        verifying_key,
+        &auth_claims,
+        &staging_claims,
+    )
+    .expect("verified receipt");
+    assert_eq!(observation.build_closure_sha256(), &closure);
+    assert_eq!(observation.claims().staged_device(), 123);
+    assert_eq!(observation.claims().staged_inode(), 456);
+    assert!(!observation.package_execution_enabled());
+    assert!(!observation.sync_back_enabled());
+    assert!(!observation.build_closure_materialized());
+
+    let wrong_artifact = digest(b"exact inert staged sdist");
+    let wrong_closure_claims = MacosSdistGuestStagingReceiptClaimsV1::new(
+        wrong_artifact.clone(),
+        4096,
+        digest(b"wrong closure"),
+        wrong_artifact,
+        4096,
+        123,
+        456,
+    )
+    .expect("wrong closure claims");
+    assert_eq!(
+        sign_macos_sdist_guest_staging_receipt_v1(
+            &challenge,
+            seed,
+            &auth_claims,
+            &wrong_closure_claims,
+        ),
+        Err(MacosSdistGuestAuthErrorV1::InvalidResponse)
+    );
+
+    let mut tampered: serde_json::Value = serde_json::from_slice(&receipt).expect("receipt value");
+    tampered["sync_back_enabled"] = serde_json::json!(true);
+    let tampered = serde_json_canonicalizer::to_vec(&tampered).expect("tampered receipt");
+    assert_eq!(
+        verify_macos_sdist_guest_staging_receipt_v1(
+            &challenge,
+            &tampered,
+            verifying_key,
+            &auth_claims,
+            &staging_claims,
+        ),
+        Err(MacosSdistGuestAuthErrorV1::InvalidResponse)
+    );
+}
+
+#[test]
+fn sdist_guest_supervisor_authenticates_stages_cleans_attests_and_never_executes() {
+    let root = temporary_sdist_staging_root("supervisor-success");
+    let staging_policy = sdist_staging_policy(&root);
+    let seed = [47_u8; 32];
+    let verifying_key = SigningKey::from_bytes(&seed).verifying_key().to_bytes();
+    let supervisor = digest(b"measured sdist supervisor");
+    let runner = digest(b"measured sdist runner configuration");
+    let package_gid = 20;
+    let backend = backend_with_guest_identity(
+        digest(b"measured pip"),
+        digest(&verifying_key),
+        supervisor.clone(),
+        runner.clone(),
+        staging_policy.package_uid(),
+        package_gid,
+    );
+    let (templates, artifact) = compiled_templates(b"VALUE = 'supervisor inert'\n");
+    let run_spec = compile_macos_sdist_run_spec_v1(&templates[0], &backend).expect("run spec");
+    let bindings =
+        MacosSdistSubmissionBindingsV1::for_run_spec(digest(b"session challenge"), &run_spec);
+    let header = MacosSdistSubmissionHeaderV1::new(run_spec.clone(), bindings.clone())
+        .expect("session header");
+    let mut guest =
+        encode_macos_sdist_submission_frame_v1(&header, &artifact).expect("session frame");
+    guest[..8].copy_from_slice(&MACOS_SDIST_GUEST_SUBMISSION_MAGIC_V1);
+    let challenge = MacosSdistGuestAuthChallengeV1::new(
+        [19_u8; 32],
+        bindings.execution_binding_sha256().clone(),
+        run_spec.run_spec_sha256().clone(),
+        run_spec.build_closure_sha256().clone(),
+        digest(b"session clone"),
+        digest(&verifying_key),
+    )
+    .expect("session challenge");
+    let auth_claims = MacosSdistGuestAuthClaimsV1::new(
+        supervisor,
+        runner,
+        staging_policy.package_uid(),
+        package_gid,
+    )
+    .expect("session claims");
+    let mut input = Vec::new();
+    write_macos_sdist_guest_control_frame_v1(
+        &mut input,
+        MacosSdistGuestControlFrameTypeV1::AuthenticationChallenge,
+        challenge.canonical_json_v1(),
+    )
+    .expect("write challenge");
+    input.extend_from_slice(&guest);
+    let mut output = Vec::new();
+    let observation = run_macos_sdist_guest_nonexecuting_session_v1(
+        &mut FragmentedReader::new(input, 11),
+        &mut output,
+        seed,
+        &auth_claims,
+        &staging_policy,
+    )
+    .expect("nonexecuting session");
+    assert_eq!(observation.artifact_sha256(), run_spec.artifact_sha256());
+    assert_eq!(
+        observation.build_closure_sha256(),
+        run_spec.build_closure_sha256()
+    );
+    assert!(observation.staging_cleanup_succeeded());
+    assert!(!observation.package_execution_enabled());
+    assert!(!observation.sync_back_enabled());
+    assert!(!observation.build_closure_materialized());
+    assert_eq!(fs::read_dir(&root).expect("clean root").count(), 0);
+
+    let mut output_reader = FragmentedReader::new(output, 5);
+    let response = read_macos_sdist_guest_control_frame_v1(
+        &mut output_reader,
+        MacosSdistGuestControlFrameTypeV1::AuthenticationResponse,
+        16 * 1024,
+    )
+    .expect("auth response");
+    verify_macos_sdist_guest_auth_response_v1(&challenge, &response, verifying_key, &auth_claims)
+        .expect("verify auth response");
+    let receipt = read_macos_sdist_guest_control_frame_v1(
+        &mut output_reader,
+        MacosSdistGuestControlFrameTypeV1::StagingReceipt,
+        16 * 1024,
+    )
+    .expect("staging receipt");
+    let expected_staging_claims = MacosSdistGuestStagingReceiptClaimsV1::new(
+        observation.artifact_sha256().clone(),
+        observation.artifact_byte_length(),
+        observation.build_closure_sha256().clone(),
+        observation.first_rehash_sha256().clone(),
+        observation.first_rehash_byte_length(),
+        observation.staged_device(),
+        observation.staged_inode(),
+    )
+    .expect("expected staging claims");
+    verify_macos_sdist_guest_staging_receipt_v1(
+        &challenge,
+        &receipt,
+        verifying_key,
+        &auth_claims,
+        &expected_staging_claims,
+    )
+    .expect("verify staging receipt");
+    require_macos_sdist_guest_control_eof_v1(&mut output_reader).expect("output EOF");
+    fs::remove_dir(root).expect("remove supervisor root");
+}
+
+#[test]
+fn sdist_guest_supervisor_rejects_closure_rebinding_and_cleans_staging() {
+    let root = temporary_sdist_staging_root("supervisor-rebind");
+    let staging_policy = sdist_staging_policy(&root);
+    let seed = [53_u8; 32];
+    let verifying_key = SigningKey::from_bytes(&seed).verifying_key().to_bytes();
+    let supervisor = digest(b"rebind sdist supervisor");
+    let runner = digest(b"rebind sdist runner configuration");
+    let backend = backend_with_guest_identity(
+        digest(b"measured pip"),
+        digest(&verifying_key),
+        supervisor.clone(),
+        runner.clone(),
+        staging_policy.package_uid(),
+        20,
+    );
+    let (templates, artifact) = compiled_templates(b"VALUE = 'rebind inert'\n");
+    let run_spec = compile_macos_sdist_run_spec_v1(&templates[0], &backend).expect("run spec");
+    let bindings =
+        MacosSdistSubmissionBindingsV1::for_run_spec(digest(b"rebind challenge"), &run_spec);
+    let header =
+        MacosSdistSubmissionHeaderV1::new(run_spec.clone(), bindings.clone()).expect("header");
+    let mut guest =
+        encode_macos_sdist_submission_frame_v1(&header, &artifact).expect("guest frame");
+    guest[..8].copy_from_slice(&MACOS_SDIST_GUEST_SUBMISSION_MAGIC_V1);
+    let challenge = MacosSdistGuestAuthChallengeV1::new(
+        [23_u8; 32],
+        bindings.execution_binding_sha256().clone(),
+        run_spec.run_spec_sha256().clone(),
+        digest(b"forged closure binding"),
+        digest(b"rebind clone"),
+        digest(&verifying_key),
+    )
+    .expect("rebound challenge");
+    let auth_claims =
+        MacosSdistGuestAuthClaimsV1::new(supervisor, runner, staging_policy.package_uid(), 20)
+            .expect("claims");
+    let mut input = Vec::new();
+    write_macos_sdist_guest_control_frame_v1(
+        &mut input,
+        MacosSdistGuestControlFrameTypeV1::AuthenticationChallenge,
+        challenge.canonical_json_v1(),
+    )
+    .expect("challenge frame");
+    input.extend_from_slice(&guest);
+    let failure = run_macos_sdist_guest_nonexecuting_session_v1(
+        &mut Cursor::new(input),
+        &mut Vec::new(),
+        seed,
+        &auth_claims,
+        &staging_policy,
+    )
+    .expect_err("closure rebinding must fail");
+    assert_eq!(
+        failure.primary(),
+        MacosSdistGuestSupervisorPrimaryErrorV1::BindingMismatch
+    );
+    assert!(!failure.staging_cleanup_failed());
+    assert_eq!(fs::read_dir(&root).expect("clean root").count(), 0);
+    fs::remove_dir(root).expect("remove rebind root");
 }
