@@ -802,6 +802,8 @@ private func appendCanonicalJSON(_ value: Any, to output: inout String) throws {
         output.append("]")
     case let text as String:
         appendJSONString(text, to: &output)
+    case is NSNull:
+        output.append("null")
     case let number as NSNumber:
         if CFGetTypeID(number) == CFBooleanGetTypeID() {
             output.append(number.boolValue ? "true" : "false")
