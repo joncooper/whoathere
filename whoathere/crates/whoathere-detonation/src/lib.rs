@@ -7,12 +7,14 @@
 mod artifact;
 mod npm;
 mod sdist;
+mod telemetry;
 mod wheel;
 mod wire;
 
 pub use artifact::*;
 pub use npm::*;
 pub use sdist::*;
+pub use telemetry::*;
 pub use wheel::*;
 pub use wire::*;
 

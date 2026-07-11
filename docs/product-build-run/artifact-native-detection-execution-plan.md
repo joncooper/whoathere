@@ -767,7 +767,10 @@ Work packages:
 - **AN-007 Telemetry feasibility spike:** with inert programs only, prove that the proposed macOS
   design can independently observe process creation and descendants, protected file or canary
   access, DNS and connection attempts, dropped-event state, and complete process-tree teardown.
-  Time-box the spike and document unsupported signals.
+  Time-box the spike and document unsupported signals. The 2026-07-11
+  [telemetry feasibility decision](artifact-native-telemetry-feasibility-decision-2026-07-11.md)
+  rejects the current macOS-native backend as the bulk lane and selects a lightweight Linux VZ
+  guest on the Mac as the candidate; the required inert Linux conformance run remains open.
 - **AN-008 Artifact transport feasibility spike:** replace or prototype beyond the current bounded
   hex-in-JSON project payload so realistic tgz/wheel/sdist sizes can be transported as exact bytes
   with streaming or bounded-memory behavior and end-to-end digest verification.
