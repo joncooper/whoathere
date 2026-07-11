@@ -8,12 +8,20 @@ let package = Package(
     ],
     products: [
         .library(name: "WhoaThereMacosVmHelperCore", targets: ["WhoaThereMacosVmHelperCore"]),
-        .executable(name: "whoathere-macos-vm-helper", targets: ["WhoaThereMacosVmHelper"])
+        .executable(name: "whoathere-macos-vm-helper", targets: ["WhoaThereMacosVmHelper"]),
+        .executable(
+            name: "whoathere-linux-vz-conformance",
+            targets: ["WhoaThereLinuxVzConformance"]
+        )
     ],
     targets: [
         .target(name: "WhoaThereMacosVmHelperCore"),
         .executableTarget(
             name: "WhoaThereMacosVmHelper",
+            dependencies: ["WhoaThereMacosVmHelperCore"]
+        ),
+        .executableTarget(
+            name: "WhoaThereLinuxVzConformance",
             dependencies: ["WhoaThereMacosVmHelperCore"]
         ),
         .testTarget(
