@@ -63,9 +63,11 @@ restricted sample, or malware was used.
 
 ## Next gate
 
-The next backend slice must define a closed Linux VZ run spec that nests this unqualified identity
-and the full telemetry requirements while keeping execution absent. After that, an inert measured
-image and sensor conformance workflow must produce separately signed guest and host receipts.
+The follow-on [telemetry-conformance run-spec checkpoint](artifact-native-linux-vz-telemetry-conformance-run-spec-checkpoint-2026-07-11.md)
+now defines a closed request that nests this unqualified identity and the full telemetry
+requirements while keeping package execution absent. The next backend slice must build an inert
+measured image and sensor conformance workflow that produces separately authenticated guest and
+host receipts.
 
 A future qualified backend must be a distinct type constructible only from those verified receipts;
 it must not add a mutable qualification flag to this identity. Only that distinct type may become

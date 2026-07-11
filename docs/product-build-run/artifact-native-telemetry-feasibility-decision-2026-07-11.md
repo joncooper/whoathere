@@ -3,8 +3,8 @@
 Date: 2026-07-11
 
 Status: macOS-native is not qualified as the bulk detection lane; a lightweight Linux guest on the
-Mac is selected as the bulk-lane candidate, its shared requirements schema is implemented, and
-inert conformance remains pending
+Mac is selected as the bulk-lane candidate, its requirements, unqualified identity, and inert
+conformance run-spec schemas are implemented, and measured conformance remains pending
 
 Canonical references:
 
@@ -123,9 +123,10 @@ unmeasured, unsupported, dropped, truncated, or unverifiable.
 ## Immediate implementation consequence
 
 The current macOS npm, wheel, and sdist supervisors remain non-executing. The new sdist execution
-grant stays a protocol primitive with no production issuer or consumer. The next code slice is the
-Linux VZ backend identity/run-spec skeleton, which cannot construct execution authority until a
-conformance receipt verifies.
+grant stays a protocol primitive with no production issuer or consumer. The Linux VZ requirements,
+unqualified backend identity, and closed telemetry-conformance run spec are now implemented. None
+can construct package-execution authority; a future distinct qualified type requires verified
+conformance receipts for the exact measured backend.
 
 This decision adds the closed canonical
 `whoathere.artifact_protected_telemetry_requirements.v1` contract. It fixes the 16 required sensor
@@ -138,6 +139,12 @@ eligible merely by serializing the requirements.
 The follow-on [unqualified backend checkpoint](artifact-native-linux-vz-unqualified-backend-checkpoint-2026-07-11.md)
 adds a cross-language measured identity whose only state is `candidate_unqualified` and whose API
 always denies execution authority until a future conformance receipt constructs a distinct type.
+
+The follow-on [telemetry-conformance run-spec checkpoint](artifact-native-linux-vz-telemetry-conformance-run-spec-checkpoint-2026-07-11.md)
+adds a cross-language, trusted-inert-fixture-only request that binds that identity and the full
+requirements. It has no package coordinate or arbitrary command, fixes no external route and
+structurally absent sync-back, and still proves no sensor or VM behavior until measured receipts
+exist.
 
 No restricted sample, package lifecycle, package manager, VM, live network target, or malware was
 executed while making this decision.
