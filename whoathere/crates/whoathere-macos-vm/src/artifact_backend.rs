@@ -201,6 +201,18 @@ impl MacosArtifactBackendIdentityV1 {
         &self.machine_identifier_sha256
     }
 
+    pub fn guest_supervisor_sha256(&self) -> &Sha256Digest {
+        &self.guest_supervisor_sha256
+    }
+
+    pub fn guest_auth_public_key_sha256(&self) -> &Sha256Digest {
+        &self.guest_auth_public_key_sha256
+    }
+
+    pub fn runner_configuration_sha256(&self) -> &Sha256Digest {
+        &self.runner_configuration_sha256
+    }
+
     pub const fn cpu_count(&self) -> u16 {
         self.cpu_count
     }

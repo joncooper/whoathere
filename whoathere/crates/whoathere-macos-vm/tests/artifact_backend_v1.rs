@@ -20,17 +20,18 @@ use whoathere_macos_vm::{
     compile_macos_artifact_run_spec_v1, decode_and_validate_macos_artifact_run_spec_v1,
     decode_macos_artifact_guest_auth_challenge_v1, decode_macos_artifact_submission_frame_v1,
     encode_macos_artifact_submission_frame_v1, read_macos_artifact_guest_control_frame_v1,
-    require_macos_artifact_guest_control_eof_v1, sign_macos_artifact_guest_auth_response_v1,
-    sign_macos_artifact_guest_staging_receipt_v1, stage_macos_artifact_guest_submission_v1,
-    stream_macos_artifact_guest_submission_v1, verify_macos_artifact_guest_auth_response_v1,
-    verify_macos_artifact_guest_staging_receipt_v1, write_macos_artifact_guest_control_frame_v1,
-    write_macos_artifact_submission_frame_v1, ArtifactGuestRehashPhaseV1,
-    MacosArtifactBackendCapabilitiesV1, MacosArtifactBackendIdentityV1,
+    require_macos_artifact_guest_control_eof_v1, run_macos_artifact_guest_nonexecuting_session_v1,
+    sign_macos_artifact_guest_auth_response_v1, sign_macos_artifact_guest_staging_receipt_v1,
+    stage_macos_artifact_guest_submission_v1, stream_macos_artifact_guest_submission_v1,
+    verify_macos_artifact_guest_auth_response_v1, verify_macos_artifact_guest_staging_receipt_v1,
+    write_macos_artifact_guest_control_frame_v1, write_macos_artifact_submission_frame_v1,
+    ArtifactGuestRehashPhaseV1, MacosArtifactBackendCapabilitiesV1, MacosArtifactBackendIdentityV1,
     MacosArtifactGuestAuthChallengeV1, MacosArtifactGuestAuthClaimsV1,
     MacosArtifactGuestAuthErrorV1, MacosArtifactGuestControlErrorV1,
     MacosArtifactGuestControlFrameTypeV1, MacosArtifactGuestStagingErrorV1,
     MacosArtifactGuestStagingPolicyV1, MacosArtifactGuestStagingReceiptClaimsV1,
-    MacosArtifactRunErrorV1, MacosArtifactSubmissionBindingsV1, MacosArtifactSubmissionErrorV1,
+    MacosArtifactGuestSupervisorPrimaryErrorV1, MacosArtifactRunErrorV1,
+    MacosArtifactSubmissionBindingsV1, MacosArtifactSubmissionErrorV1,
     MacosArtifactSubmissionHeaderV1, MACOS_ARTIFACT_GUEST_SUBMISSION_MAGIC_V1,
     MACOS_ARTIFACT_SUBMISSION_FIXED_PREFIX_BYTES_V1,
 };
@@ -146,6 +147,14 @@ fn compiled_template() -> (whoathere_detonation::ArtifactScenarioTemplateV1, Vec
 }
 
 fn backend(npm_digest: Sha256Digest) -> MacosArtifactBackendCapabilitiesV1 {
+    backend_with_guest_identity(npm_digest, digest(b"guest auth Ed25519 public key"), 502)
+}
+
+fn backend_with_guest_identity(
+    npm_digest: Sha256Digest,
+    guest_auth_public_key_sha256: Sha256Digest,
+    package_uid: u32,
+) -> MacosArtifactBackendCapabilitiesV1 {
     let identity = MacosArtifactBackendIdentityV1::new(
         "base-generation-inert-v1",
         digest(b"base disk"),
@@ -157,9 +166,9 @@ fn backend(npm_digest: Sha256Digest) -> MacosArtifactBackendCapabilitiesV1 {
         digest(b"post provisioning receipt"),
         digest(b"signed swift helper"),
         digest(b"root guest supervisor"),
-        digest(b"guest auth Ed25519 public key"),
+        guest_auth_public_key_sha256,
         digest(b"runner configuration"),
-        502,
+        package_uid,
         502,
         "22.17.0",
         digest(b"measured node"),
@@ -691,6 +700,163 @@ fn guest_control_frames_are_ordered_bounded_fragment_tolerant_and_explicitly_ter
     );
 }
 
+#[test]
+fn guest_supervisor_authenticates_stages_binds_cleans_and_never_executes() {
+    let seed = [7_u8; 32];
+    let verifying_key = SigningKey::from_bytes(&seed).verifying_key().to_bytes();
+    let root = temporary_staging_root("supervisor-success");
+    let policy = staging_policy(&root);
+    let (guest, artifact, run_spec, bindings) =
+        supervisor_guest_frame(verifying_key, policy.package_uid());
+    let claims = MacosArtifactGuestAuthClaimsV1::new(
+        digest(b"root guest supervisor"),
+        digest(b"runner configuration"),
+        policy.package_uid(),
+        502,
+    )
+    .expect("supervisor auth claims");
+    let challenge = MacosArtifactGuestAuthChallengeV1::new(
+        [9_u8; 32],
+        bindings.execution_binding_sha256().clone(),
+        run_spec.run_spec_sha256().clone(),
+        digest(b"unique clone"),
+        Sha256Digest::from_bytes(&verifying_key),
+    )
+    .expect("supervisor challenge");
+    let mut input = Vec::new();
+    write_macos_artifact_guest_control_frame_v1(
+        &mut input,
+        MacosArtifactGuestControlFrameTypeV1::AuthenticationChallenge,
+        challenge.canonical_json_v1(),
+    )
+    .expect("challenge frame");
+    input.extend_from_slice(&guest);
+
+    let mut output = Vec::new();
+    let observation = run_macos_artifact_guest_nonexecuting_session_v1(
+        &mut Cursor::new(input),
+        &mut output,
+        seed,
+        &claims,
+        &policy,
+    )
+    .expect("non-executing supervisor session");
+    assert_eq!(observation.artifact_sha256(), &digest(&artifact));
+    assert_eq!(observation.artifact_byte_length(), artifact.len() as u64);
+    assert_eq!(observation.first_rehash_sha256(), &digest(&artifact));
+    assert_eq!(observation.package_uid(), policy.package_uid());
+    assert_eq!(observation.package_gid(), 502);
+    assert!(observation.staging_cleanup_succeeded());
+    assert!(!observation.package_execution_enabled());
+    assert_eq!(fs::read_dir(&root).expect("read clean root").count(), 0);
+
+    let mut output = Cursor::new(output);
+    let auth_response = read_macos_artifact_guest_control_frame_v1(
+        &mut output,
+        MacosArtifactGuestControlFrameTypeV1::AuthenticationResponse,
+        16 * 1024,
+    )
+    .expect("auth response");
+    verify_macos_artifact_guest_auth_response_v1(
+        &challenge,
+        &auth_response,
+        verifying_key,
+        &claims,
+    )
+    .expect("verified auth response");
+    let receipt = read_macos_artifact_guest_control_frame_v1(
+        &mut output,
+        MacosArtifactGuestControlFrameTypeV1::StagingReceipt,
+        16 * 1024,
+    )
+    .expect("staging receipt");
+    let staging_claims = MacosArtifactGuestStagingReceiptClaimsV1::new(
+        observation.artifact_sha256().clone(),
+        observation.artifact_byte_length(),
+        observation.first_rehash_sha256().clone(),
+        observation.first_rehash_byte_length(),
+        observation.staged_device(),
+        observation.staged_inode(),
+    )
+    .expect("expected staging claims");
+    verify_macos_artifact_guest_staging_receipt_v1(
+        &challenge,
+        &receipt,
+        verifying_key,
+        &claims,
+        &staging_claims,
+    )
+    .expect("verified staging receipt");
+    require_macos_artifact_guest_control_eof_v1(&mut output).expect("supervisor output EOF");
+    fs::remove_dir(&root).expect("remove clean staging root");
+}
+
+#[test]
+fn guest_supervisor_rejects_header_challenge_rebinding_and_cleans_staging() {
+    let seed = [7_u8; 32];
+    let verifying_key = SigningKey::from_bytes(&seed).verifying_key().to_bytes();
+    let root = temporary_staging_root("supervisor-rebinding");
+    let policy = staging_policy(&root);
+    let (guest, _, run_spec, _) = supervisor_guest_frame(verifying_key, policy.package_uid());
+    let claims = MacosArtifactGuestAuthClaimsV1::new(
+        digest(b"root guest supervisor"),
+        digest(b"runner configuration"),
+        policy.package_uid(),
+        502,
+    )
+    .expect("supervisor auth claims");
+    let challenge = MacosArtifactGuestAuthChallengeV1::new(
+        [10_u8; 32],
+        digest(b"wrong execution binding"),
+        run_spec.run_spec_sha256().clone(),
+        digest(b"unique clone"),
+        Sha256Digest::from_bytes(&verifying_key),
+    )
+    .expect("rebound challenge");
+    let mut input = Vec::new();
+    write_macos_artifact_guest_control_frame_v1(
+        &mut input,
+        MacosArtifactGuestControlFrameTypeV1::AuthenticationChallenge,
+        challenge.canonical_json_v1(),
+    )
+    .expect("challenge frame");
+    input.extend_from_slice(&guest);
+
+    let mut output = Vec::new();
+    let failure = run_macos_artifact_guest_nonexecuting_session_v1(
+        &mut Cursor::new(input),
+        &mut output,
+        seed,
+        &claims,
+        &policy,
+    )
+    .expect_err("rebound header must fail");
+    assert_eq!(
+        failure.primary(),
+        MacosArtifactGuestSupervisorPrimaryErrorV1::BindingMismatch
+    );
+    assert!(!failure.staging_cleanup_failed());
+    assert_eq!(fs::read_dir(&root).expect("read clean root").count(), 0);
+
+    let mut output = Cursor::new(output);
+    let auth_response = read_macos_artifact_guest_control_frame_v1(
+        &mut output,
+        MacosArtifactGuestControlFrameTypeV1::AuthenticationResponse,
+        16 * 1024,
+    )
+    .expect("auth response precedes artifact");
+    verify_macos_artifact_guest_auth_response_v1(
+        &challenge,
+        &auth_response,
+        verifying_key,
+        &claims,
+    )
+    .expect("verified auth response");
+    require_macos_artifact_guest_control_eof_v1(&mut output)
+        .expect("no receipt after binding failure");
+    fs::remove_dir(&root).expect("remove clean staging root");
+}
+
 fn guest_frame() -> (Vec<u8>, Vec<u8>, whoathere_macos_vm::MacosArtifactRunSpecV1) {
     let (template, artifact) = compiled_template();
     let run_spec = compile_macos_artifact_run_spec_v1(&template, &backend(digest(b"measured npm")))
@@ -702,6 +868,32 @@ fn guest_frame() -> (Vec<u8>, Vec<u8>, whoathere_macos_vm::MacosArtifactRunSpecV
         encode_macos_artifact_submission_frame_v1(&header, &artifact).expect("host frame");
     guest[..8].copy_from_slice(&MACOS_ARTIFACT_GUEST_SUBMISSION_MAGIC_V1);
     (guest, artifact, run_spec)
+}
+
+fn supervisor_guest_frame(
+    verifying_key: [u8; 32],
+    package_uid: u32,
+) -> (
+    Vec<u8>,
+    Vec<u8>,
+    whoathere_macos_vm::MacosArtifactRunSpecV1,
+    MacosArtifactSubmissionBindingsV1,
+) {
+    let (template, artifact) = compiled_template();
+    let backend = backend_with_guest_identity(
+        digest(b"measured npm"),
+        Sha256Digest::from_bytes(&verifying_key),
+        package_uid,
+    );
+    let run_spec =
+        compile_macos_artifact_run_spec_v1(&template, &backend).expect("supervisor Mac run spec");
+    let bindings = MacosArtifactSubmissionBindingsV1::for_run_spec(digest(b"challenge"), &run_spec);
+    let header = MacosArtifactSubmissionHeaderV1::new(run_spec.clone(), bindings.clone())
+        .expect("supervisor submission header");
+    let mut guest =
+        encode_macos_artifact_submission_frame_v1(&header, &artifact).expect("supervisor frame");
+    guest[..8].copy_from_slice(&MACOS_ARTIFACT_GUEST_SUBMISSION_MAGIC_V1);
+    (guest, artifact, run_spec, bindings)
 }
 
 fn temporary_staging_root(label: &str) -> PathBuf {

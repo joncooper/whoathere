@@ -6,6 +6,7 @@ import Security
 import WhoaThereMacosVmHelperCore
 
 private let guestReadinessPort: UInt32 = 47078
+private let artifactGuestPort: UInt32 = 47079
 private let guestReadinessProtocol = "whoathere.guest_ready.v1"
 private let guestDetonationProtocol = "whoathere.guest_detonation.v1"
 private let maxProjectPayloadHexBytes = 2 * 1024 * 1024
@@ -270,6 +271,69 @@ private final class GuestReadinessListener: NSObject, VZVirtioSocketListenerDele
     }
 }
 
+private final class ArtifactGuestRunListener: NSObject, VZVirtioSocketListenerDelegate {
+    private let lock = NSLock()
+    private var accepted = false
+    private let reader: ArtifactRunSubmissionReader
+    private let base: LockedArtifactRunBase
+    private let clone: DisposableArtifactRunClone
+    private let resultBox: LockedResultBox<ArtifactGuestNonExecutingSessionObservation>
+    private let completion: DispatchSemaphore
+
+    init(
+        reader: ArtifactRunSubmissionReader,
+        base: LockedArtifactRunBase,
+        clone: DisposableArtifactRunClone,
+        resultBox: LockedResultBox<ArtifactGuestNonExecutingSessionObservation>,
+        completion: DispatchSemaphore
+    ) {
+        self.reader = reader
+        self.base = base
+        self.clone = clone
+        self.resultBox = resultBox
+        self.completion = completion
+    }
+
+    func listener(
+        _ listener: VZVirtioSocketListener,
+        shouldAcceptNewConnection connection: VZVirtioSocketConnection,
+        from socketDevice: VZVirtioSocketDevice
+    ) -> Bool {
+        guard connection.destinationPort == artifactGuestPort else { return false }
+        lock.lock()
+        let shouldAccept = !accepted
+        if shouldAccept { accepted = true }
+        lock.unlock()
+        guard shouldAccept else { return false }
+
+        let listenerBox = UncheckedSendableBox(value: self)
+        let connectionBox = UncheckedSendableBox(value: connection)
+        DispatchQueue.global(qos: .userInitiated).async {
+            listenerBox.value.handle(connectionBox.value)
+        }
+        return true
+    }
+
+    private func handle(_ connection: VZVirtioSocketConnection) {
+        defer {
+            connection.close()
+            completion.signal()
+        }
+        do {
+            let observation = try runNonExecutingArtifactGuestSession(
+                descriptor: connection.fileDescriptor,
+                reader: reader,
+                base: base,
+                clone: clone,
+                timeoutMillis: 90_000
+            )
+            resultBox.store(.success(observation))
+        } catch {
+            resultBox.store(.failure(error))
+        }
+    }
+}
+
 private struct DetonationRequestFile {
     var jobID: String
     var url: URL
@@ -521,59 +585,299 @@ struct WhoaThereMacosVmHelper {
         guard options.execute else {
             emit(
                 fields: [
-                    "schema_version": "whoathere.macos_artifact_run_parser.v1",
+                    "schema_version": "whoathere.macos_artifact_run_nonexecuting.v1",
                     "helper_version": helperVersion,
                     "status": "blocked",
                     "execution_requested": false,
                     "vm_execution_enabled": false,
                     "package_execution_enabled": false,
-                    "reason_codes": ["execute_required_for_artifact_submission_parse"],
+                    "reason_codes": ["execute_required_for_artifact_vm_run"],
                     "exit_code": 78
                 ],
                 exitCode: 78
             )
         }
+        var pendingClone: DisposableArtifactRunClone?
         do {
-            let observation = try inspectArtifactSubmission(from: FileHandle.standardInput)
+            let reader = try beginArtifactSubmission(from: FileHandle.standardInput)
+            let prelude = reader.prelude
+            let stateDirectory = options.stateDir.map {
+                URL(fileURLWithPath: $0, isDirectory: true)
+            } ?? defaultStateDir()
+            let layout = ArtifactRunBaseLayout(stateDirectory: stateDirectory)
+            let helperURL = URL(
+                fileURLWithPath: absoluteExecutablePath(CommandLine.arguments[0])
+            )
+            let base = try verifyAndLockArtifactRunBase(
+                layout: layout,
+                identity: prelude.backendIdentity,
+                helperURL: helperURL
+            )
+            let clone = try base.createDisposableClone()
+            pendingClone = clone
+            let configuration = try buildArtifactScenarioConfiguration(base: base, clone: clone)
+            let queue = DispatchQueue(label: "whoathere.macos.artifact-run")
+            let virtualMachine = VZVirtualMachine(configuration: configuration, queue: queue)
+            guard let socketDevice = virtualMachine.socketDevices.first as? VZVirtioSocketDevice else {
+                throw helperError("artifact_run_socket_device_missing")
+            }
+            let sessionResult = LockedResultBox<ArtifactGuestNonExecutingSessionObservation>()
+            let sessionCompletion = DispatchSemaphore(value: 0)
+            let listenerDelegate = ArtifactGuestRunListener(
+                reader: reader,
+                base: base,
+                clone: clone,
+                resultBox: sessionResult,
+                completion: sessionCompletion
+            )
+            let socketListener = VZVirtioSocketListener()
+            socketListener.delegate = listenerDelegate
+            queue.sync {
+                socketDevice.setSocketListener(socketListener, forPort: artifactGuestPort)
+            }
+
+            var primaryError: Error?
+            var sessionObservation: ArtifactGuestNonExecutingSessionObservation?
+            var vmStartSucceeded = false
+            var sessionCompleted = false
+            do {
+                try startArtifactVirtualMachine(virtualMachine, queue: queue)
+                vmStartSucceeded = true
+                guard sessionCompletion.wait(timeout: .now() + .seconds(120)) == .success else {
+                    throw helperError("artifact_run_guest_session_timeout")
+                }
+                sessionCompleted = true
+                guard let result = sessionResult.load() else {
+                    throw helperError("artifact_run_guest_session_result_missing")
+                }
+                sessionObservation = try result.get()
+            } catch {
+                primaryError = error
+            }
+
+            queue.sync {
+                socketDevice.removeSocketListener(forPort: artifactGuestPort)
+            }
+            let stopResult = stopArtifactVirtualMachine(virtualMachine, queue: queue)
+            if !sessionCompleted {
+                sessionCompleted = sessionCompletion.wait(
+                    timeout: .now() + .seconds(10)
+                ) == .success
+            }
+            var cloneCleanupSucceeded = false
+            var cleanupError: Error?
+            let vmStopSucceeded: Bool
+            switch stopResult {
+            case .success: vmStopSucceeded = true
+            case .failure: vmStopSucceeded = false
+            }
+            let cleanupDisposition = artifactRunCloneCleanupDisposition(
+                vmStopSucceeded: vmStopSucceeded,
+                guestSessionTerminated: sessionCompleted
+            )
+            switch cleanupDisposition {
+            case .cleanupAuthorized:
+                do {
+                    try clone.cleanup()
+                    cloneCleanupSucceeded = true
+                    pendingClone = nil
+                } catch {
+                    cleanupError = error
+                }
+            case .retainBecauseVMStopUnproven:
+                if case .failure(let error) = stopResult {
+                    cleanupError = error
+                } else {
+                    cleanupError = helperError(
+                        cleanupDisposition.reasonCode
+                            ?? "artifact_run_clone_cleanup_disposition_invalid"
+                    )
+                }
+            case .retainBecauseGuestSessionUnterminated:
+                cleanupError = helperError(
+                    cleanupDisposition.reasonCode
+                        ?? "artifact_run_clone_cleanup_disposition_invalid"
+                )
+            }
+
+            if primaryError != nil || cleanupError != nil {
+                var reasons: [String] = []
+                if let primaryError { reasons.append(String(describing: primaryError)) }
+                if let cleanupError { reasons.append(String(describing: cleanupError)) }
+                if !sessionCompleted {
+                    reasons.append("artifact_run_guest_session_not_terminated")
+                }
+                if !cloneCleanupSucceeded {
+                    reasons.append("artifact_run_clone_cleanup_unproven")
+                }
+                emit(
+                    fields: [
+                        "schema_version": "whoathere.macos_artifact_run_nonexecuting.v1",
+                        "helper_version": helperVersion,
+                        "status": "error",
+                        "execution_requested": true,
+                        "submission_prelude_verified": true,
+                        "run_spec_sha256": prelude.runSpecSHA256,
+                        "artifact_sha256": prelude.artifactSHA256,
+                        "vm_start_succeeded": vmStartSucceeded,
+                        "vm_stop_succeeded": vmStopSucceeded,
+                        "guest_session_completed": sessionCompleted,
+                        "clone_cleanup_succeeded": cloneCleanupSucceeded,
+                        "package_execution_enabled": false,
+                        "sync_back_enabled": false,
+                        "reason_codes": reasonArray(reasons),
+                        "exit_code": 70
+                    ],
+                    exitCode: 70
+                )
+            }
+            guard let observation = sessionObservation else {
+                throw helperError("artifact_run_guest_session_observation_missing")
+            }
             emit(
                 fields: [
-                    "schema_version": "whoathere.macos_artifact_run_parser.v1",
+                    "schema_version": "whoathere.macos_artifact_run_nonexecuting.v1",
                     "helper_version": helperVersion,
-                    "status": "blocked",
+                    "status": "staged_no_execution",
                     "execution_requested": true,
                     "transport_verified": true,
-                    "run_spec_sha256": observation.runSpecSHA256,
-                    "template_sha256": observation.templateSHA256,
-                    "challenge_binding_sha256": observation.challengeBindingSHA256,
-                    "execution_binding_sha256": observation.executionBindingSHA256,
-                    "artifact_sha256": observation.artifactSHA256,
-                    "artifact_byte_length": observation.artifactByteLength,
-                    "header_byte_length": observation.headerByteLength,
-                    "scenario_id": observation.scenarioID,
-                    "environment": observation.environment,
-                    "vm_execution_enabled": false,
+                    "run_spec_sha256": prelude.runSpecSHA256,
+                    "template_sha256": prelude.templateSHA256,
+                    "challenge_binding_sha256": prelude.challengeBindingSHA256,
+                    "execution_binding_sha256": observation.stagingReceipt.executionBindingSHA256,
+                    "clone_binding_sha256": observation.stagingReceipt.cloneBindingSHA256,
+                    "artifact_sha256": observation.stagingReceipt.artifactSHA256,
+                    "artifact_byte_length": observation.stagingReceipt.artifactByteLength,
+                    "scenario_id": prelude.scenarioID,
+                    "environment": prelude.environment,
+                    "vm_start_succeeded": true,
+                    "vm_stop_succeeded": true,
+                    "guest_authentication_verified": observation.authentication.signatureVerified,
+                    "guest_staging_receipt_verified": observation.stagingReceipt.signatureVerified,
+                    "guest_staging_cleanup_succeeded": true,
+                    "clone_cleanup_succeeded": true,
                     "package_execution_enabled": false,
-                    "reason_codes": ["artifact_run_disposable_vm_lifecycle_not_implemented"],
-                    "exit_code": 78
+                    "sync_back_enabled": false,
+                    "reason_codes": ["artifact_staged_and_destroyed_without_execution"],
+                    "exit_code": 0
                 ],
-                exitCode: 78
+                exitCode: 0
             )
         } catch {
+            var cloneCleanupSucceeded = pendingClone == nil
+            var reasons = [String(describing: error)]
+            if let clone = pendingClone {
+                do {
+                    try clone.cleanup()
+                    pendingClone = nil
+                    cloneCleanupSucceeded = true
+                } catch {
+                    reasons.append(String(describing: error))
+                }
+            }
             emit(
                 fields: [
-                    "schema_version": "whoathere.macos_artifact_run_parser.v1",
+                    "schema_version": "whoathere.macos_artifact_run_nonexecuting.v1",
                     "helper_version": helperVersion,
                     "status": "error",
                     "execution_requested": true,
                     "transport_verified": false,
-                    "vm_execution_enabled": false,
+                    "clone_cleanup_succeeded": cloneCleanupSucceeded,
                     "package_execution_enabled": false,
-                    "reason_codes": [String(describing: error)],
+                    "sync_back_enabled": false,
+                    "reason_codes": reasonArray(reasons),
                     "exit_code": 65
                 ],
                 exitCode: 65
             )
         }
+    }
+
+    private static func startArtifactVirtualMachine(
+        _ virtualMachine: VZVirtualMachine,
+        queue: DispatchQueue
+    ) throws {
+        let resultBox = LockedResultBox<Void>()
+        let completion = DispatchSemaphore(value: 0)
+        let virtualMachineBox = UncheckedSendableBox(value: virtualMachine)
+        queue.async {
+            virtualMachineBox.value.start { result in
+                resultBox.store(result.mapError { $0 })
+                completion.signal()
+            }
+        }
+        guard completion.wait(timeout: .now() + .seconds(60)) == .success else {
+            throw helperError("artifact_run_vm_start_timeout")
+        }
+        guard let result = resultBox.load() else {
+            throw helperError("artifact_run_vm_start_result_missing")
+        }
+        try result.get()
+    }
+
+    private static func stopArtifactVirtualMachine(
+        _ virtualMachine: VZVirtualMachine,
+        queue: DispatchQueue
+    ) -> Result<String, Error> {
+        let virtualMachineBox = UncheckedSendableBox(value: virtualMachine)
+        let requestResult = LockedResultBox<Void>()
+        let requestCompletion = DispatchSemaphore(value: 0)
+        queue.async {
+            if virtualMachineBox.value.state == .stopped {
+                requestResult.store(.success(()))
+            } else if virtualMachineBox.value.canRequestStop {
+                do {
+                    try virtualMachineBox.value.requestStop()
+                    requestResult.store(.success(()))
+                } catch {
+                    requestResult.store(.failure(error))
+                }
+            } else {
+                requestResult.store(.failure(helperError("artifact_run_vm_request_stop_unavailable")))
+            }
+            requestCompletion.signal()
+        }
+        _ = requestCompletion.wait(timeout: .now() + .seconds(2))
+
+        let gracefulDeadline = Date().addingTimeInterval(20)
+        while Date() < gracefulDeadline {
+            let stopped = queue.sync { virtualMachine.state == .stopped }
+            if stopped { return .success("guest_requested_stop") }
+            Thread.sleep(forTimeInterval: 0.25)
+        }
+
+        let forceResult = LockedResultBox<Void>()
+        let forceCompletion = DispatchSemaphore(value: 0)
+        queue.async {
+            guard virtualMachineBox.value.canStop else {
+                forceResult.store(.failure(helperError("artifact_run_vm_force_stop_unavailable")))
+                forceCompletion.signal()
+                return
+            }
+            virtualMachineBox.value.stop { error in
+                if let error {
+                    forceResult.store(.failure(error))
+                } else {
+                    forceResult.store(.success(()))
+                }
+                forceCompletion.signal()
+            }
+        }
+        guard forceCompletion.wait(timeout: .now() + .seconds(20)) == .success else {
+            return .failure(helperError("artifact_run_vm_force_stop_timeout"))
+        }
+        guard let result = forceResult.load() else {
+            return .failure(helperError("artifact_run_vm_force_stop_result_missing"))
+        }
+        do {
+            try result.get()
+        } catch {
+            return .failure(error)
+        }
+        guard queue.sync(execute: { virtualMachine.state == .stopped }) else {
+            return .failure(helperError("artifact_run_vm_stop_unproven"))
+        }
+        return .success("force_stop")
     }
 
     private static func run(_ options: HelperOptions) {
