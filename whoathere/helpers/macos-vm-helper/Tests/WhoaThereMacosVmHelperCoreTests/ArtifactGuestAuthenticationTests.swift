@@ -137,7 +137,7 @@ import Testing
     #expect(observation.signatureVerified)
 }
 
-private func signedGuestAuthResponse(
+func signedGuestAuthResponse(
     challenge: ArtifactGuestAuthChallenge,
     prelude: ArtifactRunSubmissionPrelude
 ) throws -> Data {

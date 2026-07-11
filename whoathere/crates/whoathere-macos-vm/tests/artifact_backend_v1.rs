@@ -19,12 +19,15 @@ use whoathere_evidence::v2::{canonical_cas_object_key_for_artifact, ArtifactEvid
 use whoathere_macos_vm::{
     compile_macos_artifact_run_spec_v1, decode_and_validate_macos_artifact_run_spec_v1,
     decode_macos_artifact_guest_auth_challenge_v1, decode_macos_artifact_submission_frame_v1,
-    encode_macos_artifact_submission_frame_v1, sign_macos_artifact_guest_auth_response_v1,
+    encode_macos_artifact_submission_frame_v1, read_macos_artifact_guest_control_frame_v1,
+    require_macos_artifact_guest_control_eof_v1, sign_macos_artifact_guest_auth_response_v1,
     stage_macos_artifact_guest_submission_v1, stream_macos_artifact_guest_submission_v1,
-    verify_macos_artifact_guest_auth_response_v1, write_macos_artifact_submission_frame_v1,
-    ArtifactGuestRehashPhaseV1, MacosArtifactBackendCapabilitiesV1, MacosArtifactBackendIdentityV1,
+    verify_macos_artifact_guest_auth_response_v1, write_macos_artifact_guest_control_frame_v1,
+    write_macos_artifact_submission_frame_v1, ArtifactGuestRehashPhaseV1,
+    MacosArtifactBackendCapabilitiesV1, MacosArtifactBackendIdentityV1,
     MacosArtifactGuestAuthChallengeV1, MacosArtifactGuestAuthClaimsV1,
-    MacosArtifactGuestAuthErrorV1, MacosArtifactGuestStagingErrorV1,
+    MacosArtifactGuestAuthErrorV1, MacosArtifactGuestControlErrorV1,
+    MacosArtifactGuestControlFrameTypeV1, MacosArtifactGuestStagingErrorV1,
     MacosArtifactGuestStagingPolicyV1, MacosArtifactRunErrorV1, MacosArtifactSubmissionBindingsV1,
     MacosArtifactSubmissionErrorV1, MacosArtifactSubmissionHeaderV1,
     MACOS_ARTIFACT_GUEST_SUBMISSION_MAGIC_V1, MACOS_ARTIFACT_SUBMISSION_FIXED_PREFIX_BYTES_V1,
@@ -538,6 +541,69 @@ fn guest_authentication_binds_fresh_challenge_signed_claims_and_measured_public_
     assert_eq!(
         sign_macos_artifact_guest_auth_response_v1(&challenge, [8_u8; 32], &claims),
         Err(MacosArtifactGuestAuthErrorV1::PublicKeyMismatch)
+    );
+}
+
+#[test]
+fn guest_control_frames_are_ordered_bounded_fragment_tolerant_and_explicitly_terminated() {
+    let challenge = b"{\"challenge\":\"inert\"}";
+    let response = b"{\"response\":\"inert\"}";
+    let mut wire = Vec::new();
+    write_macos_artifact_guest_control_frame_v1(
+        &mut wire,
+        MacosArtifactGuestControlFrameTypeV1::AuthenticationChallenge,
+        challenge,
+    )
+    .expect("challenge frame");
+    write_macos_artifact_guest_control_frame_v1(
+        &mut wire,
+        MacosArtifactGuestControlFrameTypeV1::AuthenticationResponse,
+        response,
+    )
+    .expect("response frame");
+    let mut fragmented = FragmentedReader::new(&wire, 1);
+    assert_eq!(
+        read_macos_artifact_guest_control_frame_v1(
+            &mut fragmented,
+            MacosArtifactGuestControlFrameTypeV1::AuthenticationChallenge,
+            1024
+        )
+        .expect("read challenge"),
+        challenge
+    );
+    assert_eq!(
+        read_macos_artifact_guest_control_frame_v1(
+            &mut fragmented,
+            MacosArtifactGuestControlFrameTypeV1::AuthenticationResponse,
+            1024
+        )
+        .expect("read response"),
+        response
+    );
+    require_macos_artifact_guest_control_eof_v1(&mut fragmented).expect("control EOF");
+
+    let mut wrong_type = Cursor::new(&wire);
+    assert_eq!(
+        read_macos_artifact_guest_control_frame_v1(
+            &mut wrong_type,
+            MacosArtifactGuestControlFrameTypeV1::StagingReceipt,
+            1024
+        ),
+        Err(MacosArtifactGuestControlErrorV1::UnexpectedFrameType)
+    );
+    let mut truncated = Cursor::new(&wire[..10]);
+    assert_eq!(
+        read_macos_artifact_guest_control_frame_v1(
+            &mut truncated,
+            MacosArtifactGuestControlFrameTypeV1::AuthenticationChallenge,
+            1024
+        ),
+        Err(MacosArtifactGuestControlErrorV1::Truncated)
+    );
+    let mut trailing = Cursor::new([0_u8]);
+    assert_eq!(
+        require_macos_artifact_guest_control_eof_v1(&mut trailing),
+        Err(MacosArtifactGuestControlErrorV1::TrailingData)
     );
 }
 

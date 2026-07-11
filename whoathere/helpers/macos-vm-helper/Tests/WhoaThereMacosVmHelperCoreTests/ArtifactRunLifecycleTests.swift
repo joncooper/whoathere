@@ -143,7 +143,7 @@ func lifecycleFixture(
     let auxiliary = Data("inert APFS auxiliary fixture".utf8)
     let hardware = Data("bounded hardware model fixture".utf8)
     let machine = Data("bounded machine identifier fixture".utf8)
-    let guestAuthPublicKey = Data(repeating: 0x42, count: 32)
+    let guestAuthPublicKey = try guestAuthTestPublicKey()
     let receipt = Data("{\"fixture\":\"post-provisioning\"}".utf8)
     let helper = Data("inert signed helper fixture".utf8)
     let helperURL = root.appendingPathComponent("helper-fixture")
