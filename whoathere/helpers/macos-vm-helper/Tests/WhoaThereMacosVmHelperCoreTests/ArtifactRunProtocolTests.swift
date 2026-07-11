@@ -49,6 +49,25 @@ import Testing
     )
 }
 
+@Test func submissionPreludeIsValidatedBeforeSinglePassArtifactForwarding() throws {
+    let fixture = try artifactSubmissionFixture()
+    let reader = try beginArtifactSubmission(from: fileHandle(fixture.frame))
+    #expect(reader.prelude.runSpecSHA256 == fixture.runSpecSHA256)
+    #expect(reader.prelude.artifactSHA256 == fixture.artifactSHA256)
+    #expect(reader.prelude.artifactByteLength == UInt64(fixture.artifact.count))
+    #expect(reader.prelude.backendIdentity.cpuCount == 4)
+
+    var forwarded = Data()
+    let observation = try reader.consumeArtifact { chunk in
+        forwarded.append(chunk)
+    }
+    #expect(forwarded == fixture.artifact)
+    #expect(observation.executionBindingSHA256 == fixture.executionBindingSHA256)
+    #expect(throws: ArtifactRunProtocolError.trailingData) {
+        try reader.consumeArtifact()
+    }
+}
+
 @Test func artifactSubmissionParserRejectsCorruptionAndExposesChallengeAuthorityBoundary() throws {
     let fixture = try artifactSubmissionFixture()
 
@@ -91,7 +110,7 @@ import Testing
     // compare it with the pre-issued expected challenge before execution.
 }
 
-private struct ArtifactSubmissionFixture {
+struct ArtifactSubmissionFixture {
     let frame: Data
     let header: [String: Any]
     let artifact: Data
@@ -102,7 +121,7 @@ private struct ArtifactSubmissionFixture {
     let executionBindingSHA256: String
 }
 
-private func artifactSubmissionFixture() throws -> ArtifactSubmissionFixture {
+func artifactSubmissionFixture() throws -> ArtifactSubmissionFixture {
     let artifact = Data([0x1f, 0x8b, 0x08, 0x00, 0x57, 0x48, 0x4f, 0x41])
     let artifactSHA256 = sha256(artifact)
     let envelopeSHA256 = sha256(Data("envelope".utf8))

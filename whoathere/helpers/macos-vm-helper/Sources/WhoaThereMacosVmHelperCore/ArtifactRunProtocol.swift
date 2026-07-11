@@ -100,9 +100,92 @@ public struct ArtifactRunBackendIdentity: Equatable, Sendable {
     public let guestProtocolSHA256: String
 }
 
+public struct ArtifactRunSubmissionPrelude: Equatable, Sendable {
+    public let runSpecSHA256: String
+    public let templateSHA256: String
+    public let challengeBindingSHA256: String
+    public let executionBindingSHA256: String
+    public let artifactSHA256: String
+    public let artifactByteLength: UInt64
+    public let headerByteLength: UInt32
+    public let scenarioID: String
+    public let environment: String
+    public let backendIdentity: ArtifactRunBackendIdentity
+}
+
+public final class ArtifactRunSubmissionReader {
+    public let prelude: ArtifactRunSubmissionPrelude
+
+    private let handle: FileHandle
+    let expectedArtifactDigest: Data
+    let canonicalHeaderData: Data
+    private var consumed = false
+
+    fileprivate init(
+        handle: FileHandle,
+        expectedArtifactDigest: Data,
+        canonicalHeaderData: Data,
+        prelude: ArtifactRunSubmissionPrelude
+    ) {
+        self.handle = handle
+        self.expectedArtifactDigest = expectedArtifactDigest
+        self.canonicalHeaderData = canonicalHeaderData
+        self.prelude = prelude
+    }
+
+    public func consumeArtifact(
+        chunkSink: (Data) throws -> Void = { _ in }
+    ) throws -> ArtifactRunTransportObservation {
+        guard !consumed else {
+            throw ArtifactRunProtocolError.trailingData
+        }
+        consumed = true
+        var remaining = prelude.artifactByteLength
+        var artifactHasher = SHA256()
+        while remaining > 0 {
+            let requested = Int(min(remaining, 64 * 1024))
+            let chunk = try readExactly(handle, count: requested)
+            artifactHasher.update(data: chunk)
+            try chunkSink(chunk)
+            remaining -= UInt64(chunk.count)
+        }
+        let observedDigest = Data(artifactHasher.finalize())
+        guard observedDigest == expectedArtifactDigest else {
+            throw ArtifactRunProtocolError.artifactDigestMismatch
+        }
+        do {
+            if let trailing = try handle.read(upToCount: 1), !trailing.isEmpty {
+                throw ArtifactRunProtocolError.trailingData
+            }
+        } catch let error as ArtifactRunProtocolError {
+            throw error
+        } catch {
+            throw ArtifactRunProtocolError.inputReadFailed
+        }
+        return ArtifactRunTransportObservation(
+            runSpecSHA256: prelude.runSpecSHA256,
+            templateSHA256: prelude.templateSHA256,
+            challengeBindingSHA256: prelude.challengeBindingSHA256,
+            executionBindingSHA256: prelude.executionBindingSHA256,
+            artifactSHA256: prelude.artifactSHA256,
+            artifactByteLength: prelude.artifactByteLength,
+            headerByteLength: prelude.headerByteLength,
+            scenarioID: prelude.scenarioID,
+            environment: prelude.environment,
+            backendIdentity: prelude.backendIdentity
+        )
+    }
+}
+
 public func inspectArtifactSubmission(
     from handle: FileHandle
 ) throws -> ArtifactRunTransportObservation {
+    try beginArtifactSubmission(from: handle).consumeArtifact()
+}
+
+public func beginArtifactSubmission(
+    from handle: FileHandle
+) throws -> ArtifactRunSubmissionReader {
     let prefix = try readExactly(handle, count: artifactSubmissionPrefixBytesV1)
     guard prefix.prefix(8) == artifactSubmissionMagicV1 else {
         throw ArtifactRunProtocolError.invalidMagic
@@ -128,30 +211,7 @@ public func inspectArtifactSubmission(
         prefixArtifactLength: artifactLength,
         prefixArtifactDigest: prefixDigest
     )
-
-    var remaining = artifactLength
-    var artifactHasher = SHA256()
-    while remaining > 0 {
-        let requested = Int(min(remaining, 64 * 1024))
-        let chunk = try readExactly(handle, count: requested)
-        artifactHasher.update(data: chunk)
-        remaining -= UInt64(chunk.count)
-    }
-    let observedDigest = Data(artifactHasher.finalize())
-    guard observedDigest == prefixDigest else {
-        throw ArtifactRunProtocolError.artifactDigestMismatch
-    }
-    do {
-        if let trailing = try handle.read(upToCount: 1), !trailing.isEmpty {
-            throw ArtifactRunProtocolError.trailingData
-        }
-    } catch let error as ArtifactRunProtocolError {
-        throw error
-    } catch {
-        throw ArtifactRunProtocolError.inputReadFailed
-    }
-
-    return ArtifactRunTransportObservation(
+    let prelude = ArtifactRunSubmissionPrelude(
         runSpecSHA256: validated.runSpecSHA256,
         templateSHA256: validated.templateSHA256,
         challengeBindingSHA256: validated.challengeBindingSHA256,
@@ -162,6 +222,12 @@ public func inspectArtifactSubmission(
         scenarioID: validated.scenarioID,
         environment: validated.environment,
         backendIdentity: validated.backendIdentity
+    )
+    return ArtifactRunSubmissionReader(
+        handle: handle,
+        expectedArtifactDigest: prefixDigest,
+        canonicalHeaderData: headerData,
+        prelude: prelude
     )
 }
 
