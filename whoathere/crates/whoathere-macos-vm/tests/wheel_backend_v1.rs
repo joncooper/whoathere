@@ -1,6 +1,10 @@
 use ed25519_dalek::SigningKey;
 use std::collections::BTreeMap;
+use std::fs;
 use std::io::{Cursor, Read, Write};
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 use whoathere_artifact::{
     normalize_artifact, AcquisitionMethod, ArtifactEnvelope, ArtifactEnvelopeInput, ArtifactFormat,
     ArtifactSourceType, Ecosystem, NormalizationLimits, Sha256Digest,
@@ -17,13 +21,15 @@ use whoathere_macos_vm::{
     decode_macos_wheel_submission_frame_v1, encode_macos_wheel_submission_frame_v1,
     macos_wheel_execution_binding_sha256_v1, read_macos_wheel_guest_control_frame_v1,
     require_macos_wheel_guest_control_eof_v1, sign_macos_wheel_guest_auth_response_v1,
-    stream_macos_wheel_guest_submission_v1, verify_macos_wheel_guest_auth_response_v1,
-    write_macos_wheel_guest_control_frame_v1, MacosArtifactRunErrorV1,
-    MacosWheelBackendCapabilitiesV1, MacosWheelBackendIdentityV1, MacosWheelGuestAuthChallengeV1,
-    MacosWheelGuestAuthClaimsV1, MacosWheelGuestAuthErrorV1, MacosWheelGuestControlErrorV1,
-    MacosWheelGuestControlFrameTypeV1, MacosWheelSubmissionBindingsV1, MacosWheelSubmissionErrorV1,
-    MacosWheelSubmissionHeaderV1, MACOS_WHEEL_GUEST_SUBMISSION_MAGIC_V1,
-    MACOS_WHEEL_SUBMISSION_FIXED_PREFIX_BYTES_V1, MACOS_WHEEL_SUBMISSION_MAGIC_V1,
+    stage_macos_wheel_guest_submission_v1, stream_macos_wheel_guest_submission_v1,
+    verify_macos_wheel_guest_auth_response_v1, write_macos_wheel_guest_control_frame_v1,
+    MacosArtifactRunErrorV1, MacosWheelBackendCapabilitiesV1, MacosWheelBackendIdentityV1,
+    MacosWheelGuestAuthChallengeV1, MacosWheelGuestAuthClaimsV1, MacosWheelGuestAuthErrorV1,
+    MacosWheelGuestControlErrorV1, MacosWheelGuestControlFrameTypeV1,
+    MacosWheelGuestStagingErrorV1, MacosWheelGuestStagingPolicyV1, MacosWheelSubmissionBindingsV1,
+    MacosWheelSubmissionErrorV1, MacosWheelSubmissionHeaderV1, WheelGuestRehashPhaseV1,
+    MACOS_WHEEL_GUEST_SUBMISSION_MAGIC_V1, MACOS_WHEEL_SUBMISSION_FIXED_PREFIX_BYTES_V1,
+    MACOS_WHEEL_SUBMISSION_MAGIC_V1,
 };
 use zip::write::SimpleFileOptions;
 
@@ -692,4 +698,126 @@ fn wheel_guest_control_frames_are_bounded_ordered_and_cross_ecosystem_closed() {
         ),
         Err(MacosWheelGuestControlErrorV1::BodyLimitExceeded)
     );
+}
+
+#[test]
+fn wheel_guest_staging_is_exclusive_read_only_rehashed_and_removed() {
+    let (guest, artifact, run_spec) = wheel_guest_staging_frame();
+    let root = temporary_wheel_staging_root("success");
+    let policy = wheel_staging_policy(&root);
+    let mut staged = stage_macos_wheel_guest_submission_v1(&mut Cursor::new(guest), &policy)
+        .expect("stage inert wheel");
+    let path = staged.artifact_path().to_path_buf();
+    assert_eq!(
+        path.file_name().and_then(|value| value.to_str()),
+        Some("artifact.whl")
+    );
+    let metadata = fs::symlink_metadata(&path).expect("staged wheel metadata");
+    assert!(metadata.file_type().is_file());
+    assert_eq!(metadata.mode() & 0o777, 0o444);
+    assert_eq!(metadata.nlink(), 1);
+    assert_eq!(metadata.len(), artifact.len() as u64);
+    assert_eq!(
+        staged.transport().artifact_sha256(),
+        run_spec.artifact_sha256()
+    );
+
+    let prelaunch = staged.verify_prelaunch().expect("wheel prelaunch rehash");
+    let postrun = staged.verify_postrun().expect("wheel postrun rehash");
+    assert_eq!(prelaunch.phase(), WheelGuestRehashPhaseV1::Prelaunch);
+    assert_eq!(postrun.phase(), WheelGuestRehashPhaseV1::Postrun);
+    assert_eq!(prelaunch.artifact_sha256(), run_spec.artifact_sha256());
+    assert_eq!(prelaunch.artifact_byte_length(), artifact.len() as u64);
+    assert_eq!(prelaunch.device(), postrun.device());
+    assert_eq!(prelaunch.inode(), postrun.inode());
+
+    let directory = path
+        .parent()
+        .expect("wheel scenario directory")
+        .to_path_buf();
+    staged.cleanup().expect("verified wheel cleanup");
+    assert!(!directory.exists());
+    assert_eq!(fs::read_dir(&root).expect("empty wheel root").count(), 0);
+    fs::remove_dir(root).expect("remove wheel staging root");
+}
+
+#[test]
+fn wheel_guest_staging_discards_bad_transport_and_detects_path_replacement() {
+    let (mut guest, _, _) = wheel_guest_staging_frame();
+    let root = temporary_wheel_staging_root("failure");
+    let policy = wheel_staging_policy(&root);
+    *guest.last_mut().expect("wheel byte") ^= 1;
+    assert_eq!(
+        stage_macos_wheel_guest_submission_v1(&mut Cursor::new(guest), &policy)
+            .expect_err("mutated wheel must fail"),
+        MacosWheelGuestStagingErrorV1::Transport(
+            MacosWheelSubmissionErrorV1::ArtifactDigestMismatch
+        )
+    );
+    assert_eq!(fs::read_dir(&root).expect("cleaned wheel root").count(), 0);
+
+    let (guest, artifact, _) = wheel_guest_staging_frame();
+    let mut staged = stage_macos_wheel_guest_submission_v1(&mut Cursor::new(guest), &policy)
+        .expect("stage replacement fixture");
+    let path = staged.artifact_path().to_path_buf();
+    let held = path.with_file_name("held-original.whl");
+    fs::rename(&path, &held).expect("move original wheel");
+    fs::write(&path, &artifact).expect("write replacement wheel");
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o444))
+        .expect("protect replacement wheel");
+    assert_eq!(
+        staged.verify_prelaunch(),
+        Err(MacosWheelGuestStagingErrorV1::VerificationFailed)
+    );
+    assert_eq!(
+        staged.cleanup(),
+        Err(MacosWheelGuestStagingErrorV1::CleanupFailed)
+    );
+    assert!(held.exists());
+    fs::remove_file(held).expect("remove held original wheel");
+    staged.cleanup().expect("retry wheel cleanup");
+    assert_eq!(fs::read_dir(&root).expect("clean wheel root").count(), 0);
+    fs::remove_dir(root).expect("remove wheel staging root");
+}
+
+fn wheel_guest_staging_frame() -> (Vec<u8>, Vec<u8>, whoathere_macos_vm::MacosWheelRunSpecV1) {
+    let (template, artifact) = compiled_template(b"VALUE = 'inert'\n");
+    let run_spec = compile_macos_wheel_run_spec_v1(&template, &backend(digest(b"measured pip")))
+        .expect("wheel staging run spec");
+    let bindings =
+        MacosWheelSubmissionBindingsV1::for_run_spec(digest(b"wheel staging challenge"), &run_spec);
+    let header = MacosWheelSubmissionHeaderV1::new(run_spec.clone(), bindings)
+        .expect("wheel staging header");
+    let mut guest =
+        encode_macos_wheel_submission_frame_v1(&header, &artifact).expect("wheel staging frame");
+    guest[..8].copy_from_slice(&MACOS_WHEEL_GUEST_SUBMISSION_MAGIC_V1);
+    (guest, artifact, run_spec)
+}
+
+fn temporary_wheel_staging_root(label: &str) -> PathBuf {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "whoathere-wheel-staging-{label}-{}-{nonce}",
+        std::process::id()
+    ));
+    fs::create_dir(&root).expect("create wheel staging root");
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
+        .expect("protect wheel staging root");
+    root
+}
+
+fn wheel_staging_policy(root: &std::path::Path) -> MacosWheelGuestStagingPolicyV1 {
+    let supervisor_uid = fs::symlink_metadata(root)
+        .expect("wheel root metadata")
+        .uid();
+    let package_uid = if supervisor_uid == u32::MAX {
+        1
+    } else {
+        (supervisor_uid + 1).max(1)
+    };
+    MacosWheelGuestStagingPolicyV1::for_current_supervisor(root.to_path_buf(), package_uid)
+        .expect("wheel staging policy")
 }
