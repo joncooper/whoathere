@@ -72,6 +72,10 @@ pub struct MacosArtifactBackendIdentityV1 {
     base_generation_id: String,
     base_disk_sha256: Sha256Digest,
     base_auxiliary_storage_sha256: Sha256Digest,
+    hardware_model_sha256: Sha256Digest,
+    machine_identifier_sha256: Sha256Digest,
+    cpu_count: u16,
+    memory_mib: u64,
     post_provisioning_receipt_sha256: Sha256Digest,
     helper_sha256: Sha256Digest,
     guest_supervisor_sha256: Sha256Digest,
@@ -94,6 +98,10 @@ impl fmt::Debug for MacosArtifactBackendIdentityV1 {
                 "base_auxiliary_storage_sha256",
                 &self.base_auxiliary_storage_sha256,
             )
+            .field("hardware_model_sha256", &self.hardware_model_sha256)
+            .field("machine_identifier_sha256", &self.machine_identifier_sha256)
+            .field("cpu_count", &self.cpu_count)
+            .field("memory_mib", &self.memory_mib)
             .field(
                 "post_provisioning_receipt_sha256",
                 &self.post_provisioning_receipt_sha256,
@@ -123,6 +131,10 @@ impl MacosArtifactBackendIdentityV1 {
         base_generation_id: impl Into<String>,
         base_disk_sha256: Sha256Digest,
         base_auxiliary_storage_sha256: Sha256Digest,
+        hardware_model_sha256: Sha256Digest,
+        machine_identifier_sha256: Sha256Digest,
+        cpu_count: u16,
+        memory_mib: u64,
         post_provisioning_receipt_sha256: Sha256Digest,
         helper_sha256: Sha256Digest,
         guest_supervisor_sha256: Sha256Digest,
@@ -137,6 +149,10 @@ impl MacosArtifactBackendIdentityV1 {
             base_generation_id: base_generation_id.into(),
             base_disk_sha256,
             base_auxiliary_storage_sha256,
+            hardware_model_sha256,
+            machine_identifier_sha256,
+            cpu_count,
+            memory_mib,
             post_provisioning_receipt_sha256,
             helper_sha256,
             guest_supervisor_sha256,
@@ -162,6 +178,22 @@ impl MacosArtifactBackendIdentityV1 {
         &self.node_version
     }
 
+    pub fn hardware_model_sha256(&self) -> &Sha256Digest {
+        &self.hardware_model_sha256
+    }
+
+    pub fn machine_identifier_sha256(&self) -> &Sha256Digest {
+        &self.machine_identifier_sha256
+    }
+
+    pub const fn cpu_count(&self) -> u16 {
+        self.cpu_count
+    }
+
+    pub const fn memory_mib(&self) -> u64 {
+        self.memory_mib
+    }
+
     pub fn node_executable_sha256(&self) -> &Sha256Digest {
         &self.node_executable_sha256
     }
@@ -176,6 +208,9 @@ impl MacosArtifactBackendIdentityV1 {
 
     fn validate(&self) -> Result<(), MacosArtifactRunErrorV1> {
         if !valid_identity_v1(&self.base_generation_id)
+            || self.cpu_count == 0
+            || self.memory_mib < 1_024
+            || self.memory_mib > 1_048_576
             || !valid_version_v1(&self.node_version)
             || !valid_version_v1(&self.npm_version)
             || self.guest_protocol_sha256

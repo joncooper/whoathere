@@ -40,6 +40,13 @@ import Testing
     #expect(observation.artifactByteLength == UInt64(fixture.artifact.count))
     #expect(observation.scenarioID == "scenario-ci-false")
     #expect(observation.environment == "ci_false")
+    #expect(observation.backendIdentity.cpuCount == 4)
+    #expect(observation.backendIdentity.memoryMiB == 6_144)
+    #expect(observation.backendIdentity.hardwareModelSHA256 == sha256(Data("hardware model".utf8)))
+    #expect(
+        observation.backendIdentity.machineIdentifierSHA256
+            == sha256(Data("machine identifier".utf8))
+    )
 }
 
 @Test func artifactSubmissionParserRejectsCorruptionAndExposesChallengeAuthorityBoundary() throws {
@@ -202,6 +209,10 @@ private func artifactSubmissionFixture() throws -> ArtifactSubmissionFixture {
             "base_generation_id": "base-generation-inert-v1",
             "base_disk_sha256": sha256(Data("base disk".utf8)),
             "base_auxiliary_storage_sha256": sha256(Data("base aux".utf8)),
+            "hardware_model_sha256": sha256(Data("hardware model".utf8)),
+            "machine_identifier_sha256": sha256(Data("machine identifier".utf8)),
+            "cpu_count": UInt64(4),
+            "memory_mib": UInt64(6_144),
             "post_provisioning_receipt_sha256": sha256(Data("receipt".utf8)),
             "helper_sha256": sha256(Data("helper".utf8)),
             "guest_supervisor_sha256": sha256(Data("supervisor".utf8)),

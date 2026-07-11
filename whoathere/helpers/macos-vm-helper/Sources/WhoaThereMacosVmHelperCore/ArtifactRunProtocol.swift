@@ -53,6 +53,7 @@ public struct ArtifactRunTransportObservation: Equatable, Sendable {
     public let headerByteLength: UInt32
     public let scenarioID: String
     public let environment: String
+    public let backendIdentity: ArtifactRunBackendIdentity
 
     public init(
         runSpecSHA256: String,
@@ -63,7 +64,8 @@ public struct ArtifactRunTransportObservation: Equatable, Sendable {
         artifactByteLength: UInt64,
         headerByteLength: UInt32,
         scenarioID: String,
-        environment: String
+        environment: String,
+        backendIdentity: ArtifactRunBackendIdentity
     ) {
         self.runSpecSHA256 = runSpecSHA256
         self.templateSHA256 = templateSHA256
@@ -74,7 +76,28 @@ public struct ArtifactRunTransportObservation: Equatable, Sendable {
         self.headerByteLength = headerByteLength
         self.scenarioID = scenarioID
         self.environment = environment
+        self.backendIdentity = backendIdentity
     }
+}
+
+public struct ArtifactRunBackendIdentity: Equatable, Sendable {
+    public let baseGenerationID: String
+    public let baseDiskSHA256: String
+    public let baseAuxiliaryStorageSHA256: String
+    public let hardwareModelSHA256: String
+    public let machineIdentifierSHA256: String
+    public let cpuCount: UInt16
+    public let memoryMiB: UInt64
+    public let postProvisioningReceiptSHA256: String
+    public let helperSHA256: String
+    public let guestSupervisorSHA256: String
+    public let runnerConfigurationSHA256: String
+    public let nodeVersion: String
+    public let nodeExecutableSHA256: String
+    public let npmVersion: String
+    public let npmCLISHA256: String
+    public let cloneImplementationSHA256: String
+    public let guestProtocolSHA256: String
 }
 
 public func inspectArtifactSubmission(
@@ -137,7 +160,8 @@ public func inspectArtifactSubmission(
         artifactByteLength: artifactLength,
         headerByteLength: headerLength,
         scenarioID: validated.scenarioID,
-        environment: validated.environment
+        environment: validated.environment,
+        backendIdentity: validated.backendIdentity
     )
 }
 
@@ -149,6 +173,7 @@ private struct ValidatedHeader {
     let artifactSHA256: String
     let scenarioID: String
     let environment: String
+    let backendIdentity: ArtifactRunBackendIdentity
 }
 
 private func validateArtifactHeader(
@@ -211,7 +236,8 @@ private func validateArtifactHeader(
         executionBindingSHA256: execution,
         artifactSHA256: artifactSHA256,
         scenarioID: runSpecFields.scenarioID,
-        environment: runSpecFields.environment
+        environment: runSpecFields.environment,
+        backendIdentity: runSpecFields.backendIdentity
     )
 }
 
@@ -221,6 +247,7 @@ private struct ValidatedRunSpec {
     let artifactByteLength: UInt64
     let scenarioID: String
     let environment: String
+    let backendIdentity: ArtifactRunBackendIdentity
 }
 
 private func validateRunSpec(_ runSpec: [String: Any]) throws -> ValidatedRunSpec {
@@ -249,13 +276,14 @@ private func validateRunSpec(_ runSpec: [String: Any]) throws -> ValidatedRunSpe
         throw ArtifactRunProtocolError.templateInvalid
     }
     let templateFields = try validateTemplate(template)
-    try validateBackend(backend, template: templateFields)
+    let backendIdentity = try validateBackend(backend, template: templateFields)
     return ValidatedRunSpec(
         templateSHA256: templateSHA256,
         artifactSHA256: templateFields.artifactSHA256,
         artifactByteLength: templateFields.artifactByteLength,
         scenarioID: templateFields.scenarioID,
-        environment: templateFields.environment
+        environment: templateFields.environment,
+        backendIdentity: backendIdentity
     )
 }
 
@@ -480,29 +508,68 @@ private func validateLimits(_ value: [String: Any]) throws {
     }
 }
 
-private func validateBackend(_ backend: [String: Any], template: ValidatedTemplate) throws {
+private func validateBackend(
+    _ backend: [String: Any],
+    template: ValidatedTemplate
+) throws -> ArtifactRunBackendIdentity {
     try requireExactKeys(backend, [
         "base_auxiliary_storage_sha256", "base_disk_sha256", "base_generation_id",
-        "clone_implementation_sha256", "guest_protocol_sha256", "guest_supervisor_sha256",
-        "helper_sha256", "node_executable_sha256", "node_version", "npm_cli_sha256",
-        "npm_version", "post_provisioning_receipt_sha256", "runner_configuration_sha256"
+        "clone_implementation_sha256", "cpu_count", "guest_protocol_sha256",
+        "guest_supervisor_sha256", "hardware_model_sha256", "helper_sha256",
+        "machine_identifier_sha256", "memory_mib", "node_executable_sha256", "node_version",
+        "npm_cli_sha256", "npm_version", "post_provisioning_receipt_sha256",
+        "runner_configuration_sha256"
     ], error: .runSpecInvalid)
-    guard validIdentity(try string(backend, "base_generation_id", error: .runSpecInvalid)),
-          try string(backend, "node_version", error: .runSpecInvalid) == template.nodeVersion,
-          try digest(backend, "node_executable_sha256", error: .runSpecInvalid) == template.nodeSHA256,
-          try string(backend, "npm_version", error: .runSpecInvalid) == template.npmVersion,
-          try digest(backend, "npm_cli_sha256", error: .runSpecInvalid) == template.npmSHA256,
-          try digest(backend, "guest_protocol_sha256", error: .runSpecInvalid)
+    let baseGenerationID = try string(backend, "base_generation_id", error: .runSpecInvalid)
+    let cpuCount = try integer(backend, "cpu_count", error: .runSpecInvalid)
+    let memoryMiB = try integer(backend, "memory_mib", error: .runSpecInvalid)
+    let nodeVersion = try string(backend, "node_version", error: .runSpecInvalid)
+    let nodeSHA256 = try digest(backend, "node_executable_sha256", error: .runSpecInvalid)
+    let npmVersion = try string(backend, "npm_version", error: .runSpecInvalid)
+    let npmSHA256 = try digest(backend, "npm_cli_sha256", error: .runSpecInvalid)
+    let guestProtocolSHA256 = try digest(backend, "guest_protocol_sha256", error: .runSpecInvalid)
+    guard validIdentity(baseGenerationID),
+          cpuCount > 0, cpuCount <= UInt16.max,
+          memoryMiB >= 1_024, memoryMiB <= 1_048_576,
+          nodeVersion == template.nodeVersion,
+          nodeSHA256 == template.nodeSHA256,
+          npmVersion == template.npmVersion,
+          npmSHA256 == template.npmSHA256,
+          guestProtocolSHA256
             == sha256(Data("whoathere.artifact_scenario.v1".utf8)) else {
         throw ArtifactRunProtocolError.runSpecInvalid
     }
-    for key in [
-        "base_auxiliary_storage_sha256", "base_disk_sha256", "clone_implementation_sha256",
-        "guest_supervisor_sha256", "helper_sha256", "post_provisioning_receipt_sha256",
-        "runner_configuration_sha256"
-    ] {
-        _ = try digest(backend, key, error: .runSpecInvalid)
-    }
+    return ArtifactRunBackendIdentity(
+        baseGenerationID: baseGenerationID,
+        baseDiskSHA256: try digest(backend, "base_disk_sha256", error: .runSpecInvalid),
+        baseAuxiliaryStorageSHA256: try digest(
+            backend, "base_auxiliary_storage_sha256", error: .runSpecInvalid
+        ),
+        hardwareModelSHA256: try digest(backend, "hardware_model_sha256", error: .runSpecInvalid),
+        machineIdentifierSHA256: try digest(
+            backend, "machine_identifier_sha256", error: .runSpecInvalid
+        ),
+        cpuCount: UInt16(cpuCount),
+        memoryMiB: memoryMiB,
+        postProvisioningReceiptSHA256: try digest(
+            backend, "post_provisioning_receipt_sha256", error: .runSpecInvalid
+        ),
+        helperSHA256: try digest(backend, "helper_sha256", error: .runSpecInvalid),
+        guestSupervisorSHA256: try digest(
+            backend, "guest_supervisor_sha256", error: .runSpecInvalid
+        ),
+        runnerConfigurationSHA256: try digest(
+            backend, "runner_configuration_sha256", error: .runSpecInvalid
+        ),
+        nodeVersion: nodeVersion,
+        nodeExecutableSHA256: nodeSHA256,
+        npmVersion: npmVersion,
+        npmCLISHA256: npmSHA256,
+        cloneImplementationSHA256: try digest(
+            backend, "clone_implementation_sha256", error: .runSpecInvalid
+        ),
+        guestProtocolSHA256: guestProtocolSHA256
+    )
 }
 
 private func readExactly(_ handle: FileHandle, count: Int) throws -> Data {
