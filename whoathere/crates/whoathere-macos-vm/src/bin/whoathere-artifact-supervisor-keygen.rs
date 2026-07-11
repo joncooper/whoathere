@@ -9,6 +9,7 @@ use zeroize::Zeroize;
 enum KeyKind {
     Artifact,
     Wheel,
+    Sdist,
 }
 
 impl KeyKind {
@@ -16,6 +17,7 @@ impl KeyKind {
         match env!("CARGO_BIN_NAME") {
             "whoathere-artifact-supervisor-keygen" => Ok(Self::Artifact),
             "whoathere-wheel-supervisor-keygen" => Ok(Self::Wheel),
+            "whoathere-sdist-supervisor-keygen" => Ok(Self::Sdist),
             _ => Err("guest_supervisor_keygen_binary_identity_invalid"),
         }
     }
@@ -24,6 +26,7 @@ impl KeyKind {
         match self {
             Self::Artifact => "artifact-supervisor-ed25519.seed",
             Self::Wheel => "wheel-supervisor-ed25519.seed",
+            Self::Sdist => "sdist-supervisor-ed25519.seed",
         }
     }
 
@@ -31,13 +34,20 @@ impl KeyKind {
         match self {
             Self::Artifact => "artifact-supervisor-public-key.bin",
             Self::Wheel => "wheel-supervisor-public-key.bin",
+            Self::Sdist => "sdist-supervisor-public-key.bin",
         }
     }
 
-    const fn reason(self, artifact: &'static str, wheel: &'static str) -> &'static str {
+    const fn reason(
+        self,
+        artifact: &'static str,
+        wheel: &'static str,
+        sdist: &'static str,
+    ) -> &'static str {
         match self {
             Self::Artifact => artifact,
             Self::Wheel => wheel,
+            Self::Sdist => sdist,
         }
     }
 }
@@ -56,17 +66,20 @@ fn run() -> Result<(), &'static str> {
     let output = arguments.next().ok_or(kind.reason(
         "artifact_supervisor_keygen_output_required",
         "wheel_supervisor_keygen_output_required",
+        "sdist_supervisor_keygen_output_required",
     ))?;
     if arguments.next().is_some() {
         return Err(kind.reason(
             "artifact_supervisor_keygen_arguments_invalid",
             "wheel_supervisor_keygen_arguments_invalid",
+            "sdist_supervisor_keygen_arguments_invalid",
         ));
     }
     generate_key_pair(Path::new(&output), kind).map_err(|_| {
         kind.reason(
             "artifact_supervisor_keygen_failed",
             "wheel_supervisor_keygen_failed",
+            "sdist_supervisor_keygen_failed",
         )
     })
 }
@@ -171,6 +184,12 @@ mod tests {
         fs::remove_file(root.join(KeyKind::Wheel.seed_name())).expect("remove wheel seed");
         fs::remove_file(root.join(KeyKind::Wheel.public_key_name()))
             .expect("remove wheel public key");
+        generate_key_pair(&root, KeyKind::Sdist).expect("generate sdist key pair");
+        assert!(root.join(KeyKind::Sdist.seed_name()).is_file());
+        assert!(root.join(KeyKind::Sdist.public_key_name()).is_file());
+        fs::remove_file(root.join(KeyKind::Sdist.seed_name())).expect("remove sdist seed");
+        fs::remove_file(root.join(KeyKind::Sdist.public_key_name()))
+            .expect("remove sdist public key");
         fs::remove_dir(root).expect("remove keygen root");
     }
 }

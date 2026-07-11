@@ -11,8 +11,10 @@ mod macos {
     use whoathere_artifact::Sha256Digest;
     use whoathere_macos_vm::{
         run_macos_artifact_guest_nonexecuting_session_v1,
+        run_macos_sdist_guest_nonexecuting_session_v1,
         run_macos_wheel_guest_nonexecuting_session_v1, MacosArtifactGuestAuthClaimsV1,
-        MacosArtifactGuestStagingPolicyV1, MacosWheelGuestAuthClaimsV1,
+        MacosArtifactGuestStagingPolicyV1, MacosSdistGuestAuthClaimsV1,
+        MacosSdistGuestStagingPolicyV1, MacosWheelGuestAuthClaimsV1,
         MacosWheelGuestStagingPolicyV1,
     };
     use zeroize::Zeroizing;
@@ -27,6 +29,7 @@ mod macos {
     enum SupervisorKind {
         Artifact,
         Wheel,
+        Sdist,
     }
 
     impl SupervisorKind {
@@ -34,6 +37,7 @@ mod macos {
             match env!("CARGO_BIN_NAME") {
                 "whoathere-artifact-supervisor" => Ok(Self::Artifact),
                 "whoathere-wheel-supervisor" => Ok(Self::Wheel),
+                "whoathere-sdist-supervisor" => Ok(Self::Sdist),
                 _ => Err("guest_supervisor_binary_identity_invalid"),
             }
         }
@@ -42,6 +46,7 @@ mod macos {
             match self {
                 Self::Artifact => "whoathere.artifact_guest_supervisor_config.v1",
                 Self::Wheel => "whoathere.wheel_guest_supervisor_config.v1",
+                Self::Sdist => "whoathere.sdist_guest_supervisor_config.v1",
             }
         }
 
@@ -49,6 +54,7 @@ mod macos {
             match self {
                 Self::Artifact => "/Library/Application Support/WhoaThere/artifact-supervisor.json",
                 Self::Wheel => "/Library/Application Support/WhoaThere/wheel-supervisor.json",
+                Self::Sdist => "/Library/Application Support/WhoaThere/sdist-supervisor.json",
             }
         }
 
@@ -60,6 +66,9 @@ mod macos {
                 Self::Wheel => {
                     "/Library/Application Support/WhoaThere/wheel-supervisor-ed25519.seed"
                 }
+                Self::Sdist => {
+                    "/Library/Application Support/WhoaThere/sdist-supervisor-ed25519.seed"
+                }
             }
         }
 
@@ -67,6 +76,7 @@ mod macos {
             match self {
                 Self::Artifact => "/var/db/whoathere/artifact-staging",
                 Self::Wheel => "/var/db/whoathere/wheel-staging",
+                Self::Sdist => "/var/db/whoathere/sdist-staging",
             }
         }
 
@@ -74,13 +84,20 @@ mod macos {
             match self {
                 Self::Artifact => 47_079,
                 Self::Wheel => 47_080,
+                Self::Sdist => 47_081,
             }
         }
 
-        const fn reason(self, artifact: &'static str, wheel: &'static str) -> &'static str {
+        const fn reason(
+            self,
+            artifact: &'static str,
+            wheel: &'static str,
+            sdist: &'static str,
+        ) -> &'static str {
             match self {
                 Self::Artifact => artifact,
                 Self::Wheel => wheel,
+                Self::Sdist => sdist,
             }
         }
     }
@@ -316,12 +333,14 @@ mod macos {
             return Err(kind.reason(
                 "artifact_guest_supervisor_arguments_rejected",
                 "wheel_guest_supervisor_arguments_rejected",
+                "sdist_guest_supervisor_arguments_rejected",
             ));
         }
         if unsafe { libc::geteuid() } != 0 {
             return Err(kind.reason(
                 "artifact_guest_supervisor_root_required",
                 "wheel_guest_supervisor_root_required",
+                "sdist_guest_supervisor_root_required",
             ));
         }
         let config_bytes = read_trusted_file(
@@ -334,12 +353,14 @@ mod macos {
             kind.reason(
                 "artifact_guest_supervisor_config_untrusted",
                 "wheel_guest_supervisor_config_untrusted",
+                "sdist_guest_supervisor_config_untrusted",
             )
         })?;
         let config = decode_config(&config_bytes, kind.config_schema()).map_err(|_| {
             kind.reason(
                 "artifact_guest_supervisor_config_invalid",
                 "wheel_guest_supervisor_config_invalid",
+                "sdist_guest_supervisor_config_invalid",
             )
         })?;
         let seed_bytes = Zeroizing::new(
@@ -348,6 +369,7 @@ mod macos {
                     kind.reason(
                         "artifact_guest_supervisor_key_untrusted",
                         "wheel_guest_supervisor_key_untrusted",
+                        "sdist_guest_supervisor_key_untrusted",
                     )
                 },
             )?,
@@ -356,6 +378,7 @@ mod macos {
             kind.reason(
                 "artifact_guest_supervisor_key_invalid",
                 "wheel_guest_supervisor_key_invalid",
+                "sdist_guest_supervisor_key_invalid",
             )
         })?;
         let signing_seed = Zeroizing::new(seed_array);
@@ -363,6 +386,7 @@ mod macos {
             kind.reason(
                 "artifact_guest_supervisor_identity_unavailable",
                 "wheel_guest_supervisor_identity_unavailable",
+                "sdist_guest_supervisor_identity_unavailable",
             )
         })?;
         let supervisor_bytes = read_trusted_file(&executable, 0, MAX_SUPERVISOR_BYTES, None)
@@ -370,6 +394,7 @@ mod macos {
                 kind.reason(
                     "artifact_guest_supervisor_identity_untrusted",
                     "wheel_guest_supervisor_identity_untrusted",
+                    "sdist_guest_supervisor_identity_untrusted",
                 )
             })?;
         let connection = VsockConnection::connect_host(kind.vsock_port(), CONNECT_TIMEOUT)
@@ -377,6 +402,7 @@ mod macos {
                 kind.reason(
                     "artifact_guest_supervisor_vsock_connect_failed",
                     "wheel_guest_supervisor_vsock_connect_failed",
+                    "sdist_guest_supervisor_vsock_connect_failed",
                 )
             })?;
         let deadline = Instant::now() + SESSION_TIMEOUT;
@@ -433,11 +459,34 @@ mod macos {
                 )
                 .map_err(|failure| failure.reason_code())?;
             }
+            SupervisorKind::Sdist => {
+                let claims = MacosSdistGuestAuthClaimsV1::new(
+                    Sha256Digest::from_bytes(&supervisor_bytes),
+                    config.canonical_sha256,
+                    config.package_uid,
+                    config.package_gid,
+                )
+                .map_err(|_| "sdist_guest_supervisor_claims_invalid")?;
+                let policy = MacosSdistGuestStagingPolicyV1::for_current_supervisor(
+                    PathBuf::from(kind.staging_root()),
+                    config.package_uid,
+                )
+                .map_err(|_| "sdist_guest_supervisor_staging_policy_invalid")?;
+                run_macos_sdist_guest_nonexecuting_session_v1(
+                    &mut reader,
+                    &mut writer,
+                    *signing_seed,
+                    &claims,
+                    &policy,
+                )
+                .map_err(|failure| failure.reason_code())?;
+            }
         }
         connection.shutdown_write().map_err(|_| {
             kind.reason(
                 "artifact_guest_supervisor_shutdown_failed",
                 "wheel_guest_supervisor_shutdown_failed",
+                "sdist_guest_supervisor_shutdown_failed",
             )
         })?;
         Ok(())
@@ -571,6 +620,38 @@ mod macos {
             assert!(
                 decode_config(wheel, "whoathere.artifact_guest_supervisor_config.v1",).is_err()
             );
+            let sdist = br#"{"package_gid":"498","package_uid":"498","package_username":"_whoatherepkg","schema_version":"whoathere.sdist_guest_supervisor_config.v1"}"#;
+            assert!(decode_config(sdist, "whoathere.sdist_guest_supervisor_config.v1").is_ok());
+            assert!(decode_config(sdist, "whoathere.wheel_guest_supervisor_config.v1").is_err());
+        }
+
+        #[test]
+        fn compiled_supervisor_identity_selects_a_distinct_contract() {
+            let kind = SupervisorKind::compiled().expect("compiled supervisor kind");
+            match env!("CARGO_BIN_NAME") {
+                "whoathere-artifact-supervisor" => {
+                    assert_eq!(kind, SupervisorKind::Artifact);
+                    assert_eq!(kind.vsock_port(), 47_079);
+                }
+                "whoathere-wheel-supervisor" => {
+                    assert_eq!(kind, SupervisorKind::Wheel);
+                    assert_eq!(kind.vsock_port(), 47_080);
+                }
+                "whoathere-sdist-supervisor" => {
+                    assert_eq!(kind, SupervisorKind::Sdist);
+                    assert_eq!(kind.vsock_port(), 47_081);
+                    assert_eq!(
+                        kind.config_schema(),
+                        "whoathere.sdist_guest_supervisor_config.v1"
+                    );
+                    assert_eq!(
+                        kind.signing_seed_path(),
+                        "/Library/Application Support/WhoaThere/sdist-supervisor-ed25519.seed"
+                    );
+                    assert_eq!(kind.staging_root(), "/var/db/whoathere/sdist-staging");
+                }
+                _ => panic!("unexpected supervisor binary"),
+            }
         }
 
         #[test]
@@ -592,6 +673,12 @@ fn main() {
 
 #[cfg(not(target_os = "macos"))]
 fn main() {
-    eprintln!("artifact_guest_supervisor_macos_required");
+    let reason = match env!("CARGO_BIN_NAME") {
+        "whoathere-artifact-supervisor" => "artifact_guest_supervisor_macos_required",
+        "whoathere-wheel-supervisor" => "wheel_guest_supervisor_macos_required",
+        "whoathere-sdist-supervisor" => "sdist_guest_supervisor_macos_required",
+        _ => "guest_supervisor_binary_identity_invalid",
+    };
+    eprintln!("{reason}");
     std::process::exit(70);
 }
