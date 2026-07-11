@@ -143,8 +143,14 @@ pub(crate) fn canonical_template_json_v1(
 pub struct ValidatedArtifactScenarioTemplateWireV1 {
     template_sha256: Sha256Digest,
     artifact_sha256: Sha256Digest,
+    artifact_byte_length: u64,
     scenario_id: String,
     environment: NpmEnvironmentProfileV1,
+    runtime_profile_sha256: Sha256Digest,
+    node_version: String,
+    node_executable_sha256: Sha256Digest,
+    npm_version: String,
+    npm_cli_sha256: Sha256Digest,
 }
 
 impl std::fmt::Debug for ValidatedArtifactScenarioTemplateWireV1 {
@@ -153,8 +159,14 @@ impl std::fmt::Debug for ValidatedArtifactScenarioTemplateWireV1 {
             .debug_struct("ValidatedArtifactScenarioTemplateWireV1")
             .field("template_sha256", &self.template_sha256)
             .field("artifact_sha256", &self.artifact_sha256)
+            .field("artifact_byte_length", &self.artifact_byte_length)
             .field("scenario_id", &self.scenario_id)
             .field("environment", &self.environment)
+            .field("runtime_profile_sha256", &self.runtime_profile_sha256)
+            .field("node_version", &self.node_version)
+            .field("node_executable_sha256", &self.node_executable_sha256)
+            .field("npm_version", &self.npm_version)
+            .field("npm_cli_sha256", &self.npm_cli_sha256)
             .finish()
     }
 }
@@ -168,12 +180,36 @@ impl ValidatedArtifactScenarioTemplateWireV1 {
         &self.artifact_sha256
     }
 
+    pub fn artifact_byte_length(&self) -> u64 {
+        self.artifact_byte_length
+    }
+
     pub fn scenario_id(&self) -> &str {
         &self.scenario_id
     }
 
     pub fn environment(&self) -> NpmEnvironmentProfileV1 {
         self.environment
+    }
+
+    pub fn runtime_profile_sha256(&self) -> &Sha256Digest {
+        &self.runtime_profile_sha256
+    }
+
+    pub fn node_version(&self) -> &str {
+        &self.node_version
+    }
+
+    pub fn node_executable_sha256(&self) -> &Sha256Digest {
+        &self.node_executable_sha256
+    }
+
+    pub fn npm_version(&self) -> &str {
+        &self.npm_version
+    }
+
+    pub fn npm_cli_sha256(&self) -> &Sha256Digest {
+        &self.npm_cli_sha256
     }
 }
 
@@ -202,8 +238,14 @@ pub fn decode_and_validate_artifact_scenario_template_v1(
     Ok(ValidatedArtifactScenarioTemplateWireV1 {
         template_sha256: Sha256Digest::from_bytes(bytes),
         artifact_sha256: wire.subject.artifact_sha256,
+        artifact_byte_length: wire.artifact_byte_length,
         scenario_id: wire.identity.scenario_id,
         environment,
+        runtime_profile_sha256: wire.runtime_profile.profile_sha256,
+        node_version: wire.runtime_profile.node_version,
+        node_executable_sha256: wire.runtime_profile.node_executable_sha256,
+        npm_version: wire.runtime_profile.npm_version,
+        npm_cli_sha256: wire.runtime_profile.npm_cli_sha256,
     })
 }
 

@@ -1,3 +1,9 @@
+mod artifact_backend;
+mod artifact_transport;
+
+pub use artifact_backend::*;
+pub use artifact_transport::*;
+
 use std::path::{Path, PathBuf};
 
 pub const STATUS_SCHEMA_VERSION: &str = "whoathere.macos_vm.status.v1";
