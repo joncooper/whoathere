@@ -21,16 +21,18 @@ use whoathere_macos_vm::{
     decode_macos_artifact_guest_auth_challenge_v1, decode_macos_artifact_submission_frame_v1,
     encode_macos_artifact_submission_frame_v1, read_macos_artifact_guest_control_frame_v1,
     require_macos_artifact_guest_control_eof_v1, sign_macos_artifact_guest_auth_response_v1,
-    stage_macos_artifact_guest_submission_v1, stream_macos_artifact_guest_submission_v1,
-    verify_macos_artifact_guest_auth_response_v1, write_macos_artifact_guest_control_frame_v1,
+    sign_macos_artifact_guest_staging_receipt_v1, stage_macos_artifact_guest_submission_v1,
+    stream_macos_artifact_guest_submission_v1, verify_macos_artifact_guest_auth_response_v1,
+    verify_macos_artifact_guest_staging_receipt_v1, write_macos_artifact_guest_control_frame_v1,
     write_macos_artifact_submission_frame_v1, ArtifactGuestRehashPhaseV1,
     MacosArtifactBackendCapabilitiesV1, MacosArtifactBackendIdentityV1,
     MacosArtifactGuestAuthChallengeV1, MacosArtifactGuestAuthClaimsV1,
     MacosArtifactGuestAuthErrorV1, MacosArtifactGuestControlErrorV1,
     MacosArtifactGuestControlFrameTypeV1, MacosArtifactGuestStagingErrorV1,
-    MacosArtifactGuestStagingPolicyV1, MacosArtifactRunErrorV1, MacosArtifactSubmissionBindingsV1,
-    MacosArtifactSubmissionErrorV1, MacosArtifactSubmissionHeaderV1,
-    MACOS_ARTIFACT_GUEST_SUBMISSION_MAGIC_V1, MACOS_ARTIFACT_SUBMISSION_FIXED_PREFIX_BYTES_V1,
+    MacosArtifactGuestStagingPolicyV1, MacosArtifactGuestStagingReceiptClaimsV1,
+    MacosArtifactRunErrorV1, MacosArtifactSubmissionBindingsV1, MacosArtifactSubmissionErrorV1,
+    MacosArtifactSubmissionHeaderV1, MACOS_ARTIFACT_GUEST_SUBMISSION_MAGIC_V1,
+    MACOS_ARTIFACT_SUBMISSION_FIXED_PREFIX_BYTES_V1,
 };
 
 fn digest(label: &[u8]) -> Sha256Digest {
@@ -541,6 +543,88 @@ fn guest_authentication_binds_fresh_challenge_signed_claims_and_measured_public_
     assert_eq!(
         sign_macos_artifact_guest_auth_response_v1(&challenge, [8_u8; 32], &claims),
         Err(MacosArtifactGuestAuthErrorV1::PublicKeyMismatch)
+    );
+}
+
+#[test]
+fn signed_guest_staging_receipt_binds_rehash_identity_and_no_execution_posture() {
+    let seed = [7_u8; 32];
+    let verifying_key = SigningKey::from_bytes(&seed).verifying_key().to_bytes();
+    let challenge = MacosArtifactGuestAuthChallengeV1::new(
+        [9_u8; 32],
+        digest(b"execution binding"),
+        digest(b"run spec"),
+        digest(b"clone binding"),
+        Sha256Digest::from_bytes(&verifying_key),
+    )
+    .expect("receipt challenge");
+    let auth_claims = MacosArtifactGuestAuthClaimsV1::new(
+        digest(b"guest supervisor"),
+        digest(b"runner configuration"),
+        502,
+        502,
+    )
+    .expect("auth claims");
+    let staging_claims = MacosArtifactGuestStagingReceiptClaimsV1::new(
+        digest(b"artifact"),
+        205,
+        digest(b"artifact"),
+        205,
+        123,
+        456,
+    )
+    .expect("staging claims");
+    let receipt = sign_macos_artifact_guest_staging_receipt_v1(
+        &challenge,
+        seed,
+        &auth_claims,
+        &staging_claims,
+    )
+    .expect("signed staging receipt");
+    let observation = verify_macos_artifact_guest_staging_receipt_v1(
+        &challenge,
+        &receipt,
+        verifying_key,
+        &auth_claims,
+        &staging_claims,
+    )
+    .expect("verified staging receipt");
+    assert_eq!(observation.claims(), &staging_claims);
+    assert_eq!(observation.package_uid(), 502);
+    assert_eq!(observation.package_gid(), 502);
+
+    let mut enabled: serde_json::Value = serde_json::from_slice(&receipt).expect("receipt JSON");
+    enabled["package_execution_enabled"] = serde_json::json!(true);
+    let enabled = serde_json_canonicalizer::to_vec(&enabled).expect("enabled receipt");
+    assert_eq!(
+        verify_macos_artifact_guest_staging_receipt_v1(
+            &challenge,
+            &enabled,
+            verifying_key,
+            &auth_claims,
+            &staging_claims
+        ),
+        Err(MacosArtifactGuestAuthErrorV1::InvalidResponse)
+    );
+
+    let changed_staging = MacosArtifactGuestStagingReceiptClaimsV1::new(
+        digest(b"artifact"),
+        205,
+        digest(b"artifact"),
+        205,
+        123,
+        457,
+    )
+    .expect("changed staging claims");
+    assert_eq!(
+        verify_macos_artifact_guest_staging_receipt_v1(
+            &challenge,
+            &receipt,
+            verifying_key,
+            &auth_claims,
+            &changed_staging
+        ),
+        Err(MacosArtifactGuestAuthErrorV1::InvalidResponse)
     );
 }
 

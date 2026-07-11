@@ -122,7 +122,7 @@ import Testing
         challengeBindingSHA256: sha256(Data("challenge binding".utf8)),
         executionBindingSHA256: challenge.executionBindingSHA256,
         artifactSHA256: sha256(Data("artifact".utf8)),
-        artifactByteLength: 1,
+        artifactByteLength: 205,
         headerByteLength: 1,
         scenarioID: "golden-scenario",
         environment: "ci_false",
@@ -135,6 +135,49 @@ import Testing
         guestAuthPublicKey: publicKey
     )
     #expect(observation.signatureVerified)
+    let authenticated = ArtifactGuestAuthenticatedSession(
+        challenge: challenge,
+        observation: observation
+    )
+    let transport = ArtifactRunTransportObservation(
+        runSpecSHA256: prelude.runSpecSHA256,
+        templateSHA256: prelude.templateSHA256,
+        challengeBindingSHA256: prelude.challengeBindingSHA256,
+        executionBindingSHA256: prelude.executionBindingSHA256,
+        artifactSHA256: prelude.artifactSHA256,
+        artifactByteLength: prelude.artifactByteLength,
+        headerByteLength: prelude.headerByteLength,
+        scenarioID: prelude.scenarioID,
+        environment: prelude.environment,
+        backendIdentity: backend
+    )
+    let receiptData = Data(#"{"artifact_byte_length":"205","artifact_file_mode":"0444","artifact_sha256":"sha256:c7c5c1d70c5dec4416ab6158afd0b223ef40c29b1dc1f97ed9428b94d4cadb1c","challenge_sha256":"sha256:c5d93c1b625d9725401bbb47a3914fc65c54e74969e4c3031e2ac2565ee372cc","clone_binding_sha256":"sha256:92514cfc03f94cbbc544178a0e7b999522b708efd7db40bd0c3d3796f9515564","execution_binding_sha256":"sha256:0adeabc9b469d31f8f4074566c3aec953f83419cc5700ece10e2c6c63272daf2","first_rehash_byte_length":"205","first_rehash_sha256":"sha256:c7c5c1d70c5dec4416ab6158afd0b223ef40c29b1dc1f97ed9428b94d4cadb1c","package_execution_enabled":false,"package_gid":"502","package_uid":"502","run_spec_sha256":"sha256:3626162ee4f7e66251d3d4fd61e2414e2153f65311611ebb72efc42565984fa3","schema_version":"whoathere.artifact_guest_staging_receipt.v1","signature_ed25519_hex":"a84cc4fc034beb74af97155b1d2a94a731fbbc34ca9abebd5c9b1fd8b81e30b3af3f4a916979c09dbfbe9a8c580afc068686319e63b0067974cac097268b8d04","staged_device":"123","staged_inode":"456","staging_directory_mode":"0711","status":"staged_no_execution"}"#.utf8)
+    let receipt = try verifyArtifactGuestStagingReceipt(
+        receiptData,
+        authenticated: authenticated,
+        prelude: prelude,
+        transport: transport,
+        guestAuthPublicKey: publicKey
+    )
+    #expect(receipt.signatureVerified)
+    #expect(receipt.stagedDevice == 123)
+    #expect(receipt.stagedInode == 456)
+    #expect(receipt.packageExecutionEnabled == false)
+
+    var executionEnabled = try #require(
+        JSONSerialization.jsonObject(with: receiptData) as? [String: Any]
+    )
+    executionEnabled["package_execution_enabled"] = true
+    let executionEnabledData = try canonicalJSONData(executionEnabled)
+    #expect(throws: ArtifactGuestAuthenticationError.invalidResponse) {
+        try verifyArtifactGuestStagingReceipt(
+            executionEnabledData,
+            authenticated: authenticated,
+            prelude: prelude,
+            transport: transport,
+            guestAuthPublicKey: publicKey
+        )
+    }
 }
 
 func signedGuestAuthResponse(

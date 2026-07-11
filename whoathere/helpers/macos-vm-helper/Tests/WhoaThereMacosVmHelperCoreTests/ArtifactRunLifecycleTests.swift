@@ -139,13 +139,13 @@ func lifecycleFixture(
     try setMode(root, 0o700)
     try setMode(layout.bundleDirectory, 0o700)
 
-    let disk = Data("inert APFS disk fixture".utf8)
-    let auxiliary = Data("inert APFS auxiliary fixture".utf8)
-    let hardware = Data("bounded hardware model fixture".utf8)
-    let machine = Data("bounded machine identifier fixture".utf8)
+    let disk = Data("base disk".utf8)
+    let auxiliary = Data("base aux".utf8)
+    let hardware = Data("hardware model".utf8)
+    let machine = Data("machine identifier".utf8)
     let guestAuthPublicKey = try guestAuthTestPublicKey()
-    let receipt = Data("{\"fixture\":\"post-provisioning\"}".utf8)
-    let helper = Data("inert signed helper fixture".utf8)
+    let receipt = Data("receipt".utf8)
+    let helper = Data("helper".utf8)
     let helperURL = root.appendingPathComponent("helper-fixture")
     for (url, data) in [
         (layout.diskURL, disk),
@@ -161,7 +161,7 @@ func lifecycleFixture(
     }
 
     let identity = ArtifactRunBackendIdentity(
-        baseGenerationID: "base-generation-lifecycle-test",
+        baseGenerationID: "base-generation-inert-v1",
         baseDiskSHA256: diskDigestOverride ?? sha256(disk),
         baseAuxiliaryStorageSHA256: sha256(auxiliary),
         hardwareModelSHA256: sha256(hardware),
@@ -170,16 +170,16 @@ func lifecycleFixture(
         memoryMiB: 6_144,
         postProvisioningReceiptSHA256: sha256(receipt),
         helperSHA256: sha256(helper),
-        guestSupervisorSHA256: sha256(Data("guest supervisor".utf8)),
+        guestSupervisorSHA256: sha256(Data("supervisor".utf8)),
         guestAuthPublicKeySHA256: sha256(guestAuthPublicKey),
-        runnerConfigurationSHA256: sha256(Data("runner configuration".utf8)),
+        runnerConfigurationSHA256: sha256(Data("runner".utf8)),
         packageUID: 502,
         packageGID: 502,
         nodeVersion: "22.17.0",
         nodeExecutableSHA256: sha256(Data("node executable".utf8)),
         npmVersion: "11.18.0",
-        npmCLISHA256: sha256(Data("npm CLI".utf8)),
-        cloneImplementationSHA256: sha256(Data("fclonefileat implementation".utf8)),
+        npmCLISHA256: sha256(Data("npm cli".utf8)),
+        cloneImplementationSHA256: sha256(Data("clone".utf8)),
         guestProtocolSHA256: sha256(Data("whoathere.artifact_scenario.v1".utf8))
     )
     return LifecycleFixture(

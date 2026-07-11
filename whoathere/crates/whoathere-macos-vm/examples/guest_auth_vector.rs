@@ -1,8 +1,9 @@
 use ed25519_dalek::SigningKey;
 use whoathere_artifact::Sha256Digest;
 use whoathere_macos_vm::{
-    sign_macos_artifact_guest_auth_response_v1, MacosArtifactGuestAuthChallengeV1,
-    MacosArtifactGuestAuthClaimsV1,
+    sign_macos_artifact_guest_auth_response_v1, sign_macos_artifact_guest_staging_receipt_v1,
+    MacosArtifactGuestAuthChallengeV1, MacosArtifactGuestAuthClaimsV1,
+    MacosArtifactGuestStagingReceiptClaimsV1,
 };
 
 fn digest(label: &[u8]) -> Sha256Digest {
@@ -26,7 +27,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         502,
     )?;
     let response = sign_macos_artifact_guest_auth_response_v1(&challenge, seed, &claims)?;
+    let staging = MacosArtifactGuestStagingReceiptClaimsV1::new(
+        digest(b"artifact"),
+        205,
+        digest(b"artifact"),
+        205,
+        123,
+        456,
+    )?;
+    let receipt =
+        sign_macos_artifact_guest_staging_receipt_v1(&challenge, seed, &claims, &staging)?;
     println!("{}", std::str::from_utf8(challenge.canonical_json_v1())?);
     println!("{}", std::str::from_utf8(&response)?);
+    println!("{}", std::str::from_utf8(&receipt)?);
     Ok(())
 }
