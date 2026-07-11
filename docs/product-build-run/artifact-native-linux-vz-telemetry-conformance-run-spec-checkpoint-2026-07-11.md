@@ -73,6 +73,25 @@ execution authority is not permitted.
 This contract is intentionally a conformance request, not a conformance result. It does not prove
 that a fixture ran, a sensor observed anything, an image is qualified, or a package may execute.
 
+## Fresh clone challenge
+
+`whoathere.macos_linux_vz_telemetry_conformance_challenge.v1` now binds one fresh 256-bit nonce to:
+
+- the exact run-spec, backend-identity, and requirements digests;
+- a caller-supplied disposable-clone binding;
+- the guest and host evidence public-key digests pinned by the backend; and
+- a repeated `trusted_inert_telemetry_conformance_only`, package-disabled, structurally-no-sync
+  posture.
+
+Rust constructs and strictly decodes the challenge. Swift independently validates the canonical
+wire object against already-validated run-spec and backend objects. Changing the nonce or clone
+changes the challenge digest; run-spec, backend, requirements, key, execution, unknown-field, and
+noncanonical rebinding fail closed. The shared challenge golden is
+`sha256:28136636fa8be52022213f238b9a39b55c35a837eb8262552dc5eeae55400ff6`.
+
+The challenge is not execution authority and cannot authorize package code. Signed guest and host
+receipts that consume this challenge remain the next implementation boundary.
+
 ## Cross-language binding
 
 Rust compiles the wire object and validates it again through the same strict decoder. Swift
@@ -103,9 +122,10 @@ cargo fmt --manifest-path whoathere/Cargo.toml --all -- --check
 swift test
 ```
 
-The Rust macOS VM package passed 82 tests, including three conformance run-spec tests. The Swift
-helper passed 91 tests, including three independent conformance parser tests. No VM, package
-manager, package code, public network target, restricted sample, or malware was used.
+The Rust macOS VM package passed 84 tests, including three conformance run-spec tests and two
+challenge tests. The Swift helper passed 92 tests, including four independent conformance
+run-spec/challenge tests. No VM, package manager, package code, public network target, restricted
+sample, or malware was used.
 
 ## Next gate
 

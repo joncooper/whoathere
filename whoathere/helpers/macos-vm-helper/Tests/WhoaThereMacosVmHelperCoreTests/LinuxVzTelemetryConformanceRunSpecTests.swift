@@ -42,6 +42,56 @@ import Testing
     }
 }
 
+@Test func linuxVzConformanceChallengeMatchesRustAndRejectsRebinding() throws {
+    let runValue = try linuxVzConformanceFixture(
+        runID: "linux-vz-conformance-run-challenge-golden",
+        evidenceID: "linux-vz-conformance-evidence-challenge-golden"
+    )
+    let runData = try canonicalJSONData(runValue)
+    let runSpec = try decodeLinuxVzTelemetryConformanceRunSpec(runData)
+    let backendValue = try #require(runValue["backend_identity"] as? [String: Any])
+    let requirementsSHA256 = try #require(
+        runValue["telemetry_requirements_sha256"] as? String
+    )
+    let backend = try decodeUnqualifiedLinuxVzTelemetryBackendIdentity(
+        try canonicalJSONData(backendValue),
+        expectedTelemetryRequirementsSHA256: requirementsSHA256
+    )
+    var challenge: [String: Any] = [
+        "schema_version": linuxVzTelemetryConformanceChallengeSchemaV1,
+        "nonce_hex": String(repeating: "42", count: 32),
+        "challenge_purpose": "trusted_inert_telemetry_conformance_only",
+        "run_spec_sha256": runSpec.runSpecSHA256,
+        "backend_identity_sha256": backend.identitySHA256,
+        "telemetry_requirements_sha256": requirementsSHA256,
+        "clone_binding_sha256": sha256(Data("inert disposable clone binding".utf8)),
+        "guest_evidence_public_key_sha256": backend.guestEvidencePublicKeySHA256,
+        "host_evidence_public_key_sha256": backend.hostEvidencePublicKeySHA256,
+        "package_execution": "disabled",
+        "sync_back_policy": "structurally_absent"
+    ]
+    let data = try canonicalJSONData(challenge)
+    let decoded = try decodeLinuxVzTelemetryConformanceChallenge(
+        data,
+        expectedRunSpec: runSpec,
+        expectedBackend: backend
+    )
+    #expect(
+        decoded.challengeSHA256
+            == "sha256:28136636fa8be52022213f238b9a39b55c35a837eb8262552dc5eeae55400ff6"
+    )
+    #expect(!decoded.packageExecutionAuthorityPermitted)
+
+    challenge["package_execution"] = "enabled"
+    #expect(throws: LinuxVzTelemetryConformanceEvidenceError.invalidSchema) {
+        try decodeLinuxVzTelemetryConformanceChallenge(
+            try canonicalJSONData(challenge),
+            expectedRunSpec: runSpec,
+            expectedBackend: backend
+        )
+    }
+}
+
 @Test func linuxVzConformanceRunSpecRejectsSensorGapsExecutionAndRebinding() throws {
     let fixture = try linuxVzConformanceFixture()
 
@@ -99,7 +149,10 @@ import Testing
     }
 }
 
-private func linuxVzConformanceFixture() throws -> [String: Any] {
+private func linuxVzConformanceFixture(
+    runID: String = "linux-vz-conformance-run-golden",
+    evidenceID: String = "linux-vz-conformance-evidence-golden"
+) throws -> [String: Any] {
     let requirements = linuxVzRequirementsFixture()
     let requirementsData = try canonicalJSONData(requirements)
     let requirementsSHA256 = sha256(requirementsData)
@@ -111,8 +164,8 @@ private func linuxVzConformanceFixture() throws -> [String: Any] {
     return [
         "schema_version": linuxVzTelemetryConformanceRunSpecSchemaV1,
         "canonicalization": "rfc8785.jcs.v1",
-        "conformance_run_id": "linux-vz-conformance-run-golden",
-        "evidence_id": "linux-vz-conformance-evidence-golden",
+        "conformance_run_id": runID,
+        "evidence_id": evidenceID,
         "fixture": "network_intent",
         "fixture_case": "dns_plaintext",
         "fixture_binary_sha256": fixtureBinarySHA256,
