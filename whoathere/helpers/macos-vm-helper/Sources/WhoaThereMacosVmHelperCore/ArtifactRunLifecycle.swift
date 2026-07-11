@@ -12,6 +12,7 @@ public enum ArtifactRunLifecycleError: Error, Equatable, CustomStringConvertible
     case helperDigestMismatch
     case provisioningReceiptInvalid
     case wheelProvisioningReceiptInvalid
+    case sdistProvisioningReceiptInvalid
     case metadataLimitExceeded
     case randomGenerationFailed
     case runDirectoryFailed
@@ -34,6 +35,8 @@ public enum ArtifactRunLifecycleError: Error, Equatable, CustomStringConvertible
             return "artifact_run_supervisor_provisioning_receipt_invalid"
         case .wheelProvisioningReceiptInvalid:
             return "wheel_run_supervisor_provisioning_receipt_invalid"
+        case .sdistProvisioningReceiptInvalid:
+            return "sdist_run_supervisor_provisioning_receipt_invalid"
         case .metadataLimitExceeded: return "artifact_run_metadata_limit_exceeded"
         case .randomGenerationFailed: return "artifact_run_random_generation_failed"
         case .runDirectoryFailed: return "artifact_run_directory_failed"
@@ -93,7 +96,7 @@ public struct ArtifactRunBaseMeasurement: Equatable, Sendable {
     public let helperSHA256: String
 }
 
-private struct LockedMeasuredFile {
+struct LockedMeasuredFile {
     let descriptor: Int32
     let device: UInt64
     let inode: UInt64
@@ -667,7 +670,7 @@ public func verifyAndLockWheelRunBase(
     }
 }
 
-private func requireSecureDirectory(_ url: URL) throws {
+func requireSecureDirectory(_ url: URL) throws {
     var status = stat()
     guard lstat(url.path, &status) == 0,
           status.st_mode & S_IFMT == S_IFDIR,
@@ -677,7 +680,7 @@ private func requireSecureDirectory(_ url: URL) throws {
     }
 }
 
-private func requireStoppedRuntime(_ pidURL: URL) throws {
+func requireStoppedRuntime(_ pidURL: URL) throws {
     var status = stat()
     if lstat(pidURL.path, &status) != 0 {
         guard errno == ENOENT else {
@@ -703,7 +706,7 @@ private func requireStoppedRuntime(_ pidURL: URL) throws {
     }
 }
 
-private func openLockedMeasuredFile(
+func openLockedMeasuredFile(
     _ url: URL,
     dataLimit: UInt64?
 ) throws -> LockedMeasuredFile {
@@ -784,7 +787,7 @@ private func hashDescriptor(
     return (digest, captured)
 }
 
-private func verifyFileIdentity(_ file: LockedMeasuredFile) throws {
+func verifyFileIdentity(_ file: LockedMeasuredFile) throws {
     var status = stat()
     guard fstat(file.descriptor, &status) == 0,
           UInt64(status.st_dev) == file.device,
@@ -798,7 +801,7 @@ private func verifyFileIdentity(_ file: LockedMeasuredFile) throws {
     }
 }
 
-private func openOrCreateSecureDirectory(_ url: URL) throws -> Int32 {
+func openOrCreateSecureDirectory(_ url: URL) throws -> Int32 {
     if mkdir(url.path, 0o700) != 0 && errno != EEXIST {
         throw ArtifactRunLifecycleError.runDirectoryFailed
     }
@@ -810,7 +813,7 @@ private func openOrCreateSecureDirectory(_ url: URL) throws -> Int32 {
     return descriptor
 }
 
-private func randomRunID() throws -> String {
+func randomRunID() throws -> String {
     var bytes = [UInt8](repeating: 0, count: 16)
     guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
         throw ArtifactRunLifecycleError.randomGenerationFailed
@@ -818,7 +821,7 @@ private func randomRunID() throws -> String {
     return bytes.map { String(format: "%02x", $0) }.joined()
 }
 
-private func cloneMeasuredFile(
+func cloneMeasuredFile(
     _ source: LockedMeasuredFile,
     into directoryDescriptor: Int32,
     name: String
@@ -835,7 +838,7 @@ private func cloneMeasuredFile(
     }
 }
 
-private func verifyClone(
+func verifyClone(
     in directoryDescriptor: Int32,
     name: String,
     source: LockedMeasuredFile
@@ -873,7 +876,7 @@ private func verifyClone(
     )
 }
 
-private func removeCloneMembers(_ runDescriptor: Int32) {
+func removeCloneMembers(_ runDescriptor: Int32) {
     for name in ["disk.img", "auxiliary-storage"] {
         _ = name.withCString { unlinkat(runDescriptor, $0, 0) }
     }

@@ -50,10 +50,33 @@ public struct WheelRunOptions: Equatable, Sendable {
     }
 }
 
+public struct SdistRunOptions: Equatable, Sendable {
+    public var stateDir: String?
+    public var authorityID: String
+    public var authorityRecordSHA256: String
+    public var execute: Bool
+    public var json: Bool
+
+    public init(
+        stateDir: String? = nil,
+        authorityID: String,
+        authorityRecordSHA256: String,
+        execute: Bool = false,
+        json: Bool = false
+    ) {
+        self.stateDir = stateDir
+        self.authorityID = authorityID
+        self.authorityRecordSHA256 = authorityRecordSHA256
+        self.execute = execute
+        self.json = json
+    }
+}
+
 public enum HelperInvocation: Equatable, Sendable {
     case legacy(HelperOptions)
     case artifactRun(ArtifactRunOptions)
     case wheelRun(WheelRunOptions)
+    case sdistRun(SdistRunOptions)
 }
 
 public struct HelperOptions: Equatable, Sendable {
@@ -274,12 +297,13 @@ public func parseHelperInvocation(_ arguments: [String]) throws -> HelperInvocat
     guard let command = arguments.first else {
         throw ArgumentError.commandRequired
     }
-    guard command == "artifact-run" || command == "wheel-run" else {
+    guard command == "artifact-run" || command == "wheel-run" || command == "sdist-run" else {
         return .legacy(try parseArguments(arguments))
     }
 
     var stateDir: String?
     var authorityID: String?
+    var authorityRecordSHA256: String?
     var execute = false
     var json = false
     var index = arguments.index(after: arguments.startIndex)
@@ -294,8 +318,10 @@ public func parseHelperInvocation(_ arguments: [String]) throws -> HelperInvocat
             index += 1
         case "--state-dir":
             stateDir = try value(after: token, in: arguments, at: &index)
-        case "--authority-id" where command == "wheel-run":
+        case "--authority-id" where command == "wheel-run" || command == "sdist-run":
             authorityID = try value(after: token, in: arguments, at: &index)
+        case "--authority-record-sha256" where command == "sdist-run":
+            authorityRecordSHA256 = try value(after: token, in: arguments, at: &index)
         default:
             if let split = token.firstIndex(of: "="), token.starts(with: "--") {
                 let flag = String(token[..<split])
@@ -306,11 +332,16 @@ public func parseHelperInvocation(_ arguments: [String]) throws -> HelperInvocat
                         throw ArgumentError.valueRequired(flag)
                     }
                     stateDir = rawValue
-                case "--authority-id" where command == "wheel-run":
+                case "--authority-id" where command == "wheel-run" || command == "sdist-run":
                     guard !rawValue.isEmpty else {
                         throw ArgumentError.valueRequired(flag)
                     }
                     authorityID = rawValue
+                case "--authority-record-sha256" where command == "sdist-run":
+                    guard !rawValue.isEmpty else {
+                        throw ArgumentError.valueRequired(flag)
+                    }
+                    authorityRecordSHA256 = rawValue
                 case "--execute":
                     guard rawValue == "true" else {
                         throw ArgumentError.unknownFlag(token)
@@ -337,6 +368,21 @@ public func parseHelperInvocation(_ arguments: [String]) throws -> HelperInvocat
         return .wheelRun(WheelRunOptions(
             stateDir: stateDir,
             authorityID: authorityID,
+            execute: execute,
+            json: json
+        ))
+    }
+    if command == "sdist-run" {
+        guard let authorityID else {
+            throw ArgumentError.valueRequired("--authority-id")
+        }
+        guard let authorityRecordSHA256 else {
+            throw ArgumentError.valueRequired("--authority-record-sha256")
+        }
+        return .sdistRun(SdistRunOptions(
+            stateDir: stateDir,
+            authorityID: authorityID,
+            authorityRecordSHA256: authorityRecordSHA256,
             execute: execute,
             json: json
         ))

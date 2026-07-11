@@ -2,6 +2,49 @@ import Foundation
 import Testing
 @testable import WhoaThereMacosVmHelperCore
 
+@Test func sdistRunUsesDistinctDigestBoundNoSyncOptions() throws {
+    let recordSHA256 = sha256(Data("sdist authority record".utf8))
+    let parsed = try parseHelperInvocation([
+        "sdist-run",
+        "--state-dir", "/tmp/whoathere-sdist-runs",
+        "--authority-id", "sdist-authority-" + String(repeating: "a", count: 64),
+        "--authority-record-sha256", recordSHA256,
+        "--execute",
+        "--json"
+    ])
+    guard case .sdistRun(let options) = parsed else {
+        Issue.record("expected sdist-run invocation")
+        return
+    }
+    #expect(options.stateDir == "/tmp/whoathere-sdist-runs")
+    #expect(options.authorityRecordSHA256 == recordSHA256)
+    #expect(options.execute)
+    #expect(options.json)
+
+    #expect(throws: ArgumentError.valueRequired("--authority-id")) {
+        _ = try parseHelperInvocation([
+            "sdist-run", "--authority-record-sha256", recordSHA256, "--execute"
+        ])
+    }
+    #expect(throws: ArgumentError.valueRequired("--authority-record-sha256")) {
+        _ = try parseHelperInvocation([
+            "sdist-run",
+            "--authority-id", "sdist-authority-" + String(repeating: "a", count: 64),
+            "--execute"
+        ])
+    }
+    for forbidden in ["--sync-back", "--tool=pip", "--", "--project-payload-path=/tmp/x"] {
+        #expect(throws: ArgumentError.self) {
+            _ = try parseHelperInvocation([
+                "sdist-run",
+                "--authority-id", "sdist-authority-" + String(repeating: "a", count: 64),
+                "--authority-record-sha256", recordSHA256,
+                forbidden
+            ])
+        }
+    }
+}
+
 @Test func strictSdistSubmissionParserAcceptsEveryTypedScenarioVariant() throws {
     let declaration = sha256(Data("setuptools>=75".utf8))
     let scenarios: [[String: Any]] = [
