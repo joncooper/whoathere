@@ -12,3 +12,18 @@ import Testing
         vmStopSucceeded: true, guestSessionTerminated: false
     ) == .retainBecauseGuestSessionUnterminated)
 }
+
+@Test func sdistGuestTerminationDistinguishesNoConnectionFromLiveAcceptedSession() {
+    #expect(sdistGuestSessionTerminationProven(
+        connectionAccepted: false,
+        sessionCompletionObserved: false
+    ))
+    #expect(!sdistGuestSessionTerminationProven(
+        connectionAccepted: true,
+        sessionCompletionObserved: false
+    ))
+    #expect(sdistGuestSessionTerminationProven(
+        connectionAccepted: true,
+        sessionCompletionObserved: true
+    ))
+}

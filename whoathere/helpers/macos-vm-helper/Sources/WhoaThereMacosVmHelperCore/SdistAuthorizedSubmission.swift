@@ -43,9 +43,13 @@ public func beginAndAuthorizeSdistRunSubmission(
     authorityLayout: SdistRunAuthorityLayout,
     authorityID: String,
     expectedAuthorityRecordSHA256: String,
-    nowUnixSeconds: UInt64
+    nowUnixSeconds: UInt64,
+    cancellation: SdistRunCancellationState? = nil
 ) throws -> AuthorizedSdistRunSubmission {
-    let reader = try beginSdistSubmission(from: handle)
+    let reader = try beginSdistSubmission(
+        from: handle,
+        cancellation: cancellation
+    )
     let authority = try consumeSdistRunAuthority(
         layout: authorityLayout,
         authorityID: authorityID,

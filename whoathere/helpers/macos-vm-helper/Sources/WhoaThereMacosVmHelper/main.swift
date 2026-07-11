@@ -468,6 +468,12 @@ private final class SdistGuestRunListener: NSObject, VZVirtioSocketListenerDeleg
             resultBox.store(.failure(error))
         }
     }
+
+    var hasAcceptedConnection: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return accepted
+    }
 }
 
 private struct DetonationRequestFile {
@@ -1214,10 +1220,18 @@ struct WhoaThereMacosVmHelper {
                 exitCode: 78
             )
         }
+        let cancellation = SdistRunCancellationState()
+        let cancellationSignalSources = installSdistRunCancellationSignals(cancellation)
+        defer {
+            for source in cancellationSignalSources {
+                source.cancel()
+            }
+        }
         var pendingClone: DisposableSdistRunClone?
         var consumedAuthority: ConsumedSdistRunAuthority?
         var authorityReplayStatePersisted = false
         do {
+            try cancellation.throwIfRequested()
             let stateDirectory = options.stateDir.map {
                 URL(fileURLWithPath: $0, isDirectory: true)
             } ?? defaultStateDir()
@@ -1233,7 +1247,8 @@ struct WhoaThereMacosVmHelper {
                     authorityLayout: authorityLayout,
                     authorityID: options.authorityID,
                     expectedAuthorityRecordSHA256: options.authorityRecordSHA256,
-                    nowUnixSeconds: UInt64(timestamp.rounded(.down))
+                    nowUnixSeconds: UInt64(timestamp.rounded(.down)),
+                    cancellation: cancellation
                 )
                 consumedAuthority = authorized.authority
                 authorityReplayStatePersisted = authorized.authority.replayStatePersisted
@@ -1245,6 +1260,7 @@ struct WhoaThereMacosVmHelper {
                 )
                 throw error
             }
+            try cancellation.throwIfRequested()
             let prelude = authorized.prelude
             let layout = SdistRunBaseLayout(stateDirectory: stateDirectory)
             let helperURL = URL(
@@ -1255,8 +1271,10 @@ struct WhoaThereMacosVmHelper {
                 identity: prelude.backendIdentity,
                 helperURL: helperURL
             )
+            try cancellation.throwIfRequested()
             let clone = try base.createDisposableClone()
             pendingClone = clone
+            try cancellation.throwIfRequested()
             let configuration = try buildSdistScenarioConfiguration(base: base, clone: clone)
             guard configuration.networkDevices.isEmpty,
                   configuration.socketDevices.count == 1 else {
@@ -1290,16 +1308,30 @@ struct WhoaThereMacosVmHelper {
             var vmStartSucceeded = false
             var sessionCompleted = false
             do {
-                try startArtifactVirtualMachine(virtualMachine, queue: queue)
+                try startArtifactVirtualMachine(
+                    virtualMachine,
+                    queue: queue,
+                    cancellation: cancellation
+                )
                 vmStartSucceeded = true
-                guard sessionCompletion.wait(timeout: .now() + .seconds(120)) == .success else {
+                switch waitForSdistRunCompletion(
+                    sessionCompletion,
+                    cancellation: cancellation,
+                    timeoutMilliseconds: 120_000
+                ) {
+                case .completed:
+                    break
+                case .timedOut:
                     throw helperError("sdist_run_guest_session_timeout")
+                case .cancelled(let reason):
+                    throw SdistRunCancellationError.cancelled(reason)
                 }
                 sessionCompleted = true
                 guard let result = sessionResult.load() else {
                     throw helperError("sdist_run_guest_session_result_missing")
                 }
                 sessionObservation = try result.get()
+                try cancellation.throwIfRequested()
             } catch {
                 primaryError = error
             }
@@ -1308,11 +1340,15 @@ struct WhoaThereMacosVmHelper {
                 socketDevice.removeSocketListener(forPort: sdistGuestVSOCKPortV1)
             }
             let stopResult = stopArtifactVirtualMachine(virtualMachine, queue: queue)
-            if !sessionCompleted {
+            if !sessionCompleted, listenerDelegate.hasAcceptedConnection {
                 sessionCompleted = sessionCompletion.wait(
                     timeout: .now() + .seconds(10)
                 ) == .success
             }
+            let guestSessionTerminated = sdistGuestSessionTerminationProven(
+                connectionAccepted: listenerDelegate.hasAcceptedConnection,
+                sessionCompletionObserved: sessionCompleted
+            )
             var cloneCleanupSucceeded = false
             var cleanupError: Error?
             let vmStopSucceeded: Bool
@@ -1322,7 +1358,7 @@ struct WhoaThereMacosVmHelper {
             }
             let cleanupDisposition = sdistRunCloneCleanupDisposition(
                 vmStopSucceeded: vmStopSucceeded,
-                guestSessionTerminated: sessionCompleted
+                guestSessionTerminated: guestSessionTerminated
             )
             switch cleanupDisposition {
             case .cleanupAuthorized:
@@ -1353,7 +1389,7 @@ struct WhoaThereMacosVmHelper {
                 var reasons: [String] = []
                 if let primaryError { reasons.append(String(describing: primaryError)) }
                 if let cleanupError { reasons.append(String(describing: cleanupError)) }
-                if !sessionCompleted {
+                if !guestSessionTerminated {
                     reasons.append("sdist_run_guest_session_not_terminated")
                 }
                 if !cloneCleanupSucceeded {
@@ -1377,8 +1413,10 @@ struct WhoaThereMacosVmHelper {
                         "vm_start_succeeded": vmStartSucceeded,
                         "vm_stop_succeeded": vmStopSucceeded,
                         "guest_session_completed": sessionCompleted,
-                        "guest_channel_terminated": sessionCompleted,
+                        "guest_channel_terminated": guestSessionTerminated,
                         "clone_cleanup_succeeded": cloneCleanupSucceeded,
+                        "cancellation_requested": cancellation.reason != nil,
+                        "cancellation_reason": cancellation.reason?.rawValue ?? NSNull(),
                         "package_execution_enabled": false,
                         "sync_back_enabled": false,
                         "build_closure_materialized": false,
@@ -1421,6 +1459,8 @@ struct WhoaThereMacosVmHelper {
                     "guest_staging_cleanup_succeeded": true,
                     "guest_channel_terminated": true,
                     "clone_cleanup_succeeded": true,
+                    "cancellation_requested": false,
+                    "cancellation_reason": NSNull(),
                     "package_execution_enabled": observation.packageExecutionEnabled,
                     "sync_back_enabled": observation.syncBackEnabled,
                     "build_closure_materialized": observation.buildClosureMaterialized,
@@ -1453,6 +1493,8 @@ struct WhoaThereMacosVmHelper {
                     "authority_replay_state_persisted": authorityReplayStatePersisted,
                     "transport_verified": false,
                     "clone_cleanup_succeeded": cloneCleanupSucceeded,
+                    "cancellation_requested": cancellation.reason != nil,
+                    "cancellation_reason": cancellation.reason?.rawValue ?? NSNull(),
                     "package_execution_enabled": false,
                     "sync_back_enabled": false,
                     "build_closure_materialized": false,
@@ -1466,8 +1508,10 @@ struct WhoaThereMacosVmHelper {
 
     private static func startArtifactVirtualMachine(
         _ virtualMachine: VZVirtualMachine,
-        queue: DispatchQueue
+        queue: DispatchQueue,
+        cancellation: SdistRunCancellationState? = nil
     ) throws {
+        try cancellation?.throwIfRequested()
         let resultBox = LockedResultBox<Void>()
         let completion = DispatchSemaphore(value: 0)
         let virtualMachineBox = UncheckedSendableBox(value: virtualMachine)
@@ -1477,13 +1521,47 @@ struct WhoaThereMacosVmHelper {
                 completion.signal()
             }
         }
-        guard completion.wait(timeout: .now() + .seconds(60)) == .success else {
-            throw helperError("artifact_run_vm_start_timeout")
+        if let cancellation {
+            switch waitForSdistRunCompletion(
+                completion,
+                cancellation: cancellation,
+                timeoutMilliseconds: 60_000
+            ) {
+            case .completed:
+                break
+            case .timedOut:
+                throw helperError("artifact_run_vm_start_timeout")
+            case .cancelled(let reason):
+                throw SdistRunCancellationError.cancelled(reason)
+            }
+        } else {
+            guard completion.wait(timeout: .now() + .seconds(60)) == .success else {
+                throw helperError("artifact_run_vm_start_timeout")
+            }
         }
         guard let result = resultBox.load() else {
             throw helperError("artifact_run_vm_start_result_missing")
         }
         try result.get()
+    }
+
+    private static func installSdistRunCancellationSignals(
+        _ cancellation: SdistRunCancellationState
+    ) -> [DispatchSourceSignal] {
+        let queue = DispatchQueue(label: "whoathere.macos.sdist-run.signals")
+        let definitions: [(Int32, SdistRunCancellationReason)] = [
+            (SIGINT, .interruptSignal),
+            (SIGTERM, .terminationSignal)
+        ]
+        return definitions.map { signalNumber, reason in
+            _ = Darwin.signal(signalNumber, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: queue)
+            source.setEventHandler {
+                cancellation.request(reason)
+            }
+            source.resume()
+            return source
+        }
     }
 
     private static func stopArtifactVirtualMachine(

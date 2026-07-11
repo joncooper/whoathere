@@ -25,3 +25,12 @@ public func sdistRunCloneCleanupDisposition(
     guard guestSessionTerminated else { return .retainBecauseGuestSessionUnterminated }
     return .cleanupAuthorized
 }
+
+/// After listener removal has serialized with the VM queue, either no connection was ever accepted
+/// or the one permitted connection must have returned from its handler before teardown is proven.
+public func sdistGuestSessionTerminationProven(
+    connectionAccepted: Bool,
+    sessionCompletionObserved: Bool
+) -> Bool {
+    !connectionAccepted || sessionCompletionObserved
+}

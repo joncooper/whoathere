@@ -1,5 +1,6 @@
 import CoreFoundation
 import CryptoKit
+import Darwin
 import Foundation
 
 public let sdistSubmissionMagicV1 = Data("WHOASDI1".utf8)
@@ -67,17 +68,20 @@ public final class SdistRunSubmissionReader {
     public let prelude: SdistRunSubmissionPrelude
 
     private let handle: FileHandle
+    private let cancellation: SdistRunCancellationState?
     let expectedArtifactDigest: Data
     let canonicalHeaderData: Data
     private var consumed = false
 
     fileprivate init(
         handle: FileHandle,
+        cancellation: SdistRunCancellationState?,
         expectedArtifactDigest: Data,
         canonicalHeaderData: Data,
         prelude: SdistRunSubmissionPrelude
     ) {
         self.handle = handle
+        self.cancellation = cancellation
         self.expectedArtifactDigest = expectedArtifactDigest
         self.canonicalHeaderData = canonicalHeaderData
         self.prelude = prelude
@@ -94,7 +98,11 @@ public final class SdistRunSubmissionReader {
         var hasher = SHA256()
         while remaining > 0 {
             let requested = Int(min(remaining, 64 * 1024))
-            let chunk = try sdistReadExactly(handle, count: requested)
+            let chunk = try sdistReadExactly(
+                handle,
+                count: requested,
+                cancellation: cancellation
+            )
             hasher.update(data: chunk)
             try chunkSink(chunk)
             remaining -= UInt64(chunk.count)
@@ -103,12 +111,14 @@ public final class SdistRunSubmissionReader {
             throw ArtifactRunProtocolError.artifactDigestMismatch
         }
         do {
+            try sdistWaitUntilReadable(handle, cancellation: cancellation)
             if let trailing = try handle.read(upToCount: 1), !trailing.isEmpty {
                 throw ArtifactRunProtocolError.trailingData
             }
         } catch let error as ArtifactRunProtocolError {
             throw error
         } catch {
+            try cancellation?.throwIfRequested()
             throw ArtifactRunProtocolError.inputReadFailed
         }
         return SdistRunTransportObservation(
@@ -139,9 +149,14 @@ public func inspectSdistSubmission(
 
 public func beginSdistSubmission(
     from handle: FileHandle,
-    expectedChallengeBindingSHA256: String? = nil
+    expectedChallengeBindingSHA256: String? = nil,
+    cancellation: SdistRunCancellationState? = nil
 ) throws -> SdistRunSubmissionReader {
-    let prefix = try sdistReadExactly(handle, count: sdistSubmissionPrefixBytesV1)
+    let prefix = try sdistReadExactly(
+        handle,
+        count: sdistSubmissionPrefixBytesV1,
+        cancellation: cancellation
+    )
     guard prefix.prefix(8) == sdistSubmissionMagicV1 else {
         throw ArtifactRunProtocolError.invalidMagic
     }
@@ -160,7 +175,11 @@ public func beginSdistSubmission(
         throw ArtifactRunProtocolError.artifactLimitExceeded
     }
     let prefixDigest = Data(prefix[24..<56])
-    let headerData = try sdistReadExactly(handle, count: Int(headerLength))
+    let headerData = try sdistReadExactly(
+        handle,
+        count: Int(headerLength),
+        cancellation: cancellation
+    )
     let validated = try validateSdistHeader(
         headerData,
         prefixArtifactLength: artifactLength,
@@ -182,6 +201,7 @@ public func beginSdistSubmission(
     )
     return SdistRunSubmissionReader(
         handle: handle,
+        cancellation: cancellation,
         expectedArtifactDigest: prefixDigest,
         canonicalHeaderData: headerData,
         prelude: prelude
@@ -777,11 +797,16 @@ private func validateSdistBackend(
     )
 }
 
-private func sdistReadExactly(_ handle: FileHandle, count: Int) throws -> Data {
+private func sdistReadExactly(
+    _ handle: FileHandle,
+    count: Int,
+    cancellation: SdistRunCancellationState?
+) throws -> Data {
     var result = Data()
     result.reserveCapacity(count)
     do {
         while result.count < count {
+            try sdistWaitUntilReadable(handle, cancellation: cancellation)
             let requested = min(64 * 1024, count - result.count)
             guard let chunk = try handle.read(upToCount: requested), !chunk.isEmpty else {
                 throw ArtifactRunProtocolError.truncated
@@ -791,9 +816,39 @@ private func sdistReadExactly(_ handle: FileHandle, count: Int) throws -> Data {
     } catch let error as ArtifactRunProtocolError {
         throw error
     } catch {
+        try cancellation?.throwIfRequested()
         throw ArtifactRunProtocolError.inputReadFailed
     }
     return result
+}
+
+private func sdistWaitUntilReadable(
+    _ handle: FileHandle,
+    cancellation: SdistRunCancellationState?
+) throws {
+    guard let cancellation else { return }
+    let descriptor = handle.fileDescriptor
+    guard descriptor >= 0 else { throw ArtifactRunProtocolError.inputReadFailed }
+    while true {
+        try cancellation.throwIfRequested()
+        var item = pollfd(
+            fd: descriptor,
+            events: Int16(POLLIN | POLLHUP),
+            revents: 0
+        )
+        let result = Darwin.poll(&item, 1, 100)
+        if result > 0 {
+            try cancellation.throwIfRequested()
+            guard item.revents & Int16(POLLNVAL) == 0 else {
+                throw ArtifactRunProtocolError.inputReadFailed
+            }
+            return
+        }
+        if result == 0 { continue }
+        if errno == EINTR { continue }
+        try cancellation.throwIfRequested()
+        throw ArtifactRunProtocolError.inputReadFailed
+    }
 }
 
 private func sdistUInt16(_ data: Data, at offset: Int) -> UInt16 {
