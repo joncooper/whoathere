@@ -6,11 +6,13 @@
 
 mod artifact;
 mod npm;
+mod sdist;
 mod wheel;
 mod wire;
 
 pub use artifact::*;
 pub use npm::*;
+pub use sdist::*;
 pub use wheel::*;
 pub use wire::*;
 

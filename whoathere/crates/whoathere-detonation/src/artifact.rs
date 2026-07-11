@@ -177,6 +177,10 @@ pub enum ArtifactScenarioEvidenceClassV1 {
     VmStop,
     ChannelClosure,
     CloneDestruction,
+    BuildClosureIdentity,
+    DerivedArtifactDigest,
+    DerivedArtifactValidation,
+    BuildEnvironmentTeardown,
 }
 
 pub(crate) fn required_evidence_classes_v1() -> Vec<ArtifactScenarioEvidenceClassV1> {
