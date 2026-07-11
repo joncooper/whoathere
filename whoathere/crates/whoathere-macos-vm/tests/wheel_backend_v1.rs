@@ -12,8 +12,11 @@ use whoathere_detonation::{
 use whoathere_evidence::v2::{canonical_cas_object_key_for_artifact, ArtifactEvidenceSubjectV2};
 use whoathere_macos_vm::{
     compile_macos_wheel_run_spec_v1, decode_and_validate_macos_artifact_run_spec_v1,
-    decode_and_validate_macos_wheel_run_spec_v1, MacosArtifactRunErrorV1,
-    MacosWheelBackendCapabilitiesV1, MacosWheelBackendIdentityV1,
+    decode_and_validate_macos_wheel_run_spec_v1, decode_macos_wheel_submission_frame_v1,
+    encode_macos_wheel_submission_frame_v1, macos_wheel_execution_binding_sha256_v1,
+    MacosArtifactRunErrorV1, MacosWheelBackendCapabilitiesV1, MacosWheelBackendIdentityV1,
+    MacosWheelSubmissionBindingsV1, MacosWheelSubmissionErrorV1, MacosWheelSubmissionHeaderV1,
+    MACOS_WHEEL_SUBMISSION_FIXED_PREFIX_BYTES_V1, MACOS_WHEEL_SUBMISSION_MAGIC_V1,
 };
 use zip::write::SimpleFileOptions;
 
@@ -309,5 +312,108 @@ fn exact_wheel_and_backend_measurements_rebind_macos_wheel_run_spec() {
     assert_eq!(
         first_spec.template_sha256(),
         changed_backend_spec.template_sha256()
+    );
+}
+
+#[test]
+fn exact_wheel_round_trips_through_a_distinct_challenge_bound_binary_frame() {
+    let (template, artifact) = compiled_template(b"VALUE = 'inert'\n");
+    let run_spec = compile_macos_wheel_run_spec_v1(&template, &backend(digest(b"measured pip")))
+        .expect("Mac wheel run spec");
+    let bindings =
+        MacosWheelSubmissionBindingsV1::for_run_spec(digest(b"wheel challenge"), &run_spec);
+    let header = MacosWheelSubmissionHeaderV1::new(run_spec.clone(), bindings.clone())
+        .expect("wheel header");
+    let encoded = encode_macos_wheel_submission_frame_v1(&header, &artifact).expect("wheel frame");
+    assert_eq!(&encoded[..8], &MACOS_WHEEL_SUBMISSION_MAGIC_V1);
+    assert!(encoded.ends_with(&artifact));
+    assert_eq!(
+        encoded.len(),
+        MACOS_WHEEL_SUBMISSION_FIXED_PREFIX_BYTES_V1
+            + header.canonical_json_v1().len()
+            + artifact.len()
+    );
+    let decoded =
+        decode_macos_wheel_submission_frame_v1(&encoded, &bindings).expect("decoded frame");
+    assert_eq!(decoded.header().run_spec(), &run_spec);
+    assert_eq!(decoded.artifact_bytes(), artifact);
+
+    let wrong_bindings =
+        MacosWheelSubmissionBindingsV1::for_run_spec(digest(b"other challenge"), &run_spec);
+    assert_eq!(
+        decode_macos_wheel_submission_frame_v1(&encoded, &wrong_bindings),
+        Err(MacosWheelSubmissionErrorV1::BindingMismatch)
+    );
+
+    let mut truncated = encoded.clone();
+    truncated.pop();
+    assert_eq!(
+        decode_macos_wheel_submission_frame_v1(&truncated, &bindings),
+        Err(MacosWheelSubmissionErrorV1::Truncated)
+    );
+    let mut trailing = encoded.clone();
+    trailing.push(0);
+    assert_eq!(
+        decode_macos_wheel_submission_frame_v1(&trailing, &bindings),
+        Err(MacosWheelSubmissionErrorV1::TrailingData)
+    );
+    let mut mutated = encoded.clone();
+    *mutated.last_mut().expect("artifact byte") ^= 1;
+    assert_eq!(
+        decode_macos_wheel_submission_frame_v1(&mutated, &bindings),
+        Err(MacosWheelSubmissionErrorV1::ArtifactDigestMismatch)
+    );
+    let mut npm_magic = encoded.clone();
+    npm_magic[..8].copy_from_slice(b"WHOAART1");
+    assert_eq!(
+        decode_macos_wheel_submission_frame_v1(&npm_magic, &bindings),
+        Err(MacosWheelSubmissionErrorV1::InvalidMagic)
+    );
+
+    let header_start = MACOS_WHEEL_SUBMISSION_FIXED_PREFIX_BYTES_V1;
+    let header_len =
+        u32::from_be_bytes(encoded[12..16].try_into().expect("header length")) as usize;
+    let mut header_value: serde_json::Value =
+        serde_json::from_slice(&encoded[header_start..header_start + header_len])
+            .expect("header value");
+    header_value["sync_back"] = serde_json::json!(false);
+    let unknown_header = serde_json_canonicalizer::to_vec(&header_value).expect("unknown header");
+    let rebuilt = rebuild_wheel_frame(&encoded, &unknown_header);
+    assert_eq!(
+        decode_macos_wheel_submission_frame_v1(&rebuilt, &bindings),
+        Err(MacosWheelSubmissionErrorV1::InvalidHeader)
+    );
+}
+
+fn rebuild_wheel_frame(frame: &[u8], header: &[u8]) -> Vec<u8> {
+    let old_header_len =
+        u32::from_be_bytes(frame[12..16].try_into().expect("header length")) as usize;
+    let artifact_start = MACOS_WHEEL_SUBMISSION_FIXED_PREFIX_BYTES_V1 + old_header_len;
+    let mut rebuilt = Vec::with_capacity(
+        MACOS_WHEEL_SUBMISSION_FIXED_PREFIX_BYTES_V1 + header.len() + frame.len() - artifact_start,
+    );
+    rebuilt.extend_from_slice(&frame[..12]);
+    rebuilt.extend_from_slice(&(header.len() as u32).to_be_bytes());
+    rebuilt.extend_from_slice(&frame[16..MACOS_WHEEL_SUBMISSION_FIXED_PREFIX_BYTES_V1]);
+    rebuilt.extend_from_slice(header);
+    rebuilt.extend_from_slice(&frame[artifact_start..]);
+    rebuilt
+}
+
+#[test]
+fn wheel_execution_binding_matches_the_cross_language_golden() {
+    let challenge = digest(b"wheel challenge");
+    let run_spec = digest(b"wheel run spec");
+    assert_eq!(
+        challenge.as_str(),
+        "sha256:b1ab8715aa7684198e18b8edf39eda977c1ed27ea8ef39d3bbed8289e6fbcae2"
+    );
+    assert_eq!(
+        run_spec.as_str(),
+        "sha256:6ed9490f306948340b695150470fee00b434f28442914867c0750b067abf228e"
+    );
+    assert_eq!(
+        macos_wheel_execution_binding_sha256_v1(&challenge, &run_spec).as_str(),
+        "sha256:fc895a01869db614532cae70220cdafe0eec5a6682b8197dcc6bab91fc04ef33"
     );
 }

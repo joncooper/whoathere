@@ -6,6 +6,7 @@ mod artifact_guest_staging;
 mod artifact_guest_supervisor;
 mod artifact_transport;
 mod wheel_backend;
+mod wheel_transport;
 
 pub use artifact_backend::*;
 pub use artifact_guest_auth::*;
@@ -15,6 +16,7 @@ pub use artifact_guest_staging::*;
 pub use artifact_guest_supervisor::*;
 pub use artifact_transport::*;
 pub use wheel_backend::*;
+pub use wheel_transport::*;
 
 use std::path::{Path, PathBuf};
 
