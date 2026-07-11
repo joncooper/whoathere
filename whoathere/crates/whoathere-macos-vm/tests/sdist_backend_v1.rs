@@ -26,7 +26,8 @@ use whoathere_macos_vm::{
     decode_and_validate_macos_sdist_run_spec_v1, decode_and_validate_macos_wheel_run_spec_v1,
     decode_macos_sdist_build_closure_frame_v1, decode_macos_sdist_guest_auth_challenge_v1,
     decode_macos_sdist_submission_frame_v1, encode_macos_sdist_build_closure_frame_v1,
-    encode_macos_sdist_guest_build_closure_frame_v1, encode_macos_sdist_submission_frame_v1,
+    encode_macos_sdist_build_execution_grant_v1, encode_macos_sdist_guest_build_closure_frame_v1,
+    encode_macos_sdist_submission_frame_v1, macos_sdist_execution_binding_sha256_v1,
     prepare_macos_sdist_launch_v1, read_macos_sdist_guest_control_frame_v1,
     require_macos_sdist_guest_control_eof_v1, run_macos_sdist_guest_nonexecuting_session_v1,
     sign_macos_sdist_guest_auth_response_v1, sign_macos_sdist_guest_staging_receipt_v1,
@@ -35,6 +36,7 @@ use whoathere_macos_vm::{
     stream_macos_sdist_guest_submission_v1, verify_macos_sdist_guest_auth_response_v1,
     verify_macos_sdist_guest_staging_receipt_v1, write_macos_sdist_guest_control_frame_v1,
     MacosArtifactRunErrorV1, MacosSdistBackendCapabilitiesV1, MacosSdistBackendIdentityV1,
+    MacosSdistBuildExecutionGrantErrorV1, MacosSdistBuildExecutionGrantVerifierV1,
     MacosSdistGuestAuthChallengeV1, MacosSdistGuestAuthClaimsV1, MacosSdistGuestAuthErrorV1,
     MacosSdistGuestControlErrorV1, MacosSdistGuestControlFrameTypeV1,
     MacosSdistGuestStagingErrorV1, MacosSdistGuestStagingPolicyV1,
@@ -316,6 +318,160 @@ fn sdist_build_closure_transport_is_distinct_bounded_exact_and_digest_bound() {
     assert!(empty_payload.is_empty());
     assert_eq!(empty_observation.artifact_count(), 0);
     assert_eq!(empty_observation.payload_byte_length(), 0);
+}
+
+#[test]
+fn sdist_build_execution_grant_is_secret_bound_clone_bound_and_burn_first() {
+    let (templates, _) = compiled_templates(b"VALUE = 'execution grant inert'\n");
+    let run_spec =
+        compile_macos_sdist_run_spec_v1(&templates[0], &backend(digest(b"measured pip")))
+            .expect("execution grant run spec");
+    let capability = [0x42_u8; 32];
+    let capability_sha256 = digest(&capability);
+    let challenge = MacosSdistGuestAuthChallengeV1::new(
+        [0x24_u8; 32],
+        macos_sdist_execution_binding_sha256_v1(&capability_sha256, run_spec.run_spec_sha256()),
+        run_spec.run_spec_sha256().clone(),
+        run_spec.build_closure_sha256().clone(),
+        digest(b"execution grant clone"),
+        run_spec
+            .backend_identity()
+            .guest_auth_public_key_sha256()
+            .clone(),
+    )
+    .expect("execution grant challenge");
+    let grant = encode_macos_sdist_build_execution_grant_v1(capability, &challenge)
+        .expect("bound execution grant");
+    assert!(format!("{grant:?}").contains("<redacted-and-zeroized-on-drop>"));
+    assert!(!format!("{grant:?}").contains(&"42".repeat(32)));
+    let verifier = MacosSdistBuildExecutionGrantVerifierV1::new(challenge.clone());
+    let observation = verifier
+        .verify_and_consume(grant.as_bytes().to_vec())
+        .expect("consume exact execution grant");
+    assert!(observation.consumed());
+    assert!(verifier.consumed());
+    assert_eq!(observation.capability_sha256(), &capability_sha256);
+    assert_eq!(
+        observation.challenge_sha256(),
+        &digest(challenge.canonical_json_v1())
+    );
+    assert_eq!(
+        observation.execution_binding_sha256(),
+        challenge.execution_binding_sha256()
+    );
+    assert_eq!(observation.run_spec_sha256(), run_spec.run_spec_sha256());
+    assert_eq!(
+        observation.build_closure_sha256(),
+        run_spec.build_closure_sha256()
+    );
+    assert_eq!(
+        verifier.verify_and_consume(grant.as_bytes().to_vec()),
+        Err(MacosSdistBuildExecutionGrantErrorV1::AlreadyConsumed)
+    );
+
+    assert!(matches!(
+        encode_macos_sdist_build_execution_grant_v1([0x43_u8; 32], &challenge),
+        Err(MacosSdistBuildExecutionGrantErrorV1::BindingMismatch)
+    ));
+    let rebound_challenge = MacosSdistGuestAuthChallengeV1::new(
+        [0x25_u8; 32],
+        challenge.execution_binding_sha256().clone(),
+        challenge.run_spec_sha256().clone(),
+        challenge.build_closure_sha256().clone(),
+        digest(b"different clone"),
+        challenge.guest_auth_public_key_sha256().clone(),
+    )
+    .expect("rebound challenge");
+    let rebound_verifier = MacosSdistBuildExecutionGrantVerifierV1::new(rebound_challenge);
+    assert_eq!(
+        rebound_verifier.verify_and_consume(grant.as_bytes().to_vec()),
+        Err(MacosSdistBuildExecutionGrantErrorV1::BindingMismatch)
+    );
+
+    let burned = MacosSdistBuildExecutionGrantVerifierV1::new(challenge);
+    assert_eq!(
+        burned.verify_and_consume(b"{}".to_vec()),
+        Err(MacosSdistBuildExecutionGrantErrorV1::InvalidGrant)
+    );
+    assert_eq!(
+        burned.verify_and_consume(grant.as_bytes().to_vec()),
+        Err(MacosSdistBuildExecutionGrantErrorV1::AlreadyConsumed)
+    );
+}
+
+#[test]
+fn concurrent_sdist_build_execution_grant_consumers_have_exactly_one_winner() {
+    let (templates, _) = compiled_templates(b"VALUE = 'concurrent grant inert'\n");
+    let run_spec =
+        compile_macos_sdist_run_spec_v1(&templates[0], &backend(digest(b"measured pip")))
+            .expect("concurrent grant run spec");
+    let capability = [0x66_u8; 32];
+    let challenge = MacosSdistGuestAuthChallengeV1::new(
+        [0x67_u8; 32],
+        macos_sdist_execution_binding_sha256_v1(&digest(&capability), run_spec.run_spec_sha256()),
+        run_spec.run_spec_sha256().clone(),
+        run_spec.build_closure_sha256().clone(),
+        digest(b"concurrent grant clone"),
+        run_spec
+            .backend_identity()
+            .guest_auth_public_key_sha256()
+            .clone(),
+    )
+    .expect("concurrent grant challenge");
+    let grant = Arc::new(
+        encode_macos_sdist_build_execution_grant_v1(capability, &challenge)
+            .expect("concurrent grant")
+            .as_bytes()
+            .to_vec(),
+    );
+    let verifier = Arc::new(MacosSdistBuildExecutionGrantVerifierV1::new(challenge));
+    let barrier = Arc::new(Barrier::new(8));
+    let handles = (0..8)
+        .map(|_| {
+            let verifier = Arc::clone(&verifier);
+            let barrier = Arc::clone(&barrier);
+            let grant = Arc::clone(&grant);
+            std::thread::spawn(move || {
+                barrier.wait();
+                verifier.verify_and_consume((*grant).clone())
+            })
+        })
+        .collect::<Vec<_>>();
+    let results = handles
+        .into_iter()
+        .map(|handle| handle.join().expect("grant consumer"))
+        .collect::<Vec<_>>();
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| {
+                **result == Err(MacosSdistBuildExecutionGrantErrorV1::AlreadyConsumed)
+            })
+            .count(),
+        7
+    );
+}
+
+#[test]
+fn sdist_build_execution_grant_matches_the_swift_golden() {
+    let capability = [0x42_u8; 32];
+    let run_spec_sha256 = digest(b"grant run spec");
+    let challenge = MacosSdistGuestAuthChallengeV1::new(
+        [0x24_u8; 32],
+        macos_sdist_execution_binding_sha256_v1(&digest(&capability), &run_spec_sha256),
+        run_spec_sha256,
+        digest(b"grant closure"),
+        digest(b"grant clone"),
+        digest(&[0x31_u8; 32]),
+    )
+    .expect("Swift golden challenge");
+    let grant = encode_macos_sdist_build_execution_grant_v1(capability, &challenge)
+        .expect("Swift golden grant");
+    assert_eq!(
+        digest(grant.as_bytes()).as_str(),
+        "sha256:c8539fc3e006ce3a6723213b6439e80372e335afa1ef332009a73550aad447e2"
+    );
 }
 
 fn backend(pip_cli_sha256: Sha256Digest) -> MacosSdistBackendCapabilitiesV1 {
@@ -1099,6 +1255,7 @@ fn sdist_guest_control_frames_are_bounded_ordered_and_cross_ecosystem_closed() {
     let challenge = b"inert sdist challenge";
     let response = b"inert sdist response";
     let receipt = b"inert sdist receipt";
+    let grant = b"inert secret-bearing execution grant";
     let mut wire = Vec::new();
     write_macos_sdist_guest_control_frame_v1(
         &mut wire,
@@ -1118,6 +1275,12 @@ fn sdist_guest_control_frames_are_bounded_ordered_and_cross_ecosystem_closed() {
         receipt,
     )
     .expect("receipt frame");
+    write_macos_sdist_guest_control_frame_v1(
+        &mut wire,
+        MacosSdistGuestControlFrameTypeV1::BuildExecutionGrant,
+        grant,
+    )
+    .expect("execution grant frame");
     let mut reader = FragmentedReader::new(wire.clone(), 3);
     assert_eq!(
         read_macos_sdist_guest_control_frame_v1(
@@ -1145,6 +1308,15 @@ fn sdist_guest_control_frames_are_bounded_ordered_and_cross_ecosystem_closed() {
         )
         .expect("receipt"),
         receipt
+    );
+    assert_eq!(
+        read_macos_sdist_guest_control_frame_v1(
+            &mut reader,
+            MacosSdistGuestControlFrameTypeV1::BuildExecutionGrant,
+            1024,
+        )
+        .expect("execution grant"),
+        grant
     );
     require_macos_sdist_guest_control_eof_v1(&mut reader).expect("control EOF");
 

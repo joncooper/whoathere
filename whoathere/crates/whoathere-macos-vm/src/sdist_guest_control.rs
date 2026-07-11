@@ -12,6 +12,7 @@ pub enum MacosSdistGuestControlFrameTypeV1 {
     AuthenticationChallenge = 1,
     AuthenticationResponse = 2,
     StagingReceipt = 3,
+    BuildExecutionGrant = 4,
 }
 
 impl TryFrom<u16> for MacosSdistGuestControlFrameTypeV1 {
@@ -22,6 +23,7 @@ impl TryFrom<u16> for MacosSdistGuestControlFrameTypeV1 {
             1 => Ok(Self::AuthenticationChallenge),
             2 => Ok(Self::AuthenticationResponse),
             3 => Ok(Self::StagingReceipt),
+            4 => Ok(Self::BuildExecutionGrant),
             _ => Err(MacosSdistGuestControlErrorV1::UnsupportedFrameType),
         }
     }

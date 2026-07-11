@@ -25,6 +25,19 @@ import Testing
         timeoutMillis: 1_000
     )
     #expect(received == body)
+    let grant = Data("inert secret-bearing execution grant".utf8)
+    try writeSdistGuestControlFrame(
+        descriptor: sockets[0],
+        frameType: .buildExecutionGrant,
+        body: grant,
+        timeoutMillis: 1_000
+    )
+    #expect(try readSdistGuestControlFrame(
+        descriptor: sockets[1],
+        expectedType: .buildExecutionGrant,
+        maximumBodyBytes: 1_024,
+        timeoutMillis: 1_000
+    ) == grant)
     #expect(throws: SdistGuestControlError.bodyLimitExceeded) {
         try writeSdistGuestControlFrame(
             descriptor: sockets[0],

@@ -10,6 +10,7 @@ public enum SdistGuestControlFrameType: UInt16, Sendable {
     case authenticationChallenge = 1
     case authenticationResponse = 2
     case stagingReceipt = 3
+    case buildExecutionGrant = 4
 }
 
 public enum SdistGuestControlError: Error, Equatable, CustomStringConvertible {
