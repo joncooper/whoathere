@@ -1,7 +1,9 @@
 mod artifact_backend;
+mod artifact_guest_staging;
 mod artifact_transport;
 
 pub use artifact_backend::*;
+pub use artifact_guest_staging::*;
 pub use artifact_transport::*;
 
 use std::path::{Path, PathBuf};

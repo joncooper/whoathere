@@ -8,6 +8,8 @@ version.workspace = true
 path = "src/lib.rs"
 
 [dependencies]
+getrandom = { version = "=0.4.3", default-features = false }
+libc = "=0.2.186"
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.150"
 serde_json_canonicalizer = "=0.3.2"

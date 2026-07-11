@@ -1,6 +1,10 @@
 use flate2::write::GzEncoder;
 use flate2::Compression;
+use std::fs;
 use std::io::{self, Cursor, Read, Write};
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 use whoathere_artifact::{
     normalize_artifact, AcquisitionMethod, ArtifactEnvelope, ArtifactEnvelopeInput, ArtifactFormat,
     ArtifactSourceType, Ecosystem, NormalizationLimits, Sha256Digest,
@@ -14,8 +18,10 @@ use whoathere_evidence::v2::{canonical_cas_object_key_for_artifact, ArtifactEvid
 use whoathere_macos_vm::{
     compile_macos_artifact_run_spec_v1, decode_and_validate_macos_artifact_run_spec_v1,
     decode_macos_artifact_submission_frame_v1, encode_macos_artifact_submission_frame_v1,
-    stream_macos_artifact_guest_submission_v1, write_macos_artifact_submission_frame_v1,
-    MacosArtifactBackendCapabilitiesV1, MacosArtifactBackendIdentityV1, MacosArtifactRunErrorV1,
+    stage_macos_artifact_guest_submission_v1, stream_macos_artifact_guest_submission_v1,
+    write_macos_artifact_submission_frame_v1, ArtifactGuestRehashPhaseV1,
+    MacosArtifactBackendCapabilitiesV1, MacosArtifactBackendIdentityV1,
+    MacosArtifactGuestStagingErrorV1, MacosArtifactGuestStagingPolicyV1, MacosArtifactRunErrorV1,
     MacosArtifactSubmissionBindingsV1, MacosArtifactSubmissionErrorV1,
     MacosArtifactSubmissionHeaderV1, MACOS_ARTIFACT_GUEST_SUBMISSION_MAGIC_V1,
     MACOS_ARTIFACT_SUBMISSION_FIXED_PREFIX_BYTES_V1,
@@ -360,6 +366,116 @@ fn guest_submission_streams_exact_bytes_and_rejects_wrong_domain_corruption_and_
         ),
         Err(MacosArtifactSubmissionErrorV1::Truncated)
     );
+}
+
+#[test]
+fn guest_staging_is_exclusive_read_only_rehashed_and_removed() {
+    let (guest, artifact, run_spec) = guest_frame();
+    let root = temporary_staging_root("success");
+    let policy = staging_policy(&root);
+    let mut staged = stage_macos_artifact_guest_submission_v1(&mut Cursor::new(guest), &policy)
+        .expect("stage inert artifact");
+    let path = staged.artifact_path().to_path_buf();
+    let metadata = fs::symlink_metadata(&path).expect("staged metadata");
+    assert!(metadata.file_type().is_file());
+    assert_eq!(metadata.mode() & 0o777, 0o444);
+    assert_eq!(metadata.nlink(), 1);
+    assert_eq!(metadata.len(), artifact.len() as u64);
+    assert_eq!(
+        staged.transport().artifact_sha256(),
+        run_spec.artifact_sha256()
+    );
+
+    let prelaunch = staged.verify_prelaunch().expect("prelaunch rehash");
+    let postrun = staged.verify_postrun().expect("postrun rehash");
+    assert_eq!(prelaunch.phase(), ArtifactGuestRehashPhaseV1::Prelaunch);
+    assert_eq!(postrun.phase(), ArtifactGuestRehashPhaseV1::Postrun);
+    assert_eq!(prelaunch.artifact_sha256(), run_spec.artifact_sha256());
+    assert_eq!(prelaunch.artifact_byte_length(), artifact.len() as u64);
+    assert_eq!(prelaunch.device(), postrun.device());
+    assert_eq!(prelaunch.inode(), postrun.inode());
+
+    let directory = path.parent().expect("scenario directory").to_path_buf();
+    staged.cleanup().expect("verified cleanup");
+    assert!(!directory.exists());
+    assert_eq!(fs::read_dir(&root).expect("empty root").count(), 0);
+    fs::remove_dir(root).expect("remove staging root");
+}
+
+#[test]
+fn guest_staging_discards_bad_transport_and_detects_path_replacement_before_launch() {
+    let (mut guest, _, _) = guest_frame();
+    let root = temporary_staging_root("failure");
+    let policy = staging_policy(&root);
+    *guest.last_mut().expect("artifact byte") ^= 1;
+    assert_eq!(
+        stage_macos_artifact_guest_submission_v1(&mut Cursor::new(guest), &policy)
+            .expect_err("mutated body must fail"),
+        MacosArtifactGuestStagingErrorV1::Transport(
+            MacosArtifactSubmissionErrorV1::ArtifactDigestMismatch
+        )
+    );
+    assert_eq!(fs::read_dir(&root).expect("cleaned root").count(), 0);
+
+    let (guest, artifact, _) = guest_frame();
+    let mut staged = stage_macos_artifact_guest_submission_v1(&mut Cursor::new(guest), &policy)
+        .expect("stage replacement fixture");
+    let path = staged.artifact_path().to_path_buf();
+    let held = path.with_file_name("held-original.tgz");
+    fs::rename(&path, &held).expect("move original as simulated root tamper");
+    fs::write(&path, &artifact).expect("write replacement");
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).expect("protect replacement");
+    assert_eq!(
+        staged.verify_prelaunch(),
+        Err(MacosArtifactGuestStagingErrorV1::VerificationFailed)
+    );
+    assert_eq!(
+        staged.cleanup(),
+        Err(MacosArtifactGuestStagingErrorV1::CleanupFailed)
+    );
+    assert!(held.exists());
+    fs::remove_file(held).expect("remove simulated tamper residue");
+    staged.cleanup().expect("retry cleanup");
+    assert_eq!(fs::read_dir(&root).expect("clean root").count(), 0);
+    fs::remove_dir(root).expect("remove staging root");
+}
+
+fn guest_frame() -> (Vec<u8>, Vec<u8>, whoathere_macos_vm::MacosArtifactRunSpecV1) {
+    let (template, artifact) = compiled_template();
+    let run_spec = compile_macos_artifact_run_spec_v1(&template, &backend(digest(b"measured npm")))
+        .expect("Mac run spec");
+    let bindings = MacosArtifactSubmissionBindingsV1::for_run_spec(digest(b"challenge"), &run_spec);
+    let header = MacosArtifactSubmissionHeaderV1::new(run_spec.clone(), bindings)
+        .expect("submission header");
+    let mut guest =
+        encode_macos_artifact_submission_frame_v1(&header, &artifact).expect("host frame");
+    guest[..8].copy_from_slice(&MACOS_ARTIFACT_GUEST_SUBMISSION_MAGIC_V1);
+    (guest, artifact, run_spec)
+}
+
+fn temporary_staging_root(label: &str) -> PathBuf {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "whoathere-guest-staging-{label}-{}-{nonce}",
+        std::process::id()
+    ));
+    fs::create_dir(&root).expect("create staging root");
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).expect("protect staging root");
+    root
+}
+
+fn staging_policy(root: &std::path::Path) -> MacosArtifactGuestStagingPolicyV1 {
+    let supervisor_uid = fs::symlink_metadata(root).expect("root metadata").uid();
+    let package_uid = if supervisor_uid == u32::MAX {
+        1
+    } else {
+        (supervisor_uid + 1).max(1)
+    };
+    MacosArtifactGuestStagingPolicyV1::for_current_supervisor(root.to_path_buf(), package_uid)
+        .expect("staging policy")
 }
 
 struct FragmentedReader<'a> {

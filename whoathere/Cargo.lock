@@ -641,6 +641,8 @@ name = "whoathere-macos-vm"
 version = "0.1.0"
 dependencies = [
  "flate2",
+ "getrandom",
+ "libc",
  "serde",
  "serde_json",
  "serde_json_canonicalizer",
