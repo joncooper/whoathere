@@ -6,10 +6,12 @@
 
 mod artifact;
 mod npm;
+mod wheel;
 mod wire;
 
 pub use artifact::*;
 pub use npm::*;
+pub use wheel::*;
 pub use wire::*;
 
 use whoathere_evidence::JobState;

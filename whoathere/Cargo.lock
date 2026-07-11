@@ -608,6 +608,7 @@ dependencies = [
  "whoathere-evidence",
  "whoathere-hash",
  "whoathere-vault-api",
+ "zip",
 ]
 
 [[package]]

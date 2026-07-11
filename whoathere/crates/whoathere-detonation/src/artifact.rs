@@ -27,6 +27,8 @@ pub enum ArtifactScenarioCompileErrorV1 {
     UnsupportedDependencyClosure,
     UnsupportedNativeArtifact,
     UnsupportedLifecycleHook,
+    UnsupportedWheelScript,
+    InvalidTriggerSurface,
     ArtifactLimitExceeded,
     PolicyMismatch,
     InvalidPolicy,
@@ -49,6 +51,8 @@ impl ArtifactScenarioCompileErrorV1 {
             }
             Self::UnsupportedNativeArtifact => "artifact_scenario_native_artifact_unsupported",
             Self::UnsupportedLifecycleHook => "artifact_scenario_lifecycle_hook_unqualified",
+            Self::UnsupportedWheelScript => "artifact_scenario_wheel_script_unsupported",
+            Self::InvalidTriggerSurface => "artifact_scenario_trigger_surface_invalid",
             Self::ArtifactLimitExceeded => "artifact_scenario_artifact_limit_exceeded",
             Self::PolicyMismatch => "artifact_scenario_policy_mismatch",
             Self::InvalidPolicy => "artifact_scenario_policy_invalid",
@@ -745,7 +749,7 @@ pub(crate) fn valid_identity_component_v1(value: &str) -> bool {
         })
 }
 
-fn valid_version_component_v1(value: &str) -> bool {
+pub(crate) fn valid_version_component_v1(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 64
         && value.is_ascii()

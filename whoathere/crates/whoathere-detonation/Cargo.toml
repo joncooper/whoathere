@@ -16,3 +16,4 @@ whoathere-vault-api = { path = "../whoathere-vault-api" }
 [dev-dependencies]
 flate2 = { version = "1.1.9", default-features = false, features = ["miniz_oxide"] }
 tar = { version = "0.4.46", default-features = false }
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2"] }
