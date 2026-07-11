@@ -196,7 +196,8 @@ struct WheelSubmissionFixture {
 
 func wheelSubmissionFixture(
     scenario: [String: Any],
-    scenarioIndex: Int
+    scenarioIndex: Int,
+    guestAuthPublicKeySHA256: String? = nil
 ) throws -> WheelSubmissionFixture {
     let artifact = Data([0x50, 0x4b, 0x03, 0x04, 0x57, 0x48, 0x4f, 0x41])
     let artifactSHA256 = sha256(artifact)
@@ -307,7 +308,8 @@ func wheelSubmissionFixture(
             "post_provisioning_receipt_sha256": sha256(Data("wheel receipt".utf8)),
             "helper_sha256": sha256(Data("helper".utf8)),
             "guest_supervisor_sha256": sha256(Data("wheel supervisor".utf8)),
-            "guest_auth_public_key_sha256": sha256(Data("wheel public key".utf8)),
+            "guest_auth_public_key_sha256": guestAuthPublicKeySHA256
+                ?? sha256(Data("wheel public key".utf8)),
             "runner_configuration_sha256": sha256(Data("wheel runner".utf8)),
             "package_username": "_whoatherepkg",
             "package_uid": UInt64(499),

@@ -20,15 +20,16 @@ use whoathere_macos_vm::{
     decode_and_validate_macos_wheel_run_spec_v1, decode_macos_wheel_guest_auth_challenge_v1,
     decode_macos_wheel_submission_frame_v1, encode_macos_wheel_submission_frame_v1,
     macos_wheel_execution_binding_sha256_v1, read_macos_wheel_guest_control_frame_v1,
-    require_macos_wheel_guest_control_eof_v1, sign_macos_wheel_guest_auth_response_v1,
-    sign_macos_wheel_guest_staging_receipt_v1, stage_macos_wheel_guest_submission_v1,
-    stream_macos_wheel_guest_submission_v1, verify_macos_wheel_guest_auth_response_v1,
-    verify_macos_wheel_guest_staging_receipt_v1, write_macos_wheel_guest_control_frame_v1,
-    MacosArtifactRunErrorV1, MacosWheelBackendCapabilitiesV1, MacosWheelBackendIdentityV1,
-    MacosWheelGuestAuthChallengeV1, MacosWheelGuestAuthClaimsV1, MacosWheelGuestAuthErrorV1,
-    MacosWheelGuestControlErrorV1, MacosWheelGuestControlFrameTypeV1,
-    MacosWheelGuestStagingErrorV1, MacosWheelGuestStagingPolicyV1,
-    MacosWheelGuestStagingReceiptClaimsV1, MacosWheelSubmissionBindingsV1,
+    require_macos_wheel_guest_control_eof_v1, run_macos_wheel_guest_nonexecuting_session_v1,
+    sign_macos_wheel_guest_auth_response_v1, sign_macos_wheel_guest_staging_receipt_v1,
+    stage_macos_wheel_guest_submission_v1, stream_macos_wheel_guest_submission_v1,
+    verify_macos_wheel_guest_auth_response_v1, verify_macos_wheel_guest_staging_receipt_v1,
+    write_macos_wheel_guest_control_frame_v1, MacosArtifactRunErrorV1,
+    MacosWheelBackendCapabilitiesV1, MacosWheelBackendIdentityV1, MacosWheelGuestAuthChallengeV1,
+    MacosWheelGuestAuthClaimsV1, MacosWheelGuestAuthErrorV1, MacosWheelGuestControlErrorV1,
+    MacosWheelGuestControlFrameTypeV1, MacosWheelGuestStagingErrorV1,
+    MacosWheelGuestStagingPolicyV1, MacosWheelGuestStagingReceiptClaimsV1,
+    MacosWheelGuestSupervisorPrimaryErrorV1, MacosWheelSubmissionBindingsV1,
     MacosWheelSubmissionErrorV1, MacosWheelSubmissionHeaderV1, WheelGuestRehashPhaseV1,
     MACOS_WHEEL_GUEST_SUBMISSION_MAGIC_V1, MACOS_WHEEL_SUBMISSION_FIXED_PREFIX_BYTES_V1,
     MACOS_WHEEL_SUBMISSION_MAGIC_V1,
@@ -220,6 +221,36 @@ fn backend_with_base(
         digest(b"apfs clone implementation"),
     )
     .expect("wheel backend identity");
+    MacosWheelBackendCapabilitiesV1::inert_first_slice(identity)
+}
+
+fn backend_with_guest_identity(
+    guest_auth_public_key_sha256: Sha256Digest,
+    package_uid: u32,
+    package_gid: u32,
+) -> MacosWheelBackendCapabilitiesV1 {
+    let identity = MacosWheelBackendIdentityV1::new(
+        "wheel-base-generation-inert-v1",
+        digest(b"base disk"),
+        digest(b"base auxiliary storage"),
+        digest(b"hardware model"),
+        digest(b"machine identifier"),
+        4,
+        6_144,
+        digest(b"wheel provisioning receipt"),
+        digest(b"signed swift helper"),
+        digest(b"root wheel guest supervisor"),
+        guest_auth_public_key_sha256,
+        digest(b"wheel runner configuration"),
+        package_uid,
+        package_gid,
+        "3.12.13",
+        digest(b"measured python"),
+        "26.1.2",
+        digest(b"measured pip"),
+        digest(b"apfs clone implementation"),
+    )
+    .expect("wheel guest backend identity");
     MacosWheelBackendCapabilitiesV1::inert_first_slice(identity)
 }
 
@@ -865,6 +896,184 @@ fn signed_wheel_staging_receipt_binds_held_inode_and_no_execution_posture() {
         ),
         Err(MacosWheelGuestAuthErrorV1::InvalidResponse)
     );
+}
+
+#[test]
+fn wheel_guest_supervisor_authenticates_stages_cleans_attests_and_never_executes() {
+    let seed = [7_u8; 32];
+    let verifying_key = SigningKey::from_bytes(&seed).verifying_key().to_bytes();
+    let root = temporary_wheel_staging_root("supervisor-success");
+    let policy = wheel_staging_policy(&root);
+    let package_gid = 499;
+    let (guest, artifact, run_spec, bindings) =
+        wheel_supervisor_guest_frame(verifying_key, policy.package_uid(), package_gid);
+    let claims = MacosWheelGuestAuthClaimsV1::new(
+        digest(b"root wheel guest supervisor"),
+        digest(b"wheel runner configuration"),
+        policy.package_uid(),
+        package_gid,
+    )
+    .expect("wheel supervisor claims");
+    let challenge = MacosWheelGuestAuthChallengeV1::new(
+        [13_u8; 32],
+        bindings.execution_binding_sha256().clone(),
+        run_spec.run_spec_sha256().clone(),
+        digest(b"unique wheel clone"),
+        Sha256Digest::from_bytes(&verifying_key),
+    )
+    .expect("wheel supervisor challenge");
+    let mut input = Vec::new();
+    write_macos_wheel_guest_control_frame_v1(
+        &mut input,
+        MacosWheelGuestControlFrameTypeV1::AuthenticationChallenge,
+        challenge.canonical_json_v1(),
+    )
+    .expect("wheel challenge frame");
+    input.extend_from_slice(&guest);
+
+    let mut output = Vec::new();
+    let observation = run_macos_wheel_guest_nonexecuting_session_v1(
+        &mut Cursor::new(input),
+        &mut output,
+        seed,
+        &claims,
+        &policy,
+    )
+    .expect("non-executing wheel session");
+    assert_eq!(observation.artifact_sha256(), &digest(&artifact));
+    assert_eq!(observation.artifact_byte_length(), artifact.len() as u64);
+    assert_eq!(observation.first_rehash_sha256(), &digest(&artifact));
+    assert_eq!(observation.package_uid(), policy.package_uid());
+    assert_eq!(observation.package_gid(), package_gid);
+    assert!(observation.staging_cleanup_succeeded());
+    assert!(!observation.package_execution_enabled());
+    assert_eq!(fs::read_dir(&root).expect("clean wheel root").count(), 0);
+
+    let mut output = Cursor::new(output);
+    let auth_response = read_macos_wheel_guest_control_frame_v1(
+        &mut output,
+        MacosWheelGuestControlFrameTypeV1::AuthenticationResponse,
+        16 * 1024,
+    )
+    .expect("wheel auth response");
+    verify_macos_wheel_guest_auth_response_v1(&challenge, &auth_response, verifying_key, &claims)
+        .expect("verified wheel auth response");
+    let receipt = read_macos_wheel_guest_control_frame_v1(
+        &mut output,
+        MacosWheelGuestControlFrameTypeV1::StagingReceipt,
+        16 * 1024,
+    )
+    .expect("wheel staging receipt");
+    let staging_claims = MacosWheelGuestStagingReceiptClaimsV1::new(
+        observation.artifact_sha256().clone(),
+        observation.artifact_byte_length(),
+        observation.first_rehash_sha256().clone(),
+        observation.first_rehash_byte_length(),
+        observation.staged_device(),
+        observation.staged_inode(),
+    )
+    .expect("wheel expected staging claims");
+    verify_macos_wheel_guest_staging_receipt_v1(
+        &challenge,
+        &receipt,
+        verifying_key,
+        &claims,
+        &staging_claims,
+    )
+    .expect("verified wheel staging receipt");
+    require_macos_wheel_guest_control_eof_v1(&mut output).expect("wheel supervisor EOF");
+    fs::remove_dir(&root).expect("remove clean wheel root");
+}
+
+#[test]
+fn wheel_guest_supervisor_rejects_challenge_rebinding_and_cleans_staging() {
+    let seed = [7_u8; 32];
+    let verifying_key = SigningKey::from_bytes(&seed).verifying_key().to_bytes();
+    let root = temporary_wheel_staging_root("supervisor-rebinding");
+    let policy = wheel_staging_policy(&root);
+    let package_gid = 499;
+    let (guest, _, run_spec, _) =
+        wheel_supervisor_guest_frame(verifying_key, policy.package_uid(), package_gid);
+    let claims = MacosWheelGuestAuthClaimsV1::new(
+        digest(b"root wheel guest supervisor"),
+        digest(b"wheel runner configuration"),
+        policy.package_uid(),
+        package_gid,
+    )
+    .expect("wheel supervisor claims");
+    let challenge = MacosWheelGuestAuthChallengeV1::new(
+        [14_u8; 32],
+        digest(b"wrong wheel execution binding"),
+        run_spec.run_spec_sha256().clone(),
+        digest(b"unique wheel clone"),
+        Sha256Digest::from_bytes(&verifying_key),
+    )
+    .expect("rebound wheel challenge");
+    let mut input = Vec::new();
+    write_macos_wheel_guest_control_frame_v1(
+        &mut input,
+        MacosWheelGuestControlFrameTypeV1::AuthenticationChallenge,
+        challenge.canonical_json_v1(),
+    )
+    .expect("wheel challenge frame");
+    input.extend_from_slice(&guest);
+
+    let mut output = Vec::new();
+    let failure = run_macos_wheel_guest_nonexecuting_session_v1(
+        &mut Cursor::new(input),
+        &mut output,
+        seed,
+        &claims,
+        &policy,
+    )
+    .expect_err("rebound wheel must fail");
+    assert_eq!(
+        failure.primary(),
+        MacosWheelGuestSupervisorPrimaryErrorV1::BindingMismatch
+    );
+    assert!(!failure.staging_cleanup_failed());
+    assert_eq!(fs::read_dir(&root).expect("clean wheel root").count(), 0);
+
+    let mut output = Cursor::new(output);
+    let auth_response = read_macos_wheel_guest_control_frame_v1(
+        &mut output,
+        MacosWheelGuestControlFrameTypeV1::AuthenticationResponse,
+        16 * 1024,
+    )
+    .expect("auth response precedes wheel");
+    verify_macos_wheel_guest_auth_response_v1(&challenge, &auth_response, verifying_key, &claims)
+        .expect("verified rebound auth response");
+    require_macos_wheel_guest_control_eof_v1(&mut output)
+        .expect("no receipt after wheel binding failure");
+    fs::remove_dir(&root).expect("remove rebound wheel root");
+}
+
+fn wheel_supervisor_guest_frame(
+    verifying_key: [u8; 32],
+    package_uid: u32,
+    package_gid: u32,
+) -> (
+    Vec<u8>,
+    Vec<u8>,
+    whoathere_macos_vm::MacosWheelRunSpecV1,
+    MacosWheelSubmissionBindingsV1,
+) {
+    let (template, artifact) = compiled_template(b"VALUE = 'inert'\n");
+    let backend = backend_with_guest_identity(
+        Sha256Digest::from_bytes(&verifying_key),
+        package_uid,
+        package_gid,
+    );
+    let run_spec =
+        compile_macos_wheel_run_spec_v1(&template, &backend).expect("wheel supervisor run spec");
+    let bindings =
+        MacosWheelSubmissionBindingsV1::for_run_spec(digest(b"wheel challenge"), &run_spec);
+    let header = MacosWheelSubmissionHeaderV1::new(run_spec.clone(), bindings.clone())
+        .expect("wheel supervisor header");
+    let mut guest =
+        encode_macos_wheel_submission_frame_v1(&header, &artifact).expect("wheel supervisor frame");
+    guest[..8].copy_from_slice(&MACOS_WHEEL_GUEST_SUBMISSION_MAGIC_V1);
+    (guest, artifact, run_spec, bindings)
 }
 
 fn wheel_guest_staging_frame() -> (Vec<u8>, Vec<u8>, whoathere_macos_vm::MacosWheelRunSpecV1) {
