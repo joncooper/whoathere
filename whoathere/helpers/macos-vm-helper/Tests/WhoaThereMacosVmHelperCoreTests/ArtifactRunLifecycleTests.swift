@@ -238,6 +238,7 @@ func artifactSupervisorProvisioningFixtureData(
         "package_execution_enabled": false,
         "package_gid": "502",
         "package_uid": "502",
+        "package_username": "_whoatherepkg",
         "runner_configuration_sha256": sha256(Data("runner".utf8)),
         "schema_version": artifactSupervisorProvisioningReceiptSchemaV1,
         "sync_back_enabled": false

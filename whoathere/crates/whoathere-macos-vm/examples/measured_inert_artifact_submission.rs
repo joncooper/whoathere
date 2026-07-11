@@ -43,6 +43,7 @@ struct ProvisioningReceiptV1 {
     package_execution_enabled: bool,
     package_gid: String,
     package_uid: String,
+    package_username: String,
     runner_configuration_sha256: Sha256Digest,
     schema_version: String,
     sync_back_enabled: bool,
@@ -85,6 +86,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         || receipt.package_execution_enabled
         || receipt.sync_back_enabled
         || receipt.artifact_vsock_port != "47079"
+        || receipt.package_username != "_whoatherepkg"
         || receipt.clone_implementation_sha256
             != Sha256Digest::from_bytes(CLONE_IMPLEMENTATION_ID_V1)
     {

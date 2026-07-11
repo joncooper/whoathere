@@ -17,6 +17,7 @@ public struct ArtifactSupervisorProvisioningObservation: Equatable, Sendable {
     public let memoryMiB: UInt64
     public let packageUID: UInt32
     public let packageGID: UInt32
+    public let packageUsername: String
     public let artifactVSOCKPort: UInt32
     public let packageExecutionEnabled: Bool
     public let syncBackEnabled: Bool
@@ -36,7 +37,8 @@ public func verifyArtifactSupervisorProvisioningReceipt(
             "guest_auth_public_key_sha256", "guest_supervisor_sha256",
             "memory_mib", "node_executable_sha256", "node_version", "npm_cli_sha256", "npm_version",
             "package_execution_enabled", "package_gid", "package_uid",
-            "runner_configuration_sha256", "schema_version", "sync_back_enabled"
+            "package_username", "runner_configuration_sha256", "schema_version",
+            "sync_back_enabled"
           ]),
           receipt["schema_version"] as? String
             == artifactSupervisorProvisioningReceiptSchemaV1,
@@ -58,6 +60,7 @@ public func verifyArtifactSupervisorProvisioningReceipt(
           sha256(guestAuthPublicKey) == identity.guestAuthPublicKeySHA256,
           receipt["package_execution_enabled"] as? Bool == false,
           receipt["sync_back_enabled"] as? Bool == false,
+          receipt["package_username"] as? String == "_whoatherepkg",
           let packageUIDText = receipt["package_uid"] as? String,
           let packageGIDText = receipt["package_gid"] as? String,
           let portText = receipt["artifact_vsock_port"] as? String,
@@ -95,6 +98,7 @@ public func verifyArtifactSupervisorProvisioningReceipt(
         memoryMiB: memoryMiB,
         packageUID: packageUID,
         packageGID: packageGID,
+        packageUsername: "_whoatherepkg",
         artifactVSOCKPort: port,
         packageExecutionEnabled: false,
         syncBackEnabled: false

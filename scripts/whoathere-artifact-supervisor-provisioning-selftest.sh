@@ -25,6 +25,7 @@ OUTPUT=$(WHOATHERE_ARTIFACT_SUPERVISOR_BINARY="$BIN/whoathere-artifact-superviso
   "$PROVISIONER" --preflight "$STATE")
 printf '%s\n' "$OUTPUT" | grep -q '^artifact_supervisor_preflight=true$'
 printf '%s\n' "$OUTPUT" | grep -q '^artifact_vsock_port=47079$'
+printf '%s\n' "$OUTPUT" | grep -q '^package_username=_whoatherepkg$'
 printf '%s\n' "$OUTPUT" | grep -q '^package_execution_enabled=false$'
 printf '%s\n' "$OUTPUT" | grep -q '^sync_back_enabled=false$'
 

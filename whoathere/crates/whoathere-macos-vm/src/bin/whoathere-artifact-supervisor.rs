@@ -16,6 +16,7 @@ mod macos {
     use zeroize::Zeroizing;
 
     const CONFIG_SCHEMA_V1: &str = "whoathere.artifact_guest_supervisor_config.v1";
+    const PACKAGE_USERNAME_V1: &str = "_whoatherepkg";
     const CONFIG_PATH: &str = "/Library/Application Support/WhoaThere/artifact-supervisor.json";
     const SIGNING_SEED_PATH: &str =
         "/Library/Application Support/WhoaThere/artifact-supervisor-ed25519.seed";
@@ -30,6 +31,7 @@ mod macos {
     #[serde(deny_unknown_fields)]
     struct SupervisorConfigWireV1 {
         schema_version: String,
+        package_username: String,
         package_uid: String,
         package_gid: String,
     }
@@ -320,6 +322,9 @@ mod macos {
         if canonical != bytes || wire.schema_version != CONFIG_SCHEMA_V1 {
             return Err(());
         }
+        if wire.package_username != PACKAGE_USERNAME_V1 {
+            return Err(());
+        }
         let package_uid = canonical_nonzero_u32(&wire.package_uid).ok_or(())?;
         let package_gid = canonical_nonzero_u32(&wire.package_gid).ok_or(())?;
         Ok(SupervisorConfigV1 {
@@ -407,7 +412,7 @@ mod macos {
 
         #[test]
         fn supervisor_config_is_closed_canonical_and_nonzero() {
-            let bytes = br#"{"package_gid":"502","package_uid":"502","schema_version":"whoathere.artifact_guest_supervisor_config.v1"}"#;
+            let bytes = br#"{"package_gid":"502","package_uid":"502","package_username":"_whoatherepkg","schema_version":"whoathere.artifact_guest_supervisor_config.v1"}"#;
             let decoded = decode_config(bytes).expect("valid config");
             assert_eq!(decoded.package_uid, 502);
             assert_eq!(decoded.package_gid, 502);
@@ -416,9 +421,11 @@ mod macos {
             let mut noncanonical = b" ".to_vec();
             noncanonical.extend_from_slice(bytes);
             assert!(decode_config(&noncanonical).is_err());
-            let zero = br#"{"package_gid":"502","package_uid":"0","schema_version":"whoathere.artifact_guest_supervisor_config.v1"}"#;
+            let zero = br#"{"package_gid":"502","package_uid":"0","package_username":"_whoatherepkg","schema_version":"whoathere.artifact_guest_supervisor_config.v1"}"#;
             assert!(decode_config(zero).is_err());
-            let unknown = br#"{"extra":false,"package_gid":"502","package_uid":"502","schema_version":"whoathere.artifact_guest_supervisor_config.v1"}"#;
+            let privileged = br#"{"package_gid":"502","package_uid":"502","package_username":"admin","schema_version":"whoathere.artifact_guest_supervisor_config.v1"}"#;
+            assert!(decode_config(privileged).is_err());
+            let unknown = br#"{"extra":false,"package_gid":"502","package_uid":"502","package_username":"_whoatherepkg","schema_version":"whoathere.artifact_guest_supervisor_config.v1"}"#;
             assert!(decode_config(unknown).is_err());
         }
 

@@ -4,6 +4,7 @@ set -eu
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 HELPER_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 WHOATHERE_ROOT=$(CDPATH= cd -- "$HELPER_ROOT/../.." && pwd)
+. "$SCRIPT_DIR/artifact-package-account-lib.sh"
 
 usage() {
   echo "usage: $0 [--preflight] /absolute/path/to/macos-vm-state" >&2
@@ -29,8 +30,9 @@ PUBLIC_KEY_DEST="$BUNDLE_DIR/artifact-supervisor-public-key.bin"
 RECEIPT_DEST="$BUNDLE_DIR/artifact-supervisor-provisioning.json"
 SUPERVISOR_BINARY=${WHOATHERE_ARTIFACT_SUPERVISOR_BINARY:-"$WHOATHERE_ROOT/target/release/whoathere-artifact-supervisor"}
 KEYGEN_BINARY=${WHOATHERE_ARTIFACT_SUPERVISOR_KEYGEN_BINARY:-"$WHOATHERE_ROOT/target/release/whoathere-artifact-supervisor-keygen"}
-PACKAGE_UID=${WHOATHERE_ARTIFACT_PACKAGE_UID:-502}
-PACKAGE_GID=${WHOATHERE_ARTIFACT_PACKAGE_GID:-502}
+PACKAGE_USERNAME=_whoatherepkg
+PACKAGE_UID=${WHOATHERE_ARTIFACT_PACKAGE_UID:-499}
+PACKAGE_GID=${WHOATHERE_ARTIFACT_PACKAGE_GID:-499}
 CPU_COUNT=${WHOATHERE_ARTIFACT_CPU_COUNT:-2}
 MEMORY_MIB=${WHOATHERE_ARTIFACT_MEMORY_MIB:-6144}
 NODE_VERSION=${WHOATHERE_ARTIFACT_NODE_VERSION:-22.17.0}
@@ -44,6 +46,12 @@ for value in "$PACKAGE_UID" "$PACKAGE_GID" "$CPU_COUNT" "$MEMORY_MIB"; do
       ;;
   esac
 done
+case "$PACKAGE_UID:$PACKAGE_GID" in
+  0[0-9]*:*|*:0[0-9]*)
+    echo "artifact_supervisor_package_identity_invalid=true" >&2
+    exit 64
+    ;;
+esac
 case "$NODE_VERSION:$NPM_VERSION" in
   *[!0-9A-Za-z._:+-]*|:|*:)
     echo "artifact_supervisor_runtime_version_invalid=true" >&2
@@ -97,6 +105,7 @@ if [ "$PREFLIGHT" -eq 1 ]; then
   echo "artifact_supervisor_preflight=true"
   echo "package_uid=$PACKAGE_UID"
   echo "package_gid=$PACKAGE_GID"
+  echo "package_username=$PACKAGE_USERNAME"
   echo "artifact_vsock_port=47079"
   echo "package_execution_enabled=false"
   echo "sync_back_enabled=false"
@@ -136,7 +145,7 @@ install -o root -g wheel -m 0755 "$SUPERVISOR_BINARY" "$SUPERVISOR_STAGED"
 /usr/bin/codesign --verify --strict "$SUPERVISOR_STAGED" >/dev/null
 
 CONFIG_FILE="$BUILD_DIR/artifact-supervisor.json"
-printf '%s' "{\"package_gid\":\"$PACKAGE_GID\",\"package_uid\":\"$PACKAGE_UID\",\"schema_version\":\"whoathere.artifact_guest_supervisor_config.v1\"}" > "$CONFIG_FILE"
+printf '%s' "{\"package_gid\":\"$PACKAGE_GID\",\"package_uid\":\"$PACKAGE_UID\",\"package_username\":\"$PACKAGE_USERNAME\",\"schema_version\":\"whoathere.artifact_guest_supervisor_config.v1\"}" > "$CONFIG_FILE"
 chmod 0400 "$CONFIG_FILE"
 
 SUPERVISOR_DIGEST=$(shasum -a 256 "$SUPERVISOR_STAGED" | awk '{print $1}')
@@ -192,6 +201,7 @@ if [ ! -x "$NODE_EXECUTABLE" ] || [ -L "$NODE_EXECUTABLE" ] || [ ! -f "$NPM_CLI"
 fi
 NODE_EXECUTABLE_DIGEST=$(shasum -a 256 "$NODE_EXECUTABLE" | awk '{print $1}')
 NPM_CLI_DIGEST=$(shasum -a 256 "$NPM_CLI" | awk '{print $1}')
+whoathere_provision_package_account "$DATA_MOUNT" "$PACKAGE_USERNAME" "$PACKAGE_UID" "$PACKAGE_GID" 0
 
 for path in \
   "$DATA_MOUNT/usr/local/libexec" \
@@ -222,7 +232,7 @@ hdiutil detach "$ATTACHED_DISK" >/dev/null
 ATTACHED_DISK=""
 
 RECEIPT_FILE="$BUILD_DIR/artifact-supervisor-provisioning.json"
-printf '%s' "{\"artifact_vsock_port\":\"47079\",\"base_generation_id\":\"$BASE_GENERATION_ID\",\"clone_implementation_sha256\":\"sha256:$CLONE_IMPLEMENTATION_DIGEST\",\"cpu_count\":\"$CPU_COUNT\",\"guest_auth_public_key_sha256\":\"sha256:$PUBLIC_KEY_DIGEST\",\"guest_supervisor_sha256\":\"sha256:$SUPERVISOR_DIGEST\",\"memory_mib\":\"$MEMORY_MIB\",\"node_executable_sha256\":\"sha256:$NODE_EXECUTABLE_DIGEST\",\"node_version\":\"$NODE_VERSION\",\"npm_cli_sha256\":\"sha256:$NPM_CLI_DIGEST\",\"npm_version\":\"$NPM_VERSION\",\"package_execution_enabled\":false,\"package_gid\":\"$PACKAGE_GID\",\"package_uid\":\"$PACKAGE_UID\",\"runner_configuration_sha256\":\"sha256:$CONFIG_DIGEST\",\"schema_version\":\"whoathere.artifact_supervisor_provisioning.v1\",\"sync_back_enabled\":false}" > "$RECEIPT_FILE"
+printf '%s' "{\"artifact_vsock_port\":\"47079\",\"base_generation_id\":\"$BASE_GENERATION_ID\",\"clone_implementation_sha256\":\"sha256:$CLONE_IMPLEMENTATION_DIGEST\",\"cpu_count\":\"$CPU_COUNT\",\"guest_auth_public_key_sha256\":\"sha256:$PUBLIC_KEY_DIGEST\",\"guest_supervisor_sha256\":\"sha256:$SUPERVISOR_DIGEST\",\"memory_mib\":\"$MEMORY_MIB\",\"node_executable_sha256\":\"sha256:$NODE_EXECUTABLE_DIGEST\",\"node_version\":\"$NODE_VERSION\",\"npm_cli_sha256\":\"sha256:$NPM_CLI_DIGEST\",\"npm_version\":\"$NPM_VERSION\",\"package_execution_enabled\":false,\"package_gid\":\"$PACKAGE_GID\",\"package_uid\":\"$PACKAGE_UID\",\"package_username\":\"$PACKAGE_USERNAME\",\"runner_configuration_sha256\":\"sha256:$CONFIG_DIGEST\",\"schema_version\":\"whoathere.artifact_supervisor_provisioning.v1\",\"sync_back_enabled\":false}" > "$RECEIPT_FILE"
 chmod 0400 "$RECEIPT_FILE"
 
 PUBLIC_TMP="$BUNDLE_DIR/.artifact-supervisor-public-key.bin.$$"
@@ -243,6 +253,7 @@ echo "npm_cli_sha256=sha256:$NPM_CLI_DIGEST"
 echo "npm_version=$NPM_VERSION"
 echo "package_uid=$PACKAGE_UID"
 echo "package_gid=$PACKAGE_GID"
+echo "package_username=$PACKAGE_USERNAME"
 echo "cpu_count=$CPU_COUNT"
 echo "memory_mib=$MEMORY_MIB"
 echo "artifact_vsock_port=47079"
