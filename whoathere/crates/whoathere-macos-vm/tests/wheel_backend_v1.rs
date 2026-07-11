@@ -15,13 +15,15 @@ use whoathere_macos_vm::{
     compile_macos_wheel_run_spec_v1, decode_and_validate_macos_artifact_run_spec_v1,
     decode_and_validate_macos_wheel_run_spec_v1, decode_macos_wheel_guest_auth_challenge_v1,
     decode_macos_wheel_submission_frame_v1, encode_macos_wheel_submission_frame_v1,
-    macos_wheel_execution_binding_sha256_v1, sign_macos_wheel_guest_auth_response_v1,
+    macos_wheel_execution_binding_sha256_v1, read_macos_wheel_guest_control_frame_v1,
+    require_macos_wheel_guest_control_eof_v1, sign_macos_wheel_guest_auth_response_v1,
     stream_macos_wheel_guest_submission_v1, verify_macos_wheel_guest_auth_response_v1,
-    MacosArtifactRunErrorV1, MacosWheelBackendCapabilitiesV1, MacosWheelBackendIdentityV1,
-    MacosWheelGuestAuthChallengeV1, MacosWheelGuestAuthClaimsV1, MacosWheelGuestAuthErrorV1,
-    MacosWheelSubmissionBindingsV1, MacosWheelSubmissionErrorV1, MacosWheelSubmissionHeaderV1,
-    MACOS_WHEEL_GUEST_SUBMISSION_MAGIC_V1, MACOS_WHEEL_SUBMISSION_FIXED_PREFIX_BYTES_V1,
-    MACOS_WHEEL_SUBMISSION_MAGIC_V1,
+    write_macos_wheel_guest_control_frame_v1, MacosArtifactRunErrorV1,
+    MacosWheelBackendCapabilitiesV1, MacosWheelBackendIdentityV1, MacosWheelGuestAuthChallengeV1,
+    MacosWheelGuestAuthClaimsV1, MacosWheelGuestAuthErrorV1, MacosWheelGuestControlErrorV1,
+    MacosWheelGuestControlFrameTypeV1, MacosWheelSubmissionBindingsV1, MacosWheelSubmissionErrorV1,
+    MacosWheelSubmissionHeaderV1, MACOS_WHEEL_GUEST_SUBMISSION_MAGIC_V1,
+    MACOS_WHEEL_SUBMISSION_FIXED_PREFIX_BYTES_V1, MACOS_WHEEL_SUBMISSION_MAGIC_V1,
 };
 use zip::write::SimpleFileOptions;
 
@@ -598,5 +600,96 @@ fn wheel_guest_authentication_is_signed_fresh_and_cross_ecosystem_closed() {
     assert_eq!(
         sign_macos_wheel_guest_auth_response_v1(&challenge, [8_u8; 32], &claims),
         Err(MacosWheelGuestAuthErrorV1::PublicKeyMismatch)
+    );
+}
+
+#[test]
+fn wheel_guest_control_frames_are_bounded_ordered_and_cross_ecosystem_closed() {
+    let challenge = br#"{"wheel_challenge":"inert"}"#;
+    let response = br#"{"wheel_response":"inert"}"#;
+    let receipt = br#"{"wheel_receipt":"inert"}"#;
+    let mut wire = Vec::new();
+    write_macos_wheel_guest_control_frame_v1(
+        &mut wire,
+        MacosWheelGuestControlFrameTypeV1::AuthenticationChallenge,
+        challenge,
+    )
+    .expect("challenge frame");
+    write_macos_wheel_guest_control_frame_v1(
+        &mut wire,
+        MacosWheelGuestControlFrameTypeV1::AuthenticationResponse,
+        response,
+    )
+    .expect("response frame");
+    write_macos_wheel_guest_control_frame_v1(
+        &mut wire,
+        MacosWheelGuestControlFrameTypeV1::StagingReceipt,
+        receipt,
+    )
+    .expect("receipt frame");
+
+    let mut reader = FragmentedReader::new(&wire, 2);
+    assert_eq!(
+        read_macos_wheel_guest_control_frame_v1(
+            &mut reader,
+            MacosWheelGuestControlFrameTypeV1::AuthenticationChallenge,
+            1024,
+        )
+        .expect("challenge"),
+        challenge
+    );
+    assert_eq!(
+        read_macos_wheel_guest_control_frame_v1(
+            &mut reader,
+            MacosWheelGuestControlFrameTypeV1::AuthenticationResponse,
+            1024,
+        )
+        .expect("response"),
+        response
+    );
+    assert_eq!(
+        read_macos_wheel_guest_control_frame_v1(
+            &mut reader,
+            MacosWheelGuestControlFrameTypeV1::StagingReceipt,
+            1024,
+        )
+        .expect("receipt"),
+        receipt
+    );
+    require_macos_wheel_guest_control_eof_v1(&mut reader).expect("control EOF");
+
+    let mut npm_magic = wire.clone();
+    npm_magic[..8].copy_from_slice(b"WHOACTL1");
+    assert_eq!(
+        read_macos_wheel_guest_control_frame_v1(
+            &mut Cursor::new(npm_magic),
+            MacosWheelGuestControlFrameTypeV1::AuthenticationChallenge,
+            1024,
+        ),
+        Err(MacosWheelGuestControlErrorV1::InvalidMagic)
+    );
+    assert_eq!(
+        read_macos_wheel_guest_control_frame_v1(
+            &mut Cursor::new(&wire),
+            MacosWheelGuestControlFrameTypeV1::AuthenticationResponse,
+            1024,
+        ),
+        Err(MacosWheelGuestControlErrorV1::UnexpectedFrameType)
+    );
+    assert_eq!(
+        read_macos_wheel_guest_control_frame_v1(
+            &mut Cursor::new(&wire[..15]),
+            MacosWheelGuestControlFrameTypeV1::AuthenticationChallenge,
+            1024,
+        ),
+        Err(MacosWheelGuestControlErrorV1::Truncated)
+    );
+    assert_eq!(
+        write_macos_wheel_guest_control_frame_v1(
+            &mut Vec::new(),
+            MacosWheelGuestControlFrameTypeV1::AuthenticationChallenge,
+            &[],
+        ),
+        Err(MacosWheelGuestControlErrorV1::BodyLimitExceeded)
     );
 }
