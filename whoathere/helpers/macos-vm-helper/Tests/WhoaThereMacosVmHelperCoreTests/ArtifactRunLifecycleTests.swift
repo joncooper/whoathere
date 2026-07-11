@@ -16,6 +16,7 @@ import Testing
     #expect(base.measurement.auxiliaryStorageSHA256 == fixture.identity.baseAuxiliaryStorageSHA256)
     #expect(base.hardwareModelData == fixture.hardwareModel)
     #expect(base.machineIdentifierData == fixture.machineIdentifier)
+    #expect(base.guestAuthPublicKeyData == fixture.guestAuthPublicKey)
 
     let first = try base.createDisposableClone()
     let second = try base.createDisposableClone()
@@ -120,6 +121,7 @@ private struct LifecycleFixture {
     let auxiliaryStorage: Data
     let hardwareModel: Data
     let machineIdentifier: Data
+    let guestAuthPublicKey: Data
 }
 
 private func lifecycleFixture(
@@ -141,6 +143,7 @@ private func lifecycleFixture(
     let auxiliary = Data("inert APFS auxiliary fixture".utf8)
     let hardware = Data("bounded hardware model fixture".utf8)
     let machine = Data("bounded machine identifier fixture".utf8)
+    let guestAuthPublicKey = Data(repeating: 0x42, count: 32)
     let receipt = Data("{\"fixture\":\"post-provisioning\"}".utf8)
     let helper = Data("inert signed helper fixture".utf8)
     let helperURL = root.appendingPathComponent("helper-fixture")
@@ -149,6 +152,7 @@ private func lifecycleFixture(
         (layout.auxiliaryStorageURL, auxiliary),
         (layout.hardwareModelURL, hardware),
         (layout.machineIdentifierURL, machine),
+        (layout.guestAuthPublicKeyURL, guestAuthPublicKey),
         (layout.postProvisioningReceiptURL, receipt),
         (helperURL, helper)
     ] {
@@ -167,7 +171,10 @@ private func lifecycleFixture(
         postProvisioningReceiptSHA256: sha256(receipt),
         helperSHA256: sha256(helper),
         guestSupervisorSHA256: sha256(Data("guest supervisor".utf8)),
+        guestAuthPublicKeySHA256: sha256(guestAuthPublicKey),
         runnerConfigurationSHA256: sha256(Data("runner configuration".utf8)),
+        packageUID: 502,
+        packageGID: 502,
         nodeVersion: "22.17.0",
         nodeExecutableSHA256: sha256(Data("node executable".utf8)),
         npmVersion: "11.18.0",
@@ -183,7 +190,8 @@ private func lifecycleFixture(
         disk: disk,
         auxiliaryStorage: auxiliary,
         hardwareModel: hardware,
-        machineIdentifier: machine
+        machineIdentifier: machine,
+        guestAuthPublicKey: guestAuthPublicKey
     )
 }
 

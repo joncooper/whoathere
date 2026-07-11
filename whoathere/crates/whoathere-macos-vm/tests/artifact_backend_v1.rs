@@ -149,7 +149,10 @@ fn backend(npm_digest: Sha256Digest) -> MacosArtifactBackendCapabilitiesV1 {
         digest(b"post provisioning receipt"),
         digest(b"signed swift helper"),
         digest(b"root guest supervisor"),
+        digest(b"guest auth Ed25519 public key"),
         digest(b"runner configuration"),
+        502,
+        502,
         "22.17.0",
         digest(b"measured node"),
         "11.18.0",
@@ -192,6 +195,15 @@ fn complete_template_is_nested_in_a_closed_no_nic_one_clone_run_spec() {
     let unknown = serde_json_canonicalizer::to_vec(&unknown).expect("unknown-field run spec");
     assert_eq!(
         decode_and_validate_macos_artifact_run_spec_v1(&unknown),
+        Err(MacosArtifactRunErrorV1::InvalidRunSpec)
+    );
+    let mut invalid_package_uid: serde_json::Value =
+        serde_json::from_slice(bytes).expect("run spec value");
+    invalid_package_uid["backend_identity"]["package_uid"] = serde_json::json!(0);
+    let invalid_package_uid =
+        serde_json_canonicalizer::to_vec(&invalid_package_uid).expect("invalid UID run spec");
+    assert_eq!(
+        decode_and_validate_macos_artifact_run_spec_v1(&invalid_package_uid),
         Err(MacosArtifactRunErrorV1::InvalidRunSpec)
     );
     let mut duplicate = b"{\"canonicalization\":\"rfc8785.jcs.v1\",".to_vec();

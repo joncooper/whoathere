@@ -91,7 +91,10 @@ public struct ArtifactRunBackendIdentity: Equatable, Sendable {
     public let postProvisioningReceiptSHA256: String
     public let helperSHA256: String
     public let guestSupervisorSHA256: String
+    public let guestAuthPublicKeySHA256: String
     public let runnerConfigurationSHA256: String
+    public let packageUID: UInt32
+    public let packageGID: UInt32
     public let nodeVersion: String
     public let nodeExecutableSHA256: String
     public let npmVersion: String
@@ -580,15 +583,17 @@ private func validateBackend(
 ) throws -> ArtifactRunBackendIdentity {
     try requireExactKeys(backend, [
         "base_auxiliary_storage_sha256", "base_disk_sha256", "base_generation_id",
-        "clone_implementation_sha256", "cpu_count", "guest_protocol_sha256",
-        "guest_supervisor_sha256", "hardware_model_sha256", "helper_sha256",
+        "clone_implementation_sha256", "cpu_count", "guest_auth_public_key_sha256",
+        "guest_protocol_sha256", "guest_supervisor_sha256", "hardware_model_sha256", "helper_sha256",
         "machine_identifier_sha256", "memory_mib", "node_executable_sha256", "node_version",
-        "npm_cli_sha256", "npm_version", "post_provisioning_receipt_sha256",
-        "runner_configuration_sha256"
+        "npm_cli_sha256", "npm_version", "package_gid", "package_uid",
+        "post_provisioning_receipt_sha256", "runner_configuration_sha256"
     ], error: .runSpecInvalid)
     let baseGenerationID = try string(backend, "base_generation_id", error: .runSpecInvalid)
     let cpuCount = try integer(backend, "cpu_count", error: .runSpecInvalid)
     let memoryMiB = try integer(backend, "memory_mib", error: .runSpecInvalid)
+    let packageUID = try integer(backend, "package_uid", error: .runSpecInvalid)
+    let packageGID = try integer(backend, "package_gid", error: .runSpecInvalid)
     let nodeVersion = try string(backend, "node_version", error: .runSpecInvalid)
     let nodeSHA256 = try digest(backend, "node_executable_sha256", error: .runSpecInvalid)
     let npmVersion = try string(backend, "npm_version", error: .runSpecInvalid)
@@ -597,6 +602,8 @@ private func validateBackend(
     guard validIdentity(baseGenerationID),
           cpuCount > 0, cpuCount <= UInt16.max,
           memoryMiB >= 1_024, memoryMiB <= 1_048_576,
+          packageUID > 0, packageUID <= UInt32.max,
+          packageGID > 0, packageGID <= UInt32.max,
           nodeVersion == template.nodeVersion,
           nodeSHA256 == template.nodeSHA256,
           npmVersion == template.npmVersion,
@@ -624,9 +631,14 @@ private func validateBackend(
         guestSupervisorSHA256: try digest(
             backend, "guest_supervisor_sha256", error: .runSpecInvalid
         ),
+        guestAuthPublicKeySHA256: try digest(
+            backend, "guest_auth_public_key_sha256", error: .runSpecInvalid
+        ),
         runnerConfigurationSHA256: try digest(
             backend, "runner_configuration_sha256", error: .runSpecInvalid
         ),
+        packageUID: UInt32(packageUID),
+        packageGID: UInt32(packageGID),
         nodeVersion: nodeVersion,
         nodeExecutableSHA256: nodeSHA256,
         npmVersion: npmVersion,

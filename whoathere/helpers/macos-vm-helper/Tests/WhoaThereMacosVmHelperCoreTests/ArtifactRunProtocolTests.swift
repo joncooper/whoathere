@@ -56,6 +56,12 @@ import Testing
     #expect(reader.prelude.artifactSHA256 == fixture.artifactSHA256)
     #expect(reader.prelude.artifactByteLength == UInt64(fixture.artifact.count))
     #expect(reader.prelude.backendIdentity.cpuCount == 4)
+    #expect(reader.prelude.backendIdentity.packageUID == 502)
+    #expect(reader.prelude.backendIdentity.packageGID == 502)
+    #expect(
+        reader.prelude.backendIdentity.guestAuthPublicKeySHA256
+            == sha256(Data("guest auth public key".utf8))
+    )
 
     var forwarded = Data()
     let observation = try reader.consumeArtifact { chunk in
@@ -235,7 +241,10 @@ func artifactSubmissionFixture() throws -> ArtifactSubmissionFixture {
             "post_provisioning_receipt_sha256": sha256(Data("receipt".utf8)),
             "helper_sha256": sha256(Data("helper".utf8)),
             "guest_supervisor_sha256": sha256(Data("supervisor".utf8)),
+            "guest_auth_public_key_sha256": sha256(Data("guest auth public key".utf8)),
             "runner_configuration_sha256": sha256(Data("runner".utf8)),
+            "package_uid": UInt64(502),
+            "package_gid": UInt64(502),
             "node_version": "22.17.0",
             "node_executable_sha256": nodeSHA256,
             "npm_version": "11.18.0",

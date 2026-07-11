@@ -50,6 +50,7 @@ public struct ArtifactRunBaseLayout: Equatable, Sendable {
     public let auxiliaryStorageURL: URL
     public let hardwareModelURL: URL
     public let machineIdentifierURL: URL
+    public let guestAuthPublicKeyURL: URL
     public let postProvisioningReceiptURL: URL
     public let runtimePIDURL: URL
 
@@ -63,6 +64,9 @@ public struct ArtifactRunBaseLayout: Equatable, Sendable {
         auxiliaryStorageURL = bundleDirectory.appendingPathComponent("auxiliary-storage")
         hardwareModelURL = bundleDirectory.appendingPathComponent("hardware-model.bin")
         machineIdentifierURL = bundleDirectory.appendingPathComponent("machine-identifier.bin")
+        guestAuthPublicKeyURL = bundleDirectory.appendingPathComponent(
+            "artifact-supervisor-public-key.bin"
+        )
         postProvisioningReceiptURL = bundleDirectory.appendingPathComponent(
             "guest-provisioning.json"
         )
@@ -78,6 +82,7 @@ public struct ArtifactRunBaseMeasurement: Equatable, Sendable {
     public let auxiliaryStorageByteLength: UInt64
     public let hardwareModelSHA256: String
     public let machineIdentifierSHA256: String
+    public let guestAuthPublicKeySHA256: String
     public let postProvisioningReceiptSHA256: String
     public let helperSHA256: String
 }
@@ -97,6 +102,7 @@ public final class LockedArtifactRunBase {
     public let measurement: ArtifactRunBaseMeasurement
     public let hardwareModelData: Data
     public let machineIdentifierData: Data
+    public let guestAuthPublicKeyData: Data
 
     private let disk: LockedMeasuredFile
     private let auxiliaryStorage: LockedMeasuredFile
@@ -108,6 +114,7 @@ public final class LockedArtifactRunBase {
         measurement: ArtifactRunBaseMeasurement,
         hardwareModelData: Data,
         machineIdentifierData: Data,
+        guestAuthPublicKeyData: Data,
         disk: LockedMeasuredFile,
         auxiliaryStorage: LockedMeasuredFile,
         heldDescriptors: [Int32]
@@ -117,6 +124,7 @@ public final class LockedArtifactRunBase {
         self.measurement = measurement
         self.hardwareModelData = hardwareModelData
         self.machineIdentifierData = machineIdentifierData
+        self.guestAuthPublicKeyData = guestAuthPublicKeyData
         self.disk = disk
         self.auxiliaryStorage = auxiliaryStorage
         self.heldDescriptors = heldDescriptors
@@ -286,6 +294,10 @@ public func verifyAndLockArtifactRunBase(
             layout.postProvisioningReceiptURL, dataLimit: 4 * 1024 * 1024
         )
         files.append(receipt)
+        let guestAuthPublicKey = try openLockedMeasuredFile(
+            layout.guestAuthPublicKeyURL, dataLimit: 32
+        )
+        files.append(guestAuthPublicKey)
         let helper = try openLockedMeasuredFile(helperURL, dataLimit: 64 * 1024 * 1024)
         files.append(helper)
 
@@ -293,6 +305,7 @@ public func verifyAndLockArtifactRunBase(
               auxiliary.sha256 == identity.baseAuxiliaryStorageSHA256,
               hardware.sha256 == identity.hardwareModelSHA256,
               machine.sha256 == identity.machineIdentifierSHA256,
+              guestAuthPublicKey.sha256 == identity.guestAuthPublicKeySHA256,
               receipt.sha256 == identity.postProvisioningReceiptSHA256 else {
             throw ArtifactRunLifecycleError.baseDigestMismatch
         }
@@ -300,7 +313,9 @@ public func verifyAndLockArtifactRunBase(
             throw ArtifactRunLifecycleError.helperDigestMismatch
         }
         guard let hardwareData = hardware.boundedData,
-              let machineData = machine.boundedData else {
+              let machineData = machine.boundedData,
+              let guestAuthPublicKeyData = guestAuthPublicKey.boundedData,
+              guestAuthPublicKeyData.count == 32 else {
             throw ArtifactRunLifecycleError.baseFileUnsafe
         }
         let measurement = ArtifactRunBaseMeasurement(
@@ -311,6 +326,7 @@ public func verifyAndLockArtifactRunBase(
             auxiliaryStorageByteLength: auxiliary.byteLength,
             hardwareModelSHA256: hardware.sha256,
             machineIdentifierSHA256: machine.sha256,
+            guestAuthPublicKeySHA256: guestAuthPublicKey.sha256,
             postProvisioningReceiptSHA256: receipt.sha256,
             helperSHA256: helper.sha256
         )
@@ -320,6 +336,7 @@ public func verifyAndLockArtifactRunBase(
             measurement: measurement,
             hardwareModelData: hardwareData,
             machineIdentifierData: machineData,
+            guestAuthPublicKeyData: guestAuthPublicKeyData,
             disk: disk,
             auxiliaryStorage: auxiliary,
             heldDescriptors: files.map(\.descriptor)

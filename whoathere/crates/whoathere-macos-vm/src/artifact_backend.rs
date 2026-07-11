@@ -79,7 +79,10 @@ pub struct MacosArtifactBackendIdentityV1 {
     post_provisioning_receipt_sha256: Sha256Digest,
     helper_sha256: Sha256Digest,
     guest_supervisor_sha256: Sha256Digest,
+    guest_auth_public_key_sha256: Sha256Digest,
     runner_configuration_sha256: Sha256Digest,
+    package_uid: u32,
+    package_gid: u32,
     node_version: String,
     node_executable_sha256: Sha256Digest,
     npm_version: String,
@@ -109,9 +112,15 @@ impl fmt::Debug for MacosArtifactBackendIdentityV1 {
             .field("helper_sha256", &self.helper_sha256)
             .field("guest_supervisor_sha256", &self.guest_supervisor_sha256)
             .field(
+                "guest_auth_public_key_sha256",
+                &self.guest_auth_public_key_sha256,
+            )
+            .field(
                 "runner_configuration_sha256",
                 &self.runner_configuration_sha256,
             )
+            .field("package_uid", &self.package_uid)
+            .field("package_gid", &self.package_gid)
             .field("node_version", &self.node_version)
             .field("node_executable_sha256", &self.node_executable_sha256)
             .field("npm_version", &self.npm_version)
@@ -138,7 +147,10 @@ impl MacosArtifactBackendIdentityV1 {
         post_provisioning_receipt_sha256: Sha256Digest,
         helper_sha256: Sha256Digest,
         guest_supervisor_sha256: Sha256Digest,
+        guest_auth_public_key_sha256: Sha256Digest,
         runner_configuration_sha256: Sha256Digest,
+        package_uid: u32,
+        package_gid: u32,
         node_version: impl Into<String>,
         node_executable_sha256: Sha256Digest,
         npm_version: impl Into<String>,
@@ -156,7 +168,10 @@ impl MacosArtifactBackendIdentityV1 {
             post_provisioning_receipt_sha256,
             helper_sha256,
             guest_supervisor_sha256,
+            guest_auth_public_key_sha256,
             runner_configuration_sha256,
+            package_uid,
+            package_gid,
             node_version: node_version.into(),
             node_executable_sha256,
             npm_version: npm_version.into(),
@@ -194,6 +209,14 @@ impl MacosArtifactBackendIdentityV1 {
         self.memory_mib
     }
 
+    pub const fn package_uid(&self) -> u32 {
+        self.package_uid
+    }
+
+    pub const fn package_gid(&self) -> u32 {
+        self.package_gid
+    }
+
     pub fn node_executable_sha256(&self) -> &Sha256Digest {
         &self.node_executable_sha256
     }
@@ -211,6 +234,8 @@ impl MacosArtifactBackendIdentityV1 {
             || self.cpu_count == 0
             || self.memory_mib < 1_024
             || self.memory_mib > 1_048_576
+            || self.package_uid == 0
+            || self.package_gid == 0
             || !valid_version_v1(&self.node_version)
             || !valid_version_v1(&self.npm_version)
             || self.guest_protocol_sha256
