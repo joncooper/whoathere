@@ -981,6 +981,10 @@ pub struct ValidatedSdistScenarioTemplateWireV1 {
     scenario_id: String,
     scenario_kind: SdistScenarioKindV1,
     runtime_profile_sha256: Sha256Digest,
+    python_version: String,
+    python_executable_sha256: Sha256Digest,
+    pip_version: String,
+    pip_cli_sha256: Sha256Digest,
     build_closure_sha256: Sha256Digest,
 }
 
@@ -1002,6 +1006,18 @@ impl ValidatedSdistScenarioTemplateWireV1 {
     }
     pub fn runtime_profile_sha256(&self) -> &Sha256Digest {
         &self.runtime_profile_sha256
+    }
+    pub fn python_version(&self) -> &str {
+        &self.python_version
+    }
+    pub fn python_executable_sha256(&self) -> &Sha256Digest {
+        &self.python_executable_sha256
+    }
+    pub fn pip_version(&self) -> &str {
+        &self.pip_version
+    }
+    pub fn pip_cli_sha256(&self) -> &Sha256Digest {
+        &self.pip_cli_sha256
     }
     pub fn build_closure_sha256(&self) -> &Sha256Digest {
         &self.build_closure_sha256
@@ -1034,6 +1050,10 @@ pub fn decode_and_validate_sdist_scenario_template_v1(
         scenario_id: wire.identity.scenario_id,
         scenario_kind: wire.scenario_kind,
         runtime_profile_sha256: wire.runtime_profile.profile_sha256,
+        python_version: wire.runtime_profile.python_version,
+        python_executable_sha256: wire.runtime_profile.python_executable_sha256,
+        pip_version: wire.runtime_profile.pip_version,
+        pip_cli_sha256: wire.runtime_profile.pip_cli_sha256,
         build_closure_sha256: wire.build_closure.closure_sha256,
     })
 }
