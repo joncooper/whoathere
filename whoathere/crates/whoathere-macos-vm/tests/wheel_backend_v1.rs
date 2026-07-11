@@ -1,3 +1,4 @@
+use ed25519_dalek::SigningKey;
 use std::collections::BTreeMap;
 use std::io::{Cursor, Read, Write};
 use whoathere_artifact::{
@@ -12,11 +13,13 @@ use whoathere_detonation::{
 use whoathere_evidence::v2::{canonical_cas_object_key_for_artifact, ArtifactEvidenceSubjectV2};
 use whoathere_macos_vm::{
     compile_macos_wheel_run_spec_v1, decode_and_validate_macos_artifact_run_spec_v1,
-    decode_and_validate_macos_wheel_run_spec_v1, decode_macos_wheel_submission_frame_v1,
-    encode_macos_wheel_submission_frame_v1, macos_wheel_execution_binding_sha256_v1,
-    stream_macos_wheel_guest_submission_v1, MacosArtifactRunErrorV1,
-    MacosWheelBackendCapabilitiesV1, MacosWheelBackendIdentityV1, MacosWheelSubmissionBindingsV1,
-    MacosWheelSubmissionErrorV1, MacosWheelSubmissionHeaderV1,
+    decode_and_validate_macos_wheel_run_spec_v1, decode_macos_wheel_guest_auth_challenge_v1,
+    decode_macos_wheel_submission_frame_v1, encode_macos_wheel_submission_frame_v1,
+    macos_wheel_execution_binding_sha256_v1, sign_macos_wheel_guest_auth_response_v1,
+    stream_macos_wheel_guest_submission_v1, verify_macos_wheel_guest_auth_response_v1,
+    MacosArtifactRunErrorV1, MacosWheelBackendCapabilitiesV1, MacosWheelBackendIdentityV1,
+    MacosWheelGuestAuthChallengeV1, MacosWheelGuestAuthClaimsV1, MacosWheelGuestAuthErrorV1,
+    MacosWheelSubmissionBindingsV1, MacosWheelSubmissionErrorV1, MacosWheelSubmissionHeaderV1,
     MACOS_WHEEL_GUEST_SUBMISSION_MAGIC_V1, MACOS_WHEEL_SUBMISSION_FIXED_PREFIX_BYTES_V1,
     MACOS_WHEEL_SUBMISSION_MAGIC_V1,
 };
@@ -509,5 +512,91 @@ fn wheel_execution_binding_matches_the_cross_language_golden() {
     assert_eq!(
         macos_wheel_execution_binding_sha256_v1(&challenge, &run_spec).as_str(),
         "sha256:fc895a01869db614532cae70220cdafe0eec5a6682b8197dcc6bab91fc04ef33"
+    );
+}
+
+#[test]
+fn wheel_guest_authentication_is_signed_fresh_and_cross_ecosystem_closed() {
+    let seed = [7_u8; 32];
+    let verifying_key = SigningKey::from_bytes(&seed).verifying_key().to_bytes();
+    let challenge = MacosWheelGuestAuthChallengeV1::new(
+        [11_u8; 32],
+        digest(b"wheel execution binding"),
+        digest(b"wheel run spec"),
+        digest(b"wheel clone binding"),
+        Sha256Digest::from_bytes(&verifying_key),
+    )
+    .expect("wheel guest challenge");
+    assert_eq!(
+        decode_macos_wheel_guest_auth_challenge_v1(challenge.canonical_json_v1())
+            .expect("strict wheel challenge"),
+        challenge
+    );
+    let claims = MacosWheelGuestAuthClaimsV1::new(
+        digest(b"wheel guest supervisor"),
+        digest(b"wheel runner configuration"),
+        499,
+        499,
+    )
+    .expect("wheel claims");
+    let response = sign_macos_wheel_guest_auth_response_v1(&challenge, seed, &claims)
+        .expect("signed wheel response");
+    verify_macos_wheel_guest_auth_response_v1(&challenge, &response, verifying_key, &claims)
+        .expect("verified wheel response");
+
+    assert_eq!(
+        std::str::from_utf8(challenge.canonical_json_v1()).expect("challenge UTF-8"),
+        r#"{"clone_binding_sha256":"sha256:29bea0252f37265b288224ebf9b5220fd7d9696fc64aa65f4d6322560182cb51","execution_binding_sha256":"sha256:26ba19f41ff9747505dcbc06292c2debb15a97fe8cb80f2a7625ceba0653356d","guest_auth_public_key_sha256":"sha256:fe812c12f3ab4ce6ac5db69ac352f906cb1b11ef43fb33e252ef7ff552263889","nonce_hex":"0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b","run_spec_sha256":"sha256:6ed9490f306948340b695150470fee00b434f28442914867c0750b067abf228e","schema_version":"whoathere.wheel_guest_auth_challenge.v1"}"#
+    );
+    assert_eq!(
+        std::str::from_utf8(&response).expect("response UTF-8"),
+        r#"{"challenge_sha256":"sha256:763b43adeed736fc4fe75497780a71f412e4ea13628f50b63e0448c44e1c6d41","clone_binding_sha256":"sha256:29bea0252f37265b288224ebf9b5220fd7d9696fc64aa65f4d6322560182cb51","execution_binding_sha256":"sha256:26ba19f41ff9747505dcbc06292c2debb15a97fe8cb80f2a7625ceba0653356d","guest_supervisor_sha256":"sha256:0d2f2274c6f58bd4cc5430838896cc59b5e5ed4840de084cea26af903f93276e","package_gid":"499","package_uid":"499","run_spec_sha256":"sha256:6ed9490f306948340b695150470fee00b434f28442914867c0750b067abf228e","runner_configuration_sha256":"sha256:0e539a3c126c40c4efdfae8fb67ad5fb81f57660a4de665743586531faafc67b","schema_version":"whoathere.wheel_guest_auth_response.v1","signature_ed25519_hex":"deca32783d5e3774da376dad89cce630f9c9ddc69cf14abffcb921213e6fc9c2832f3d97c7b6d62062829f74843281aa8ebbe52f0876199871dcbd461dc6bb01"}"#
+    );
+
+    let mut npm_schema: serde_json::Value =
+        serde_json::from_slice(challenge.canonical_json_v1()).expect("challenge JSON");
+    npm_schema["schema_version"] = serde_json::json!("whoathere.artifact_guest_auth_challenge.v1");
+    let npm_schema = serde_json_canonicalizer::to_vec(&npm_schema).expect("npm challenge schema");
+    assert_eq!(
+        decode_macos_wheel_guest_auth_challenge_v1(&npm_schema),
+        Err(MacosWheelGuestAuthErrorV1::NonCanonical)
+    );
+
+    let fresh = MacosWheelGuestAuthChallengeV1::new(
+        [12_u8; 32],
+        digest(b"wheel execution binding"),
+        digest(b"wheel run spec"),
+        digest(b"wheel clone binding"),
+        Sha256Digest::from_bytes(&verifying_key),
+    )
+    .expect("fresh wheel challenge");
+    assert_eq!(
+        verify_macos_wheel_guest_auth_response_v1(&fresh, &response, verifying_key, &claims),
+        Err(MacosWheelGuestAuthErrorV1::InvalidResponse)
+    );
+
+    let forged_claims = MacosWheelGuestAuthClaimsV1::new(
+        digest(b"wheel guest supervisor"),
+        digest(b"wheel runner configuration"),
+        500,
+        499,
+    )
+    .expect("forged wheel claims");
+    let mut forged: serde_json::Value =
+        serde_json::from_slice(&response).expect("wheel response JSON");
+    forged["package_uid"] = serde_json::json!("500");
+    let forged = serde_json_canonicalizer::to_vec(&forged).expect("forged wheel response");
+    assert_eq!(
+        verify_macos_wheel_guest_auth_response_v1(
+            &challenge,
+            &forged,
+            verifying_key,
+            &forged_claims
+        ),
+        Err(MacosWheelGuestAuthErrorV1::SignatureFailed)
+    );
+    assert_eq!(
+        sign_macos_wheel_guest_auth_response_v1(&challenge, [8_u8; 32], &claims),
+        Err(MacosWheelGuestAuthErrorV1::PublicKeyMismatch)
     );
 }
