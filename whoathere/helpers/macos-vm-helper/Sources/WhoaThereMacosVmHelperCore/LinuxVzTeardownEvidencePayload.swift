@@ -86,6 +86,9 @@ public func decodeLinuxVzTeardownEvidenceJSONV1(
               value["deadline_reached"] as? Bool == false,
               teardownDecimal(value["fixture_exit_status"]) == 0,
               value["fixture_termination_signal"] == nil,
+              value["term_grace_limit_ns"] == nil,
+              value["term_grace_reached"] == nil,
+              value["term_resistance_proven"] == nil,
               teardownDecimal(value["termination_signal_count"]) == 0,
               teardownDecimal(value["kill_signal_count"]) == 0 else {
             throw LinuxVzTeardownEvidencePayloadError.invalidSchema
@@ -99,8 +102,30 @@ public func decodeLinuxVzTeardownEvidenceJSONV1(
               value["deadline_reached"] as? Bool == true,
               value["fixture_exit_status"] == nil,
               teardownDecimal(value["fixture_termination_signal"]) == 15,
+              value["term_grace_limit_ns"] == nil,
+              value["term_grace_reached"] == nil,
+              value["term_resistance_proven"] == nil,
               teardownDecimal(value["termination_signal_count"]) == 1,
               teardownDecimal(value["kill_signal_count"]) == 0 else {
+            throw LinuxVzTeardownEvidencePayloadError.invalidSchema
+        }
+    case "term_resistance":
+        expectedKeys = baseKeys.union([
+            "fixture_termination_signal", "term_grace_limit_ns", "term_grace_reached",
+            "term_resistance_proven"
+        ])
+        expectedKinds = ["fork", "exec", "signal_term", "signal_kill", "exit"]
+        observedTerminal = "timeout_with_teardown"
+        guard value["teardown_trigger"] as? String == "deadline",
+              teardownDecimal(value["deadline_limit_ns"]) == 1_000_000_000,
+              value["deadline_reached"] as? Bool == true,
+              value["fixture_exit_status"] == nil,
+              teardownDecimal(value["fixture_termination_signal"]) == 9,
+              teardownDecimal(value["term_grace_limit_ns"]) == 250_000_000,
+              value["term_grace_reached"] as? Bool == true,
+              value["term_resistance_proven"] as? Bool == true,
+              teardownDecimal(value["termination_signal_count"]) == 1,
+              teardownDecimal(value["kill_signal_count"]) == 1 else {
             throw LinuxVzTeardownEvidencePayloadError.invalidSchema
         }
     default:
@@ -140,13 +165,14 @@ public func decodeLinuxVzTeardownEvidenceJSONV1(
           }) else {
         throw LinuxVzTeardownEvidencePayloadError.invalidEvent
     }
-    if fixtureCase == "normal_exit" {
+    switch fixtureCase {
+    case "normal_exit":
         guard events.dropFirst().allSatisfy({
             $0.actorPID == events[0].subjectPID && $0.subjectPID == events[0].subjectPID
         }) else {
             throw LinuxVzTeardownEvidencePayloadError.invalidEvent
         }
-    } else {
+    case "timeout":
         guard events[1].actorPID == events[0].subjectPID,
               events[1].subjectPID == events[0].subjectPID,
               events[2].actorPID == events[0].actorPID,
@@ -155,6 +181,19 @@ public func decodeLinuxVzTeardownEvidenceJSONV1(
               events[3].subjectPID == events[0].subjectPID else {
             throw LinuxVzTeardownEvidencePayloadError.invalidEvent
         }
+    case "term_resistance":
+        guard events[1].actorPID == events[0].subjectPID,
+              events[1].subjectPID == events[0].subjectPID,
+              events[2].actorPID == events[0].actorPID,
+              events[2].subjectPID == events[0].subjectPID,
+              events[3].actorPID == events[0].actorPID,
+              events[3].subjectPID == events[0].subjectPID,
+              events[4].actorPID == events[0].subjectPID,
+              events[4].subjectPID == events[0].subjectPID else {
+            throw LinuxVzTeardownEvidencePayloadError.invalidEvent
+        }
+    default:
+        throw LinuxVzTeardownEvidencePayloadError.invalidSchema
     }
     let claims = LinuxVzTelemetryGuestObservationClaims(
         evidencePayloadSHA256: sha256(data),

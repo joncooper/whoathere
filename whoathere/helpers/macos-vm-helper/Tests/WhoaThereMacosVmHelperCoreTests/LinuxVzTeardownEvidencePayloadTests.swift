@@ -8,6 +8,9 @@ private let validNormalExitPayload =
 private let validTimeoutPayload =
     #"{"cgroup_empty_after_reap":true,"cgroup_removed":true,"deadline_limit_ns":"1000000000","deadline_reached":true,"descendant_teardown_complete":true,"dropped_event_count":"0","event_count":"4","event_sequence_end":"4","event_sequence_start":"1","events":[{"actor_pid":"41","cgroup_id":"9001","kind":"fork","sequence":"1","subject_pid":"42","timestamp_ns":"100"},{"actor_pid":"42","cgroup_id":"9001","kind":"exec","sequence":"2","subject_pid":"42","timestamp_ns":"200"},{"actor_pid":"41","cgroup_id":"9001","kind":"signal_term","sequence":"3","subject_pid":"42","timestamp_ns":"300"},{"actor_pid":"42","cgroup_id":"9001","kind":"exit","sequence":"4","subject_pid":"42","timestamp_ns":"400"}],"evidence_truncated":false,"fixture_case":"timeout","fixture_termination_signal":"15","heartbeat_count":"2","kill_signal_count":"0","package_gid":"65534","package_uid":"65534","reaped_process_count":"1","schema_version":"whoathere.linux_vz_teardown_evidence_payload.v1","sensor_healthy":true,"sensor_teardown_complete":true,"teardown_trigger":"deadline","termination_signal_count":"1"}"#
 
+private let validTermResistancePayload =
+    #"{"cgroup_empty_after_reap":true,"cgroup_removed":true,"deadline_limit_ns":"1000000000","deadline_reached":true,"descendant_teardown_complete":true,"dropped_event_count":"0","event_count":"5","event_sequence_end":"5","event_sequence_start":"1","events":[{"actor_pid":"41","cgroup_id":"9001","kind":"fork","sequence":"1","subject_pid":"42","timestamp_ns":"100"},{"actor_pid":"42","cgroup_id":"9001","kind":"exec","sequence":"2","subject_pid":"42","timestamp_ns":"200"},{"actor_pid":"41","cgroup_id":"9001","kind":"signal_term","sequence":"3","subject_pid":"42","timestamp_ns":"300"},{"actor_pid":"41","cgroup_id":"9001","kind":"signal_kill","sequence":"4","subject_pid":"42","timestamp_ns":"600"},{"actor_pid":"42","cgroup_id":"9001","kind":"exit","sequence":"5","subject_pid":"42","timestamp_ns":"700"}],"evidence_truncated":false,"fixture_case":"term_resistance","fixture_termination_signal":"9","heartbeat_count":"2","kill_signal_count":"1","package_gid":"65534","package_uid":"65534","reaped_process_count":"1","schema_version":"whoathere.linux_vz_teardown_evidence_payload.v1","sensor_healthy":true,"sensor_teardown_complete":true,"teardown_trigger":"deadline","term_grace_limit_ns":"250000000","term_grace_reached":true,"term_resistance_proven":true,"termination_signal_count":"1"}"#
+
 private let normalExitPrefix = "WHOATHERE_GUEST_TEARDOWN_EVIDENCE "
 
 @Test func teardownEvidenceBindsNaturalExitLineageAndCompleteCleanup() throws {
@@ -97,6 +100,52 @@ private let normalExitPrefix = "WHOATHERE_GUEST_TEARDOWN_EVIDENCE "
     )
     var events = try #require(rebound["events"] as? [[String: Any]])
     events[2]["actor_pid"] = "42"
+    rebound["events"] = events
+    let data = try canonicalJSONData(rebound)
+    #expect(throws: LinuxVzTeardownEvidencePayloadError.invalidEvent) {
+        try decodeLinuxVzTeardownEvidencePayloadV1(
+            Data(normalExitPrefix.utf8) + data + Data("\n".utf8)
+        )
+    }
+}
+
+@Test func teardownEvidenceBindsTermResistanceGraceKillAndCompleteCleanup() throws {
+    let payload = try decodeLinuxVzTeardownEvidencePayloadV1(
+        Data((normalExitPrefix + validTermResistancePayload + "\n").utf8)
+    )
+    #expect(payload.canonicalJSON == Data(validTermResistancePayload.utf8))
+    #expect(payload.fixtureCase == "term_resistance")
+    #expect(payload.claims.eventCount == 5)
+    #expect(payload.claims.observedTerminal == "timeout_with_teardown")
+    #expect(payload.claims.droppedEventCount == 0)
+    #expect(payload.claims.descendantTeardownComplete)
+}
+
+@Test func teardownEvidenceRejectsForgedTermResistanceGraceKillAndActor() throws {
+    for (field, changed) in [
+        ("term_grace_reached", false as Any),
+        ("fixture_termination_signal", "15" as Any),
+        ("kill_signal_count", "0" as Any),
+    ] {
+        var object = try #require(
+            JSONSerialization.jsonObject(with: Data(validTermResistancePayload.utf8))
+                as? [String: Any]
+        )
+        object[field] = changed
+        let data = try canonicalJSONData(object)
+        #expect(throws: LinuxVzTeardownEvidencePayloadError.invalidSchema) {
+            try decodeLinuxVzTeardownEvidencePayloadV1(
+                Data(normalExitPrefix.utf8) + data + Data("\n".utf8)
+            )
+        }
+    }
+
+    var rebound = try #require(
+        JSONSerialization.jsonObject(with: Data(validTermResistancePayload.utf8))
+            as? [String: Any]
+    )
+    var events = try #require(rebound["events"] as? [[String: Any]])
+    events[3]["actor_pid"] = "42"
     rebound["events"] = events
     let data = try canonicalJSONData(rebound)
     #expect(throws: LinuxVzTeardownEvidencePayloadError.invalidEvent) {

@@ -55,6 +55,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "host_frame_overflow" => LinuxVzTelemetryConformanceCaseV1::HostFrameOverflow,
         "normal_exit" => LinuxVzTelemetryConformanceCaseV1::NormalExit,
         "timeout" => LinuxVzTelemetryConformanceCaseV1::Timeout,
+        "term_resistance" => LinuxVzTelemetryConformanceCaseV1::TermResistance,
         _ => return Err("request builder fixture case is not implemented".into()),
     };
     let output_directory = Path::new(&arguments[5]);

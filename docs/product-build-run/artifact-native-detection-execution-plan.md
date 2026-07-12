@@ -4,14 +4,15 @@ Date: 2026-07-09
 
 Status: canonical execution plan for the next product milestone
 
-Current execution checkpoint (2026-07-12): twenty-four of the 38 authenticated Linux VZ inert
-conformance cases now pass physically on one exact measured backend identity. The newest `timeout`
-case proves that the unprivileged fixture is still alive at the guest-monotonic deadline, delivers
-exactly one TERM signal, binds exact fork/exec/signal/exit lineage, requires no KILL, leaves no
-descendant, closes sensors, empties and removes the cgroup, stops the VM, and destroys the diskless
-instance. Independent guest and host receipts bind `timeout_with_teardown`. This is still telemetry
-qualification, not package detection, and the backend remains `candidate_unqualified`. See the
-[timeout checkpoint](artifact-native-linux-vz-timeout-checkpoint-2026-07-12.md).
+Current execution checkpoint (2026-07-12): twenty-five of the 38 authenticated Linux VZ inert
+conformance cases now pass physically on one exact measured backend identity. The newest
+`term_resistance` case proves that the exact unprivileged fixture survives the guest deadline, one
+TERM, and a complete 250 ms grace interval before one KILL; it then binds strict
+fork/exec/TERM/KILL/exit lineage, no remaining descendant, sensor closure, cgroup removal, stopped
+VM, and destroyed diskless instance. Independent guest and host receipts bind
+`timeout_with_teardown`. This is still telemetry qualification, not package detection, and the
+backend remains `candidate_unqualified`. See the
+[TERM-resistance checkpoint](artifact-native-linux-vz-term-resistance-checkpoint-2026-07-12.md).
 
 The first protected-sensor bootstrap now also observes a cgroup-filtered inert fork/exec/exit chain
 whose child runs as UID/GID 65534 and cannot read or write the root-only sensor. This remains
@@ -207,6 +208,14 @@ All twenty-four cases were run physically on the resulting exact identity; all 7
 matched locally and every signed complete case passed independent Rust verification. Twenty-four of
 38 cases now share one backend binding; 14 remain. See the
 [timeout checkpoint](artifact-native-linux-vz-timeout-checkpoint-2026-07-12.md).
+
+The `term_resistance` teardown case now binds an exact readiness record proving the fixture's TERM
+ignore disposition is active, a one-second guest deadline, one TERM, a complete 250 ms live grace
+interval, one KILL, signal-9 reap, and strict fork/exec/TERM/KILL/exit lineage. Complete sensor and
+cgroup teardown precedes evidence emission. All twenty-five cases were run physically on the new
+exact identity; all 75 request inputs matched locally and every signed complete case passed
+independent Rust verification. Twenty-five of 38 cases now share one backend binding; 13 remain. See
+the [TERM-resistance checkpoint](artifact-native-linux-vz-term-resistance-checkpoint-2026-07-12.md).
 
 Primary target: malicious npm and PyPI package detection with static analysis, AI-assisted code
 review, and behaviorally instrumented detonation in disposable virtual machines
@@ -1481,6 +1490,7 @@ Repository evidence:
 - [Linux VZ host-frame overflow checkpoint](artifact-native-linux-vz-host-frame-overflow-checkpoint-2026-07-12.md)
 - [Linux VZ normal-exit checkpoint](artifact-native-linux-vz-normal-exit-checkpoint-2026-07-12.md)
 - [Linux VZ timeout checkpoint](artifact-native-linux-vz-timeout-checkpoint-2026-07-12.md)
+- [Linux VZ TERM-resistance checkpoint](artifact-native-linux-vz-term-resistance-checkpoint-2026-07-12.md)
 - [macOS local release readiness](macos-local-release-readiness.md)
 - [macOS local beta pressure checkpoint](macos-local-beta-pressure-checkpoint.md)
 - [latest source-fixture corpus report](src-fixture-corpus-latest.md)

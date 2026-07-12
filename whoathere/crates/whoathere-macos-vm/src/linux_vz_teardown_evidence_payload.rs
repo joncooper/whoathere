@@ -117,6 +117,12 @@ struct TeardownEvidenceWireV1 {
     sensor_healthy: bool,
     sensor_teardown_complete: bool,
     teardown_trigger: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    term_grace_limit_ns: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    term_grace_reached: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    term_resistance_proven: Option<bool>,
     termination_signal_count: String,
 }
 
@@ -195,6 +201,9 @@ pub fn decode_linux_vz_teardown_evidence_payload_v1(
                 && !wire.deadline_reached
                 && optional_decimal_u64_v1(wire.fixture_exit_status.as_deref())? == 0
                 && wire.fixture_termination_signal.is_none()
+                && wire.term_grace_limit_ns.is_none()
+                && wire.term_grace_reached.is_none()
+                && wire.term_resistance_proven.is_none()
                 && decimal_u64_v1(&wire.termination_signal_count)? == 0
                 && decimal_u64_v1(&wire.kill_signal_count)? == 0 =>
         {
@@ -210,12 +219,33 @@ pub fn decode_linux_vz_teardown_evidence_payload_v1(
                 && wire.deadline_reached
                 && wire.fixture_exit_status.is_none()
                 && optional_decimal_u64_v1(wire.fixture_termination_signal.as_deref())? == 15
+                && wire.term_grace_limit_ns.is_none()
+                && wire.term_grace_reached.is_none()
+                && wire.term_resistance_proven.is_none()
                 && decimal_u64_v1(&wire.termination_signal_count)? == 1
                 && decimal_u64_v1(&wire.kill_signal_count)? == 0 =>
         {
             (
                 LinuxVzTelemetryConformanceCaseV1::Timeout,
                 &["fork", "exec", "signal_term", "exit"],
+                LinuxVzTelemetryConformanceObservedTerminalV1::TimeoutWithTeardown,
+            )
+        }
+        "term_resistance"
+            if wire.teardown_trigger == "deadline"
+                && decimal_u64_v1(&wire.deadline_limit_ns)? == 1_000_000_000
+                && wire.deadline_reached
+                && wire.fixture_exit_status.is_none()
+                && optional_decimal_u64_v1(wire.fixture_termination_signal.as_deref())? == 9
+                && optional_decimal_u64_v1(wire.term_grace_limit_ns.as_deref())? == 250_000_000
+                && wire.term_grace_reached == Some(true)
+                && wire.term_resistance_proven == Some(true)
+                && decimal_u64_v1(&wire.termination_signal_count)? == 1
+                && decimal_u64_v1(&wire.kill_signal_count)? == 1 =>
+        {
+            (
+                LinuxVzTelemetryConformanceCaseV1::TermResistance,
+                &["fork", "exec", "signal_term", "signal_kill", "exit"],
                 LinuxVzTelemetryConformanceObservedTerminalV1::TimeoutWithTeardown,
             )
         }
@@ -264,6 +294,13 @@ pub fn decode_linux_vz_teardown_evidence_payload_v1(
                 && subject_pids[2] == subject_pids[0]
                 && actor_pids[3] == subject_pids[0]
                 && subject_pids[3] == subject_pids[0] => {}
+        LinuxVzTelemetryConformanceCaseV1::TermResistance
+            if actor_pids[2] == actor_pids[0]
+                && subject_pids[2] == subject_pids[0]
+                && actor_pids[3] == actor_pids[0]
+                && subject_pids[3] == subject_pids[0]
+                && actor_pids[4] == subject_pids[0]
+                && subject_pids[4] == subject_pids[0] => {}
         _ => return Err(LinuxVzTeardownEvidencePayloadErrorV1::InvalidEvent),
     }
 
@@ -300,6 +337,7 @@ mod tests {
 
     const NORMAL_EXIT: &[u8] = br#"{"cgroup_empty_after_reap":true,"cgroup_removed":true,"deadline_limit_ns":"5000000000","deadline_reached":false,"descendant_teardown_complete":true,"dropped_event_count":"0","event_count":"3","event_sequence_end":"3","event_sequence_start":"1","events":[{"actor_pid":"41","cgroup_id":"9001","kind":"fork","sequence":"1","subject_pid":"42","timestamp_ns":"100"},{"actor_pid":"42","cgroup_id":"9001","kind":"exec","sequence":"2","subject_pid":"42","timestamp_ns":"200"},{"actor_pid":"42","cgroup_id":"9001","kind":"exit","sequence":"3","subject_pid":"42","timestamp_ns":"300"}],"evidence_truncated":false,"fixture_case":"normal_exit","fixture_exit_status":"0","heartbeat_count":"2","kill_signal_count":"0","package_gid":"65534","package_uid":"65534","reaped_process_count":"1","schema_version":"whoathere.linux_vz_teardown_evidence_payload.v1","sensor_healthy":true,"sensor_teardown_complete":true,"teardown_trigger":"natural_exit","termination_signal_count":"0"}"#;
     const TIMEOUT: &[u8] = br#"{"cgroup_empty_after_reap":true,"cgroup_removed":true,"deadline_limit_ns":"1000000000","deadline_reached":true,"descendant_teardown_complete":true,"dropped_event_count":"0","event_count":"4","event_sequence_end":"4","event_sequence_start":"1","events":[{"actor_pid":"41","cgroup_id":"9001","kind":"fork","sequence":"1","subject_pid":"42","timestamp_ns":"100"},{"actor_pid":"42","cgroup_id":"9001","kind":"exec","sequence":"2","subject_pid":"42","timestamp_ns":"200"},{"actor_pid":"41","cgroup_id":"9001","kind":"signal_term","sequence":"3","subject_pid":"42","timestamp_ns":"300"},{"actor_pid":"42","cgroup_id":"9001","kind":"exit","sequence":"4","subject_pid":"42","timestamp_ns":"400"}],"evidence_truncated":false,"fixture_case":"timeout","fixture_termination_signal":"15","heartbeat_count":"2","kill_signal_count":"0","package_gid":"65534","package_uid":"65534","reaped_process_count":"1","schema_version":"whoathere.linux_vz_teardown_evidence_payload.v1","sensor_healthy":true,"sensor_teardown_complete":true,"teardown_trigger":"deadline","termination_signal_count":"1"}"#;
+    const TERM_RESISTANCE: &[u8] = br#"{"cgroup_empty_after_reap":true,"cgroup_removed":true,"deadline_limit_ns":"1000000000","deadline_reached":true,"descendant_teardown_complete":true,"dropped_event_count":"0","event_count":"5","event_sequence_end":"5","event_sequence_start":"1","events":[{"actor_pid":"41","cgroup_id":"9001","kind":"fork","sequence":"1","subject_pid":"42","timestamp_ns":"100"},{"actor_pid":"42","cgroup_id":"9001","kind":"exec","sequence":"2","subject_pid":"42","timestamp_ns":"200"},{"actor_pid":"41","cgroup_id":"9001","kind":"signal_term","sequence":"3","subject_pid":"42","timestamp_ns":"300"},{"actor_pid":"41","cgroup_id":"9001","kind":"signal_kill","sequence":"4","subject_pid":"42","timestamp_ns":"600"},{"actor_pid":"42","cgroup_id":"9001","kind":"exit","sequence":"5","subject_pid":"42","timestamp_ns":"700"}],"evidence_truncated":false,"fixture_case":"term_resistance","fixture_termination_signal":"9","heartbeat_count":"2","kill_signal_count":"1","package_gid":"65534","package_uid":"65534","reaped_process_count":"1","schema_version":"whoathere.linux_vz_teardown_evidence_payload.v1","sensor_healthy":true,"sensor_teardown_complete":true,"teardown_trigger":"deadline","term_grace_limit_ns":"250000000","term_grace_reached":true,"term_resistance_proven":true,"termination_signal_count":"1"}"#;
 
     #[test]
     fn normal_exit_binds_natural_exit_lineage_and_complete_cleanup() {
@@ -370,6 +408,52 @@ mod tests {
                 "\"actor_pid\":\"41\",\"cgroup_id\":\"9001\",\"kind\":\"signal_term\"",
                 "\"actor_pid\":\"42\",\"cgroup_id\":\"9001\",\"kind\":\"signal_term\"",
             ),
+        ] {
+            assert!(decode_linux_vz_teardown_evidence_payload_v1(changed.as_bytes()).is_err());
+        }
+    }
+
+    #[test]
+    fn term_resistance_binds_term_grace_kill_lineage_and_complete_cleanup() {
+        let payload = decode_linux_vz_teardown_evidence_payload_v1(TERM_RESISTANCE).unwrap();
+        assert_eq!(
+            payload.fixture_case(),
+            LinuxVzTelemetryConformanceCaseV1::TermResistance
+        );
+        let claims = payload.guest_observation_claims_v1().unwrap();
+        assert_eq!(claims.dropped_event_count(), 0);
+        assert!(claims.sensor_healthy());
+        assert!(claims.descendant_teardown_complete());
+        assert_eq!(
+            claims.observed_terminal(),
+            LinuxVzTelemetryConformanceObservedTerminalV1::TimeoutWithTeardown
+        );
+    }
+
+    #[test]
+    fn term_resistance_rejects_forged_grace_kill_and_actor_claims() {
+        for changed in [
+            String::from_utf8(TERM_RESISTANCE.to_vec())
+                .unwrap()
+                .replace(
+                    "\"term_grace_reached\":true",
+                    "\"term_grace_reached\":false",
+                ),
+            String::from_utf8(TERM_RESISTANCE.to_vec())
+                .unwrap()
+                .replace(
+                    "\"fixture_termination_signal\":\"9\"",
+                    "\"fixture_termination_signal\":\"15\"",
+                ),
+            String::from_utf8(TERM_RESISTANCE.to_vec())
+                .unwrap()
+                .replace("\"kill_signal_count\":\"1\"", "\"kill_signal_count\":\"0\""),
+            String::from_utf8(TERM_RESISTANCE.to_vec())
+                .unwrap()
+                .replace(
+                    "\"actor_pid\":\"41\",\"cgroup_id\":\"9001\",\"kind\":\"signal_kill\"",
+                    "\"actor_pid\":\"42\",\"cgroup_id\":\"9001\",\"kind\":\"signal_kill\"",
+                ),
         ] {
             assert!(decode_linux_vz_teardown_evidence_payload_v1(changed.as_bytes()).is_err());
         }

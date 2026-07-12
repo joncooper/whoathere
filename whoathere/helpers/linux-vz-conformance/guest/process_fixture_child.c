@@ -2,6 +2,7 @@
 #include <fcntl.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
@@ -35,6 +36,7 @@ static const char *dynamic_library_path = "/whoathere/dynamic-fixture-library.so
 #define HOST_FRAME_REPORT_MAGIC 0x57544846U
 #define HOST_FRAME_TRIGGER_COUNT 512U
 #define HOST_FRAME_PAYLOAD_LENGTH 16U
+#define TERM_RESISTANCE_REPORT_MAGIC 0x57545452U
 static const unsigned char dns_plaintext_query[] = {
     0x57, 0x54, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x09, 'w', 'h', 'o', 'a', 't', 'h', 'e', 'r', 'e',
@@ -110,6 +112,11 @@ struct host_frame_report {
     uint16_t target_port;
     uint32_t payload_length;
     uint32_t transmitted_count;
+};
+
+struct term_resistance_report {
+    uint32_t magic;
+    int32_t process_pid;
 };
 
 static int protected_sensor_denied(void) {
@@ -725,6 +732,25 @@ static int dns_malformed(void) {
     );
 }
 
+static int term_resistance(void) {
+    struct sigaction action;
+    memset(&action, 0, sizeof(action));
+    action.sa_handler = SIG_IGN;
+    if (sigemptyset(&action.sa_mask) != 0 || sigaction(SIGTERM, &action, NULL) != 0) {
+        return 161;
+    }
+    const struct term_resistance_report report = {
+        .magic = TERM_RESISTANCE_REPORT_MAGIC,
+        .process_pid = getpid(),
+    };
+    ssize_t written = write(REPARENT_REPORT_FD, &report, sizeof(report));
+    int saved_errno = errno;
+    if (close(REPARENT_REPORT_FD) != 0 && written == (ssize_t)sizeof(report)) return 162;
+    errno = saved_errno;
+    if (written != (ssize_t)sizeof(report)) return 163;
+    for (;;) (void)pause();
+}
+
 int main(int argument_count, char **arguments) {
     if (argument_count != 2 || getuid() != 65534 || geteuid() != 65534 ||
         getgid() != 65534 || getegid() != 65534) {
@@ -737,6 +763,7 @@ int main(int argument_count, char **arguments) {
     if (strcmp(arguments[1], "timeout") == 0) {
         for (;;) (void)pause();
     }
+    if (strcmp(arguments[1], "term_resistance") == 0) return term_resistance();
     if (strcmp(arguments[1], "double_fork_daemonization") == 0) {
         return double_fork_daemonization();
     }
