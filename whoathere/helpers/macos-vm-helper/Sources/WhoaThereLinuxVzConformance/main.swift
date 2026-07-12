@@ -104,7 +104,7 @@ private struct LinuxVzConformanceHarness {
             exit(64)
         } catch {
             emitJSON([
-                "schema_version": "whoathere.linux_vz_inert_boot_result.v2",
+                "schema_version": "whoathere.linux_vz_inert_boot_result.v3",
                 "status": "error",
                 "reason": String(describing: error),
                 "virtualization_supported": VZVirtualMachine.isSupported,
@@ -215,11 +215,12 @@ private struct LinuxVzConformanceHarness {
             serialData,
             marker: "WHOATHERE_SENSOR_PROCESS_PROBE_OK"
         )
+        let processEvidence = try? decodeLinuxVzProcessEvidencePayloadV1(serialData)
         let success = stopped && markerPresent && processSensorMarkerPresent
-            && missingRequiredMarkers.isEmpty && rawFrameCount == 0
+            && processEvidence != nil && missingRequiredMarkers.isEmpty && rawFrameCount == 0
             && imageIdentityStable
         emitJSON([
-            "schema_version": "whoathere.linux_vz_inert_boot_result.v2",
+            "schema_version": "whoathere.linux_vz_inert_boot_result.v3",
             "status": success ? "ok" : "error",
             "operation": "linux_vz_inert_boot",
             "kernel_sha256": kernelSHA256,
@@ -231,6 +232,16 @@ private struct LinuxVzConformanceHarness {
             "vm_stopped": stopped,
             "inert_marker_present": markerPresent,
             "process_sensor_marker_present": processSensorMarkerPresent,
+            "process_evidence_valid": processEvidence != nil,
+            "process_evidence_payload_sha256": processEvidence?.payloadSHA256 ?? "unavailable",
+            "process_evidence_byte_length": String(processEvidence?.evidenceByteLength ?? 0),
+            "process_event_sequence_start": String(processEvidence?.eventSequenceStart ?? 0),
+            "process_event_sequence_end": String(processEvidence?.eventSequenceEnd ?? 0),
+            "process_event_count": String(processEvidence?.eventCount ?? 0),
+            "process_heartbeat_count": String(processEvidence?.heartbeatCount ?? 0),
+            "process_dropped_event_count": String(processEvidence?.droppedEventCount ?? 0),
+            "process_descendant_teardown_complete":
+                processEvidence?.descendantTeardownComplete ?? false,
             "required_platform_capability_count": linuxVzInertRequiredCapabilityMarkersV1.count,
             "required_process_sensor_marker_count": linuxVzInertProcessSensorMarkersV2.count,
             "missing_required_markers": missingRequiredMarkers,

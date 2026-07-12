@@ -1,0 +1,157 @@
+import Foundation
+
+public let linuxVzProcessEvidencePayloadSchemaV1 =
+    "whoathere.linux_vz_process_evidence_payload.v1"
+public let linuxVzProcessEvidenceSerialPrefixV1 =
+    "WHOATHERE_GUEST_PROCESS_EVIDENCE "
+
+public enum LinuxVzProcessEvidencePayloadError: Error, Equatable {
+    case missing
+    case duplicate
+    case limitExceeded
+    case invalidJSON
+    case nonCanonical
+    case invalidSchema
+    case invalidEvent
+}
+
+public struct LinuxVzProcessEvidencePayloadV1: Equatable, Sendable {
+    public let canonicalJSON: Data
+    public let payloadSHA256: String
+    public let evidenceByteLength: UInt64
+    public let eventSequenceStart: UInt64
+    public let eventSequenceEnd: UInt64
+    public let eventCount: UInt64
+    public let heartbeatCount: UInt64
+    public let droppedEventCount: UInt64
+    public let sensorHealthy: Bool
+    public let evidenceTruncated: Bool
+    public let descendantTeardownComplete: Bool
+    public let packageUID: UInt64
+    public let packageGID: UInt64
+}
+
+private struct LinuxVzProcessEventV1 {
+    let actorPID: UInt64
+    let cgroupID: UInt64
+    let kind: String
+    let sequence: UInt64
+    let subjectPID: UInt64
+    let timestampNS: UInt64
+}
+
+public func decodeLinuxVzProcessEvidencePayloadV1(
+    _ serialData: Data
+) throws -> LinuxVzProcessEvidencePayloadV1 {
+    let prefix = Array(linuxVzProcessEvidenceSerialPrefixV1.utf8)
+    var payloads = [Data]()
+    for rawLine in serialData.split(separator: 0x0A) {
+        var line = Array(rawLine)
+        if line.last == 0x0D { line.removeLast() }
+        guard line.starts(with: prefix) else { continue }
+        payloads.append(Data(line.dropFirst(prefix.count)))
+    }
+    guard !payloads.isEmpty else { throw LinuxVzProcessEvidencePayloadError.missing }
+    guard payloads.count == 1 else { throw LinuxVzProcessEvidencePayloadError.duplicate }
+    let payload = payloads[0]
+    guard !payload.isEmpty, payload.count <= 64 * 1024 else {
+        throw LinuxVzProcessEvidencePayloadError.limitExceeded
+    }
+    guard let value = try? JSONSerialization.jsonObject(with: payload) as? [String: Any] else {
+        throw LinuxVzProcessEvidencePayloadError.invalidJSON
+    }
+    guard try canonicalJSONData(value) == payload else {
+        throw LinuxVzProcessEvidencePayloadError.nonCanonical
+    }
+    guard Set(value.keys) == Set([
+        "descendant_teardown_complete", "dropped_event_count", "event_count",
+        "event_sequence_end", "event_sequence_start", "events", "evidence_truncated",
+        "heartbeat_count", "package_gid", "package_uid", "schema_version", "sensor_healthy"
+    ]),
+    value["schema_version"] as? String == linuxVzProcessEvidencePayloadSchemaV1,
+    value["sensor_healthy"] as? Bool == true,
+    value["evidence_truncated"] as? Bool == false,
+    value["descendant_teardown_complete"] as? Bool == true,
+    let eventSequenceStart = decimalUInt64(value["event_sequence_start"]),
+    let eventSequenceEnd = decimalUInt64(value["event_sequence_end"]),
+    let eventCount = decimalUInt64(value["event_count"]),
+    let heartbeatCount = decimalUInt64(value["heartbeat_count"]),
+    let droppedEventCount = decimalUInt64(value["dropped_event_count"]),
+    let packageUID = decimalUInt64(value["package_uid"]),
+    let packageGID = decimalUInt64(value["package_gid"]),
+    let rawEvents = value["events"] as? [[String: Any]],
+    eventSequenceStart == 1,
+    eventSequenceEnd == 3,
+    eventCount == 3,
+    heartbeatCount == 2,
+    droppedEventCount == 0,
+    packageUID == 65534,
+    packageGID == 65534,
+    rawEvents.count == 3 else {
+        throw LinuxVzProcessEvidencePayloadError.invalidSchema
+    }
+
+    let events = try rawEvents.map(decodeLinuxVzProcessEventV1)
+    guard events.map(\.kind) == ["fork", "exec", "exit"],
+          events.map(\.sequence) == [1, 2, 3],
+          events.allSatisfy({ $0.actorPID > 0 && $0.subjectPID > 0 && $0.cgroupID > 0 }),
+          events[0].actorPID != events[0].subjectPID,
+          events[1].actorPID == events[0].subjectPID,
+          events[1].subjectPID == events[0].subjectPID,
+          events[2].actorPID == events[0].subjectPID,
+          events[2].subjectPID == events[0].subjectPID,
+          events[0].cgroupID == events[1].cgroupID,
+          events[1].cgroupID == events[2].cgroupID,
+          events[0].timestampNS < events[1].timestampNS,
+          events[1].timestampNS < events[2].timestampNS else {
+        throw LinuxVzProcessEvidencePayloadError.invalidEvent
+    }
+
+    return LinuxVzProcessEvidencePayloadV1(
+        canonicalJSON: payload,
+        payloadSHA256: sha256(payload),
+        evidenceByteLength: UInt64(payload.count),
+        eventSequenceStart: eventSequenceStart,
+        eventSequenceEnd: eventSequenceEnd,
+        eventCount: eventCount,
+        heartbeatCount: heartbeatCount,
+        droppedEventCount: droppedEventCount,
+        sensorHealthy: true,
+        evidenceTruncated: false,
+        descendantTeardownComplete: true,
+        packageUID: packageUID,
+        packageGID: packageGID
+    )
+}
+
+private func decodeLinuxVzProcessEventV1(
+    _ value: [String: Any]
+) throws -> LinuxVzProcessEventV1 {
+    guard Set(value.keys) == Set([
+        "actor_pid", "cgroup_id", "kind", "sequence", "subject_pid", "timestamp_ns"
+    ]),
+    let actorPID = decimalUInt64(value["actor_pid"]),
+    let cgroupID = decimalUInt64(value["cgroup_id"]),
+    let kind = value["kind"] as? String,
+    let sequence = decimalUInt64(value["sequence"]),
+    let subjectPID = decimalUInt64(value["subject_pid"]),
+    let timestampNS = decimalUInt64(value["timestamp_ns"]) else {
+        throw LinuxVzProcessEvidencePayloadError.invalidEvent
+    }
+    return LinuxVzProcessEventV1(
+        actorPID: actorPID,
+        cgroupID: cgroupID,
+        kind: kind,
+        sequence: sequence,
+        subjectPID: subjectPID,
+        timestampNS: timestampNS
+    )
+}
+
+private func decimalUInt64(_ value: Any?) -> UInt64? {
+    guard let text = value as? String, !text.isEmpty,
+          text == "0" || (text.first != "0" && text.allSatisfy(\.isNumber)) else {
+        return nil
+    }
+    return UInt64(text)
+}

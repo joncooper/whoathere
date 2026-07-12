@@ -64,6 +64,10 @@ three safety invariants false. See the
 The follow-on
 [process-sensor checkpoint](../../../docs/product-build-run/artifact-native-linux-vz-process-sensor-checkpoint-2026-07-11.md)
 records the first successful root-owned cgroup-filtered process observation.
+The
+[ordered process-evidence checkpoint](../../../docs/product-build-run/artifact-native-linux-vz-ordered-process-evidence-checkpoint-2026-07-11.md)
+adds one canonical payload that independent Swift and Rust validators bind to the existing guest
+receipt claim shape. It remains unsigned bootstrap evidence rather than a conformance receipt.
 
 ## Closed fixture contract
 

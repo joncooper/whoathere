@@ -15,6 +15,11 @@ whose child runs as UID/GID 65534 and cannot read or write the root-only sensor.
 unsigned bootstrap evidence rather than a conformance receipt. See the
 [process-sensor checkpoint](artifact-native-linux-vz-process-sensor-checkpoint-2026-07-11.md).
 
+The guest now emits one strict ordered process payload with host-validated sequence, cgroup lineage,
+heartbeat, drop, health, truncation, and teardown fields. Rust independently maps the same payload
+into the existing challenge-bound guest receipt claims, while live signing remains disabled. See
+the [ordered process-evidence checkpoint](artifact-native-linux-vz-ordered-process-evidence-checkpoint-2026-07-11.md).
+
 Primary target: malicious npm and PyPI package detection with static analysis, AI-assisted code
 review, and behaviorally instrumented detonation in disposable virtual machines
 
@@ -1270,6 +1275,7 @@ Repository evidence:
 - [Current product README](../../README.md)
 - [Linux VZ inert-boot checkpoint](artifact-native-linux-vz-inert-boot-checkpoint-2026-07-11.md)
 - [Linux VZ process-sensor checkpoint](artifact-native-linux-vz-process-sensor-checkpoint-2026-07-11.md)
+- [Linux VZ ordered process-evidence checkpoint](artifact-native-linux-vz-ordered-process-evidence-checkpoint-2026-07-11.md)
 - [macOS local release readiness](macos-local-release-readiness.md)
 - [macOS local beta pressure checkpoint](macos-local-beta-pressure-checkpoint.md)
 - [latest source-fixture corpus report](src-fixture-corpus-latest.md)

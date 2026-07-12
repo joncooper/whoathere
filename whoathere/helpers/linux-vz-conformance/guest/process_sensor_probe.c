@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <grp.h>
+#include <inttypes.h>
 #include <linux/bpf.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -62,6 +63,7 @@ enum observation_key {
 struct observation {
     uint64_t count;
     uint64_t pid_tgid;
+    uint64_t timestamp_ns;
 };
 
 struct sensor_fds {
@@ -158,20 +160,22 @@ static int load_observation_program(int map, enum observation_key key) {
         MOV64_REG(BPF_REG_2, BPF_REG_10),
         ADD64_IMM(BPF_REG_2, -4),
         CALL_HELPER(BPF_FUNC_map_lookup_elem),
-        JUMP_IMM(BPF_JEQ, BPF_REG_0, 0, 15),
+        JUMP_IMM(BPF_JEQ, BPF_REG_0, 0, 17),
         LOAD_REG(BPF_DW, BPF_REG_1, BPF_REG_0, 0),
-        JUMP_REG(BPF_JNE, BPF_REG_8, BPF_REG_1, 13),
+        JUMP_REG(BPF_JNE, BPF_REG_8, BPF_REG_1, 15),
         STORE_IMM(BPF_W, BPF_REG_10, -4, key),
         LOAD_MAP_FD(BPF_REG_1, map),
         MOV64_REG(BPF_REG_2, BPF_REG_10),
         ADD64_IMM(BPF_REG_2, -4),
         CALL_HELPER(BPF_FUNC_map_lookup_elem),
-        JUMP_IMM(BPF_JEQ, BPF_REG_0, 0, 6),
+        JUMP_IMM(BPF_JEQ, BPF_REG_0, 0, 8),
         MOV64_REG(BPF_REG_7, BPF_REG_0),
         MOV64_IMM(BPF_REG_1, 1),
         INSN(BPF_STX | BPF_XADD | BPF_DW, BPF_REG_7, BPF_REG_1, 0, 0),
         CALL_HELPER(BPF_FUNC_get_current_pid_tgid),
         STORE_REG(BPF_DW, BPF_REG_7, BPF_REG_0, 8),
+        CALL_HELPER(BPF_FUNC_ktime_get_ns),
+        STORE_REG(BPF_DW, BPF_REG_7, BPF_REG_0, 16),
         MOV64_IMM(BPF_REG_0, 0),
         EXIT_PROGRAM(),
     };
@@ -221,7 +225,8 @@ static int child_fixture(const char *fixture, struct sensor_fds *fds) {
 }
 
 static int observed_pid(const struct observation *value, pid_t expected) {
-    return value->count >= 1 && (pid_t)(value->pid_tgid >> 32) == expected;
+    return value->count == 1 && value->timestamp_ns > 0 &&
+        (pid_t)(value->pid_tgid >> 32) == expected;
 }
 
 static int run_probe(const char *fixture) {
@@ -332,7 +337,9 @@ static int run_probe(const char *fixture) {
         lookup_observation(fds.map, OBSERVATION_EXEC, &exec_event) != 0 ||
         lookup_observation(fds.map, OBSERVATION_EXIT, &exit_event) != 0 ||
         !observed_pid(&fork_event, parent) || !observed_pid(&exec_event, child) ||
-        !observed_pid(&exit_event, child)) {
+        !observed_pid(&exit_event, child) ||
+        fork_event.timestamp_ns >= exec_event.timestamp_ns ||
+        exec_event.timestamp_ns >= exit_event.timestamp_ns) {
         failure_stage = "observation_match";
         failure_errno = errno;
         goto cleanup;
@@ -346,6 +353,37 @@ static int run_probe(const char *fixture) {
     puts("WHOATHERE_SENSOR protected_sensor_read=denied");
     puts("WHOATHERE_SENSOR protected_sensor_write=denied");
     puts("WHOATHERE_SENSOR_PROCESS_PROBE_OK");
+    printf(
+        "WHOATHERE_GUEST_PROCESS_EVIDENCE "
+        "{\"descendant_teardown_complete\":true,\"dropped_event_count\":\"0\","
+        "\"event_count\":\"3\",\"event_sequence_end\":\"3\","
+        "\"event_sequence_start\":\"1\",\"events\":["
+        "{\"actor_pid\":\"%" PRIu64 "\",\"cgroup_id\":\"%" PRIu64
+        "\",\"kind\":\"fork\",\"sequence\":\"1\",\"subject_pid\":\"%" PRIu64
+        "\",\"timestamp_ns\":\"%" PRIu64 "\"},"
+        "{\"actor_pid\":\"%" PRIu64 "\",\"cgroup_id\":\"%" PRIu64
+        "\",\"kind\":\"exec\",\"sequence\":\"2\",\"subject_pid\":\"%" PRIu64
+        "\",\"timestamp_ns\":\"%" PRIu64 "\"},"
+        "{\"actor_pid\":\"%" PRIu64 "\",\"cgroup_id\":\"%" PRIu64
+        "\",\"kind\":\"exit\",\"sequence\":\"3\",\"subject_pid\":\"%" PRIu64
+        "\",\"timestamp_ns\":\"%" PRIu64 "\"}],"
+        "\"evidence_truncated\":false,\"heartbeat_count\":\"2\","
+        "\"package_gid\":\"65534\",\"package_uid\":\"65534\","
+        "\"schema_version\":\"whoathere.linux_vz_process_evidence_payload.v1\","
+        "\"sensor_healthy\":true}\n",
+        (uint64_t)parent,
+        cgroup.count,
+        (uint64_t)child,
+        fork_event.timestamp_ns,
+        (uint64_t)child,
+        cgroup.count,
+        (uint64_t)child,
+        exec_event.timestamp_ns,
+        (uint64_t)child,
+        cgroup.count,
+        (uint64_t)child,
+        exit_event.timestamp_ns
+    );
     result = 0;
 
 cleanup:

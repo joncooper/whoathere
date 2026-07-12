@@ -6,6 +6,10 @@ Status: one root-owned, cgroup-filtered eBPF bootstrap sensor observed an inert 
 fork/exec/exit chain on a physical Apple Silicon Mac; this is not a signed conformance receipt and
 does not qualify the backend or authorize package execution
 
+Follow-on: the
+[ordered process-evidence checkpoint](artifact-native-linux-vz-ordered-process-evidence-checkpoint-2026-07-11.md)
+adds a strict host-validated payload and receipt-claims bridge; live guest signing remains pending.
+
 Canonical references:
 
 - [Artifact-Native Detection Execution Plan](artifact-native-detection-execution-plan.md)
