@@ -173,6 +173,18 @@ independently verified on the new exact identity. Twenty-one of 38 cases now sha
 binding; 17 remain. See the
 [fanotify queue-overflow checkpoint](artifact-native-linux-vz-fanotify-queue-overflow-checkpoint-2026-07-12.md).
 
+The final drop-accounting case, `host_frame_overflow`, now continuously drains the private
+Virtualization.framework attachment into a deliberately bounded 64-frame evidence queue while the
+guest emits 512 checksum-valid, uniquely sequenced UDP sinkhole frames. Guest evidence binds 512
+successful transmissions and exact `eth0` TX counters with zero guest drops or errors. The host
+received all 512 frames, retained and strictly decoded 64 unique sequences, and counted 448 real
+failed bounded-queue admissions. Strict decoders bind the queue capacity, ingress, retained, unique,
+duplicate, unexpected, and dropped arithmetic to the expected incomplete terminal. A smaller
+kernel receive buffer was explicitly rejected after it produced backpressure rather than loss. The
+previous twenty-one cases were rerun and independently verified on the new exact identity.
+Twenty-two of 38 cases now share one backend binding; 16 remain. See the
+[host-frame overflow checkpoint](artifact-native-linux-vz-host-frame-overflow-checkpoint-2026-07-12.md).
+
 Primary target: malicious npm and PyPI package detection with static analysis, AI-assisted code
 review, and behaviorally instrumented detonation in disposable virtual machines
 

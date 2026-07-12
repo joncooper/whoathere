@@ -32,6 +32,9 @@ static const char *dynamic_library_path = "/whoathere/dynamic-fixture-library.so
 #define DNS_PLAINTEXT_REPORT_MAGIC 0x57544434U
 #define DNS_MALFORMED_REPORT_MAGIC 0x57545834U
 #define ENCRYPTED_DNS_REPORT_MAGIC 0x57544534U
+#define HOST_FRAME_REPORT_MAGIC 0x57544846U
+#define HOST_FRAME_TRIGGER_COUNT 512U
+#define HOST_FRAME_PAYLOAD_LENGTH 16U
 static const unsigned char dns_plaintext_query[] = {
     0x57, 0x54, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x09, 'w', 'h', 'o', 'a', 't', 'h', 'e', 'r', 'e',
@@ -96,6 +99,17 @@ struct udp_report {
     uint16_t source_port;
     uint16_t target_port;
     uint32_t payload_length;
+};
+
+struct host_frame_report {
+    uint32_t magic;
+    int32_t process_pid;
+    uint32_t source_address;
+    uint32_t target_address;
+    uint16_t source_port;
+    uint16_t target_port;
+    uint32_t payload_length;
+    uint32_t transmitted_count;
 };
 
 static int protected_sensor_denied(void) {
@@ -433,6 +447,76 @@ static int udp_send(void) {
     return result;
 }
 
+static int host_frame_overflow(void) {
+    int descriptor = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, IPPROTO_UDP);
+    if (descriptor < 0) return 161;
+    struct sockaddr_in source = {
+        .sin_family = AF_INET,
+        .sin_port = 0,
+    };
+    struct sockaddr_in target = {
+        .sin_family = AF_INET,
+        .sin_port = htons(443),
+    };
+    if (inet_pton(AF_INET, "192.0.2.2", &source.sin_addr) != 1 ||
+        inet_pton(AF_INET, "192.0.2.1", &target.sin_addr) != 1 ||
+        bind(descriptor, (const struct sockaddr *)&source, sizeof(source)) != 0) {
+        close(descriptor);
+        return 162;
+    }
+    socklen_t source_length = sizeof(source);
+    if (getsockname(descriptor, (struct sockaddr *)&source, &source_length) != 0 ||
+        source_length != sizeof(source) || source.sin_family != AF_INET ||
+        source.sin_port == 0) {
+        close(descriptor);
+        return 163;
+    }
+    for (uint32_t sequence = 0; sequence < HOST_FRAME_TRIGGER_COUNT; sequence++) {
+        uint32_t payload[4] = {
+            htonl(HOST_FRAME_REPORT_MAGIC),
+            htonl(sequence),
+            htonl(~sequence),
+            htonl(HOST_FRAME_TRIGGER_COUNT),
+        };
+        if (sendto(
+                descriptor,
+                payload,
+                sizeof(payload),
+                0,
+                (const struct sockaddr *)&target,
+                sizeof(target)
+            ) != (ssize_t)sizeof(payload)) {
+            close(descriptor);
+            return 164;
+        }
+    }
+    const struct host_frame_report report = {
+        .magic = HOST_FRAME_REPORT_MAGIC,
+        .process_pid = getpid(),
+        .source_address = source.sin_addr.s_addr,
+        .target_address = target.sin_addr.s_addr,
+        .source_port = ntohs(source.sin_port),
+        .target_port = ntohs(target.sin_port),
+        .payload_length = HOST_FRAME_PAYLOAD_LENGTH,
+        .transmitted_count = HOST_FRAME_TRIGGER_COUNT,
+    };
+    ssize_t written = write(REPARENT_REPORT_FD, &report, sizeof(report));
+    int saved_errno = errno;
+    if (close(REPARENT_REPORT_FD) != 0 && written == (ssize_t)sizeof(report)) {
+        close(descriptor);
+        return 165;
+    }
+    errno = saved_errno;
+    if (written != (ssize_t)sizeof(report)) {
+        close(descriptor);
+        return 166;
+    }
+    const struct timespec pause = {.tv_sec = 0, .tv_nsec = 200000000};
+    int result = nanosleep(&pause, NULL) == 0 ? 0 : 167;
+    if (close(descriptor) != 0 && result == 0) result = 168;
+    return result;
+}
+
 static int loopback_connect(void) {
     int descriptor = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
     if (descriptor < 0) return 130;
@@ -669,6 +753,7 @@ int main(int argument_count, char **arguments) {
     if (strcmp(arguments[1], "dns_plaintext") == 0) return dns_plaintext();
     if (strcmp(arguments[1], "dns_malformed") == 0) return dns_malformed();
     if (strcmp(arguments[1], "encrypted_dns_connect") == 0) return encrypted_dns_connect();
+    if (strcmp(arguments[1], "host_frame_overflow") == 0) return host_frame_overflow();
     if (strcmp(arguments[1], "protected_open_read_write_rename_delete") == 0 ||
         strcmp(arguments[1], "mmap_access") == 0) {
         return file_fixture();

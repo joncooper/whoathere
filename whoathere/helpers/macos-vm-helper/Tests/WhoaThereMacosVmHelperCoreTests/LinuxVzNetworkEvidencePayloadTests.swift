@@ -483,6 +483,32 @@ private func exactIPv4SinkholeUDP() -> Data {
     return Data(frame)
 }
 
+private func exactHostFrameOverflowUDP(sequence: UInt32) -> Data {
+    let words: [UInt32] = [0x57544846, sequence, ~sequence, 512]
+    let payload = words.flatMap { word in
+        [UInt8(word >> 24), UInt8((word >> 16) & 0xff),
+         UInt8((word >> 8) & 0xff), UInt8(word & 0xff)]
+    }
+    let udpLength = 8 + payload.count
+    let totalLength = 20 + udpLength
+    var frame: [UInt8] = [
+        0x02,0x57,0x48,0x4f,0x41,0xfe, 0x02,0x57,0x48,0x4f,0x41,0x31, 0x08,0x00,
+        0x45,0x00,UInt8(totalLength >> 8),UInt8(totalLength & 0xff),0x12,0x34,0x40,0x00,
+        0x40,0x11,0x00,0x00, 192,0,2,2, 192,0,2,1,
+        0xc0,0x00,0x01,0xbb,UInt8(udpLength >> 8),UInt8(udpLength & 0xff),0,0
+    ]
+    frame.append(contentsOf: payload)
+    let ipChecksum = internetChecksum(Array(frame[14..<34]))
+    frame[24] = UInt8(ipChecksum >> 8)
+    frame[25] = UInt8(ipChecksum & 0xff)
+    var pseudo = Array(frame[26..<34]) + [0,17,UInt8(udpLength >> 8),UInt8(udpLength & 0xff)]
+    pseudo.append(contentsOf: frame[34..<frame.count])
+    let udpChecksum = internetChecksum(pseudo)
+    frame[40] = UInt8(udpChecksum >> 8)
+    frame[41] = UInt8(udpChecksum & 0xff)
+    return Data(frame)
+}
+
 private func exactIPv4PlaintextDNSQuery() -> Data {
     let payload: [UInt8] = [
         0x57,0x54,0x01,0x00,0x00,0x01,0x00,0x00,0x00,0x00,0x00,0x00,
@@ -642,6 +668,20 @@ private func exactIPv6MLDv2Report() -> Data {
     zeroChecksum[40] = 0
     zeroChecksum[41] = 0
     #expect(!linuxVzIsExactIPv4SinkholeUDPFrame(zeroChecksum, sourcePort: 49152))
+}
+
+@Test func hostFrameOverflowParserRequiresExactSequenceTupleAndChecksums() {
+    let frame = exactHostFrameOverflowUDP(sequence: 17)
+    #expect(linuxVzHostFrameOverflowSequence(frame, sourcePort: 49152) == 17)
+    #expect(linuxVzHostFrameOverflowSequence(frame, sourcePort: 49153) == nil)
+
+    var changedPayload = frame
+    changedPayload[changedPayload.count - 8] ^= 1
+    #expect(linuxVzHostFrameOverflowSequence(changedPayload, sourcePort: 49152) == nil)
+
+    #expect(linuxVzHostFrameOverflowSequence(
+        exactHostFrameOverflowUDP(sequence: 512), sourcePort: 49152
+    ) == nil)
 }
 
 @Test func plaintextDNSFrameParserRequiresExactQuestionTupleAndChecksums() {

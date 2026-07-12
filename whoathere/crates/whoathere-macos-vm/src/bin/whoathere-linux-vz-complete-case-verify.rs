@@ -9,6 +9,8 @@ use whoathere_macos_vm::{
     decode_linux_vz_drop_evidence_from_serial_v1,
     decode_linux_vz_fanotify_overflow_evidence_from_serial_v1,
     decode_linux_vz_file_evidence_from_serial_v1, decode_linux_vz_host_evidence_payload_v1,
+    decode_linux_vz_host_frame_overflow_guest_evidence_from_serial_v1,
+    decode_linux_vz_host_frame_overflow_host_evidence_payload_v1,
     decode_linux_vz_network_evidence_from_serial_v1,
     decode_linux_vz_network_host_evidence_payload_v1,
     decode_linux_vz_process_evidence_from_serial_v1,
@@ -88,6 +90,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         LinuxVzTelemetryConformanceCaseV1::MmapAccess => "mmap_access",
         LinuxVzTelemetryConformanceCaseV1::BpfReservationFailure => "bpf_reservation_failure",
         LinuxVzTelemetryConformanceCaseV1::FanotifyQueueOverflow => "fanotify_queue_overflow",
+        LinuxVzTelemetryConformanceCaseV1::HostFrameOverflow => "host_frame_overflow",
         _ => return Err("complete-case verifier does not implement this inert case".into()),
     };
     let backend = decode_unqualified_macos_linux_vz_telemetry_backend_identity_v1(
@@ -187,6 +190,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     None,
                 )
             }
+            LinuxVzTelemetryConformanceCaseV1::HostFrameOverflow => {
+                let evidence =
+                    decode_linux_vz_host_frame_overflow_guest_evidence_from_serial_v1(&serial)?;
+                if evidence.fixture_case() != run_spec.fixture_case()
+                    || evidence.package_uid() != backend.package_uid()
+                    || evidence.package_gid() != backend.package_gid()
+                {
+                    return Err("guest host-frame-overflow evidence binding mismatch".into());
+                }
+                (
+                    evidence.payload_sha256().clone(),
+                    evidence.guest_observation_claims_v1()?,
+                    Some(evidence.source_port()),
+                )
+            }
             _ => return Err("complete-case verifier does not implement this inert case".into()),
         };
     let verified_guest = verify_macos_linux_vz_telemetry_guest_receipt_v1(
@@ -197,45 +215,57 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         guest_public_key,
         &guest_claims,
     )?;
-    let (host_evidence_payload_sha256, host_claims) = if matches!(
-        run_spec.fixture_case(),
-        LinuxVzTelemetryConformanceCaseV1::Ipv4Connect
-            | LinuxVzTelemetryConformanceCaseV1::Ipv6Connect
-            | LinuxVzTelemetryConformanceCaseV1::UdpSend
-            | LinuxVzTelemetryConformanceCaseV1::PrivateAddressConnect
-            | LinuxVzTelemetryConformanceCaseV1::LinkLocalConnect
-            | LinuxVzTelemetryConformanceCaseV1::MetadataAddressConnect
-            | LinuxVzTelemetryConformanceCaseV1::PublicAddressConnect
-            | LinuxVzTelemetryConformanceCaseV1::DnsPlaintext
-            | LinuxVzTelemetryConformanceCaseV1::DnsMalformed
-            | LinuxVzTelemetryConformanceCaseV1::EncryptedDnsConnect
-    ) {
-        let evidence = decode_linux_vz_network_host_evidence_payload_v1(&host_evidence)?;
-        if evidence.fixture_case() != run_spec.fixture_case()
-            || Some(evidence.source_port()) != guest_source_port
-        {
-            return Err("guest and host network source port mismatch".into());
-        }
-        (
-            evidence.payload_sha256().clone(),
-            evidence.host_observation_claims_v1()?,
-        )
-    } else {
-        let evidence = decode_linux_vz_host_evidence_payload_v1(&host_evidence)?;
-        let terminal = if matches!(
+    let (host_evidence_payload_sha256, host_claims) =
+        if run_spec.fixture_case() == LinuxVzTelemetryConformanceCaseV1::HostFrameOverflow {
+            let evidence =
+                decode_linux_vz_host_frame_overflow_host_evidence_payload_v1(&host_evidence)?;
+            if Some(evidence.source_port()) != guest_source_port {
+                return Err("guest and host overflow source port mismatch".into());
+            }
+            (
+                evidence.payload_sha256().clone(),
+                evidence.host_observation_claims_v1()?,
+            )
+        } else if matches!(
             run_spec.fixture_case(),
-            LinuxVzTelemetryConformanceCaseV1::BpfReservationFailure
-                | LinuxVzTelemetryConformanceCaseV1::FanotifyQueueOverflow
+            LinuxVzTelemetryConformanceCaseV1::Ipv4Connect
+                | LinuxVzTelemetryConformanceCaseV1::Ipv6Connect
+                | LinuxVzTelemetryConformanceCaseV1::UdpSend
+                | LinuxVzTelemetryConformanceCaseV1::PrivateAddressConnect
+                | LinuxVzTelemetryConformanceCaseV1::LinkLocalConnect
+                | LinuxVzTelemetryConformanceCaseV1::MetadataAddressConnect
+                | LinuxVzTelemetryConformanceCaseV1::PublicAddressConnect
+                | LinuxVzTelemetryConformanceCaseV1::DnsPlaintext
+                | LinuxVzTelemetryConformanceCaseV1::DnsMalformed
+                | LinuxVzTelemetryConformanceCaseV1::EncryptedDnsConnect
         ) {
-            LinuxVzTelemetryConformanceObservedTerminalV1::IncompleteOnInjectedGap
+            let evidence = decode_linux_vz_network_host_evidence_payload_v1(&host_evidence)?;
+            if evidence.fixture_case() != run_spec.fixture_case()
+                || Some(evidence.source_port()) != guest_source_port
+            {
+                return Err("guest and host network source port mismatch".into());
+            }
+            (
+                evidence.payload_sha256().clone(),
+                evidence.host_observation_claims_v1()?,
+            )
         } else {
-            LinuxVzTelemetryConformanceObservedTerminalV1::ObservationComplete
+            let evidence = decode_linux_vz_host_evidence_payload_v1(&host_evidence)?;
+            let terminal = if matches!(
+                run_spec.fixture_case(),
+                LinuxVzTelemetryConformanceCaseV1::BpfReservationFailure
+                    | LinuxVzTelemetryConformanceCaseV1::FanotifyQueueOverflow
+                    | LinuxVzTelemetryConformanceCaseV1::HostFrameOverflow
+            ) {
+                LinuxVzTelemetryConformanceObservedTerminalV1::IncompleteOnInjectedGap
+            } else {
+                LinuxVzTelemetryConformanceObservedTerminalV1::ObservationComplete
+            };
+            (
+                evidence.payload_sha256().clone(),
+                evidence.host_observation_claims_for_terminal_v1(terminal)?,
+            )
         };
-        (
-            evidence.payload_sha256().clone(),
-            evidence.host_observation_claims_for_terminal_v1(terminal)?,
-        )
-    };
     let verified_host = verify_macos_linux_vz_telemetry_host_receipt_v1(
         &challenge,
         &run_spec,

@@ -136,6 +136,37 @@ public func linuxVzIsExactIPv4SinkholeUDPFrame(
     )
 }
 
+public func linuxVzHostFrameOverflowSequence(
+    _ frame: Data,
+    sourcePort: UInt16
+) -> UInt32? {
+    let bytes = [UInt8](frame)
+    guard bytes.count >= 16 else { return nil }
+    let payload = Array(bytes.suffix(16))
+    func word(_ offset: Int) -> UInt32 {
+        UInt32(payload[offset]) << 24
+            | UInt32(payload[offset + 1]) << 16
+            | UInt32(payload[offset + 2]) << 8
+            | UInt32(payload[offset + 3])
+    }
+    let sequence = word(4)
+    guard word(0) == 0x57544846,
+          sequence < 512,
+          word(8) == ~sequence,
+          word(12) == 512,
+          linuxVzIsExactIPv4UDPFrame(
+              frame,
+              sourcePort: sourcePort,
+              targetPort: 443,
+              sourceAddress: [192, 0, 2, 2],
+              targetAddress: [192, 0, 2, 1],
+              payload: payload
+          ) else {
+        return nil
+    }
+    return sequence
+}
+
 public func linuxVzIsExactIPv4PlaintextDNSQueryFrame(
     _ frame: Data,
     sourcePort: UInt16

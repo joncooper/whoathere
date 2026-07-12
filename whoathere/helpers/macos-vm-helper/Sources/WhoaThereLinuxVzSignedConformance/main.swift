@@ -25,6 +25,72 @@ private final class LockedBox<Value>: @unchecked Sendable {
     }
 }
 
+private struct BoundedHostFrameCollection: Sendable {
+    let retainedFrames: [Data]
+    let ingressFrameCount: Int
+    let droppedFrameCount: Int
+    let healthy: Bool
+    let terminal: String
+}
+
+private final class BoundedHostFrameCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private let capacity: Int
+    private var retainedFrames = [Data]()
+    private var ingressFrameCount = 0
+    private var droppedFrameCount = 0
+    private var healthy = true
+    private var stopRequested = false
+
+    init(capacity: Int) {
+        self.capacity = capacity
+    }
+
+    func requestStop() {
+        lock.lock()
+        stopRequested = true
+        lock.unlock()
+    }
+
+    func run(fileDescriptor: Int32) -> BoundedHostFrameCollection {
+        var buffer = [UInt8](repeating: 0, count: 65_535)
+        while true {
+            let received = recv(fileDescriptor, &buffer, buffer.count, MSG_DONTWAIT)
+            if received >= 0 {
+                lock.lock()
+                ingressFrameCount += 1
+                if retainedFrames.count < capacity {
+                    retainedFrames.append(Data(buffer.prefix(received)))
+                } else {
+                    droppedFrameCount += 1
+                }
+                lock.unlock()
+                continue
+            }
+            if errno != EAGAIN && errno != EWOULDBLOCK {
+                lock.lock()
+                healthy = false
+                lock.unlock()
+                break
+            }
+            lock.lock()
+            let shouldStop = stopRequested
+            lock.unlock()
+            if shouldStop { break }
+            usleep(1_000)
+        }
+        lock.lock()
+        defer { lock.unlock() }
+        return BoundedHostFrameCollection(
+            retainedFrames: retainedFrames,
+            ingressFrameCount: ingressFrameCount,
+            droppedFrameCount: droppedFrameCount,
+            healthy: healthy,
+            terminal: healthy ? "bounded_queue_overflow_accounted" : "socket_error"
+        )
+    }
+}
+
 private struct Options {
     let kernel: URL
     let initramfs: URL
@@ -198,6 +264,27 @@ private struct LinuxVzSignedConformanceHarness {
             if sockets[0] >= 0 { close(sockets[0]) }
             if sockets[1] >= 0 { close(sockets[1]) }
         }
+        let overflowCollector = runSpec.fixtureCase == "host_frame_overflow"
+            ? BoundedHostFrameCollector(capacity: 64) : nil
+        let overflowCollectionResult = LockedBox<BoundedHostFrameCollection>()
+        let overflowCollectionDone = DispatchSemaphore(value: 0)
+        var overflowCollectionFinished = false
+        if let overflowCollector {
+            let collectorBox = UncheckedSendableBox(value: overflowCollector)
+            let descriptor = sockets[1]
+            DispatchQueue.global(qos: .userInitiated).async {
+                overflowCollectionResult.store(
+                    collectorBox.value.run(fileDescriptor: descriptor)
+                )
+                overflowCollectionDone.signal()
+            }
+        }
+        defer {
+            if let overflowCollector, !overflowCollectionFinished {
+                overflowCollector.requestStop()
+                _ = overflowCollectionDone.wait(timeout: .now() + .seconds(2))
+            }
+        }
         let guestNetworkSocket = FileHandle(fileDescriptor: sockets[0], closeOnDealloc: false)
         let configuration = try buildLinuxVzInertVMConfiguration(
             kernelURL: options.kernel,
@@ -274,6 +361,18 @@ private struct LinuxVzSignedConformanceHarness {
         let receipt = try decodeLinuxVzGuestSignerResponse(responseData)
 
         try waitForStop(virtualMachine: virtualMachine, queue: queue, deadline: deadline)
+        let boundedHostFrames: BoundedHostFrameCollection?
+        if let overflowCollector {
+            overflowCollector.requestStop()
+            guard overflowCollectionDone.wait(timeout: .now() + .seconds(2)) == .success,
+                  let collection = overflowCollectionResult.load() else {
+                throw HarnessError.verificationFailed
+            }
+            overflowCollectionFinished = true
+            boundedHostFrames = collection
+        } else {
+            boundedHostFrames = nil
+        }
         try serialOutput.synchronize()
         let serialData = try Data(contentsOf: options.serialLog)
         if let serialText = String(data: serialData, encoding: .utf8) {
@@ -284,6 +383,7 @@ private struct LinuxVzSignedConformanceHarness {
         let guestEventCount: UInt64
         let networkSourcePort: UInt16?
         let networkFixtureCase: String?
+        let hostFrameTriggerCount: UInt64?
         switch runSpec.fixtureCase {
         case "fork_exec_exit", "reparenting", "double_fork_daemonization", "setsid_escape",
              "credential_change", "dynamic_library_load":
@@ -310,6 +410,7 @@ private struct LinuxVzSignedConformanceHarness {
             guestEventCount = evidence.eventCount
             networkSourcePort = nil
             networkFixtureCase = nil
+            hostFrameTriggerCount = nil
         case "protected_open_read_write_rename_delete", "mmap_access":
             let evidence = try decodeLinuxVzFileEvidencePayload(serialData)
             guard evidence.fixtureCase == runSpec.fixtureCase,
@@ -322,6 +423,7 @@ private struct LinuxVzSignedConformanceHarness {
             guestEventCount = evidence.claims.eventCount
             networkSourcePort = nil
             networkFixtureCase = nil
+            hostFrameTriggerCount = nil
         case "ipv4_connect", "ipv6_connect", "udp_send", "loopback_connect",
              "private_address_connect", "link_local_connect", "metadata_address_connect",
              "public_address_connect", "dns_plaintext", "dns_malformed",
@@ -337,6 +439,7 @@ private struct LinuxVzSignedConformanceHarness {
             guestEventCount = evidence.claims.eventCount
             networkSourcePort = evidence.sourcePort
             networkFixtureCase = evidence.fixtureCase
+            hostFrameTriggerCount = nil
         case "bpf_reservation_failure":
             let evidence = try decodeLinuxVzDropEvidencePayloadV1(serialData)
             guard evidence.fixtureCase == runSpec.fixtureCase,
@@ -349,6 +452,7 @@ private struct LinuxVzSignedConformanceHarness {
             guestEventCount = evidence.claims.eventCount
             networkSourcePort = nil
             networkFixtureCase = nil
+            hostFrameTriggerCount = nil
         case "fanotify_queue_overflow":
             let evidence = try decodeLinuxVzFanotifyOverflowEvidencePayloadV1(serialData)
             guard evidence.fixtureCase == runSpec.fixtureCase,
@@ -361,6 +465,20 @@ private struct LinuxVzSignedConformanceHarness {
             guestEventCount = evidence.claims.eventCount
             networkSourcePort = nil
             networkFixtureCase = nil
+            hostFrameTriggerCount = nil
+        case "host_frame_overflow":
+            let evidence = try decodeLinuxVzHostFrameOverflowGuestEvidencePayloadV1(serialData)
+            guard evidence.fixtureCase == runSpec.fixtureCase,
+                  evidence.packageUID == UInt64(backend.packageUID),
+                  evidence.packageGID == UInt64(backend.packageGID) else {
+                throw HarnessError.verificationFailed
+            }
+            claims = evidence.claims
+            guestEvidencePayloadSHA256 = evidence.payloadSHA256
+            guestEventCount = evidence.claims.eventCount
+            networkSourcePort = evidence.sourcePort
+            networkFixtureCase = evidence.fixtureCase
+            hostFrameTriggerCount = evidence.triggerCount
         default:
             throw HarnessError.verificationFailed
         }
@@ -476,6 +594,12 @@ private struct LinuxVzSignedConformanceHarness {
                 !linuxVzInertSerialContainsExactMarker(serialData, marker: $0)
             }
             missingBaseMarkers = missingCapabilities + missingDropMarkers
+        } else if runSpec.fixtureCase == "host_frame_overflow" {
+            let missingCapabilities = linuxVzInertMissingCapabilityMarkers(serialData)
+            let missingDropMarkers = linuxVzInertHostFrameOverflowSensorMarkersV1.filter {
+                !linuxVzInertSerialContainsExactMarker(serialData, marker: $0)
+            }
+            missingBaseMarkers = missingCapabilities + missingDropMarkers
         } else {
             let missingCapabilities = linuxVzInertMissingCapabilityMarkers(serialData)
             let missingFileMarkers = linuxVzInertFileSensorMarkersV1.filter {
@@ -500,7 +624,9 @@ private struct LinuxVzSignedConformanceHarness {
         let packetSensor = drainRawFrames(
             fileDescriptor: sockets[1],
             networkFixtureCase: networkFixtureCase,
-            networkSourcePort: networkSourcePort
+            networkSourcePort: networkSourcePort,
+            hostFrameTriggerCount: hostFrameTriggerCount,
+            boundedHostFrames: boundedHostFrames
         )
         let finalKernelSHA256 = try fileSHA256(options.kernel)
         let finalInitramfsSHA256 = try fileSHA256(options.initramfs)
@@ -514,7 +640,37 @@ private struct LinuxVzSignedConformanceHarness {
         let hostEvidencePayloadSHA256: String
         let hostClaims: LinuxVzTelemetryHostObservationClaims
         let cloneDestroyed = configuration.storageDevices.isEmpty
-        if let sourcePort = networkSourcePort, let networkFixtureCase {
+        if runSpec.fixtureCase == "host_frame_overflow" {
+            guard let sourcePort = networkSourcePort,
+                  let triggerCount = hostFrameTriggerCount,
+                  triggerCount == 512,
+                  packetSensor.ingressFrameCount == 512,
+                  packetSensor.frameCount == 64,
+                  packetSensor.droppedFrameCount == 448,
+                  packetSensor.matchedFrameCount == packetSensor.frameCount,
+                  packetSensor.uniqueSequenceCount == packetSensor.frameCount,
+                  packetSensor.duplicateFrameCount == 0,
+                  packetSensor.unexpectedFrameCount == 0,
+                  packetSensor.healthy else {
+                throw HarnessError.verificationFailed
+            }
+            let hostEvidence = try makeLinuxVzHostFrameOverflowHostEvidencePayloadV1(
+                triggerFrameCount: triggerCount,
+                ingressFrameCount: UInt64(packetSensor.ingressFrameCount),
+                observedFrameCount: UInt64(packetSensor.frameCount),
+                uniqueSequenceCount: UInt64(packetSensor.uniqueSequenceCount),
+                duplicateFrameCount: UInt64(packetSensor.duplicateFrameCount),
+                unexpectedFrameCount: UInt64(packetSensor.unexpectedFrameCount),
+                sourcePort: sourcePort,
+                hostFrameQueueCapacity: 64,
+                packetSensorHealthy: packetSensor.healthy,
+                packetSensorTerminal: packetSensor.terminal,
+                storageDeviceCount: UInt64(configuration.storageDevices.count)
+            )
+            hostEvidenceJSON = hostEvidence.canonicalJSON
+            hostEvidencePayloadSHA256 = hostEvidence.payloadSHA256
+            hostClaims = hostEvidence.claims
+        } else if let sourcePort = networkSourcePort, let networkFixtureCase {
             let expectedRawFrameCount = networkFixtureCase == "loopback_connect" ? 0 :
                 (networkFixtureCase == "ipv6_connect" ? 2 : 1)
             let expectedBootstrapFrameCount = networkFixtureCase == "ipv6_connect" ? 1 : 0
@@ -667,7 +823,7 @@ private struct LinuxVzSignedConformanceHarness {
                 cloneDestroyed: cloneDestroyed,
                 storageDeviceCount: UInt64(configuration.storageDevices.count),
                 observedTerminal: [
-                    "bpf_reservation_failure", "fanotify_queue_overflow"
+                    "bpf_reservation_failure", "fanotify_queue_overflow", "host_frame_overflow"
                 ].contains(runSpec.fixtureCase)
                     ? "incomplete_on_injected_gap" : "observation_complete"
             )
@@ -725,6 +881,7 @@ private struct LinuxVzSignedConformanceHarness {
             "guest_evidence_payload_sha256": guestEvidencePayloadSHA256,
             "guest_event_count": String(guestEventCount),
             "raw_frame_count": packetSensor.frameCount,
+            "dropped_frame_count": String(hostClaims.droppedFrameCount),
             "packet_sensor_healthy": packetSensor.healthy,
             "clone_destroyed": hostClaims.cloneDestroyed,
             "vm_stopped": true,
@@ -898,8 +1055,12 @@ private struct LinuxVzSignedConformanceHarness {
 
     private struct PacketSensorResult {
         let frameCount: Int
+        let ingressFrameCount: Int
+        let droppedFrameCount: Int
         let matchedFrameCount: Int
         let bootstrapFrameCount: Int
+        let uniqueSequenceCount: Int
+        let duplicateFrameCount: Int
         let unexpectedFrameCount: Int
         let unexpectedFrameKinds: [String]
         let healthy: Bool
@@ -909,99 +1070,132 @@ private struct LinuxVzSignedConformanceHarness {
     private static func drainRawFrames(
         fileDescriptor: Int32,
         networkFixtureCase: String?,
-        networkSourcePort: UInt16?
+        networkSourcePort: UInt16?,
+        hostFrameTriggerCount: UInt64?,
+        boundedHostFrames: BoundedHostFrameCollection?
     ) -> PacketSensorResult {
         var count = 0
         var matched = 0
         var bootstrap = 0
+        var sequences = Set<UInt32>()
+        var duplicates = 0
         var unexpected = 0
         var unexpectedKinds = [String]()
-        var buffer = [UInt8](repeating: 0, count: 65_535)
-        while true {
-            let received = recv(fileDescriptor, &buffer, buffer.count, MSG_DONTWAIT)
-            if received >= 0 {
-                count += 1
-                let frame = Data(buffer.prefix(received))
-                let exactMatch: Bool
-                if networkFixtureCase == "ipv4_connect", let sourcePort = networkSourcePort {
-                    exactMatch = linuxVzIsExactIPv4SinkholeSYNFrame(
-                        frame,
-                        sourcePort: sourcePort
-                    )
-                } else if networkFixtureCase == "ipv6_connect",
-                          let sourcePort = networkSourcePort {
-                    exactMatch = linuxVzIsExactIPv6SinkholeSYNFrame(
-                        frame,
-                        sourcePort: sourcePort
-                    )
-                } else if networkFixtureCase == "udp_send", let sourcePort = networkSourcePort {
-                    exactMatch = linuxVzIsExactIPv4SinkholeUDPFrame(
-                        frame,
-                        sourcePort: sourcePort
-                    )
-                } else if networkFixtureCase == "private_address_connect",
-                          let sourcePort = networkSourcePort {
-                    exactMatch = linuxVzIsExactIPv4PrivateSinkholeSYNFrame(
-                        frame,
-                        sourcePort: sourcePort
-                    )
-                } else if networkFixtureCase == "link_local_connect",
-                          let sourcePort = networkSourcePort {
-                    exactMatch = linuxVzIsExactIPv4LinkLocalSinkholeSYNFrame(
-                        frame,
-                        sourcePort: sourcePort
-                    )
-                } else if networkFixtureCase == "metadata_address_connect",
-                          let sourcePort = networkSourcePort {
-                    exactMatch = linuxVzIsExactIPv4MetadataSinkholeSYNFrame(
-                        frame,
-                        sourcePort: sourcePort
-                    )
-                } else if networkFixtureCase == "public_address_connect",
-                          let sourcePort = networkSourcePort {
-                    exactMatch = linuxVzIsExactIPv4PublicSinkholeSYNFrame(
-                        frame,
-                        sourcePort: sourcePort
-                    )
-                } else if networkFixtureCase == "dns_plaintext",
-                          let sourcePort = networkSourcePort {
-                    exactMatch = linuxVzIsExactIPv4PlaintextDNSQueryFrame(
-                        frame,
-                        sourcePort: sourcePort
-                    )
-                } else if networkFixtureCase == "dns_malformed",
-                          let sourcePort = networkSourcePort {
-                    exactMatch = linuxVzIsExactIPv4MalformedDNSQueryFrame(
-                        frame,
-                        sourcePort: sourcePort
-                    )
-                } else if networkFixtureCase == "encrypted_dns_connect",
-                          let sourcePort = networkSourcePort {
-                    exactMatch = linuxVzIsExactIPv4EncryptedDNSSinkholeSYNFrame(
-                        frame,
-                        sourcePort: sourcePort
-                    )
-                } else {
-                    exactMatch = false
-                }
-                if exactMatch {
-                    matched += 1
-                } else if networkFixtureCase == "ipv6_connect" &&
-                            linuxVzIsExactIPv6MLDv2BootstrapFrame(frame) {
-                    bootstrap += 1
+        func recordFrame(_ frame: Data) {
+            if networkFixtureCase == "host_frame_overflow",
+               let sourcePort = networkSourcePort,
+               hostFrameTriggerCount == 512 {
+                if let sequence = linuxVzHostFrameOverflowSequence(
+                    frame,
+                    sourcePort: sourcePort
+                ) {
+                    if sequences.insert(sequence).inserted {
+                        matched += 1
+                    } else {
+                        duplicates += 1
+                    }
                 } else {
                     unexpected += 1
                     if unexpectedKinds.count < 4 {
                         unexpectedKinds.append(sanitizedFrameKind(frame))
                     }
                 }
+                return
+            }
+            let exactMatch: Bool
+            if networkFixtureCase == "ipv4_connect", let sourcePort = networkSourcePort {
+                exactMatch = linuxVzIsExactIPv4SinkholeSYNFrame(frame, sourcePort: sourcePort)
+            } else if networkFixtureCase == "ipv6_connect", let sourcePort = networkSourcePort {
+                exactMatch = linuxVzIsExactIPv6SinkholeSYNFrame(frame, sourcePort: sourcePort)
+            } else if networkFixtureCase == "udp_send", let sourcePort = networkSourcePort {
+                exactMatch = linuxVzIsExactIPv4SinkholeUDPFrame(frame, sourcePort: sourcePort)
+            } else if networkFixtureCase == "private_address_connect",
+                      let sourcePort = networkSourcePort {
+                exactMatch = linuxVzIsExactIPv4PrivateSinkholeSYNFrame(
+                    frame, sourcePort: sourcePort
+                )
+            } else if networkFixtureCase == "link_local_connect",
+                      let sourcePort = networkSourcePort {
+                exactMatch = linuxVzIsExactIPv4LinkLocalSinkholeSYNFrame(
+                    frame, sourcePort: sourcePort
+                )
+            } else if networkFixtureCase == "metadata_address_connect",
+                      let sourcePort = networkSourcePort {
+                exactMatch = linuxVzIsExactIPv4MetadataSinkholeSYNFrame(
+                    frame, sourcePort: sourcePort
+                )
+            } else if networkFixtureCase == "public_address_connect",
+                      let sourcePort = networkSourcePort {
+                exactMatch = linuxVzIsExactIPv4PublicSinkholeSYNFrame(
+                    frame, sourcePort: sourcePort
+                )
+            } else if networkFixtureCase == "dns_plaintext",
+                      let sourcePort = networkSourcePort {
+                exactMatch = linuxVzIsExactIPv4PlaintextDNSQueryFrame(
+                    frame, sourcePort: sourcePort
+                )
+            } else if networkFixtureCase == "dns_malformed",
+                      let sourcePort = networkSourcePort {
+                exactMatch = linuxVzIsExactIPv4MalformedDNSQueryFrame(
+                    frame, sourcePort: sourcePort
+                )
+            } else if networkFixtureCase == "encrypted_dns_connect",
+                      let sourcePort = networkSourcePort {
+                exactMatch = linuxVzIsExactIPv4EncryptedDNSSinkholeSYNFrame(
+                    frame, sourcePort: sourcePort
+                )
+            } else {
+                exactMatch = false
+            }
+            if exactMatch {
+                matched += 1
+            } else if networkFixtureCase == "ipv6_connect" &&
+                        linuxVzIsExactIPv6MLDv2BootstrapFrame(frame) {
+                bootstrap += 1
+            } else {
+                unexpected += 1
+                if unexpectedKinds.count < 4 {
+                    unexpectedKinds.append(sanitizedFrameKind(frame))
+                }
+            }
+        }
+        if let boundedHostFrames {
+            for frame in boundedHostFrames.retainedFrames {
+                count += 1
+                recordFrame(frame)
+            }
+            return PacketSensorResult(
+                frameCount: count,
+                ingressFrameCount: boundedHostFrames.ingressFrameCount,
+                droppedFrameCount: boundedHostFrames.droppedFrameCount,
+                matchedFrameCount: matched,
+                bootstrapFrameCount: bootstrap,
+                uniqueSequenceCount: sequences.count,
+                duplicateFrameCount: duplicates,
+                unexpectedFrameCount: unexpected,
+                unexpectedFrameKinds: unexpectedKinds,
+                healthy: boundedHostFrames.healthy,
+                terminal: boundedHostFrames.terminal
+            )
+        }
+        var buffer = [UInt8](repeating: 0, count: 65_535)
+        while true {
+            let received = recv(fileDescriptor, &buffer, buffer.count, MSG_DONTWAIT)
+            if received >= 0 {
+                count += 1
+                let frame = Data(buffer.prefix(received))
+                recordFrame(frame)
                 continue
             }
             if errno == EAGAIN || errno == EWOULDBLOCK {
                 return PacketSensorResult(
                     frameCount: count,
+                    ingressFrameCount: count,
+                    droppedFrameCount: 0,
                     matchedFrameCount: matched,
                     bootstrapFrameCount: bootstrap,
+                    uniqueSequenceCount: sequences.count,
+                    duplicateFrameCount: duplicates,
                     unexpectedFrameCount: unexpected,
                     unexpectedFrameKinds: unexpectedKinds,
                     healthy: true,
@@ -1010,8 +1204,12 @@ private struct LinuxVzSignedConformanceHarness {
             }
             return PacketSensorResult(
                 frameCount: count,
+                ingressFrameCount: count,
+                droppedFrameCount: 0,
                 matchedFrameCount: matched,
                 bootstrapFrameCount: bootstrap,
+                uniqueSequenceCount: sequences.count,
+                duplicateFrameCount: duplicates,
                 unexpectedFrameCount: unexpected,
                 unexpectedFrameKinds: unexpectedKinds,
                 healthy: false,

@@ -84,6 +84,12 @@
 #define FANOTIFY_OVERFLOW_ROOT "/run/whoathere-fanotify-overflow"
 #define FANOTIFY_INJECTED_QUEUE_LIMIT 64
 #define FANOTIFY_OVERFLOW_TRIGGER_COUNT 256
+#define HOST_FRAME_REPORT_MAGIC 0x57544846U
+#define HOST_FRAME_TRIGGER_COUNT 512U
+#define HOST_FRAME_PAYLOAD_LENGTH 16U
+#define HOST_FRAME_TX_PACKETS_PATH "/sys/class/net/eth0/statistics/tx_packets"
+#define HOST_FRAME_TX_DROPPED_PATH "/sys/class/net/eth0/statistics/tx_dropped"
+#define HOST_FRAME_TX_ERRORS_PATH "/sys/class/net/eth0/statistics/tx_errors"
 #define SENSOR_PROGRAM_COUNT 8
 
 struct reparent_report {
@@ -147,6 +153,17 @@ struct udp_report {
     uint16_t source_port;
     uint16_t target_port;
     uint32_t payload_length;
+};
+
+struct host_frame_report {
+    uint32_t magic;
+    int32_t process_pid;
+    uint32_t source_address;
+    uint32_t target_address;
+    uint16_t source_port;
+    uint16_t target_port;
+    uint32_t payload_length;
+    uint32_t transmitted_count;
 };
 
 #define INSN(code_value, destination, source, instruction_offset, immediate) \
@@ -718,7 +735,6 @@ static int read_uint64_control(const char *path, uint64_t *value) {
             parsed > (UINT64_MAX - (uint64_t)(buffer[index] - '0')) / 10) return -1;
         parsed = parsed * 10 + (uint64_t)(buffer[index] - '0');
     }
-    if (parsed == 0) return -1;
     *value = parsed;
     return 0;
 }
@@ -1821,6 +1837,167 @@ static void cleanup_ipv4_sinkhole(void) {
         (void)ioctl(descriptor, SIOCSIFFLAGS, &interface);
     }
     close(descriptor);
+}
+
+static int read_exact_host_frame_report(
+    int descriptor,
+    struct host_frame_report *report
+) {
+    size_t offset = 0;
+    while (offset < sizeof(*report)) {
+        ssize_t length = read(descriptor, (char *)report + offset, sizeof(*report) - offset);
+        if (length < 0 && errno == EINTR) continue;
+        if (length <= 0) return -1;
+        offset += (size_t)length;
+    }
+    char trailing = 0;
+    ssize_t length;
+    do {
+        length = read(descriptor, &trailing, 1);
+    } while (length < 0 && errno == EINTR);
+    struct in_addr source = {0};
+    struct in_addr target = {0};
+    return length == 0 && report->magic == HOST_FRAME_REPORT_MAGIC &&
+        report->process_pid > 0 && report->source_port > 0 &&
+        report->target_port == NETWORK_TARGET_PORT &&
+        report->payload_length == HOST_FRAME_PAYLOAD_LENGTH &&
+        report->transmitted_count == HOST_FRAME_TRIGGER_COUNT &&
+        inet_pton(AF_INET, NETWORK_SOURCE_ADDRESS, &source) == 1 &&
+        inet_pton(AF_INET, NETWORK_TARGET_ADDRESS, &target) == 1 &&
+        report->source_address == source.s_addr && report->target_address == target.s_addr
+        ? 0 : -1;
+}
+
+static int run_host_frame_overflow_probe(const char *fixture) {
+    struct sensor_fds fds = {
+        .map = -1,
+        .programs = {-1, -1, -1, -1, -1, -1, -1, -1},
+        .links = {-1, -1, -1, -1, -1, -1, -1, -1},
+    };
+    int report_pipe[2] = {-1, -1};
+    pid_t child = -1;
+    int child_status = 0;
+    int child_reaped = 0;
+    int sinkhole_prepared = 0;
+    int result = 70;
+    const char *failure_stage = "preflight";
+    int failure_errno = 0;
+    struct host_frame_report report = {0};
+    uint64_t packets_before = 0;
+    uint64_t packets_after = 0;
+    uint64_t dropped_before = 0;
+    uint64_t dropped_after = 0;
+    uint64_t errors_before = 0;
+    uint64_t errors_after = 0;
+
+    if (getuid() != 0 || geteuid() != 0 || verify_root_owned_executable(fixture) != 0) {
+        failure_stage = "identity";
+        goto cleanup;
+    }
+    if (prepare_ipv4_sinkhole() != 0) {
+        failure_stage = "sinkhole_prepare";
+        failure_errno = errno;
+        goto cleanup;
+    }
+    sinkhole_prepared = 1;
+    if (read_uint64_control(HOST_FRAME_TX_PACKETS_PATH, &packets_before) != 0 ||
+        read_uint64_control(HOST_FRAME_TX_DROPPED_PATH, &dropped_before) != 0 ||
+        read_uint64_control(HOST_FRAME_TX_ERRORS_PATH, &errors_before) != 0) {
+        failure_stage = "tx_counters_before";
+        failure_errno = errno;
+        goto cleanup;
+    }
+    if (pipe2(report_pipe, O_CLOEXEC) != 0) {
+        failure_stage = "report_pipe";
+        failure_errno = errno;
+        goto cleanup;
+    }
+    child = fork();
+    if (child < 0) {
+        failure_stage = "fixture_fork";
+        failure_errno = errno;
+        goto cleanup;
+    }
+    if (child == 0) {
+        close_if_open(&report_pipe[0]);
+        child_fixture(fixture, "host_frame_overflow", &fds, report_pipe[1]);
+    }
+    close_if_open(&report_pipe[1]);
+    if (read_exact_host_frame_report(report_pipe[0], &report) != 0 ||
+        report.process_pid != child) {
+        failure_stage = "fixture_report";
+        failure_errno = errno;
+        goto cleanup;
+    }
+    close_if_open(&report_pipe[0]);
+    if (waitpid(child, &child_status, 0) != child || !WIFEXITED(child_status) ||
+        WEXITSTATUS(child_status) != 0) {
+        failure_stage = "fixture_exit";
+        goto cleanup;
+    }
+    child_reaped = 1;
+    for (size_t attempt = 0; attempt < 100; attempt++) {
+        if (read_uint64_control(HOST_FRAME_TX_PACKETS_PATH, &packets_after) != 0 ||
+            read_uint64_control(HOST_FRAME_TX_DROPPED_PATH, &dropped_after) != 0 ||
+            read_uint64_control(HOST_FRAME_TX_ERRORS_PATH, &errors_after) != 0) {
+            failure_stage = "tx_counters_after";
+            failure_errno = errno;
+            goto cleanup;
+        }
+        if (packets_after >= packets_before + HOST_FRAME_TRIGGER_COUNT) break;
+        const struct timespec pause = {.tv_sec = 0, .tv_nsec = 10000000};
+        (void)nanosleep(&pause, NULL);
+    }
+    if (packets_after - packets_before != HOST_FRAME_TRIGGER_COUNT ||
+        dropped_after != dropped_before || errors_after != errors_before) {
+        failure_stage = "tx_counter_delta";
+        goto cleanup;
+    }
+    uint64_t timestamp = monotonic_ns();
+    if (timestamp == 0) {
+        failure_stage = "timestamp";
+        goto cleanup;
+    }
+    puts("WHOATHERE_SENSOR host_frame_overflow_guest_trigger=observed");
+    puts("WHOATHERE_SENSOR host_frame_guest_tx_drop_count=zero");
+    puts("WHOATHERE_SENSOR network_target=documentation_sinkhole_192_0_2_1_443");
+    puts("WHOATHERE_SENSOR drop_accounting_terminal=incomplete_on_injected_gap");
+    printf(
+        "WHOATHERE_GUEST_HOST_FRAME_OVERFLOW_EVIDENCE {"
+        "\"descendant_teardown_complete\":true,\"dropped_event_count\":\"0\","
+        "\"event_count\":\"1\",\"event_sequence_end\":\"1\","
+        "\"event_sequence_start\":\"1\",\"events\":[{\"actor_pid\":\"%d\","
+        "\"kind\":\"host_frame_overflow_trigger\",\"sequence\":\"1\","
+        "\"timestamp_ns\":\"%" PRIu64 "\"}],\"evidence_truncated\":false,"
+        "\"fixture_case\":\"host_frame_overflow\",\"heartbeat_count\":\"2\","
+        "\"host_frame_payload_bytes\":\"%u\",\"host_frame_source_port\":\"%u\","
+        "\"host_frame_transmitted_count\":\"%u\",\"host_frame_trigger_count\":\"%u\","
+        "\"host_frame_tx_dropped_count\":\"0\",\"host_frame_tx_error_count\":\"0\","
+        "\"package_gid\":\"65534\",\"package_uid\":\"65534\","
+        "\"schema_version\":\"whoathere.linux_vz_host_frame_overflow_guest_evidence_payload.v1\","
+        "\"sensor_healthy\":true,\"traffic_kind\":\"sequenced_udp_sinkhole_frames\"}\n",
+        report.process_pid,
+        timestamp,
+        report.payload_length,
+        report.source_port,
+        report.transmitted_count,
+        report.transmitted_count
+    );
+    result = 0;
+
+cleanup:
+    close_if_open(&report_pipe[0]);
+    close_if_open(&report_pipe[1]);
+    if (child > 0 && !child_reaped) (void)waitpid(child, NULL, 0);
+    if (sinkhole_prepared) cleanup_ipv4_sinkhole();
+    if (result != 0) {
+        printf(
+            "WHOATHERE_SENSOR_HOST_FRAME_OVERFLOW_FAILED stage=%s errno=%d\n",
+            failure_stage,
+            failure_errno
+        );
+    }
+    return result;
 }
 
 static int proc_tcp_contains_ipv4_sinkhole(const struct network_report *report) {
@@ -3392,6 +3569,9 @@ int main(int argument_count, char **arguments) {
     }
     if (strcmp(arguments[2], "fanotify_queue_overflow") == 0) {
         return run_fanotify_queue_overflow_probe(arguments[1]);
+    }
+    if (strcmp(arguments[2], "host_frame_overflow") == 0) {
+        return run_host_frame_overflow_probe(arguments[1]);
     }
     if (strcmp(arguments[2], "protected_open_read_write_rename_delete") == 0 ||
         strcmp(arguments[2], "mmap_access") == 0) {

@@ -145,6 +145,13 @@ public let linuxVzInertFanotifyQueueOverflowSensorMarkersV1 = [
     "WHOATHERE_SENSOR drop_accounting_terminal=incomplete_on_injected_gap"
 ]
 
+public let linuxVzInertHostFrameOverflowSensorMarkersV1 = [
+    "WHOATHERE_SENSOR host_frame_overflow_guest_trigger=observed",
+    "WHOATHERE_SENSOR host_frame_guest_tx_drop_count=zero",
+    "WHOATHERE_SENSOR network_target=documentation_sinkhole_192_0_2_1_443",
+    "WHOATHERE_SENSOR drop_accounting_terminal=incomplete_on_injected_gap"
+]
+
 public let linuxVzInertRequiredEvidenceMarkersV2 =
     linuxVzInertRequiredCapabilityMarkersV1 + linuxVzInertProcessSensorMarkersV2
 
