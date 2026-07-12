@@ -25,9 +25,10 @@ mod linux {
     use whoathere_macos_vm::{
         decode_and_validate_macos_linux_vz_telemetry_conformance_challenge_v1,
         decode_and_validate_macos_linux_vz_telemetry_conformance_run_spec_v1,
-        decode_linux_vz_guest_signer_request_v1, decode_linux_vz_process_evidence_from_serial_v1,
-        encode_linux_vz_guest_signer_response_v1, sign_macos_linux_vz_telemetry_guest_receipt_v1,
-        LinuxVzTelemetryConformanceCaseV1, LinuxVzTelemetryConformanceExpectedTerminalV1,
+        decode_linux_vz_file_evidence_from_serial_v1, decode_linux_vz_guest_signer_request_v1,
+        decode_linux_vz_process_evidence_from_serial_v1, encode_linux_vz_guest_signer_response_v1,
+        sign_macos_linux_vz_telemetry_guest_receipt_v1, LinuxVzTelemetryConformanceCaseV1,
+        LinuxVzTelemetryConformanceExpectedTerminalV1, MAX_LINUX_VZ_FILE_EVIDENCE_PAYLOAD_BYTES_V1,
         MAX_LINUX_VZ_GUEST_SIGNER_REQUEST_FRAME_BYTES_V1,
         MAX_LINUX_VZ_PROCESS_EVIDENCE_PAYLOAD_BYTES_V1,
     };
@@ -38,8 +39,13 @@ mod linux {
     const SENSOR_PATH: &str = "/whoathere/process-sensor-probe";
     const FIXTURE_PATH: &str = "/whoathere/process-fixture-child";
     const MAX_EXECUTABLE_BYTES: u64 = 64 * 1024 * 1024;
-    const MAX_SENSOR_OUTPUT_BYTES: u64 =
-        MAX_LINUX_VZ_PROCESS_EVIDENCE_PAYLOAD_BYTES_V1 as u64 + 32 * 1024;
+    const MAX_SENSOR_OUTPUT_BYTES: u64 = if MAX_LINUX_VZ_FILE_EVIDENCE_PAYLOAD_BYTES_V1
+        > MAX_LINUX_VZ_PROCESS_EVIDENCE_PAYLOAD_BYTES_V1
+    {
+        MAX_LINUX_VZ_FILE_EVIDENCE_PAYLOAD_BYTES_V1 as u64 + 32 * 1024
+    } else {
+        MAX_LINUX_VZ_PROCESS_EVIDENCE_PAYLOAD_BYTES_V1 as u64 + 32 * 1024
+    };
 
     pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         if unsafe { libc::geteuid() } != 0 || unsafe { libc::getegid() } != 0 {
@@ -59,12 +65,16 @@ mod linux {
         let run_spec = decode_and_validate_macos_linux_vz_telemetry_conformance_run_spec_v1(
             request.run_spec(),
         )?;
-        if run_spec.fixture_case() != LinuxVzTelemetryConformanceCaseV1::ForkExecExit
-            || run_spec.expected_terminal()
-                != LinuxVzTelemetryConformanceExpectedTerminalV1::ObservationComplete
+        if !matches!(
+            run_spec.fixture_case(),
+            LinuxVzTelemetryConformanceCaseV1::ForkExecExit
+                | LinuxVzTelemetryConformanceCaseV1::ProtectedOpenReadWriteRenameDelete
+                | LinuxVzTelemetryConformanceCaseV1::MmapAccess
+        ) || run_spec.expected_terminal()
+            != LinuxVzTelemetryConformanceExpectedTerminalV1::ObservationComplete
             || run_spec.package_execution_authority_permitted()
         {
-            return Err("guest_signer_run_spec_not_inert_fork_exec_exit".into());
+            return Err("guest_signer_run_spec_not_supported_inert_case".into());
         }
         let backend = run_spec.backend_identity();
         let challenge = decode_and_validate_macos_linux_vz_telemetry_conformance_challenge_v1(
@@ -77,8 +87,17 @@ mod linux {
         require_digest(SENSOR_PATH, backend.guest_bpf_bundle_sha256())?;
         require_digest(FIXTURE_PATH, backend.guest_runner_sha256())?;
 
+        let fixture_case_argument = match run_spec.fixture_case() {
+            LinuxVzTelemetryConformanceCaseV1::ForkExecExit => "fork_exec_exit",
+            LinuxVzTelemetryConformanceCaseV1::ProtectedOpenReadWriteRenameDelete => {
+                "protected_open_read_write_rename_delete"
+            }
+            LinuxVzTelemetryConformanceCaseV1::MmapAccess => "mmap_access",
+            _ => return Err("guest_signer_run_spec_not_supported_inert_case".into()),
+        };
         let mut child = Command::new(SENSOR_PATH)
             .arg(FIXTURE_PATH)
+            .arg(fixture_case_argument)
             .env_clear()
             .current_dir("/")
             .stdin(Stdio::null())
@@ -93,18 +112,37 @@ mod linux {
             .take(MAX_SENSOR_OUTPUT_BYTES + 1)
             .read_to_end(&mut sensor_output)?;
         let status = child.wait()?;
+        std::io::stdout().write_all(&sensor_output)?;
+        std::io::stdout().flush()?;
         if !status.success() || sensor_output.len() as u64 > MAX_SENSOR_OUTPUT_BYTES {
             return Err("guest_signer_sensor_failed".into());
         }
-        std::io::stdout().write_all(&sensor_output)?;
-        std::io::stdout().flush()?;
-        let evidence = decode_linux_vz_process_evidence_from_serial_v1(&sensor_output)?;
-        if evidence.package_uid() != backend.package_uid()
-            || evidence.package_gid() != backend.package_gid()
-        {
+        let (package_uid, package_gid, claims) = match run_spec.fixture_case() {
+            LinuxVzTelemetryConformanceCaseV1::ForkExecExit => {
+                let evidence = decode_linux_vz_process_evidence_from_serial_v1(&sensor_output)?;
+                (
+                    evidence.package_uid(),
+                    evidence.package_gid(),
+                    evidence.guest_observation_claims_v1()?,
+                )
+            }
+            LinuxVzTelemetryConformanceCaseV1::ProtectedOpenReadWriteRenameDelete
+            | LinuxVzTelemetryConformanceCaseV1::MmapAccess => {
+                let evidence = decode_linux_vz_file_evidence_from_serial_v1(&sensor_output)?;
+                if evidence.fixture_case() != run_spec.fixture_case() {
+                    return Err("guest_signer_file_case_mismatch".into());
+                }
+                (
+                    evidence.package_uid(),
+                    evidence.package_gid(),
+                    evidence.guest_observation_claims_v1()?,
+                )
+            }
+            _ => return Err("guest_signer_run_spec_not_supported_inert_case".into()),
+        };
+        if package_uid != backend.package_uid() || package_gid != backend.package_gid() {
             return Err("guest_signer_package_identity_mismatch".into());
         }
-        let claims = evidence.guest_observation_claims_v1()?;
         let seed = read_root_seed(SEED_PATH)?;
         let receipt = sign_macos_linux_vz_telemetry_guest_receipt_v1(
             &challenge, &run_spec, backend, &claims, seed,

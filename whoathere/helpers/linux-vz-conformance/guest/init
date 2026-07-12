@@ -49,7 +49,7 @@ else
     capability_failed=1
 fi
 
-if /whoathere/process-sensor-probe /whoathere/process-fixture-child; then
+if /whoathere/process-sensor-probe /whoathere/process-fixture-child fork_exec_exit; then
     :
 else
     capability_failed=1

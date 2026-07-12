@@ -6,7 +6,8 @@ use whoathere_detonation::ArtifactProtectedTelemetryRequirementsV1;
 use whoathere_macos_vm::{
     decode_and_validate_macos_linux_vz_telemetry_conformance_challenge_v1,
     decode_and_validate_macos_linux_vz_telemetry_conformance_run_spec_v1,
-    decode_linux_vz_host_evidence_payload_v1, decode_linux_vz_process_evidence_from_serial_v1,
+    decode_linux_vz_file_evidence_from_serial_v1, decode_linux_vz_host_evidence_payload_v1,
+    decode_linux_vz_process_evidence_from_serial_v1,
     decode_unqualified_macos_linux_vz_telemetry_backend_identity_v1,
     verify_macos_linux_vz_telemetry_conformance_case_v1,
     verify_macos_linux_vz_telemetry_guest_receipt_v1,
@@ -59,9 +60,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let requirements = ArtifactProtectedTelemetryRequirementsV1::linux_vz_bulk_v1();
     let run_spec =
         decode_and_validate_macos_linux_vz_telemetry_conformance_run_spec_v1(&run_spec_bytes)?;
-    if run_spec.fixture_case() != LinuxVzTelemetryConformanceCaseV1::ForkExecExit {
-        return Err("complete-case verifier only accepts fork_exec_exit".into());
-    }
+    let fixture_case = match run_spec.fixture_case() {
+        LinuxVzTelemetryConformanceCaseV1::ForkExecExit => "fork_exec_exit",
+        LinuxVzTelemetryConformanceCaseV1::ProtectedOpenReadWriteRenameDelete => {
+            "protected_open_read_write_rename_delete"
+        }
+        LinuxVzTelemetryConformanceCaseV1::MmapAccess => "mmap_access",
+        _ => return Err("complete-case verifier does not implement this inert case".into()),
+    };
     let backend = decode_unqualified_macos_linux_vz_telemetry_backend_identity_v1(
         &backend_bytes,
         &requirements,
@@ -71,8 +77,35 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         &run_spec,
         &backend,
     )?;
-    let guest_evidence = decode_linux_vz_process_evidence_from_serial_v1(&serial)?;
-    let guest_claims = guest_evidence.guest_observation_claims_v1()?;
+    let (guest_evidence_payload_sha256, guest_claims) = match run_spec.fixture_case() {
+        LinuxVzTelemetryConformanceCaseV1::ForkExecExit => {
+            let evidence = decode_linux_vz_process_evidence_from_serial_v1(&serial)?;
+            if evidence.package_uid() != backend.package_uid()
+                || evidence.package_gid() != backend.package_gid()
+            {
+                return Err("guest evidence package identity mismatch".into());
+            }
+            (
+                evidence.payload_sha256().clone(),
+                evidence.guest_observation_claims_v1()?,
+            )
+        }
+        LinuxVzTelemetryConformanceCaseV1::ProtectedOpenReadWriteRenameDelete
+        | LinuxVzTelemetryConformanceCaseV1::MmapAccess => {
+            let evidence = decode_linux_vz_file_evidence_from_serial_v1(&serial)?;
+            if evidence.fixture_case() != run_spec.fixture_case()
+                || evidence.package_uid() != backend.package_uid()
+                || evidence.package_gid() != backend.package_gid()
+            {
+                return Err("guest file evidence binding mismatch".into());
+            }
+            (
+                evidence.payload_sha256().clone(),
+                evidence.guest_observation_claims_v1()?,
+            )
+        }
+        _ => return Err("complete-case verifier does not implement this inert case".into()),
+    };
     let verified_guest = verify_macos_linux_vz_telemetry_guest_receipt_v1(
         &challenge,
         &run_spec,
@@ -103,10 +136,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Err("complete case unexpectedly grants execution authority".into());
     }
     println!(
-        "{{\"backend_identity_sha256\":\"{}\",\"challenge_sha256\":\"{}\",\"complete_conformance_case_verified\":true,\"execution_authority\":false,\"fixture_case\":\"fork_exec_exit\",\"guest_evidence_payload_sha256\":\"{}\",\"guest_receipt_sha256\":\"{}\",\"host_evidence_payload_sha256\":\"{}\",\"host_receipt_sha256\":\"{}\",\"package_execution\":false,\"run_spec_sha256\":\"{}\",\"schema_version\":\"whoathere.linux_vz_complete_case_verification.v1\",\"sync_back\":false}}",
+        "{{\"backend_identity_sha256\":\"{}\",\"challenge_sha256\":\"{}\",\"complete_conformance_case_verified\":true,\"execution_authority\":false,\"fixture_case\":\"{}\",\"guest_evidence_payload_sha256\":\"{}\",\"guest_receipt_sha256\":\"{}\",\"host_evidence_payload_sha256\":\"{}\",\"host_receipt_sha256\":\"{}\",\"package_execution\":false,\"run_spec_sha256\":\"{}\",\"schema_version\":\"whoathere.linux_vz_complete_case_verification.v1\",\"sync_back\":false}}",
         backend.identity_sha256_v1()?,
         challenge.challenge_sha256(),
-        guest_evidence.payload_sha256(),
+        fixture_case,
+        guest_evidence_payload_sha256,
         Sha256Digest::from_bytes(&guest_receipt),
         host_evidence.payload_sha256(),
         Sha256Digest::from_bytes(&host_receipt),

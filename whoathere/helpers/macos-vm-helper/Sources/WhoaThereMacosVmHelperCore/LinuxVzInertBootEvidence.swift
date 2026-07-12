@@ -32,6 +32,13 @@ public let linuxVzInertProcessSensorMarkersV2 = [
 public let linuxVzInertRequiredEvidenceMarkersV2 =
     linuxVzInertRequiredCapabilityMarkersV1 + linuxVzInertProcessSensorMarkersV2
 
+public let linuxVzInertFileSensorMarkersV1 = [
+    "WHOATHERE_SENSOR file_fanotify_permission=observed",
+    "WHOATHERE_SENSOR file_mmap_bpf=observed",
+    "WHOATHERE_SENSOR persistence_write=observed",
+    "WHOATHERE_SENSOR file_system_diff=observed",
+]
+
 public func linuxVzInertSerialContainsExactMarker(_ serialData: Data, marker: String) -> Bool {
     linuxVzInertSerialLines(serialData).contains(marker)
 }

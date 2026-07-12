@@ -23,13 +23,20 @@ fn main() {
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let arguments = std::env::args().collect::<Vec<_>>();
-    if arguments.len() != 5 || !arguments[1].starts_with('/') || !arguments[4].starts_with('/') {
+    if arguments.len() != 6 || !arguments[1].starts_with('/') || !arguments[5].starts_with('/') {
         return Err(
-            "usage: request-build BACKEND_IDENTITY CONFORMANCE_RUN_ID EVIDENCE_ID OUTPUT_DIR"
-                .into(),
+            "usage: request-build BACKEND_IDENTITY FIXTURE_CASE CONFORMANCE_RUN_ID EVIDENCE_ID OUTPUT_DIR".into(),
         );
     }
-    let output_directory = Path::new(&arguments[4]);
+    let fixture_case = match arguments[2].as_str() {
+        "fork_exec_exit" => LinuxVzTelemetryConformanceCaseV1::ForkExecExit,
+        "protected_open_read_write_rename_delete" => {
+            LinuxVzTelemetryConformanceCaseV1::ProtectedOpenReadWriteRenameDelete
+        }
+        "mmap_access" => LinuxVzTelemetryConformanceCaseV1::MmapAccess,
+        _ => return Err("request builder fixture case is not implemented".into()),
+    };
+    let output_directory = Path::new(&arguments[5]);
     validate_output_directory(output_directory)?;
 
     let requirements = ArtifactProtectedTelemetryRequirementsV1::linux_vz_bulk_v1();
@@ -39,9 +46,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         &requirements,
     )?;
     let run_spec = compile_macos_linux_vz_telemetry_conformance_run_spec_v1(
-        &arguments[2],
         &arguments[3],
-        LinuxVzTelemetryConformanceCaseV1::ForkExecExit,
+        &arguments[4],
+        fixture_case,
         &requirements,
         &backend,
     )?;
@@ -74,9 +81,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     write_new(&output_directory.join("guest-request.bin"), &request_frame)?;
     println!(
-        "{{\"backend_identity_sha256\":\"{}\",\"challenge_sha256\":\"{}\",\"execution_authority\":false,\"fixture_case\":\"fork_exec_exit\",\"package_execution\":false,\"run_spec_sha256\":\"{}\",\"schema_version\":\"whoathere.linux_vz_conformance_request_build_result.v1\",\"sync_back\":false}}",
+        "{{\"backend_identity_sha256\":\"{}\",\"challenge_sha256\":\"{}\",\"execution_authority\":false,\"fixture_case\":\"{}\",\"package_execution\":false,\"run_spec_sha256\":\"{}\",\"schema_version\":\"whoathere.linux_vz_conformance_request_build_result.v1\",\"sync_back\":false}}",
         backend.identity_sha256_v1()?,
         challenge.challenge_sha256(),
+        arguments[2],
         run_spec.run_spec_sha256(),
     );
     Ok(())

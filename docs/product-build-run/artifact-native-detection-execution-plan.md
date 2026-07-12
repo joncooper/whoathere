@@ -36,6 +36,11 @@ complete guest-plus-host case with zero frames, stopped VM, destroyed diskless e
 and no authority. The backend remains unqualified because 37 of 38 physical cases are pending. See
 the [first complete conformance-case checkpoint](artifact-native-linux-vz-first-complete-conformance-case-checkpoint-2026-07-12.md).
 
+The same measured sensor now also completes protected file open/read/write plus BPF-correlated mmap,
+fake persistence, and filesystem-diff evidence. `fork_exec_exit` was rerun on the new exact identity,
+so two physical cases now share one backend binding; 36 remain. See the
+[file-telemetry checkpoint](artifact-native-linux-vz-file-telemetry-checkpoint-2026-07-12.md).
+
 Primary target: malicious npm and PyPI package detection with static analysis, AI-assisted code
 review, and behaviorally instrumented detonation in disposable virtual machines
 
@@ -1295,6 +1300,7 @@ Repository evidence:
 - [Linux VZ measured backend-identity checkpoint](artifact-native-linux-vz-measured-backend-identity-checkpoint-2026-07-11.md)
 - [Linux VZ live guest-receipt checkpoint](artifact-native-linux-vz-live-guest-receipt-checkpoint-2026-07-12.md)
 - [Linux VZ first complete conformance-case checkpoint](artifact-native-linux-vz-first-complete-conformance-case-checkpoint-2026-07-12.md)
+- [Linux VZ file-telemetry checkpoint](artifact-native-linux-vz-file-telemetry-checkpoint-2026-07-12.md)
 - [macOS local release readiness](macos-local-release-readiness.md)
 - [macOS local beta pressure checkpoint](macos-local-beta-pressure-checkpoint.md)
 - [latest source-fixture corpus report](src-fixture-corpus-latest.md)

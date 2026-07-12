@@ -96,6 +96,10 @@ The
 [first complete conformance-case checkpoint](../../../docs/product-build-run/artifact-native-linux-vz-first-complete-conformance-case-checkpoint-2026-07-12.md)
 adds the separately signed host packet/lifecycle receipt and verifies the first physical
 guest-plus-host case. The other 37 physical cases remain pending.
+The
+[file-telemetry checkpoint](../../../docs/product-build-run/artifact-native-linux-vz-file-telemetry-checkpoint-2026-07-12.md)
+adds fanotify permission evidence, BPF-correlated mmap, fake persistence, and protected filesystem
+diffs, then rebaselines the process case on the same identity. The other 36 cases remain pending.
 
 ## Closed fixture contract
 

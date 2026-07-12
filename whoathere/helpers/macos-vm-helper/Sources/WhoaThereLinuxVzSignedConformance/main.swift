@@ -279,20 +279,44 @@ private struct LinuxVzSignedConformanceHarness {
         if let serialText = String(data: serialData, encoding: .utf8) {
             fputs(serialText, stderr)
         }
-        let evidence = try decodeLinuxVzProcessEvidencePayloadV1(serialData)
-        let claims = LinuxVzTelemetryGuestObservationClaims(
-            evidencePayloadSHA256: evidence.payloadSHA256,
-            evidenceByteLength: evidence.evidenceByteLength,
-            eventSequenceStart: evidence.eventSequenceStart,
-            eventSequenceEnd: evidence.eventSequenceEnd,
-            eventCount: evidence.eventCount,
-            heartbeatCount: evidence.heartbeatCount,
-            droppedEventCount: evidence.droppedEventCount,
-            sensorHealthy: evidence.sensorHealthy,
-            evidenceTruncated: evidence.evidenceTruncated,
-            descendantTeardownComplete: evidence.descendantTeardownComplete,
-            observedTerminal: "observation_complete"
-        )
+        let claims: LinuxVzTelemetryGuestObservationClaims
+        let guestEvidencePayloadSHA256: String
+        let guestEventCount: UInt64
+        switch runSpec.fixtureCase {
+        case "fork_exec_exit":
+            let evidence = try decodeLinuxVzProcessEvidencePayloadV1(serialData)
+            guard evidence.packageUID == UInt64(backend.packageUID),
+                  evidence.packageGID == UInt64(backend.packageGID) else {
+                throw HarnessError.verificationFailed
+            }
+            claims = LinuxVzTelemetryGuestObservationClaims(
+                evidencePayloadSHA256: evidence.payloadSHA256,
+                evidenceByteLength: evidence.evidenceByteLength,
+                eventSequenceStart: evidence.eventSequenceStart,
+                eventSequenceEnd: evidence.eventSequenceEnd,
+                eventCount: evidence.eventCount,
+                heartbeatCount: evidence.heartbeatCount,
+                droppedEventCount: evidence.droppedEventCount,
+                sensorHealthy: evidence.sensorHealthy,
+                evidenceTruncated: evidence.evidenceTruncated,
+                descendantTeardownComplete: evidence.descendantTeardownComplete,
+                observedTerminal: "observation_complete"
+            )
+            guestEvidencePayloadSHA256 = evidence.payloadSHA256
+            guestEventCount = evidence.eventCount
+        case "protected_open_read_write_rename_delete", "mmap_access":
+            let evidence = try decodeLinuxVzFileEvidencePayload(serialData)
+            guard evidence.fixtureCase == runSpec.fixtureCase,
+                  evidence.packageUID == UInt64(backend.packageUID),
+                  evidence.packageGID == UInt64(backend.packageGID) else {
+                throw HarnessError.verificationFailed
+            }
+            claims = evidence.claims
+            guestEvidencePayloadSHA256 = evidence.payloadSHA256
+            guestEventCount = evidence.claims.eventCount
+        default:
+            throw HarnessError.verificationFailed
+        }
         let verifiedGuest = try verifyLinuxVzTelemetryGuestReceipt(
             receipt,
             challenge: challenge,
@@ -302,7 +326,16 @@ private struct LinuxVzSignedConformanceHarness {
             expectedClaims: claims
         )
 
-        let missingBaseMarkers = linuxVzInertMissingRequiredEvidenceMarkersV2(serialData)
+        let missingBaseMarkers: [String]
+        if runSpec.fixtureCase == "fork_exec_exit" {
+            missingBaseMarkers = linuxVzInertMissingRequiredEvidenceMarkersV2(serialData)
+        } else {
+            let missingCapabilities = linuxVzInertMissingCapabilityMarkers(serialData)
+            let missingFileMarkers = linuxVzInertFileSensorMarkersV1.filter {
+                !linuxVzInertSerialContainsExactMarker(serialData, marker: $0)
+            }
+            missingBaseMarkers = missingCapabilities + missingFileMarkers
+        }
         let signedMarkers = [
             "WHOATHERE_LINUX_VZ_SIGNED_INERT_BEGIN",
             "WHOATHERE_CAPABILITY virtio_vsock=loaded",
@@ -382,8 +415,9 @@ private struct LinuxVzSignedConformanceHarness {
             "host_receipt_sha256": dataSHA256(hostReceipt),
             "complete_conformance_case_verified": completeCase.guestReceiptPresent
                 && completeCase.hostReceiptPresent,
-            "process_evidence_payload_sha256": evidence.payloadSHA256,
-            "process_event_count": String(evidence.eventCount),
+            "fixture_case": runSpec.fixtureCase,
+            "guest_evidence_payload_sha256": guestEvidencePayloadSHA256,
+            "guest_event_count": String(guestEventCount),
             "raw_frame_count": packetSensor.frameCount,
             "packet_sensor_healthy": packetSensor.healthy,
             "clone_destroyed": hostEvidence.claims.cloneDestroyed,
