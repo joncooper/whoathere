@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 
 #include <errno.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <grp.h>
 #include <inttypes.h>
@@ -15,6 +16,7 @@
 #include <net/if_arp.h>
 #include <netinet/in.h>
 #include <poll.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -92,6 +94,8 @@
 #define HOST_FRAME_TX_ERRORS_PATH "/sys/class/net/eth0/statistics/tx_errors"
 #define TERM_RESISTANCE_REPORT_MAGIC 0x57545452U
 #define TERM_RESISTANCE_GRACE_NS 250000000ULL
+#define BACKGROUND_LISTENER_REPORT_MAGIC 0x57544c53U
+#define BACKGROUND_LISTENER_PORT 40552U
 #define SENSOR_PROGRAM_COUNT 8
 
 struct reparent_report {
@@ -121,6 +125,14 @@ struct credential_report {
 struct term_resistance_report {
     uint32_t magic;
     int32_t process_pid;
+};
+
+struct background_listener_report {
+    uint32_t magic;
+    int32_t process_pid;
+    uint64_t socket_inode;
+    uint32_t address;
+    uint16_t port;
 };
 
 struct dynamic_report {
@@ -1280,6 +1292,30 @@ static int read_exact_term_resistance_report(
         report->process_pid > 0 ? 0 : -1;
 }
 
+static int read_exact_background_listener_report(
+    int descriptor,
+    struct background_listener_report *report
+) {
+    size_t offset = 0;
+    while (offset < sizeof(*report)) {
+        ssize_t length = read(descriptor, (char *)report + offset, sizeof(*report) - offset);
+        if (length < 0 && errno == EINTR) continue;
+        if (length <= 0) return -1;
+        offset += (size_t)length;
+    }
+    char trailing = 0;
+    ssize_t length;
+    do {
+        length = read(descriptor, &trailing, 1);
+    } while (length < 0 && errno == EINTR);
+    struct in_addr loopback = {0};
+    return length == 0 && report->magic == BACKGROUND_LISTENER_REPORT_MAGIC &&
+        report->process_pid > 0 && report->socket_inode > 0 &&
+        report->port == BACKGROUND_LISTENER_PORT &&
+        inet_pton(AF_INET, "127.0.0.1", &loopback) == 1 &&
+        report->address == loopback.s_addr ? 0 : -1;
+}
+
 static int read_exact_dynamic_report(int descriptor, struct dynamic_report *report) {
     size_t offset = 0;
     while (offset < sizeof(*report)) {
@@ -2120,6 +2156,64 @@ static int proc_tcp_contains_ipv4_sinkhole(const struct network_report *report) 
     return observed;
 }
 
+static int proc_tcp_contains_background_listener(
+    const struct background_listener_report *report
+) {
+    FILE *stream = fopen("/proc/net/tcp", "re");
+    if (stream == NULL) return 0;
+    char expected_local[14];
+    snprintf(
+        expected_local, sizeof(expected_local),
+        "%08X:%04X", (unsigned int)report->address, report->port
+    );
+    char line[512];
+    int observed = 0;
+    while (fgets(line, sizeof(line), stream) != NULL) {
+        char local[14] = {0};
+        char remote[14] = {0};
+        char state[3] = {0};
+        unsigned long long inode = 0;
+        if (sscanf(
+                line, " %*d: %13s %13s %2s %*s %*s %*s %*u %*u %llu",
+                local, remote, state, &inode
+            ) == 4 && strcmp(local, expected_local) == 0 &&
+            strcmp(remote, "00000000:0000") == 0 && strcmp(state, "0A") == 0 &&
+            inode == report->socket_inode) {
+            observed = 1;
+            break;
+        }
+    }
+    if (fclose(stream) != 0) return 0;
+    return observed;
+}
+
+static int proc_fd_owns_socket_inode(pid_t process, uint64_t inode) {
+    char directory_path[64];
+    snprintf(directory_path, sizeof(directory_path), "/proc/%d/fd", process);
+    DIR *directory = opendir(directory_path);
+    if (directory == NULL) return 0;
+    char expected[64];
+    snprintf(expected, sizeof(expected), "socket:[%" PRIu64 "]", inode);
+    int observed = 0;
+    struct dirent *entry;
+    while ((entry = readdir(directory)) != NULL) {
+        if (entry->d_name[0] == '.') continue;
+        char path[PATH_MAX];
+        char target[128];
+        int length = snprintf(path, sizeof(path), "%s/%s", directory_path, entry->d_name);
+        if (length <= 0 || (size_t)length >= sizeof(path)) continue;
+        ssize_t target_length = readlink(path, target, sizeof(target) - 1);
+        if (target_length <= 0 || (size_t)target_length >= sizeof(target)) continue;
+        target[target_length] = '\0';
+        if (strcmp(target, expected) == 0) {
+            observed = 1;
+            break;
+        }
+    }
+    if (closedir(directory) != 0) return 0;
+    return observed;
+}
+
 static int proc_udp_contains_ipv4_sinkhole(const struct udp_report *report) {
     FILE *stream = fopen("/proc/net/udp", "re");
     if (stream == NULL) return 0;
@@ -2317,6 +2411,7 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
     struct session_report session_report = {0};
     struct credential_report credential_report = {0};
     struct term_resistance_report term_resistance_report = {0};
+    struct background_listener_report background_listener_report = {0};
     struct dynamic_report dynamic_report = {0};
     struct network_report network_report = {0};
     struct network6_report network6_report = {0};
@@ -2333,6 +2428,7 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
     uint64_t session_timestamp = 0;
     uint64_t dynamic_timestamp = 0;
     uint64_t network_timestamp = 0;
+    uint64_t listener_timestamp = 0;
     int report_pipe[2] = {-1, -1};
     int dynamic_fanotify = -1;
     int loopback_listener = -1;
@@ -2424,6 +2520,7 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
     int escaped_session = strcmp(fixture_case, "escaped_session") == 0;
     int reparent = strcmp(fixture_case, "reparenting") == 0;
     int reparented_child = strcmp(fixture_case, "reparented_child") == 0;
+    int background_listener = strcmp(fixture_case, "background_listener") == 0;
     int setsid_escape = strcmp(fixture_case, "setsid_escape") == 0;
     int credential_change = strcmp(fixture_case, "credential_change") == 0;
     int dynamic_library_load = strcmp(fixture_case, "dynamic_library_load") == 0;
@@ -2445,7 +2542,8 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
     int dns_sinkhole_activity = dns_activity || encrypted_dns_connect;
     int udp_activity = udp_send || dns_activity;
     int network_activity = network_connect || udp_activity;
-    if (timeout_case || term_resistance || escaped_session || reparented_child) {
+    if (timeout_case || term_resistance || escaped_session || reparented_child ||
+        background_listener) {
         fds.programs[4] = load_syscall_program(fds.map, OBSERVATION_KILL, SYS_kill);
         fds.links[4] = fds.programs[4] >= 0
             ? attach_raw_tracepoint("sys_enter", fds.programs[4]) : -1;
@@ -2532,7 +2630,7 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
             loopback_prepared = 1;
         }
     }
-    if ((double_fork || reparent || reparented_child) &&
+    if ((double_fork || reparent || reparented_child || background_listener) &&
         prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0) {
         failure_stage = "subreaper_enable";
         failure_errno = errno;
@@ -2557,8 +2655,9 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
             goto cleanup;
         }
     }
-    if ((reparent || reparented_child || setsid_escape || escaped_session || credential_change ||
-         dynamic_library_load || network_activity || term_resistance) &&
+    if ((reparent || reparented_child || background_listener || setsid_escape ||
+         escaped_session || credential_change || dynamic_library_load || network_activity ||
+         term_resistance) &&
         pipe2(report_pipe, O_CLOEXEC) != 0) {
         failure_stage = "process_report_pipe";
         failure_errno = errno;
@@ -2600,8 +2699,9 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
             fixture,
             fixture_case,
             &fds,
-            (reparent || reparented_child || setsid_escape || escaped_session || credential_change ||
-             dynamic_library_load || network_activity || term_resistance)
+            (reparent || reparented_child || background_listener || setsid_escape ||
+             escaped_session || credential_change || dynamic_library_load || network_activity ||
+             term_resistance)
                 ? report_pipe[1] : -1
         );
     }
@@ -2653,6 +2753,41 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
             goto cleanup;
         }
         timeout_deadline_ns = reparent_timestamp + 1000000000ULL;
+    }
+    if (background_listener) {
+        if (read_exact_background_listener_report(
+                report_pipe[0], &background_listener_report
+            ) != 0) {
+            failure_stage = "background_listener_report";
+            failure_errno = errno;
+            goto cleanup;
+        }
+        close_if_open(&report_pipe[0]);
+        int launcher_status = 0;
+        reparent_report.child_pid = background_listener_report.process_pid;
+        if (waitpid(child, &launcher_status, 0) != child ||
+            !WIFEXITED(launcher_status) || WEXITSTATUS(launcher_status) != 0 ||
+            !proc_identity_matches(reparent_report.child_pid, parent) ||
+            !cgroup_contains_pid(reparent_report.child_pid) ||
+            !proc_fd_owns_socket_inode(
+                reparent_report.child_pid, background_listener_report.socket_inode
+            ) || !proc_tcp_contains_background_listener(&background_listener_report)) {
+            failure_stage = "background_listener_identity";
+            failure_errno = errno;
+            failure_detail = WIFEXITED(launcher_status) ? WEXITSTATUS(launcher_status) : 255;
+            goto cleanup;
+        }
+        reparent_timestamp = monotonic_ns();
+        for (int attempt = 0; attempt < 16 && listener_timestamp <= reparent_timestamp;
+             attempt++) {
+            listener_timestamp = monotonic_ns();
+        }
+        if (reparent_timestamp == 0 || listener_timestamp <= reparent_timestamp ||
+            UINT64_MAX - listener_timestamp < 1000000000ULL) {
+            failure_stage = "background_listener_deadline_create";
+            goto cleanup;
+        }
+        timeout_deadline_ns = listener_timestamp + 1000000000ULL;
     }
     if (setsid_escape || escaped_session) {
         if (read_exact_session_report(report_pipe[0], &session_report) != 0) {
@@ -2949,8 +3084,10 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
             goto cleanup;
         }
     }
-    if (timeout_case || term_resistance || escaped_session || reparented_child) {
-        pid_t teardown_target = reparented_child ? reparent_report.child_pid : child;
+    if (timeout_case || term_resistance || escaped_session || reparented_child ||
+        background_listener) {
+        pid_t teardown_target = (reparented_child || background_listener)
+            ? reparent_report.child_pid : child;
         int deadline_result = wait_until_deadline_while_child_runs(
             teardown_target,
             &child_status,
@@ -2974,13 +3111,26 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
             failure_errno = errno;
             goto cleanup;
         }
-        if (timeout_case || escaped_session || reparented_child) {
+        if (background_listener &&
+            (!proc_fd_owns_socket_inode(
+                teardown_target, background_listener_report.socket_inode
+             ) || !proc_tcp_contains_background_listener(&background_listener_report))) {
+            failure_stage = "background_listener_deadline_identity";
+            failure_errno = errno;
+            goto cleanup;
+        }
+        if (timeout_case || escaped_session || reparented_child || background_listener) {
             if (kill(teardown_target, SIGTERM) != 0 ||
                 waitpid(teardown_target, &child_status, 0) != teardown_target ||
                 !WIFSIGNALED(child_status) || WTERMSIG(child_status) != SIGTERM) {
                 failure_stage = "timeout_term_delivery";
                 failure_errno = errno;
                 failure_detail = WIFSIGNALED(child_status) ? WTERMSIG(child_status) : 255;
+                goto cleanup;
+            }
+            if (background_listener &&
+                proc_tcp_contains_background_listener(&background_listener_report)) {
+                failure_stage = "background_listener_not_removed";
                 goto cleanup;
             }
         } else {
@@ -3036,7 +3186,8 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
             goto cleanup;
         }
     }
-    if (normal_exit || timeout_case || term_resistance || escaped_session || reparented_child) {
+    if (normal_exit || timeout_case || term_resistance || escaped_session || reparented_child ||
+        background_listener) {
         errno = 0;
         if (waitpid(-1, NULL, WNOHANG) != -1 || errno != ECHILD) {
             failure_stage = "normal_exit_descendant_count";
@@ -3119,7 +3270,8 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
         failure_errno = errno;
         goto cleanup;
     }
-    if ((timeout_case || term_resistance || escaped_session || reparented_child) &&
+    if ((timeout_case || term_resistance || escaped_session || reparented_child ||
+         background_listener) &&
         lookup_observation(fds.map, OBSERVATION_KILL, &kill_event) != 0) {
         failure_stage = "teardown_kill_observation_lookup";
         failure_errno = errno;
@@ -3127,7 +3279,7 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
     }
     if ((!double_fork && !reparent && !setsid_escape && !credential_change &&
          !dynamic_library_load && !network_activity && !timeout_case && !term_resistance &&
-         !escaped_session && !reparented_child &&
+         !escaped_session && !reparented_child && !background_listener &&
          (!observed_pid(&fork_event, parent) || !observed_pid(&exec_event, child) ||
           !observed_pid(&exit_event, child) ||
           fork_event.timestamp_ns >= exec_event.timestamp_ns ||
@@ -3164,6 +3316,18 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
           reparent_timestamp == 0 || exec_event.timestamp_ns >= fork_event.timestamp_ns ||
           fork_event.timestamp_ns >= reparent_timestamp ||
           reparent_timestamp >= kill_event.timestamp_ns ||
+          kill_event.timestamp_ns >= exit_event.timestamp_ns)) ||
+        (background_listener &&
+         (fork_event.count != 2 || exec_event.count != 1 || exit_event.count != 2 ||
+          (pid_t)(exec_event.pid_tgid >> 32) != child ||
+          (pid_t)(fork_event.pid_tgid >> 32) != child ||
+          kill_event.count != 1 || !observed_pid(&kill_event, parent) ||
+          (pid_t)(exit_event.pid_tgid >> 32) != reparent_report.child_pid ||
+          reparent_timestamp == 0 || listener_timestamp == 0 ||
+          exec_event.timestamp_ns >= fork_event.timestamp_ns ||
+          fork_event.timestamp_ns >= reparent_timestamp ||
+          reparent_timestamp >= listener_timestamp ||
+          listener_timestamp >= kill_event.timestamp_ns ||
           kill_event.timestamp_ns >= exit_event.timestamp_ns)) ||
         (double_fork &&
          (fork_event.count != 3 || exec_event.count != 1 || exit_event.count != 3 ||
@@ -3358,7 +3522,8 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
         goto cleanup;
     }
 
-    if (normal_exit || timeout_case || term_resistance || escaped_session || reparented_child) {
+    if (normal_exit || timeout_case || term_resistance || escaped_session || reparented_child ||
+        background_listener) {
         close_sensor_fds(&fds);
         if (write_control(ROOT_CGROUP_PROCS, "0\n") != 0) {
             failure_stage = "normal_exit_cgroup_release";
@@ -3399,6 +3564,16 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
         puts("WHOATHERE_SENSOR teardown_deadline=reached");
         puts("WHOATHERE_SENSOR teardown_term_signal=delivered");
         puts("WHOATHERE_SENSOR teardown_kill_signal=not_required");
+        puts("WHOATHERE_SENSOR teardown_descendants=none_remaining");
+        puts("WHOATHERE_SENSOR teardown_sensor=closed");
+        puts("WHOATHERE_SENSOR teardown_cgroup=removed");
+        puts("WHOATHERE_SENSOR teardown_terminal=timeout_with_teardown");
+    }
+    if (background_listener) {
+        puts("WHOATHERE_SENSOR teardown_trigger=deadline");
+        puts("WHOATHERE_SENSOR teardown_deadline=reached");
+        puts("WHOATHERE_SENSOR teardown_listener=loopback_removed");
+        puts("WHOATHERE_SENSOR teardown_term_signal=delivered");
         puts("WHOATHERE_SENSOR teardown_descendants=none_remaining");
         puts("WHOATHERE_SENSOR teardown_sensor=closed");
         puts("WHOATHERE_SENSOR teardown_cgroup=removed");
@@ -3558,6 +3733,37 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
             cgroup.count,
             (uint64_t)child,
             exit_event.timestamp_ns
+        );
+        result = 0;
+        goto cleanup;
+    }
+    if (background_listener) {
+        printf(
+            "WHOATHERE_GUEST_TEARDOWN_EVIDENCE "
+            "{\"cgroup_empty_after_reap\":true,\"cgroup_removed\":true,"
+            "\"deadline_limit_ns\":\"1000000000\",\"deadline_reached\":true,"
+            "\"descendant_teardown_complete\":true,\"dropped_event_count\":\"0\","
+            "\"event_count\":\"6\",\"event_sequence_end\":\"6\","
+            "\"event_sequence_start\":\"1\",\"events\":["
+            "{\"actor_pid\":\"%" PRIu64 "\",\"cgroup_id\":\"%" PRIu64 "\",\"kind\":\"exec\",\"sequence\":\"1\",\"subject_pid\":\"%" PRIu64 "\",\"timestamp_ns\":\"%" PRIu64 "\"},"
+            "{\"actor_pid\":\"%" PRIu64 "\",\"cgroup_id\":\"%" PRIu64 "\",\"kind\":\"fork\",\"sequence\":\"2\",\"subject_pid\":\"%" PRIu64 "\",\"timestamp_ns\":\"%" PRIu64 "\"},"
+            "{\"actor_pid\":\"%" PRIu64 "\",\"cgroup_id\":\"%" PRIu64 "\",\"kind\":\"reparent\",\"sequence\":\"3\",\"subject_pid\":\"%" PRIu64 "\",\"timestamp_ns\":\"%" PRIu64 "\"},"
+            "{\"actor_pid\":\"%" PRIu64 "\",\"cgroup_id\":\"%" PRIu64 "\",\"kind\":\"listener_ready\",\"sequence\":\"4\",\"subject_pid\":\"%" PRIu64 "\",\"timestamp_ns\":\"%" PRIu64 "\"},"
+            "{\"actor_pid\":\"%" PRIu64 "\",\"cgroup_id\":\"%" PRIu64 "\",\"kind\":\"signal_term\",\"sequence\":\"5\",\"subject_pid\":\"%" PRIu64 "\",\"timestamp_ns\":\"%" PRIu64 "\"},"
+            "{\"actor_pid\":\"%" PRIu64 "\",\"cgroup_id\":\"%" PRIu64 "\",\"kind\":\"exit\",\"sequence\":\"6\",\"subject_pid\":\"%" PRIu64 "\",\"timestamp_ns\":\"%" PRIu64 "\"}],"
+            "\"evidence_truncated\":false,\"fixture_case\":\"background_listener\","
+            "\"fixture_termination_signal\":\"15\",\"fork_count\":\"2\",\"heartbeat_count\":\"2\",\"kill_signal_count\":\"0\","
+            "\"listener_address\":\"127.0.0.1\",\"listener_count\":\"1\",\"listener_owner\":\"reparented_descendant_at_deadline\",\"listener_port\":\"40552\",\"listener_removed\":true,"
+            "\"package_gid\":\"65534\",\"package_uid\":\"65534\",\"reaped_process_count\":\"2\","
+            "\"reparent_target\":\"protected_subreaper_at_deadline\",\"reparented_process_count\":\"1\","
+            "\"schema_version\":\"whoathere.linux_vz_teardown_evidence_payload.v1\",\"sensor_healthy\":true,\"sensor_teardown_complete\":true,"
+            "\"teardown_trigger\":\"deadline\",\"termination_signal_count\":\"1\"}\n",
+            (uint64_t)child, cgroup.count, (uint64_t)child, exec_event.timestamp_ns,
+            (uint64_t)child, cgroup.count, (uint64_t)reparent_report.child_pid, fork_event.timestamp_ns,
+            (uint64_t)parent, cgroup.count, (uint64_t)reparent_report.child_pid, reparent_timestamp,
+            (uint64_t)reparent_report.child_pid, cgroup.count, (uint64_t)reparent_report.child_pid, listener_timestamp,
+            (uint64_t)parent, cgroup.count, (uint64_t)reparent_report.child_pid, kill_event.timestamp_ns,
+            (uint64_t)reparent_report.child_pid, cgroup.count, (uint64_t)reparent_report.child_pid, exit_event.timestamp_ns
         );
         result = 0;
         goto cleanup;
@@ -4176,6 +4382,7 @@ int main(int argument_count, char **arguments) {
         strcmp(arguments[2], "term_resistance") == 0 ||
         strcmp(arguments[2], "escaped_session") == 0 ||
         strcmp(arguments[2], "reparented_child") == 0 ||
+        strcmp(arguments[2], "background_listener") == 0 ||
         strcmp(arguments[2], "double_fork_daemonization") == 0 ||
         strcmp(arguments[2], "reparenting") == 0 ||
         strcmp(arguments[2], "setsid_escape") == 0 ||

@@ -97,6 +97,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         LinuxVzTelemetryConformanceCaseV1::TermResistance => "term_resistance",
         LinuxVzTelemetryConformanceCaseV1::EscapedSession => "escaped_session",
         LinuxVzTelemetryConformanceCaseV1::ReparentedChild => "reparented_child",
+        LinuxVzTelemetryConformanceCaseV1::BackgroundListener => "background_listener",
         _ => return Err("complete-case verifier does not implement this inert case".into()),
     };
     let backend = decode_unqualified_macos_linux_vz_telemetry_backend_identity_v1(
@@ -215,7 +216,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             | LinuxVzTelemetryConformanceCaseV1::Timeout
             | LinuxVzTelemetryConformanceCaseV1::TermResistance
             | LinuxVzTelemetryConformanceCaseV1::EscapedSession
-            | LinuxVzTelemetryConformanceCaseV1::ReparentedChild => {
+            | LinuxVzTelemetryConformanceCaseV1::ReparentedChild
+            | LinuxVzTelemetryConformanceCaseV1::BackgroundListener => {
                 let evidence = decode_linux_vz_teardown_evidence_from_serial_v1(&serial)?;
                 if evidence.fixture_case() != run_spec.fixture_case()
                     || evidence.package_uid() != backend.package_uid()
@@ -288,6 +290,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     | LinuxVzTelemetryConformanceCaseV1::TermResistance
                     | LinuxVzTelemetryConformanceCaseV1::EscapedSession
                     | LinuxVzTelemetryConformanceCaseV1::ReparentedChild
+                    | LinuxVzTelemetryConformanceCaseV1::BackgroundListener
             ) {
                 LinuxVzTelemetryConformanceObservedTerminalV1::TimeoutWithTeardown
             } else {

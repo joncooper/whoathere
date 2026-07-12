@@ -37,6 +37,8 @@ static const char *dynamic_library_path = "/whoathere/dynamic-fixture-library.so
 #define HOST_FRAME_TRIGGER_COUNT 512U
 #define HOST_FRAME_PAYLOAD_LENGTH 16U
 #define TERM_RESISTANCE_REPORT_MAGIC 0x57545452U
+#define BACKGROUND_LISTENER_REPORT_MAGIC 0x57544c53U
+#define BACKGROUND_LISTENER_PORT 40552U
 static const unsigned char dns_plaintext_query[] = {
     0x57, 0x54, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x09, 'w', 'h', 'o', 'a', 't', 'h', 'e', 'r', 'e',
@@ -117,6 +119,14 @@ struct host_frame_report {
 struct term_resistance_report {
     uint32_t magic;
     int32_t process_pid;
+};
+
+struct background_listener_report {
+    uint32_t magic;
+    int32_t process_pid;
+    uint64_t socket_inode;
+    uint32_t address;
+    uint16_t port;
 };
 
 static int protected_sensor_denied(void) {
@@ -243,6 +253,42 @@ static int reparented_child(void) {
     if (close(REPARENT_REPORT_FD) != 0 && written == (ssize_t)sizeof(report)) return 169;
     errno = saved_errno;
     return written == (ssize_t)sizeof(report) ? 0 : 170;
+}
+
+static int background_listener(void) {
+    pid_t child = fork();
+    if (child < 0) return 171;
+    if (child > 0) {
+        close(REPARENT_REPORT_FD);
+        return 0;
+    }
+    int descriptor = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
+    int reuse = 1;
+    struct sockaddr_in address = {
+        .sin_family = AF_INET,
+        .sin_port = htons(BACKGROUND_LISTENER_PORT),
+    };
+    struct stat metadata;
+    if (descriptor < 0 ||
+        setsockopt(descriptor, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) != 0 ||
+        inet_pton(AF_INET, "127.0.0.1", &address.sin_addr) != 1 ||
+        bind(descriptor, (const struct sockaddr *)&address, sizeof(address)) != 0 ||
+        listen(descriptor, 1) != 0 || fstat(descriptor, &metadata) != 0) {
+        _exit(172);
+    }
+    const struct background_listener_report report = {
+        .magic = BACKGROUND_LISTENER_REPORT_MAGIC,
+        .process_pid = getpid(),
+        .socket_inode = metadata.st_ino,
+        .address = address.sin_addr.s_addr,
+        .port = BACKGROUND_LISTENER_PORT,
+    };
+    ssize_t written = write(REPARENT_REPORT_FD, &report, sizeof(report));
+    int saved_errno = errno;
+    if (close(REPARENT_REPORT_FD) != 0 && written == (ssize_t)sizeof(report)) _exit(173);
+    errno = saved_errno;
+    if (written != (ssize_t)sizeof(report)) _exit(174);
+    for (;;) (void)pause();
 }
 
 static int setsid_escape(void) {
@@ -811,6 +857,7 @@ int main(int argument_count, char **arguments) {
     }
     if (strcmp(arguments[1], "reparenting") == 0) return reparenting();
     if (strcmp(arguments[1], "reparented_child") == 0) return reparented_child();
+    if (strcmp(arguments[1], "background_listener") == 0) return background_listener();
     if (strcmp(arguments[1], "setsid_escape") == 0) return setsid_escape();
     if (strcmp(arguments[1], "escaped_session") == 0) return escaped_session();
     if (strcmp(arguments[1], "credential_change") == 0) return credential_change();

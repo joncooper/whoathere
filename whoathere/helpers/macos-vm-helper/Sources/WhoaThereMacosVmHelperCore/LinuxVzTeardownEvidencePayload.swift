@@ -173,6 +173,31 @@ public func decodeLinuxVzTeardownEvidenceJSONV1(
               teardownDecimal(value["kill_signal_count"]) == 0 else {
             throw LinuxVzTeardownEvidencePayloadError.invalidSchema
         }
+    case "background_listener":
+        expectedKeys = baseKeys.union([
+            "fixture_termination_signal", "fork_count", "listener_address", "listener_count",
+            "listener_owner", "listener_port", "listener_removed", "reparent_target",
+            "reparented_process_count"
+        ])
+        expectedKinds = ["exec", "fork", "reparent", "listener_ready", "signal_term", "exit"]
+        observedTerminal = "timeout_with_teardown"
+        guard value["teardown_trigger"] as? String == "deadline",
+              teardownDecimal(value["deadline_limit_ns"]) == 1_000_000_000,
+              value["deadline_reached"] as? Bool == true,
+              teardownDecimal(value["fixture_termination_signal"]) == 15,
+              teardownDecimal(value["fork_count"]) == 2,
+              teardownDecimal(value["reaped_process_count"]) == 2,
+              value["reparent_target"] as? String == "protected_subreaper_at_deadline",
+              teardownDecimal(value["reparented_process_count"]) == 1,
+              value["listener_address"] as? String == "127.0.0.1",
+              teardownDecimal(value["listener_count"]) == 1,
+              value["listener_owner"] as? String == "reparented_descendant_at_deadline",
+              teardownDecimal(value["listener_port"]) == 40552,
+              value["listener_removed"] as? Bool == true,
+              teardownDecimal(value["termination_signal_count"]) == 1,
+              teardownDecimal(value["kill_signal_count"]) == 0 else {
+            throw LinuxVzTeardownEvidencePayloadError.invalidSchema
+        }
     default:
         throw LinuxVzTeardownEvidencePayloadError.invalidSchema
     }
@@ -186,7 +211,7 @@ public func decodeLinuxVzTeardownEvidenceJSONV1(
           value["sensor_healthy"] as? Bool == true,
           value["evidence_truncated"] as? Bool == false,
           teardownDecimal(value["reaped_process_count"]) ==
-            (fixtureCase == "reparented_child" ? 2 : 1),
+            (["reparented_child", "background_listener"].contains(fixtureCase) ? 2 : 1),
           teardownDecimal(value["event_sequence_start"]) == 1,
           teardownDecimal(value["event_sequence_end"]) == eventCount,
           teardownDecimal(value["event_count"]) == eventCount,
@@ -208,7 +233,7 @@ public func decodeLinuxVzTeardownEvidenceJSONV1(
           zip(events, events.dropFirst()).allSatisfy({ pair in
               pair.0.timestampNS < pair.1.timestampNS
           }),
-          fixtureCase == "reparented_child" ||
+          ["reparented_child", "background_listener"].contains(fixtureCase) ||
             events[0].actorPID != events[0].subjectPID else {
         throw LinuxVzTeardownEvidencePayloadError.invalidEvent
     }
@@ -261,6 +286,20 @@ public func decodeLinuxVzTeardownEvidenceJSONV1(
               events[3].subjectPID == events[1].subjectPID,
               events[4].actorPID == events[1].subjectPID,
               events[4].subjectPID == events[1].subjectPID else {
+            throw LinuxVzTeardownEvidencePayloadError.invalidEvent
+        }
+    case "background_listener":
+        guard events[0].actorPID == events[0].subjectPID,
+              events[1].actorPID == events[0].actorPID,
+              events[1].subjectPID != events[0].actorPID,
+              events[2].actorPID != events[0].actorPID,
+              events[2].subjectPID == events[1].subjectPID,
+              events[3].actorPID == events[1].subjectPID,
+              events[3].subjectPID == events[1].subjectPID,
+              events[4].actorPID == events[2].actorPID,
+              events[4].subjectPID == events[1].subjectPID,
+              events[5].actorPID == events[1].subjectPID,
+              events[5].subjectPID == events[1].subjectPID else {
             throw LinuxVzTeardownEvidencePayloadError.invalidEvent
         }
     default:

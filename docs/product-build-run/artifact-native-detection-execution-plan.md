@@ -4,15 +4,15 @@ Date: 2026-07-09
 
 Status: canonical execution plan for the next product milestone
 
-Current execution checkpoint (2026-07-12): twenty-seven of the 38 authenticated Linux VZ inert
+Current execution checkpoint (2026-07-12): twenty-eight of the 38 authenticated Linux VZ inert
 conformance cases now pass physically on one exact measured backend identity. The newest
-`reparented_child` case proves that a live descendant is reparented to the protected subreaper,
-remains in the measured cgroup through the guest deadline, and is then found, TERM-signaled, reaped,
-and removed with no descendant. Strict exec/fork/reparent/TERM/exit lineage, two exact reaps,
-sensor closure, cgroup removal, stopped VM, and destroyed diskless instance are bound by independent
-guest and host receipts. This is still telemetry qualification, not package detection, and the
-backend remains `candidate_unqualified`. See the
-[reparented-child checkpoint](artifact-native-linux-vz-reparented-child-checkpoint-2026-07-12.md).
+`background_listener` case proves that an adopted unprivileged descendant owns one exact loopback
+TCP listener through the guest deadline, is TERM-signaled and reaped, and leaves that listener,
+descendant set, and measured cgroup absent. Strict exec/fork/reparent/listener/TERM/exit lineage,
+two exact reaps, sensor closure, stopped VM, and destroyed diskless instance are bound by
+independent guest and host receipts. This is still telemetry qualification, not package detection,
+and the backend remains `candidate_unqualified`. See the
+[background-listener checkpoint](artifact-native-linux-vz-background-listener-checkpoint-2026-07-12.md).
 
 The first protected-sensor bootstrap now also observes a cgroup-filtered inert fork/exec/exit chain
 whose child runs as UID/GID 65534 and cannot read or write the root-only sensor. This remains
@@ -234,6 +234,16 @@ removal. All twenty-seven cases ran physically on the resulting identity; all 81
 matched locally and every complete case passed independent Rust verification. Twenty-seven of 38
 cases now share one backend binding; 11 remain. See the
 [reparented-child checkpoint](artifact-native-linux-vz-reparented-child-checkpoint-2026-07-12.md).
+
+The `background_listener` teardown case now proves that the adopted unprivileged descendant owns
+the exact `127.0.0.1:40552` listening socket at readiness and again at the one-second deadline.
+The protected sensor correlates the descendant's procfs parent and cgroup identity, file-descriptor
+socket inode, and exact `/proc/net/tcp` LISTEN row before delivering one TERM and reaping signal 15.
+It then requires that exact listener to be absent before sensor closure and empty-cgroup removal.
+All twenty-eight cases ran physically on the resulting identity; all 84 request inputs matched
+locally and every complete case passed independent Rust verification. Twenty-eight of 38 cases now
+share one backend binding; 10 remain. See the
+[background-listener checkpoint](artifact-native-linux-vz-background-listener-checkpoint-2026-07-12.md).
 
 Primary target: malicious npm and PyPI package detection with static analysis, AI-assisted code
 review, and behaviorally instrumented detonation in disposable virtual machines

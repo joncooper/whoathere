@@ -17,6 +17,9 @@ private let validEscapedSessionPayload =
 private let validReparentedChildPayload =
     #"{"cgroup_empty_after_reap":true,"cgroup_removed":true,"deadline_limit_ns":"1000000000","deadline_reached":true,"descendant_teardown_complete":true,"dropped_event_count":"0","event_count":"5","event_sequence_end":"5","event_sequence_start":"1","events":[{"actor_pid":"42","cgroup_id":"9001","kind":"exec","sequence":"1","subject_pid":"42","timestamp_ns":"100"},{"actor_pid":"42","cgroup_id":"9001","kind":"fork","sequence":"2","subject_pid":"43","timestamp_ns":"200"},{"actor_pid":"41","cgroup_id":"9001","kind":"reparent","sequence":"3","subject_pid":"43","timestamp_ns":"300"},{"actor_pid":"41","cgroup_id":"9001","kind":"signal_term","sequence":"4","subject_pid":"43","timestamp_ns":"1400"},{"actor_pid":"43","cgroup_id":"9001","kind":"exit","sequence":"5","subject_pid":"43","timestamp_ns":"1500"}],"evidence_truncated":false,"fixture_case":"reparented_child","fixture_termination_signal":"15","fork_count":"2","heartbeat_count":"2","kill_signal_count":"0","package_gid":"65534","package_uid":"65534","reaped_process_count":"2","reparent_target":"protected_subreaper_at_deadline","reparented_process_count":"1","schema_version":"whoathere.linux_vz_teardown_evidence_payload.v1","sensor_healthy":true,"sensor_teardown_complete":true,"teardown_trigger":"deadline","termination_signal_count":"1"}"#
 
+private let validBackgroundListenerPayload =
+    #"{"cgroup_empty_after_reap":true,"cgroup_removed":true,"deadline_limit_ns":"1000000000","deadline_reached":true,"descendant_teardown_complete":true,"dropped_event_count":"0","event_count":"6","event_sequence_end":"6","event_sequence_start":"1","events":[{"actor_pid":"42","cgroup_id":"9001","kind":"exec","sequence":"1","subject_pid":"42","timestamp_ns":"100"},{"actor_pid":"42","cgroup_id":"9001","kind":"fork","sequence":"2","subject_pid":"43","timestamp_ns":"200"},{"actor_pid":"41","cgroup_id":"9001","kind":"reparent","sequence":"3","subject_pid":"43","timestamp_ns":"300"},{"actor_pid":"43","cgroup_id":"9001","kind":"listener_ready","sequence":"4","subject_pid":"43","timestamp_ns":"400"},{"actor_pid":"41","cgroup_id":"9001","kind":"signal_term","sequence":"5","subject_pid":"43","timestamp_ns":"1500"},{"actor_pid":"43","cgroup_id":"9001","kind":"exit","sequence":"6","subject_pid":"43","timestamp_ns":"1600"}],"evidence_truncated":false,"fixture_case":"background_listener","fixture_termination_signal":"15","fork_count":"2","heartbeat_count":"2","kill_signal_count":"0","listener_address":"127.0.0.1","listener_count":"1","listener_owner":"reparented_descendant_at_deadline","listener_port":"40552","listener_removed":true,"package_gid":"65534","package_uid":"65534","reaped_process_count":"2","reparent_target":"protected_subreaper_at_deadline","reparented_process_count":"1","schema_version":"whoathere.linux_vz_teardown_evidence_payload.v1","sensor_healthy":true,"sensor_teardown_complete":true,"teardown_trigger":"deadline","termination_signal_count":"1"}"#
+
 private let normalExitPrefix = "WHOATHERE_GUEST_TEARDOWN_EVIDENCE "
 
 @Test func teardownEvidenceBindsNaturalExitLineageAndCompleteCleanup() throws {
@@ -244,6 +247,52 @@ private let normalExitPrefix = "WHOATHERE_GUEST_TEARDOWN_EVIDENCE "
     )
     var events = try #require(rebound["events"] as? [[String: Any]])
     events[2]["actor_pid"] = "42"
+    rebound["events"] = events
+    let data = try canonicalJSONData(rebound)
+    #expect(throws: LinuxVzTeardownEvidencePayloadError.invalidEvent) {
+        try decodeLinuxVzTeardownEvidencePayloadV1(
+            Data(normalExitPrefix.utf8) + data + Data("\n".utf8)
+        )
+    }
+}
+
+@Test func teardownEvidenceBindsBackgroundListenerOwnerRemovalAndCompleteCleanup() throws {
+    let payload = try decodeLinuxVzTeardownEvidencePayloadV1(
+        Data((normalExitPrefix + validBackgroundListenerPayload + "\n").utf8)
+    )
+    #expect(payload.canonicalJSON == Data(validBackgroundListenerPayload.utf8))
+    #expect(payload.fixtureCase == "background_listener")
+    #expect(payload.claims.eventCount == 6)
+    #expect(payload.claims.observedTerminal == "timeout_with_teardown")
+    #expect(payload.claims.droppedEventCount == 0)
+    #expect(payload.claims.descendantTeardownComplete)
+}
+
+@Test func teardownEvidenceRejectsForgedBackgroundListenerClaimsAndLineage() throws {
+    for (field, changed) in [
+        ("listener_removed", false as Any),
+        ("listener_port", "40553" as Any),
+        ("listener_owner", "package_launcher" as Any),
+    ] {
+        var object = try #require(
+            JSONSerialization.jsonObject(with: Data(validBackgroundListenerPayload.utf8))
+                as? [String: Any]
+        )
+        object[field] = changed
+        let data = try canonicalJSONData(object)
+        #expect(throws: LinuxVzTeardownEvidencePayloadError.invalidSchema) {
+            try decodeLinuxVzTeardownEvidencePayloadV1(
+                Data(normalExitPrefix.utf8) + data + Data("\n".utf8)
+            )
+        }
+    }
+
+    var rebound = try #require(
+        JSONSerialization.jsonObject(with: Data(validBackgroundListenerPayload.utf8))
+            as? [String: Any]
+    )
+    var events = try #require(rebound["events"] as? [[String: Any]])
+    events[3]["actor_pid"] = "42"
     rebound["events"] = events
     let data = try canonicalJSONData(rebound)
     #expect(throws: LinuxVzTeardownEvidencePayloadError.invalidEvent) {
