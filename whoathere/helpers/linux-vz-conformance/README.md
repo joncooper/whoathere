@@ -68,6 +68,10 @@ The
 [ordered process-evidence checkpoint](../../../docs/product-build-run/artifact-native-linux-vz-ordered-process-evidence-checkpoint-2026-07-11.md)
 adds one canonical payload that independent Swift and Rust validators bind to the existing guest
 receipt claim shape. It remains unsigned bootstrap evidence rather than a conformance receipt.
+The
+[measured backend-identity checkpoint](../../../docs/product-build-run/artifact-native-linux-vz-measured-backend-identity-checkpoint-2026-07-11.md)
+pins the runtime BTF and binds the actual physical-host helper, configurations, and fresh evidence
+public keys into the still-unqualified backend identity.
 
 ## Closed fixture contract
 

@@ -6,6 +6,7 @@ public let linuxVzInertRequiredCapabilityMarkersV1 = [
     "WHOATHERE_CAPABILITY kernel_release=6.18.35-0-virt",
     "WHOATHERE_CAPABILITY architecture=aarch64",
     "WHOATHERE_CAPABILITY kernel_btf=present",
+    "WHOATHERE_CAPABILITY kernel_btf_sha256=sha256:d7f143446e11cfd67fa53392616afdbca6511a6af432e6bd56fb053aa4e7becb",
     "WHOATHERE_CAPABILITY cgroup_v2=mounted",
     "WHOATHERE_CAPABILITY bpf_fs=mounted",
     "WHOATHERE_CAPABILITY fanotify_init=available",

@@ -12,6 +12,7 @@ expected_iso_sha256=c81699152db11d2a6dbb7d75348d632fcf5811eff414d7e71876a8bb6d48
 expected_source_kernel_pe_sha256=47970e0ee0478fe5c60824a89f162d5a353fa29466e5d3bddb0f9c506f1ed756
 expected_kernel_image_sha256=8b216f74e7f89def4604adf69e2345437363aff4819101bb1551c9e83cd35cdd
 expected_base_initramfs_sha256=fc1aad923040d23bea79f62bef4a8e2481162e89a5c42245903df1a85134a527
+expected_kernel_btf_sha256=d7f143446e11cfd67fa53392616afdbca6511a6af432e6bd56fb053aa4e7becb
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 source_dir=$(CDPATH= cd -- "$script_dir/.." && pwd)
 
@@ -71,7 +72,7 @@ if ! cmp -s "$canonical_manifest" "$manifest"; then
     exit 65
 fi
 
-expected_keys='["architecture","base_initramfs_sha256","builder_source_sha256","canonical_newc_source_sha256","capability_probe_sha256","capability_probe_source_sha256","config_sha256","external_network","guest_init_sha256","guest_init_source_sha256","image_state","kernel_extraction","kernel_gzip_payload_offset","kernel_image_sha256","kernel_release","overlay_cpio_gzip_sha256","overlay_cpio_sha256","process_fixture_child_sha256","process_fixture_child_source_sha256","process_sensor_probe_sha256","process_sensor_probe_source_sha256","schema_version","source_iso_sha256","source_kernel_pe_sha256","source_url","sync_back_policy","system_map_sha256","whoathere_initramfs_sha256","zig_version"]'
+expected_keys='["architecture","base_initramfs_sha256","builder_source_sha256","canonical_newc_source_sha256","capability_probe_sha256","capability_probe_source_sha256","config_sha256","external_network","guest_init_sha256","guest_init_source_sha256","image_state","kernel_btf_sha256","kernel_extraction","kernel_gzip_payload_offset","kernel_image_sha256","kernel_release","overlay_cpio_gzip_sha256","overlay_cpio_sha256","process_fixture_child_sha256","process_fixture_child_source_sha256","process_sensor_probe_sha256","process_sensor_probe_source_sha256","schema_version","source_iso_sha256","source_kernel_pe_sha256","source_url","sync_back_policy","system_map_sha256","whoathere_initramfs_sha256","zig_version"]'
 if [ "$(jq -c 'keys' "$manifest")" != "$expected_keys" ]; then
     echo "manifest key set mismatch" >&2
     exit 65
@@ -94,9 +95,10 @@ require_hash() {
     require_value "$field" "$actual"
 }
 
-require_value schema_version whoathere.linux_vz_inert_image_manifest.v4
+require_value schema_version whoathere.linux_vz_inert_image_manifest.v5
 require_value architecture aarch64
 require_value kernel_release 6.18.35-0-virt
+require_value kernel_btf_sha256 "sha256:$expected_kernel_btf_sha256"
 require_value image_state candidate_unqualified
 require_value external_network no_external_route
 require_value sync_back_policy structurally_absent

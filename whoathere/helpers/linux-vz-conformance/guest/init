@@ -21,6 +21,8 @@ echo "WHOATHERE_CAPABILITY architecture=$("$busybox" uname -m)"
 
 if [ -r /sys/kernel/btf/vmlinux ]; then
     echo "WHOATHERE_CAPABILITY kernel_btf=present"
+    kernel_btf_sha256=$("$busybox" sha256sum /sys/kernel/btf/vmlinux | "$busybox" awk '{print $1}')
+    echo "WHOATHERE_CAPABILITY kernel_btf_sha256=sha256:$kernel_btf_sha256"
 else
     echo "WHOATHERE_CAPABILITY kernel_btf=missing"
     capability_failed=1

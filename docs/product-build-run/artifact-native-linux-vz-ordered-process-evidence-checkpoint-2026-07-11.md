@@ -6,6 +6,11 @@ Status: the physical Linux VZ guest emits one canonical, ordered, cgroup-bound p
 payload that independent Swift and Rust validators map into the existing authenticated guest-receipt
 claims; live guest signing and a verified conformance receipt remain pending
 
+Follow-on: the
+[measured backend-identity checkpoint](artifact-native-linux-vz-measured-backend-identity-checkpoint-2026-07-11.md)
+binds the physical runtime BTF, helper, configurations, and evidence public keys needed for the
+forthcoming live challenge.
+
 Canonical references:
 
 - [Artifact-Native Detection Execution Plan](artifact-native-detection-execution-plan.md)

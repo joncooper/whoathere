@@ -20,6 +20,11 @@ heartbeat, drop, health, truncation, and teardown fields. Rust independently map
 into the existing challenge-bound guest receipt claims, while live signing remains disabled. See
 the [ordered process-evidence checkpoint](artifact-native-linux-vz-ordered-process-evidence-checkpoint-2026-07-11.md).
 
+The pinned runtime BTF, actual signed physical-host helper, canonical sensor configurations,
+structurally absent root disk, and fresh evidence public keys now form an independently validated
+unqualified backend identity. Private-key provisioning and live receipt signing remain pending. See
+the [measured backend-identity checkpoint](artifact-native-linux-vz-measured-backend-identity-checkpoint-2026-07-11.md).
+
 Primary target: malicious npm and PyPI package detection with static analysis, AI-assisted code
 review, and behaviorally instrumented detonation in disposable virtual machines
 
@@ -1276,6 +1281,7 @@ Repository evidence:
 - [Linux VZ inert-boot checkpoint](artifact-native-linux-vz-inert-boot-checkpoint-2026-07-11.md)
 - [Linux VZ process-sensor checkpoint](artifact-native-linux-vz-process-sensor-checkpoint-2026-07-11.md)
 - [Linux VZ ordered process-evidence checkpoint](artifact-native-linux-vz-ordered-process-evidence-checkpoint-2026-07-11.md)
+- [Linux VZ measured backend-identity checkpoint](artifact-native-linux-vz-measured-backend-identity-checkpoint-2026-07-11.md)
 - [macOS local release readiness](macos-local-release-readiness.md)
 - [macOS local beta pressure checkpoint](macos-local-beta-pressure-checkpoint.md)
 - [latest source-fixture corpus report](src-fixture-corpus-latest.md)

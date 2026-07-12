@@ -1,0 +1,1 @@
+{"cgroup_scope":"one_unique_fixture_cgroup","drop_policy":"exact_single_event_per_bootstrap_slot","event_order":"kernel_monotonic_timestamp","package_gid":"65534","package_uid":"65534","schema_version":"whoathere.linux_vz_guest_sensor_configuration.v1","sensor_access":"root_only","sync_back":"structurally_absent"}
