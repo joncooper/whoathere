@@ -5,6 +5,9 @@ import Testing
 private let validProcessPayload =
     #"{"descendant_teardown_complete":true,"dropped_event_count":"0","event_count":"3","event_sequence_end":"3","event_sequence_start":"1","events":[{"actor_pid":"41","cgroup_id":"9001","kind":"fork","sequence":"1","subject_pid":"42","timestamp_ns":"100"},{"actor_pid":"42","cgroup_id":"9001","kind":"exec","sequence":"2","subject_pid":"42","timestamp_ns":"200"},{"actor_pid":"42","cgroup_id":"9001","kind":"exit","sequence":"3","subject_pid":"42","timestamp_ns":"300"}],"evidence_truncated":false,"heartbeat_count":"2","package_gid":"65534","package_uid":"65534","schema_version":"whoathere.linux_vz_process_evidence_payload.v1","sensor_healthy":true}"#
 
+private let validDoubleForkPayload =
+    #"{"descendant_teardown_complete":true,"dropped_event_count":"0","event_count":"3","event_sequence_end":"3","event_sequence_start":"1","events":[{"actor_pid":"42","cgroup_id":"9001","kind":"exec","sequence":"1","subject_pid":"42","timestamp_ns":"100"},{"actor_pid":"43","cgroup_id":"9001","kind":"fork","sequence":"2","subject_pid":"44","timestamp_ns":"200"},{"actor_pid":"44","cgroup_id":"9001","kind":"exit","sequence":"3","subject_pid":"44","timestamp_ns":"300"}],"evidence_truncated":false,"exec_count":"1","exit_count":"3","fixture_case":"double_fork_daemonization","fork_count":"3","heartbeat_count":"2","package_gid":"65534","package_uid":"65534","reaped_process_count":"3","schema_version":"whoathere.linux_vz_process_evidence_payload.v1","sensor_healthy":true}"#
+
 @Test func processEvidencePayloadBindsOrderedCgroupLineageAndReceiptClaims() throws {
     let serial = Data(
         (linuxVzProcessEvidenceSerialPrefixV1 + validProcessPayload + "\r\n").utf8
@@ -21,6 +24,29 @@ private let validProcessPayload =
     #expect(payload.descendantTeardownComplete)
     #expect(payload.packageUID == 65534)
     #expect(payload.packageGID == 65534)
+    #expect(payload.fixtureCase == "fork_exec_exit")
+}
+
+@Test func processEvidencePayloadBindsDoubleForkCountsAndDaemonTeardown() throws {
+    let serial = Data(
+        (linuxVzProcessEvidenceSerialPrefixV1 + validDoubleForkPayload + "\n").utf8
+    )
+    let payload = try decodeLinuxVzProcessEvidencePayloadV1(serial)
+    #expect(payload.canonicalJSON == Data(validDoubleForkPayload.utf8))
+    #expect(payload.fixtureCase == "double_fork_daemonization")
+    #expect(payload.eventCount == 3)
+    #expect(payload.descendantTeardownComplete)
+
+    var object = try #require(
+        JSONSerialization.jsonObject(with: Data(validDoubleForkPayload.utf8)) as? [String: Any]
+    )
+    object["fork_count"] = "2"
+    let changed = try canonicalJSONData(object)
+    #expect(throws: LinuxVzProcessEvidencePayloadError.invalidSchema) {
+        try decodeLinuxVzProcessEvidencePayloadV1(
+            Data(linuxVzProcessEvidenceSerialPrefixV1.utf8) + changed + Data("\n".utf8)
+        )
+    }
 }
 
 @Test func processEvidencePayloadRejectsDuplicateReorderedDroppedAndNoncanonicalEvidence() throws {

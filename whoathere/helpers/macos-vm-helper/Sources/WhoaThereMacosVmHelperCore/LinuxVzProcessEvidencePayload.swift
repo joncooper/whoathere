@@ -29,6 +29,7 @@ public struct LinuxVzProcessEvidencePayloadV1: Equatable, Sendable {
     public let descendantTeardownComplete: Bool
     public let packageUID: UInt64
     public let packageGID: UInt64
+    public let fixtureCase: String
 }
 
 private struct LinuxVzProcessEventV1 {
@@ -63,11 +64,24 @@ public func decodeLinuxVzProcessEvidencePayloadV1(
     guard try canonicalJSONData(value) == payload else {
         throw LinuxVzProcessEvidencePayloadError.nonCanonical
     }
-    guard Set(value.keys) == Set([
+    let baseKeys = Set([
         "descendant_teardown_complete", "dropped_event_count", "event_count",
         "event_sequence_end", "event_sequence_start", "events", "evidence_truncated",
         "heartbeat_count", "package_gid", "package_uid", "schema_version", "sensor_healthy"
-    ]),
+    ])
+    let fixtureCase = value["fixture_case"] as? String ?? "fork_exec_exit"
+    let expectedKeys: Set<String>
+    switch fixtureCase {
+    case "fork_exec_exit":
+        expectedKeys = baseKeys
+    case "double_fork_daemonization":
+        expectedKeys = baseKeys.union([
+            "exec_count", "exit_count", "fixture_case", "fork_count", "reaped_process_count"
+        ])
+    default:
+        throw LinuxVzProcessEvidencePayloadError.invalidSchema
+    }
+    guard Set(value.keys) == expectedKeys,
     value["schema_version"] as? String == linuxVzProcessEvidencePayloadSchemaV1,
     value["sensor_healthy"] as? Bool == true,
     value["evidence_truncated"] as? Bool == false,
@@ -90,21 +104,44 @@ public func decodeLinuxVzProcessEvidencePayloadV1(
     rawEvents.count == 3 else {
         throw LinuxVzProcessEvidencePayloadError.invalidSchema
     }
+    if fixtureCase == "double_fork_daemonization" {
+        guard decimalUInt64(value["fork_count"]) == 3,
+              decimalUInt64(value["exec_count"]) == 1,
+              decimalUInt64(value["exit_count"]) == 3,
+              decimalUInt64(value["reaped_process_count"]) == 3 else {
+            throw LinuxVzProcessEvidencePayloadError.invalidSchema
+        }
+    }
 
     let events = try rawEvents.map(decodeLinuxVzProcessEventV1)
-    guard events.map(\.kind) == ["fork", "exec", "exit"],
+    let expectedKinds = fixtureCase == "fork_exec_exit"
+        ? ["fork", "exec", "exit"] : ["exec", "fork", "exit"]
+    guard events.map(\.kind) == expectedKinds,
           events.map(\.sequence) == [1, 2, 3],
           events.allSatisfy({ $0.actorPID > 0 && $0.subjectPID > 0 && $0.cgroupID > 0 }),
-          events[0].actorPID != events[0].subjectPID,
-          events[1].actorPID == events[0].subjectPID,
-          events[1].subjectPID == events[0].subjectPID,
-          events[2].actorPID == events[0].subjectPID,
-          events[2].subjectPID == events[0].subjectPID,
           events[0].cgroupID == events[1].cgroupID,
           events[1].cgroupID == events[2].cgroupID,
           events[0].timestampNS < events[1].timestampNS,
           events[1].timestampNS < events[2].timestampNS else {
         throw LinuxVzProcessEvidencePayloadError.invalidEvent
+    }
+    if fixtureCase == "fork_exec_exit" {
+        guard events[0].actorPID != events[0].subjectPID,
+              events[1].actorPID == events[0].subjectPID,
+              events[1].subjectPID == events[0].subjectPID,
+              events[2].actorPID == events[0].subjectPID,
+              events[2].subjectPID == events[0].subjectPID else {
+            throw LinuxVzProcessEvidencePayloadError.invalidEvent
+        }
+    } else {
+        guard events[0].actorPID == events[0].subjectPID,
+              events[1].actorPID != events[1].subjectPID,
+              events[2].actorPID == events[2].subjectPID,
+              events[1].subjectPID == events[2].actorPID,
+              events[0].actorPID != events[1].actorPID,
+              events[0].actorPID != events[2].actorPID else {
+            throw LinuxVzProcessEvidencePayloadError.invalidEvent
+        }
     }
 
     return LinuxVzProcessEvidencePayloadV1(
@@ -120,7 +157,8 @@ public func decodeLinuxVzProcessEvidencePayloadV1(
         evidenceTruncated: false,
         descendantTeardownComplete: true,
         packageUID: packageUID,
-        packageGID: packageGID
+        packageGID: packageGID,
+        fixtureCase: fixtureCase
     )
 }
 

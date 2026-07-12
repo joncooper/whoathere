@@ -1,6 +1,6 @@
 use crate::{
-    LinuxVzTelemetryConformanceObservedTerminalV1, LinuxVzTelemetryGuestObservationClaimsV1,
-    MacosLinuxVzTelemetryEvidenceErrorV1,
+    LinuxVzTelemetryConformanceCaseV1, LinuxVzTelemetryConformanceObservedTerminalV1,
+    LinuxVzTelemetryGuestObservationClaimsV1, MacosLinuxVzTelemetryEvidenceErrorV1,
 };
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -51,6 +51,7 @@ pub struct LinuxVzProcessEvidencePayloadV1 {
     dropped_event_count: u64,
     package_uid: u32,
     package_gid: u32,
+    fixture_case: LinuxVzTelemetryConformanceCaseV1,
 }
 
 impl LinuxVzProcessEvidencePayloadV1 {
@@ -94,6 +95,10 @@ impl LinuxVzProcessEvidencePayloadV1 {
         self.package_gid
     }
 
+    pub fn fixture_case(&self) -> LinuxVzTelemetryConformanceCaseV1 {
+        self.fixture_case
+    }
+
     pub fn guest_observation_claims_v1(
         &self,
     ) -> Result<LinuxVzTelemetryGuestObservationClaimsV1, MacosLinuxVzTelemetryEvidenceErrorV1>
@@ -124,9 +129,19 @@ struct ProcessEvidenceWireV1 {
     event_sequence_start: String,
     events: Vec<ProcessEventWireV1>,
     evidence_truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    exec_count: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    exit_count: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fixture_case: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fork_count: Option<String>,
     heartbeat_count: String,
     package_gid: String,
     package_uid: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reaped_process_count: Option<String>,
     schema_version: String,
     sensor_healthy: bool,
 }
@@ -209,7 +224,34 @@ pub fn decode_linux_vz_process_evidence_payload_v1(
         return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema);
     }
 
-    let expected_kinds = ["fork", "exec", "exit"];
+    let fixture_case = match wire.fixture_case.as_deref() {
+        None => {
+            if wire.fork_count.is_some()
+                || wire.exec_count.is_some()
+                || wire.exit_count.is_some()
+                || wire.reaped_process_count.is_some()
+            {
+                return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema);
+            }
+            LinuxVzTelemetryConformanceCaseV1::ForkExecExit
+        }
+        Some("double_fork_daemonization") => {
+            if optional_decimal_u64_v1(wire.fork_count.as_deref())? != 3
+                || optional_decimal_u64_v1(wire.exec_count.as_deref())? != 1
+                || optional_decimal_u64_v1(wire.exit_count.as_deref())? != 3
+                || optional_decimal_u64_v1(wire.reaped_process_count.as_deref())? != 3
+            {
+                return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema);
+            }
+            LinuxVzTelemetryConformanceCaseV1::DoubleForkDaemonization
+        }
+        _ => return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema),
+    };
+    let expected_kinds = match fixture_case {
+        LinuxVzTelemetryConformanceCaseV1::ForkExecExit => ["fork", "exec", "exit"],
+        LinuxVzTelemetryConformanceCaseV1::DoubleForkDaemonization => ["exec", "fork", "exit"],
+        _ => return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema),
+    };
     let mut events = Vec::with_capacity(3);
     for (index, event) in wire.events.iter().enumerate() {
         if event.kind != expected_kinds[index]
@@ -228,17 +270,36 @@ pub fn decode_linux_vz_process_evidence_payload_v1(
         }
         events.push(event);
     }
-    if events[0].actor_pid == events[0].subject_pid
-        || events[1].actor_pid != events[0].subject_pid
-        || events[1].subject_pid != events[0].subject_pid
-        || events[2].actor_pid != events[0].subject_pid
-        || events[2].subject_pid != events[0].subject_pid
-        || events[0].cgroup_id != events[1].cgroup_id
+    if events[0].cgroup_id != events[1].cgroup_id
         || events[1].cgroup_id != events[2].cgroup_id
         || events[0].timestamp_ns >= events[1].timestamp_ns
         || events[1].timestamp_ns >= events[2].timestamp_ns
     {
         return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidEvent);
+    }
+    match fixture_case {
+        LinuxVzTelemetryConformanceCaseV1::ForkExecExit => {
+            if events[0].actor_pid == events[0].subject_pid
+                || events[1].actor_pid != events[0].subject_pid
+                || events[1].subject_pid != events[0].subject_pid
+                || events[2].actor_pid != events[0].subject_pid
+                || events[2].subject_pid != events[0].subject_pid
+            {
+                return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidEvent);
+            }
+        }
+        LinuxVzTelemetryConformanceCaseV1::DoubleForkDaemonization => {
+            if events[0].actor_pid != events[0].subject_pid
+                || events[1].actor_pid == events[1].subject_pid
+                || events[2].actor_pid != events[2].subject_pid
+                || events[1].subject_pid != events[2].actor_pid
+                || events[0].actor_pid == events[1].actor_pid
+                || events[0].actor_pid == events[2].actor_pid
+            {
+                return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidEvent);
+            }
+        }
+        _ => return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema),
     }
 
     Ok(LinuxVzProcessEvidencePayloadV1 {
@@ -252,7 +313,14 @@ pub fn decode_linux_vz_process_evidence_payload_v1(
         dropped_event_count,
         package_uid: package_uid as u32,
         package_gid: package_gid as u32,
+        fixture_case,
     })
+}
+
+fn optional_decimal_u64_v1(
+    value: Option<&str>,
+) -> Result<u64, LinuxVzProcessEvidencePayloadErrorV1> {
+    decimal_u64_v1(value.ok_or(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema)?)
 }
 
 fn decimal_u64_v1(value: &str) -> Result<u64, LinuxVzProcessEvidencePayloadErrorV1> {
@@ -265,4 +333,33 @@ fn decimal_u64_v1(value: &str) -> Result<u64, LinuxVzProcessEvidencePayloadError
     value
         .parse()
         .map_err(|_| LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const DOUBLE_FORK: &[u8] = br#"{"descendant_teardown_complete":true,"dropped_event_count":"0","event_count":"3","event_sequence_end":"3","event_sequence_start":"1","events":[{"actor_pid":"42","cgroup_id":"9001","kind":"exec","sequence":"1","subject_pid":"42","timestamp_ns":"100"},{"actor_pid":"43","cgroup_id":"9001","kind":"fork","sequence":"2","subject_pid":"44","timestamp_ns":"200"},{"actor_pid":"44","cgroup_id":"9001","kind":"exit","sequence":"3","subject_pid":"44","timestamp_ns":"300"}],"evidence_truncated":false,"exec_count":"1","exit_count":"3","fixture_case":"double_fork_daemonization","fork_count":"3","heartbeat_count":"2","package_gid":"65534","package_uid":"65534","reaped_process_count":"3","schema_version":"whoathere.linux_vz_process_evidence_payload.v1","sensor_healthy":true}"#;
+
+    #[test]
+    fn double_fork_payload_binds_counts_lineage_and_teardown() {
+        let payload = decode_linux_vz_process_evidence_payload_v1(DOUBLE_FORK).unwrap();
+        assert_eq!(
+            payload.fixture_case(),
+            LinuxVzTelemetryConformanceCaseV1::DoubleForkDaemonization
+        );
+        assert_eq!(payload.event_count(), 3);
+        assert_eq!(payload.dropped_event_count(), 0);
+    }
+
+    #[test]
+    fn double_fork_payload_rejects_changed_count() {
+        let changed = String::from_utf8(DOUBLE_FORK.to_vec())
+            .unwrap()
+            .replace("\"fork_count\":\"3\"", "\"fork_count\":\"2\"");
+        assert_eq!(
+            decode_linux_vz_process_evidence_payload_v1(changed.as_bytes()),
+            Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema)
+        );
+    }
 }

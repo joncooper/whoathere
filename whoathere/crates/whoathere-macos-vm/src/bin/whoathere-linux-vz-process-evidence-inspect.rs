@@ -1,5 +1,7 @@
 use std::{env, fs, path::Path};
-use whoathere_macos_vm::decode_linux_vz_process_evidence_from_serial_v1;
+use whoathere_macos_vm::{
+    decode_linux_vz_process_evidence_from_serial_v1, LinuxVzTelemetryConformanceCaseV1,
+};
 
 const MAX_SERIAL_BYTES: u64 = 16 * 1024 * 1024;
 
@@ -29,6 +31,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let serial = fs::read(path)?;
     let payload = decode_linux_vz_process_evidence_from_serial_v1(&serial)?;
     let claims = payload.guest_observation_claims_v1()?;
+    let fixture_case = match payload.fixture_case() {
+        LinuxVzTelemetryConformanceCaseV1::ForkExecExit => "fork_exec_exit",
+        LinuxVzTelemetryConformanceCaseV1::DoubleForkDaemonization => "double_fork_daemonization",
+        _ => return Err("unsupported process evidence fixture case".into()),
+    };
     let result = serde_json::json!({
         "descendant_teardown_complete": claims.descendant_teardown_complete(),
         "dropped_event_count": payload.dropped_event_count().to_string(),
@@ -38,6 +45,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "evidence_byte_length": payload.evidence_byte_length().to_string(),
         "evidence_payload_sha256": payload.payload_sha256(),
         "evidence_truncated": claims.evidence_truncated(),
+        "fixture_case": fixture_case,
         "heartbeat_count": payload.heartbeat_count().to_string(),
         "operation": "inspect_only_no_signing",
         "package_execution": false,

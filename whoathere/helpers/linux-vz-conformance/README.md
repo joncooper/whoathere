@@ -103,6 +103,10 @@ diffs, then rebaselines the process case on the same identity. The other 36 case
 The distinct
 [mmap checkpoint](../../../docs/product-build-run/artifact-native-linux-vz-mmap-checkpoint-2026-07-12.md)
 then verifies `mmap_access` on that exact identity. The other 35 cases remain pending.
+The
+[double-fork checkpoint](../../../docs/product-build-run/artifact-native-linux-vz-double-fork-checkpoint-2026-07-12.md)
+adds protected double-fork lineage and daemon teardown, then reruns the earlier three cases on the
+new measured identity. The other 34 cases remain pending.
 
 ## Closed fixture contract
 

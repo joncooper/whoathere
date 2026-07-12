@@ -62,6 +62,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         decode_and_validate_macos_linux_vz_telemetry_conformance_run_spec_v1(&run_spec_bytes)?;
     let fixture_case = match run_spec.fixture_case() {
         LinuxVzTelemetryConformanceCaseV1::ForkExecExit => "fork_exec_exit",
+        LinuxVzTelemetryConformanceCaseV1::DoubleForkDaemonization => "double_fork_daemonization",
         LinuxVzTelemetryConformanceCaseV1::ProtectedOpenReadWriteRenameDelete => {
             "protected_open_read_write_rename_delete"
         }
@@ -78,9 +79,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         &backend,
     )?;
     let (guest_evidence_payload_sha256, guest_claims) = match run_spec.fixture_case() {
-        LinuxVzTelemetryConformanceCaseV1::ForkExecExit => {
+        LinuxVzTelemetryConformanceCaseV1::ForkExecExit
+        | LinuxVzTelemetryConformanceCaseV1::DoubleForkDaemonization => {
             let evidence = decode_linux_vz_process_evidence_from_serial_v1(&serial)?;
-            if evidence.package_uid() != backend.package_uid()
+            if evidence.fixture_case() != run_spec.fixture_case()
+                || evidence.package_uid() != backend.package_uid()
                 || evidence.package_gid() != backend.package_gid()
             {
                 return Err("guest evidence package identity mismatch".into());

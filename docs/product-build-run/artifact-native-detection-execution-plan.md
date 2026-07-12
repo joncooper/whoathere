@@ -46,6 +46,13 @@ independently verified from the signed guest and host evidence. Three of 38 case
 backend binding; 35 remain. See the
 [mmap checkpoint](artifact-native-linux-vz-mmap-checkpoint-2026-07-12.md).
 
+The process sensor now also proves the closed `double_fork_daemonization` lifecycle with three
+kernel-observed forks, one exec, three exits, intermediate-to-daemon PID binding, and protected
+subreaper teardown. Because that changed the measured identity, the earlier three cases were rerun
+and independently verified on the new exact backend. Four of 38 cases now share one binding; 34
+remain. See the
+[double-fork checkpoint](artifact-native-linux-vz-double-fork-checkpoint-2026-07-12.md).
+
 Primary target: malicious npm and PyPI package detection with static analysis, AI-assisted code
 review, and behaviorally instrumented detonation in disposable virtual machines
 
@@ -1307,6 +1314,7 @@ Repository evidence:
 - [Linux VZ first complete conformance-case checkpoint](artifact-native-linux-vz-first-complete-conformance-case-checkpoint-2026-07-12.md)
 - [Linux VZ file-telemetry checkpoint](artifact-native-linux-vz-file-telemetry-checkpoint-2026-07-12.md)
 - [Linux VZ mmap checkpoint](artifact-native-linux-vz-mmap-checkpoint-2026-07-12.md)
+- [Linux VZ double-fork checkpoint](artifact-native-linux-vz-double-fork-checkpoint-2026-07-12.md)
 - [macOS local release readiness](macos-local-release-readiness.md)
 - [macOS local beta pressure checkpoint](macos-local-beta-pressure-checkpoint.md)
 - [latest source-fixture corpus report](src-fixture-corpus-latest.md)

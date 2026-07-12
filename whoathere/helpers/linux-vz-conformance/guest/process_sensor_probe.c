@@ -13,6 +13,7 @@
 #include <string.h>
 #include <sys/resource.h>
 #include <sys/mman.h>
+#include <sys/prctl.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
@@ -587,7 +588,7 @@ cleanup:
     return result;
 }
 
-static int run_process_probe(const char *fixture) {
+static int run_process_probe(const char *fixture, const char *fixture_case) {
     static const char *tracepoints[] = {
         "sys_enter",
         "sched_process_fork",
@@ -605,6 +606,7 @@ static int run_process_probe(const char *fixture) {
     struct observation exec_event = {0};
     struct observation exit_event = {0};
     pid_t child = -1;
+    pid_t reaped_descendants[2] = {-1, -1};
     int child_status = 0;
     int result = 70;
     const char *failure_stage = "preflight";
@@ -678,6 +680,13 @@ static int run_process_probe(const char *fixture) {
         }
     }
 
+    int double_fork = strcmp(fixture_case, "double_fork_daemonization") == 0;
+    if (double_fork && prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0) {
+        failure_stage = "subreaper_enable";
+        failure_errno = errno;
+        goto cleanup;
+    }
+
     pid_t parent = getpid();
     child = fork();
     if (child < 0) {
@@ -686,7 +695,7 @@ static int run_process_probe(const char *fixture) {
         goto cleanup;
     }
     if (child == 0) {
-        child_fixture(fixture, "fork_exec_exit", &fds);
+        child_fixture(fixture, fixture_case, &fds);
     }
     if (waitpid(child, &child_status, 0) != child || !WIFEXITED(child_status) ||
         WEXITSTATUS(child_status) != 0) {
@@ -695,15 +704,46 @@ static int run_process_probe(const char *fixture) {
         failure_detail = WIFEXITED(child_status) ? WEXITSTATUS(child_status) : 255;
         goto cleanup;
     }
+    if (double_fork) {
+        for (size_t index = 0; index < 2; index++) {
+            int descendant_status = 0;
+            reaped_descendants[index] = waitpid(-1, &descendant_status, 0);
+            if (reaped_descendants[index] <= 0 || !WIFEXITED(descendant_status) ||
+                WEXITSTATUS(descendant_status) != 0) {
+                failure_stage = "descendant_reap";
+                failure_errno = errno;
+                failure_detail = WIFEXITED(descendant_status)
+                    ? WEXITSTATUS(descendant_status) : 255;
+                goto cleanup;
+            }
+        }
+        errno = 0;
+        if (waitpid(-1, NULL, WNOHANG) != -1 || errno != ECHILD) {
+            failure_stage = "descendant_count";
+            failure_errno = errno;
+            goto cleanup;
+        }
+    }
     if (lookup_observation(fds.map, OBSERVATION_FORK, &fork_event) != 0 ||
         lookup_observation(fds.map, OBSERVATION_EXEC, &exec_event) != 0 ||
-        lookup_observation(fds.map, OBSERVATION_EXIT, &exit_event) != 0 ||
-        !observed_pid(&fork_event, parent) || !observed_pid(&exec_event, child) ||
-        !observed_pid(&exit_event, child) ||
-        fork_event.timestamp_ns >= exec_event.timestamp_ns ||
-        exec_event.timestamp_ns >= exit_event.timestamp_ns) {
+        lookup_observation(fds.map, OBSERVATION_EXIT, &exit_event) != 0) {
         failure_stage = "observation_match";
         failure_errno = errno;
+        goto cleanup;
+    }
+    if ((!double_fork &&
+         (!observed_pid(&fork_event, parent) || !observed_pid(&exec_event, child) ||
+          !observed_pid(&exit_event, child) ||
+          fork_event.timestamp_ns >= exec_event.timestamp_ns ||
+          exec_event.timestamp_ns >= exit_event.timestamp_ns)) ||
+        (double_fork &&
+         (fork_event.count != 3 || exec_event.count != 1 || exit_event.count != 3 ||
+          (pid_t)(exec_event.pid_tgid >> 32) != child ||
+          (pid_t)(fork_event.pid_tgid >> 32) != reaped_descendants[0] ||
+          (pid_t)(exit_event.pid_tgid >> 32) != reaped_descendants[1] ||
+          exec_event.timestamp_ns >= fork_event.timestamp_ns ||
+          fork_event.timestamp_ns >= exit_event.timestamp_ns))) {
+        failure_stage = "observation_match";
         goto cleanup;
     }
 
@@ -714,7 +754,48 @@ static int run_process_probe(const char *fixture) {
     puts("WHOATHERE_SENSOR unprivileged_fixture=uid_65534_gid_65534");
     puts("WHOATHERE_SENSOR protected_sensor_read=denied");
     puts("WHOATHERE_SENSOR protected_sensor_write=denied");
+    if (double_fork) {
+        puts("WHOATHERE_SENSOR process_double_fork=observed");
+        puts("WHOATHERE_SENSOR process_daemon_reaped=observed");
+    }
     puts("WHOATHERE_SENSOR_PROCESS_PROBE_OK");
+    if (double_fork) {
+        printf(
+            "WHOATHERE_GUEST_PROCESS_EVIDENCE "
+            "{\"descendant_teardown_complete\":true,\"dropped_event_count\":\"0\","
+            "\"event_count\":\"3\",\"event_sequence_end\":\"3\","
+            "\"event_sequence_start\":\"1\",\"events\":["
+            "{\"actor_pid\":\"%" PRIu64 "\",\"cgroup_id\":\"%" PRIu64
+            "\",\"kind\":\"exec\",\"sequence\":\"1\",\"subject_pid\":\"%" PRIu64
+            "\",\"timestamp_ns\":\"%" PRIu64 "\"},"
+            "{\"actor_pid\":\"%" PRIu64 "\",\"cgroup_id\":\"%" PRIu64
+            "\",\"kind\":\"fork\",\"sequence\":\"2\",\"subject_pid\":\"%" PRIu64
+            "\",\"timestamp_ns\":\"%" PRIu64 "\"},"
+            "{\"actor_pid\":\"%" PRIu64 "\",\"cgroup_id\":\"%" PRIu64
+            "\",\"kind\":\"exit\",\"sequence\":\"3\",\"subject_pid\":\"%" PRIu64
+            "\",\"timestamp_ns\":\"%" PRIu64 "\"}],"
+            "\"evidence_truncated\":false,\"exec_count\":\"1\",\"exit_count\":\"3\","
+            "\"fixture_case\":\"double_fork_daemonization\",\"fork_count\":\"3\","
+            "\"heartbeat_count\":\"2\",\"package_gid\":\"65534\","
+            "\"package_uid\":\"65534\",\"reaped_process_count\":\"3\","
+            "\"schema_version\":\"whoathere.linux_vz_process_evidence_payload.v1\","
+            "\"sensor_healthy\":true}\n",
+            (uint64_t)child,
+            cgroup.count,
+            (uint64_t)child,
+            exec_event.timestamp_ns,
+            fork_event.pid_tgid >> 32,
+            cgroup.count,
+            (uint64_t)reaped_descendants[1],
+            fork_event.timestamp_ns,
+            exit_event.pid_tgid >> 32,
+            cgroup.count,
+            exit_event.pid_tgid >> 32,
+            exit_event.timestamp_ns
+        );
+        result = 0;
+        goto cleanup;
+    }
     printf(
         "WHOATHERE_GUEST_PROCESS_EVIDENCE "
         "{\"descendant_teardown_complete\":true,\"dropped_event_count\":\"0\","
@@ -768,8 +849,9 @@ int main(int argument_count, char **arguments) {
     if (argument_count != 3 || arguments[1][0] != '/') {
         return 64;
     }
-    if (strcmp(arguments[2], "fork_exec_exit") == 0) {
-        return run_process_probe(arguments[1]);
+    if (strcmp(arguments[2], "fork_exec_exit") == 0 ||
+        strcmp(arguments[2], "double_fork_daemonization") == 0) {
+        return run_process_probe(arguments[1], arguments[2]);
     }
     if (strcmp(arguments[2], "protected_open_read_write_rename_delete") == 0 ||
         strcmp(arguments[2], "mmap_access") == 0) {

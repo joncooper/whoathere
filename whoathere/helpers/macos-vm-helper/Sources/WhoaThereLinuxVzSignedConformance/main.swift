@@ -283,9 +283,10 @@ private struct LinuxVzSignedConformanceHarness {
         let guestEvidencePayloadSHA256: String
         let guestEventCount: UInt64
         switch runSpec.fixtureCase {
-        case "fork_exec_exit":
+        case "fork_exec_exit", "double_fork_daemonization":
             let evidence = try decodeLinuxVzProcessEvidencePayloadV1(serialData)
-            guard evidence.packageUID == UInt64(backend.packageUID),
+            guard evidence.fixtureCase == runSpec.fixtureCase,
+                  evidence.packageUID == UInt64(backend.packageUID),
                   evidence.packageGID == UInt64(backend.packageGID) else {
                 throw HarnessError.verificationFailed
             }
@@ -327,8 +328,14 @@ private struct LinuxVzSignedConformanceHarness {
         )
 
         let missingBaseMarkers: [String]
-        if runSpec.fixtureCase == "fork_exec_exit" {
-            missingBaseMarkers = linuxVzInertMissingRequiredEvidenceMarkersV2(serialData)
+        if runSpec.fixtureCase == "fork_exec_exit" ||
+            runSpec.fixtureCase == "double_fork_daemonization" {
+            let missingProcessMarkers = linuxVzInertMissingRequiredEvidenceMarkersV2(serialData)
+            let missingDoubleForkMarkers = runSpec.fixtureCase == "double_fork_daemonization"
+                ? linuxVzInertDoubleForkSensorMarkersV1.filter {
+                    !linuxVzInertSerialContainsExactMarker(serialData, marker: $0)
+                } : []
+            missingBaseMarkers = missingProcessMarkers + missingDoubleForkMarkers
         } else {
             let missingCapabilities = linuxVzInertMissingCapabilityMarkers(serialData)
             let missingFileMarkers = linuxVzInertFileSensorMarkersV1.filter {
