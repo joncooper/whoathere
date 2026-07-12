@@ -100,6 +100,9 @@ The
 [file-telemetry checkpoint](../../../docs/product-build-run/artifact-native-linux-vz-file-telemetry-checkpoint-2026-07-12.md)
 adds fanotify permission evidence, BPF-correlated mmap, fake persistence, and protected filesystem
 diffs, then rebaselines the process case on the same identity. The other 36 cases remain pending.
+The distinct
+[mmap checkpoint](../../../docs/product-build-run/artifact-native-linux-vz-mmap-checkpoint-2026-07-12.md)
+then verifies `mmap_access` on that exact identity. The other 35 cases remain pending.
 
 ## Closed fixture contract
 
