@@ -93,6 +93,12 @@ public func decodeLinuxVzProcessEvidencePayloadV1(
             "session_escape_count", "session_target"
         ])
         expectedKinds = ["fork", "exec", "setsid", "exit"]
+    case "credential_change":
+        expectedKeys = baseKeys.union([
+            "credential_change_count", "credential_target", "exec_count", "exit_count",
+            "fixture_case", "fork_count", "reaped_process_count"
+        ])
+        expectedKinds = ["fork", "setgroups", "setgid", "setuid", "exec", "exit"]
     default:
         throw LinuxVzProcessEvidencePayloadError.invalidSchema
     }
@@ -144,6 +150,16 @@ public func decodeLinuxVzProcessEvidencePayloadV1(
               value["session_target"] as? String == "new_session_leader" else {
             throw LinuxVzProcessEvidencePayloadError.invalidSchema
         }
+    } else if fixtureCase == "credential_change" {
+        guard decimalUInt64(value["credential_change_count"]) == 3,
+              value["credential_target"] as? String ==
+                "uid_65534_gid_65534_no_supplementary_groups",
+              decimalUInt64(value["fork_count"]) == 1,
+              decimalUInt64(value["exec_count"]) == 1,
+              decimalUInt64(value["exit_count"]) == 1,
+              decimalUInt64(value["reaped_process_count"]) == 1 else {
+            throw LinuxVzProcessEvidencePayloadError.invalidSchema
+        }
     }
 
     let events = try rawEvents.map(decodeLinuxVzProcessEventV1)
@@ -183,7 +199,7 @@ public func decodeLinuxVzProcessEvidencePayloadV1(
               events[3].actorPID == events[1].subjectPID else {
             throw LinuxVzProcessEvidencePayloadError.invalidEvent
         }
-    } else {
+    } else if fixtureCase == "setsid_escape" {
         guard events[0].actorPID != events[0].subjectPID,
               events[1].actorPID == events[0].subjectPID,
               events[1].subjectPID == events[0].subjectPID,
@@ -191,6 +207,14 @@ public func decodeLinuxVzProcessEvidencePayloadV1(
               events[2].subjectPID == events[0].subjectPID,
               events[3].actorPID == events[0].subjectPID,
               events[3].subjectPID == events[0].subjectPID else {
+            throw LinuxVzProcessEvidencePayloadError.invalidEvent
+        }
+    } else {
+        guard events[0].actorPID != events[0].subjectPID,
+              events.dropFirst().allSatisfy({
+                  $0.actorPID == events[0].subjectPID &&
+                    $0.subjectPID == events[0].subjectPID
+              }) else {
             throw LinuxVzProcessEvidencePayloadError.invalidEvent
         }
     }

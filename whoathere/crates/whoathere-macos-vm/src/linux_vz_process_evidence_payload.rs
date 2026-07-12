@@ -122,6 +122,10 @@ impl LinuxVzProcessEvidencePayloadV1 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ProcessEvidenceWireV1 {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    credential_change_count: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    credential_target: Option<String>,
     descendant_teardown_complete: bool,
     dropped_event_count: String,
     event_count: String,
@@ -232,7 +236,9 @@ pub fn decode_linux_vz_process_evidence_payload_v1(
     let (fixture_case, expected_kinds): (LinuxVzTelemetryConformanceCaseV1, &[&str]) =
         match wire.fixture_case.as_deref() {
             None => {
-                if wire.fork_count.is_some()
+                if wire.credential_change_count.is_some()
+                    || wire.credential_target.is_some()
+                    || wire.fork_count.is_some()
                     || wire.exec_count.is_some()
                     || wire.exit_count.is_some()
                     || wire.reaped_process_count.is_some()
@@ -249,7 +255,9 @@ pub fn decode_linux_vz_process_evidence_payload_v1(
                 )
             }
             Some("double_fork_daemonization") => {
-                if optional_decimal_u64_v1(wire.fork_count.as_deref())? != 3
+                if wire.credential_change_count.is_some()
+                    || wire.credential_target.is_some()
+                    || optional_decimal_u64_v1(wire.fork_count.as_deref())? != 3
                     || optional_decimal_u64_v1(wire.exec_count.as_deref())? != 1
                     || optional_decimal_u64_v1(wire.exit_count.as_deref())? != 3
                     || optional_decimal_u64_v1(wire.reaped_process_count.as_deref())? != 3
@@ -266,7 +274,9 @@ pub fn decode_linux_vz_process_evidence_payload_v1(
                 )
             }
             Some("reparenting") => {
-                if optional_decimal_u64_v1(wire.fork_count.as_deref())? != 2
+                if wire.credential_change_count.is_some()
+                    || wire.credential_target.is_some()
+                    || optional_decimal_u64_v1(wire.fork_count.as_deref())? != 2
                     || optional_decimal_u64_v1(wire.exec_count.as_deref())? != 1
                     || optional_decimal_u64_v1(wire.exit_count.as_deref())? != 2
                     || optional_decimal_u64_v1(wire.reaped_process_count.as_deref())? != 2
@@ -283,7 +293,9 @@ pub fn decode_linux_vz_process_evidence_payload_v1(
                 )
             }
             Some("setsid_escape") => {
-                if optional_decimal_u64_v1(wire.fork_count.as_deref())? != 1
+                if wire.credential_change_count.is_some()
+                    || wire.credential_target.is_some()
+                    || optional_decimal_u64_v1(wire.fork_count.as_deref())? != 1
                     || optional_decimal_u64_v1(wire.exec_count.as_deref())? != 1
                     || optional_decimal_u64_v1(wire.exit_count.as_deref())? != 1
                     || optional_decimal_u64_v1(wire.reaped_process_count.as_deref())? != 1
@@ -297,6 +309,26 @@ pub fn decode_linux_vz_process_evidence_payload_v1(
                 (
                     LinuxVzTelemetryConformanceCaseV1::SetsidEscape,
                     &["fork", "exec", "setsid", "exit"],
+                )
+            }
+            Some("credential_change") => {
+                if optional_decimal_u64_v1(wire.credential_change_count.as_deref())? != 3
+                    || wire.credential_target.as_deref()
+                        != Some("uid_65534_gid_65534_no_supplementary_groups")
+                    || optional_decimal_u64_v1(wire.fork_count.as_deref())? != 1
+                    || optional_decimal_u64_v1(wire.exec_count.as_deref())? != 1
+                    || optional_decimal_u64_v1(wire.exit_count.as_deref())? != 1
+                    || optional_decimal_u64_v1(wire.reaped_process_count.as_deref())? != 1
+                    || wire.reparent_target.is_some()
+                    || wire.reparented_process_count.is_some()
+                    || wire.session_escape_count.is_some()
+                    || wire.session_target.is_some()
+                {
+                    return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema);
+                }
+                (
+                    LinuxVzTelemetryConformanceCaseV1::CredentialChange,
+                    &["fork", "setgroups", "setgid", "setuid", "exec", "exit"],
                 )
             }
             _ => return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema),
@@ -377,6 +409,16 @@ pub fn decode_linux_vz_process_evidence_payload_v1(
                 return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidEvent);
             }
         }
+        LinuxVzTelemetryConformanceCaseV1::CredentialChange => {
+            if events[0].actor_pid == events[0].subject_pid
+                || events[1..].iter().any(|event| {
+                    event.actor_pid != events[0].subject_pid
+                        || event.subject_pid != events[0].subject_pid
+                })
+            {
+                return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidEvent);
+            }
+        }
         _ => return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema),
     }
 
@@ -420,6 +462,7 @@ mod tests {
     const DOUBLE_FORK: &[u8] = br#"{"descendant_teardown_complete":true,"dropped_event_count":"0","event_count":"3","event_sequence_end":"3","event_sequence_start":"1","events":[{"actor_pid":"42","cgroup_id":"9001","kind":"exec","sequence":"1","subject_pid":"42","timestamp_ns":"100"},{"actor_pid":"43","cgroup_id":"9001","kind":"fork","sequence":"2","subject_pid":"44","timestamp_ns":"200"},{"actor_pid":"44","cgroup_id":"9001","kind":"exit","sequence":"3","subject_pid":"44","timestamp_ns":"300"}],"evidence_truncated":false,"exec_count":"1","exit_count":"3","fixture_case":"double_fork_daemonization","fork_count":"3","heartbeat_count":"2","package_gid":"65534","package_uid":"65534","reaped_process_count":"3","schema_version":"whoathere.linux_vz_process_evidence_payload.v1","sensor_healthy":true}"#;
     const REPARENTING: &[u8] = br#"{"descendant_teardown_complete":true,"dropped_event_count":"0","event_count":"4","event_sequence_end":"4","event_sequence_start":"1","events":[{"actor_pid":"42","cgroup_id":"9001","kind":"exec","sequence":"1","subject_pid":"42","timestamp_ns":"100"},{"actor_pid":"42","cgroup_id":"9001","kind":"fork","sequence":"2","subject_pid":"43","timestamp_ns":"200"},{"actor_pid":"41","cgroup_id":"9001","kind":"reparent","sequence":"3","subject_pid":"43","timestamp_ns":"300"},{"actor_pid":"43","cgroup_id":"9001","kind":"exit","sequence":"4","subject_pid":"43","timestamp_ns":"400"}],"evidence_truncated":false,"exec_count":"1","exit_count":"2","fixture_case":"reparenting","fork_count":"2","heartbeat_count":"2","package_gid":"65534","package_uid":"65534","reaped_process_count":"2","reparent_target":"protected_subreaper","reparented_process_count":"1","schema_version":"whoathere.linux_vz_process_evidence_payload.v1","sensor_healthy":true}"#;
     const SETSID_ESCAPE: &[u8] = br#"{"descendant_teardown_complete":true,"dropped_event_count":"0","event_count":"4","event_sequence_end":"4","event_sequence_start":"1","events":[{"actor_pid":"41","cgroup_id":"9001","kind":"fork","sequence":"1","subject_pid":"42","timestamp_ns":"100"},{"actor_pid":"42","cgroup_id":"9001","kind":"exec","sequence":"2","subject_pid":"42","timestamp_ns":"200"},{"actor_pid":"42","cgroup_id":"9001","kind":"setsid","sequence":"3","subject_pid":"42","timestamp_ns":"300"},{"actor_pid":"42","cgroup_id":"9001","kind":"exit","sequence":"4","subject_pid":"42","timestamp_ns":"400"}],"evidence_truncated":false,"exec_count":"1","exit_count":"1","fixture_case":"setsid_escape","fork_count":"1","heartbeat_count":"2","package_gid":"65534","package_uid":"65534","reaped_process_count":"1","schema_version":"whoathere.linux_vz_process_evidence_payload.v1","sensor_healthy":true,"session_escape_count":"1","session_target":"new_session_leader"}"#;
+    const CREDENTIAL_CHANGE: &[u8] = br#"{"credential_change_count":"3","credential_target":"uid_65534_gid_65534_no_supplementary_groups","descendant_teardown_complete":true,"dropped_event_count":"0","event_count":"6","event_sequence_end":"6","event_sequence_start":"1","events":[{"actor_pid":"41","cgroup_id":"9001","kind":"fork","sequence":"1","subject_pid":"42","timestamp_ns":"100"},{"actor_pid":"42","cgroup_id":"9001","kind":"setgroups","sequence":"2","subject_pid":"42","timestamp_ns":"200"},{"actor_pid":"42","cgroup_id":"9001","kind":"setgid","sequence":"3","subject_pid":"42","timestamp_ns":"300"},{"actor_pid":"42","cgroup_id":"9001","kind":"setuid","sequence":"4","subject_pid":"42","timestamp_ns":"400"},{"actor_pid":"42","cgroup_id":"9001","kind":"exec","sequence":"5","subject_pid":"42","timestamp_ns":"500"},{"actor_pid":"42","cgroup_id":"9001","kind":"exit","sequence":"6","subject_pid":"42","timestamp_ns":"600"}],"evidence_truncated":false,"exec_count":"1","exit_count":"1","fixture_case":"credential_change","fork_count":"1","heartbeat_count":"2","package_gid":"65534","package_uid":"65534","reaped_process_count":"1","schema_version":"whoathere.linux_vz_process_evidence_payload.v1","sensor_healthy":true}"#;
 
     #[test]
     fn double_fork_payload_binds_counts_lineage_and_teardown() {
@@ -481,6 +524,28 @@ mod tests {
         let changed = String::from_utf8(SETSID_ESCAPE.to_vec())
             .unwrap()
             .replace("new_session_leader", "inherited_session");
+        assert_eq!(
+            decode_linux_vz_process_evidence_payload_v1(changed.as_bytes()),
+            Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema)
+        );
+    }
+
+    #[test]
+    fn credential_payload_binds_exact_drop_sequence_and_target() {
+        let payload = decode_linux_vz_process_evidence_payload_v1(CREDENTIAL_CHANGE).unwrap();
+        assert_eq!(
+            payload.fixture_case(),
+            LinuxVzTelemetryConformanceCaseV1::CredentialChange
+        );
+        assert_eq!(payload.event_count(), 6);
+        assert_eq!(payload.dropped_event_count(), 0);
+    }
+
+    #[test]
+    fn credential_payload_rejects_forged_target() {
+        let changed = String::from_utf8(CREDENTIAL_CHANGE.to_vec())
+            .unwrap()
+            .replace("uid_65534_gid_65534_no_supplementary_groups", "uid_0_gid_0");
         assert_eq!(
             decode_linux_vz_process_evidence_payload_v1(changed.as_bytes()),
             Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema)

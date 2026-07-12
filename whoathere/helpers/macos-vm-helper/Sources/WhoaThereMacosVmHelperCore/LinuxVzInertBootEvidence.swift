@@ -44,6 +44,11 @@ public let linuxVzInertSetsidSensorMarkersV1 = [
     "WHOATHERE_SENSOR process_session_escape=observed",
 ]
 
+public let linuxVzInertCredentialSensorMarkersV1 = [
+    "WHOATHERE_SENSOR process_credential_change=observed",
+    "WHOATHERE_SENSOR process_credentials=uid_65534_gid_65534_no_supplementary_groups",
+]
+
 public let linuxVzInertRequiredEvidenceMarkersV2 =
     linuxVzInertRequiredCapabilityMarkersV1 + linuxVzInertProcessSensorMarkersV2
 

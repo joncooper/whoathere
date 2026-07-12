@@ -65,6 +65,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         LinuxVzTelemetryConformanceCaseV1::Reparenting => "reparenting",
         LinuxVzTelemetryConformanceCaseV1::DoubleForkDaemonization => "double_fork_daemonization",
         LinuxVzTelemetryConformanceCaseV1::SetsidEscape => "setsid_escape",
+        LinuxVzTelemetryConformanceCaseV1::CredentialChange => "credential_change",
         LinuxVzTelemetryConformanceCaseV1::ProtectedOpenReadWriteRenameDelete => {
             "protected_open_read_write_rename_delete"
         }
@@ -84,7 +85,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         LinuxVzTelemetryConformanceCaseV1::ForkExecExit
         | LinuxVzTelemetryConformanceCaseV1::Reparenting
         | LinuxVzTelemetryConformanceCaseV1::DoubleForkDaemonization
-        | LinuxVzTelemetryConformanceCaseV1::SetsidEscape => {
+        | LinuxVzTelemetryConformanceCaseV1::SetsidEscape
+        | LinuxVzTelemetryConformanceCaseV1::CredentialChange => {
             let evidence = decode_linux_vz_process_evidence_from_serial_v1(&serial)?;
             if evidence.fixture_case() != run_spec.fixture_case()
                 || evidence.package_uid() != backend.package_uid()

@@ -66,6 +66,12 @@ and exit events. The previous five cases were rerun on the resulting exact ident
 now share one backend binding; 32 remain. See the
 [session-escape checkpoint](artifact-native-linux-vz-setsid-checkpoint-2026-07-12.md).
 
+The `credential_change` case now binds the trusted launcher's drop into the package sandbox through
+exact cgroup-filtered `setgroups`, `setgid`, and `setuid` observations, live procfs credentials, and
+strict pre-exec ordering. The previous six cases were rerun on the resulting exact identity. Seven
+of 38 cases now share one backend binding; 31 remain. See the
+[credential-change checkpoint](artifact-native-linux-vz-credential-checkpoint-2026-07-12.md).
+
 Primary target: malicious npm and PyPI package detection with static analysis, AI-assisted code
 review, and behaviorally instrumented detonation in disposable virtual machines
 
@@ -1330,6 +1336,7 @@ Repository evidence:
 - [Linux VZ double-fork checkpoint](artifact-native-linux-vz-double-fork-checkpoint-2026-07-12.md)
 - [Linux VZ reparenting checkpoint](artifact-native-linux-vz-reparenting-checkpoint-2026-07-12.md)
 - [Linux VZ session-escape checkpoint](artifact-native-linux-vz-setsid-checkpoint-2026-07-12.md)
+- [Linux VZ credential-change checkpoint](artifact-native-linux-vz-credential-checkpoint-2026-07-12.md)
 - [macOS local release readiness](macos-local-release-readiness.md)
 - [macOS local beta pressure checkpoint](macos-local-beta-pressure-checkpoint.md)
 - [latest source-fixture corpus report](src-fixture-corpus-latest.md)

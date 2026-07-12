@@ -115,6 +115,10 @@ The
 [session-escape checkpoint](../../../docs/product-build-run/artifact-native-linux-vz-setsid-checkpoint-2026-07-12.md)
 adds live session/process-group transition corroboration and strict event ordering, then reruns the
 earlier five cases on the new measured identity. The other 32 cases remain pending.
+The
+[credential-change checkpoint](../../../docs/product-build-run/artifact-native-linux-vz-credential-checkpoint-2026-07-12.md)
+adds protected credential-drop syscall ordering and live identity corroboration, then reruns the
+earlier six cases on the new measured identity. The other 31 cases remain pending.
 
 ## Closed fixture contract
 

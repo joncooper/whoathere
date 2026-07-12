@@ -13,6 +13,7 @@ static const char *fixture_root = "/run/whoathere-file-fixture";
 #define REPARENT_REPORT_FD 3
 #define REPARENT_REPORT_MAGIC 0x57545052U
 #define SESSION_REPORT_MAGIC 0x57545353U
+#define CREDENTIAL_REPORT_MAGIC 0x57544352U
 
 struct reparent_report {
     uint32_t magic;
@@ -26,6 +27,16 @@ struct session_report {
     int32_t prior_process_group_id;
     int32_t session_id;
     int32_t process_group_id;
+};
+
+struct credential_report {
+    uint32_t magic;
+    int32_t process_pid;
+    uint32_t uid;
+    uint32_t effective_uid;
+    uint32_t gid;
+    uint32_t effective_gid;
+    int32_t supplementary_group_count;
 };
 
 static int protected_sensor_denied(void) {
@@ -161,6 +172,27 @@ static int setsid_escape(void) {
     return nanosleep(&pause, NULL) == 0 ? 0 : 100;
 }
 
+static int credential_change(void) {
+    const int group_count = getgroups(0, NULL);
+    if (group_count != 0) return 101;
+    const struct credential_report report = {
+        .magic = CREDENTIAL_REPORT_MAGIC,
+        .process_pid = getpid(),
+        .uid = getuid(),
+        .effective_uid = geteuid(),
+        .gid = getgid(),
+        .effective_gid = getegid(),
+        .supplementary_group_count = group_count,
+    };
+    ssize_t written = write(REPARENT_REPORT_FD, &report, sizeof(report));
+    int saved_errno = errno;
+    if (close(REPARENT_REPORT_FD) != 0 && written == (ssize_t)sizeof(report)) return 102;
+    errno = saved_errno;
+    if (written != (ssize_t)sizeof(report)) return 103;
+    const struct timespec pause = {.tv_sec = 0, .tv_nsec = 200000000};
+    return nanosleep(&pause, NULL) == 0 ? 0 : 104;
+}
+
 int main(int argument_count, char **arguments) {
     if (argument_count != 2 || getuid() != 65534 || geteuid() != 65534 ||
         getgid() != 65534 || getegid() != 65534) {
@@ -174,6 +206,7 @@ int main(int argument_count, char **arguments) {
     }
     if (strcmp(arguments[1], "reparenting") == 0) return reparenting();
     if (strcmp(arguments[1], "setsid_escape") == 0) return setsid_escape();
+    if (strcmp(arguments[1], "credential_change") == 0) return credential_change();
     if (strcmp(arguments[1], "protected_open_read_write_rename_delete") == 0 ||
         strcmp(arguments[1], "mmap_access") == 0) {
         return file_fixture();

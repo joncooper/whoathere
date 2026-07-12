@@ -30,6 +30,8 @@
 #define REPARENT_REPORT_FD 3
 #define REPARENT_REPORT_MAGIC 0x57545052U
 #define SESSION_REPORT_MAGIC 0x57545353U
+#define CREDENTIAL_REPORT_MAGIC 0x57544352U
+#define SENSOR_PROGRAM_COUNT 7
 
 struct reparent_report {
     uint32_t magic;
@@ -43,6 +45,16 @@ struct session_report {
     int32_t prior_process_group_id;
     int32_t session_id;
     int32_t process_group_id;
+};
+
+struct credential_report {
+    uint32_t magic;
+    int32_t process_pid;
+    uint32_t uid;
+    uint32_t effective_uid;
+    uint32_t gid;
+    uint32_t effective_gid;
+    int32_t supplementary_group_count;
 };
 
 #define INSN(code_value, destination, source, instruction_offset, immediate) \
@@ -81,7 +93,10 @@ enum observation_key {
     OBSERVATION_EXEC = 2,
     OBSERVATION_EXIT = 3,
     OBSERVATION_MMAP = 4,
-    OBSERVATION_COUNT = 5,
+    OBSERVATION_SETGROUPS = 5,
+    OBSERVATION_SETGID = 6,
+    OBSERVATION_SETUID = 7,
+    OBSERVATION_COUNT = 8,
 };
 
 struct observation {
@@ -92,8 +107,8 @@ struct observation {
 
 struct sensor_fds {
     int map;
-    int programs[5];
-    int links[5];
+    int programs[SENSOR_PROGRAM_COUNT];
+    int links[SENSOR_PROGRAM_COUNT];
 };
 
 static void close_if_open(int *descriptor) {
@@ -104,7 +119,7 @@ static void close_if_open(int *descriptor) {
 }
 
 static void close_sensor_fds(struct sensor_fds *fds) {
-    for (size_t index = 0; index < 5; index++) {
+    for (size_t index = 0; index < SENSOR_PROGRAM_COUNT; index++) {
         close_if_open(&fds->links[index]);
         close_if_open(&fds->programs[index]);
     }
@@ -215,12 +230,12 @@ static int load_observation_program(int map, enum observation_key key) {
     return load_program(instructions, sizeof(instructions) / sizeof(instructions[0]));
 }
 
-static int load_mmap_program(int map) {
+static int load_syscall_program(int map, enum observation_key key, int syscall_number) {
     const struct bpf_insn instructions[] = {
         MOV64_IMM(BPF_REG_0, 0),
         MOV64_REG(BPF_REG_6, BPF_REG_1),
         LOAD_REG(BPF_DW, BPF_REG_9, BPF_REG_6, 8),
-        JUMP_IMM(BPF_JNE, BPF_REG_9, SYS_mmap, 26),
+        JUMP_IMM(BPF_JNE, BPF_REG_9, syscall_number, 26),
         CALL_HELPER(BPF_FUNC_get_current_cgroup_id),
         MOV64_REG(BPF_REG_8, BPF_REG_0),
         STORE_IMM(BPF_W, BPF_REG_10, -4, OBSERVATION_CGROUP),
@@ -231,7 +246,7 @@ static int load_mmap_program(int map) {
         JUMP_IMM(BPF_JEQ, BPF_REG_0, 0, 17),
         LOAD_REG(BPF_DW, BPF_REG_1, BPF_REG_0, 0),
         JUMP_REG(BPF_JNE, BPF_REG_8, BPF_REG_1, 15),
-        STORE_IMM(BPF_W, BPF_REG_10, -4, OBSERVATION_MMAP),
+        STORE_IMM(BPF_W, BPF_REG_10, -4, key),
         LOAD_MAP_FD(BPF_REG_1, map),
         MOV64_REG(BPF_REG_2, BPF_REG_10),
         ADD64_IMM(BPF_REG_2, -4),
@@ -439,8 +454,8 @@ static uint64_t monotonic_ns(void) {
 static int run_file_probe(const char *fixture, const char *fixture_case) {
     struct sensor_fds fds = {
         .map = -1,
-        .programs = {-1, -1, -1, -1, -1},
-        .links = {-1, -1, -1, -1, -1},
+        .programs = {-1, -1, -1, -1, -1, -1, -1},
+        .links = {-1, -1, -1, -1, -1, -1, -1},
     };
     struct rlimit unlimited = {.rlim_cur = RLIM_INFINITY, .rlim_max = RLIM_INFINITY};
     struct observation cgroup = {0};
@@ -483,7 +498,7 @@ static int run_file_probe(const char *fixture, const char *fixture_case) {
         failure_stage = "cgroup_calibration";
         goto cleanup;
     }
-    fds.programs[4] = load_mmap_program(fds.map);
+    fds.programs[4] = load_syscall_program(fds.map, OBSERVATION_MMAP, SYS_mmap);
     fds.links[4] = fds.programs[4] >= 0
         ? attach_raw_tracepoint("sys_enter", fds.programs[4]) : -1;
     if (fds.programs[4] < 0 || fds.links[4] < 0) {
@@ -654,6 +669,23 @@ static int read_exact_session_report(int descriptor, struct session_report *repo
         ? 0 : -1;
 }
 
+static int read_exact_credential_report(int descriptor, struct credential_report *report) {
+    size_t offset = 0;
+    while (offset < sizeof(*report)) {
+        ssize_t length = read(descriptor, (char *)report + offset, sizeof(*report) - offset);
+        if (length < 0 && errno == EINTR) continue;
+        if (length <= 0) return -1;
+        offset += (size_t)length;
+    }
+    char trailing = 0;
+    ssize_t length;
+    do {
+        length = read(descriptor, &trailing, 1);
+    } while (length < 0 && errno == EINTR);
+    return length == 0 && report->magic == CREDENTIAL_REPORT_MAGIC && report->process_pid > 0
+        ? 0 : -1;
+}
+
 static int cgroup_contains_pid(pid_t expected) {
     int descriptor = open(FIXTURE_CGROUP_PROCS, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
     if (descriptor < 0) return 0;
@@ -706,6 +738,25 @@ static int proc_identity_matches(pid_t child, pid_t expected_parent) {
     return parent == (unsigned long)expected_parent && cgroup_contains_pid(child);
 }
 
+static int proc_has_no_supplementary_groups(pid_t child) {
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/%d/status", child);
+    int descriptor = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (descriptor < 0) return 0;
+    char buffer[4096];
+    ssize_t length = read(descriptor, buffer, sizeof(buffer) - 1);
+    int saved_errno = errno;
+    close(descriptor);
+    errno = saved_errno;
+    if (length <= 0 || (size_t)length >= sizeof(buffer)) return 0;
+    buffer[length] = '\0';
+    char *groups = strstr(buffer, "\nGroups:\t");
+    if (groups == NULL) return 0;
+    groups += 9;
+    while (*groups == ' ' || *groups == '\t') groups++;
+    return *groups == '\n';
+}
+
 static int run_process_probe(const char *fixture, const char *fixture_case) {
     static const char *tracepoints[] = {
         "sys_enter",
@@ -715,18 +766,22 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
     };
     struct sensor_fds fds = {
         .map = -1,
-        .programs = {-1, -1, -1, -1, -1},
-        .links = {-1, -1, -1, -1, -1},
+        .programs = {-1, -1, -1, -1, -1, -1, -1},
+        .links = {-1, -1, -1, -1, -1, -1, -1},
     };
     struct rlimit unlimited = {.rlim_cur = RLIM_INFINITY, .rlim_max = RLIM_INFINITY};
     struct observation cgroup = {0};
     struct observation fork_event = {0};
     struct observation exec_event = {0};
     struct observation exit_event = {0};
+    struct observation setgroups_event = {0};
+    struct observation setgid_event = {0};
+    struct observation setuid_event = {0};
     pid_t child = -1;
     pid_t reaped_descendants[2] = {-1, -1};
     struct reparent_report reparent_report = {0};
     struct session_report session_report = {0};
+    struct credential_report credential_report = {0};
     uint64_t reparent_timestamp = 0;
     uint64_t session_timestamp = 0;
     int report_pipe[2] = {-1, -1};
@@ -806,12 +861,41 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
     int double_fork = strcmp(fixture_case, "double_fork_daemonization") == 0;
     int reparent = strcmp(fixture_case, "reparenting") == 0;
     int setsid_escape = strcmp(fixture_case, "setsid_escape") == 0;
+    int credential_change = strcmp(fixture_case, "credential_change") == 0;
+    if (credential_change) {
+        const enum observation_key keys[] = {
+            OBSERVATION_SETGROUPS, OBSERVATION_SETGID, OBSERVATION_SETUID
+        };
+        const int syscalls[] = {SYS_setgroups, SYS_setgid, SYS_setuid};
+        for (size_t index = 0; index < 3; index++) {
+            size_t program_index = index + 4;
+            fds.programs[program_index] = load_syscall_program(
+                fds.map,
+                keys[index],
+                syscalls[index]
+            );
+            if (fds.programs[program_index] < 0) {
+                failure_stage = "credential_program_load";
+                failure_errno = errno;
+                goto cleanup;
+            }
+            fds.links[program_index] = attach_raw_tracepoint(
+                "sys_enter",
+                fds.programs[program_index]
+            );
+            if (fds.links[program_index] < 0) {
+                failure_stage = "credential_attach";
+                failure_errno = errno;
+                goto cleanup;
+            }
+        }
+    }
     if ((double_fork || reparent) && prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0) {
         failure_stage = "subreaper_enable";
         failure_errno = errno;
         goto cleanup;
     }
-    if ((reparent || setsid_escape) && pipe2(report_pipe, O_CLOEXEC) != 0) {
+    if ((reparent || setsid_escape || credential_change) && pipe2(report_pipe, O_CLOEXEC) != 0) {
         failure_stage = "process_report_pipe";
         failure_errno = errno;
         goto cleanup;
@@ -836,7 +920,7 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
             fixture,
             fixture_case,
             &fds,
-            (reparent || setsid_escape) ? report_pipe[1] : -1
+            (reparent || setsid_escape || credential_change) ? report_pipe[1] : -1
         );
     }
     close_if_open(&report_pipe[1]);
@@ -864,6 +948,25 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
         session_timestamp = monotonic_ns();
         if (session_timestamp == 0) {
             failure_stage = "session_timestamp";
+            goto cleanup;
+        }
+    }
+    if (credential_change) {
+        if (read_exact_credential_report(report_pipe[0], &credential_report) != 0) {
+            failure_stage = "credential_report";
+            failure_errno = errno;
+            goto cleanup;
+        }
+        close_if_open(&report_pipe[0]);
+        if (credential_report.process_pid != child ||
+            credential_report.uid != FIXTURE_UID ||
+            credential_report.effective_uid != FIXTURE_UID ||
+            credential_report.gid != FIXTURE_GID ||
+            credential_report.effective_gid != FIXTURE_GID ||
+            credential_report.supplementary_group_count != 0 ||
+            !proc_identity_matches(child, parent) ||
+            !proc_has_no_supplementary_groups(child)) {
+            failure_stage = "credential_identity";
             goto cleanup;
         }
     }
@@ -929,7 +1032,15 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
         failure_errno = errno;
         goto cleanup;
     }
-    if ((!double_fork && !reparent && !setsid_escape &&
+    if (credential_change &&
+        (lookup_observation(fds.map, OBSERVATION_SETGROUPS, &setgroups_event) != 0 ||
+         lookup_observation(fds.map, OBSERVATION_SETGID, &setgid_event) != 0 ||
+         lookup_observation(fds.map, OBSERVATION_SETUID, &setuid_event) != 0)) {
+        failure_stage = "credential_observation_lookup";
+        failure_errno = errno;
+        goto cleanup;
+    }
+    if ((!double_fork && !reparent && !setsid_escape && !credential_change &&
          (!observed_pid(&fork_event, parent) || !observed_pid(&exec_event, child) ||
           !observed_pid(&exit_event, child) ||
           fork_event.timestamp_ns >= exec_event.timestamp_ns ||
@@ -954,7 +1065,16 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
           !observed_pid(&exit_event, child) || session_timestamp == 0 ||
           fork_event.timestamp_ns >= exec_event.timestamp_ns ||
           exec_event.timestamp_ns >= session_timestamp ||
-          session_timestamp >= exit_event.timestamp_ns))) {
+          session_timestamp >= exit_event.timestamp_ns)) ||
+        (credential_change &&
+         (!observed_pid(&fork_event, parent) || !observed_pid(&setgroups_event, child) ||
+          !observed_pid(&setgid_event, child) || !observed_pid(&setuid_event, child) ||
+          !observed_pid(&exec_event, child) || !observed_pid(&exit_event, child) ||
+          fork_event.timestamp_ns >= setgroups_event.timestamp_ns ||
+          setgroups_event.timestamp_ns >= setgid_event.timestamp_ns ||
+          setgid_event.timestamp_ns >= setuid_event.timestamp_ns ||
+          setuid_event.timestamp_ns >= exec_event.timestamp_ns ||
+          exec_event.timestamp_ns >= exit_event.timestamp_ns))) {
         if (reparent) {
             printf(
                 "WHOATHERE_SENSOR_REPARENT_OBSERVATION_DIAGNOSTIC "
@@ -1002,6 +1122,30 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
                 exit_event.timestamp_ns
             );
         }
+        if (credential_change) {
+            printf(
+                "WHOATHERE_SENSOR_CREDENTIAL_OBSERVATION_DIAGNOSTIC "
+                "fork_count=%" PRIu64 " setgroups_count=%" PRIu64
+                " setgid_count=%" PRIu64 " setuid_count=%" PRIu64
+                " exec_count=%" PRIu64 " exit_count=%" PRIu64
+                " child=%d fork_actor=%" PRIu64 " setgroups_actor=%" PRIu64
+                " setgid_actor=%" PRIu64 " setuid_actor=%" PRIu64
+                " exec_actor=%" PRIu64 " exit_actor=%" PRIu64 "\n",
+                fork_event.count,
+                setgroups_event.count,
+                setgid_event.count,
+                setuid_event.count,
+                exec_event.count,
+                exit_event.count,
+                child,
+                fork_event.pid_tgid >> 32,
+                setgroups_event.pid_tgid >> 32,
+                setgid_event.pid_tgid >> 32,
+                setuid_event.pid_tgid >> 32,
+                exec_event.pid_tgid >> 32,
+                exit_event.pid_tgid >> 32
+            );
+        }
         failure_stage = "observation_match";
         goto cleanup;
     }
@@ -1024,6 +1168,13 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
     if (setsid_escape) {
         puts("WHOATHERE_SENSOR process_setsid=observed");
         puts("WHOATHERE_SENSOR process_session_escape=observed");
+    }
+    if (credential_change) {
+        puts("WHOATHERE_SENSOR process_credential_change=observed");
+        puts(
+            "WHOATHERE_SENSOR process_credentials="
+            "uid_65534_gid_65534_no_supplementary_groups"
+        );
     }
     puts("WHOATHERE_SENSOR_PROCESS_PROBE_OK");
     if (double_fork) {
@@ -1154,6 +1305,66 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
         result = 0;
         goto cleanup;
     }
+    if (credential_change) {
+        printf(
+            "WHOATHERE_GUEST_PROCESS_EVIDENCE "
+            "{\"credential_change_count\":\"3\","
+            "\"credential_target\":\"uid_65534_gid_65534_no_supplementary_groups\","
+            "\"descendant_teardown_complete\":true,\"dropped_event_count\":\"0\","
+            "\"event_count\":\"6\",\"event_sequence_end\":\"6\","
+            "\"event_sequence_start\":\"1\",\"events\":["
+            "{\"actor_pid\":\"%" PRIu64 "\",\"cgroup_id\":\"%" PRIu64
+            "\",\"kind\":\"fork\",\"sequence\":\"1\",\"subject_pid\":\"%" PRIu64
+            "\",\"timestamp_ns\":\"%" PRIu64 "\"},"
+            "{\"actor_pid\":\"%" PRIu64 "\",\"cgroup_id\":\"%" PRIu64
+            "\",\"kind\":\"setgroups\",\"sequence\":\"2\",\"subject_pid\":\"%" PRIu64
+            "\",\"timestamp_ns\":\"%" PRIu64 "\"},"
+            "{\"actor_pid\":\"%" PRIu64 "\",\"cgroup_id\":\"%" PRIu64
+            "\",\"kind\":\"setgid\",\"sequence\":\"3\",\"subject_pid\":\"%" PRIu64
+            "\",\"timestamp_ns\":\"%" PRIu64 "\"},"
+            "{\"actor_pid\":\"%" PRIu64 "\",\"cgroup_id\":\"%" PRIu64
+            "\",\"kind\":\"setuid\",\"sequence\":\"4\",\"subject_pid\":\"%" PRIu64
+            "\",\"timestamp_ns\":\"%" PRIu64 "\"},"
+            "{\"actor_pid\":\"%" PRIu64 "\",\"cgroup_id\":\"%" PRIu64
+            "\",\"kind\":\"exec\",\"sequence\":\"5\",\"subject_pid\":\"%" PRIu64
+            "\",\"timestamp_ns\":\"%" PRIu64 "\"},"
+            "{\"actor_pid\":\"%" PRIu64 "\",\"cgroup_id\":\"%" PRIu64
+            "\",\"kind\":\"exit\",\"sequence\":\"6\",\"subject_pid\":\"%" PRIu64
+            "\",\"timestamp_ns\":\"%" PRIu64 "\"}],"
+            "\"evidence_truncated\":false,\"exec_count\":\"1\",\"exit_count\":\"1\","
+            "\"fixture_case\":\"credential_change\",\"fork_count\":\"1\","
+            "\"heartbeat_count\":\"2\",\"package_gid\":\"65534\","
+            "\"package_uid\":\"65534\",\"reaped_process_count\":\"1\","
+            "\"schema_version\":\"whoathere.linux_vz_process_evidence_payload.v1\","
+            "\"sensor_healthy\":true}\n",
+            (uint64_t)parent,
+            cgroup.count,
+            (uint64_t)child,
+            fork_event.timestamp_ns,
+            (uint64_t)child,
+            cgroup.count,
+            (uint64_t)child,
+            setgroups_event.timestamp_ns,
+            (uint64_t)child,
+            cgroup.count,
+            (uint64_t)child,
+            setgid_event.timestamp_ns,
+            (uint64_t)child,
+            cgroup.count,
+            (uint64_t)child,
+            setuid_event.timestamp_ns,
+            (uint64_t)child,
+            cgroup.count,
+            (uint64_t)child,
+            exec_event.timestamp_ns,
+            (uint64_t)child,
+            cgroup.count,
+            (uint64_t)child,
+            exit_event.timestamp_ns
+        );
+        result = 0;
+        goto cleanup;
+    }
     printf(
         "WHOATHERE_GUEST_PROCESS_EVIDENCE "
         "{\"descendant_teardown_complete\":true,\"dropped_event_count\":\"0\","
@@ -1212,7 +1423,8 @@ int main(int argument_count, char **arguments) {
     if (strcmp(arguments[2], "fork_exec_exit") == 0 ||
         strcmp(arguments[2], "double_fork_daemonization") == 0 ||
         strcmp(arguments[2], "reparenting") == 0 ||
-        strcmp(arguments[2], "setsid_escape") == 0) {
+        strcmp(arguments[2], "setsid_escape") == 0 ||
+        strcmp(arguments[2], "credential_change") == 0) {
         return run_process_probe(arguments[1], arguments[2]);
     }
     if (strcmp(arguments[2], "protected_open_read_write_rename_delete") == 0 ||
