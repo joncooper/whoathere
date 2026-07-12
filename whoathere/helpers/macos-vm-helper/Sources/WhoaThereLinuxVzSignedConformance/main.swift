@@ -283,7 +283,7 @@ private struct LinuxVzSignedConformanceHarness {
         let guestEvidencePayloadSHA256: String
         let guestEventCount: UInt64
         switch runSpec.fixtureCase {
-        case "fork_exec_exit", "reparenting", "double_fork_daemonization":
+        case "fork_exec_exit", "reparenting", "double_fork_daemonization", "setsid_escape":
             let evidence = try decodeLinuxVzProcessEvidencePayloadV1(serialData)
             guard evidence.fixtureCase == runSpec.fixtureCase,
                   evidence.packageUID == UInt64(backend.packageUID),
@@ -330,7 +330,8 @@ private struct LinuxVzSignedConformanceHarness {
         let missingBaseMarkers: [String]
         if runSpec.fixtureCase == "fork_exec_exit" ||
             runSpec.fixtureCase == "reparenting" ||
-            runSpec.fixtureCase == "double_fork_daemonization" {
+            runSpec.fixtureCase == "double_fork_daemonization" ||
+            runSpec.fixtureCase == "setsid_escape" {
             let missingProcessMarkers = linuxVzInertMissingRequiredEvidenceMarkersV2(serialData)
             let missingDoubleForkMarkers = runSpec.fixtureCase == "double_fork_daemonization"
                 ? linuxVzInertDoubleForkSensorMarkersV1.filter {
@@ -340,8 +341,12 @@ private struct LinuxVzSignedConformanceHarness {
                 ? linuxVzInertReparentingSensorMarkersV1.filter {
                     !linuxVzInertSerialContainsExactMarker(serialData, marker: $0)
                 } : []
+            let missingSetsidMarkers = runSpec.fixtureCase == "setsid_escape"
+                ? linuxVzInertSetsidSensorMarkersV1.filter {
+                    !linuxVzInertSerialContainsExactMarker(serialData, marker: $0)
+                } : []
             missingBaseMarkers = missingProcessMarkers + missingDoubleForkMarkers
-                + missingReparentingMarkers
+                + missingReparentingMarkers + missingSetsidMarkers
         } else {
             let missingCapabilities = linuxVzInertMissingCapabilityMarkers(serialData)
             let missingFileMarkers = linuxVzInertFileSensorMarkersV1.filter {

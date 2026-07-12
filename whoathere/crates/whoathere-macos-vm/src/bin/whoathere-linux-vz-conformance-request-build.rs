@@ -32,6 +32,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "fork_exec_exit" => LinuxVzTelemetryConformanceCaseV1::ForkExecExit,
         "reparenting" => LinuxVzTelemetryConformanceCaseV1::Reparenting,
         "double_fork_daemonization" => LinuxVzTelemetryConformanceCaseV1::DoubleForkDaemonization,
+        "setsid_escape" => LinuxVzTelemetryConformanceCaseV1::SetsidEscape,
         "protected_open_read_write_rename_delete" => {
             LinuxVzTelemetryConformanceCaseV1::ProtectedOpenReadWriteRenameDelete
         }

@@ -39,6 +39,11 @@ public let linuxVzInertReparentingSensorMarkersV1 = [
     "WHOATHERE_SENSOR process_subreaper_teardown=observed",
 ]
 
+public let linuxVzInertSetsidSensorMarkersV1 = [
+    "WHOATHERE_SENSOR process_setsid=observed",
+    "WHOATHERE_SENSOR process_session_escape=observed",
+]
+
 public let linuxVzInertRequiredEvidenceMarkersV2 =
     linuxVzInertRequiredCapabilityMarkersV1 + linuxVzInertProcessSensorMarkersV2
 

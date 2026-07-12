@@ -148,6 +148,10 @@ struct ProcessEvidenceWireV1 {
     reaped_process_count: Option<String>,
     schema_version: String,
     sensor_healthy: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    session_escape_count: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    session_target: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -234,6 +238,8 @@ pub fn decode_linux_vz_process_evidence_payload_v1(
                     || wire.reaped_process_count.is_some()
                     || wire.reparent_target.is_some()
                     || wire.reparented_process_count.is_some()
+                    || wire.session_escape_count.is_some()
+                    || wire.session_target.is_some()
                 {
                     return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema);
                 }
@@ -249,6 +255,8 @@ pub fn decode_linux_vz_process_evidence_payload_v1(
                     || optional_decimal_u64_v1(wire.reaped_process_count.as_deref())? != 3
                     || wire.reparent_target.is_some()
                     || wire.reparented_process_count.is_some()
+                    || wire.session_escape_count.is_some()
+                    || wire.session_target.is_some()
                 {
                     return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema);
                 }
@@ -264,12 +272,31 @@ pub fn decode_linux_vz_process_evidence_payload_v1(
                     || optional_decimal_u64_v1(wire.reaped_process_count.as_deref())? != 2
                     || optional_decimal_u64_v1(wire.reparented_process_count.as_deref())? != 1
                     || wire.reparent_target.as_deref() != Some("protected_subreaper")
+                    || wire.session_escape_count.is_some()
+                    || wire.session_target.is_some()
                 {
                     return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema);
                 }
                 (
                     LinuxVzTelemetryConformanceCaseV1::Reparenting,
                     &["exec", "fork", "reparent", "exit"],
+                )
+            }
+            Some("setsid_escape") => {
+                if optional_decimal_u64_v1(wire.fork_count.as_deref())? != 1
+                    || optional_decimal_u64_v1(wire.exec_count.as_deref())? != 1
+                    || optional_decimal_u64_v1(wire.exit_count.as_deref())? != 1
+                    || optional_decimal_u64_v1(wire.reaped_process_count.as_deref())? != 1
+                    || optional_decimal_u64_v1(wire.session_escape_count.as_deref())? != 1
+                    || wire.session_target.as_deref() != Some("new_session_leader")
+                    || wire.reparent_target.is_some()
+                    || wire.reparented_process_count.is_some()
+                {
+                    return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema);
+                }
+                (
+                    LinuxVzTelemetryConformanceCaseV1::SetsidEscape,
+                    &["fork", "exec", "setsid", "exit"],
                 )
             }
             _ => return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema),
@@ -338,6 +365,18 @@ pub fn decode_linux_vz_process_evidence_payload_v1(
                 return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidEvent);
             }
         }
+        LinuxVzTelemetryConformanceCaseV1::SetsidEscape => {
+            if events[0].actor_pid == events[0].subject_pid
+                || events[1].actor_pid != events[0].subject_pid
+                || events[1].subject_pid != events[0].subject_pid
+                || events[2].actor_pid != events[0].subject_pid
+                || events[2].subject_pid != events[0].subject_pid
+                || events[3].actor_pid != events[0].subject_pid
+                || events[3].subject_pid != events[0].subject_pid
+            {
+                return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidEvent);
+            }
+        }
         _ => return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema),
     }
 
@@ -380,6 +419,7 @@ mod tests {
 
     const DOUBLE_FORK: &[u8] = br#"{"descendant_teardown_complete":true,"dropped_event_count":"0","event_count":"3","event_sequence_end":"3","event_sequence_start":"1","events":[{"actor_pid":"42","cgroup_id":"9001","kind":"exec","sequence":"1","subject_pid":"42","timestamp_ns":"100"},{"actor_pid":"43","cgroup_id":"9001","kind":"fork","sequence":"2","subject_pid":"44","timestamp_ns":"200"},{"actor_pid":"44","cgroup_id":"9001","kind":"exit","sequence":"3","subject_pid":"44","timestamp_ns":"300"}],"evidence_truncated":false,"exec_count":"1","exit_count":"3","fixture_case":"double_fork_daemonization","fork_count":"3","heartbeat_count":"2","package_gid":"65534","package_uid":"65534","reaped_process_count":"3","schema_version":"whoathere.linux_vz_process_evidence_payload.v1","sensor_healthy":true}"#;
     const REPARENTING: &[u8] = br#"{"descendant_teardown_complete":true,"dropped_event_count":"0","event_count":"4","event_sequence_end":"4","event_sequence_start":"1","events":[{"actor_pid":"42","cgroup_id":"9001","kind":"exec","sequence":"1","subject_pid":"42","timestamp_ns":"100"},{"actor_pid":"42","cgroup_id":"9001","kind":"fork","sequence":"2","subject_pid":"43","timestamp_ns":"200"},{"actor_pid":"41","cgroup_id":"9001","kind":"reparent","sequence":"3","subject_pid":"43","timestamp_ns":"300"},{"actor_pid":"43","cgroup_id":"9001","kind":"exit","sequence":"4","subject_pid":"43","timestamp_ns":"400"}],"evidence_truncated":false,"exec_count":"1","exit_count":"2","fixture_case":"reparenting","fork_count":"2","heartbeat_count":"2","package_gid":"65534","package_uid":"65534","reaped_process_count":"2","reparent_target":"protected_subreaper","reparented_process_count":"1","schema_version":"whoathere.linux_vz_process_evidence_payload.v1","sensor_healthy":true}"#;
+    const SETSID_ESCAPE: &[u8] = br#"{"descendant_teardown_complete":true,"dropped_event_count":"0","event_count":"4","event_sequence_end":"4","event_sequence_start":"1","events":[{"actor_pid":"41","cgroup_id":"9001","kind":"fork","sequence":"1","subject_pid":"42","timestamp_ns":"100"},{"actor_pid":"42","cgroup_id":"9001","kind":"exec","sequence":"2","subject_pid":"42","timestamp_ns":"200"},{"actor_pid":"42","cgroup_id":"9001","kind":"setsid","sequence":"3","subject_pid":"42","timestamp_ns":"300"},{"actor_pid":"42","cgroup_id":"9001","kind":"exit","sequence":"4","subject_pid":"42","timestamp_ns":"400"}],"evidence_truncated":false,"exec_count":"1","exit_count":"1","fixture_case":"setsid_escape","fork_count":"1","heartbeat_count":"2","package_gid":"65534","package_uid":"65534","reaped_process_count":"1","schema_version":"whoathere.linux_vz_process_evidence_payload.v1","sensor_healthy":true,"session_escape_count":"1","session_target":"new_session_leader"}"#;
 
     #[test]
     fn double_fork_payload_binds_counts_lineage_and_teardown() {
@@ -419,6 +459,28 @@ mod tests {
         let changed = String::from_utf8(REPARENTING.to_vec())
             .unwrap()
             .replace("protected_subreaper", "package_process");
+        assert_eq!(
+            decode_linux_vz_process_evidence_payload_v1(changed.as_bytes()),
+            Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema)
+        );
+    }
+
+    #[test]
+    fn setsid_payload_binds_new_session_leader_and_teardown() {
+        let payload = decode_linux_vz_process_evidence_payload_v1(SETSID_ESCAPE).unwrap();
+        assert_eq!(
+            payload.fixture_case(),
+            LinuxVzTelemetryConformanceCaseV1::SetsidEscape
+        );
+        assert_eq!(payload.event_count(), 4);
+        assert_eq!(payload.dropped_event_count(), 0);
+    }
+
+    #[test]
+    fn setsid_payload_rejects_forged_session_target() {
+        let changed = String::from_utf8(SETSID_ESCAPE.to_vec())
+            .unwrap()
+            .replace("new_session_leader", "inherited_session");
         assert_eq!(
             decode_linux_vz_process_evidence_payload_v1(changed.as_bytes()),
             Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema)

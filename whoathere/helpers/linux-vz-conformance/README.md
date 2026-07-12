@@ -111,6 +111,10 @@ The
 [reparenting checkpoint](../../../docs/product-build-run/artifact-native-linux-vz-reparenting-checkpoint-2026-07-12.md)
 adds live parent-transition corroboration and protected reaping, then reruns the earlier four cases
 on the new measured identity. The other 33 cases remain pending.
+The
+[session-escape checkpoint](../../../docs/product-build-run/artifact-native-linux-vz-setsid-checkpoint-2026-07-12.md)
+adds live session/process-group transition corroboration and strict event ordering, then reruns the
+earlier five cases on the new measured identity. The other 32 cases remain pending.
 
 ## Closed fixture contract
 

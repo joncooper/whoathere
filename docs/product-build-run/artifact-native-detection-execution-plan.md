@@ -59,6 +59,13 @@ cgroup membership, and complete reaping. The previous four cases were rerun on t
 identity. Five of 38 cases now share one backend binding; 33 remain. See the
 [reparenting checkpoint](artifact-native-linux-vz-reparenting-checkpoint-2026-07-12.md).
 
+The distinct `setsid_escape` case now proves that the exact unprivileged package child becomes a
+new session and process-group leader while retaining its package credentials, parent binding, and
+cgroup. Strict Swift and Rust decoders bind the corroborated transition between kernel-observed exec
+and exit events. The previous five cases were rerun on the resulting exact identity. Six of 38 cases
+now share one backend binding; 32 remain. See the
+[session-escape checkpoint](artifact-native-linux-vz-setsid-checkpoint-2026-07-12.md).
+
 Primary target: malicious npm and PyPI package detection with static analysis, AI-assisted code
 review, and behaviorally instrumented detonation in disposable virtual machines
 
@@ -1322,6 +1329,7 @@ Repository evidence:
 - [Linux VZ mmap checkpoint](artifact-native-linux-vz-mmap-checkpoint-2026-07-12.md)
 - [Linux VZ double-fork checkpoint](artifact-native-linux-vz-double-fork-checkpoint-2026-07-12.md)
 - [Linux VZ reparenting checkpoint](artifact-native-linux-vz-reparenting-checkpoint-2026-07-12.md)
+- [Linux VZ session-escape checkpoint](artifact-native-linux-vz-setsid-checkpoint-2026-07-12.md)
 - [macOS local release readiness](macos-local-release-readiness.md)
 - [macOS local beta pressure checkpoint](macos-local-beta-pressure-checkpoint.md)
 - [latest source-fixture corpus report](src-fixture-corpus-latest.md)

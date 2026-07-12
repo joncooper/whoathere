@@ -70,6 +70,7 @@ mod linux {
             LinuxVzTelemetryConformanceCaseV1::ForkExecExit
                 | LinuxVzTelemetryConformanceCaseV1::Reparenting
                 | LinuxVzTelemetryConformanceCaseV1::DoubleForkDaemonization
+                | LinuxVzTelemetryConformanceCaseV1::SetsidEscape
                 | LinuxVzTelemetryConformanceCaseV1::ProtectedOpenReadWriteRenameDelete
                 | LinuxVzTelemetryConformanceCaseV1::MmapAccess
         ) || run_spec.expected_terminal()
@@ -95,6 +96,7 @@ mod linux {
             LinuxVzTelemetryConformanceCaseV1::DoubleForkDaemonization => {
                 "double_fork_daemonization"
             }
+            LinuxVzTelemetryConformanceCaseV1::SetsidEscape => "setsid_escape",
             LinuxVzTelemetryConformanceCaseV1::ProtectedOpenReadWriteRenameDelete => {
                 "protected_open_read_write_rename_delete"
             }
@@ -126,7 +128,8 @@ mod linux {
         let (package_uid, package_gid, claims) = match run_spec.fixture_case() {
             LinuxVzTelemetryConformanceCaseV1::ForkExecExit
             | LinuxVzTelemetryConformanceCaseV1::Reparenting
-            | LinuxVzTelemetryConformanceCaseV1::DoubleForkDaemonization => {
+            | LinuxVzTelemetryConformanceCaseV1::DoubleForkDaemonization
+            | LinuxVzTelemetryConformanceCaseV1::SetsidEscape => {
                 let evidence = decode_linux_vz_process_evidence_from_serial_v1(&sensor_output)?;
                 if evidence.fixture_case() != run_spec.fixture_case() {
                     return Err("guest_signer_process_case_mismatch".into());

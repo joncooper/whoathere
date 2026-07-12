@@ -11,6 +11,9 @@ private let validDoubleForkPayload =
 private let validReparentingPayload =
     #"{"descendant_teardown_complete":true,"dropped_event_count":"0","event_count":"4","event_sequence_end":"4","event_sequence_start":"1","events":[{"actor_pid":"42","cgroup_id":"9001","kind":"exec","sequence":"1","subject_pid":"42","timestamp_ns":"100"},{"actor_pid":"42","cgroup_id":"9001","kind":"fork","sequence":"2","subject_pid":"43","timestamp_ns":"200"},{"actor_pid":"41","cgroup_id":"9001","kind":"reparent","sequence":"3","subject_pid":"43","timestamp_ns":"300"},{"actor_pid":"43","cgroup_id":"9001","kind":"exit","sequence":"4","subject_pid":"43","timestamp_ns":"400"}],"evidence_truncated":false,"exec_count":"1","exit_count":"2","fixture_case":"reparenting","fork_count":"2","heartbeat_count":"2","package_gid":"65534","package_uid":"65534","reaped_process_count":"2","reparent_target":"protected_subreaper","reparented_process_count":"1","schema_version":"whoathere.linux_vz_process_evidence_payload.v1","sensor_healthy":true}"#
 
+private let validSetsidPayload =
+    #"{"descendant_teardown_complete":true,"dropped_event_count":"0","event_count":"4","event_sequence_end":"4","event_sequence_start":"1","events":[{"actor_pid":"41","cgroup_id":"9001","kind":"fork","sequence":"1","subject_pid":"42","timestamp_ns":"100"},{"actor_pid":"42","cgroup_id":"9001","kind":"exec","sequence":"2","subject_pid":"42","timestamp_ns":"200"},{"actor_pid":"42","cgroup_id":"9001","kind":"setsid","sequence":"3","subject_pid":"42","timestamp_ns":"300"},{"actor_pid":"42","cgroup_id":"9001","kind":"exit","sequence":"4","subject_pid":"42","timestamp_ns":"400"}],"evidence_truncated":false,"exec_count":"1","exit_count":"1","fixture_case":"setsid_escape","fork_count":"1","heartbeat_count":"2","package_gid":"65534","package_uid":"65534","reaped_process_count":"1","schema_version":"whoathere.linux_vz_process_evidence_payload.v1","sensor_healthy":true,"session_escape_count":"1","session_target":"new_session_leader"}"#
+
 @Test func processEvidencePayloadBindsOrderedCgroupLineageAndReceiptClaims() throws {
     let serial = Data(
         (linuxVzProcessEvidenceSerialPrefixV1 + validProcessPayload + "\r\n").utf8
@@ -67,6 +70,26 @@ private let validReparentingPayload =
             as? [String: Any]
     )
     object["reparent_target"] = "package_process"
+    let changed = try canonicalJSONData(object)
+    #expect(throws: LinuxVzProcessEvidencePayloadError.invalidSchema) {
+        try decodeLinuxVzProcessEvidencePayloadV1(
+            Data(linuxVzProcessEvidenceSerialPrefixV1.utf8) + changed + Data("\n".utf8)
+        )
+    }
+}
+
+@Test func processEvidencePayloadBindsSetsidToNewSessionLeader() throws {
+    let serial = Data((linuxVzProcessEvidenceSerialPrefixV1 + validSetsidPayload + "\n").utf8)
+    let payload = try decodeLinuxVzProcessEvidencePayloadV1(serial)
+    #expect(payload.canonicalJSON == Data(validSetsidPayload.utf8))
+    #expect(payload.fixtureCase == "setsid_escape")
+    #expect(payload.eventCount == 4)
+    #expect(payload.descendantTeardownComplete)
+
+    var object = try #require(
+        JSONSerialization.jsonObject(with: Data(validSetsidPayload.utf8)) as? [String: Any]
+    )
+    object["session_target"] = "inherited_session"
     let changed = try canonicalJSONData(object)
     #expect(throws: LinuxVzProcessEvidencePayloadError.invalidSchema) {
         try decodeLinuxVzProcessEvidencePayloadV1(

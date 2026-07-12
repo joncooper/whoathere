@@ -12,10 +12,20 @@ static const char *sensor_path = "/whoathere/process-sensor-probe";
 static const char *fixture_root = "/run/whoathere-file-fixture";
 #define REPARENT_REPORT_FD 3
 #define REPARENT_REPORT_MAGIC 0x57545052U
+#define SESSION_REPORT_MAGIC 0x57545353U
 
 struct reparent_report {
     uint32_t magic;
     int32_t child_pid;
+};
+
+struct session_report {
+    uint32_t magic;
+    int32_t process_pid;
+    int32_t prior_session_id;
+    int32_t prior_process_group_id;
+    int32_t session_id;
+    int32_t process_group_id;
 };
 
 static int protected_sensor_denied(void) {
@@ -126,6 +136,31 @@ static int reparenting(void) {
     return written == (ssize_t)sizeof(report) ? 0 : 95;
 }
 
+static int setsid_escape(void) {
+    const pid_t process_pid = getpid();
+    const pid_t prior_session_id = getsid(0);
+    const pid_t prior_process_group_id = getpgrp();
+    if (prior_session_id < 0 || prior_process_group_id < 0) return 96;
+    const pid_t session_id = setsid();
+    const pid_t process_group_id = getpgrp();
+    if (session_id != process_pid || process_group_id != process_pid) return 97;
+    const struct session_report report = {
+        .magic = SESSION_REPORT_MAGIC,
+        .process_pid = process_pid,
+        .prior_session_id = prior_session_id,
+        .prior_process_group_id = prior_process_group_id,
+        .session_id = session_id,
+        .process_group_id = process_group_id,
+    };
+    ssize_t written = write(REPARENT_REPORT_FD, &report, sizeof(report));
+    int saved_errno = errno;
+    if (close(REPARENT_REPORT_FD) != 0 && written == (ssize_t)sizeof(report)) return 98;
+    errno = saved_errno;
+    if (written != (ssize_t)sizeof(report)) return 99;
+    const struct timespec pause = {.tv_sec = 0, .tv_nsec = 200000000};
+    return nanosleep(&pause, NULL) == 0 ? 0 : 100;
+}
+
 int main(int argument_count, char **arguments) {
     if (argument_count != 2 || getuid() != 65534 || geteuid() != 65534 ||
         getgid() != 65534 || getegid() != 65534) {
@@ -138,6 +173,7 @@ int main(int argument_count, char **arguments) {
         return double_fork_daemonization();
     }
     if (strcmp(arguments[1], "reparenting") == 0) return reparenting();
+    if (strcmp(arguments[1], "setsid_escape") == 0) return setsid_escape();
     if (strcmp(arguments[1], "protected_open_read_write_rename_delete") == 0 ||
         strcmp(arguments[1], "mmap_access") == 0) {
         return file_fixture();
