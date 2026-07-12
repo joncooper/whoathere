@@ -142,6 +142,27 @@ int main(void) {
         "python3 -c 'pass'",
         10
     );
+    if (clean_result.exit_code != 0) {
+        fprintf(
+            stderr,
+            "clean_result exit=%d identity=%d telemetry=%d events=%u cleanup=%d\n",
+            clean_result.exit_code,
+            clean_result.execution_identity_isolated,
+            clean_result.runtime_network_telemetry_active,
+            clean_result.network_telemetry_events,
+            clean_result.process_group_cleanup_enforced
+        );
+        char stderr_path[512];
+        assert(snprintf(stderr_path, sizeof(stderr_path), "%s/stderr.log", workspace) > 0);
+        FILE *stderr_file = fopen(stderr_path, "r");
+        if (stderr_file != NULL) {
+            char error_line[512];
+            while (fgets(error_line, sizeof(error_line), stderr_file) != NULL) {
+                fputs(error_line, stderr);
+            }
+            fclose(stderr_file);
+        }
+    }
     assert(clean_result.exit_code == 0);
     assert(clean_result.runtime_network_telemetry_active == 1);
     assert(clean_result.network_telemetry_events == 0);
@@ -157,7 +178,7 @@ int main(void) {
         getuid(),
         getgid(),
         0,
-        "python3 -c 'import socket; socket.getaddrinfo(\"payload.example\", 443)'",
+        "exec 3>&-; python3 -c 'import socket; socket.getaddrinfo(\"payload.example\", 443)'",
         10
     );
     assert(network_result.runtime_network_telemetry_active == 1);

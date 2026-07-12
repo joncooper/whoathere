@@ -795,7 +795,7 @@ static void drain_runtime_telemetry(int fd, struct command_result *result) {
     }
     char event[32];
     while (1) {
-        ssize_t count = recv(fd, event, sizeof(event), MSG_DONTWAIT);
+        ssize_t count = read(fd, event, sizeof(event));
         if (count <= 0) {
             return;
         }
@@ -819,18 +819,22 @@ static int write_runtime_telemetry_files(const char *workspace, char *control_di
     char node_preload[1024];
     char python_preload[1024];
     char bin_dir[1024];
+    char telemetry_fifo[1024];
     if (snprintf(node_preload, sizeof(node_preload), "%s/node-preload.cjs", control_dir) < 0
         || snprintf(python_preload, sizeof(python_preload), "%s/sitecustomize.py", control_dir) < 0
         || snprintf(bin_dir, sizeof(bin_dir), "%s/bin", control_dir) < 0
-        || mkdir(bin_dir, 0755) != 0) {
+        || snprintf(telemetry_fifo, sizeof(telemetry_fifo), "%s/telemetry.fifo", control_dir) < 0
+        || mkdir(bin_dir, 0755) != 0
+        || mkfifo(telemetry_fifo, 0622) != 0
+        || chmod(telemetry_fifo, 0622) != 0) {
         return -1;
     }
     const char *node_source =
         "'use strict';\n"
         "const fs = require('fs');\n"
-        "const fd = Number(process.env.WHOATHERE_TELEMETRY_FD);\n"
+        "const telemetryPath = process.env.WHOATHERE_TELEMETRY_PATH;\n"
         "let networkSent = false;\n"
-        "function emit(value) { try { if (Number.isInteger(fd)) fs.writeSync(fd, value); } catch (_) {} }\n"
+        "function emit(value) { try { if (telemetryPath) fs.writeFileSync(telemetryPath, value); } catch (_) {} }\n"
         "function mark() { if (!networkSent) { networkSent = true; emit('N'); } }\n"
         "function wrap(object, name) { const original = object && object[name]; if (typeof original !== 'function') return; object[name] = function(...args) { mark(); return Reflect.apply(original, this, args); }; }\n"
         "emit('R');\n"
@@ -846,11 +850,14 @@ static int write_runtime_telemetry_files(const char *workspace, char *control_di
     const char *python_source =
         "import os\n"
         "import socket\n"
-        "_fd = int(os.environ.get('WHOATHERE_TELEMETRY_FD', '-1'))\n"
+        "_telemetry_path = os.environ.get('WHOATHERE_TELEMETRY_PATH')\n"
         "_network_sent = False\n"
         "def _emit(value):\n"
         "    try:\n"
-        "        if _fd >= 0: os.write(_fd, value)\n"
+        "        if _telemetry_path:\n"
+        "            fd = os.open(_telemetry_path, os.O_WRONLY | os.O_NONBLOCK)\n"
+        "            try: os.write(fd, value)\n"
+        "            finally: os.close(fd)\n"
         "    except OSError:\n"
         "        pass\n"
         "def _mark():\n"
@@ -880,7 +887,7 @@ static int write_runtime_telemetry_files(const char *workspace, char *control_di
     for (size_t index = 0; index < sizeof(tools) / sizeof(tools[0]); index++) {
         char wrapper[1024];
         if (snprintf(wrapper, sizeof(wrapper), "%s/%s", bin_dir, tools[index]) < 0
-            || write_file(wrapper, "#!/bin/sh\nprintf N >&3\nexit 69\n") != 0
+            || write_file(wrapper, "#!/bin/sh\nprintf N > \"$WHOATHERE_TELEMETRY_PATH\"\nexit 69\n") != 0
             || chmod(wrapper, 0555) != 0) {
             return -1;
         }
@@ -930,17 +937,50 @@ static struct command_result run_shell_fixture_with_boundary(
     result.exit_code = 70;
 
     int telemetry_fds[2] = {-1, -1};
+    int telemetry_fifo_fd = -1;
     if (control_dir != NULL && socketpair(AF_UNIX, SOCK_DGRAM, 0, telemetry_fds) != 0) {
         return result;
+    }
+    if (telemetry_fds[0] >= 0) {
+        int flags = fcntl(telemetry_fds[0], F_GETFL, 0);
+        if (flags < 0 || fcntl(telemetry_fds[0], F_SETFL, flags | O_NONBLOCK) != 0) {
+            close(telemetry_fds[0]);
+            close(telemetry_fds[1]);
+            return result;
+        }
+    }
+    if (control_dir != NULL) {
+        char telemetry_fifo[1024];
+        int length = snprintf(
+            telemetry_fifo,
+            sizeof(telemetry_fifo),
+            "%s/telemetry.fifo",
+            control_dir
+        );
+        if (length < 0 || (size_t)length >= sizeof(telemetry_fifo)) {
+            close(telemetry_fds[0]);
+            close(telemetry_fds[1]);
+            return result;
+        }
+        telemetry_fifo_fd = open(telemetry_fifo, O_RDWR | O_NONBLOCK);
+        if (telemetry_fifo_fd < 0) {
+            close(telemetry_fds[0]);
+            close(telemetry_fds[1]);
+            return result;
+        }
     }
 
     pid_t pid = fork();
     if (pid < 0) {
         if (telemetry_fds[0] >= 0) close(telemetry_fds[0]);
         if (telemetry_fds[1] >= 0) close(telemetry_fds[1]);
+        if (telemetry_fifo_fd >= 0) close(telemetry_fifo_fd);
         return result;
     }
     if (pid == 0) {
+        if (telemetry_fifo_fd >= 0) {
+            close(telemetry_fifo_fd);
+        }
         if (telemetry_fds[0] >= 0) {
             close(telemetry_fds[0]);
             if (telemetry_fds[1] != WHOATHERE_TELEMETRY_FD) {
@@ -976,6 +1016,9 @@ static struct command_result run_shell_fixture_with_boundary(
             snprintf(path, sizeof(path), "%s/bin:%s", control_dir, WHOATHERE_TOOL_PATH);
             setenv("WHOATHERE_TELEMETRY_FD", telemetry_fd, 1);
             setenv("WHOATHERE_TELEMETRY_DIR", control_dir, 1);
+            char telemetry_path[1200];
+            snprintf(telemetry_path, sizeof(telemetry_path), "%s/telemetry.fifo", control_dir);
+            setenv("WHOATHERE_TELEMETRY_PATH", telemetry_path, 1);
             setenv("NODE_OPTIONS", node_options, 1);
             setenv("PYTHONPATH", control_dir, 1);
             setenv("PATH", path, 1);
@@ -1010,6 +1053,7 @@ static struct command_result run_shell_fixture_with_boundary(
     int status = 0;
     while (1) {
         drain_runtime_telemetry(telemetry_fds[0], &result);
+        drain_runtime_telemetry(telemetry_fifo_fd, &result);
         pid_t waited = waitpid(pid, &status, WNOHANG);
         if (waited == pid) {
             if (WIFEXITED(status)) {
@@ -1022,13 +1066,16 @@ static struct command_result run_shell_fixture_with_boundary(
                 result.process_group_cleanup_enforced = 1;
             }
             drain_runtime_telemetry(telemetry_fds[0], &result);
+            drain_runtime_telemetry(telemetry_fifo_fd, &result);
             if (telemetry_fds[0] >= 0) close(telemetry_fds[0]);
+            if (telemetry_fifo_fd >= 0) close(telemetry_fifo_fd);
             return result;
         }
         if (waited < 0) {
             result.exit_code = 70;
             if (process_group_ready) (void)kill(-pid, SIGKILL);
             if (telemetry_fds[0] >= 0) close(telemetry_fds[0]);
+            if (telemetry_fifo_fd >= 0) close(telemetry_fifo_fd);
             return result;
         }
         if ((unsigned int)(time(NULL) - start) >= timeout_seconds) {
@@ -1042,7 +1089,9 @@ static struct command_result run_shell_fixture_with_boundary(
             result.exit_code = 124;
             result.timed_out = 1;
             drain_runtime_telemetry(telemetry_fds[0], &result);
+            drain_runtime_telemetry(telemetry_fifo_fd, &result);
             if (telemetry_fds[0] >= 0) close(telemetry_fds[0]);
+            if (telemetry_fifo_fd >= 0) close(telemetry_fifo_fd);
             return result;
         }
         usleep(100000);
