@@ -92,6 +92,10 @@ The
 [live guest-receipt checkpoint](../../../docs/product-build-run/artifact-native-linux-vz-live-guest-receipt-checkpoint-2026-07-12.md)
 adds a bounded host-CID-only virtio-vsock challenge, root-only guest signer, reproducible signed
 initramfs overlay, and independently verified inert guest receipt. It does not qualify the backend.
+The
+[first complete conformance-case checkpoint](../../../docs/product-build-run/artifact-native-linux-vz-first-complete-conformance-case-checkpoint-2026-07-12.md)
+adds the separately signed host packet/lifecycle receipt and verifies the first physical
+guest-plus-host case. The other 37 physical cases remain pending.
 
 ## Closed fixture contract
 

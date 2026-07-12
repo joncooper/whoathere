@@ -33,7 +33,10 @@ private struct Options {
     let requestFrame: URL
     let backendIdentity: URL
     let guestPublicKey: URL
+    let hostSigningSeed: URL
     let receiptOutput: URL
+    let hostEvidenceOutput: URL
+    let hostReceiptOutput: URL
     let serialLog: URL
     let timeoutSeconds: Int
 
@@ -50,7 +53,8 @@ private struct Options {
         let required = [
             "--kernel", "--initramfs", "--expected-kernel-sha256",
             "--expected-initramfs-sha256", "--request-frame", "--backend-identity",
-            "--guest-public-key", "--receipt-output", "--serial-log"
+            "--guest-public-key", "--host-signing-seed", "--receipt-output",
+            "--host-evidence-output", "--host-receipt-output", "--serial-log"
         ]
         guard required.allSatisfy({ values[$0] != nil }),
               Set(values.keys).isSubset(of: Set(required + ["--timeout-seconds"])),
@@ -61,10 +65,14 @@ private struct Options {
               let requestFrame = values["--request-frame"],
               let backendIdentity = values["--backend-identity"],
               let guestPublicKey = values["--guest-public-key"],
+              let hostSigningSeed = values["--host-signing-seed"],
               let receiptOutput = values["--receipt-output"],
+              let hostEvidenceOutput = values["--host-evidence-output"],
+              let hostReceiptOutput = values["--host-receipt-output"],
               let serialLog = values["--serial-log"],
               [kernel, initramfs, requestFrame, backendIdentity, guestPublicKey,
-               receiptOutput, serialLog].allSatisfy({ $0.hasPrefix("/") }),
+               hostSigningSeed, receiptOutput, hostEvidenceOutput, hostReceiptOutput,
+               serialLog].allSatisfy({ $0.hasPrefix("/") }),
               validSHA256(expectedKernelSHA256), validSHA256(expectedInitramfsSHA256) else {
             throw HarnessError.usage
         }
@@ -85,7 +93,10 @@ private struct Options {
             requestFrame: URL(fileURLWithPath: requestFrame),
             backendIdentity: URL(fileURLWithPath: backendIdentity),
             guestPublicKey: URL(fileURLWithPath: guestPublicKey),
+            hostSigningSeed: URL(fileURLWithPath: hostSigningSeed),
             receiptOutput: URL(fileURLWithPath: receiptOutput),
+            hostEvidenceOutput: URL(fileURLWithPath: hostEvidenceOutput),
+            hostReceiptOutput: URL(fileURLWithPath: hostReceiptOutput),
             serialLog: URL(fileURLWithPath: serialLog),
             timeoutSeconds: timeoutSeconds
         )
@@ -119,7 +130,7 @@ private struct LinuxVzSignedConformanceHarness {
             exit(try run(options))
         } catch HarnessError.usage {
             fputs(
-                "usage: whoathere-linux-vz-signed-conformance --kernel PATH --initramfs PATH --expected-kernel-sha256 SHA256 --expected-initramfs-sha256 SHA256 --request-frame PATH --backend-identity PATH --guest-public-key PATH --receipt-output PATH --serial-log PATH [--timeout-seconds 45]\n",
+                "usage: whoathere-linux-vz-signed-conformance --kernel PATH --initramfs PATH --expected-kernel-sha256 SHA256 --expected-initramfs-sha256 SHA256 --request-frame PATH --backend-identity PATH --guest-public-key PATH --host-signing-seed PATH --receipt-output PATH --host-evidence-output PATH --host-receipt-output PATH --serial-log PATH [--timeout-seconds 45]\n",
                 stderr
             )
             exit(64)
@@ -169,18 +180,14 @@ private struct LinuxVzSignedConformanceHarness {
         let guestPublicKey = try readBoundedRegularFile(options.guestPublicKey, maximum: 32)
         guard guestPublicKey.count == 32,
               dataSHA256(guestPublicKey) == challenge.guestEvidencePublicKeySHA256,
-              !FileManager.default.fileExists(atPath: options.receiptOutput.path) else {
+              !FileManager.default.fileExists(atPath: options.receiptOutput.path),
+              !FileManager.default.fileExists(atPath: options.hostEvidenceOutput.path),
+              !FileManager.default.fileExists(atPath: options.hostReceiptOutput.path),
+              !FileManager.default.fileExists(atPath: options.serialLog.path) else {
             throw HarnessError.invalidInput("guest_key_or_receipt_output")
         }
 
-        try FileManager.default.createDirectory(
-            at: options.serialLog.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        guard FileManager.default.createFile(atPath: options.serialLog.path, contents: nil),
-              let serialOutput = try? FileHandle(forWritingTo: options.serialLog) else {
-            throw HarnessError.serialLog
-        }
+        let serialOutput = try openNewPrivateFileHandle(options.serialLog)
         defer { try? serialOutput.close() }
 
         var sockets = [Int32](repeating: -1, count: 2)
@@ -286,7 +293,7 @@ private struct LinuxVzSignedConformanceHarness {
             descendantTeardownComplete: evidence.descendantTeardownComplete,
             observedTerminal: "observation_complete"
         )
-        _ = try verifyLinuxVzTelemetryGuestReceipt(
+        let verifiedGuest = try verifyLinuxVzTelemetryGuestReceipt(
             receipt,
             challenge: challenge,
             runSpec: runSpec,
@@ -310,16 +317,60 @@ private struct LinuxVzSignedConformanceHarness {
             serialData,
             marker: "WHOATHERE_GUEST_SIGNER_READY port=40551"
         ) && serialText.contains("WHOATHERE_GUEST_SIGNER_RECEIPT_OK challenge_sha256=")
-        let rawFrameCount = drainRawFrames(fileDescriptor: sockets[1])
+        let packetSensor = drainRawFrames(fileDescriptor: sockets[1])
         let finalKernelSHA256 = try fileSHA256(options.kernel)
         let finalInitramfsSHA256 = try fileSHA256(options.initramfs)
         let imageIdentityStable = finalKernelSHA256 == kernelSHA256
             && finalInitramfsSHA256 == initramfsSHA256
         guard missingBaseMarkers.isEmpty, missingSignedMarkers.isEmpty, signerMarkersPresent,
-              rawFrameCount == 0, imageIdentityStable else {
+              imageIdentityStable else {
             throw HarnessError.verificationFailed
         }
+        let hostEvidence = try makeLinuxVzInertHostEvidencePayload(
+            rawFrameCount: UInt64(packetSensor.frameCount),
+            packetSensorHealthy: packetSensor.healthy,
+            packetSensorTerminal: packetSensor.terminal,
+            guestChannelTerminated: true,
+            vmStarted: true,
+            vmStopped: true,
+            cloneDestroyed: configuration.storageDevices.isEmpty,
+            storageDeviceCount: UInt64(configuration.storageDevices.count)
+        )
+        var hostSigningSeed = try readProtectedSeed(options.hostSigningSeed)
+        let hostPublicKey: Data
+        do {
+            hostPublicKey = try Curve25519.Signing.PrivateKey(
+                rawRepresentation: hostSigningSeed
+            ).publicKey.rawRepresentation
+        } catch {
+            hostSigningSeed.resetBytes(in: 0..<hostSigningSeed.count)
+            throw HarnessError.invalidInput("host_signing_seed")
+        }
+        let hostReceipt = try signLinuxVzTelemetryHostReceipt(
+            challenge: challenge,
+            runSpec: runSpec,
+            backend: backend,
+            claims: hostEvidence.claims,
+            signingSeed: &hostSigningSeed
+        )
+        let verifiedHost = try verifyLinuxVzTelemetryHostReceipt(
+            hostReceipt,
+            challenge: challenge,
+            runSpec: runSpec,
+            backend: backend,
+            verifyingKey: hostPublicKey,
+            expectedClaims: hostEvidence.claims
+        )
+        let completeCase = try verifyLinuxVzObservationCompleteConformanceCase(
+            challenge: challenge,
+            runSpec: runSpec,
+            backend: backend,
+            guest: verifiedGuest,
+            host: verifiedHost
+        )
         try writeNewPrivateFile(options.receiptOutput, data: receipt)
+        try writeNewPrivateFile(options.hostEvidenceOutput, data: hostEvidence.canonicalJSON)
+        try writeNewPrivateFile(options.hostReceiptOutput, data: hostReceipt)
         emitJSON([
             "schema_version": "whoathere.linux_vz_signed_conformance_result.v1",
             "status": "ok",
@@ -327,9 +378,15 @@ private struct LinuxVzSignedConformanceHarness {
             "run_spec_sha256": runSpec.runSpecSHA256,
             "backend_identity_sha256": backend.identitySHA256,
             "receipt_sha256": dataSHA256(receipt),
+            "host_evidence_payload_sha256": hostEvidence.payloadSHA256,
+            "host_receipt_sha256": dataSHA256(hostReceipt),
+            "complete_conformance_case_verified": completeCase.guestReceiptPresent
+                && completeCase.hostReceiptPresent,
             "process_evidence_payload_sha256": evidence.payloadSHA256,
             "process_event_count": String(evidence.eventCount),
-            "raw_frame_count": rawFrameCount,
+            "raw_frame_count": packetSensor.frameCount,
+            "packet_sensor_healthy": packetSensor.healthy,
+            "clone_destroyed": hostEvidence.claims.cloneDestroyed,
             "vm_stopped": true,
             "image_identity_stable": imageIdentityStable,
             "execution_authority": false,
@@ -463,6 +520,26 @@ private struct LinuxVzSignedConformanceHarness {
         guard fsync(descriptor) == 0 else { throw HarnessError.invalidInput("receipt_output") }
     }
 
+    private static func openNewPrivateFileHandle(_ url: URL) throws -> FileHandle {
+        let descriptor = open(
+            url.path,
+            O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+            0o600
+        )
+        guard descriptor >= 0 else { throw HarnessError.serialLog }
+        var metadata = stat()
+        guard fstat(descriptor, &metadata) == 0,
+              metadata.st_uid == geteuid(),
+              metadata.st_nlink == 1,
+              metadata.st_size == 0,
+              metadata.st_mode & S_IFMT == S_IFREG,
+              metadata.st_mode & 0o777 == 0o600 else {
+            close(descriptor)
+            throw HarnessError.serialLog
+        }
+        return FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+    }
+
     private static func fileSHA256(_ url: URL) throws -> String {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
@@ -479,11 +556,52 @@ private struct LinuxVzSignedConformanceHarness {
         "sha256:" + SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
-    private static func drainRawFrames(fileDescriptor: Int32) -> Int {
+    private struct PacketSensorResult {
+        let frameCount: Int
+        let healthy: Bool
+        let terminal: String
+    }
+
+    private static func drainRawFrames(fileDescriptor: Int32) -> PacketSensorResult {
         var count = 0
         var buffer = [UInt8](repeating: 0, count: 65_535)
-        while recv(fileDescriptor, &buffer, buffer.count, MSG_DONTWAIT) > 0 { count += 1 }
-        return count
+        while true {
+            let received = recv(fileDescriptor, &buffer, buffer.count, MSG_DONTWAIT)
+            if received >= 0 {
+                count += 1
+                continue
+            }
+            if errno == EAGAIN || errno == EWOULDBLOCK {
+                return PacketSensorResult(
+                    frameCount: count,
+                    healthy: true,
+                    terminal: "drained_would_block"
+                )
+            }
+            return PacketSensorResult(
+                frameCount: count,
+                healthy: false,
+                terminal: "socket_error"
+            )
+        }
+    }
+
+    private static func readProtectedSeed(_ url: URL) throws -> Data {
+        let descriptor = open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else { throw HarnessError.invalidInput("host_signing_seed") }
+        defer { close(descriptor) }
+        var metadata = stat()
+        guard fstat(descriptor, &metadata) == 0,
+              metadata.st_uid == geteuid(),
+              metadata.st_nlink == 1,
+              metadata.st_size == 32,
+              metadata.st_mode & S_IFMT == S_IFREG,
+              metadata.st_mode & 0o777 == 0o600 else {
+            throw HarnessError.invalidInput("host_signing_seed")
+        }
+        let seed = try readToEOF(descriptor, maximum: 32)
+        guard seed.count == 32 else { throw HarnessError.invalidInput("host_signing_seed") }
+        return seed
     }
 
     private static func emitJSON(_ fields: [String: Any]) {

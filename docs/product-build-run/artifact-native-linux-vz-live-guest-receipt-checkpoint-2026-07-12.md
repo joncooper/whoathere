@@ -7,6 +7,11 @@ bounded host-to-guest virtio-vsock challenge channel and returned a root-signed 
 independent Swift and Rust implementations verified against the exact unqualified backend identity;
 host lifecycle signing, a complete conformance case, and backend qualification remain pending
 
+Follow-on: the
+[first complete conformance-case checkpoint](artifact-native-linux-vz-first-complete-conformance-case-checkpoint-2026-07-12.md)
+adds the independently signed host packet/lifecycle receipt and verifies this case end to end. The
+remaining 37 physical cases and backend qualification are still pending.
+
 Canonical references:
 
 - [Artifact-Native Detection Execution Plan](artifact-native-detection-execution-plan.md)

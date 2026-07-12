@@ -229,6 +229,16 @@ import Testing
         sha256(hostData)
             == "sha256:48a21bb1719681148070688cbf3bf890ca7c84c735eb5ba954558179608dac43"
     )
+    var hostSigningSeed = Data(repeating: 0x22, count: 32)
+    let signedHostData = try signLinuxVzTelemetryHostReceipt(
+        challenge: challenge,
+        runSpec: runSpec,
+        backend: backend,
+        claims: hostClaims,
+        signingSeed: &hostSigningSeed
+    )
+    #expect(!signedHostData.isEmpty)
+    #expect(hostSigningSeed == Data(repeating: 0, count: 32))
     let guest = try verifyLinuxVzTelemetryGuestReceipt(
         guestData,
         challenge: challenge,
@@ -245,10 +255,28 @@ import Testing
         verifyingKey: hostPrivate.publicKey.rawRepresentation,
         expectedClaims: hostClaims
     )
+    _ = try verifyLinuxVzTelemetryHostReceipt(
+        signedHostData,
+        challenge: challenge,
+        runSpec: runSpec,
+        backend: backend,
+        verifyingKey: hostPrivate.publicKey.rawRepresentation,
+        expectedClaims: hostClaims
+    )
     #expect(!guest.packageExecutionAuthorityPermitted)
     #expect(!host.packageExecutionAuthorityPermitted)
     #expect(guest.challengeSHA256 == challenge.challengeSHA256)
     #expect(host.challengeSHA256 == challenge.challengeSHA256)
+    let completeCase = try verifyLinuxVzObservationCompleteConformanceCase(
+        challenge: challenge,
+        runSpec: runSpec,
+        backend: backend,
+        guest: guest,
+        host: host
+    )
+    #expect(completeCase.guestReceiptPresent)
+    #expect(completeCase.hostReceiptPresent)
+    #expect(!completeCase.packageExecutionAuthorityPermitted)
 
     #expect(throws: LinuxVzTelemetryConformanceEvidenceError.invalidReceipt) {
         try verifyLinuxVzTelemetryHostReceipt(

@@ -20,6 +20,10 @@ let package = Package(
         .executable(
             name: "whoathere-linux-vz-signed-conformance",
             targets: ["WhoaThereLinuxVzSignedConformance"]
+        ),
+        .executable(
+            name: "whoathere-linux-vz-host-keygen",
+            targets: ["WhoaThereLinuxVzHostKeygen"]
         )
     ],
     targets: [
@@ -39,6 +43,9 @@ let package = Package(
         .executableTarget(
             name: "WhoaThereLinuxVzSignedConformance",
             dependencies: ["WhoaThereMacosVmHelperCore"]
+        ),
+        .executableTarget(
+            name: "WhoaThereLinuxVzHostKeygen"
         ),
         .testTarget(
             name: "WhoaThereMacosVmHelperCoreTests",

@@ -153,6 +153,55 @@ public struct VerifiedLinuxVzTelemetryHostReceipt: Equatable, Sendable {
     public var packageExecutionAuthorityPermitted: Bool { false }
 }
 
+public struct VerifiedLinuxVzObservationCompleteConformanceCase: Equatable, Sendable {
+    public let challengeSHA256: String
+    public let runSpecSHA256: String
+    public let backendIdentitySHA256: String
+    public let guestReceiptPresent: Bool
+    public let hostReceiptPresent: Bool
+    public var packageExecutionAuthorityPermitted: Bool { false }
+}
+
+public func signLinuxVzTelemetryHostReceipt(
+    challenge: LinuxVzTelemetryConformanceChallenge,
+    runSpec: LinuxVzTelemetryConformanceRunSpec,
+    backend: UnqualifiedLinuxVzTelemetryBackendIdentity,
+    claims: LinuxVzTelemetryHostObservationClaims,
+    signingSeed: inout Data
+) throws -> Data {
+    defer {
+        signingSeed.resetBytes(in: 0..<signingSeed.count)
+    }
+    guard signingSeed.count == 32,
+          let privateKey = try? Curve25519.Signing.PrivateKey(rawRepresentation: signingSeed),
+          sha256(privateKey.publicKey.rawRepresentation)
+            == challenge.hostEvidencePublicKeySHA256 else {
+        throw LinuxVzTelemetryConformanceEvidenceError.publicKeyMismatch
+    }
+    let unsigned = try linuxVzHostUnsignedReceipt(
+        challenge: challenge,
+        runSpec: runSpec,
+        backend: backend,
+        claims: claims
+    )
+    let unsignedData = try canonicalJSONData(unsigned)
+    var message = Data()
+    message.append(linuxVzHostReceiptSignatureDomainDataV1)
+    message.append(challenge.canonicalJSON)
+    message.append(0)
+    message.append(unsignedData)
+    let signature = try privateKey.signature(for: message)
+    var receipt = unsigned
+    receipt["signature_ed25519_hex"] = signature.map {
+        String(format: "%02x", $0)
+    }.joined()
+    let data = try canonicalJSONData(receipt)
+    guard data.count <= maximumLinuxVzTelemetryConformanceEvidenceBytesV1 else {
+        throw LinuxVzTelemetryConformanceEvidenceError.limitExceeded
+    }
+    return data
+}
+
 public func verifyLinuxVzTelemetryGuestReceipt(
     _ data: Data,
     challenge: LinuxVzTelemetryConformanceChallenge,
@@ -208,6 +257,47 @@ public func verifyLinuxVzTelemetryHostReceipt(
         challengeSHA256: challenge.challengeSHA256,
         observedSensors: linuxVzConformanceExpectedHostSensors(runSpec),
         claims: expectedClaims
+    )
+}
+
+public func verifyLinuxVzObservationCompleteConformanceCase(
+    challenge: LinuxVzTelemetryConformanceChallenge,
+    runSpec: LinuxVzTelemetryConformanceRunSpec,
+    backend: UnqualifiedLinuxVzTelemetryBackendIdentity,
+    guest: VerifiedLinuxVzTelemetryGuestReceipt,
+    host: VerifiedLinuxVzTelemetryHostReceipt
+) throws -> VerifiedLinuxVzObservationCompleteConformanceCase {
+    guard runSpec.expectedTerminal == "observation_complete",
+          challenge.runSpecSHA256 == runSpec.runSpecSHA256,
+          challenge.backendIdentitySHA256 == backend.identitySHA256,
+          guest.challengeSHA256 == challenge.challengeSHA256,
+          host.challengeSHA256 == challenge.challengeSHA256,
+          !runSpec.packageExecutionAuthorityPermitted,
+          !backend.executionAuthorityPermitted,
+          !guest.packageExecutionAuthorityPermitted,
+          !host.packageExecutionAuthorityPermitted,
+          guest.claims.observedTerminal == "observation_complete",
+          guest.claims.sensorHealthy,
+          !guest.claims.evidenceTruncated,
+          guest.claims.droppedEventCount == 0,
+          guest.claims.descendantTeardownComplete,
+          host.claims.observedTerminal == "observation_complete",
+          host.claims.packetSensorHealthy,
+          !host.claims.evidenceTruncated,
+          host.claims.droppedFrameCount == 0,
+          host.claims.guestChannelTerminated,
+          host.claims.vmStarted,
+          host.claims.vmStopped,
+          host.claims.cloneDestroyed,
+          host.claims.externalFramesForwarded == 0 else {
+        throw LinuxVzTelemetryConformanceEvidenceError.invalidReceipt
+    }
+    return VerifiedLinuxVzObservationCompleteConformanceCase(
+        challengeSHA256: challenge.challengeSHA256,
+        runSpecSHA256: runSpec.runSpecSHA256,
+        backendIdentitySHA256: backend.identitySHA256,
+        guestReceiptPresent: true,
+        hostReceiptPresent: true
     )
 }
 
