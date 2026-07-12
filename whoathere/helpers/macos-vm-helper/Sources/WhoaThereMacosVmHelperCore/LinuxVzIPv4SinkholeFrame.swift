@@ -41,6 +41,48 @@ public func linuxVzIsExactIPv4SinkholeSYNFrame(
     return linuxVzChecksumValid(pseudoHeader)
 }
 
+public func linuxVzIsExactIPv4SinkholeUDPFrame(
+    _ frame: Data,
+    sourcePort: UInt16
+) -> Bool {
+    let bytes = [UInt8](frame)
+    let sourceMAC: [UInt8] = [0x02, 0x57, 0x48, 0x4f, 0x41, 0x31]
+    let targetMAC: [UInt8] = [0x02, 0x57, 0x48, 0x4f, 0x41, 0xfe]
+    let payload = [UInt8]("WHOATHERE_UDP_V1".utf8)
+    guard bytes.count == 14 + 20 + 8 + payload.count,
+          Array(bytes[0..<6]) == targetMAC,
+          Array(bytes[6..<12]) == sourceMAC,
+          bytes[12] == 0x08, bytes[13] == 0x00,
+          bytes[14] == 0x45,
+          bytes[23] == 0x11,
+          Array(bytes[26..<30]) == [192, 0, 2, 2],
+          Array(bytes[30..<34]) == [192, 0, 2, 1] else {
+        return false
+    }
+    let totalLength = Int(bytes[16]) << 8 | Int(bytes[17])
+    let fragment = UInt16(bytes[20]) << 8 | UInt16(bytes[21])
+    let udpLength = Int(bytes[38]) << 8 | Int(bytes[39])
+    let udpChecksum = UInt16(bytes[40]) << 8 | UInt16(bytes[41])
+    guard totalLength == bytes.count - 14,
+          totalLength == 20 + udpLength,
+          fragment & 0xbfff == 0,
+          udpLength == 8 + payload.count,
+          (UInt16(bytes[34]) << 8 | UInt16(bytes[35])) == sourcePort,
+          (UInt16(bytes[36]) << 8 | UInt16(bytes[37])) == 443,
+          udpChecksum != 0,
+          Array(bytes[42..<bytes.count]) == payload,
+          linuxVzChecksumValid(Array(bytes[14..<34])) else {
+        return false
+    }
+    var pseudoHeader = Array(bytes[26..<34])
+    pseudoHeader.append(0)
+    pseudoHeader.append(17)
+    pseudoHeader.append(UInt8((udpLength >> 8) & 0xff))
+    pseudoHeader.append(UInt8(udpLength & 0xff))
+    pseudoHeader.append(contentsOf: bytes[34..<bytes.count])
+    return linuxVzChecksumValid(pseudoHeader)
+}
+
 public func linuxVzIsExactIPv6SinkholeSYNFrame(
     _ frame: Data,
     sourcePort: UInt16

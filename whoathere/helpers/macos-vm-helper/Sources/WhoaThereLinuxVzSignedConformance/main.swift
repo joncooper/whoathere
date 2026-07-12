@@ -322,7 +322,7 @@ private struct LinuxVzSignedConformanceHarness {
             guestEventCount = evidence.claims.eventCount
             networkSourcePort = nil
             networkFixtureCase = nil
-        case "ipv4_connect", "ipv6_connect":
+        case "ipv4_connect", "ipv6_connect", "udp_send":
             let evidence = try decodeLinuxVzNetworkEvidencePayloadV1(serialData)
             guard evidence.fixtureCase == runSpec.fixtureCase,
                   evidence.packageUID == UInt64(backend.packageUID),
@@ -354,7 +354,8 @@ private struct LinuxVzSignedConformanceHarness {
             runSpec.fixtureCase == "credential_change" ||
             runSpec.fixtureCase == "dynamic_library_load" ||
             runSpec.fixtureCase == "ipv4_connect" ||
-            runSpec.fixtureCase == "ipv6_connect" {
+            runSpec.fixtureCase == "ipv6_connect" ||
+            runSpec.fixtureCase == "udp_send" {
             let missingProcessMarkers = linuxVzInertMissingRequiredEvidenceMarkersV2(serialData)
             let missingDoubleForkMarkers = runSpec.fixtureCase == "double_fork_daemonization"
                 ? linuxVzInertDoubleForkSensorMarkersV1.filter {
@@ -384,9 +385,14 @@ private struct LinuxVzSignedConformanceHarness {
                 ? linuxVzInertIPv6ConnectSensorMarkersV1.filter {
                     !linuxVzInertSerialContainsExactMarker(serialData, marker: $0)
                 } : []
+            let missingUDPMarkers = runSpec.fixtureCase == "udp_send"
+                ? linuxVzInertUDPSendSensorMarkersV1.filter {
+                    !linuxVzInertSerialContainsExactMarker(serialData, marker: $0)
+                } : []
             missingBaseMarkers = missingProcessMarkers + missingDoubleForkMarkers
                 + missingReparentingMarkers + missingSetsidMarkers + missingCredentialMarkers
                 + missingDynamicLibraryMarkers + missingIPv4Markers + missingIPv6Markers
+                + missingUDPMarkers
         } else {
             let missingCapabilities = linuxVzInertMissingCapabilityMarkers(serialData)
             let missingFileMarkers = linuxVzInertFileSensorMarkersV1.filter {
@@ -455,6 +461,16 @@ private struct LinuxVzSignedConformanceHarness {
                 )
             } else if networkFixtureCase == "ipv6_connect" {
                 hostEvidence = try makeLinuxVzIPv6ConnectHostEvidencePayload(
+                    sourcePort: sourcePort,
+                    rawFrameCount: UInt64(packetSensor.frameCount),
+                    matchedFrameCount: UInt64(packetSensor.matchedFrameCount),
+                    unexpectedFrameCount: UInt64(packetSensor.unexpectedFrameCount),
+                    packetSensorHealthy: packetSensor.healthy,
+                    packetSensorTerminal: packetSensor.terminal,
+                    storageDeviceCount: UInt64(configuration.storageDevices.count)
+                )
+            } else if networkFixtureCase == "udp_send" {
+                hostEvidence = try makeLinuxVzUDPSendHostEvidencePayload(
                     sourcePort: sourcePort,
                     rawFrameCount: UInt64(packetSensor.frameCount),
                     matchedFrameCount: UInt64(packetSensor.matchedFrameCount),
@@ -740,6 +756,11 @@ private struct LinuxVzSignedConformanceHarness {
                 } else if networkFixtureCase == "ipv6_connect",
                           let sourcePort = networkSourcePort {
                     exactMatch = linuxVzIsExactIPv6SinkholeSYNFrame(
+                        frame,
+                        sourcePort: sourcePort
+                    )
+                } else if networkFixtureCase == "udp_send", let sourcePort = networkSourcePort {
+                    exactMatch = linuxVzIsExactIPv4SinkholeUDPFrame(
                         frame,
                         sourcePort: sourcePort
                     )

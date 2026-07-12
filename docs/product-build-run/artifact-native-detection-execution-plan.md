@@ -91,6 +91,12 @@ report and one checksum-valid host-observed TCP SYN. The previous nine cases wer
 resulting exact identity. Ten of 38 cases now share one backend binding; 28 remain. See the
 [IPv6-connect checkpoint](artifact-native-linux-vz-ipv6-connect-checkpoint-2026-07-12.md).
 
+The `udp_send` case now binds one unprivileged `sendto` to the RFC 5737 sinkhole through protected
+syscall evidence, a live unconnected-bound UDP socket inode, and exactly one checksum-valid
+host-observed UDP datagram carrying the fixed 16-byte inert marker. The previous ten cases were
+rerun on the resulting exact identity. Eleven of 38 cases now share one backend binding; 27 remain.
+See the [UDP-send checkpoint](artifact-native-linux-vz-udp-send-checkpoint-2026-07-12.md).
+
 Primary target: malicious npm and PyPI package detection with static analysis, AI-assisted code
 review, and behaviorally instrumented detonation in disposable virtual machines
 
@@ -1359,6 +1365,7 @@ Repository evidence:
 - [Linux VZ dynamic-library checkpoint](artifact-native-linux-vz-dynamic-library-checkpoint-2026-07-12.md)
 - [Linux VZ IPv4-connect checkpoint](artifact-native-linux-vz-ipv4-connect-checkpoint-2026-07-12.md)
 - [Linux VZ IPv6-connect checkpoint](artifact-native-linux-vz-ipv6-connect-checkpoint-2026-07-12.md)
+- [Linux VZ UDP-send checkpoint](artifact-native-linux-vz-udp-send-checkpoint-2026-07-12.md)
 - [macOS local release readiness](macos-local-release-readiness.md)
 - [macOS local beta pressure checkpoint](macos-local-beta-pressure-checkpoint.md)
 - [latest source-fixture corpus report](src-fixture-corpus-latest.md)

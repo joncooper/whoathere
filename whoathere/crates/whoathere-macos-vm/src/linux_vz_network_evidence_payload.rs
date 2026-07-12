@@ -182,12 +182,25 @@ pub fn decode_linux_vz_network_evidence_payload_v1(
         {
             LinuxVzTelemetryConformanceCaseV1::Ipv6Connect
         }
+        "udp_send"
+            if wire.network_family == "ipv4"
+                && wire.network_source == "192.0.2.2"
+                && wire.network_target == "192.0.2.1" =>
+        {
+            LinuxVzTelemetryConformanceCaseV1::UdpSend
+        }
         _ => return Err(LinuxVzNetworkEvidencePayloadErrorV1::InvalidSchema),
     };
+    let (expected_action, expected_protocol, expected_socket_state, expected_event_kind) =
+        if fixture_case == LinuxVzTelemetryConformanceCaseV1::UdpSend {
+            ("udp_send", "udp", "unconnected_bound", "sendto")
+        } else {
+            ("tcp_connect", "tcp", "syn_sent", "connect")
+        };
     if wire.schema_version != LINUX_VZ_NETWORK_EVIDENCE_PAYLOAD_SCHEMA_V1
-        || wire.network_action != "tcp_connect"
-        || wire.network_protocol != "tcp"
-        || wire.network_socket_state != "syn_sent"
+        || wire.network_action != expected_action
+        || wire.network_protocol != expected_protocol
+        || wire.network_socket_state != expected_socket_state
         || decimal_u64_v1(&wire.network_target_port)? != 443
         || source_port == 0
         || source_port > u16::MAX as u64
@@ -206,7 +219,7 @@ pub fn decode_linux_vz_network_evidence_payload_v1(
     {
         return Err(LinuxVzNetworkEvidencePayloadErrorV1::InvalidSchema);
     }
-    let expected_kinds = ["fork", "exec", "connect", "exit"];
+    let expected_kinds = ["fork", "exec", expected_event_kind, "exit"];
     let mut child_pid = None;
     let mut cgroup_id = None;
     let mut prior_timestamp = 0;
@@ -336,6 +349,22 @@ mod tests {
         assert_eq!(
             evidence.fixture_case(),
             LinuxVzTelemetryConformanceCaseV1::Ipv6Connect
+        );
+    }
+
+    #[test]
+    fn udp_payload_binds_sendto_and_exact_documentation_sinkhole() {
+        let mut value: serde_json::Value = serde_json::from_slice(&payload()).unwrap();
+        value["fixture_case"] = serde_json::json!("udp_send");
+        value["network_action"] = serde_json::json!("udp_send");
+        value["network_protocol"] = serde_json::json!("udp");
+        value["network_socket_state"] = serde_json::json!("unconnected_bound");
+        value["events"][2]["kind"] = serde_json::json!("sendto");
+        let encoded = serde_json_canonicalizer::to_vec(&value).unwrap();
+        let evidence = decode_linux_vz_network_evidence_payload_v1(&encoded).unwrap();
+        assert_eq!(
+            evidence.fixture_case(),
+            LinuxVzTelemetryConformanceCaseV1::UdpSend
         );
     }
 }

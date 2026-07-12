@@ -160,6 +160,13 @@ pub fn decode_linux_vz_network_host_evidence_payload_v1(
         {
             LinuxVzTelemetryConformanceCaseV1::Ipv6Connect
         }
+        "udp_send"
+            if wire.frame_kind == "ipv4_udp_datagram"
+                && wire.source_address == "192.0.2.2"
+                && wire.target_address == "192.0.2.1" =>
+        {
+            LinuxVzTelemetryConformanceCaseV1::UdpSend
+        }
         _ => return Err(LinuxVzNetworkHostEvidencePayloadErrorV1::InvalidSchema),
     };
     if wire.schema_version != LINUX_VZ_NETWORK_HOST_EVIDENCE_PAYLOAD_SCHEMA_V1
@@ -190,7 +197,7 @@ pub fn decode_linux_vz_network_host_evidence_payload_v1(
         || decimal_u64_v1(&wire.external_frames_forwarded)? != 0
         || decimal_u64_v1(&wire.storage_device_count)? != 0
         || wire.ip_checksum_valid
-            != (fixture_case == LinuxVzTelemetryConformanceCaseV1::Ipv4Connect)
+            != (fixture_case != LinuxVzTelemetryConformanceCaseV1::Ipv6Connect)
         || !wire.transport_checksum_valid
         || !wire.packet_sensor_healthy
         || wire.packet_sensor_terminal != "drained_would_block"
@@ -332,6 +339,19 @@ mod tests {
         assert_eq!(
             evidence.fixture_case(),
             LinuxVzTelemetryConformanceCaseV1::Ipv6Connect
+        );
+    }
+
+    #[test]
+    fn exact_ipv4_udp_frame_derives_distinct_case() {
+        let mut value: serde_json::Value = serde_json::from_slice(&payload()).unwrap();
+        value["fixture_case"] = serde_json::json!("udp_send");
+        value["frame_kind"] = serde_json::json!("ipv4_udp_datagram");
+        let encoded = serde_json_canonicalizer::to_vec(&value).unwrap();
+        let evidence = decode_linux_vz_network_host_evidence_payload_v1(&encoded).unwrap();
+        assert_eq!(
+            evidence.fixture_case(),
+            LinuxVzTelemetryConformanceCaseV1::UdpSend
         );
     }
 }

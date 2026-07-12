@@ -61,6 +61,31 @@ public func makeLinuxVzIPv6ConnectHostEvidencePayload(
     )
 }
 
+public func makeLinuxVzUDPSendHostEvidencePayload(
+    sourcePort: UInt16,
+    rawFrameCount: UInt64,
+    matchedFrameCount: UInt64,
+    unexpectedFrameCount: UInt64,
+    packetSensorHealthy: Bool,
+    packetSensorTerminal: String,
+    storageDeviceCount: UInt64
+) throws -> LinuxVzNetworkHostEvidencePayload {
+    try makeLinuxVzConnectHostEvidencePayload(
+        fixtureCase: "udp_send",
+        frameKind: "ipv4_udp_datagram",
+        sourceAddress: "192.0.2.2",
+        targetAddress: "192.0.2.1",
+        bootstrapFrameCount: 0,
+        sourcePort: sourcePort,
+        rawFrameCount: rawFrameCount,
+        matchedFrameCount: matchedFrameCount,
+        unexpectedFrameCount: unexpectedFrameCount,
+        packetSensorHealthy: packetSensorHealthy,
+        packetSensorTerminal: packetSensorTerminal,
+        storageDeviceCount: storageDeviceCount
+    )
+}
+
 private func makeLinuxVzConnectHostEvidencePayload(
     fixtureCase: String,
     frameKind: String,
@@ -98,7 +123,7 @@ private func makeLinuxVzConnectHostEvidencePayload(
         "frame_kind": frameKind,
         "guest_channel_terminated": true,
         "heartbeat_count": "2",
-        "ip_checksum_valid": fixtureCase == "ipv4_connect",
+        "ip_checksum_valid": fixtureCase != "ipv6_connect",
         "matched_frame_count": String(matchedFrameCount),
         "package_execution": false,
         "packet_sensor_healthy": packetSensorHealthy,
@@ -145,6 +170,8 @@ public func decodeLinuxVzNetworkHostEvidencePayload(
         fixtureCase = "ipv4_connect"
     case ("ipv6_connect", "ipv6_tcp_syn", "2001:db8::2", "2001:db8::1"):
         fixtureCase = "ipv6_connect"
+    case ("udp_send", "ipv4_udp_datagram", "192.0.2.2", "192.0.2.1"):
+        fixtureCase = "udp_send"
     default:
         throw LinuxVzHostEvidencePayloadError.invalidSchema
     }
@@ -175,7 +202,7 @@ public func decodeLinuxVzNetworkHostEvidencePayload(
     networkHostDecimal(value["dropped_frame_count"]) == 0,
     networkHostDecimal(value["external_frames_forwarded"]) == 0,
     networkHostDecimal(value["storage_device_count"]) == 0,
-    value["ip_checksum_valid"] as? Bool == (fixtureCase == "ipv4_connect"),
+    value["ip_checksum_valid"] as? Bool == (fixtureCase != "ipv6_connect"),
     value["transport_checksum_valid"] as? Bool == true,
     value["packet_sensor_healthy"] as? Bool == true,
     value["packet_sensor_terminal"] as? String == "drained_would_block",

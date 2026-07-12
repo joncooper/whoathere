@@ -134,6 +134,11 @@ The
 adds a fixed no-route IPv6 neighbor, live TCP6 socket evidence, one exact MLDv2 bootstrap report,
 and one exact host-observed IPv6 SYN, then reruns the earlier nine cases on the new measured
 identity. The other 28 cases remain pending.
+The
+[UDP-send checkpoint](../../../docs/product-build-run/artifact-native-linux-vz-udp-send-checkpoint-2026-07-12.md)
+adds protected `sendto` and live UDP socket evidence plus one exact checksum-valid datagram carrying
+the fixed inert marker, then reruns the earlier ten cases on the new measured identity. The other
+27 cases remain pending.
 
 ## Closed fixture contract
 
