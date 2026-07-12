@@ -187,6 +187,43 @@ chmod 0755 "$output/overlay/whoathere/process-sensor-probe"
     -o "$output/overlay/whoathere/process-fixture-child" \
     "$source_dir/guest/process_fixture_child.c"
 chmod 0755 "$output/overlay/whoathere/process-fixture-child"
+"$zig" cc \
+    -target aarch64-linux-musl \
+    -O2 \
+    -Wall \
+    -Wextra \
+    -Werror \
+    -fPIC \
+    -shared \
+    -nostdlib \
+    -s \
+    -fno-ident \
+    -Wl,--build-id=none \
+    -Wl,-soname,dynamic-fixture-library.so \
+    -o "$output/overlay/whoathere/dynamic-fixture-library.so" \
+    "$source_dir/guest/dynamic_fixture_library.c"
+chmod 0444 "$output/overlay/whoathere/dynamic-fixture-library.so"
+"$zig" cc \
+    -target aarch64-linux-musl \
+    -O2 \
+    -Wall \
+    -Wextra \
+    -Werror \
+    -dynamic \
+    -s \
+    -fno-ident \
+    -Wl,--build-id=none \
+    -o "$output/overlay/whoathere/dynamic-library-driver" \
+    "$source_dir/guest/dynamic_library_driver.c" \
+    -ldl
+chmod 0555 "$output/overlay/whoathere/dynamic-library-driver"
+process_fixture_child_sha256=$(shasum -a 256 "$output/overlay/whoathere/process-fixture-child" | awk '{print $1}')
+dynamic_library_driver_sha256=$(shasum -a 256 "$output/overlay/whoathere/dynamic-library-driver" | awk '{print $1}')
+dynamic_fixture_library_sha256=$(shasum -a 256 "$output/overlay/whoathere/dynamic-fixture-library.so" | awk '{print $1}')
+cat > "$output/overlay/whoathere/process-fixture-bundle.json" <<EOF
+{"dynamic_fixture_library_sha256":"sha256:$dynamic_fixture_library_sha256","dynamic_library_driver_sha256":"sha256:$dynamic_library_driver_sha256","process_fixture_child_sha256":"sha256:$process_fixture_child_sha256","schema_version":"whoathere.linux_vz_process_fixture_bundle.v1"}
+EOF
+chmod 0444 "$output/overlay/whoathere/process-fixture-bundle.json"
 "$native_cc" \
     -O2 \
     -Wall \
@@ -201,7 +238,10 @@ touch -t 202607110000.00 \
     "$output/overlay/whoathere" \
     "$output/overlay/whoathere/capability-probe" \
     "$output/overlay/whoathere/process-sensor-probe" \
-    "$output/overlay/whoathere/process-fixture-child"
+    "$output/overlay/whoathere/process-fixture-child" \
+    "$output/overlay/whoathere/dynamic-library-driver" \
+    "$output/overlay/whoathere/dynamic-fixture-library.so" \
+    "$output/overlay/whoathere/process-fixture-bundle.json"
 
 overlay_cpio_tmp="$output/.whoathere-overlay.cpio.tmp.$$"
 "$zig_cache_root/canonical-newc" \
@@ -209,7 +249,10 @@ overlay_cpio_tmp="$output/.whoathere-overlay.cpio.tmp.$$"
     "$output/overlay/init" \
     "$output/overlay/whoathere/capability-probe" \
     "$output/overlay/whoathere/process-sensor-probe" \
-    "$output/overlay/whoathere/process-fixture-child"
+    "$output/overlay/whoathere/process-fixture-child" \
+    "$output/overlay/whoathere/dynamic-library-driver" \
+    "$output/overlay/whoathere/dynamic-fixture-library.so" \
+    "$output/overlay/whoathere/process-fixture-bundle.json"
 mv -f "$overlay_cpio_tmp" "$output/whoathere-overlay.cpio"
 overlay_cpio_tmp=
 
@@ -242,6 +285,11 @@ process_sensor_probe_sha256=$(shasum -a 256 "$output/overlay/whoathere/process-s
 process_sensor_probe_source_sha256=$(shasum -a 256 "$source_dir/guest/process_sensor_probe.c" | awk '{print $1}')
 process_fixture_child_sha256=$(shasum -a 256 "$output/overlay/whoathere/process-fixture-child" | awk '{print $1}')
 process_fixture_child_source_sha256=$(shasum -a 256 "$source_dir/guest/process_fixture_child.c" | awk '{print $1}')
+dynamic_library_driver_sha256=$(shasum -a 256 "$output/overlay/whoathere/dynamic-library-driver" | awk '{print $1}')
+dynamic_library_driver_source_sha256=$(shasum -a 256 "$source_dir/guest/dynamic_library_driver.c" | awk '{print $1}')
+dynamic_fixture_library_sha256=$(shasum -a 256 "$output/overlay/whoathere/dynamic-fixture-library.so" | awk '{print $1}')
+dynamic_fixture_library_source_sha256=$(shasum -a 256 "$source_dir/guest/dynamic_fixture_library.c" | awk '{print $1}')
+process_fixture_bundle_sha256=$(shasum -a 256 "$output/overlay/whoathere/process-fixture-bundle.json" | awk '{print $1}')
 canonical_newc_source_sha256=$(shasum -a 256 "$source_dir/tools/canonical_newc.c" | awk '{print $1}')
 overlay_cpio_sha256=$(shasum -a 256 "$output/whoathere-overlay.cpio" | awk '{print $1}')
 overlay_cpio_gzip_sha256=$(shasum -a 256 "$output/whoathere-overlay.cpio.gz" | awk '{print $1}')
@@ -249,7 +297,7 @@ overlay_cpio_gzip_sha256=$(shasum -a 256 "$output/whoathere-overlay.cpio.gz" | a
 manifest="$output/manifest.json"
 tmp_manifest="$manifest.tmp.$$"
 cat > "$tmp_manifest" <<EOF
-{"architecture":"aarch64","base_initramfs_sha256":"sha256:$base_initramfs_sha256","builder_source_sha256":"sha256:$builder_source_sha256","canonical_newc_source_sha256":"sha256:$canonical_newc_source_sha256","capability_probe_sha256":"sha256:$capability_probe_sha256","capability_probe_source_sha256":"sha256:$capability_probe_source_sha256","config_sha256":"sha256:$config_sha256","external_network":"no_external_route","guest_init_sha256":"sha256:$guest_init_sha256","guest_init_source_sha256":"sha256:$guest_init_source_sha256","image_state":"candidate_unqualified","kernel_btf_sha256":"sha256:$expected_kernel_btf_sha256","kernel_extraction":"gzip_payload_from_pinned_pe_efi_kernel","kernel_gzip_payload_offset":"$kernel_gzip_payload_offset","kernel_image_sha256":"sha256:$kernel_image_sha256","kernel_release":"6.18.35-0-virt","overlay_cpio_gzip_sha256":"sha256:$overlay_cpio_gzip_sha256","overlay_cpio_sha256":"sha256:$overlay_cpio_sha256","process_fixture_child_sha256":"sha256:$process_fixture_child_sha256","process_fixture_child_source_sha256":"sha256:$process_fixture_child_source_sha256","process_sensor_probe_sha256":"sha256:$process_sensor_probe_sha256","process_sensor_probe_source_sha256":"sha256:$process_sensor_probe_source_sha256","schema_version":"whoathere.linux_vz_inert_image_manifest.v5","source_iso_sha256":"sha256:$actual_iso_sha256","source_kernel_pe_sha256":"sha256:$source_kernel_pe_sha256","source_url":"https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/aarch64/alpine-virt-3.24.1-aarch64.iso","sync_back_policy":"structurally_absent","system_map_sha256":"sha256:$system_map_sha256","whoathere_initramfs_sha256":"sha256:$combined_initramfs_sha256","zig_version":"$zig_version"}
+{"architecture":"aarch64","base_initramfs_sha256":"sha256:$base_initramfs_sha256","builder_source_sha256":"sha256:$builder_source_sha256","canonical_newc_source_sha256":"sha256:$canonical_newc_source_sha256","capability_probe_sha256":"sha256:$capability_probe_sha256","capability_probe_source_sha256":"sha256:$capability_probe_source_sha256","config_sha256":"sha256:$config_sha256","dynamic_fixture_library_sha256":"sha256:$dynamic_fixture_library_sha256","dynamic_fixture_library_source_sha256":"sha256:$dynamic_fixture_library_source_sha256","dynamic_library_driver_sha256":"sha256:$dynamic_library_driver_sha256","dynamic_library_driver_source_sha256":"sha256:$dynamic_library_driver_source_sha256","external_network":"no_external_route","guest_init_sha256":"sha256:$guest_init_sha256","guest_init_source_sha256":"sha256:$guest_init_source_sha256","image_state":"candidate_unqualified","kernel_btf_sha256":"sha256:$expected_kernel_btf_sha256","kernel_extraction":"gzip_payload_from_pinned_pe_efi_kernel","kernel_gzip_payload_offset":"$kernel_gzip_payload_offset","kernel_image_sha256":"sha256:$kernel_image_sha256","kernel_release":"6.18.35-0-virt","overlay_cpio_gzip_sha256":"sha256:$overlay_cpio_gzip_sha256","overlay_cpio_sha256":"sha256:$overlay_cpio_sha256","process_fixture_bundle_sha256":"sha256:$process_fixture_bundle_sha256","process_fixture_child_sha256":"sha256:$process_fixture_child_sha256","process_fixture_child_source_sha256":"sha256:$process_fixture_child_source_sha256","process_sensor_probe_sha256":"sha256:$process_sensor_probe_sha256","process_sensor_probe_source_sha256":"sha256:$process_sensor_probe_source_sha256","schema_version":"whoathere.linux_vz_inert_image_manifest.v5","source_iso_sha256":"sha256:$actual_iso_sha256","source_kernel_pe_sha256":"sha256:$source_kernel_pe_sha256","source_url":"https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/aarch64/alpine-virt-3.24.1-aarch64.iso","sync_back_policy":"structurally_absent","system_map_sha256":"sha256:$system_map_sha256","whoathere_initramfs_sha256":"sha256:$combined_initramfs_sha256","zig_version":"$zig_version"}
 EOF
 mv "$tmp_manifest" "$manifest"
 tmp_manifest=

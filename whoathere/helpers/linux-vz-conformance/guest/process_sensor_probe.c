@@ -31,6 +31,9 @@
 #define REPARENT_REPORT_MAGIC 0x57545052U
 #define SESSION_REPORT_MAGIC 0x57545353U
 #define CREDENTIAL_REPORT_MAGIC 0x57544352U
+#define DYNAMIC_REPORT_MAGIC 0x5754444cU
+#define DYNAMIC_MARKER UINT64_C(0x57544c4942465831)
+#define DYNAMIC_LIBRARY_PATH "/whoathere/dynamic-fixture-library.so"
 #define SENSOR_PROGRAM_COUNT 7
 
 struct reparent_report {
@@ -55,6 +58,12 @@ struct credential_report {
     uint32_t gid;
     uint32_t effective_gid;
     int32_t supplementary_group_count;
+};
+
+struct dynamic_report {
+    uint32_t magic;
+    int32_t process_pid;
+    uint64_t marker;
 };
 
 #define INSN(code_value, destination, source, instruction_offset, immediate) \
@@ -686,6 +695,23 @@ static int read_exact_credential_report(int descriptor, struct credential_report
         ? 0 : -1;
 }
 
+static int read_exact_dynamic_report(int descriptor, struct dynamic_report *report) {
+    size_t offset = 0;
+    while (offset < sizeof(*report)) {
+        ssize_t length = read(descriptor, (char *)report + offset, sizeof(*report) - offset);
+        if (length < 0 && errno == EINTR) continue;
+        if (length <= 0) return -1;
+        offset += (size_t)length;
+    }
+    char trailing = 0;
+    ssize_t length;
+    do {
+        length = read(descriptor, &trailing, 1);
+    } while (length < 0 && errno == EINTR);
+    return length == 0 && report->magic == DYNAMIC_REPORT_MAGIC &&
+        report->process_pid > 0 && report->marker == DYNAMIC_MARKER ? 0 : -1;
+}
+
 static int cgroup_contains_pid(pid_t expected) {
     int descriptor = open(FIXTURE_CGROUP_PROCS, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
     if (descriptor < 0) return 0;
@@ -757,6 +783,52 @@ static int proc_has_no_supplementary_groups(pid_t child) {
     return *groups == '\n';
 }
 
+static int proc_maps_contains_dynamic_library(pid_t child) {
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/%d/maps", child);
+    int descriptor = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (descriptor < 0) return 0;
+    char buffer[16384];
+    ssize_t length = read(descriptor, buffer, sizeof(buffer) - 1);
+    int saved_errno = errno;
+    close(descriptor);
+    errno = saved_errno;
+    if (length <= 0 || (size_t)length >= sizeof(buffer)) return 0;
+    buffer[length] = '\0';
+    char *line = buffer;
+    while (*line != '\0') {
+        char *end = strchr(line, '\n');
+        if (end == NULL) return 0;
+        *end = '\0';
+        if (strstr(line, " r-xp ") != NULL) {
+            char *mapped_path = strstr(line, DYNAMIC_LIBRARY_PATH);
+            if (mapped_path != NULL && strcmp(mapped_path, DYNAMIC_LIBRARY_PATH) == 0) return 1;
+        }
+        line = end + 1;
+    }
+    return 0;
+}
+
+static int dynamic_library_open_observed(int fanotify, pid_t child) {
+    char buffer[4096] __attribute__((aligned(8)));
+    int observed = 0;
+    for (;;) {
+        ssize_t length = read(fanotify, buffer, sizeof(buffer));
+        if (length < 0 && errno == EINTR) continue;
+        if (length < 0 && errno == EAGAIN) break;
+        if (length <= 0) return 0;
+        struct fanotify_event_metadata *metadata;
+        for (metadata = (struct fanotify_event_metadata *)buffer;
+             FAN_EVENT_OK(metadata, length);
+             metadata = FAN_EVENT_NEXT(metadata, length)) {
+            if (metadata->vers != FANOTIFY_METADATA_VERSION) return 0;
+            if (metadata->pid == child && (metadata->mask & FAN_OPEN)) observed = 1;
+            if (metadata->fd >= 0) close(metadata->fd);
+        }
+    }
+    return observed;
+}
+
 static int run_process_probe(const char *fixture, const char *fixture_case) {
     static const char *tracepoints[] = {
         "sys_enter",
@@ -782,9 +854,12 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
     struct reparent_report reparent_report = {0};
     struct session_report session_report = {0};
     struct credential_report credential_report = {0};
+    struct dynamic_report dynamic_report = {0};
     uint64_t reparent_timestamp = 0;
     uint64_t session_timestamp = 0;
+    uint64_t dynamic_timestamp = 0;
     int report_pipe[2] = {-1, -1};
+    int dynamic_fanotify = -1;
     int child_status = 0;
     int result = 70;
     const char *failure_stage = "preflight";
@@ -862,6 +937,7 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
     int reparent = strcmp(fixture_case, "reparenting") == 0;
     int setsid_escape = strcmp(fixture_case, "setsid_escape") == 0;
     int credential_change = strcmp(fixture_case, "credential_change") == 0;
+    int dynamic_library_load = strcmp(fixture_case, "dynamic_library_load") == 0;
     if (credential_change) {
         const enum observation_key keys[] = {
             OBSERVATION_SETGROUPS, OBSERVATION_SETGID, OBSERVATION_SETUID
@@ -895,7 +971,27 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
         failure_errno = errno;
         goto cleanup;
     }
-    if ((reparent || setsid_escape || credential_change) && pipe2(report_pipe, O_CLOEXEC) != 0) {
+    if (dynamic_library_load) {
+        dynamic_fanotify = (int)syscall(
+            SYS_fanotify_init,
+            FAN_CLASS_NOTIF | FAN_CLOEXEC | FAN_NONBLOCK,
+            O_RDONLY | O_LARGEFILE | O_CLOEXEC
+        );
+        if (dynamic_fanotify < 0 || syscall(
+                SYS_fanotify_mark,
+                dynamic_fanotify,
+                FAN_MARK_ADD,
+                FAN_OPEN,
+                AT_FDCWD,
+                DYNAMIC_LIBRARY_PATH
+            ) != 0) {
+            failure_stage = "dynamic_fanotify_mark";
+            failure_errno = errno;
+            goto cleanup;
+        }
+    }
+    if ((reparent || setsid_escape || credential_change || dynamic_library_load) &&
+        pipe2(report_pipe, O_CLOEXEC) != 0) {
         failure_stage = "process_report_pipe";
         failure_errno = errno;
         goto cleanup;
@@ -920,8 +1016,13 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
             fixture,
             fixture_case,
             &fds,
-            (reparent || setsid_escape || credential_change) ? report_pipe[1] : -1
+            (reparent || setsid_escape || credential_change || dynamic_library_load)
+                ? report_pipe[1] : -1
         );
+    }
+    if (dynamic_library_load) {
+        puts("WHOATHERE_SENSOR dynamic_library_load=observed");
+        puts("WHOATHERE_SENSOR dynamic_library_target=measured_inert_fixture_library");
     }
     close_if_open(&report_pipe[1]);
     if (setsid_escape) {
@@ -967,6 +1068,27 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
             !proc_identity_matches(child, parent) ||
             !proc_has_no_supplementary_groups(child)) {
             failure_stage = "credential_identity";
+            goto cleanup;
+        }
+    }
+    if (dynamic_library_load) {
+        if (read_exact_dynamic_report(report_pipe[0], &dynamic_report) != 0) {
+            failure_stage = "dynamic_report";
+            failure_errno = errno;
+            goto cleanup;
+        }
+        close_if_open(&report_pipe[0]);
+        if (dynamic_report.process_pid != child ||
+            !proc_identity_matches(child, parent) ||
+            !proc_has_no_supplementary_groups(child) ||
+            !proc_maps_contains_dynamic_library(child) ||
+            !dynamic_library_open_observed(dynamic_fanotify, child)) {
+            failure_stage = "dynamic_identity";
+            goto cleanup;
+        }
+        dynamic_timestamp = monotonic_ns();
+        if (dynamic_timestamp == 0) {
+            failure_stage = "dynamic_timestamp";
             goto cleanup;
         }
     }
@@ -1041,6 +1163,7 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
         goto cleanup;
     }
     if ((!double_fork && !reparent && !setsid_escape && !credential_change &&
+         !dynamic_library_load &&
          (!observed_pid(&fork_event, parent) || !observed_pid(&exec_event, child) ||
           !observed_pid(&exit_event, child) ||
           fork_event.timestamp_ns >= exec_event.timestamp_ns ||
@@ -1074,7 +1197,14 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
           setgroups_event.timestamp_ns >= setgid_event.timestamp_ns ||
           setgid_event.timestamp_ns >= setuid_event.timestamp_ns ||
           setuid_event.timestamp_ns >= exec_event.timestamp_ns ||
-          exec_event.timestamp_ns >= exit_event.timestamp_ns))) {
+          exec_event.timestamp_ns >= exit_event.timestamp_ns)) ||
+        (dynamic_library_load &&
+         (!observed_pid(&fork_event, parent) || exec_event.count != 2 ||
+          (pid_t)(exec_event.pid_tgid >> 32) != child ||
+          !observed_pid(&exit_event, child) || dynamic_timestamp == 0 ||
+          fork_event.timestamp_ns >= exec_event.timestamp_ns ||
+          exec_event.timestamp_ns >= dynamic_timestamp ||
+          dynamic_timestamp >= exit_event.timestamp_ns))) {
         if (reparent) {
             printf(
                 "WHOATHERE_SENSOR_REPARENT_OBSERVATION_DIAGNOSTIC "
@@ -1146,6 +1276,23 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
                 exit_event.pid_tgid >> 32
             );
         }
+        if (dynamic_library_load) {
+            printf(
+                "WHOATHERE_SENSOR_DYNAMIC_LIBRARY_DIAGNOSTIC "
+                "fork_count=%" PRIu64 " exec_count=%" PRIu64 " exit_count=%" PRIu64
+                " child=%d exec_actor=%" PRIu64 " fork_ns=%" PRIu64
+                " exec_ns=%" PRIu64 " dynamic_ns=%" PRIu64 " exit_ns=%" PRIu64 "\n",
+                fork_event.count,
+                exec_event.count,
+                exit_event.count,
+                child,
+                exec_event.pid_tgid >> 32,
+                fork_event.timestamp_ns,
+                exec_event.timestamp_ns,
+                dynamic_timestamp,
+                exit_event.timestamp_ns
+            );
+        }
         failure_stage = "observation_match";
         goto cleanup;
     }
@@ -1209,6 +1356,52 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
             exit_event.pid_tgid >> 32,
             cgroup.count,
             exit_event.pid_tgid >> 32,
+            exit_event.timestamp_ns
+        );
+        result = 0;
+        goto cleanup;
+    }
+    if (dynamic_library_load) {
+        printf(
+            "WHOATHERE_GUEST_PROCESS_EVIDENCE "
+            "{\"descendant_teardown_complete\":true,\"dropped_event_count\":\"0\","
+            "\"dynamic_library_load_count\":\"1\","
+            "\"dynamic_library_target\":\"measured_inert_fixture_library\","
+            "\"event_count\":\"4\",\"event_sequence_end\":\"4\","
+            "\"event_sequence_start\":\"1\",\"events\":["
+            "{\"actor_pid\":\"%" PRIu64 "\",\"cgroup_id\":\"%" PRIu64
+            "\",\"kind\":\"fork\",\"sequence\":\"1\",\"subject_pid\":\"%" PRIu64
+            "\",\"timestamp_ns\":\"%" PRIu64 "\"},"
+            "{\"actor_pid\":\"%" PRIu64 "\",\"cgroup_id\":\"%" PRIu64
+            "\",\"kind\":\"exec\",\"sequence\":\"2\",\"subject_pid\":\"%" PRIu64
+            "\",\"timestamp_ns\":\"%" PRIu64 "\"},"
+            "{\"actor_pid\":\"%" PRIu64 "\",\"cgroup_id\":\"%" PRIu64
+            "\",\"kind\":\"dynamic_library_load\",\"sequence\":\"3\","
+            "\"subject_pid\":\"%" PRIu64 "\",\"timestamp_ns\":\"%" PRIu64 "\"},"
+            "{\"actor_pid\":\"%" PRIu64 "\",\"cgroup_id\":\"%" PRIu64
+            "\",\"kind\":\"exit\",\"sequence\":\"4\",\"subject_pid\":\"%" PRIu64
+            "\",\"timestamp_ns\":\"%" PRIu64 "\"}],"
+            "\"evidence_truncated\":false,\"exec_count\":\"2\",\"exit_count\":\"1\","
+            "\"fixture_case\":\"dynamic_library_load\",\"fork_count\":\"1\","
+            "\"heartbeat_count\":\"2\",\"package_gid\":\"65534\","
+            "\"package_uid\":\"65534\",\"reaped_process_count\":\"1\","
+            "\"schema_version\":\"whoathere.linux_vz_process_evidence_payload.v1\","
+            "\"sensor_healthy\":true}\n",
+            (uint64_t)parent,
+            cgroup.count,
+            (uint64_t)child,
+            fork_event.timestamp_ns,
+            (uint64_t)child,
+            cgroup.count,
+            (uint64_t)child,
+            exec_event.timestamp_ns,
+            (uint64_t)child,
+            cgroup.count,
+            (uint64_t)child,
+            dynamic_timestamp,
+            (uint64_t)child,
+            cgroup.count,
+            (uint64_t)child,
             exit_event.timestamp_ns
         );
         result = 0;
@@ -1399,6 +1592,7 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
     result = 0;
 
 cleanup:
+    if (dynamic_fanotify >= 0) close(dynamic_fanotify);
     close_if_open(&report_pipe[0]);
     close_if_open(&report_pipe[1]);
     close_sensor_fds(&fds);
@@ -1424,7 +1618,8 @@ int main(int argument_count, char **arguments) {
         strcmp(arguments[2], "double_fork_daemonization") == 0 ||
         strcmp(arguments[2], "reparenting") == 0 ||
         strcmp(arguments[2], "setsid_escape") == 0 ||
-        strcmp(arguments[2], "credential_change") == 0) {
+        strcmp(arguments[2], "credential_change") == 0 ||
+        strcmp(arguments[2], "dynamic_library_load") == 0) {
         return run_process_probe(arguments[1], arguments[2]);
     }
     if (strcmp(arguments[2], "protected_open_read_write_rename_delete") == 0 ||

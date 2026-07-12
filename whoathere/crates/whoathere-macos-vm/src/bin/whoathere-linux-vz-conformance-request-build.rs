@@ -34,6 +34,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "double_fork_daemonization" => LinuxVzTelemetryConformanceCaseV1::DoubleForkDaemonization,
         "setsid_escape" => LinuxVzTelemetryConformanceCaseV1::SetsidEscape,
         "credential_change" => LinuxVzTelemetryConformanceCaseV1::CredentialChange,
+        "dynamic_library_load" => LinuxVzTelemetryConformanceCaseV1::DynamicLibraryLoad,
         "protected_open_read_write_rename_delete" => {
             LinuxVzTelemetryConformanceCaseV1::ProtectedOpenReadWriteRenameDelete
         }

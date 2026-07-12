@@ -66,7 +66,7 @@ if ! cmp -s "$canonical_manifest" "$manifest"; then
     echo "signed manifest must be canonical sorted compact JSON" >&2
     exit 65
 fi
-expected_keys='["architecture","base_generation_manifest_sha256","base_generation_schema_version","builder_source_sha256","canonical_signed_newc_source_sha256","cargo_lock_sha256","cargo_zigbuild_version","external_network","guest_init_sha256","guest_init_source_sha256","guest_seed_provisioning","guest_signer_sha256","guest_signer_source_sha256","image_state","kernel_btf_sha256","kernel_config_sha256","kernel_image_sha256","kernel_release","package_execution","process_fixture_child_sha256","process_sensor_probe_sha256","root_disk","rustc_version","schema_version","signed_overlay_cpio_gzip_sha256","signed_overlay_cpio_sha256","source_iso_sha256","source_modloop_sha256","sync_back_policy","virtio_vsock_common_sha256","virtio_vsock_transport_sha256","vsock_core_sha256","whoathere_signed_initramfs_sha256","zig_version"]'
+expected_keys='["architecture","base_generation_manifest_sha256","base_generation_schema_version","builder_source_sha256","canonical_signed_newc_source_sha256","cargo_lock_sha256","cargo_zigbuild_version","dynamic_fixture_library_sha256","dynamic_library_driver_sha256","external_network","guest_init_sha256","guest_init_source_sha256","guest_seed_provisioning","guest_signer_sha256","guest_signer_source_sha256","image_state","kernel_btf_sha256","kernel_config_sha256","kernel_image_sha256","kernel_release","package_execution","process_fixture_bundle_sha256","process_fixture_child_sha256","process_sensor_probe_sha256","root_disk","rustc_version","schema_version","signed_overlay_cpio_gzip_sha256","signed_overlay_cpio_sha256","source_iso_sha256","source_modloop_sha256","sync_back_policy","virtio_vsock_common_sha256","virtio_vsock_transport_sha256","vsock_core_sha256","whoathere_signed_initramfs_sha256","zig_version"]'
 if [ "$(jq -c 'keys' "$manifest")" != "$expected_keys" ]; then
     echo "signed manifest key set mismatch" >&2
     exit 65
@@ -127,6 +127,9 @@ require_hash virtio_vsock_common_sha256 "$image/overlay/whoathere/modules/vmw_vs
 require_hash virtio_vsock_transport_sha256 "$image/overlay/whoathere/modules/vmw_vsock_virtio_transport.ko"
 require_value process_sensor_probe_sha256 "$(jq -er '.process_sensor_probe_sha256' "$base/manifest.json")"
 require_value process_fixture_child_sha256 "$(jq -er '.process_fixture_child_sha256' "$base/manifest.json")"
+require_value process_fixture_bundle_sha256 "$(jq -er '.process_fixture_bundle_sha256' "$base/manifest.json")"
+require_value dynamic_library_driver_sha256 "$(jq -er '.dynamic_library_driver_sha256' "$base/manifest.json")"
+require_value dynamic_fixture_library_sha256 "$(jq -er '.dynamic_fixture_library_sha256' "$base/manifest.json")"
 
 "$script_dir/verify-alpine-inert-image.sh" "$iso" "$base" >/dev/null
 case "$(file "$image/overlay/whoathere/guest-signer")" in

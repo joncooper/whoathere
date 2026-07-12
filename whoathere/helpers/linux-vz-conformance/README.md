@@ -119,6 +119,11 @@ The
 [credential-change checkpoint](../../../docs/product-build-run/artifact-native-linux-vz-credential-checkpoint-2026-07-12.md)
 adds protected credential-drop syscall ordering and live identity corroboration, then reruns the
 earlier six cases on the new measured identity. The other 31 cases remain pending.
+The
+[dynamic-library checkpoint](../../../docs/product-build-run/artifact-native-linux-vz-dynamic-library-checkpoint-2026-07-12.md)
+adds exact shared-object open and executable-mapping evidence plus a measured `dlopen`/`dlsym`
+fixture, then reruns the earlier seven cases on the new measured identity. The other 30 cases remain
+pending.
 
 ## Closed fixture contract
 

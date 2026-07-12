@@ -14,6 +14,7 @@ fn main() {
 
 #[cfg(target_os = "linux")]
 mod linux {
+    use serde_json::Value;
     use std::fs::{File, OpenOptions};
     use std::io::{Read, Write};
     use std::mem::{size_of, zeroed};
@@ -38,6 +39,9 @@ mod linux {
     const SEED_PATH: &str = "/whoathere/guest-ed25519.seed";
     const SENSOR_PATH: &str = "/whoathere/process-sensor-probe";
     const FIXTURE_PATH: &str = "/whoathere/process-fixture-child";
+    const FIXTURE_BUNDLE_PATH: &str = "/whoathere/process-fixture-bundle.json";
+    const DYNAMIC_DRIVER_PATH: &str = "/whoathere/dynamic-library-driver";
+    const DYNAMIC_LIBRARY_PATH: &str = "/whoathere/dynamic-fixture-library.so";
     const MAX_EXECUTABLE_BYTES: u64 = 64 * 1024 * 1024;
     const MAX_SENSOR_OUTPUT_BYTES: u64 = if MAX_LINUX_VZ_FILE_EVIDENCE_PAYLOAD_BYTES_V1
         > MAX_LINUX_VZ_PROCESS_EVIDENCE_PAYLOAD_BYTES_V1
@@ -72,6 +76,7 @@ mod linux {
                 | LinuxVzTelemetryConformanceCaseV1::DoubleForkDaemonization
                 | LinuxVzTelemetryConformanceCaseV1::SetsidEscape
                 | LinuxVzTelemetryConformanceCaseV1::CredentialChange
+                | LinuxVzTelemetryConformanceCaseV1::DynamicLibraryLoad
                 | LinuxVzTelemetryConformanceCaseV1::ProtectedOpenReadWriteRenameDelete
                 | LinuxVzTelemetryConformanceCaseV1::MmapAccess
         ) || run_spec.expected_terminal()
@@ -89,7 +94,7 @@ mod linux {
 
         require_self_digest(backend.guest_sensor_sha256())?;
         require_digest(SENSOR_PATH, backend.guest_bpf_bundle_sha256())?;
-        require_digest(FIXTURE_PATH, backend.guest_runner_sha256())?;
+        require_fixture_bundle(backend.guest_runner_sha256())?;
 
         let fixture_case_argument = match run_spec.fixture_case() {
             LinuxVzTelemetryConformanceCaseV1::ForkExecExit => "fork_exec_exit",
@@ -99,6 +104,7 @@ mod linux {
             }
             LinuxVzTelemetryConformanceCaseV1::SetsidEscape => "setsid_escape",
             LinuxVzTelemetryConformanceCaseV1::CredentialChange => "credential_change",
+            LinuxVzTelemetryConformanceCaseV1::DynamicLibraryLoad => "dynamic_library_load",
             LinuxVzTelemetryConformanceCaseV1::ProtectedOpenReadWriteRenameDelete => {
                 "protected_open_read_write_rename_delete"
             }
@@ -132,7 +138,8 @@ mod linux {
             | LinuxVzTelemetryConformanceCaseV1::Reparenting
             | LinuxVzTelemetryConformanceCaseV1::DoubleForkDaemonization
             | LinuxVzTelemetryConformanceCaseV1::SetsidEscape
-            | LinuxVzTelemetryConformanceCaseV1::CredentialChange => {
+            | LinuxVzTelemetryConformanceCaseV1::CredentialChange
+            | LinuxVzTelemetryConformanceCaseV1::DynamicLibraryLoad => {
                 let evidence = decode_linux_vz_process_evidence_from_serial_v1(&sensor_output)?;
                 if evidence.fixture_case() != run_spec.fixture_case() {
                     return Err("guest_signer_process_case_mismatch".into());
@@ -186,6 +193,52 @@ mod linux {
         if Sha256Digest::from_bytes(&bytes) != *expected {
             return Err("guest_signer_executable_digest_mismatch".into());
         }
+        Ok(())
+    }
+
+    fn require_fixture_bundle(expected: &Sha256Digest) -> Result<(), Box<dyn std::error::Error>> {
+        let bytes = read_regular_nofollow(FIXTURE_BUNDLE_PATH, 64 * 1024)?;
+        if Sha256Digest::from_bytes(&bytes) != *expected {
+            return Err("guest_signer_fixture_bundle_digest_mismatch".into());
+        }
+        let value: Value = serde_json::from_slice(&bytes)?;
+        let canonical = serde_json_canonicalizer::to_vec(&value)?;
+        if bytes != canonical && bytes != [canonical.as_slice(), b"\n"].concat() {
+            return Err("guest_signer_fixture_bundle_noncanonical".into());
+        }
+        let object = value
+            .as_object()
+            .ok_or("guest_signer_fixture_bundle_schema")?;
+        let expected_keys = [
+            "dynamic_fixture_library_sha256",
+            "dynamic_library_driver_sha256",
+            "process_fixture_child_sha256",
+            "schema_version",
+        ];
+        if object.len() != expected_keys.len()
+            || expected_keys.iter().any(|key| !object.contains_key(*key))
+            || object.get("schema_version").and_then(Value::as_str)
+                != Some("whoathere.linux_vz_process_fixture_bundle.v1")
+        {
+            return Err("guest_signer_fixture_bundle_schema".into());
+        }
+        let digest = |key: &str| -> Result<Sha256Digest, Box<dyn std::error::Error>> {
+            Ok(Sha256Digest::parse(
+                object
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .ok_or("guest_signer_fixture_bundle_digest")?,
+            )?)
+        };
+        require_digest(FIXTURE_PATH, &digest("process_fixture_child_sha256")?)?;
+        require_digest(
+            DYNAMIC_DRIVER_PATH,
+            &digest("dynamic_library_driver_sha256")?,
+        )?;
+        require_digest(
+            DYNAMIC_LIBRARY_PATH,
+            &digest("dynamic_fixture_library_sha256")?,
+        )?;
         Ok(())
     }
 

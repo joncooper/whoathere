@@ -10,6 +10,8 @@
 
 static const char *sensor_path = "/whoathere/process-sensor-probe";
 static const char *fixture_root = "/run/whoathere-file-fixture";
+static const char *dynamic_driver_path = "/whoathere/dynamic-library-driver";
+static const char *dynamic_library_path = "/whoathere/dynamic-fixture-library.so";
 #define REPARENT_REPORT_FD 3
 #define REPARENT_REPORT_MAGIC 0x57545052U
 #define SESSION_REPORT_MAGIC 0x57545353U
@@ -193,6 +195,16 @@ static int credential_change(void) {
     return nanosleep(&pause, NULL) == 0 ? 0 : 104;
 }
 
+static int dynamic_library_load(void) {
+    execl(
+        dynamic_driver_path,
+        dynamic_driver_path,
+        dynamic_library_path,
+        (char *)NULL
+    );
+    return 105;
+}
+
 int main(int argument_count, char **arguments) {
     if (argument_count != 2 || getuid() != 65534 || geteuid() != 65534 ||
         getgid() != 65534 || getegid() != 65534) {
@@ -207,6 +219,7 @@ int main(int argument_count, char **arguments) {
     if (strcmp(arguments[1], "reparenting") == 0) return reparenting();
     if (strcmp(arguments[1], "setsid_escape") == 0) return setsid_escape();
     if (strcmp(arguments[1], "credential_change") == 0) return credential_change();
+    if (strcmp(arguments[1], "dynamic_library_load") == 0) return dynamic_library_load();
     if (strcmp(arguments[1], "protected_open_read_write_rename_delete") == 0 ||
         strcmp(arguments[1], "mmap_access") == 0) {
         return file_fixture();

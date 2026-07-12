@@ -99,6 +99,12 @@ public func decodeLinuxVzProcessEvidencePayloadV1(
             "fixture_case", "fork_count", "reaped_process_count"
         ])
         expectedKinds = ["fork", "setgroups", "setgid", "setuid", "exec", "exit"]
+    case "dynamic_library_load":
+        expectedKeys = baseKeys.union([
+            "dynamic_library_load_count", "dynamic_library_target", "exec_count", "exit_count",
+            "fixture_case", "fork_count", "reaped_process_count"
+        ])
+        expectedKinds = ["fork", "exec", "dynamic_library_load", "exit"]
     default:
         throw LinuxVzProcessEvidencePayloadError.invalidSchema
     }
@@ -160,6 +166,15 @@ public func decodeLinuxVzProcessEvidencePayloadV1(
               decimalUInt64(value["reaped_process_count"]) == 1 else {
             throw LinuxVzProcessEvidencePayloadError.invalidSchema
         }
+    } else if fixtureCase == "dynamic_library_load" {
+        guard decimalUInt64(value["dynamic_library_load_count"]) == 1,
+              value["dynamic_library_target"] as? String == "measured_inert_fixture_library",
+              decimalUInt64(value["fork_count"]) == 1,
+              decimalUInt64(value["exec_count"]) == 2,
+              decimalUInt64(value["exit_count"]) == 1,
+              decimalUInt64(value["reaped_process_count"]) == 1 else {
+            throw LinuxVzProcessEvidencePayloadError.invalidSchema
+        }
     }
 
     let events = try rawEvents.map(decodeLinuxVzProcessEventV1)
@@ -207,6 +222,14 @@ public func decodeLinuxVzProcessEvidencePayloadV1(
               events[2].subjectPID == events[0].subjectPID,
               events[3].actorPID == events[0].subjectPID,
               events[3].subjectPID == events[0].subjectPID else {
+            throw LinuxVzProcessEvidencePayloadError.invalidEvent
+        }
+    } else if fixtureCase == "credential_change" {
+        guard events[0].actorPID != events[0].subjectPID,
+              events.dropFirst().allSatisfy({
+                  $0.actorPID == events[0].subjectPID &&
+                    $0.subjectPID == events[0].subjectPID
+              }) else {
             throw LinuxVzProcessEvidencePayloadError.invalidEvent
         }
     } else {

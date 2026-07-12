@@ -45,12 +45,16 @@ guest_init="$image/overlay/init"
 capability_probe="$image/overlay/whoathere/capability-probe"
 process_sensor_probe="$image/overlay/whoathere/process-sensor-probe"
 process_fixture_child="$image/overlay/whoathere/process-fixture-child"
+dynamic_library_driver="$image/overlay/whoathere/dynamic-library-driver"
+dynamic_fixture_library="$image/overlay/whoathere/dynamic-fixture-library.so"
+process_fixture_bundle="$image/overlay/whoathere/process-fixture-bundle.json"
 
 for path in \
     "$iso" "$manifest" "$kernel" "$source_kernel_pe" "$base_initramfs" "$overlay_cpio" \
     "$overlay_cpio_gzip" \
     "$combined_initramfs" "$config" "$system_map" "$guest_init" "$capability_probe" \
-    "$process_sensor_probe" "$process_fixture_child"
+    "$process_sensor_probe" "$process_fixture_child" "$dynamic_library_driver" \
+    "$dynamic_fixture_library" "$process_fixture_bundle"
 do
     if [ ! -f "$path" ] || [ -L "$path" ]; then
         echo "required regular non-symlink file missing: $path" >&2
@@ -72,7 +76,7 @@ if ! cmp -s "$canonical_manifest" "$manifest"; then
     exit 65
 fi
 
-expected_keys='["architecture","base_initramfs_sha256","builder_source_sha256","canonical_newc_source_sha256","capability_probe_sha256","capability_probe_source_sha256","config_sha256","external_network","guest_init_sha256","guest_init_source_sha256","image_state","kernel_btf_sha256","kernel_extraction","kernel_gzip_payload_offset","kernel_image_sha256","kernel_release","overlay_cpio_gzip_sha256","overlay_cpio_sha256","process_fixture_child_sha256","process_fixture_child_source_sha256","process_sensor_probe_sha256","process_sensor_probe_source_sha256","schema_version","source_iso_sha256","source_kernel_pe_sha256","source_url","sync_back_policy","system_map_sha256","whoathere_initramfs_sha256","zig_version"]'
+expected_keys='["architecture","base_initramfs_sha256","builder_source_sha256","canonical_newc_source_sha256","capability_probe_sha256","capability_probe_source_sha256","config_sha256","dynamic_fixture_library_sha256","dynamic_fixture_library_source_sha256","dynamic_library_driver_sha256","dynamic_library_driver_source_sha256","external_network","guest_init_sha256","guest_init_source_sha256","image_state","kernel_btf_sha256","kernel_extraction","kernel_gzip_payload_offset","kernel_image_sha256","kernel_release","overlay_cpio_gzip_sha256","overlay_cpio_sha256","process_fixture_bundle_sha256","process_fixture_child_sha256","process_fixture_child_source_sha256","process_sensor_probe_sha256","process_sensor_probe_source_sha256","schema_version","source_iso_sha256","source_kernel_pe_sha256","source_url","sync_back_policy","system_map_sha256","whoathere_initramfs_sha256","zig_version"]'
 if [ "$(jq -c 'keys' "$manifest")" != "$expected_keys" ]; then
     echo "manifest key set mismatch" >&2
     exit 65
@@ -127,6 +131,11 @@ require_hash process_sensor_probe_sha256 "$process_sensor_probe"
 require_hash process_sensor_probe_source_sha256 "$source_dir/guest/process_sensor_probe.c"
 require_hash process_fixture_child_sha256 "$process_fixture_child"
 require_hash process_fixture_child_source_sha256 "$source_dir/guest/process_fixture_child.c"
+require_hash dynamic_library_driver_sha256 "$dynamic_library_driver"
+require_hash dynamic_library_driver_source_sha256 "$source_dir/guest/dynamic_library_driver.c"
+require_hash dynamic_fixture_library_sha256 "$dynamic_fixture_library"
+require_hash dynamic_fixture_library_source_sha256 "$source_dir/guest/dynamic_fixture_library.c"
+require_hash process_fixture_bundle_sha256 "$process_fixture_bundle"
 require_hash canonical_newc_source_sha256 "$source_dir/tools/canonical_newc.c"
 
 extracted_kernel_hash="sha256:$(tail -c +51833 "$source_kernel_pe" | gunzip -c 2>/dev/null | shasum -a 256 | awk '{print $1}')"
@@ -146,7 +155,7 @@ combined_stream_hash="sha256:$(/bin/cat "$base_initramfs" "$overlay_cpio_gzip" |
 require_value whoathere_initramfs_sha256 "$combined_stream_hash"
 
 entries=$(cpio -it < "$overlay_cpio" 2>/dev/null)
-expected_entries=$(printf 'init\nwhoathere\nwhoathere/capability-probe\nwhoathere/process-sensor-probe\nwhoathere/process-fixture-child')
+expected_entries=$(printf 'init\nwhoathere\nwhoathere/capability-probe\nwhoathere/process-sensor-probe\nwhoathere/process-fixture-child\nwhoathere/dynamic-library-driver\nwhoathere/dynamic-fixture-library.so\nwhoathere/process-fixture-bundle.json')
 if [ "$entries" != "$expected_entries" ]; then
     echo "canonical overlay entry set or order mismatch" >&2
     exit 65
@@ -158,7 +167,10 @@ fi
 if ! cmp -s "$extract_root/init" "$guest_init" || \
    ! cmp -s "$extract_root/whoathere/capability-probe" "$capability_probe" || \
    ! cmp -s "$extract_root/whoathere/process-sensor-probe" "$process_sensor_probe" || \
-   ! cmp -s "$extract_root/whoathere/process-fixture-child" "$process_fixture_child"; then
+   ! cmp -s "$extract_root/whoathere/process-fixture-child" "$process_fixture_child" || \
+   ! cmp -s "$extract_root/whoathere/dynamic-library-driver" "$dynamic_library_driver" || \
+   ! cmp -s "$extract_root/whoathere/dynamic-fixture-library.so" "$dynamic_fixture_library" || \
+   ! cmp -s "$extract_root/whoathere/process-fixture-bundle.json" "$process_fixture_bundle"; then
     echo "canonical overlay content mismatch" >&2
     exit 65
 fi
@@ -166,7 +178,10 @@ if [ "$(stat -f '%Lp' "$extract_root/init")" != 755 ] || \
    [ "$(stat -f '%Lp' "$extract_root/whoathere")" != 711 ] || \
    [ "$(stat -f '%Lp' "$extract_root/whoathere/capability-probe")" != 700 ] || \
    [ "$(stat -f '%Lp' "$extract_root/whoathere/process-sensor-probe")" != 700 ] || \
-   [ "$(stat -f '%Lp' "$extract_root/whoathere/process-fixture-child")" != 555 ]; then
+   [ "$(stat -f '%Lp' "$extract_root/whoathere/process-fixture-child")" != 555 ] || \
+   [ "$(stat -f '%Lp' "$extract_root/whoathere/dynamic-library-driver")" != 555 ] || \
+   [ "$(stat -f '%Lp' "$extract_root/whoathere/dynamic-fixture-library.so")" != 444 ] || \
+   [ "$(stat -f '%Lp' "$extract_root/whoathere/process-fixture-bundle.json")" != 444 ]; then
     echo "canonical overlay protection modes mismatch" >&2
     exit 65
 fi
@@ -183,6 +198,23 @@ for binary in "$process_sensor_probe" "$process_fixture_child"; do
         *) echo "process sensor fixture is not a stripped static aarch64 Linux executable" >&2; exit 65 ;;
     esac
 done
+case "$(file "$dynamic_library_driver")" in
+    *"ARM aarch64"*"dynamically linked"*"interpreter /lib/ld-musl-aarch64.so.1"*"stripped"*) ;;
+    *) echo "dynamic library driver contract mismatch" >&2; exit 65 ;;
+esac
+case "$(file "$dynamic_fixture_library")" in
+    *"shared object"*"ARM aarch64"*"stripped"*) ;;
+    *) echo "dynamic fixture library contract mismatch" >&2; exit 65 ;;
+esac
+bundle_expected=$(jq -cnS \
+    --arg library "$(jq -er '.dynamic_fixture_library_sha256' "$manifest")" \
+    --arg driver "$(jq -er '.dynamic_library_driver_sha256' "$manifest")" \
+    --arg child "$(jq -er '.process_fixture_child_sha256' "$manifest")" \
+    '{dynamic_fixture_library_sha256:$library,dynamic_library_driver_sha256:$driver,process_fixture_child_sha256:$child,schema_version:"whoathere.linux_vz_process_fixture_bundle.v1"}')
+if [ "$(cat "$process_fixture_bundle")" != "$bundle_expected" ]; then
+    echo "process fixture bundle binding mismatch" >&2
+    exit 65
+fi
 
 for required_config in \
     CONFIG_BPF=y \

@@ -128,6 +128,10 @@ struct ProcessEvidenceWireV1 {
     credential_target: Option<String>,
     descendant_teardown_complete: bool,
     dropped_event_count: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    dynamic_library_load_count: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    dynamic_library_target: Option<String>,
     event_count: String,
     event_sequence_end: String,
     event_sequence_start: String,
@@ -238,6 +242,8 @@ pub fn decode_linux_vz_process_evidence_payload_v1(
             None => {
                 if wire.credential_change_count.is_some()
                     || wire.credential_target.is_some()
+                    || wire.dynamic_library_load_count.is_some()
+                    || wire.dynamic_library_target.is_some()
                     || wire.fork_count.is_some()
                     || wire.exec_count.is_some()
                     || wire.exit_count.is_some()
@@ -257,6 +263,8 @@ pub fn decode_linux_vz_process_evidence_payload_v1(
             Some("double_fork_daemonization") => {
                 if wire.credential_change_count.is_some()
                     || wire.credential_target.is_some()
+                    || wire.dynamic_library_load_count.is_some()
+                    || wire.dynamic_library_target.is_some()
                     || optional_decimal_u64_v1(wire.fork_count.as_deref())? != 3
                     || optional_decimal_u64_v1(wire.exec_count.as_deref())? != 1
                     || optional_decimal_u64_v1(wire.exit_count.as_deref())? != 3
@@ -276,6 +284,8 @@ pub fn decode_linux_vz_process_evidence_payload_v1(
             Some("reparenting") => {
                 if wire.credential_change_count.is_some()
                     || wire.credential_target.is_some()
+                    || wire.dynamic_library_load_count.is_some()
+                    || wire.dynamic_library_target.is_some()
                     || optional_decimal_u64_v1(wire.fork_count.as_deref())? != 2
                     || optional_decimal_u64_v1(wire.exec_count.as_deref())? != 1
                     || optional_decimal_u64_v1(wire.exit_count.as_deref())? != 2
@@ -295,6 +305,8 @@ pub fn decode_linux_vz_process_evidence_payload_v1(
             Some("setsid_escape") => {
                 if wire.credential_change_count.is_some()
                     || wire.credential_target.is_some()
+                    || wire.dynamic_library_load_count.is_some()
+                    || wire.dynamic_library_target.is_some()
                     || optional_decimal_u64_v1(wire.fork_count.as_deref())? != 1
                     || optional_decimal_u64_v1(wire.exec_count.as_deref())? != 1
                     || optional_decimal_u64_v1(wire.exit_count.as_deref())? != 1
@@ -323,12 +335,36 @@ pub fn decode_linux_vz_process_evidence_payload_v1(
                     || wire.reparented_process_count.is_some()
                     || wire.session_escape_count.is_some()
                     || wire.session_target.is_some()
+                    || wire.dynamic_library_load_count.is_some()
+                    || wire.dynamic_library_target.is_some()
                 {
                     return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema);
                 }
                 (
                     LinuxVzTelemetryConformanceCaseV1::CredentialChange,
                     &["fork", "setgroups", "setgid", "setuid", "exec", "exit"],
+                )
+            }
+            Some("dynamic_library_load") => {
+                if optional_decimal_u64_v1(wire.dynamic_library_load_count.as_deref())? != 1
+                    || wire.dynamic_library_target.as_deref()
+                        != Some("measured_inert_fixture_library")
+                    || optional_decimal_u64_v1(wire.fork_count.as_deref())? != 1
+                    || optional_decimal_u64_v1(wire.exec_count.as_deref())? != 2
+                    || optional_decimal_u64_v1(wire.exit_count.as_deref())? != 1
+                    || optional_decimal_u64_v1(wire.reaped_process_count.as_deref())? != 1
+                    || wire.credential_change_count.is_some()
+                    || wire.credential_target.is_some()
+                    || wire.reparent_target.is_some()
+                    || wire.reparented_process_count.is_some()
+                    || wire.session_escape_count.is_some()
+                    || wire.session_target.is_some()
+                {
+                    return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema);
+                }
+                (
+                    LinuxVzTelemetryConformanceCaseV1::DynamicLibraryLoad,
+                    &["fork", "exec", "dynamic_library_load", "exit"],
                 )
             }
             _ => return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema),
@@ -419,6 +455,16 @@ pub fn decode_linux_vz_process_evidence_payload_v1(
                 return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidEvent);
             }
         }
+        LinuxVzTelemetryConformanceCaseV1::DynamicLibraryLoad => {
+            if events[0].actor_pid == events[0].subject_pid
+                || events[1..].iter().any(|event| {
+                    event.actor_pid != events[0].subject_pid
+                        || event.subject_pid != events[0].subject_pid
+                })
+            {
+                return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidEvent);
+            }
+        }
         _ => return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema),
     }
 
@@ -463,6 +509,7 @@ mod tests {
     const REPARENTING: &[u8] = br#"{"descendant_teardown_complete":true,"dropped_event_count":"0","event_count":"4","event_sequence_end":"4","event_sequence_start":"1","events":[{"actor_pid":"42","cgroup_id":"9001","kind":"exec","sequence":"1","subject_pid":"42","timestamp_ns":"100"},{"actor_pid":"42","cgroup_id":"9001","kind":"fork","sequence":"2","subject_pid":"43","timestamp_ns":"200"},{"actor_pid":"41","cgroup_id":"9001","kind":"reparent","sequence":"3","subject_pid":"43","timestamp_ns":"300"},{"actor_pid":"43","cgroup_id":"9001","kind":"exit","sequence":"4","subject_pid":"43","timestamp_ns":"400"}],"evidence_truncated":false,"exec_count":"1","exit_count":"2","fixture_case":"reparenting","fork_count":"2","heartbeat_count":"2","package_gid":"65534","package_uid":"65534","reaped_process_count":"2","reparent_target":"protected_subreaper","reparented_process_count":"1","schema_version":"whoathere.linux_vz_process_evidence_payload.v1","sensor_healthy":true}"#;
     const SETSID_ESCAPE: &[u8] = br#"{"descendant_teardown_complete":true,"dropped_event_count":"0","event_count":"4","event_sequence_end":"4","event_sequence_start":"1","events":[{"actor_pid":"41","cgroup_id":"9001","kind":"fork","sequence":"1","subject_pid":"42","timestamp_ns":"100"},{"actor_pid":"42","cgroup_id":"9001","kind":"exec","sequence":"2","subject_pid":"42","timestamp_ns":"200"},{"actor_pid":"42","cgroup_id":"9001","kind":"setsid","sequence":"3","subject_pid":"42","timestamp_ns":"300"},{"actor_pid":"42","cgroup_id":"9001","kind":"exit","sequence":"4","subject_pid":"42","timestamp_ns":"400"}],"evidence_truncated":false,"exec_count":"1","exit_count":"1","fixture_case":"setsid_escape","fork_count":"1","heartbeat_count":"2","package_gid":"65534","package_uid":"65534","reaped_process_count":"1","schema_version":"whoathere.linux_vz_process_evidence_payload.v1","sensor_healthy":true,"session_escape_count":"1","session_target":"new_session_leader"}"#;
     const CREDENTIAL_CHANGE: &[u8] = br#"{"credential_change_count":"3","credential_target":"uid_65534_gid_65534_no_supplementary_groups","descendant_teardown_complete":true,"dropped_event_count":"0","event_count":"6","event_sequence_end":"6","event_sequence_start":"1","events":[{"actor_pid":"41","cgroup_id":"9001","kind":"fork","sequence":"1","subject_pid":"42","timestamp_ns":"100"},{"actor_pid":"42","cgroup_id":"9001","kind":"setgroups","sequence":"2","subject_pid":"42","timestamp_ns":"200"},{"actor_pid":"42","cgroup_id":"9001","kind":"setgid","sequence":"3","subject_pid":"42","timestamp_ns":"300"},{"actor_pid":"42","cgroup_id":"9001","kind":"setuid","sequence":"4","subject_pid":"42","timestamp_ns":"400"},{"actor_pid":"42","cgroup_id":"9001","kind":"exec","sequence":"5","subject_pid":"42","timestamp_ns":"500"},{"actor_pid":"42","cgroup_id":"9001","kind":"exit","sequence":"6","subject_pid":"42","timestamp_ns":"600"}],"evidence_truncated":false,"exec_count":"1","exit_count":"1","fixture_case":"credential_change","fork_count":"1","heartbeat_count":"2","package_gid":"65534","package_uid":"65534","reaped_process_count":"1","schema_version":"whoathere.linux_vz_process_evidence_payload.v1","sensor_healthy":true}"#;
+    const DYNAMIC_LIBRARY_LOAD: &[u8] = br#"{"descendant_teardown_complete":true,"dropped_event_count":"0","dynamic_library_load_count":"1","dynamic_library_target":"measured_inert_fixture_library","event_count":"4","event_sequence_end":"4","event_sequence_start":"1","events":[{"actor_pid":"41","cgroup_id":"9001","kind":"fork","sequence":"1","subject_pid":"42","timestamp_ns":"100"},{"actor_pid":"42","cgroup_id":"9001","kind":"exec","sequence":"2","subject_pid":"42","timestamp_ns":"200"},{"actor_pid":"42","cgroup_id":"9001","kind":"dynamic_library_load","sequence":"3","subject_pid":"42","timestamp_ns":"300"},{"actor_pid":"42","cgroup_id":"9001","kind":"exit","sequence":"4","subject_pid":"42","timestamp_ns":"400"}],"evidence_truncated":false,"exec_count":"2","exit_count":"1","fixture_case":"dynamic_library_load","fork_count":"1","heartbeat_count":"2","package_gid":"65534","package_uid":"65534","reaped_process_count":"1","schema_version":"whoathere.linux_vz_process_evidence_payload.v1","sensor_healthy":true}"#;
 
     #[test]
     fn double_fork_payload_binds_counts_lineage_and_teardown() {
@@ -546,6 +593,28 @@ mod tests {
         let changed = String::from_utf8(CREDENTIAL_CHANGE.to_vec())
             .unwrap()
             .replace("uid_65534_gid_65534_no_supplementary_groups", "uid_0_gid_0");
+        assert_eq!(
+            decode_linux_vz_process_evidence_payload_v1(changed.as_bytes()),
+            Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema)
+        );
+    }
+
+    #[test]
+    fn dynamic_library_payload_binds_measured_target_and_teardown() {
+        let payload = decode_linux_vz_process_evidence_payload_v1(DYNAMIC_LIBRARY_LOAD).unwrap();
+        assert_eq!(
+            payload.fixture_case(),
+            LinuxVzTelemetryConformanceCaseV1::DynamicLibraryLoad
+        );
+        assert_eq!(payload.event_count(), 4);
+        assert_eq!(payload.dropped_event_count(), 0);
+    }
+
+    #[test]
+    fn dynamic_library_payload_rejects_forged_target() {
+        let changed = String::from_utf8(DYNAMIC_LIBRARY_LOAD.to_vec())
+            .unwrap()
+            .replace("measured_inert_fixture_library", "unmeasured_library");
         assert_eq!(
             decode_linux_vz_process_evidence_payload_v1(changed.as_bytes()),
             Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema)

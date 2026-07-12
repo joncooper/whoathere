@@ -147,15 +147,18 @@ static void write_trailer(FILE *output) {
 }
 
 int main(int argument_count, char **arguments) {
-    if (argument_count != 6) {
+    if (argument_count != 9) {
         fprintf(
             stderr,
-            "usage: canonical_newc OUTPUT INIT CAPABILITY_PROBE PROCESS_SENSOR PROCESS_FIXTURE\n"
+            "usage: canonical_newc OUTPUT INIT CAPABILITY_PROBE PROCESS_SENSOR "
+            "PROCESS_FIXTURE DYNAMIC_DRIVER DYNAMIC_LIBRARY FIXTURE_BUNDLE\n"
         );
         return 64;
     }
     if (checked_file_size(arguments[2]) == 0 || checked_file_size(arguments[3]) == 0 ||
-        checked_file_size(arguments[4]) == 0 || checked_file_size(arguments[5]) == 0) {
+        checked_file_size(arguments[4]) == 0 || checked_file_size(arguments[5]) == 0 ||
+        checked_file_size(arguments[6]) == 0 || checked_file_size(arguments[7]) == 0 ||
+        checked_file_size(arguments[8]) == 0) {
         fail("input must not be empty");
     }
 
@@ -169,6 +172,9 @@ int main(int argument_count, char **arguments) {
     write_file_entry(output, 3, 0100700, "whoathere/capability-probe", arguments[3]);
     write_file_entry(output, 4, 0100700, "whoathere/process-sensor-probe", arguments[4]);
     write_file_entry(output, 5, 0100555, "whoathere/process-fixture-child", arguments[5]);
+    write_file_entry(output, 6, 0100555, "whoathere/dynamic-library-driver", arguments[6]);
+    write_file_entry(output, 7, 0100444, "whoathere/dynamic-fixture-library.so", arguments[7]);
+    write_file_entry(output, 8, 0100444, "whoathere/process-fixture-bundle.json", arguments[8]);
     write_trailer(output);
     if (fclose(output) != 0) {
         fail("output close failed");

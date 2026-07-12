@@ -37,6 +37,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         LinuxVzTelemetryConformanceCaseV1::DoubleForkDaemonization => "double_fork_daemonization",
         LinuxVzTelemetryConformanceCaseV1::SetsidEscape => "setsid_escape",
         LinuxVzTelemetryConformanceCaseV1::CredentialChange => "credential_change",
+        LinuxVzTelemetryConformanceCaseV1::DynamicLibraryLoad => "dynamic_library_load",
         _ => return Err("unsupported process evidence fixture case".into()),
     };
     let result = serde_json::json!({

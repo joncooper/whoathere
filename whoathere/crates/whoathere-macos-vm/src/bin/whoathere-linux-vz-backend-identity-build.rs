@@ -80,7 +80,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         required_digest(
             &manifest,
             if signed_image {
-                "process_fixture_child_sha256"
+                "process_fixture_bundle_sha256"
             } else {
                 "guest_init_sha256"
             },

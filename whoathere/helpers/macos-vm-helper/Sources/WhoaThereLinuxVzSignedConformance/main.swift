@@ -284,7 +284,7 @@ private struct LinuxVzSignedConformanceHarness {
         let guestEventCount: UInt64
         switch runSpec.fixtureCase {
         case "fork_exec_exit", "reparenting", "double_fork_daemonization", "setsid_escape",
-             "credential_change":
+             "credential_change", "dynamic_library_load":
             let evidence = try decodeLinuxVzProcessEvidencePayloadV1(serialData)
             guard evidence.fixtureCase == runSpec.fixtureCase,
                   evidence.packageUID == UInt64(backend.packageUID),
@@ -333,7 +333,8 @@ private struct LinuxVzSignedConformanceHarness {
             runSpec.fixtureCase == "reparenting" ||
             runSpec.fixtureCase == "double_fork_daemonization" ||
             runSpec.fixtureCase == "setsid_escape" ||
-            runSpec.fixtureCase == "credential_change" {
+            runSpec.fixtureCase == "credential_change" ||
+            runSpec.fixtureCase == "dynamic_library_load" {
             let missingProcessMarkers = linuxVzInertMissingRequiredEvidenceMarkersV2(serialData)
             let missingDoubleForkMarkers = runSpec.fixtureCase == "double_fork_daemonization"
                 ? linuxVzInertDoubleForkSensorMarkersV1.filter {
@@ -351,8 +352,13 @@ private struct LinuxVzSignedConformanceHarness {
                 ? linuxVzInertCredentialSensorMarkersV1.filter {
                     !linuxVzInertSerialContainsExactMarker(serialData, marker: $0)
                 } : []
+            let missingDynamicLibraryMarkers = runSpec.fixtureCase == "dynamic_library_load"
+                ? linuxVzInertDynamicLibrarySensorMarkersV1.filter {
+                    !linuxVzInertSerialContainsExactMarker(serialData, marker: $0)
+                } : []
             missingBaseMarkers = missingProcessMarkers + missingDoubleForkMarkers
                 + missingReparentingMarkers + missingSetsidMarkers + missingCredentialMarkers
+                + missingDynamicLibraryMarkers
         } else {
             let missingCapabilities = linuxVzInertMissingCapabilityMarkers(serialData)
             let missingFileMarkers = linuxVzInertFileSensorMarkersV1.filter {

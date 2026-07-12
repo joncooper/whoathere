@@ -49,6 +49,11 @@ public let linuxVzInertCredentialSensorMarkersV1 = [
     "WHOATHERE_SENSOR process_credentials=uid_65534_gid_65534_no_supplementary_groups",
 ]
 
+public let linuxVzInertDynamicLibrarySensorMarkersV1 = [
+    "WHOATHERE_SENSOR dynamic_library_load=observed",
+    "WHOATHERE_SENSOR dynamic_library_target=measured_inert_fixture_library",
+]
+
 public let linuxVzInertRequiredEvidenceMarkersV2 =
     linuxVzInertRequiredCapabilityMarkersV1 + linuxVzInertProcessSensorMarkersV2
 
