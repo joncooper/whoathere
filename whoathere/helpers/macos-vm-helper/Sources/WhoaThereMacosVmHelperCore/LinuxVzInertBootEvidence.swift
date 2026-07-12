@@ -152,6 +152,16 @@ public let linuxVzInertHostFrameOverflowSensorMarkersV1 = [
     "WHOATHERE_SENSOR drop_accounting_terminal=incomplete_on_injected_gap"
 ]
 
+public let linuxVzInertNormalExitSensorMarkersV1 = [
+    "WHOATHERE_SENSOR teardown_trigger=natural_exit",
+    "WHOATHERE_SENSOR teardown_deadline=not_reached",
+    "WHOATHERE_SENSOR teardown_signals=none",
+    "WHOATHERE_SENSOR teardown_descendants=none_remaining",
+    "WHOATHERE_SENSOR teardown_sensor=closed",
+    "WHOATHERE_SENSOR teardown_cgroup=removed",
+    "WHOATHERE_SENSOR teardown_terminal=observation_complete"
+]
+
 public let linuxVzInertRequiredEvidenceMarkersV2 =
     linuxVzInertRequiredCapabilityMarkersV1 + linuxVzInertProcessSensorMarkersV2
 

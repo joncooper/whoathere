@@ -4,11 +4,13 @@ Date: 2026-07-09
 
 Status: canonical execution plan for the next product milestone
 
-Current execution checkpoint (2026-07-11): the pinned Linux VZ inert candidate now boots on a
-physical Apple Silicon Mac and passes all thirteen platform capability checks while preserving no
-package execution, no sync-back, and no external route. This closes platform feasibility only; the
-backend remains unqualified until protected sensors pass the authenticated 38-case inert matrix.
-See the [Linux VZ inert-boot checkpoint](artifact-native-linux-vz-inert-boot-checkpoint-2026-07-11.md).
+Current execution checkpoint (2026-07-12): twenty-three of the 38 authenticated Linux VZ inert
+conformance cases now pass physically on one exact measured backend identity. The newest
+`normal_exit` case binds a natural status-0 exit, exact fork/exec/exit lineage, no deadline or
+signals, no remaining descendants, sensor closure, empty-and-removed cgroup, stopped VM, and
+destroyed diskless instance into independently verified guest and host receipts. This is still
+telemetry qualification, not package detection, and the backend remains `candidate_unqualified`.
+See the [normal-exit checkpoint](artifact-native-linux-vz-normal-exit-checkpoint-2026-07-12.md).
 
 The first protected-sensor bootstrap now also observes a cgroup-filtered inert fork/exec/exit chain
 whose child runs as UID/GID 65534 and cannot read or write the root-only sensor. This remains
@@ -184,6 +186,17 @@ kernel receive buffer was explicitly rejected after it produced backpressure rat
 previous twenty-one cases were rerun and independently verified on the new exact identity.
 Twenty-two of 38 cases now share one backend binding; 16 remain. See the
 [host-frame overflow checkpoint](artifact-native-linux-vz-host-frame-overflow-checkpoint-2026-07-12.md).
+
+The first teardown case, `normal_exit`, now proves the unprivileged fixture exits naturally with
+status 0 before any deadline, receives no termination or kill signal, leaves no child process, and
+produces one exact cgroup-bound fork/exec/exit sequence. The protected probe closes its BPF sensor,
+moves itself out of the fixture cgroup, proves that cgroup empty, removes it, and only then emits the
+canonical teardown record. Strict Swift and Rust decoders reject forged signal, deadline, exit,
+cleanup, lineage, ordering, duplicate, and noncanonical claims. The previous twenty-two cases were
+rerun physically, their request bytes matched locally, and every complete case passed independent
+Rust verification on the new exact identity. Twenty-three of 38 cases now share one backend
+binding; 15 remain. See the
+[normal-exit checkpoint](artifact-native-linux-vz-normal-exit-checkpoint-2026-07-12.md).
 
 Primary target: malicious npm and PyPI package detection with static analysis, AI-assisted code
 review, and behaviorally instrumented detonation in disposable virtual machines
@@ -1455,6 +1468,8 @@ Repository evidence:
 - [Linux VZ IPv6-connect checkpoint](artifact-native-linux-vz-ipv6-connect-checkpoint-2026-07-12.md)
 - [Linux VZ UDP-send checkpoint](artifact-native-linux-vz-udp-send-checkpoint-2026-07-12.md)
 - [Linux VZ loopback-connect checkpoint](artifact-native-linux-vz-loopback-connect-checkpoint-2026-07-12.md)
+- [Linux VZ host-frame overflow checkpoint](artifact-native-linux-vz-host-frame-overflow-checkpoint-2026-07-12.md)
+- [Linux VZ normal-exit checkpoint](artifact-native-linux-vz-normal-exit-checkpoint-2026-07-12.md)
 - [macOS local release readiness](macos-local-release-readiness.md)
 - [macOS local beta pressure checkpoint](macos-local-beta-pressure-checkpoint.md)
 - [latest source-fixture corpus report](src-fixture-corpus-latest.md)

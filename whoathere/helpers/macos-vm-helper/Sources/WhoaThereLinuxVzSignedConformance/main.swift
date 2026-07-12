@@ -479,6 +479,19 @@ private struct LinuxVzSignedConformanceHarness {
             networkSourcePort = evidence.sourcePort
             networkFixtureCase = evidence.fixtureCase
             hostFrameTriggerCount = evidence.triggerCount
+        case "normal_exit":
+            let evidence = try decodeLinuxVzTeardownEvidencePayloadV1(serialData)
+            guard evidence.fixtureCase == runSpec.fixtureCase,
+                  evidence.packageUID == UInt64(backend.packageUID),
+                  evidence.packageGID == UInt64(backend.packageGID) else {
+                throw HarnessError.verificationFailed
+            }
+            claims = evidence.claims
+            guestEvidencePayloadSHA256 = evidence.payloadSHA256
+            guestEventCount = evidence.claims.eventCount
+            networkSourcePort = nil
+            networkFixtureCase = nil
+            hostFrameTriggerCount = nil
         default:
             throw HarnessError.verificationFailed
         }
@@ -508,7 +521,8 @@ private struct LinuxVzSignedConformanceHarness {
             runSpec.fixtureCase == "public_address_connect" ||
             runSpec.fixtureCase == "dns_plaintext" ||
             runSpec.fixtureCase == "dns_malformed" ||
-            runSpec.fixtureCase == "encrypted_dns_connect" {
+            runSpec.fixtureCase == "encrypted_dns_connect" ||
+            runSpec.fixtureCase == "normal_exit" {
             let missingProcessMarkers = linuxVzInertMissingRequiredEvidenceMarkersV2(serialData)
             let missingDoubleForkMarkers = runSpec.fixtureCase == "double_fork_daemonization"
                 ? linuxVzInertDoubleForkSensorMarkersV1.filter {
@@ -574,6 +588,10 @@ private struct LinuxVzSignedConformanceHarness {
                 ? linuxVzInertEncryptedDNSSensorMarkersV1.filter {
                     !linuxVzInertSerialContainsExactMarker(serialData, marker: $0)
                 } : []
+            let missingNormalExitMarkers = runSpec.fixtureCase == "normal_exit"
+                ? linuxVzInertNormalExitSensorMarkersV1.filter {
+                    !linuxVzInertSerialContainsExactMarker(serialData, marker: $0)
+                } : []
             missingBaseMarkers = missingProcessMarkers + missingDoubleForkMarkers
                 + missingReparentingMarkers + missingSetsidMarkers + missingCredentialMarkers
                 + missingDynamicLibraryMarkers + missingIPv4Markers + missingIPv6Markers
@@ -582,6 +600,7 @@ private struct LinuxVzSignedConformanceHarness {
                 + missingDNSPlaintextMarkers
                 + missingDNSMalformedMarkers
                 + missingEncryptedDNSMarkers
+                + missingNormalExitMarkers
         } else if runSpec.fixtureCase == "bpf_reservation_failure" {
             let missingCapabilities = linuxVzInertMissingCapabilityMarkers(serialData)
             let missingDropMarkers = linuxVzInertBPFReservationFailureSensorMarkersV1.filter {

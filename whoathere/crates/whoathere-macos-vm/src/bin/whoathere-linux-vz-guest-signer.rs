@@ -31,7 +31,8 @@ mod linux {
         decode_linux_vz_file_evidence_from_serial_v1, decode_linux_vz_guest_signer_request_v1,
         decode_linux_vz_host_frame_overflow_guest_evidence_from_serial_v1,
         decode_linux_vz_network_evidence_from_serial_v1,
-        decode_linux_vz_process_evidence_from_serial_v1, encode_linux_vz_guest_signer_response_v1,
+        decode_linux_vz_process_evidence_from_serial_v1,
+        decode_linux_vz_teardown_evidence_from_serial_v1, encode_linux_vz_guest_signer_response_v1,
         sign_macos_linux_vz_telemetry_guest_receipt_v1, LinuxVzTelemetryConformanceCaseV1,
         LinuxVzTelemetryConformanceExpectedTerminalV1, MAX_LINUX_VZ_DROP_EVIDENCE_PAYLOAD_BYTES_V1,
         MAX_LINUX_VZ_FANOTIFY_OVERFLOW_EVIDENCE_PAYLOAD_BYTES_V1,
@@ -40,6 +41,7 @@ mod linux {
         MAX_LINUX_VZ_HOST_FRAME_OVERFLOW_GUEST_EVIDENCE_PAYLOAD_BYTES_V1,
         MAX_LINUX_VZ_NETWORK_EVIDENCE_PAYLOAD_BYTES_V1,
         MAX_LINUX_VZ_PROCESS_EVIDENCE_PAYLOAD_BYTES_V1,
+        MAX_LINUX_VZ_TEARDOWN_EVIDENCE_PAYLOAD_BYTES_V1,
     };
     use zeroize::Zeroize;
 
@@ -70,10 +72,17 @@ mod linux {
             } else {
                 including_drop
             };
-        if MAX_LINUX_VZ_HOST_FRAME_OVERFLOW_GUEST_EVIDENCE_PAYLOAD_BYTES_V1 > including_fanotify {
-            MAX_LINUX_VZ_HOST_FRAME_OVERFLOW_GUEST_EVIDENCE_PAYLOAD_BYTES_V1
+        let including_host_frame =
+            if MAX_LINUX_VZ_HOST_FRAME_OVERFLOW_GUEST_EVIDENCE_PAYLOAD_BYTES_V1 > including_fanotify
+            {
+                MAX_LINUX_VZ_HOST_FRAME_OVERFLOW_GUEST_EVIDENCE_PAYLOAD_BYTES_V1
+            } else {
+                including_fanotify
+            };
+        if MAX_LINUX_VZ_TEARDOWN_EVIDENCE_PAYLOAD_BYTES_V1 > including_host_frame {
+            MAX_LINUX_VZ_TEARDOWN_EVIDENCE_PAYLOAD_BYTES_V1
         } else {
-            including_fanotify
+            including_host_frame
         }
     };
     const MAX_SENSOR_OUTPUT_BYTES: u64 =
@@ -125,6 +134,7 @@ mod linux {
                 | LinuxVzTelemetryConformanceCaseV1::BpfReservationFailure
                 | LinuxVzTelemetryConformanceCaseV1::FanotifyQueueOverflow
                 | LinuxVzTelemetryConformanceCaseV1::HostFrameOverflow
+                | LinuxVzTelemetryConformanceCaseV1::NormalExit
         ) || run_spec.expected_terminal()
             != match run_spec.fixture_case() {
                 LinuxVzTelemetryConformanceCaseV1::BpfReservationFailure
@@ -176,6 +186,7 @@ mod linux {
             LinuxVzTelemetryConformanceCaseV1::BpfReservationFailure => "bpf_reservation_failure",
             LinuxVzTelemetryConformanceCaseV1::FanotifyQueueOverflow => "fanotify_queue_overflow",
             LinuxVzTelemetryConformanceCaseV1::HostFrameOverflow => "host_frame_overflow",
+            LinuxVzTelemetryConformanceCaseV1::NormalExit => "normal_exit",
             _ => return Err("guest_signer_run_spec_not_supported_inert_case".into()),
         };
         let mut child = Command::new(SENSOR_PATH)
@@ -279,6 +290,17 @@ mod linux {
                 )?;
                 if evidence.fixture_case() != run_spec.fixture_case() {
                     return Err("guest_signer_host_frame_overflow_case_mismatch".into());
+                }
+                (
+                    evidence.package_uid(),
+                    evidence.package_gid(),
+                    evidence.guest_observation_claims_v1()?,
+                )
+            }
+            LinuxVzTelemetryConformanceCaseV1::NormalExit => {
+                let evidence = decode_linux_vz_teardown_evidence_from_serial_v1(&sensor_output)?;
+                if evidence.fixture_case() != run_spec.fixture_case() {
+                    return Err("guest_signer_teardown_case_mismatch".into());
                 }
                 (
                     evidence.package_uid(),

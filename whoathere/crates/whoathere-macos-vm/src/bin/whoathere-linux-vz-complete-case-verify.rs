@@ -14,6 +14,7 @@ use whoathere_macos_vm::{
     decode_linux_vz_network_evidence_from_serial_v1,
     decode_linux_vz_network_host_evidence_payload_v1,
     decode_linux_vz_process_evidence_from_serial_v1,
+    decode_linux_vz_teardown_evidence_from_serial_v1,
     decode_unqualified_macos_linux_vz_telemetry_backend_identity_v1,
     verify_macos_linux_vz_telemetry_conformance_case_v1,
     verify_macos_linux_vz_telemetry_guest_receipt_v1,
@@ -91,6 +92,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         LinuxVzTelemetryConformanceCaseV1::BpfReservationFailure => "bpf_reservation_failure",
         LinuxVzTelemetryConformanceCaseV1::FanotifyQueueOverflow => "fanotify_queue_overflow",
         LinuxVzTelemetryConformanceCaseV1::HostFrameOverflow => "host_frame_overflow",
+        LinuxVzTelemetryConformanceCaseV1::NormalExit => "normal_exit",
         _ => return Err("complete-case verifier does not implement this inert case".into()),
     };
     let backend = decode_unqualified_macos_linux_vz_telemetry_backend_identity_v1(
@@ -203,6 +205,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     evidence.payload_sha256().clone(),
                     evidence.guest_observation_claims_v1()?,
                     Some(evidence.source_port()),
+                )
+            }
+            LinuxVzTelemetryConformanceCaseV1::NormalExit => {
+                let evidence = decode_linux_vz_teardown_evidence_from_serial_v1(&serial)?;
+                if evidence.fixture_case() != run_spec.fixture_case()
+                    || evidence.package_uid() != backend.package_uid()
+                    || evidence.package_gid() != backend.package_gid()
+                {
+                    return Err("guest teardown evidence binding mismatch".into());
+                }
+                (
+                    evidence.payload_sha256().clone(),
+                    evidence.guest_observation_claims_v1()?,
+                    None,
                 )
             }
             _ => return Err("complete-case verifier does not implement this inert case".into()),

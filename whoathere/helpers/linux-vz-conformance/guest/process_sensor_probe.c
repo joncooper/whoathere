@@ -632,6 +632,26 @@ static uint64_t monotonic_ns(void) {
         ? (uint64_t)value.tv_sec * 1000000000ULL + (uint64_t)value.tv_nsec : 0;
 }
 
+static int wait_for_natural_exit_before_deadline(
+    pid_t child,
+    int *status,
+    uint64_t deadline_ns
+) {
+    const struct timespec poll_interval = {.tv_sec = 0, .tv_nsec = 1000000};
+    for (;;) {
+        pid_t waited = waitpid(child, status, WNOHANG);
+        if (waited == child) return 0;
+        if (waited < 0) {
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        uint64_t now = monotonic_ns();
+        if (now == 0) return -1;
+        if (now >= deadline_ns) return 1;
+        if (nanosleep(&poll_interval, NULL) != 0 && errno != EINTR) return -1;
+    }
+}
+
 static int run_bpf_reservation_failure_probe(const char *fixture) {
     struct rlimit unlimited = {.rlim_cur = RLIM_INFINITY, .rlim_max = RLIM_INFINITY};
     int ring_buffer = -1;
@@ -1249,6 +1269,20 @@ static int cgroup_contains_pid(pid_t expected) {
         cursor = *end == '\n' ? end + 1 : end;
     }
     return 0;
+}
+
+static int cgroup_is_empty(void) {
+    int descriptor = open(FIXTURE_CGROUP_PROCS, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (descriptor < 0) return 0;
+    char byte = 0;
+    ssize_t length;
+    do {
+        length = read(descriptor, &byte, 1);
+    } while (length < 0 && errno == EINTR);
+    int saved_errno = errno;
+    if (close(descriptor) != 0 && length == 0) return 0;
+    errno = saved_errno;
+    return length == 0;
 }
 
 static int proc_identity_matches(pid_t child, pid_t expected_parent) {
@@ -2257,6 +2291,8 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
     int ipv6_prepared = 0;
     int loopback_prepared = 0;
     int child_status = 0;
+    int cgroup_removed = 0;
+    uint64_t normal_exit_deadline_ns = 0;
     int result = 70;
     const char *failure_stage = "preflight";
     int failure_errno = 0;
@@ -2330,6 +2366,7 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
     }
 
     int double_fork = strcmp(fixture_case, "double_fork_daemonization") == 0;
+    int normal_exit = strcmp(fixture_case, "normal_exit") == 0;
     int reparent = strcmp(fixture_case, "reparenting") == 0;
     int setsid_escape = strcmp(fixture_case, "setsid_escape") == 0;
     int credential_change = strcmp(fixture_case, "credential_change") == 0;
@@ -2467,6 +2504,14 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
     if (parent_session < 0 || parent_process_group < 0) {
         failure_stage = "parent_session";
         goto cleanup;
+    }
+    if (normal_exit) {
+        uint64_t now = monotonic_ns();
+        if (now == 0 || UINT64_MAX - now < 5000000000ULL) {
+            failure_stage = "normal_exit_deadline_create";
+            goto cleanup;
+        }
+        normal_exit_deadline_ns = now + 5000000000ULL;
     }
     child = fork();
     if (child < 0) {
@@ -2778,12 +2823,31 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
             goto cleanup;
         }
     }
-    if (waitpid(child, &child_status, 0) != child || !WIFEXITED(child_status) ||
-        WEXITSTATUS(child_status) != 0) {
+    int wait_result = normal_exit
+        ? wait_for_natural_exit_before_deadline(
+            child,
+            &child_status,
+            normal_exit_deadline_ns
+        )
+        : (waitpid(child, &child_status, 0) == child ? 0 : -1);
+    if (wait_result != 0 || !WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+        if (wait_result == 1) {
+            (void)kill(child, SIGKILL);
+            (void)waitpid(child, &child_status, 0);
+        }
         failure_stage = "fixture_exit";
         failure_errno = errno;
-        failure_detail = WIFEXITED(child_status) ? WEXITSTATUS(child_status) : 255;
+        failure_detail = wait_result == 1
+            ? 124 : (WIFEXITED(child_status) ? WEXITSTATUS(child_status) : 255);
         goto cleanup;
+    }
+    if (normal_exit) {
+        errno = 0;
+        if (waitpid(-1, NULL, WNOHANG) != -1 || errno != ECHILD) {
+            failure_stage = "normal_exit_descendant_count";
+            failure_errno = errno;
+            goto cleanup;
+        }
     }
     if (double_fork) {
         for (size_t index = 0; index < 2; index++) {
@@ -3059,6 +3123,26 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
         goto cleanup;
     }
 
+    if (normal_exit) {
+        close_sensor_fds(&fds);
+        if (write_control(ROOT_CGROUP_PROCS, "0\n") != 0) {
+            failure_stage = "normal_exit_cgroup_release";
+            failure_errno = errno;
+            goto cleanup;
+        }
+        if (!cgroup_is_empty()) {
+            failure_stage = "normal_exit_cgroup_not_empty";
+            failure_errno = errno;
+            goto cleanup;
+        }
+        if (rmdir(FIXTURE_CGROUP) != 0) {
+            failure_stage = "normal_exit_cgroup_remove";
+            failure_errno = errno;
+            goto cleanup;
+        }
+        cgroup_removed = 1;
+    }
+
     puts("WHOATHERE_SENSOR process_cgroup_filter=observed");
     puts("WHOATHERE_SENSOR process_fork=observed");
     puts("WHOATHERE_SENSOR process_exec=observed");
@@ -3066,6 +3150,15 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
     puts("WHOATHERE_SENSOR unprivileged_fixture=uid_65534_gid_65534");
     puts("WHOATHERE_SENSOR protected_sensor_read=denied");
     puts("WHOATHERE_SENSOR protected_sensor_write=denied");
+    if (normal_exit) {
+        puts("WHOATHERE_SENSOR teardown_trigger=natural_exit");
+        puts("WHOATHERE_SENSOR teardown_deadline=not_reached");
+        puts("WHOATHERE_SENSOR teardown_signals=none");
+        puts("WHOATHERE_SENSOR teardown_descendants=none_remaining");
+        puts("WHOATHERE_SENSOR teardown_sensor=closed");
+        puts("WHOATHERE_SENSOR teardown_cgroup=removed");
+        puts("WHOATHERE_SENSOR teardown_terminal=observation_complete");
+    }
     if (double_fork) {
         puts("WHOATHERE_SENSOR process_double_fork=observed");
         puts("WHOATHERE_SENSOR process_daemon_reaped=observed");
@@ -3153,6 +3246,46 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
         puts("WHOATHERE_SENSOR network_target=public_sinkhole_198_51_100_1_443");
     }
     puts("WHOATHERE_SENSOR_PROCESS_PROBE_OK");
+    if (normal_exit) {
+        printf(
+            "WHOATHERE_GUEST_TEARDOWN_EVIDENCE "
+            "{\"cgroup_empty_after_reap\":true,\"cgroup_removed\":true,"
+            "\"deadline_limit_ns\":\"5000000000\",\"deadline_reached\":false,"
+            "\"descendant_teardown_complete\":true,"
+            "\"dropped_event_count\":\"0\",\"event_count\":\"3\","
+            "\"event_sequence_end\":\"3\",\"event_sequence_start\":\"1\",\"events\":["
+            "{\"actor_pid\":\"%" PRIu64 "\",\"cgroup_id\":\"%" PRIu64
+            "\",\"kind\":\"fork\",\"sequence\":\"1\",\"subject_pid\":\"%" PRIu64
+            "\",\"timestamp_ns\":\"%" PRIu64 "\"},"
+            "{\"actor_pid\":\"%" PRIu64 "\",\"cgroup_id\":\"%" PRIu64
+            "\",\"kind\":\"exec\",\"sequence\":\"2\",\"subject_pid\":\"%" PRIu64
+            "\",\"timestamp_ns\":\"%" PRIu64 "\"},"
+            "{\"actor_pid\":\"%" PRIu64 "\",\"cgroup_id\":\"%" PRIu64
+            "\",\"kind\":\"exit\",\"sequence\":\"3\",\"subject_pid\":\"%" PRIu64
+            "\",\"timestamp_ns\":\"%" PRIu64 "\"}],"
+            "\"evidence_truncated\":false,\"fixture_case\":\"normal_exit\","
+            "\"fixture_exit_status\":\"0\",\"heartbeat_count\":\"2\","
+            "\"kill_signal_count\":\"0\",\"package_gid\":\"65534\","
+            "\"package_uid\":\"65534\",\"reaped_process_count\":\"1\","
+            "\"schema_version\":\"whoathere.linux_vz_teardown_evidence_payload.v1\","
+            "\"sensor_healthy\":true,\"sensor_teardown_complete\":true,"
+            "\"teardown_trigger\":\"natural_exit\",\"termination_signal_count\":\"0\"}\n",
+            (uint64_t)parent,
+            cgroup.count,
+            (uint64_t)child,
+            fork_event.timestamp_ns,
+            (uint64_t)child,
+            cgroup.count,
+            (uint64_t)child,
+            exec_event.timestamp_ns,
+            (uint64_t)child,
+            cgroup.count,
+            (uint64_t)child,
+            exit_event.timestamp_ns
+        );
+        result = 0;
+        goto cleanup;
+    }
     if (network_activity) {
         const char *network_family = ipv6_connect ? "ipv6" : "ipv4";
         const char *network_source = dns_sinkhole_activity ? DNS_SOURCE_ADDRESS :
@@ -3527,7 +3660,7 @@ cleanup:
     close_if_open(&report_pipe[0]);
     close_if_open(&report_pipe[1]);
     close_sensor_fds(&fds);
-    if (write_control(ROOT_CGROUP_PROCS, "0\n") == 0) {
+    if (!cgroup_removed && write_control(ROOT_CGROUP_PROCS, "0\n") == 0) {
         (void)rmdir(FIXTURE_CGROUP);
     }
     if (result != 0) {
@@ -3546,6 +3679,7 @@ int main(int argument_count, char **arguments) {
         return 64;
     }
     if (strcmp(arguments[2], "fork_exec_exit") == 0 ||
+        strcmp(arguments[2], "normal_exit") == 0 ||
         strcmp(arguments[2], "double_fork_daemonization") == 0 ||
         strcmp(arguments[2], "reparenting") == 0 ||
         strcmp(arguments[2], "setsid_escape") == 0 ||

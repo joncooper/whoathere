@@ -733,6 +733,7 @@ int main(int argument_count, char **arguments) {
     int denied = protected_sensor_denied();
     if (denied != 0) return denied;
     if (strcmp(arguments[1], "fork_exec_exit") == 0) return 0;
+    if (strcmp(arguments[1], "normal_exit") == 0) return 0;
     if (strcmp(arguments[1], "double_fork_daemonization") == 0) {
         return double_fork_daemonization();
     }
