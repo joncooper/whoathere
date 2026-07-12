@@ -1,9 +1,12 @@
 #include <errno.h>
 #include <fcntl.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -16,6 +19,7 @@ static const char *dynamic_library_path = "/whoathere/dynamic-fixture-library.so
 #define REPARENT_REPORT_MAGIC 0x57545052U
 #define SESSION_REPORT_MAGIC 0x57545353U
 #define CREDENTIAL_REPORT_MAGIC 0x57544352U
+#define NETWORK_REPORT_MAGIC 0x57544e34U
 
 struct reparent_report {
     uint32_t magic;
@@ -39,6 +43,17 @@ struct credential_report {
     uint32_t gid;
     uint32_t effective_gid;
     int32_t supplementary_group_count;
+};
+
+struct network_report {
+    uint32_t magic;
+    int32_t process_pid;
+    uint64_t socket_inode;
+    uint32_t source_address;
+    uint32_t target_address;
+    uint16_t source_port;
+    uint16_t target_port;
+    int32_t connect_errno;
 };
 
 static int protected_sensor_denied(void) {
@@ -205,6 +220,60 @@ static int dynamic_library_load(void) {
     return 105;
 }
 
+static int ipv4_connect(void) {
+    int descriptor = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, IPPROTO_TCP);
+    if (descriptor < 0) return 106;
+    struct sockaddr_in target = {
+        .sin_family = AF_INET,
+        .sin_port = htons(443),
+    };
+    if (inet_pton(AF_INET, "192.0.2.1", &target.sin_addr) != 1) {
+        close(descriptor);
+        return 107;
+    }
+    errno = 0;
+    int connected = connect(descriptor, (const struct sockaddr *)&target, sizeof(target));
+    int connect_errno = errno;
+    if (connected != -1 || connect_errno != EINPROGRESS) {
+        close(descriptor);
+        return 108;
+    }
+    struct sockaddr_in source = {0};
+    socklen_t source_length = sizeof(source);
+    struct stat metadata;
+    if (getsockname(descriptor, (struct sockaddr *)&source, &source_length) != 0 ||
+        source_length != sizeof(source) || source.sin_family != AF_INET ||
+        source.sin_port == 0 || fstat(descriptor, &metadata) != 0) {
+        close(descriptor);
+        return 109;
+    }
+    const struct network_report report = {
+        .magic = NETWORK_REPORT_MAGIC,
+        .process_pid = getpid(),
+        .socket_inode = metadata.st_ino,
+        .source_address = source.sin_addr.s_addr,
+        .target_address = target.sin_addr.s_addr,
+        .source_port = ntohs(source.sin_port),
+        .target_port = ntohs(target.sin_port),
+        .connect_errno = connect_errno,
+    };
+    ssize_t written = write(REPARENT_REPORT_FD, &report, sizeof(report));
+    int saved_errno = errno;
+    if (close(REPARENT_REPORT_FD) != 0 && written == (ssize_t)sizeof(report)) {
+        close(descriptor);
+        return 110;
+    }
+    errno = saved_errno;
+    if (written != (ssize_t)sizeof(report)) {
+        close(descriptor);
+        return 111;
+    }
+    const struct timespec pause = {.tv_sec = 0, .tv_nsec = 200000000};
+    int result = nanosleep(&pause, NULL) == 0 ? 0 : 112;
+    if (close(descriptor) != 0 && result == 0) result = 113;
+    return result;
+}
+
 int main(int argument_count, char **arguments) {
     if (argument_count != 2 || getuid() != 65534 || geteuid() != 65534 ||
         getgid() != 65534 || getegid() != 65534) {
@@ -220,6 +289,7 @@ int main(int argument_count, char **arguments) {
     if (strcmp(arguments[1], "setsid_escape") == 0) return setsid_escape();
     if (strcmp(arguments[1], "credential_change") == 0) return credential_change();
     if (strcmp(arguments[1], "dynamic_library_load") == 0) return dynamic_library_load();
+    if (strcmp(arguments[1], "ipv4_connect") == 0) return ipv4_connect();
     if (strcmp(arguments[1], "protected_open_read_write_rename_delete") == 0 ||
         strcmp(arguments[1], "mmap_access") == 0) {
         return file_fixture();

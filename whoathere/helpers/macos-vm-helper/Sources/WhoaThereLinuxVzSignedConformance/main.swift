@@ -282,6 +282,7 @@ private struct LinuxVzSignedConformanceHarness {
         let claims: LinuxVzTelemetryGuestObservationClaims
         let guestEvidencePayloadSHA256: String
         let guestEventCount: UInt64
+        let networkSourcePort: UInt16?
         switch runSpec.fixtureCase {
         case "fork_exec_exit", "reparenting", "double_fork_daemonization", "setsid_escape",
              "credential_change", "dynamic_library_load":
@@ -306,6 +307,7 @@ private struct LinuxVzSignedConformanceHarness {
             )
             guestEvidencePayloadSHA256 = evidence.payloadSHA256
             guestEventCount = evidence.eventCount
+            networkSourcePort = nil
         case "protected_open_read_write_rename_delete", "mmap_access":
             let evidence = try decodeLinuxVzFileEvidencePayload(serialData)
             guard evidence.fixtureCase == runSpec.fixtureCase,
@@ -316,6 +318,18 @@ private struct LinuxVzSignedConformanceHarness {
             claims = evidence.claims
             guestEvidencePayloadSHA256 = evidence.payloadSHA256
             guestEventCount = evidence.claims.eventCount
+            networkSourcePort = nil
+        case "ipv4_connect":
+            let evidence = try decodeLinuxVzNetworkEvidencePayloadV1(serialData)
+            guard evidence.fixtureCase == runSpec.fixtureCase,
+                  evidence.packageUID == UInt64(backend.packageUID),
+                  evidence.packageGID == UInt64(backend.packageGID) else {
+                throw HarnessError.verificationFailed
+            }
+            claims = evidence.claims
+            guestEvidencePayloadSHA256 = evidence.payloadSHA256
+            guestEventCount = evidence.claims.eventCount
+            networkSourcePort = evidence.sourcePort
         default:
             throw HarnessError.verificationFailed
         }
@@ -334,7 +348,8 @@ private struct LinuxVzSignedConformanceHarness {
             runSpec.fixtureCase == "double_fork_daemonization" ||
             runSpec.fixtureCase == "setsid_escape" ||
             runSpec.fixtureCase == "credential_change" ||
-            runSpec.fixtureCase == "dynamic_library_load" {
+            runSpec.fixtureCase == "dynamic_library_load" ||
+            runSpec.fixtureCase == "ipv4_connect" {
             let missingProcessMarkers = linuxVzInertMissingRequiredEvidenceMarkersV2(serialData)
             let missingDoubleForkMarkers = runSpec.fixtureCase == "double_fork_daemonization"
                 ? linuxVzInertDoubleForkSensorMarkersV1.filter {
@@ -356,9 +371,13 @@ private struct LinuxVzSignedConformanceHarness {
                 ? linuxVzInertDynamicLibrarySensorMarkersV1.filter {
                     !linuxVzInertSerialContainsExactMarker(serialData, marker: $0)
                 } : []
+            let missingIPv4Markers = runSpec.fixtureCase == "ipv4_connect"
+                ? linuxVzInertIPv4ConnectSensorMarkersV1.filter {
+                    !linuxVzInertSerialContainsExactMarker(serialData, marker: $0)
+                } : []
             missingBaseMarkers = missingProcessMarkers + missingDoubleForkMarkers
                 + missingReparentingMarkers + missingSetsidMarkers + missingCredentialMarkers
-                + missingDynamicLibraryMarkers
+                + missingDynamicLibraryMarkers + missingIPv4Markers
         } else {
             let missingCapabilities = linuxVzInertMissingCapabilityMarkers(serialData)
             let missingFileMarkers = linuxVzInertFileSensorMarkersV1.filter {
@@ -380,7 +399,10 @@ private struct LinuxVzSignedConformanceHarness {
             serialData,
             marker: "WHOATHERE_GUEST_SIGNER_READY port=40551"
         ) && serialText.contains("WHOATHERE_GUEST_SIGNER_RECEIPT_OK challenge_sha256=")
-        let packetSensor = drainRawFrames(fileDescriptor: sockets[1])
+        let packetSensor = drainRawFrames(
+            fileDescriptor: sockets[1],
+            ipv4SourcePort: networkSourcePort
+        )
         let finalKernelSHA256 = try fileSHA256(options.kernel)
         let finalInitramfsSHA256 = try fileSHA256(options.initramfs)
         let imageIdentityStable = finalKernelSHA256 == kernelSHA256
@@ -389,16 +411,43 @@ private struct LinuxVzSignedConformanceHarness {
               imageIdentityStable else {
             throw HarnessError.verificationFailed
         }
-        let hostEvidence = try makeLinuxVzInertHostEvidencePayload(
-            rawFrameCount: UInt64(packetSensor.frameCount),
-            packetSensorHealthy: packetSensor.healthy,
-            packetSensorTerminal: packetSensor.terminal,
-            guestChannelTerminated: true,
-            vmStarted: true,
-            vmStopped: true,
-            cloneDestroyed: configuration.storageDevices.isEmpty,
-            storageDeviceCount: UInt64(configuration.storageDevices.count)
-        )
+        let hostEvidenceJSON: Data
+        let hostEvidencePayloadSHA256: String
+        let hostClaims: LinuxVzTelemetryHostObservationClaims
+        let cloneDestroyed = configuration.storageDevices.isEmpty
+        if let sourcePort = networkSourcePort {
+            guard packetSensor.frameCount == 1,
+                  packetSensor.matchedFrameCount == 1,
+                  packetSensor.unexpectedFrameCount == 0 else {
+                throw HarnessError.verificationFailed
+            }
+            let hostEvidence = try makeLinuxVzIPv4ConnectHostEvidencePayload(
+                sourcePort: sourcePort,
+                rawFrameCount: UInt64(packetSensor.frameCount),
+                matchedFrameCount: UInt64(packetSensor.matchedFrameCount),
+                unexpectedFrameCount: UInt64(packetSensor.unexpectedFrameCount),
+                packetSensorHealthy: packetSensor.healthy,
+                packetSensorTerminal: packetSensor.terminal,
+                storageDeviceCount: UInt64(configuration.storageDevices.count)
+            )
+            hostEvidenceJSON = hostEvidence.canonicalJSON
+            hostEvidencePayloadSHA256 = hostEvidence.payloadSHA256
+            hostClaims = hostEvidence.claims
+        } else {
+            let hostEvidence = try makeLinuxVzInertHostEvidencePayload(
+                rawFrameCount: UInt64(packetSensor.frameCount),
+                packetSensorHealthy: packetSensor.healthy,
+                packetSensorTerminal: packetSensor.terminal,
+                guestChannelTerminated: true,
+                vmStarted: true,
+                vmStopped: true,
+                cloneDestroyed: cloneDestroyed,
+                storageDeviceCount: UInt64(configuration.storageDevices.count)
+            )
+            hostEvidenceJSON = hostEvidence.canonicalJSON
+            hostEvidencePayloadSHA256 = hostEvidence.payloadSHA256
+            hostClaims = hostEvidence.claims
+        }
         var hostSigningSeed = try readProtectedSeed(options.hostSigningSeed)
         let hostPublicKey: Data
         do {
@@ -413,7 +462,7 @@ private struct LinuxVzSignedConformanceHarness {
             challenge: challenge,
             runSpec: runSpec,
             backend: backend,
-            claims: hostEvidence.claims,
+            claims: hostClaims,
             signingSeed: &hostSigningSeed
         )
         let verifiedHost = try verifyLinuxVzTelemetryHostReceipt(
@@ -422,7 +471,7 @@ private struct LinuxVzSignedConformanceHarness {
             runSpec: runSpec,
             backend: backend,
             verifyingKey: hostPublicKey,
-            expectedClaims: hostEvidence.claims
+            expectedClaims: hostClaims
         )
         let completeCase = try verifyLinuxVzObservationCompleteConformanceCase(
             challenge: challenge,
@@ -432,7 +481,7 @@ private struct LinuxVzSignedConformanceHarness {
             host: verifiedHost
         )
         try writeNewPrivateFile(options.receiptOutput, data: receipt)
-        try writeNewPrivateFile(options.hostEvidenceOutput, data: hostEvidence.canonicalJSON)
+        try writeNewPrivateFile(options.hostEvidenceOutput, data: hostEvidenceJSON)
         try writeNewPrivateFile(options.hostReceiptOutput, data: hostReceipt)
         emitJSON([
             "schema_version": "whoathere.linux_vz_signed_conformance_result.v1",
@@ -441,7 +490,7 @@ private struct LinuxVzSignedConformanceHarness {
             "run_spec_sha256": runSpec.runSpecSHA256,
             "backend_identity_sha256": backend.identitySHA256,
             "receipt_sha256": dataSHA256(receipt),
-            "host_evidence_payload_sha256": hostEvidence.payloadSHA256,
+            "host_evidence_payload_sha256": hostEvidencePayloadSHA256,
             "host_receipt_sha256": dataSHA256(hostReceipt),
             "complete_conformance_case_verified": completeCase.guestReceiptPresent
                 && completeCase.hostReceiptPresent,
@@ -450,7 +499,7 @@ private struct LinuxVzSignedConformanceHarness {
             "guest_event_count": String(guestEventCount),
             "raw_frame_count": packetSensor.frameCount,
             "packet_sensor_healthy": packetSensor.healthy,
-            "clone_destroyed": hostEvidence.claims.cloneDestroyed,
+            "clone_destroyed": hostClaims.cloneDestroyed,
             "vm_stopped": true,
             "image_identity_stable": imageIdentityStable,
             "execution_authority": false,
@@ -622,28 +671,48 @@ private struct LinuxVzSignedConformanceHarness {
 
     private struct PacketSensorResult {
         let frameCount: Int
+        let matchedFrameCount: Int
+        let unexpectedFrameCount: Int
         let healthy: Bool
         let terminal: String
     }
 
-    private static func drainRawFrames(fileDescriptor: Int32) -> PacketSensorResult {
+    private static func drainRawFrames(
+        fileDescriptor: Int32,
+        ipv4SourcePort: UInt16?
+    ) -> PacketSensorResult {
         var count = 0
+        var matched = 0
+        var unexpected = 0
         var buffer = [UInt8](repeating: 0, count: 65_535)
         while true {
             let received = recv(fileDescriptor, &buffer, buffer.count, MSG_DONTWAIT)
             if received >= 0 {
                 count += 1
+                if let sourcePort = ipv4SourcePort,
+                   linuxVzIsExactIPv4SinkholeSYNFrame(
+                    Data(buffer.prefix(received)),
+                    sourcePort: sourcePort
+                   ) {
+                    matched += 1
+                } else {
+                    unexpected += 1
+                }
                 continue
             }
             if errno == EAGAIN || errno == EWOULDBLOCK {
                 return PacketSensorResult(
                     frameCount: count,
+                    matchedFrameCount: matched,
+                    unexpectedFrameCount: unexpected,
                     healthy: true,
                     terminal: "drained_would_block"
                 )
             }
             return PacketSensorResult(
                 frameCount: count,
+                matchedFrameCount: matched,
+                unexpectedFrameCount: unexpected,
                 healthy: false,
                 terminal: "socket_error"
             )

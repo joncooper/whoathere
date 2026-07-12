@@ -78,6 +78,13 @@ fanotify open evidence, an executable live process mapping, and a separately cor
 Eight of 38 cases now share one backend binding; 30 remain. See the
 [dynamic-library checkpoint](artifact-native-linux-vz-dynamic-library-checkpoint-2026-07-12.md).
 
+The `ipv4_connect` case now binds an unprivileged TCP connect to the RFC 5737 sinkhole through a
+cgroup-filtered syscall, live `SYN_SENT` socket state, and exactly one checksum-valid host-observed
+TCP SYN. The ephemeral source port is cross-checked across guest and host evidence, and any extra
+frame fails closed. The previous eight cases were rerun on the resulting exact identity. Nine of 38
+cases now share one backend binding; 29 remain. See the
+[IPv4-connect checkpoint](artifact-native-linux-vz-ipv4-connect-checkpoint-2026-07-12.md).
+
 Primary target: malicious npm and PyPI package detection with static analysis, AI-assisted code
 review, and behaviorally instrumented detonation in disposable virtual machines
 
@@ -1344,6 +1351,7 @@ Repository evidence:
 - [Linux VZ session-escape checkpoint](artifact-native-linux-vz-setsid-checkpoint-2026-07-12.md)
 - [Linux VZ credential-change checkpoint](artifact-native-linux-vz-credential-checkpoint-2026-07-12.md)
 - [Linux VZ dynamic-library checkpoint](artifact-native-linux-vz-dynamic-library-checkpoint-2026-07-12.md)
+- [Linux VZ IPv4-connect checkpoint](artifact-native-linux-vz-ipv4-connect-checkpoint-2026-07-12.md)
 - [macOS local release readiness](macos-local-release-readiness.md)
 - [macOS local beta pressure checkpoint](macos-local-beta-pressure-checkpoint.md)
 - [latest source-fixture corpus report](src-fixture-corpus-latest.md)

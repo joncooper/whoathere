@@ -7,6 +7,8 @@ use whoathere_macos_vm::{
     decode_and_validate_macos_linux_vz_telemetry_conformance_challenge_v1,
     decode_and_validate_macos_linux_vz_telemetry_conformance_run_spec_v1,
     decode_linux_vz_file_evidence_from_serial_v1, decode_linux_vz_host_evidence_payload_v1,
+    decode_linux_vz_network_evidence_from_serial_v1,
+    decode_linux_vz_network_host_evidence_payload_v1,
     decode_linux_vz_process_evidence_from_serial_v1,
     decode_unqualified_macos_linux_vz_telemetry_backend_identity_v1,
     verify_macos_linux_vz_telemetry_conformance_case_v1,
@@ -67,6 +69,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         LinuxVzTelemetryConformanceCaseV1::SetsidEscape => "setsid_escape",
         LinuxVzTelemetryConformanceCaseV1::CredentialChange => "credential_change",
         LinuxVzTelemetryConformanceCaseV1::DynamicLibraryLoad => "dynamic_library_load",
+        LinuxVzTelemetryConformanceCaseV1::Ipv4Connect => "ipv4_connect",
         LinuxVzTelemetryConformanceCaseV1::ProtectedOpenReadWriteRenameDelete => {
             "protected_open_read_write_rename_delete"
         }
@@ -82,41 +85,58 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         &run_spec,
         &backend,
     )?;
-    let (guest_evidence_payload_sha256, guest_claims) = match run_spec.fixture_case() {
-        LinuxVzTelemetryConformanceCaseV1::ForkExecExit
-        | LinuxVzTelemetryConformanceCaseV1::Reparenting
-        | LinuxVzTelemetryConformanceCaseV1::DoubleForkDaemonization
-        | LinuxVzTelemetryConformanceCaseV1::SetsidEscape
-        | LinuxVzTelemetryConformanceCaseV1::CredentialChange
-        | LinuxVzTelemetryConformanceCaseV1::DynamicLibraryLoad => {
-            let evidence = decode_linux_vz_process_evidence_from_serial_v1(&serial)?;
-            if evidence.fixture_case() != run_spec.fixture_case()
-                || evidence.package_uid() != backend.package_uid()
-                || evidence.package_gid() != backend.package_gid()
-            {
-                return Err("guest evidence package identity mismatch".into());
+    let (guest_evidence_payload_sha256, guest_claims, guest_source_port) =
+        match run_spec.fixture_case() {
+            LinuxVzTelemetryConformanceCaseV1::ForkExecExit
+            | LinuxVzTelemetryConformanceCaseV1::Reparenting
+            | LinuxVzTelemetryConformanceCaseV1::DoubleForkDaemonization
+            | LinuxVzTelemetryConformanceCaseV1::SetsidEscape
+            | LinuxVzTelemetryConformanceCaseV1::CredentialChange
+            | LinuxVzTelemetryConformanceCaseV1::DynamicLibraryLoad => {
+                let evidence = decode_linux_vz_process_evidence_from_serial_v1(&serial)?;
+                if evidence.fixture_case() != run_spec.fixture_case()
+                    || evidence.package_uid() != backend.package_uid()
+                    || evidence.package_gid() != backend.package_gid()
+                {
+                    return Err("guest evidence package identity mismatch".into());
+                }
+                (
+                    evidence.payload_sha256().clone(),
+                    evidence.guest_observation_claims_v1()?,
+                    None,
+                )
             }
-            (
-                evidence.payload_sha256().clone(),
-                evidence.guest_observation_claims_v1()?,
-            )
-        }
-        LinuxVzTelemetryConformanceCaseV1::ProtectedOpenReadWriteRenameDelete
-        | LinuxVzTelemetryConformanceCaseV1::MmapAccess => {
-            let evidence = decode_linux_vz_file_evidence_from_serial_v1(&serial)?;
-            if evidence.fixture_case() != run_spec.fixture_case()
-                || evidence.package_uid() != backend.package_uid()
-                || evidence.package_gid() != backend.package_gid()
-            {
-                return Err("guest file evidence binding mismatch".into());
+            LinuxVzTelemetryConformanceCaseV1::ProtectedOpenReadWriteRenameDelete
+            | LinuxVzTelemetryConformanceCaseV1::MmapAccess => {
+                let evidence = decode_linux_vz_file_evidence_from_serial_v1(&serial)?;
+                if evidence.fixture_case() != run_spec.fixture_case()
+                    || evidence.package_uid() != backend.package_uid()
+                    || evidence.package_gid() != backend.package_gid()
+                {
+                    return Err("guest file evidence binding mismatch".into());
+                }
+                (
+                    evidence.payload_sha256().clone(),
+                    evidence.guest_observation_claims_v1()?,
+                    None,
+                )
             }
-            (
-                evidence.payload_sha256().clone(),
-                evidence.guest_observation_claims_v1()?,
-            )
-        }
-        _ => return Err("complete-case verifier does not implement this inert case".into()),
-    };
+            LinuxVzTelemetryConformanceCaseV1::Ipv4Connect => {
+                let evidence = decode_linux_vz_network_evidence_from_serial_v1(&serial)?;
+                if evidence.fixture_case() != run_spec.fixture_case()
+                    || evidence.package_uid() != backend.package_uid()
+                    || evidence.package_gid() != backend.package_gid()
+                {
+                    return Err("guest network evidence binding mismatch".into());
+                }
+                (
+                    evidence.payload_sha256().clone(),
+                    evidence.guest_observation_claims_v1()?,
+                    Some(evidence.source_port()),
+                )
+            }
+            _ => return Err("complete-case verifier does not implement this inert case".into()),
+        };
     let verified_guest = verify_macos_linux_vz_telemetry_guest_receipt_v1(
         &challenge,
         &run_spec,
@@ -125,8 +145,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         guest_public_key,
         &guest_claims,
     )?;
-    let host_evidence = decode_linux_vz_host_evidence_payload_v1(&host_evidence)?;
-    let host_claims = host_evidence.host_observation_claims_v1()?;
+    let (host_evidence_payload_sha256, host_claims) =
+        if run_spec.fixture_case() == LinuxVzTelemetryConformanceCaseV1::Ipv4Connect {
+            let evidence = decode_linux_vz_network_host_evidence_payload_v1(&host_evidence)?;
+            if Some(evidence.source_port()) != guest_source_port {
+                return Err("guest and host network source port mismatch".into());
+            }
+            (
+                evidence.payload_sha256().clone(),
+                evidence.host_observation_claims_v1()?,
+            )
+        } else {
+            let evidence = decode_linux_vz_host_evidence_payload_v1(&host_evidence)?;
+            (
+                evidence.payload_sha256().clone(),
+                evidence.host_observation_claims_v1()?,
+            )
+        };
     let verified_host = verify_macos_linux_vz_telemetry_host_receipt_v1(
         &challenge,
         &run_spec,
@@ -153,7 +188,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         fixture_case,
         guest_evidence_payload_sha256,
         Sha256Digest::from_bytes(&guest_receipt),
-        host_evidence.payload_sha256(),
+        host_evidence_payload_sha256,
         Sha256Digest::from_bytes(&host_receipt),
         run_spec.run_spec_sha256(),
     );

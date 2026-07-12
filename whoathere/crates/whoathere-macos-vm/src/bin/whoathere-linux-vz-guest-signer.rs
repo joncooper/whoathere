@@ -27,10 +27,12 @@ mod linux {
         decode_and_validate_macos_linux_vz_telemetry_conformance_challenge_v1,
         decode_and_validate_macos_linux_vz_telemetry_conformance_run_spec_v1,
         decode_linux_vz_file_evidence_from_serial_v1, decode_linux_vz_guest_signer_request_v1,
+        decode_linux_vz_network_evidence_from_serial_v1,
         decode_linux_vz_process_evidence_from_serial_v1, encode_linux_vz_guest_signer_response_v1,
         sign_macos_linux_vz_telemetry_guest_receipt_v1, LinuxVzTelemetryConformanceCaseV1,
         LinuxVzTelemetryConformanceExpectedTerminalV1, MAX_LINUX_VZ_FILE_EVIDENCE_PAYLOAD_BYTES_V1,
         MAX_LINUX_VZ_GUEST_SIGNER_REQUEST_FRAME_BYTES_V1,
+        MAX_LINUX_VZ_NETWORK_EVIDENCE_PAYLOAD_BYTES_V1,
         MAX_LINUX_VZ_PROCESS_EVIDENCE_PAYLOAD_BYTES_V1,
     };
     use zeroize::Zeroize;
@@ -43,13 +45,19 @@ mod linux {
     const DYNAMIC_DRIVER_PATH: &str = "/whoathere/dynamic-library-driver";
     const DYNAMIC_LIBRARY_PATH: &str = "/whoathere/dynamic-fixture-library.so";
     const MAX_EXECUTABLE_BYTES: u64 = 64 * 1024 * 1024;
-    const MAX_SENSOR_OUTPUT_BYTES: u64 = if MAX_LINUX_VZ_FILE_EVIDENCE_PAYLOAD_BYTES_V1
+    const MAX_SENSOR_EVIDENCE_BYTES: usize = if MAX_LINUX_VZ_FILE_EVIDENCE_PAYLOAD_BYTES_V1
         > MAX_LINUX_VZ_PROCESS_EVIDENCE_PAYLOAD_BYTES_V1
     {
-        MAX_LINUX_VZ_FILE_EVIDENCE_PAYLOAD_BYTES_V1 as u64 + 32 * 1024
+        MAX_LINUX_VZ_FILE_EVIDENCE_PAYLOAD_BYTES_V1
     } else {
-        MAX_LINUX_VZ_PROCESS_EVIDENCE_PAYLOAD_BYTES_V1 as u64 + 32 * 1024
+        MAX_LINUX_VZ_PROCESS_EVIDENCE_PAYLOAD_BYTES_V1
     };
+    const MAX_SENSOR_OUTPUT_BYTES: u64 =
+        if MAX_LINUX_VZ_NETWORK_EVIDENCE_PAYLOAD_BYTES_V1 > MAX_SENSOR_EVIDENCE_BYTES {
+            MAX_LINUX_VZ_NETWORK_EVIDENCE_PAYLOAD_BYTES_V1 as u64 + 32 * 1024
+        } else {
+            MAX_SENSOR_EVIDENCE_BYTES as u64 + 32 * 1024
+        };
 
     pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         if unsafe { libc::geteuid() } != 0 || unsafe { libc::getegid() } != 0 {
@@ -77,6 +85,7 @@ mod linux {
                 | LinuxVzTelemetryConformanceCaseV1::SetsidEscape
                 | LinuxVzTelemetryConformanceCaseV1::CredentialChange
                 | LinuxVzTelemetryConformanceCaseV1::DynamicLibraryLoad
+                | LinuxVzTelemetryConformanceCaseV1::Ipv4Connect
                 | LinuxVzTelemetryConformanceCaseV1::ProtectedOpenReadWriteRenameDelete
                 | LinuxVzTelemetryConformanceCaseV1::MmapAccess
         ) || run_spec.expected_terminal()
@@ -105,6 +114,7 @@ mod linux {
             LinuxVzTelemetryConformanceCaseV1::SetsidEscape => "setsid_escape",
             LinuxVzTelemetryConformanceCaseV1::CredentialChange => "credential_change",
             LinuxVzTelemetryConformanceCaseV1::DynamicLibraryLoad => "dynamic_library_load",
+            LinuxVzTelemetryConformanceCaseV1::Ipv4Connect => "ipv4_connect",
             LinuxVzTelemetryConformanceCaseV1::ProtectedOpenReadWriteRenameDelete => {
                 "protected_open_read_write_rename_delete"
             }
@@ -155,6 +165,17 @@ mod linux {
                 let evidence = decode_linux_vz_file_evidence_from_serial_v1(&sensor_output)?;
                 if evidence.fixture_case() != run_spec.fixture_case() {
                     return Err("guest_signer_file_case_mismatch".into());
+                }
+                (
+                    evidence.package_uid(),
+                    evidence.package_gid(),
+                    evidence.guest_observation_claims_v1()?,
+                )
+            }
+            LinuxVzTelemetryConformanceCaseV1::Ipv4Connect => {
+                let evidence = decode_linux_vz_network_evidence_from_serial_v1(&sensor_output)?;
+                if evidence.fixture_case() != run_spec.fixture_case() {
+                    return Err("guest_signer_network_case_mismatch".into());
                 }
                 (
                     evidence.package_uid(),

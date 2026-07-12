@@ -124,6 +124,11 @@ The
 adds exact shared-object open and executable-mapping evidence plus a measured `dlopen`/`dlsym`
 fixture, then reruns the earlier seven cases on the new measured identity. The other 30 cases remain
 pending.
+The
+[IPv4-connect checkpoint](../../../docs/product-build-run/artifact-native-linux-vz-ipv4-connect-checkpoint-2026-07-12.md)
+adds protected connect-syscall and live socket-state evidence plus one exact checksum-valid host
+sinkhole SYN, then reruns the earlier eight cases on the new measured identity. The other 29 cases
+remain pending.
 
 ## Closed fixture contract
 

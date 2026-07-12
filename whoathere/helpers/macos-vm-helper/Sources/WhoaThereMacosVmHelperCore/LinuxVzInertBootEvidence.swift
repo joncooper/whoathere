@@ -54,6 +54,12 @@ public let linuxVzInertDynamicLibrarySensorMarkersV1 = [
     "WHOATHERE_SENSOR dynamic_library_target=measured_inert_fixture_library",
 ]
 
+public let linuxVzInertIPv4ConnectSensorMarkersV1 = [
+    "WHOATHERE_SENSOR network_ipv4_connect=observed",
+    "WHOATHERE_SENSOR network_socket_state=syn_sent",
+    "WHOATHERE_SENSOR network_target=documentation_sinkhole_192_0_2_1_443"
+]
+
 public let linuxVzInertRequiredEvidenceMarkersV2 =
     linuxVzInertRequiredCapabilityMarkersV1 + linuxVzInertProcessSensorMarkersV2
 

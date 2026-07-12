@@ -4,8 +4,12 @@
 #include <fcntl.h>
 #include <grp.h>
 #include <inttypes.h>
+#include <arpa/inet.h>
 #include <linux/bpf.h>
 #include <linux/fanotify.h>
+#include <net/if.h>
+#include <net/if_arp.h>
+#include <netinet/in.h>
 #include <poll.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -13,7 +17,9 @@
 #include <string.h>
 #include <sys/resource.h>
 #include <sys/mman.h>
+#include <sys/ioctl.h>
 #include <sys/prctl.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
@@ -34,7 +40,12 @@
 #define DYNAMIC_REPORT_MAGIC 0x5754444cU
 #define DYNAMIC_MARKER UINT64_C(0x57544c4942465831)
 #define DYNAMIC_LIBRARY_PATH "/whoathere/dynamic-fixture-library.so"
-#define SENSOR_PROGRAM_COUNT 7
+#define NETWORK_REPORT_MAGIC 0x57544e34U
+#define NETWORK_INTERFACE "eth0"
+#define NETWORK_SOURCE_ADDRESS "192.0.2.2"
+#define NETWORK_TARGET_ADDRESS "192.0.2.1"
+#define NETWORK_TARGET_PORT 443
+#define SENSOR_PROGRAM_COUNT 8
 
 struct reparent_report {
     uint32_t magic;
@@ -64,6 +75,17 @@ struct dynamic_report {
     uint32_t magic;
     int32_t process_pid;
     uint64_t marker;
+};
+
+struct network_report {
+    uint32_t magic;
+    int32_t process_pid;
+    uint64_t socket_inode;
+    uint32_t source_address;
+    uint32_t target_address;
+    uint16_t source_port;
+    uint16_t target_port;
+    int32_t connect_errno;
 };
 
 #define INSN(code_value, destination, source, instruction_offset, immediate) \
@@ -105,7 +127,8 @@ enum observation_key {
     OBSERVATION_SETGROUPS = 5,
     OBSERVATION_SETGID = 6,
     OBSERVATION_SETUID = 7,
-    OBSERVATION_COUNT = 8,
+    OBSERVATION_CONNECT = 8,
+    OBSERVATION_COUNT = 9,
 };
 
 struct observation {
@@ -463,8 +486,8 @@ static uint64_t monotonic_ns(void) {
 static int run_file_probe(const char *fixture, const char *fixture_case) {
     struct sensor_fds fds = {
         .map = -1,
-        .programs = {-1, -1, -1, -1, -1, -1, -1},
-        .links = {-1, -1, -1, -1, -1, -1, -1},
+        .programs = {-1, -1, -1, -1, -1, -1, -1, -1},
+        .links = {-1, -1, -1, -1, -1, -1, -1, -1},
     };
     struct rlimit unlimited = {.rlim_cur = RLIM_INFINITY, .rlim_max = RLIM_INFINITY};
     struct observation cgroup = {0};
@@ -829,6 +852,115 @@ static int dynamic_library_open_observed(int fanotify, pid_t child) {
     return observed;
 }
 
+static int read_exact_network_report(int descriptor, struct network_report *report) {
+    size_t offset = 0;
+    while (offset < sizeof(*report)) {
+        ssize_t length = read(descriptor, (char *)report + offset, sizeof(*report) - offset);
+        if (length < 0 && errno == EINTR) continue;
+        if (length <= 0) return -1;
+        offset += (size_t)length;
+    }
+    char trailing = 0;
+    ssize_t length;
+    do {
+        length = read(descriptor, &trailing, 1);
+    } while (length < 0 && errno == EINTR);
+    struct in_addr source = {0};
+    struct in_addr target = {0};
+    return length == 0 && report->magic == NETWORK_REPORT_MAGIC &&
+        report->process_pid > 0 && report->socket_inode > 0 &&
+        inet_pton(AF_INET, NETWORK_SOURCE_ADDRESS, &source) == 1 &&
+        inet_pton(AF_INET, NETWORK_TARGET_ADDRESS, &target) == 1 &&
+        report->source_address == source.s_addr && report->target_address == target.s_addr &&
+        report->source_port > 0 && report->target_port == NETWORK_TARGET_PORT &&
+        report->connect_errno == EINPROGRESS ? 0 : -1;
+}
+
+static int set_interface_address(int descriptor, unsigned long request, const char *address) {
+    struct ifreq interface;
+    memset(&interface, 0, sizeof(interface));
+    strncpy(interface.ifr_name, NETWORK_INTERFACE, IFNAMSIZ - 1);
+    struct sockaddr_in *socket_address = (struct sockaddr_in *)&interface.ifr_addr;
+    socket_address->sin_family = AF_INET;
+    if (inet_pton(AF_INET, address, &socket_address->sin_addr) != 1) return -1;
+    return ioctl(descriptor, request, &interface);
+}
+
+static int prepare_ipv4_sinkhole(void) {
+    if (write_control("/proc/sys/net/ipv6/conf/eth0/disable_ipv6", "1\n") != 0) return -1;
+    int descriptor = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    if (descriptor < 0) return -1;
+    int result = -1;
+    struct ifreq interface;
+    memset(&interface, 0, sizeof(interface));
+    strncpy(interface.ifr_name, NETWORK_INTERFACE, IFNAMSIZ - 1);
+    if (ioctl(descriptor, SIOCGIFFLAGS, &interface) != 0) goto done;
+    interface.ifr_flags |= IFF_UP;
+    if (ioctl(descriptor, SIOCSIFFLAGS, &interface) != 0 ||
+        set_interface_address(descriptor, SIOCSIFADDR, NETWORK_SOURCE_ADDRESS) != 0 ||
+        set_interface_address(descriptor, SIOCSIFNETMASK, "255.255.255.0") != 0) goto done;
+
+    struct arpreq neighbor;
+    memset(&neighbor, 0, sizeof(neighbor));
+    struct sockaddr_in *protocol = (struct sockaddr_in *)&neighbor.arp_pa;
+    protocol->sin_family = AF_INET;
+    if (inet_pton(AF_INET, NETWORK_TARGET_ADDRESS, &protocol->sin_addr) != 1) goto done;
+    neighbor.arp_ha.sa_family = ARPHRD_ETHER;
+    const unsigned char target_mac[6] = {0x02, 0x57, 0x48, 0x4f, 0x41, 0xfe};
+    memcpy(neighbor.arp_ha.sa_data, target_mac, sizeof(target_mac));
+    neighbor.arp_flags = ATF_COM | ATF_PERM;
+    strncpy(neighbor.arp_dev, NETWORK_INTERFACE, sizeof(neighbor.arp_dev) - 1);
+    if (ioctl(descriptor, SIOCSARP, &neighbor) != 0) goto done;
+    result = 0;
+done:
+    close(descriptor);
+    return result;
+}
+
+static void cleanup_ipv4_sinkhole(void) {
+    int descriptor = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    if (descriptor < 0) return;
+    struct ifreq interface;
+    memset(&interface, 0, sizeof(interface));
+    strncpy(interface.ifr_name, NETWORK_INTERFACE, IFNAMSIZ - 1);
+    if (ioctl(descriptor, SIOCGIFFLAGS, &interface) == 0) {
+        interface.ifr_flags &= (short)~IFF_UP;
+        (void)ioctl(descriptor, SIOCSIFFLAGS, &interface);
+    }
+    close(descriptor);
+}
+
+static int proc_tcp_contains_ipv4_sinkhole(const struct network_report *report) {
+    FILE *stream = fopen("/proc/net/tcp", "re");
+    if (stream == NULL) return 0;
+    char expected_local[14];
+    snprintf(expected_local, sizeof(expected_local), "020200C0:%04X", report->source_port);
+    const char *expected_remote = "010200C0:01BB";
+    char line[512];
+    int observed = 0;
+    while (fgets(line, sizeof(line), stream) != NULL) {
+        char local[14] = {0};
+        char remote[14] = {0};
+        char state[3] = {0};
+        unsigned long long inode = 0;
+        if (sscanf(
+                line,
+                " %*d: %13s %13s %2s %*s %*s %*s %*u %*u %llu",
+                local,
+                remote,
+                state,
+                &inode
+            ) == 4 && strcmp(local, expected_local) == 0 &&
+            strcmp(remote, expected_remote) == 0 && strcmp(state, "02") == 0 &&
+            inode == report->socket_inode) {
+            observed = 1;
+            break;
+        }
+    }
+    if (fclose(stream) != 0) return 0;
+    return observed;
+}
+
 static int run_process_probe(const char *fixture, const char *fixture_case) {
     static const char *tracepoints[] = {
         "sys_enter",
@@ -838,8 +970,8 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
     };
     struct sensor_fds fds = {
         .map = -1,
-        .programs = {-1, -1, -1, -1, -1, -1, -1},
-        .links = {-1, -1, -1, -1, -1, -1, -1},
+        .programs = {-1, -1, -1, -1, -1, -1, -1, -1},
+        .links = {-1, -1, -1, -1, -1, -1, -1, -1},
     };
     struct rlimit unlimited = {.rlim_cur = RLIM_INFINITY, .rlim_max = RLIM_INFINITY};
     struct observation cgroup = {0};
@@ -849,17 +981,21 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
     struct observation setgroups_event = {0};
     struct observation setgid_event = {0};
     struct observation setuid_event = {0};
+    struct observation connect_event = {0};
     pid_t child = -1;
     pid_t reaped_descendants[2] = {-1, -1};
     struct reparent_report reparent_report = {0};
     struct session_report session_report = {0};
     struct credential_report credential_report = {0};
     struct dynamic_report dynamic_report = {0};
+    struct network_report network_report = {0};
     uint64_t reparent_timestamp = 0;
     uint64_t session_timestamp = 0;
     uint64_t dynamic_timestamp = 0;
+    uint64_t network_timestamp = 0;
     int report_pipe[2] = {-1, -1};
     int dynamic_fanotify = -1;
+    int ipv4_prepared = 0;
     int child_status = 0;
     int result = 70;
     const char *failure_stage = "preflight";
@@ -938,6 +1074,7 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
     int setsid_escape = strcmp(fixture_case, "setsid_escape") == 0;
     int credential_change = strcmp(fixture_case, "credential_change") == 0;
     int dynamic_library_load = strcmp(fixture_case, "dynamic_library_load") == 0;
+    int ipv4_connect = strcmp(fixture_case, "ipv4_connect") == 0;
     if (credential_change) {
         const enum observation_key keys[] = {
             OBSERVATION_SETGROUPS, OBSERVATION_SETGID, OBSERVATION_SETUID
@@ -966,6 +1103,26 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
             }
         }
     }
+    if (ipv4_connect) {
+        fds.programs[7] = load_syscall_program(
+            fds.map,
+            OBSERVATION_CONNECT,
+            SYS_connect
+        );
+        fds.links[7] = fds.programs[7] >= 0
+            ? attach_raw_tracepoint("sys_enter", fds.programs[7]) : -1;
+        if (fds.programs[7] < 0 || fds.links[7] < 0) {
+            failure_stage = "ipv4_connect_attach";
+            failure_errno = errno;
+            goto cleanup;
+        }
+        if (prepare_ipv4_sinkhole() != 0) {
+            failure_stage = "ipv4_sinkhole_prepare";
+            failure_errno = errno;
+            goto cleanup;
+        }
+        ipv4_prepared = 1;
+    }
     if ((double_fork || reparent) && prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0) {
         failure_stage = "subreaper_enable";
         failure_errno = errno;
@@ -990,7 +1147,7 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
             goto cleanup;
         }
     }
-    if ((reparent || setsid_escape || credential_change || dynamic_library_load) &&
+    if ((reparent || setsid_escape || credential_change || dynamic_library_load || ipv4_connect) &&
         pipe2(report_pipe, O_CLOEXEC) != 0) {
         failure_stage = "process_report_pipe";
         failure_errno = errno;
@@ -1016,7 +1173,7 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
             fixture,
             fixture_case,
             &fds,
-            (reparent || setsid_escape || credential_change || dynamic_library_load)
+            (reparent || setsid_escape || credential_change || dynamic_library_load || ipv4_connect)
                 ? report_pipe[1] : -1
         );
     }
@@ -1092,6 +1249,26 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
             goto cleanup;
         }
     }
+    if (ipv4_connect) {
+        if (read_exact_network_report(report_pipe[0], &network_report) != 0) {
+            failure_stage = "ipv4_report";
+            failure_errno = errno;
+            goto cleanup;
+        }
+        close_if_open(&report_pipe[0]);
+        if (network_report.process_pid != child ||
+            !proc_identity_matches(child, parent) ||
+            !proc_has_no_supplementary_groups(child) ||
+            !proc_tcp_contains_ipv4_sinkhole(&network_report)) {
+            failure_stage = "ipv4_live_socket";
+            goto cleanup;
+        }
+        network_timestamp = monotonic_ns();
+        if (network_timestamp == 0) {
+            failure_stage = "ipv4_timestamp";
+            goto cleanup;
+        }
+    }
     if (waitpid(child, &child_status, 0) != child || !WIFEXITED(child_status) ||
         WEXITSTATUS(child_status) != 0) {
         failure_stage = "fixture_exit";
@@ -1162,8 +1339,14 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
         failure_errno = errno;
         goto cleanup;
     }
+    if (ipv4_connect &&
+        lookup_observation(fds.map, OBSERVATION_CONNECT, &connect_event) != 0) {
+        failure_stage = "ipv4_observation_lookup";
+        failure_errno = errno;
+        goto cleanup;
+    }
     if ((!double_fork && !reparent && !setsid_escape && !credential_change &&
-         !dynamic_library_load &&
+         !dynamic_library_load && !ipv4_connect &&
          (!observed_pid(&fork_event, parent) || !observed_pid(&exec_event, child) ||
           !observed_pid(&exit_event, child) ||
           fork_event.timestamp_ns >= exec_event.timestamp_ns ||
@@ -1204,7 +1387,14 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
           !observed_pid(&exit_event, child) || dynamic_timestamp == 0 ||
           fork_event.timestamp_ns >= exec_event.timestamp_ns ||
           exec_event.timestamp_ns >= dynamic_timestamp ||
-          dynamic_timestamp >= exit_event.timestamp_ns))) {
+          dynamic_timestamp >= exit_event.timestamp_ns)) ||
+        (ipv4_connect &&
+         (!observed_pid(&fork_event, parent) || !observed_pid(&exec_event, child) ||
+          !observed_pid(&connect_event, child) || !observed_pid(&exit_event, child) ||
+          network_timestamp == 0 || fork_event.timestamp_ns >= exec_event.timestamp_ns ||
+          exec_event.timestamp_ns >= connect_event.timestamp_ns ||
+          connect_event.timestamp_ns >= network_timestamp ||
+          network_timestamp >= exit_event.timestamp_ns))) {
         if (reparent) {
             printf(
                 "WHOATHERE_SENSOR_REPARENT_OBSERVATION_DIAGNOSTIC "
@@ -1293,6 +1483,27 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
                 exit_event.timestamp_ns
             );
         }
+        if (ipv4_connect) {
+            printf(
+                "WHOATHERE_SENSOR_IPV4_OBSERVATION_DIAGNOSTIC "
+                "fork_count=%" PRIu64 " exec_count=%" PRIu64
+                " connect_count=%" PRIu64 " exit_count=%" PRIu64
+                " child=%d source_port=%u fork_ns=%" PRIu64
+                " exec_ns=%" PRIu64 " connect_ns=%" PRIu64
+                " live_socket_ns=%" PRIu64 " exit_ns=%" PRIu64 "\n",
+                fork_event.count,
+                exec_event.count,
+                connect_event.count,
+                exit_event.count,
+                child,
+                network_report.source_port,
+                fork_event.timestamp_ns,
+                exec_event.timestamp_ns,
+                connect_event.timestamp_ns,
+                network_timestamp,
+                exit_event.timestamp_ns
+            );
+        }
         failure_stage = "observation_match";
         goto cleanup;
     }
@@ -1323,7 +1534,61 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
             "uid_65534_gid_65534_no_supplementary_groups"
         );
     }
+    if (ipv4_connect) {
+        puts("WHOATHERE_SENSOR network_ipv4_connect=observed");
+        puts("WHOATHERE_SENSOR network_socket_state=syn_sent");
+        puts("WHOATHERE_SENSOR network_target=documentation_sinkhole_192_0_2_1_443");
+    }
     puts("WHOATHERE_SENSOR_PROCESS_PROBE_OK");
+    if (ipv4_connect) {
+        printf(
+            "WHOATHERE_GUEST_NETWORK_EVIDENCE "
+            "{\"descendant_teardown_complete\":true,\"dropped_event_count\":\"0\","
+            "\"event_count\":\"4\",\"event_sequence_end\":\"4\","
+            "\"event_sequence_start\":\"1\",\"events\":["
+            "{\"actor_pid\":\"%" PRIu64 "\",\"cgroup_id\":\"%" PRIu64
+            "\",\"kind\":\"fork\",\"sequence\":\"1\",\"subject_pid\":\"%" PRIu64
+            "\",\"timestamp_ns\":\"%" PRIu64 "\"},"
+            "{\"actor_pid\":\"%" PRIu64 "\",\"cgroup_id\":\"%" PRIu64
+            "\",\"kind\":\"exec\",\"sequence\":\"2\",\"subject_pid\":\"%" PRIu64
+            "\",\"timestamp_ns\":\"%" PRIu64 "\"},"
+            "{\"actor_pid\":\"%" PRIu64 "\",\"cgroup_id\":\"%" PRIu64
+            "\",\"kind\":\"connect\",\"sequence\":\"3\",\"subject_pid\":\"%" PRIu64
+            "\",\"timestamp_ns\":\"%" PRIu64 "\"},"
+            "{\"actor_pid\":\"%" PRIu64 "\",\"cgroup_id\":\"%" PRIu64
+            "\",\"kind\":\"exit\",\"sequence\":\"4\",\"subject_pid\":\"%" PRIu64
+            "\",\"timestamp_ns\":\"%" PRIu64 "\"}],"
+            "\"evidence_truncated\":false,\"fixture_case\":\"ipv4_connect\","
+            "\"heartbeat_count\":\"2\",\"network_action\":\"tcp_connect\","
+            "\"network_family\":\"ipv4\",\"network_protocol\":\"tcp\","
+            "\"network_socket_state\":\"syn_sent\","
+            "\"network_source\":\"192.0.2.2\",\"network_source_port\":\"%u\","
+            "\"network_target\":\"192.0.2.1\",\"network_target_port\":\"443\","
+            "\"package_gid\":\"65534\",\"package_uid\":\"65534\","
+            "\"reaped_process_count\":\"1\","
+            "\"schema_version\":\"whoathere.linux_vz_network_evidence_payload.v1\","
+            "\"sensor_healthy\":true}\n",
+            (uint64_t)parent,
+            cgroup.count,
+            (uint64_t)child,
+            fork_event.timestamp_ns,
+            (uint64_t)child,
+            cgroup.count,
+            (uint64_t)child,
+            exec_event.timestamp_ns,
+            (uint64_t)child,
+            cgroup.count,
+            (uint64_t)child,
+            connect_event.timestamp_ns,
+            (uint64_t)child,
+            cgroup.count,
+            (uint64_t)child,
+            exit_event.timestamp_ns,
+            network_report.source_port
+        );
+        result = 0;
+        goto cleanup;
+    }
     if (double_fork) {
         printf(
             "WHOATHERE_GUEST_PROCESS_EVIDENCE "
@@ -1592,6 +1857,7 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
     result = 0;
 
 cleanup:
+    if (ipv4_prepared) cleanup_ipv4_sinkhole();
     if (dynamic_fanotify >= 0) close(dynamic_fanotify);
     close_if_open(&report_pipe[0]);
     close_if_open(&report_pipe[1]);
@@ -1619,7 +1885,8 @@ int main(int argument_count, char **arguments) {
         strcmp(arguments[2], "reparenting") == 0 ||
         strcmp(arguments[2], "setsid_escape") == 0 ||
         strcmp(arguments[2], "credential_change") == 0 ||
-        strcmp(arguments[2], "dynamic_library_load") == 0) {
+        strcmp(arguments[2], "dynamic_library_load") == 0 ||
+        strcmp(arguments[2], "ipv4_connect") == 0) {
         return run_process_probe(arguments[1], arguments[2]);
     }
     if (strcmp(arguments[2], "protected_open_read_write_rename_delete") == 0 ||
