@@ -27,6 +27,7 @@ static const char *dynamic_library_path = "/whoathere/dynamic-fixture-library.so
 #define LOOPBACK_TARGET_PORT 40552
 #define PRIVATE_REPORT_MAGIC 0x57545034U
 #define LINK_LOCAL_REPORT_MAGIC 0x57544b34U
+#define METADATA_REPORT_MAGIC 0x57544d34U
 
 struct reparent_report {
     uint32_t magic;
@@ -530,6 +531,10 @@ static int link_local_connect(void) {
     return classified_address_connect("169.254.100.1", LINK_LOCAL_REPORT_MAGIC);
 }
 
+static int metadata_address_connect(void) {
+    return classified_address_connect("169.254.169.254", METADATA_REPORT_MAGIC);
+}
+
 int main(int argument_count, char **arguments) {
     if (argument_count != 2 || getuid() != 65534 || geteuid() != 65534 ||
         getgid() != 65534 || getegid() != 65534) {
@@ -551,6 +556,9 @@ int main(int argument_count, char **arguments) {
     if (strcmp(arguments[1], "loopback_connect") == 0) return loopback_connect();
     if (strcmp(arguments[1], "private_address_connect") == 0) return private_address_connect();
     if (strcmp(arguments[1], "link_local_connect") == 0) return link_local_connect();
+    if (strcmp(arguments[1], "metadata_address_connect") == 0) {
+        return metadata_address_connect();
+    }
     if (strcmp(arguments[1], "protected_open_read_write_rename_delete") == 0 ||
         strcmp(arguments[1], "mmap_access") == 0) {
         return file_fixture();

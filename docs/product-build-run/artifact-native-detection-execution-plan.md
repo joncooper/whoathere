@@ -117,6 +117,13 @@ and exactly one checksum-valid host-observed SYN. The previous thirteen cases we
 exact identity. Fourteen of 38 cases now share one backend binding; 24 remain. See the
 [link-local-connect checkpoint](artifact-native-linux-vz-link-local-connect-checkpoint-2026-07-12.md).
 
+The `metadata_address_connect` case now binds one unprivileged TCP connect to the canonical metadata
+address through a guest-only inert neighbor, protected syscall evidence, live `SYN_SENT` state, a
+distinct metadata classification, and exactly one checksum-valid host-observed SYN. Nothing reaches
+a real metadata service. The previous fourteen cases were rerun on the new exact identity. Fifteen
+of 38 cases now share one backend binding; 23 remain. See the
+[metadata-address-connect checkpoint](artifact-native-linux-vz-metadata-address-connect-checkpoint-2026-07-12.md).
+
 Primary target: malicious npm and PyPI package detection with static analysis, AI-assisted code
 review, and behaviorally instrumented detonation in disposable virtual machines
 
