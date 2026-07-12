@@ -189,3 +189,70 @@ import Testing
         }
     }
 }
+
+@Test func linuxVzHostEvidenceBindsExactGuestSensorDeath() throws {
+    let payload = try makeLinuxVzGuestSensorDeathHostEvidencePayload(
+        requestFrameBytes: 5_082,
+        rawFrameCount: 0,
+        packetSensorHealthy: true,
+        packetSensorTerminal: "drained_would_block",
+        vmStarted: true,
+        vmStopped: true,
+        cloneDestroyed: true,
+        storageDeviceCount: 0
+    )
+    #expect(payload.guestSensorDeathKind ==
+        "guest_signer_sigkill_after_protected_sensor_ready")
+    #expect(payload.guestSensorDeathRequestFrameBytes == 5_082)
+    #expect(payload.guestSensorDeathTransmittedRequestBytes == 5_082)
+    #expect(payload.guestSensorDeathResponseBytes == 0)
+    #expect(payload.guestSensorDeathFixtureActiveMarkerObserved == true)
+    #expect(payload.guestSensorDeathSignal == 9)
+    #expect(payload.claims.observedTerminal == "infrastructure_error_with_teardown")
+    #expect(payload == (try decodeLinuxVzHostEvidencePayload(
+        payload.canonicalJSON,
+        observedTerminal: "infrastructure_error_with_teardown",
+        expectedGuestSensorDeathRequestFrameBytes: 5_082
+    )))
+}
+
+@Test func linuxVzHostEvidenceRejectsGuestSensorDeathRebinding() throws {
+    let payload = try makeLinuxVzGuestSensorDeathHostEvidencePayload(
+        requestFrameBytes: 5_082,
+        rawFrameCount: 0,
+        packetSensorHealthy: true,
+        packetSensorTerminal: "drained_would_block",
+        vmStarted: true,
+        vmStopped: true,
+        cloneDestroyed: true,
+        storageDeviceCount: 0
+    )
+    #expect(throws: LinuxVzHostEvidencePayloadError.invalidSchema) {
+        try decodeLinuxVzHostEvidencePayload(
+            payload.canonicalJSON,
+            observedTerminal: "infrastructure_error_with_teardown",
+            expectedGuestSensorDeathRequestFrameBytes: 5_083
+        )
+    }
+    for (field, changed): (String, Any) in [
+        ("guest_sensor_death_kind", "sensor_exit"),
+        ("guest_sensor_death_request_frame_bytes", "16"),
+        ("guest_sensor_death_transmitted_request_bytes", "5081"),
+        ("guest_sensor_death_response_bytes", "1"),
+        ("guest_sensor_death_signal", "15"),
+        ("guest_sensor_death_fixture_active_marker_observed", false),
+    ] {
+        var value = try #require(
+            JSONSerialization.jsonObject(with: payload.canonicalJSON) as? [String: Any]
+        )
+        value[field] = changed
+        let data = try canonicalJSONData(value)
+        #expect(throws: LinuxVzHostEvidencePayloadError.invalidSchema) {
+            try decodeLinuxVzHostEvidencePayload(
+                data,
+                observedTerminal: "infrastructure_error_with_teardown",
+                expectedGuestSensorDeathRequestFrameBytes: 5_082
+            )
+        }
+    }
+}

@@ -26,6 +26,12 @@ public struct LinuxVzHostEvidencePayload: Equatable, Sendable {
     public let vmStopTransmittedRequestBytes: UInt64?
     public let vmStopResponseBytes: UInt64?
     public let vmStopFixtureActiveMarkerObserved: Bool?
+    public let guestSensorDeathKind: String?
+    public let guestSensorDeathRequestFrameBytes: UInt64?
+    public let guestSensorDeathTransmittedRequestBytes: UInt64?
+    public let guestSensorDeathResponseBytes: UInt64?
+    public let guestSensorDeathFixtureActiveMarkerObserved: Bool?
+    public let guestSensorDeathSignal: UInt64?
     public let claims: LinuxVzTelemetryHostObservationClaims
 }
 
@@ -51,7 +57,8 @@ public func makeLinuxVzInertHostEvidencePayload(
         storageDeviceCount: storageDeviceCount,
         observedTerminal: observedTerminal,
         channelRequestFrameBytes: nil,
-        vmStopRequestFrameBytes: nil
+        vmStopRequestFrameBytes: nil,
+        guestSensorDeathRequestFrameBytes: nil
     )
 }
 
@@ -76,7 +83,8 @@ public func makeLinuxVzChannelInterruptionHostEvidencePayload(
         storageDeviceCount: storageDeviceCount,
         observedTerminal: "infrastructure_error_with_teardown",
         channelRequestFrameBytes: requestFrameBytes,
-        vmStopRequestFrameBytes: nil
+        vmStopRequestFrameBytes: nil,
+        guestSensorDeathRequestFrameBytes: nil
     )
 }
 
@@ -101,7 +109,34 @@ public func makeLinuxVzVmStopHostEvidencePayload(
         storageDeviceCount: storageDeviceCount,
         observedTerminal: "infrastructure_error_with_teardown",
         channelRequestFrameBytes: nil,
-        vmStopRequestFrameBytes: requestFrameBytes
+        vmStopRequestFrameBytes: requestFrameBytes,
+        guestSensorDeathRequestFrameBytes: nil
+    )
+}
+
+public func makeLinuxVzGuestSensorDeathHostEvidencePayload(
+    requestFrameBytes: UInt64,
+    rawFrameCount: UInt64,
+    packetSensorHealthy: Bool,
+    packetSensorTerminal: String,
+    vmStarted: Bool,
+    vmStopped: Bool,
+    cloneDestroyed: Bool,
+    storageDeviceCount: UInt64
+) throws -> LinuxVzHostEvidencePayload {
+    try makeLinuxVzHostEvidencePayload(
+        rawFrameCount: rawFrameCount,
+        packetSensorHealthy: packetSensorHealthy,
+        packetSensorTerminal: packetSensorTerminal,
+        guestChannelTerminated: true,
+        vmStarted: vmStarted,
+        vmStopped: vmStopped,
+        cloneDestroyed: cloneDestroyed,
+        storageDeviceCount: storageDeviceCount,
+        observedTerminal: "infrastructure_error_with_teardown",
+        channelRequestFrameBytes: nil,
+        vmStopRequestFrameBytes: nil,
+        guestSensorDeathRequestFrameBytes: requestFrameBytes
     )
 }
 
@@ -116,9 +151,13 @@ private func makeLinuxVzHostEvidencePayload(
     storageDeviceCount: UInt64,
     observedTerminal: String,
     channelRequestFrameBytes: UInt64?,
-    vmStopRequestFrameBytes: UInt64?
+    vmStopRequestFrameBytes: UInt64?,
+    guestSensorDeathRequestFrameBytes: UInt64?
 ) throws -> LinuxVzHostEvidencePayload {
-    guard channelRequestFrameBytes == nil || vmStopRequestFrameBytes == nil else {
+    let specialCaseCount = [
+        channelRequestFrameBytes, vmStopRequestFrameBytes, guestSensorDeathRequestFrameBytes
+    ].compactMap { $0 }.count
+    guard specialCaseCount <= 1 else {
         throw LinuxVzHostEvidencePayloadError.invalidSchema
     }
     let events: [[String: String]] = [
@@ -166,11 +205,23 @@ private func makeLinuxVzHostEvidencePayload(
         value["vm_stop_response_bytes"] = "0"
         value["vm_stop_fixture_active_marker_observed"] = true
     }
+    if let guestSensorDeathRequestFrameBytes {
+        value["guest_sensor_death_fixture_active_marker_observed"] = true
+        value["guest_sensor_death_kind"] =
+            "guest_signer_sigkill_after_protected_sensor_ready"
+        value["guest_sensor_death_request_frame_bytes"] =
+            String(guestSensorDeathRequestFrameBytes)
+        value["guest_sensor_death_response_bytes"] = "0"
+        value["guest_sensor_death_signal"] = "9"
+        value["guest_sensor_death_transmitted_request_bytes"] =
+            String(guestSensorDeathRequestFrameBytes)
+    }
     return try decodeLinuxVzHostEvidencePayload(
         canonicalJSONData(value),
         observedTerminal: observedTerminal,
         expectedChannelRequestFrameBytes: channelRequestFrameBytes,
-        expectedVmStopRequestFrameBytes: vmStopRequestFrameBytes
+        expectedVmStopRequestFrameBytes: vmStopRequestFrameBytes,
+        expectedGuestSensorDeathRequestFrameBytes: guestSensorDeathRequestFrameBytes
     )
 }
 
@@ -178,7 +229,8 @@ public func decodeLinuxVzHostEvidencePayload(
     _ data: Data,
     observedTerminal: String = "observation_complete",
     expectedChannelRequestFrameBytes: UInt64? = nil,
-    expectedVmStopRequestFrameBytes: UInt64? = nil
+    expectedVmStopRequestFrameBytes: UInt64? = nil,
+    expectedGuestSensorDeathRequestFrameBytes: UInt64? = nil
 ) throws -> LinuxVzHostEvidencePayload {
     guard !data.isEmpty else { throw LinuxVzHostEvidencePayloadError.empty }
     guard data.count <= maximumLinuxVzHostEvidencePayloadBytesV1 else {
@@ -196,7 +248,12 @@ public func decodeLinuxVzHostEvidencePayload(
         || observedTerminal == "infrastructure_error_with_teardown" else {
         throw LinuxVzHostEvidencePayloadError.invalidSchema
     }
-    guard expectedChannelRequestFrameBytes == nil || expectedVmStopRequestFrameBytes == nil else {
+    let specialCaseCount = [
+        expectedChannelRequestFrameBytes,
+        expectedVmStopRequestFrameBytes,
+        expectedGuestSensorDeathRequestFrameBytes
+    ].compactMap { $0 }.count
+    guard specialCaseCount <= 1 else {
         throw LinuxVzHostEvidencePayloadError.invalidSchema
     }
     var expectedKeys = Set([
@@ -218,6 +275,14 @@ public func decodeLinuxVzHostEvidencePayload(
             "vm_stop_fixture_active_marker_observed", "vm_stop_kind",
             "vm_stop_request_frame_bytes", "vm_stop_response_bytes",
             "vm_stop_transmitted_request_bytes"
+        ])
+    }
+    if expectedGuestSensorDeathRequestFrameBytes != nil {
+        expectedKeys.formUnion([
+            "guest_sensor_death_fixture_active_marker_observed",
+            "guest_sensor_death_kind", "guest_sensor_death_request_frame_bytes",
+            "guest_sensor_death_response_bytes", "guest_sensor_death_signal",
+            "guest_sensor_death_transmitted_request_bytes"
         ])
     }
     guard Set(value.keys) == expectedKeys,
@@ -270,6 +335,20 @@ public func decodeLinuxVzHostEvidencePayload(
             throw LinuxVzHostEvidencePayloadError.invalidSchema
         }
     }
+    if let expectedGuestSensorDeathRequestFrameBytes {
+        guard expectedGuestSensorDeathRequestFrameBytes > 16,
+              value["guest_sensor_death_kind"] as? String ==
+                "guest_signer_sigkill_after_protected_sensor_ready",
+              hostEvidenceDecimal(value["guest_sensor_death_request_frame_bytes"]) ==
+                expectedGuestSensorDeathRequestFrameBytes,
+              hostEvidenceDecimal(value["guest_sensor_death_transmitted_request_bytes"]) ==
+                expectedGuestSensorDeathRequestFrameBytes,
+              hostEvidenceDecimal(value["guest_sensor_death_response_bytes"]) == 0,
+              hostEvidenceDecimal(value["guest_sensor_death_signal"]) == 9,
+              value["guest_sensor_death_fixture_active_marker_observed"] as? Bool == true else {
+            throw LinuxVzHostEvidencePayloadError.invalidSchema
+        }
+    }
     let expectedKinds = [
         "vm_started", "guest_channel_connected", "guest_channel_terminated",
         "host_packet_sensor_complete", "vm_stopped", "ephemeral_clone_destroyed"
@@ -314,6 +393,16 @@ public func decodeLinuxVzHostEvidencePayload(
         vmStopResponseBytes: hostEvidenceDecimal(value["vm_stop_response_bytes"]),
         vmStopFixtureActiveMarkerObserved:
             value["vm_stop_fixture_active_marker_observed"] as? Bool,
+        guestSensorDeathKind: value["guest_sensor_death_kind"] as? String,
+        guestSensorDeathRequestFrameBytes:
+            hostEvidenceDecimal(value["guest_sensor_death_request_frame_bytes"]),
+        guestSensorDeathTransmittedRequestBytes:
+            hostEvidenceDecimal(value["guest_sensor_death_transmitted_request_bytes"]),
+        guestSensorDeathResponseBytes:
+            hostEvidenceDecimal(value["guest_sensor_death_response_bytes"]),
+        guestSensorDeathFixtureActiveMarkerObserved:
+            value["guest_sensor_death_fixture_active_marker_observed"] as? Bool,
+        guestSensorDeathSignal: hostEvidenceDecimal(value["guest_sensor_death_signal"]),
         claims: claims
     )
 }

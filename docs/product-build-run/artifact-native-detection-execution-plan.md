@@ -4,16 +4,15 @@ Date: 2026-07-09
 
 Status: canonical execution plan for the next product milestone
 
-Current execution checkpoint (2026-07-12): thirty of the 38 authenticated Linux VZ inert
-conformance cases now pass physically on one exact measured backend identity. The newest `vm_stop`
-case sends the full challenge-bound request, requires the unprivileged fixture to prove that it has
-passed the protected-sensor denial check, and requires the protected BPF sensor to corroborate its
-live fork/exec, package credentials, procfs identity, and cgroup membership. Only then does the host
-complete `VZVirtualMachine.stop`. Signed host evidence binds the exact full request, live-fixture
-marker, zero response bytes, absent guest receipt, stopped VM, healthy zero-frame packet sensor, and
-destroyed diskless instance. This is still telemetry qualification, not package detection, and the
-backend remains `candidate_unqualified`. See the
-[VM-stop checkpoint](artifact-native-linux-vz-vm-stop-checkpoint-2026-07-12.md).
+Current execution checkpoint (2026-07-12): thirty-one of the 38 authenticated Linux VZ inert
+conformance cases now pass physically on one exact measured backend identity. The newest
+`guest_sensor_death` case proves the measured guest signer waits for a protected-sensor readiness
+record backed by live fixture identity and BPF fork/exec observations, terminates that exact sensor
+with SIGKILL, records signal 9, emits no guest receipt, and fails closed. Signed host evidence binds
+the full request, readiness marker, signal, zero response, naturally stopped VM, healthy zero-frame
+packet sensor, and destroyed diskless instance. This is still telemetry qualification, not package
+detection, and the backend remains `candidate_unqualified`. See the
+[guest-sensor-death checkpoint](artifact-native-linux-vz-guest-sensor-death-checkpoint-2026-07-12.md).
 
 The first protected-sensor bootstrap now also observes a cgroup-filtered inert fork/exec/exit chain
 whose child runs as UID/GID 65534 and cannot read or write the root-only sensor. This remains
@@ -268,6 +267,16 @@ host lifecycle payload. All thirty cases ran physically on the resulting identit
 inputs matched locally and every complete case passed independent Rust verification. Thirty of 38
 cases now share one backend binding; 8 remain. See the
 [VM-stop checkpoint](artifact-native-linux-vz-vm-stop-checkpoint-2026-07-12.md).
+
+The `guest_sensor_death` tamper case now proves the measured guest signer fails closed when the
+protected sensor dies. The unprivileged child first proves protected-sensor access denial, and the
+sensor binds its exact report, package credentials, procfs parent, cgroup membership, and ordered
+BPF fork/exec observations before reporting readiness. The signer then sends SIGKILL to that exact
+sensor, verifies signal 9, emits no receipt, and returns the exact injected-failure marker. All
+thirty-one cases ran physically on the resulting identity; all 93 request inputs matched locally and
+every complete case passed independent Rust verification. Thirty-one of 38 cases now share one
+backend binding; 7 remain. See the
+[guest-sensor-death checkpoint](artifact-native-linux-vz-guest-sensor-death-checkpoint-2026-07-12.md).
 
 Primary target: malicious npm and PyPI package detection with static analysis, AI-assisted code
 review, and behaviorally instrumented detonation in disposable virtual machines

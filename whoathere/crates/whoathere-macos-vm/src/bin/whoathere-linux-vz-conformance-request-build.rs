@@ -61,6 +61,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "background_listener" => LinuxVzTelemetryConformanceCaseV1::BackgroundListener,
         "channel_interruption" => LinuxVzTelemetryConformanceCaseV1::ChannelInterruption,
         "vm_stop" => LinuxVzTelemetryConformanceCaseV1::VmStop,
+        "guest_sensor_death" => LinuxVzTelemetryConformanceCaseV1::GuestSensorDeath,
         _ => return Err("request builder fixture case is not implemented".into()),
     };
     let output_directory = Path::new(&arguments[5]);

@@ -66,7 +66,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let channel_interruption =
         run_spec.fixture_case() == LinuxVzTelemetryConformanceCaseV1::ChannelInterruption;
     let vm_stop = run_spec.fixture_case() == LinuxVzTelemetryConformanceCaseV1::VmStop;
-    let host_only = channel_interruption || vm_stop;
+    let guest_sensor_death =
+        run_spec.fixture_case() == LinuxVzTelemetryConformanceCaseV1::GuestSensorDeath;
+    let host_only = channel_interruption || vm_stop || guest_sensor_death;
     let guest_receipt = if host_only {
         require_absent(&arguments[7])?;
         None
@@ -109,6 +111,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         LinuxVzTelemetryConformanceCaseV1::BackgroundListener => "background_listener",
         LinuxVzTelemetryConformanceCaseV1::ChannelInterruption => "channel_interruption",
         LinuxVzTelemetryConformanceCaseV1::VmStop => "vm_stop",
+        LinuxVzTelemetryConformanceCaseV1::GuestSensorDeath => "guest_sensor_death",
         _ => return Err("complete-case verifier does not implement this inert case".into()),
     };
     let backend = decode_unqualified_macos_linux_vz_telemetry_backend_identity_v1(
@@ -123,8 +126,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let guest_observation = if host_only {
         if channel_interruption {
             validate_channel_interruption_serial(&serial)?;
-        } else {
+        } else if vm_stop {
             validate_vm_stop_serial(&serial)?;
+        } else {
+            validate_guest_sensor_death_serial(&serial)?;
         }
         None
     } else {
@@ -330,14 +335,42 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 {
                     return Err("VM-stop evidence is rebound".into());
                 }
-            } else if evidence.channel_interruption().is_some() || evidence.vm_stop().is_some() {
+            } else if guest_sensor_death {
+                let death = evidence
+                    .guest_sensor_death()
+                    .ok_or("guest-sensor-death evidence is absent")?;
+                let expected_request_bytes =
+                    encode_linux_vz_guest_signer_request_v1(&run_spec_bytes, &challenge_bytes)?
+                        .len() as u64;
+                if death.request_frame_bytes() != expected_request_bytes
+                    || death.transmitted_request_bytes() != expected_request_bytes
+                    || death.response_bytes() != 0
+                    || !death.fixture_active_marker_observed()
+                    || death.signal() != 9
+                {
+                    return Err("guest-sensor-death evidence is rebound".into());
+                }
+            } else if evidence.channel_interruption().is_some()
+                || evidence.vm_stop().is_some()
+                || evidence.guest_sensor_death().is_some()
+            {
                 return Err("unexpected host-fault evidence".into());
             }
-            if channel_interruption && evidence.vm_stop().is_some() {
-                return Err("unexpected VM-stop evidence".into());
+            if channel_interruption
+                && (evidence.vm_stop().is_some() || evidence.guest_sensor_death().is_some())
+            {
+                return Err("unexpected non-channel host-fault evidence".into());
             }
-            if vm_stop && evidence.channel_interruption().is_some() {
-                return Err("unexpected channel-interruption evidence".into());
+            if vm_stop
+                && (evidence.channel_interruption().is_some()
+                    || evidence.guest_sensor_death().is_some())
+            {
+                return Err("unexpected non-VM-stop host-fault evidence".into());
+            }
+            if guest_sensor_death
+                && (evidence.channel_interruption().is_some() || evidence.vm_stop().is_some())
+            {
+                return Err("unexpected non-guest-sensor-death host-fault evidence".into());
             }
             let terminal = if matches!(
                 run_spec.fixture_case(),
@@ -505,6 +538,55 @@ fn validate_vm_stop_serial(serial: &[u8]) -> Result<(), Box<dyn std::error::Erro
     Ok(())
 }
 
+fn validate_guest_sensor_death_serial(serial: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+    let lines = serial
+        .split(|byte| *byte == b'\n')
+        .map(|line| line.strip_suffix(b"\r").unwrap_or(line))
+        .collect::<Vec<_>>();
+    let required: &[&[u8]] = &[
+        b"WHOATHERE_LINUX_VZ_SIGNED_INERT_BEGIN",
+        b"WHOATHERE_CAPABILITY kernel_release=6.18.35-0-virt",
+        b"WHOATHERE_CAPABILITY architecture=aarch64",
+        b"WHOATHERE_CAPABILITY kernel_btf=present",
+        b"WHOATHERE_CAPABILITY kernel_btf_sha256=sha256:d7f143446e11cfd67fa53392616afdbca6511a6af432e6bd56fb053aa4e7becb",
+        b"WHOATHERE_CAPABILITY cgroup_v2=mounted",
+        b"WHOATHERE_CAPABILITY bpf_fs=mounted",
+        b"WHOATHERE_CAPABILITY fanotify_init=available",
+        b"WHOATHERE_CAPABILITY bpf_program_load=available",
+        b"WHOATHERE_CAPABILITY syscall_probe=passed",
+        b"WHOATHERE_CAPABILITY virtio_vsock=loaded",
+        b"WHOATHERE_CAPABILITY virtio_net=loaded",
+        b"WHOATHERE_GUEST_SIGNER_READY port=40551",
+        b"WHOATHERE_SENSOR guest_sensor_death_fixture=active",
+        b"WHOATHERE_GUEST_SENSOR_DEATH observed_signal=9",
+        b"WHOATHERE_GUEST_SIGNER_FAILED reason=guest_sensor_death_injected",
+        b"WHOATHERE_CAPABILITY guest_receipt_signing=failed",
+        b"WHOATHERE_CAPABILITY external_route_configured=false",
+        b"WHOATHERE_CAPABILITY package_execution=false",
+        b"WHOATHERE_CAPABILITY sync_back=false",
+        b"WHOATHERE_LINUX_VZ_SIGNED_INERT_FAILED",
+    ];
+    if required
+        .iter()
+        .any(|required_line| !lines.iter().any(|line| line == required_line))
+        || lines.iter().any(|line| {
+            *line == b"WHOATHERE_CAPABILITY guest_receipt_signing=passed"
+                || *line == b"WHOATHERE_LINUX_VZ_SIGNED_INERT_OK"
+                || (line.starts_with(b"WHOATHERE_SENSOR ")
+                    && *line != b"WHOATHERE_SENSOR guest_sensor_death_fixture=active")
+                || line.starts_with(b"WHOATHERE_SENSOR_PROCESS_PROBE_")
+                || line.starts_with(b"WHOATHERE_GUEST_PROCESS_EVIDENCE ")
+                || line.starts_with(b"WHOATHERE_GUEST_FILE_EVIDENCE ")
+                || line.starts_with(b"WHOATHERE_GUEST_NETWORK_EVIDENCE ")
+                || line.starts_with(b"WHOATHERE_GUEST_TEARDOWN_EVIDENCE ")
+                || line.starts_with(b"WHOATHERE_GUEST_SIGNER_RECEIPT_OK ")
+        })
+    {
+        return Err("guest-sensor-death serial evidence is incomplete or contradictory".into());
+    }
+    Ok(())
+}
+
 fn require_absent(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     match fs::symlink_metadata(path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -538,7 +620,10 @@ fn read_bounded(path: &str, maximum: u64) -> Result<Vec<u8>, Box<dyn std::error:
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_channel_interruption_serial, validate_vm_stop_serial};
+    use super::{
+        validate_channel_interruption_serial, validate_guest_sensor_death_serial,
+        validate_vm_stop_serial,
+    };
 
     const CHANNEL_SERIAL: &str = "WHOATHERE_LINUX_VZ_SIGNED_INERT_BEGIN\n\
 WHOATHERE_CAPABILITY kernel_release=6.18.35-0-virt\n\
@@ -574,6 +659,28 @@ WHOATHERE_CAPABILITY virtio_vsock=loaded\n\
 WHOATHERE_CAPABILITY virtio_net=loaded\n\
 WHOATHERE_GUEST_SIGNER_READY port=40551\n\
 WHOATHERE_SENSOR vm_stop_fixture=active\n";
+
+    const GUEST_SENSOR_DEATH_SERIAL: &str = "WHOATHERE_LINUX_VZ_SIGNED_INERT_BEGIN\n\
+WHOATHERE_CAPABILITY kernel_release=6.18.35-0-virt\n\
+WHOATHERE_CAPABILITY architecture=aarch64\n\
+WHOATHERE_CAPABILITY kernel_btf=present\n\
+WHOATHERE_CAPABILITY kernel_btf_sha256=sha256:d7f143446e11cfd67fa53392616afdbca6511a6af432e6bd56fb053aa4e7becb\n\
+WHOATHERE_CAPABILITY cgroup_v2=mounted\n\
+WHOATHERE_CAPABILITY bpf_fs=mounted\n\
+WHOATHERE_CAPABILITY fanotify_init=available\n\
+WHOATHERE_CAPABILITY bpf_program_load=available\n\
+WHOATHERE_CAPABILITY syscall_probe=passed\n\
+WHOATHERE_CAPABILITY virtio_vsock=loaded\n\
+WHOATHERE_CAPABILITY virtio_net=loaded\n\
+WHOATHERE_GUEST_SIGNER_READY port=40551\n\
+WHOATHERE_SENSOR guest_sensor_death_fixture=active\n\
+WHOATHERE_GUEST_SENSOR_DEATH observed_signal=9\n\
+WHOATHERE_GUEST_SIGNER_FAILED reason=guest_sensor_death_injected\n\
+WHOATHERE_CAPABILITY guest_receipt_signing=failed\n\
+WHOATHERE_CAPABILITY external_route_configured=false\n\
+WHOATHERE_CAPABILITY package_execution=false\n\
+WHOATHERE_CAPABILITY sync_back=false\n\
+WHOATHERE_LINUX_VZ_SIGNED_INERT_FAILED\n";
 
     #[test]
     fn channel_interruption_serial_requires_exact_failure_without_evidence() {
@@ -614,6 +721,27 @@ WHOATHERE_SENSOR vm_stop_fixture=active\n";
         .is_err());
         assert!(validate_vm_stop_serial(
             format!("{VM_STOP_SERIAL}WHOATHERE_SENSOR process_exec=observed\n").as_bytes(),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn guest_sensor_death_serial_requires_active_sigkill_and_failure() {
+        validate_guest_sensor_death_serial(GUEST_SENSOR_DEATH_SERIAL.as_bytes()).unwrap();
+        assert!(validate_guest_sensor_death_serial(
+            GUEST_SENSOR_DEATH_SERIAL
+                .replace("WHOATHERE_GUEST_SENSOR_DEATH observed_signal=9\n", "")
+                .as_bytes(),
+        )
+        .is_err());
+        assert!(validate_guest_sensor_death_serial(
+            GUEST_SENSOR_DEATH_SERIAL
+                .replace("observed_signal=9", "observed_signal=15")
+                .as_bytes(),
+        )
+        .is_err());
+        assert!(validate_guest_sensor_death_serial(
+            format!("{GUEST_SENSOR_DEATH_SERIAL}WHOATHERE_GUEST_SIGNER_RECEIPT_OK x\n").as_bytes(),
         )
         .is_err());
     }

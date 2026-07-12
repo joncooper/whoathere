@@ -16,10 +16,11 @@ fn main() {
 mod linux {
     use serde_json::Value;
     use std::fs::{File, OpenOptions};
-    use std::io::{Read, Write};
+    use std::io::{BufRead, BufReader, Read, Write};
     use std::mem::{size_of, zeroed};
     use std::os::fd::{FromRawFd, RawFd};
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    use std::os::unix::process::ExitStatusExt;
     use std::path::Path;
     use std::process::{Command, Stdio};
     use whoathere_artifact::Sha256Digest;
@@ -141,6 +142,7 @@ mod linux {
                 | LinuxVzTelemetryConformanceCaseV1::ReparentedChild
                 | LinuxVzTelemetryConformanceCaseV1::BackgroundListener
                 | LinuxVzTelemetryConformanceCaseV1::VmStop
+                | LinuxVzTelemetryConformanceCaseV1::GuestSensorDeath
         ) || run_spec.expected_terminal()
             != expected_terminal_for_case_v1(run_spec.fixture_case())
             || run_spec.package_execution_authority_permitted()
@@ -192,6 +194,7 @@ mod linux {
             LinuxVzTelemetryConformanceCaseV1::ReparentedChild => "reparented_child",
             LinuxVzTelemetryConformanceCaseV1::BackgroundListener => "background_listener",
             LinuxVzTelemetryConformanceCaseV1::VmStop => "vm_stop",
+            LinuxVzTelemetryConformanceCaseV1::GuestSensorDeath => "guest_sensor_death",
             _ => return Err("guest_signer_run_spec_not_supported_inert_case".into()),
         };
         let mut child = Command::new(SENSOR_PATH)
@@ -203,11 +206,30 @@ mod linux {
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()?;
-        let mut sensor_output = Vec::new();
-        child
+        let sensor_stdout = child
             .stdout
             .take()
-            .ok_or("guest_signer_sensor_stdout_missing")?
+            .ok_or("guest_signer_sensor_stdout_missing")?;
+        if run_spec.fixture_case() == LinuxVzTelemetryConformanceCaseV1::GuestSensorDeath {
+            let mut reader = BufReader::new(sensor_stdout);
+            let mut marker = Vec::new();
+            reader.by_ref().take(257).read_until(b'\n', &mut marker)?;
+            if marker != b"WHOATHERE_SENSOR guest_sensor_death_fixture=active\n" {
+                return Err("guest_sensor_death_readiness_invalid".into());
+            }
+            std::io::stdout().write_all(&marker)?;
+            std::io::stdout().flush()?;
+            drop(reader);
+            child.kill()?;
+            let status = child.wait()?;
+            if status.signal() != Some(libc::SIGKILL) {
+                return Err("guest_sensor_death_signal_invalid".into());
+            }
+            println!("WHOATHERE_GUEST_SENSOR_DEATH observed_signal=9");
+            return Err("guest_sensor_death_injected".into());
+        }
+        let mut sensor_output = Vec::new();
+        sensor_stdout
             .take(MAX_SENSOR_OUTPUT_BYTES + 1)
             .read_to_end(&mut sensor_output)?;
         let status = child.wait()?;
