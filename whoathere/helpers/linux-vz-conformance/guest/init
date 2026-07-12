@@ -3,19 +3,20 @@ set -eu
 
 PATH=/usr/bin:/usr/sbin:/bin:/sbin
 export PATH
+busybox=/usr/bin/busybox
 
-mkdir -p /proc /sys /dev /run
-mount -t proc proc /proc
-mount -t sysfs sysfs /sys
-mount -t devtmpfs devtmpfs /dev || true
-mount -t tmpfs tmpfs /run
-mkdir -p /sys/fs/bpf /sys/fs/cgroup
+"$busybox" mkdir -p /proc /sys /dev /run
+"$busybox" mount -t proc proc /proc
+"$busybox" mount -t sysfs sysfs /sys
+"$busybox" mount -t devtmpfs devtmpfs /dev || true
+"$busybox" mount -t tmpfs tmpfs /run
+"$busybox" mkdir -p /sys/fs/bpf /sys/fs/cgroup
 
 capability_failed=0
 
 echo "WHOATHERE_LINUX_VZ_INERT_BEGIN"
-echo "WHOATHERE_CAPABILITY kernel_release=$(uname -r)"
-echo "WHOATHERE_CAPABILITY architecture=$(uname -m)"
+echo "WHOATHERE_CAPABILITY kernel_release=$("$busybox" uname -r)"
+echo "WHOATHERE_CAPABILITY architecture=$("$busybox" uname -m)"
 
 if [ -r /sys/kernel/btf/vmlinux ]; then
     echo "WHOATHERE_CAPABILITY kernel_btf=present"
@@ -24,14 +25,14 @@ else
     capability_failed=1
 fi
 
-if mount -t cgroup2 cgroup2 /sys/fs/cgroup; then
+if "$busybox" mount -t cgroup2 cgroup2 /sys/fs/cgroup; then
     echo "WHOATHERE_CAPABILITY cgroup_v2=mounted"
 else
     echo "WHOATHERE_CAPABILITY cgroup_v2=failed"
     capability_failed=1
 fi
 
-if mount -t bpf bpf /sys/fs/bpf; then
+if "$busybox" mount -t bpf bpf /sys/fs/bpf; then
     echo "WHOATHERE_CAPABILITY bpf_fs=mounted"
 else
     echo "WHOATHERE_CAPABILITY bpf_fs=failed"
@@ -60,8 +61,8 @@ if [ "$capability_failed" -eq 0 ]; then
 else
     echo "WHOATHERE_LINUX_VZ_INERT_CAPABILITY_FAILED"
 fi
-sync
-poweroff -f
-sleep 5
+"$busybox" sync
+"$busybox" poweroff -f
+"$busybox" sleep 5
 echo "WHOATHERE_LINUX_VZ_POWER_OFF_FAILED"
 exit 1

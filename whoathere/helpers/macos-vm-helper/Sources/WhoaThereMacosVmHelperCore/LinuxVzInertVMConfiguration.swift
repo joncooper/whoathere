@@ -2,7 +2,7 @@ import Foundation
 @preconcurrency import Virtualization
 
 public let linuxVzInertKernelCommandLineV1 =
-    "console=hvc0 rdinit=/init panic=-1 reboot=k loglevel=6"
+    "console=hvc0 rdinit=/init panic=0 reboot=k loglevel=6"
 
 public enum LinuxVzInertVMConfigurationError: Error, Equatable {
     case invalidKernel

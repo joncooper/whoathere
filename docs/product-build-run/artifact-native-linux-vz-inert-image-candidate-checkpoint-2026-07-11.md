@@ -6,6 +6,11 @@ Status: a pinned, reproducible, independently verified inert Linux VZ boot candi
 current development host has no Virtualization.framework hardware support, so no guest boot,
 sensor observation, conformance receipt, backend qualification, or package execution has occurred
 
+Historical note: this pre-boot checkpoint is superseded by the successful
+[Linux VZ Inert-Boot Checkpoint](artifact-native-linux-vz-inert-boot-checkpoint-2026-07-11.md).
+Its hashes and claim boundary describe the earlier candidate and should not be read as the current
+boot result.
+
 Canonical references:
 
 - [Artifact-Native Detection Execution Plan](artifact-native-detection-execution-plan.md)

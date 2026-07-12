@@ -268,7 +268,10 @@ private struct LinuxVzConformanceHarness {
     }
 
     private static func emitJSON(_ fields: [String: Any]) {
-        guard let data = try? JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys]),
+        guard let data = try? JSONSerialization.data(
+            withJSONObject: fields,
+            options: [.sortedKeys, .withoutEscapingSlashes]
+        ),
               let text = String(data: data, encoding: .utf8) else {
             return
         }

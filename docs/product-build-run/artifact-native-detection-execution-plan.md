@@ -4,6 +4,12 @@ Date: 2026-07-09
 
 Status: canonical execution plan for the next product milestone
 
+Current execution checkpoint (2026-07-11): the pinned Linux VZ inert candidate now boots on a
+physical Apple Silicon Mac and passes all twelve platform capability checks while preserving no
+package execution, no sync-back, and no external route. This closes platform feasibility only; the
+backend remains unqualified until protected sensors pass the authenticated 38-case inert matrix.
+See the [Linux VZ inert-boot checkpoint](artifact-native-linux-vz-inert-boot-checkpoint-2026-07-11.md).
+
 Primary target: malicious npm and PyPI package detection with static analysis, AI-assisted code
 review, and behaviorally instrumented detonation in disposable virtual machines
 
@@ -1257,6 +1263,7 @@ surface area.
 Repository evidence:
 
 - [Current product README](../../README.md)
+- [Linux VZ inert-boot checkpoint](artifact-native-linux-vz-inert-boot-checkpoint-2026-07-11.md)
 - [macOS local release readiness](macos-local-release-readiness.md)
 - [macOS local beta pressure checkpoint](macos-local-beta-pressure-checkpoint.md)
 - [latest source-fixture corpus report](src-fixture-corpus-latest.md)

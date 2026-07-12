@@ -4,13 +4,16 @@ This directory contains only trusted inert Linux-on-Mac qualification fixtures. 
 package artifacts or malware.
 
 The first boot input is Alpine Linux 3.24.1's official aarch64 virtual ISO, pinned by SHA-256. The
-builder extracts the virt kernel, initramfs, config, and System.map, compiles a static aarch64 syscall
+builder extracts the virt kernel, initramfs, config, and System.map, extracts and verifies the
+uncompressed arm64 Linux `Image` from the pinned PE/EFI kernel, compiles a static aarch64 syscall
 probe, and appends a tiny inert `/init` that reports capability markers and powers off. Downloads,
 generated images, serial output, and boot results belong under the gitignored `.whoathere/` tree.
 
 The overlay uses a repository-owned canonical `newc` writer rather than host CPIO metadata. Entry
-order, inode values, root ownership, modes, timestamps, and padding are fixed. Two clean builds from
-the same ISO must therefore produce byte-identical overlay, combined initramfs, and manifest bytes.
+order, inode values, root ownership, modes, timestamps, and padding are fixed. The overlay is then
+compressed with deterministic gzip settings before concatenation with Alpine's gzip initramfs. Two
+clean builds from the same ISO must therefore produce byte-identical raw kernel, overlay, combined
+initramfs, and manifest bytes.
 The builder requires Xcode's Clang and Zig; the independent verifier additionally uses `jq`, `cpio`,
 `file`, and `shasum`.
 
@@ -51,6 +54,10 @@ The generated manifest remains `candidate_unqualified`. A successful boot marker
 telemetry conformance, does not qualify the backend, and cannot authorize package execution. Only
 the complete authenticated 38-case inert conformance matrix can construct the distinct qualified
 backend type.
+
+The first physical-host boot passed all twelve exact capability checks with zero raw frames and all
+three safety invariants false. See the
+[sanitized inert-boot checkpoint](../../../docs/product-build-run/artifact-native-linux-vz-inert-boot-checkpoint-2026-07-11.md).
 
 ## Closed fixture contract
 

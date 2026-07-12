@@ -49,15 +49,20 @@ if [ "$virtualization_supported" != true ]; then
     exit 69
 fi
 
+swift_scratch="$run_dir/swift-build"
 swift build \
     --package-path "$helper_dir" \
+    --scratch-path "$swift_scratch" \
     --product whoathere-linux-vz-conformance
-helper_bin_dir=$(swift build --package-path "$helper_dir" --show-bin-path)
+helper_bin_dir=$(swift build \
+    --package-path "$helper_dir" \
+    --scratch-path "$swift_scratch" \
+    --show-bin-path)
 helper="$helper_bin_dir/whoathere-linux-vz-conformance"
 "$helper_dir/scripts/sign-local-helper.sh" "$helper" >/dev/null
 codesign --verify --strict "$helper"
 
-expected_kernel=$(jq -er '.kernel_sha256' "$image/manifest.json")
+expected_kernel=$(jq -er '.kernel_image_sha256' "$image/manifest.json")
 expected_initramfs=$(jq -er '.whoathere_initramfs_sha256' "$image/manifest.json")
 
 result_tmp="$run_dir/.boot-result.json.tmp.$$"
@@ -67,7 +72,7 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 
 if "$helper" \
-    --kernel "$image/vmlinuz-virt" \
+    --kernel "$image/Image-virt" \
     --initramfs "$image/whoathere-initramfs-virt" \
     --expected-kernel-sha256 "$expected_kernel" \
     --expected-initramfs-sha256 "$expected_initramfs" \
