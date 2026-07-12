@@ -138,6 +138,13 @@ public let linuxVzInertBPFReservationFailureSensorMarkersV1 = [
     "WHOATHERE_SENSOR drop_accounting_terminal=incomplete_on_injected_gap"
 ]
 
+public let linuxVzInertFanotifyQueueOverflowSensorMarkersV1 = [
+    "WHOATHERE_SENSOR fanotify_queue_overflow=injected",
+    "WHOATHERE_SENSOR dropped_event_accounting=observed",
+    "WHOATHERE_SENSOR fanotify_queue_limit=restored",
+    "WHOATHERE_SENSOR drop_accounting_terminal=incomplete_on_injected_gap"
+]
+
 public let linuxVzInertRequiredEvidenceMarkersV2 =
     linuxVzInertRequiredCapabilityMarkersV1 + linuxVzInertProcessSensorMarkersV2
 

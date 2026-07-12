@@ -51,6 +51,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         "mmap_access" => LinuxVzTelemetryConformanceCaseV1::MmapAccess,
         "bpf_reservation_failure" => LinuxVzTelemetryConformanceCaseV1::BpfReservationFailure,
+        "fanotify_queue_overflow" => LinuxVzTelemetryConformanceCaseV1::FanotifyQueueOverflow,
         _ => return Err("request builder fixture case is not implemented".into()),
     };
     let output_directory = Path::new(&arguments[5]);

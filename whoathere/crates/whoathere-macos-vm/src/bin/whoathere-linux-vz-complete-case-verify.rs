@@ -6,8 +6,10 @@ use whoathere_detonation::ArtifactProtectedTelemetryRequirementsV1;
 use whoathere_macos_vm::{
     decode_and_validate_macos_linux_vz_telemetry_conformance_challenge_v1,
     decode_and_validate_macos_linux_vz_telemetry_conformance_run_spec_v1,
-    decode_linux_vz_drop_evidence_from_serial_v1, decode_linux_vz_file_evidence_from_serial_v1,
-    decode_linux_vz_host_evidence_payload_v1, decode_linux_vz_network_evidence_from_serial_v1,
+    decode_linux_vz_drop_evidence_from_serial_v1,
+    decode_linux_vz_fanotify_overflow_evidence_from_serial_v1,
+    decode_linux_vz_file_evidence_from_serial_v1, decode_linux_vz_host_evidence_payload_v1,
+    decode_linux_vz_network_evidence_from_serial_v1,
     decode_linux_vz_network_host_evidence_payload_v1,
     decode_linux_vz_process_evidence_from_serial_v1,
     decode_unqualified_macos_linux_vz_telemetry_backend_identity_v1,
@@ -85,6 +87,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         LinuxVzTelemetryConformanceCaseV1::MmapAccess => "mmap_access",
         LinuxVzTelemetryConformanceCaseV1::BpfReservationFailure => "bpf_reservation_failure",
+        LinuxVzTelemetryConformanceCaseV1::FanotifyQueueOverflow => "fanotify_queue_overflow",
         _ => return Err("complete-case verifier does not implement this inert case".into()),
     };
     let backend = decode_unqualified_macos_linux_vz_telemetry_backend_identity_v1(
@@ -170,6 +173,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     None,
                 )
             }
+            LinuxVzTelemetryConformanceCaseV1::FanotifyQueueOverflow => {
+                let evidence = decode_linux_vz_fanotify_overflow_evidence_from_serial_v1(&serial)?;
+                if evidence.fixture_case() != run_spec.fixture_case()
+                    || evidence.package_uid() != backend.package_uid()
+                    || evidence.package_gid() != backend.package_gid()
+                {
+                    return Err("guest fanotify overflow evidence binding mismatch".into());
+                }
+                (
+                    evidence.payload_sha256().clone(),
+                    evidence.guest_observation_claims_v1()?,
+                    None,
+                )
+            }
             _ => return Err("complete-case verifier does not implement this inert case".into()),
         };
     let verified_guest = verify_macos_linux_vz_telemetry_guest_receipt_v1(
@@ -205,9 +222,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         )
     } else {
         let evidence = decode_linux_vz_host_evidence_payload_v1(&host_evidence)?;
-        let terminal = if run_spec.fixture_case()
-            == LinuxVzTelemetryConformanceCaseV1::BpfReservationFailure
-        {
+        let terminal = if matches!(
+            run_spec.fixture_case(),
+            LinuxVzTelemetryConformanceCaseV1::BpfReservationFailure
+                | LinuxVzTelemetryConformanceCaseV1::FanotifyQueueOverflow
+        ) {
             LinuxVzTelemetryConformanceObservedTerminalV1::IncompleteOnInjectedGap
         } else {
             LinuxVzTelemetryConformanceObservedTerminalV1::ObservationComplete

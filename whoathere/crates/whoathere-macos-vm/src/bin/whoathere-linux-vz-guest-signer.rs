@@ -26,11 +26,14 @@ mod linux {
     use whoathere_macos_vm::{
         decode_and_validate_macos_linux_vz_telemetry_conformance_challenge_v1,
         decode_and_validate_macos_linux_vz_telemetry_conformance_run_spec_v1,
-        decode_linux_vz_drop_evidence_from_serial_v1, decode_linux_vz_file_evidence_from_serial_v1,
-        decode_linux_vz_guest_signer_request_v1, decode_linux_vz_network_evidence_from_serial_v1,
+        decode_linux_vz_drop_evidence_from_serial_v1,
+        decode_linux_vz_fanotify_overflow_evidence_from_serial_v1,
+        decode_linux_vz_file_evidence_from_serial_v1, decode_linux_vz_guest_signer_request_v1,
+        decode_linux_vz_network_evidence_from_serial_v1,
         decode_linux_vz_process_evidence_from_serial_v1, encode_linux_vz_guest_signer_response_v1,
         sign_macos_linux_vz_telemetry_guest_receipt_v1, LinuxVzTelemetryConformanceCaseV1,
         LinuxVzTelemetryConformanceExpectedTerminalV1, MAX_LINUX_VZ_DROP_EVIDENCE_PAYLOAD_BYTES_V1,
+        MAX_LINUX_VZ_FANOTIFY_OVERFLOW_EVIDENCE_PAYLOAD_BYTES_V1,
         MAX_LINUX_VZ_FILE_EVIDENCE_PAYLOAD_BYTES_V1,
         MAX_LINUX_VZ_GUEST_SIGNER_REQUEST_FRAME_BYTES_V1,
         MAX_LINUX_VZ_NETWORK_EVIDENCE_PAYLOAD_BYTES_V1,
@@ -54,10 +57,15 @@ mod linux {
         } else {
             MAX_LINUX_VZ_PROCESS_EVIDENCE_PAYLOAD_BYTES_V1
         };
-        if MAX_LINUX_VZ_DROP_EVIDENCE_PAYLOAD_BYTES_V1 > file_or_process {
+        let including_drop = if MAX_LINUX_VZ_DROP_EVIDENCE_PAYLOAD_BYTES_V1 > file_or_process {
             MAX_LINUX_VZ_DROP_EVIDENCE_PAYLOAD_BYTES_V1
         } else {
             file_or_process
+        };
+        if MAX_LINUX_VZ_FANOTIFY_OVERFLOW_EVIDENCE_PAYLOAD_BYTES_V1 > including_drop {
+            MAX_LINUX_VZ_FANOTIFY_OVERFLOW_EVIDENCE_PAYLOAD_BYTES_V1
+        } else {
+            including_drop
         }
     };
     const MAX_SENSOR_OUTPUT_BYTES: u64 =
@@ -107,9 +115,11 @@ mod linux {
                 | LinuxVzTelemetryConformanceCaseV1::ProtectedOpenReadWriteRenameDelete
                 | LinuxVzTelemetryConformanceCaseV1::MmapAccess
                 | LinuxVzTelemetryConformanceCaseV1::BpfReservationFailure
+                | LinuxVzTelemetryConformanceCaseV1::FanotifyQueueOverflow
         ) || run_spec.expected_terminal()
             != match run_spec.fixture_case() {
-                LinuxVzTelemetryConformanceCaseV1::BpfReservationFailure => {
+                LinuxVzTelemetryConformanceCaseV1::BpfReservationFailure
+                | LinuxVzTelemetryConformanceCaseV1::FanotifyQueueOverflow => {
                     LinuxVzTelemetryConformanceExpectedTerminalV1::IncompleteOnInjectedGap
                 }
                 _ => LinuxVzTelemetryConformanceExpectedTerminalV1::ObservationComplete,
@@ -154,6 +164,7 @@ mod linux {
             }
             LinuxVzTelemetryConformanceCaseV1::MmapAccess => "mmap_access",
             LinuxVzTelemetryConformanceCaseV1::BpfReservationFailure => "bpf_reservation_failure",
+            LinuxVzTelemetryConformanceCaseV1::FanotifyQueueOverflow => "fanotify_queue_overflow",
             _ => return Err("guest_signer_run_spec_not_supported_inert_case".into()),
         };
         let mut child = Command::new(SENSOR_PATH)
@@ -232,6 +243,18 @@ mod linux {
                 let evidence = decode_linux_vz_drop_evidence_from_serial_v1(&sensor_output)?;
                 if evidence.fixture_case() != run_spec.fixture_case() {
                     return Err("guest_signer_drop_case_mismatch".into());
+                }
+                (
+                    evidence.package_uid(),
+                    evidence.package_gid(),
+                    evidence.guest_observation_claims_v1()?,
+                )
+            }
+            LinuxVzTelemetryConformanceCaseV1::FanotifyQueueOverflow => {
+                let evidence =
+                    decode_linux_vz_fanotify_overflow_evidence_from_serial_v1(&sensor_output)?;
+                if evidence.fixture_case() != run_spec.fixture_case() {
+                    return Err("guest_signer_fanotify_overflow_case_mismatch".into());
                 }
                 (
                     evidence.package_uid(),

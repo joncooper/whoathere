@@ -80,6 +80,10 @@
 #define DNS_MALFORMED_PAYLOAD_LENGTH 12
 #define DROP_RING_BUFFER_BYTES 4096
 #define DROP_RESERVATION_ATTEMPTS 2048
+#define FANOTIFY_QUEUE_LIMIT_PATH "/proc/sys/fs/fanotify/max_queued_events"
+#define FANOTIFY_OVERFLOW_ROOT "/run/whoathere-fanotify-overflow"
+#define FANOTIFY_INJECTED_QUEUE_LIMIT 64
+#define FANOTIFY_OVERFLOW_TRIGGER_COUNT 256
 #define SENSOR_PROGRAM_COUNT 8
 
 struct reparent_report {
@@ -692,6 +696,266 @@ cleanup:
             "WHOATHERE_SENSOR_DROP_PROBE_FAILED stage=%s errno=%d\n",
             failure_stage,
             failure_errno
+        );
+    }
+    return result;
+}
+
+static int read_uint64_control(const char *path, uint64_t *value) {
+    char buffer[32];
+    int descriptor = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (descriptor < 0) return -1;
+    ssize_t length = read(descriptor, buffer, sizeof(buffer));
+    int saved_errno = errno;
+    int close_result = close(descriptor);
+    errno = saved_errno;
+    if (length <= 0 || length == (ssize_t)sizeof(buffer) || close_result != 0) return -1;
+    if (buffer[length - 1] == '\n') length--;
+    if (length <= 0 || (length > 1 && buffer[0] == '0')) return -1;
+    uint64_t parsed = 0;
+    for (ssize_t index = 0; index < length; index++) {
+        if (buffer[index] < '0' || buffer[index] > '9' ||
+            parsed > (UINT64_MAX - (uint64_t)(buffer[index] - '0')) / 10) return -1;
+        parsed = parsed * 10 + (uint64_t)(buffer[index] - '0');
+    }
+    if (parsed == 0) return -1;
+    *value = parsed;
+    return 0;
+}
+
+static int write_uint64_control(const char *path, uint64_t value) {
+    char buffer[32];
+    int length = snprintf(buffer, sizeof(buffer), "%" PRIu64 "\n", value);
+    if (length <= 0 || (size_t)length >= sizeof(buffer)) return -1;
+    int descriptor = open(path, O_WRONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (descriptor < 0) return -1;
+    ssize_t written = write(descriptor, buffer, (size_t)length);
+    int saved_errno = errno;
+    int close_result = close(descriptor);
+    errno = saved_errno;
+    return written == length && close_result == 0 ? 0 : -1;
+}
+
+static int fanotify_overflow_path(char *path, size_t capacity, size_t index) {
+    int length = snprintf(path, capacity, "%s/event-%03zu", FANOTIFY_OVERFLOW_ROOT, index);
+    return length > 0 && (size_t)length < capacity ? 0 : -1;
+}
+
+static int prepare_fanotify_overflow_fixture(void) {
+    ino_t inodes[FANOTIFY_OVERFLOW_TRIGGER_COUNT];
+    char path[160];
+    if (mkdir(FANOTIFY_OVERFLOW_ROOT, 0700) != 0) return -1;
+    for (size_t index = 0; index < FANOTIFY_OVERFLOW_TRIGGER_COUNT; index++) {
+        if (fanotify_overflow_path(path, sizeof(path), index) != 0) return -1;
+        int descriptor = open(
+            path,
+            O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
+            0400
+        );
+        if (descriptor < 0) return -1;
+        struct stat metadata;
+        int valid = fstat(descriptor, &metadata) == 0 && S_ISREG(metadata.st_mode) &&
+            metadata.st_uid == 0 && metadata.st_gid == 0 && metadata.st_nlink == 1;
+        int saved_errno = errno;
+        if (close(descriptor) != 0) valid = 0;
+        errno = saved_errno;
+        if (!valid) return -1;
+        for (size_t previous = 0; previous < index; previous++) {
+            if (inodes[previous] == metadata.st_ino) return -1;
+        }
+        inodes[index] = metadata.st_ino;
+    }
+    return 0;
+}
+
+static int cleanup_fanotify_overflow_fixture(void) {
+    char path[160];
+    int result = 0;
+    for (size_t index = 0; index < FANOTIFY_OVERFLOW_TRIGGER_COUNT; index++) {
+        if (fanotify_overflow_path(path, sizeof(path), index) != 0 ||
+            (unlink(path) != 0 && errno != ENOENT)) result = -1;
+    }
+    if (rmdir(FANOTIFY_OVERFLOW_ROOT) != 0 && errno != ENOENT) result = -1;
+    return result;
+}
+
+static int drain_fanotify_overflow(
+    int descriptor,
+    pid_t expected_process,
+    uint64_t *observed,
+    uint64_t *overflow_markers
+) {
+    char buffer[8192] __attribute__((aligned(8)));
+    *observed = 0;
+    *overflow_markers = 0;
+    for (;;) {
+        ssize_t length = read(descriptor, buffer, sizeof(buffer));
+        if (length < 0 && errno == EINTR) continue;
+        if (length < 0 && errno == EAGAIN) return 0;
+        if (length <= 0) return -1;
+        struct fanotify_event_metadata *metadata;
+        for (metadata = (struct fanotify_event_metadata *)buffer;
+             FAN_EVENT_OK(metadata, length);
+             metadata = FAN_EVENT_NEXT(metadata, length)) {
+            if (metadata->vers != FANOTIFY_METADATA_VERSION) return -1;
+            if (metadata->mask == FAN_Q_OVERFLOW && metadata->fd == FAN_NOFD) {
+                (*overflow_markers)++;
+            } else if (metadata->mask == FAN_OPEN && metadata->fd >= 0 &&
+                       metadata->pid == expected_process) {
+                (*observed)++;
+            } else {
+                if (metadata->fd >= 0) close(metadata->fd);
+                return -1;
+            }
+            if (metadata->fd >= 0 && close(metadata->fd) != 0) return -1;
+        }
+    }
+}
+
+static int run_fanotify_queue_overflow_probe(const char *fixture) {
+    int fanotify = -1;
+    int result = 70;
+    const char *failure_stage = "preflight";
+    int failure_errno = 0;
+    uint64_t original_limit = 0;
+    uint64_t current_limit = 0;
+    uint64_t observed = 0;
+    uint64_t overflow_markers = 0;
+    int limit_changed = 0;
+    int limit_restored = 0;
+    pid_t process = getpid();
+    char path[160];
+
+    if (getuid() != 0 || geteuid() != 0 || verify_root_owned_executable(fixture) != 0) {
+        failure_stage = "identity";
+        goto cleanup;
+    }
+    if (prepare_fanotify_overflow_fixture() != 0) {
+        failure_stage = "fixture_prepare";
+        failure_errno = errno;
+        goto cleanup;
+    }
+    if (read_uint64_control(FANOTIFY_QUEUE_LIMIT_PATH, &original_limit) != 0 ||
+        original_limit < FANOTIFY_INJECTED_QUEUE_LIMIT) {
+        failure_stage = "queue_limit_read";
+        failure_errno = errno;
+        goto cleanup;
+    }
+    if (write_uint64_control(FANOTIFY_QUEUE_LIMIT_PATH, FANOTIFY_INJECTED_QUEUE_LIMIT) != 0) {
+        failure_stage = "queue_limit_inject";
+        failure_errno = errno;
+        goto cleanup;
+    }
+    limit_changed = 1;
+    if (read_uint64_control(FANOTIFY_QUEUE_LIMIT_PATH, &current_limit) != 0 ||
+        current_limit != FANOTIFY_INJECTED_QUEUE_LIMIT) {
+        failure_stage = "queue_limit_verify";
+        failure_errno = errno;
+        goto cleanup;
+    }
+    fanotify = (int)syscall(
+        SYS_fanotify_init,
+        FAN_CLASS_NOTIF | FAN_CLOEXEC | FAN_NONBLOCK,
+        O_RDONLY | O_LARGEFILE | O_CLOEXEC
+    );
+    if (write_uint64_control(FANOTIFY_QUEUE_LIMIT_PATH, original_limit) != 0 ||
+        read_uint64_control(FANOTIFY_QUEUE_LIMIT_PATH, &current_limit) != 0 ||
+        current_limit != original_limit) {
+        failure_stage = "queue_limit_restore";
+        failure_errno = errno;
+        goto cleanup;
+    }
+    limit_restored = 1;
+    limit_changed = 0;
+    if (fanotify < 0 || syscall(
+            SYS_fanotify_mark,
+            fanotify,
+            FAN_MARK_ADD | FAN_MARK_ONLYDIR,
+            FAN_OPEN | FAN_EVENT_ON_CHILD,
+            AT_FDCWD,
+            FANOTIFY_OVERFLOW_ROOT
+        ) != 0) {
+        failure_stage = "fanotify_mark";
+        failure_errno = errno;
+        goto cleanup;
+    }
+    for (size_t index = 0; index < FANOTIFY_OVERFLOW_TRIGGER_COUNT; index++) {
+        if (fanotify_overflow_path(path, sizeof(path), index) != 0) {
+            failure_stage = "trigger_path";
+            goto cleanup;
+        }
+        int descriptor = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+        if (descriptor < 0 || close(descriptor) != 0) {
+            failure_stage = "trigger_open";
+            failure_errno = errno;
+            goto cleanup;
+        }
+    }
+    if (drain_fanotify_overflow(fanotify, process, &observed, &overflow_markers) != 0 ||
+        observed != FANOTIFY_INJECTED_QUEUE_LIMIT || overflow_markers != 1 ||
+        observed >= FANOTIFY_OVERFLOW_TRIGGER_COUNT) {
+        failure_stage = "fanotify_overflow_observation";
+        failure_errno = errno;
+        goto cleanup;
+    }
+    if (cleanup_fanotify_overflow_fixture() != 0) {
+        failure_stage = "fixture_cleanup";
+        failure_errno = errno;
+        goto cleanup;
+    }
+    uint64_t timestamp = monotonic_ns();
+    if (timestamp == 0) {
+        failure_stage = "timestamp";
+        failure_errno = errno;
+        goto cleanup;
+    }
+    uint64_t dropped = FANOTIFY_OVERFLOW_TRIGGER_COUNT - observed;
+    puts("WHOATHERE_SENSOR fanotify_queue_overflow=injected");
+    puts("WHOATHERE_SENSOR dropped_event_accounting=observed");
+    puts("WHOATHERE_SENSOR fanotify_queue_limit=restored");
+    puts("WHOATHERE_SENSOR drop_accounting_terminal=incomplete_on_injected_gap");
+    printf(
+        "WHOATHERE_GUEST_FANOTIFY_OVERFLOW_EVIDENCE {"
+        "\"descendant_teardown_complete\":true,\"dropped_event_count\":\"%" PRIu64 "\","
+        "\"event_count\":\"1\",\"event_sequence_end\":\"1\","
+        "\"event_sequence_start\":\"1\",\"events\":[{\"actor_pid\":\"%d\","
+        "\"kind\":\"fanotify_queue_overflow\",\"sequence\":\"1\","
+        "\"timestamp_ns\":\"%" PRIu64 "\"}],\"evidence_truncated\":false,"
+        "\"fanotify_observed_event_count\":\"%" PRIu64 "\","
+        "\"fanotify_overflow_marker_count\":\"%" PRIu64 "\","
+        "\"fanotify_queue_limit_injected\":\"%d\","
+        "\"fanotify_queue_limit_original\":\"%" PRIu64 "\","
+        "\"fanotify_queue_limit_restored\":true,\"fanotify_trigger_count\":\"%d\","
+        "\"fanotify_unique_inode_count\":\"%d\","
+        "\"fixture_case\":\"fanotify_queue_overflow\",\"heartbeat_count\":\"2\","
+        "\"injection_kind\":\"fanotify_queue_limit_exhaustion\","
+        "\"package_gid\":\"65534\",\"package_uid\":\"65534\","
+        "\"schema_version\":\"whoathere.linux_vz_fanotify_overflow_evidence_payload.v1\","
+        "\"sensor_healthy\":true}\n",
+        dropped,
+        process,
+        timestamp,
+        observed,
+        overflow_markers,
+        FANOTIFY_INJECTED_QUEUE_LIMIT,
+        original_limit,
+        FANOTIFY_OVERFLOW_TRIGGER_COUNT,
+        FANOTIFY_OVERFLOW_TRIGGER_COUNT
+    );
+    result = 0;
+
+cleanup:
+    if (limit_changed && write_uint64_control(FANOTIFY_QUEUE_LIMIT_PATH, original_limit) == 0 &&
+        read_uint64_control(FANOTIFY_QUEUE_LIMIT_PATH, &current_limit) == 0 &&
+        current_limit == original_limit) limit_restored = 1;
+    close_if_open(&fanotify);
+    if (result != 0) (void)cleanup_fanotify_overflow_fixture();
+    if (result != 0) {
+        printf(
+            "WHOATHERE_SENSOR_FANOTIFY_OVERFLOW_FAILED stage=%s errno=%d limit_restored=%s\n",
+            failure_stage,
+            failure_errno,
+            limit_restored ? "true" : "false"
         );
     }
     return result;
@@ -3125,6 +3389,9 @@ int main(int argument_count, char **arguments) {
     }
     if (strcmp(arguments[2], "bpf_reservation_failure") == 0) {
         return run_bpf_reservation_failure_probe(arguments[1]);
+    }
+    if (strcmp(arguments[2], "fanotify_queue_overflow") == 0) {
+        return run_fanotify_queue_overflow_probe(arguments[1]);
     }
     if (strcmp(arguments[2], "protected_open_read_write_rename_delete") == 0 ||
         strcmp(arguments[2], "mmap_access") == 0) {

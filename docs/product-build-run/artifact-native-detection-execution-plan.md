@@ -163,6 +163,16 @@ execution authority. The previous nineteen cases were rerun and independently ve
 exact identity. Twenty of 38 cases now share one backend binding; 18 remain. See the
 [BPF reservation-failure checkpoint](artifact-native-linux-vz-bpf-reservation-failure-checkpoint-2026-07-12.md).
 
+The second drop-accounting case, `fanotify_queue_overflow`, now creates one notification group
+whose queue limit is fixed at 64, immediately restores the host-wide default to 16,384, and opens
+256 root-only unique inodes exactly once without draining the group. The pinned kernel delivered 64
+normal events plus one `FAN_Q_OVERFLOW` marker, proving 192 dropped notifications. Strict decoders
+bind the unique-inode count, trigger arithmetic, kernel marker, restored limit, healthy sensors,
+zero host drops, and the expected incomplete terminal. The previous twenty cases were rerun and
+independently verified on the new exact identity. Twenty-one of 38 cases now share one backend
+binding; 17 remain. See the
+[fanotify queue-overflow checkpoint](artifact-native-linux-vz-fanotify-queue-overflow-checkpoint-2026-07-12.md).
+
 Primary target: malicious npm and PyPI package detection with static analysis, AI-assisted code
 review, and behaviorally instrumented detonation in disposable virtual machines
 

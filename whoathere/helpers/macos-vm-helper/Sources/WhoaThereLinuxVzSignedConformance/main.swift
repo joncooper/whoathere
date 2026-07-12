@@ -349,6 +349,18 @@ private struct LinuxVzSignedConformanceHarness {
             guestEventCount = evidence.claims.eventCount
             networkSourcePort = nil
             networkFixtureCase = nil
+        case "fanotify_queue_overflow":
+            let evidence = try decodeLinuxVzFanotifyOverflowEvidencePayloadV1(serialData)
+            guard evidence.fixtureCase == runSpec.fixtureCase,
+                  evidence.packageUID == UInt64(backend.packageUID),
+                  evidence.packageGID == UInt64(backend.packageGID) else {
+                throw HarnessError.verificationFailed
+            }
+            claims = evidence.claims
+            guestEvidencePayloadSHA256 = evidence.payloadSHA256
+            guestEventCount = evidence.claims.eventCount
+            networkSourcePort = nil
+            networkFixtureCase = nil
         default:
             throw HarnessError.verificationFailed
         }
@@ -455,6 +467,12 @@ private struct LinuxVzSignedConformanceHarness {
         } else if runSpec.fixtureCase == "bpf_reservation_failure" {
             let missingCapabilities = linuxVzInertMissingCapabilityMarkers(serialData)
             let missingDropMarkers = linuxVzInertBPFReservationFailureSensorMarkersV1.filter {
+                !linuxVzInertSerialContainsExactMarker(serialData, marker: $0)
+            }
+            missingBaseMarkers = missingCapabilities + missingDropMarkers
+        } else if runSpec.fixtureCase == "fanotify_queue_overflow" {
+            let missingCapabilities = linuxVzInertMissingCapabilityMarkers(serialData)
+            let missingDropMarkers = linuxVzInertFanotifyQueueOverflowSensorMarkersV1.filter {
                 !linuxVzInertSerialContainsExactMarker(serialData, marker: $0)
             }
             missingBaseMarkers = missingCapabilities + missingDropMarkers
@@ -648,7 +666,9 @@ private struct LinuxVzSignedConformanceHarness {
                 vmStopped: true,
                 cloneDestroyed: cloneDestroyed,
                 storageDeviceCount: UInt64(configuration.storageDevices.count),
-                observedTerminal: runSpec.fixtureCase == "bpf_reservation_failure"
+                observedTerminal: [
+                    "bpf_reservation_failure", "fanotify_queue_overflow"
+                ].contains(runSpec.fixtureCase)
                     ? "incomplete_on_injected_gap" : "observation_complete"
             )
             hostEvidenceJSON = hostEvidence.canonicalJSON
