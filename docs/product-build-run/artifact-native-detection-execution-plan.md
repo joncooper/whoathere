@@ -111,6 +111,12 @@ The previous twelve cases were rerun on the resulting exact identity. Thirteen o
 one backend binding; 25 remain. See the
 [private-address-connect checkpoint](artifact-native-linux-vz-private-address-connect-checkpoint-2026-07-12.md).
 
+The `link_local_connect` case now binds one unprivileged TCP connect to a non-metadata link-local
+sinkhole through the protected syscall, live `SYN_SENT` state, a distinct destination-class marker,
+and exactly one checksum-valid host-observed SYN. The previous thirteen cases were rerun on the new
+exact identity. Fourteen of 38 cases now share one backend binding; 24 remain. See the
+[link-local-connect checkpoint](artifact-native-linux-vz-link-local-connect-checkpoint-2026-07-12.md).
+
 Primary target: malicious npm and PyPI package detection with static analysis, AI-assisted code
 review, and behaviorally instrumented detonation in disposable virtual machines
 

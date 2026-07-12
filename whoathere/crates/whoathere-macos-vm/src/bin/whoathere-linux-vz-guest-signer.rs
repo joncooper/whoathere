@@ -90,6 +90,7 @@ mod linux {
                 | LinuxVzTelemetryConformanceCaseV1::UdpSend
                 | LinuxVzTelemetryConformanceCaseV1::LoopbackConnect
                 | LinuxVzTelemetryConformanceCaseV1::PrivateAddressConnect
+                | LinuxVzTelemetryConformanceCaseV1::LinkLocalConnect
                 | LinuxVzTelemetryConformanceCaseV1::ProtectedOpenReadWriteRenameDelete
                 | LinuxVzTelemetryConformanceCaseV1::MmapAccess
         ) || run_spec.expected_terminal()
@@ -123,6 +124,7 @@ mod linux {
             LinuxVzTelemetryConformanceCaseV1::UdpSend => "udp_send",
             LinuxVzTelemetryConformanceCaseV1::LoopbackConnect => "loopback_connect",
             LinuxVzTelemetryConformanceCaseV1::PrivateAddressConnect => "private_address_connect",
+            LinuxVzTelemetryConformanceCaseV1::LinkLocalConnect => "link_local_connect",
             LinuxVzTelemetryConformanceCaseV1::ProtectedOpenReadWriteRenameDelete => {
                 "protected_open_read_write_rename_delete"
             }
@@ -184,7 +186,8 @@ mod linux {
             | LinuxVzTelemetryConformanceCaseV1::Ipv6Connect
             | LinuxVzTelemetryConformanceCaseV1::UdpSend
             | LinuxVzTelemetryConformanceCaseV1::LoopbackConnect
-            | LinuxVzTelemetryConformanceCaseV1::PrivateAddressConnect => {
+            | LinuxVzTelemetryConformanceCaseV1::PrivateAddressConnect
+            | LinuxVzTelemetryConformanceCaseV1::LinkLocalConnect => {
                 let evidence = decode_linux_vz_network_evidence_from_serial_v1(&sensor_output)?;
                 if evidence.fixture_case() != run_spec.fixture_case() {
                     return Err("guest_signer_network_case_mismatch".into());

@@ -24,6 +24,18 @@ public func linuxVzIsExactIPv4PrivateSinkholeSYNFrame(
     )
 }
 
+public func linuxVzIsExactIPv4LinkLocalSinkholeSYNFrame(
+    _ frame: Data,
+    sourcePort: UInt16
+) -> Bool {
+    linuxVzIsExactIPv4TCPSYNFrame(
+        frame,
+        sourcePort: sourcePort,
+        sourceAddress: [169, 254, 100, 2],
+        targetAddress: [169, 254, 100, 1]
+    )
+}
+
 private func linuxVzIsExactIPv4TCPSYNFrame(
     _ frame: Data,
     sourcePort: UInt16,

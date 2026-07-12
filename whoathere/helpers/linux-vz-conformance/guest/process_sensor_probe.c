@@ -49,6 +49,7 @@
 #define UDP_REPORT_MAGIC 0x57545534U
 #define LOOPBACK_REPORT_MAGIC 0x57544c34U
 #define PRIVATE_REPORT_MAGIC 0x57545034U
+#define LINK_LOCAL_REPORT_MAGIC 0x57544b34U
 #define NETWORK_INTERFACE "eth0"
 #define NETWORK_SOURCE_ADDRESS "192.0.2.2"
 #define NETWORK_TARGET_ADDRESS "192.0.2.1"
@@ -60,6 +61,8 @@
 #define LOOPBACK_TARGET_PORT 40552
 #define PRIVATE_SOURCE_ADDRESS "10.0.0.2"
 #define PRIVATE_TARGET_ADDRESS "10.0.0.1"
+#define LINK_LOCAL_SOURCE_ADDRESS "169.254.100.2"
+#define LINK_LOCAL_TARGET_ADDRESS "169.254.100.1"
 #define SENSOR_PROGRAM_COUNT 8
 
 struct reparent_report {
@@ -985,7 +988,13 @@ static int read_exact_loopback_report(int descriptor, struct network_report *rep
         report->connect_errno == 0 ? 0 : -1;
 }
 
-static int read_exact_private_report(int descriptor, struct network_report *report) {
+static int read_exact_classified_report(
+    int descriptor,
+    struct network_report *report,
+    uint32_t report_magic,
+    const char *source_address,
+    const char *target_address
+) {
     size_t offset = 0;
     while (offset < sizeof(*report)) {
         ssize_t length = read(descriptor, (char *)report + offset, sizeof(*report) - offset);
@@ -1000,13 +1009,27 @@ static int read_exact_private_report(int descriptor, struct network_report *repo
     } while (length < 0 && errno == EINTR);
     struct in_addr source = {0};
     struct in_addr target = {0};
-    return length == 0 && report->magic == PRIVATE_REPORT_MAGIC &&
+    return length == 0 && report->magic == report_magic &&
         report->process_pid > 0 && report->socket_inode > 0 &&
-        inet_pton(AF_INET, PRIVATE_SOURCE_ADDRESS, &source) == 1 &&
-        inet_pton(AF_INET, PRIVATE_TARGET_ADDRESS, &target) == 1 &&
+        inet_pton(AF_INET, source_address, &source) == 1 &&
+        inet_pton(AF_INET, target_address, &target) == 1 &&
         report->source_address == source.s_addr && report->target_address == target.s_addr &&
         report->source_port > 0 && report->target_port == NETWORK_TARGET_PORT &&
         report->connect_errno == EINPROGRESS ? 0 : -1;
+}
+
+static int read_exact_private_report(int descriptor, struct network_report *report) {
+    return read_exact_classified_report(
+        descriptor, report, PRIVATE_REPORT_MAGIC,
+        PRIVATE_SOURCE_ADDRESS, PRIVATE_TARGET_ADDRESS
+    );
+}
+
+static int read_exact_link_local_report(int descriptor, struct network_report *report) {
+    return read_exact_classified_report(
+        descriptor, report, LINK_LOCAL_REPORT_MAGIC,
+        LINK_LOCAL_SOURCE_ADDRESS, LINK_LOCAL_TARGET_ADDRESS
+    );
 }
 
 static int add_route_attribute(
@@ -1210,6 +1233,12 @@ static int prepare_private_sinkhole(void) {
     return prepare_ipv4_sinkhole_addresses(PRIVATE_SOURCE_ADDRESS, PRIVATE_TARGET_ADDRESS);
 }
 
+static int prepare_link_local_sinkhole(void) {
+    return prepare_ipv4_sinkhole_addresses(
+        LINK_LOCAL_SOURCE_ADDRESS, LINK_LOCAL_TARGET_ADDRESS
+    );
+}
+
 static int prepare_loopback_sinkhole(void) {
     int descriptor = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
     if (descriptor < 0) return -1;
@@ -1383,12 +1412,18 @@ static int proc_tcp_contains_loopback_sinkhole(const struct network_report *repo
     return observed;
 }
 
-static int proc_tcp_contains_private_sinkhole(const struct network_report *report) {
+static int proc_tcp_contains_classified_sinkhole(
+    const struct network_report *report,
+    const char *expected_local_address,
+    const char *expected_remote
+) {
     FILE *stream = fopen("/proc/net/tcp", "re");
     if (stream == NULL) return 0;
     char expected_local[14];
-    snprintf(expected_local, sizeof(expected_local), "0200000A:%04X", report->source_port);
-    const char *expected_remote = "0100000A:01BB";
+    snprintf(
+        expected_local, sizeof(expected_local), "%s:%04X",
+        expected_local_address, report->source_port
+    );
     char line[512];
     int observed = 0;
     while (fgets(line, sizeof(line), stream) != NULL) {
@@ -1412,6 +1447,14 @@ static int proc_tcp_contains_private_sinkhole(const struct network_report *repor
     }
     if (fclose(stream) != 0) return 0;
     return observed;
+}
+
+static int proc_tcp_contains_private_sinkhole(const struct network_report *report) {
+    return proc_tcp_contains_classified_sinkhole(report, "0200000A", "0100000A:01BB");
+}
+
+static int proc_tcp_contains_link_local_sinkhole(const struct network_report *report) {
+    return proc_tcp_contains_classified_sinkhole(report, "0264FEA9", "0164FEA9:01BB");
 }
 
 static void proc_ipv6_address(const struct in6_addr *address, char output[33]) {
@@ -1499,6 +1542,7 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
     struct udp_report udp_report = {0};
     struct network_report loopback_report = {0};
     struct network_report private_report = {0};
+    struct network_report link_local_report = {0};
     uint64_t reparent_timestamp = 0;
     uint64_t session_timestamp = 0;
     uint64_t dynamic_timestamp = 0;
@@ -1593,8 +1637,9 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
     int udp_send = strcmp(fixture_case, "udp_send") == 0;
     int loopback_connect = strcmp(fixture_case, "loopback_connect") == 0;
     int private_address_connect = strcmp(fixture_case, "private_address_connect") == 0;
+    int link_local_connect = strcmp(fixture_case, "link_local_connect") == 0;
     int network_connect = ipv4_connect || ipv6_connect || loopback_connect ||
-        private_address_connect;
+        private_address_connect || link_local_connect;
     int network_activity = network_connect || udp_send;
     if (credential_change) {
         const enum observation_key keys[] = {
@@ -1637,12 +1682,13 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
             failure_errno = errno;
             goto cleanup;
         }
-        if (ipv4_connect || udp_send || private_address_connect) {
-            int prepared = private_address_connect
-                ? prepare_private_sinkhole() : prepare_ipv4_sinkhole();
+        if (ipv4_connect || udp_send || private_address_connect || link_local_connect) {
+            int prepared = private_address_connect ? prepare_private_sinkhole() :
+                (link_local_connect ? prepare_link_local_sinkhole() : prepare_ipv4_sinkhole());
             if (prepared != 0) {
-                failure_stage = private_address_connect
-                    ? "private_sinkhole_prepare" : "ipv4_sinkhole_prepare";
+                failure_stage = private_address_connect ? "private_sinkhole_prepare" :
+                    (link_local_connect ? "link_local_sinkhole_prepare" :
+                        "ipv4_sinkhole_prepare");
                 failure_errno = errno;
                 goto cleanup;
             }
@@ -1870,6 +1916,26 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
         network_timestamp = monotonic_ns();
         if (network_timestamp == 0) {
             failure_stage = "private_timestamp";
+            goto cleanup;
+        }
+    }
+    if (link_local_connect) {
+        if (read_exact_link_local_report(report_pipe[0], &link_local_report) != 0) {
+            failure_stage = "link_local_report";
+            failure_errno = errno;
+            goto cleanup;
+        }
+        close_if_open(&report_pipe[0]);
+        if (link_local_report.process_pid != child ||
+            !proc_identity_matches(child, parent) ||
+            !proc_has_no_supplementary_groups(child) ||
+            !proc_tcp_contains_link_local_sinkhole(&link_local_report)) {
+            failure_stage = "link_local_live_socket";
+            goto cleanup;
+        }
+        network_timestamp = monotonic_ns();
+        if (network_timestamp == 0) {
+            failure_stage = "link_local_timestamp";
             goto cleanup;
         }
     }
@@ -2136,7 +2202,8 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
                 ipv4_connect ? network_report.source_port :
                     (ipv6_connect ? network6_report.source_port :
                         (loopback_connect ? loopback_report.source_port :
-                            private_report.source_port)),
+                            (private_address_connect ? private_report.source_port :
+                                link_local_report.source_port))),
                 fork_event.timestamp_ns,
                 exec_event.timestamp_ns,
                 connect_event.timestamp_ns,
@@ -2223,15 +2290,23 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
         puts("WHOATHERE_SENSOR network_destination_class=private_rfc1918");
         puts("WHOATHERE_SENSOR network_target=private_sinkhole_10_0_0_1_443");
     }
+    if (link_local_connect) {
+        puts("WHOATHERE_SENSOR network_link_local_connect=observed");
+        puts("WHOATHERE_SENSOR network_socket_state=syn_sent");
+        puts("WHOATHERE_SENSOR network_destination_class=link_local");
+        puts("WHOATHERE_SENSOR network_target=link_local_sinkhole_169_254_100_1_443");
+    }
     puts("WHOATHERE_SENSOR_PROCESS_PROBE_OK");
     if (network_activity) {
         const char *network_family = ipv6_connect ? "ipv6" : "ipv4";
         const char *network_source = loopback_connect ? LOOPBACK_ADDRESS :
             (private_address_connect ? PRIVATE_SOURCE_ADDRESS :
-                (ipv6_connect ? NETWORK6_SOURCE_ADDRESS : NETWORK_SOURCE_ADDRESS));
+                (link_local_connect ? LINK_LOCAL_SOURCE_ADDRESS :
+                    (ipv6_connect ? NETWORK6_SOURCE_ADDRESS : NETWORK_SOURCE_ADDRESS)));
         const char *network_target = loopback_connect ? LOOPBACK_ADDRESS :
             (private_address_connect ? PRIVATE_TARGET_ADDRESS :
-                (ipv6_connect ? NETWORK6_TARGET_ADDRESS : NETWORK_TARGET_ADDRESS));
+                (link_local_connect ? LINK_LOCAL_TARGET_ADDRESS :
+                    (ipv6_connect ? NETWORK6_TARGET_ADDRESS : NETWORK_TARGET_ADDRESS)));
         const char *network_event_kind = udp_send ? "sendto" : "connect";
         const char *network_action = udp_send ? "udp_send" : "tcp_connect";
         const char *network_protocol = udp_send ? "udp" : "tcp";
@@ -2241,7 +2316,8 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
             (ipv4_connect ? network_report.source_port :
                 (ipv6_connect ? network6_report.source_port :
                     (loopback_connect ? loopback_report.source_port :
-                        private_report.source_port)));
+                        (private_address_connect ? private_report.source_port :
+                            link_local_report.source_port))));
         uint16_t network_target_port = loopback_connect
             ? LOOPBACK_TARGET_PORT : NETWORK_TARGET_PORT;
         uint64_t network_event_timestamp = udp_send
@@ -2608,7 +2684,8 @@ int main(int argument_count, char **arguments) {
         strcmp(arguments[2], "ipv6_connect") == 0 ||
         strcmp(arguments[2], "udp_send") == 0 ||
         strcmp(arguments[2], "loopback_connect") == 0 ||
-        strcmp(arguments[2], "private_address_connect") == 0) {
+        strcmp(arguments[2], "private_address_connect") == 0 ||
+        strcmp(arguments[2], "link_local_connect") == 0) {
         return run_process_probe(arguments[1], arguments[2]);
     }
     if (strcmp(arguments[2], "protected_open_read_write_rename_delete") == 0 ||
