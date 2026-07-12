@@ -125,3 +125,67 @@ import Testing
         }
     }
 }
+
+@Test func linuxVzHostEvidenceBindsExactVmStop() throws {
+    let payload = try makeLinuxVzVmStopHostEvidencePayload(
+        requestFrameBytes: 5_082,
+        rawFrameCount: 0,
+        packetSensorHealthy: true,
+        packetSensorTerminal: "drained_would_block",
+        vmStarted: true,
+        vmStopped: true,
+        cloneDestroyed: true,
+        storageDeviceCount: 0
+    )
+    #expect(payload.vmStopKind == "host_stop_after_guest_fixture_active")
+    #expect(payload.vmStopRequestFrameBytes == 5_082)
+    #expect(payload.vmStopTransmittedRequestBytes == 5_082)
+    #expect(payload.vmStopResponseBytes == 0)
+    #expect(payload.vmStopFixtureActiveMarkerObserved == true)
+    #expect(payload.claims.observedTerminal == "infrastructure_error_with_teardown")
+    #expect(payload == (try decodeLinuxVzHostEvidencePayload(
+        payload.canonicalJSON,
+        observedTerminal: "infrastructure_error_with_teardown",
+        expectedVmStopRequestFrameBytes: 5_082
+    )))
+}
+
+@Test func linuxVzHostEvidenceRejectsVmStopRebinding() throws {
+    let payload = try makeLinuxVzVmStopHostEvidencePayload(
+        requestFrameBytes: 5_082,
+        rawFrameCount: 0,
+        packetSensorHealthy: true,
+        packetSensorTerminal: "drained_would_block",
+        vmStarted: true,
+        vmStopped: true,
+        cloneDestroyed: true,
+        storageDeviceCount: 0
+    )
+    #expect(throws: LinuxVzHostEvidencePayloadError.invalidSchema) {
+        try decodeLinuxVzHostEvidencePayload(
+            payload.canonicalJSON,
+            observedTerminal: "infrastructure_error_with_teardown",
+            expectedVmStopRequestFrameBytes: 5_083
+        )
+    }
+    for (field, changed): (String, Any) in [
+        ("vm_stop_kind", "socket_closed"),
+        ("vm_stop_request_frame_bytes", "16"),
+        ("vm_stop_transmitted_request_bytes", "5081"),
+        ("vm_stop_response_bytes", "1"),
+        ("vm_stop_fixture_active_marker_observed", false),
+    ] {
+        var value = try #require(
+            JSONSerialization.jsonObject(with: payload.canonicalJSON) as? [String: Any]
+        )
+        value[field] = changed
+        let data = try canonicalJSONData(value)
+        #expect(throws: LinuxVzHostEvidencePayloadError.invalidSchema) {
+            try decodeLinuxVzHostEvidencePayload(
+                data,
+                observedTerminal: "infrastructure_error_with_teardown",
+                expectedVmStopRequestFrameBytes: 5_082
+            )
+        }
+    }
+}

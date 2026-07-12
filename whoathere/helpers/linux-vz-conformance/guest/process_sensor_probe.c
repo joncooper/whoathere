@@ -93,6 +93,7 @@
 #define HOST_FRAME_TX_DROPPED_PATH "/sys/class/net/eth0/statistics/tx_dropped"
 #define HOST_FRAME_TX_ERRORS_PATH "/sys/class/net/eth0/statistics/tx_errors"
 #define TERM_RESISTANCE_REPORT_MAGIC 0x57545452U
+#define VM_STOP_REPORT_MAGIC 0x57545653U
 #define TERM_RESISTANCE_GRACE_NS 250000000ULL
 #define BACKGROUND_LISTENER_REPORT_MAGIC 0x57544c53U
 #define BACKGROUND_LISTENER_PORT 40552U
@@ -123,6 +124,11 @@ struct credential_report {
 };
 
 struct term_resistance_report {
+    uint32_t magic;
+    int32_t process_pid;
+};
+
+struct vm_stop_report {
     uint32_t magic;
     int32_t process_pid;
 };
@@ -1292,6 +1298,23 @@ static int read_exact_term_resistance_report(
         report->process_pid > 0 ? 0 : -1;
 }
 
+static int read_exact_vm_stop_report(int descriptor, struct vm_stop_report *report) {
+    size_t offset = 0;
+    while (offset < sizeof(*report)) {
+        ssize_t length = read(descriptor, (char *)report + offset, sizeof(*report) - offset);
+        if (length < 0 && errno == EINTR) continue;
+        if (length <= 0) return -1;
+        offset += (size_t)length;
+    }
+    char trailing = 0;
+    ssize_t length;
+    do {
+        length = read(descriptor, &trailing, 1);
+    } while (length < 0 && errno == EINTR);
+    return length == 0 && report->magic == VM_STOP_REPORT_MAGIC &&
+        report->process_pid > 0 ? 0 : -1;
+}
+
 static int read_exact_background_listener_report(
     int descriptor,
     struct background_listener_report *report
@@ -2411,6 +2434,7 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
     struct session_report session_report = {0};
     struct credential_report credential_report = {0};
     struct term_resistance_report term_resistance_report = {0};
+    struct vm_stop_report vm_stop_report = {0};
     struct background_listener_report background_listener_report = {0};
     struct dynamic_report dynamic_report = {0};
     struct network_report network_report = {0};
@@ -2521,6 +2545,7 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
     int reparent = strcmp(fixture_case, "reparenting") == 0;
     int reparented_child = strcmp(fixture_case, "reparented_child") == 0;
     int background_listener = strcmp(fixture_case, "background_listener") == 0;
+    int vm_stop = strcmp(fixture_case, "vm_stop") == 0;
     int setsid_escape = strcmp(fixture_case, "setsid_escape") == 0;
     int credential_change = strcmp(fixture_case, "credential_change") == 0;
     int dynamic_library_load = strcmp(fixture_case, "dynamic_library_load") == 0;
@@ -2657,7 +2682,7 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
     }
     if ((reparent || reparented_child || background_listener || setsid_escape ||
          escaped_session || credential_change || dynamic_library_load || network_activity ||
-         term_resistance) &&
+         term_resistance || vm_stop) &&
         pipe2(report_pipe, O_CLOEXEC) != 0) {
         failure_stage = "process_report_pipe";
         failure_errno = errno;
@@ -2701,7 +2726,7 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
             &fds,
             (reparent || reparented_child || background_listener || setsid_escape ||
              escaped_session || credential_change || dynamic_library_load || network_activity ||
-             term_resistance)
+             term_resistance || vm_stop)
                 ? report_pipe[1] : -1
         );
     }
@@ -2710,6 +2735,39 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
         puts("WHOATHERE_SENSOR dynamic_library_target=measured_inert_fixture_library");
     }
     close_if_open(&report_pipe[1]);
+    if (vm_stop) {
+        if (read_exact_vm_stop_report(report_pipe[0], &vm_stop_report) != 0) {
+            failure_stage = "vm_stop_report";
+            failure_errno = errno;
+            goto cleanup;
+        }
+        close_if_open(&report_pipe[0]);
+        if (vm_stop_report.process_pid != child || !proc_identity_matches(child, parent) ||
+            !proc_has_no_supplementary_groups(child) || !cgroup_contains_pid(child)) {
+            failure_stage = "vm_stop_fixture_identity";
+            goto cleanup;
+        }
+        int observed = 0;
+        for (int attempt = 0; attempt < 100; attempt++) {
+            if (lookup_observation(fds.map, OBSERVATION_FORK, &fork_event) == 0 &&
+                lookup_observation(fds.map, OBSERVATION_EXEC, &exec_event) == 0 &&
+                observed_pid(&fork_event, parent) && observed_pid(&exec_event, child) &&
+                fork_event.timestamp_ns < exec_event.timestamp_ns) {
+                observed = 1;
+                break;
+            }
+            const struct timespec pause = {.tv_sec = 0, .tv_nsec = 10000000};
+            (void)nanosleep(&pause, NULL);
+        }
+        if (!observed || !proc_identity_matches(child, parent) ||
+            !proc_has_no_supplementary_groups(child) || !cgroup_contains_pid(child)) {
+            failure_stage = "vm_stop_live_observation";
+            goto cleanup;
+        }
+        fprintf(stderr, "WHOATHERE_SENSOR vm_stop_fixture=active\n");
+        fflush(stderr);
+        for (;;) (void)pause();
+    }
     if (term_resistance) {
         if (read_exact_term_resistance_report(report_pipe[0], &term_resistance_report) != 0) {
             failure_stage = "term_resistance_report";
@@ -4383,6 +4441,7 @@ int main(int argument_count, char **arguments) {
         strcmp(arguments[2], "escaped_session") == 0 ||
         strcmp(arguments[2], "reparented_child") == 0 ||
         strcmp(arguments[2], "background_listener") == 0 ||
+        strcmp(arguments[2], "vm_stop") == 0 ||
         strcmp(arguments[2], "double_fork_daemonization") == 0 ||
         strcmp(arguments[2], "reparenting") == 0 ||
         strcmp(arguments[2], "setsid_escape") == 0 ||

@@ -4,15 +4,16 @@ Date: 2026-07-09
 
 Status: canonical execution plan for the next product milestone
 
-Current execution checkpoint (2026-07-12): twenty-nine of the 38 authenticated Linux VZ inert
-conformance cases now pass physically on one exact measured backend identity. The newest
-`channel_interruption` case proves that the host can send only the valid 16-byte request header,
-half-close the evidence channel, receive zero response bytes and no guest receipt, and still produce
-a challenge-bound host receipt for the naturally stopped VM and destroyed diskless instance. The
-guest rejects the declared-but-missing request bodies before decoding a run spec or launching a
-fixture. This is still telemetry qualification, not package detection, and the backend remains
-`candidate_unqualified`. See the
-[channel-interruption checkpoint](artifact-native-linux-vz-channel-interruption-checkpoint-2026-07-12.md).
+Current execution checkpoint (2026-07-12): thirty of the 38 authenticated Linux VZ inert
+conformance cases now pass physically on one exact measured backend identity. The newest `vm_stop`
+case sends the full challenge-bound request, requires the unprivileged fixture to prove that it has
+passed the protected-sensor denial check, and requires the protected BPF sensor to corroborate its
+live fork/exec, package credentials, procfs identity, and cgroup membership. Only then does the host
+complete `VZVirtualMachine.stop`. Signed host evidence binds the exact full request, live-fixture
+marker, zero response bytes, absent guest receipt, stopped VM, healthy zero-frame packet sensor, and
+destroyed diskless instance. This is still telemetry qualification, not package detection, and the
+backend remains `candidate_unqualified`. See the
+[VM-stop checkpoint](artifact-native-linux-vz-vm-stop-checkpoint-2026-07-12.md).
 
 The first protected-sensor bootstrap now also observes a cgroup-filtered inert fork/exec/exit chain
 whose child runs as UID/GID 65534 and cannot read or write the root-only sensor. This remains
@@ -255,6 +256,18 @@ physically on the resulting identity; all 87 request inputs matched locally and 
 passed independent Rust verification. Twenty-nine of 38 cases now share one backend binding; 9
 remain. See the
 [channel-interruption checkpoint](artifact-native-linux-vz-channel-interruption-checkpoint-2026-07-12.md).
+
+The `vm_stop` teardown case now proves forced host teardown after the guest fixture is genuinely
+active. The unprivileged child can emit its readiness record only after it has verified both read
+and write denial against the protected sensor. The protected sensor then independently requires the
+child's exact report, UID/GID and supplementary-group posture, procfs parent identity, cgroup
+membership, and ordered BPF fork/exec observations before emitting the sole active marker. The host
+waits for that exact marker, completes `VZVirtualMachine.stop`, receives zero response bytes and no
+guest receipt, and signs the full transmitted request size plus active-marker observation into the
+host lifecycle payload. All thirty cases ran physically on the resulting identity; all 90 request
+inputs matched locally and every complete case passed independent Rust verification. Thirty of 38
+cases now share one backend binding; 8 remain. See the
+[VM-stop checkpoint](artifact-native-linux-vz-vm-stop-checkpoint-2026-07-12.md).
 
 Primary target: malicious npm and PyPI package detection with static analysis, AI-assisted code
 review, and behaviorally instrumented detonation in disposable virtual machines

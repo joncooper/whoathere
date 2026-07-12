@@ -140,6 +140,7 @@ mod linux {
                 | LinuxVzTelemetryConformanceCaseV1::EscapedSession
                 | LinuxVzTelemetryConformanceCaseV1::ReparentedChild
                 | LinuxVzTelemetryConformanceCaseV1::BackgroundListener
+                | LinuxVzTelemetryConformanceCaseV1::VmStop
         ) || run_spec.expected_terminal()
             != expected_terminal_for_case_v1(run_spec.fixture_case())
             || run_spec.package_execution_authority_permitted()
@@ -190,6 +191,7 @@ mod linux {
             LinuxVzTelemetryConformanceCaseV1::EscapedSession => "escaped_session",
             LinuxVzTelemetryConformanceCaseV1::ReparentedChild => "reparented_child",
             LinuxVzTelemetryConformanceCaseV1::BackgroundListener => "background_listener",
+            LinuxVzTelemetryConformanceCaseV1::VmStop => "vm_stop",
             _ => return Err("guest_signer_run_spec_not_supported_inert_case".into()),
         };
         let mut child = Command::new(SENSOR_PATH)

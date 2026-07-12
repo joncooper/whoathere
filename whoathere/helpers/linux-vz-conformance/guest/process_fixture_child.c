@@ -37,6 +37,7 @@ static const char *dynamic_library_path = "/whoathere/dynamic-fixture-library.so
 #define HOST_FRAME_TRIGGER_COUNT 512U
 #define HOST_FRAME_PAYLOAD_LENGTH 16U
 #define TERM_RESISTANCE_REPORT_MAGIC 0x57545452U
+#define VM_STOP_REPORT_MAGIC 0x57545653U
 #define BACKGROUND_LISTENER_REPORT_MAGIC 0x57544c53U
 #define BACKGROUND_LISTENER_PORT 40552U
 static const unsigned char dns_plaintext_query[] = {
@@ -117,6 +118,11 @@ struct host_frame_report {
 };
 
 struct term_resistance_report {
+    uint32_t magic;
+    int32_t process_pid;
+};
+
+struct vm_stop_report {
     uint32_t magic;
     int32_t process_pid;
 };
@@ -839,6 +845,19 @@ static int term_resistance(void) {
     for (;;) (void)pause();
 }
 
+static int vm_stop(void) {
+    const struct vm_stop_report report = {
+        .magic = VM_STOP_REPORT_MAGIC,
+        .process_pid = getpid(),
+    };
+    ssize_t written = write(REPARENT_REPORT_FD, &report, sizeof(report));
+    int saved_errno = errno;
+    if (close(REPARENT_REPORT_FD) != 0 && written == (ssize_t)sizeof(report)) return 175;
+    errno = saved_errno;
+    if (written != (ssize_t)sizeof(report)) return 176;
+    for (;;) (void)pause();
+}
+
 int main(int argument_count, char **arguments) {
     if (argument_count != 2 || getuid() != 65534 || geteuid() != 65534 ||
         getgid() != 65534 || getegid() != 65534) {
@@ -851,6 +870,7 @@ int main(int argument_count, char **arguments) {
     if (strcmp(arguments[1], "timeout") == 0) {
         for (;;) (void)pause();
     }
+    if (strcmp(arguments[1], "vm_stop") == 0) return vm_stop();
     if (strcmp(arguments[1], "term_resistance") == 0) return term_resistance();
     if (strcmp(arguments[1], "double_fork_daemonization") == 0) {
         return double_fork_daemonization();

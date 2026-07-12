@@ -42,6 +42,7 @@ pub struct LinuxVzHostEvidencePayloadV1 {
     payload_sha256: Sha256Digest,
     raw_frame_count: u64,
     channel_interruption: Option<LinuxVzChannelInterruptionEvidenceV1>,
+    vm_stop: Option<LinuxVzVmStopEvidenceV1>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,6 +50,14 @@ pub struct LinuxVzChannelInterruptionEvidenceV1 {
     request_frame_bytes: u64,
     transmitted_prefix_bytes: u64,
     response_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinuxVzVmStopEvidenceV1 {
+    request_frame_bytes: u64,
+    transmitted_request_bytes: u64,
+    response_bytes: u64,
+    fixture_active_marker_observed: bool,
 }
 
 impl LinuxVzHostEvidencePayloadV1 {
@@ -66,6 +75,10 @@ impl LinuxVzHostEvidencePayloadV1 {
 
     pub fn channel_interruption(&self) -> Option<&LinuxVzChannelInterruptionEvidenceV1> {
         self.channel_interruption.as_ref()
+    }
+
+    pub fn vm_stop(&self) -> Option<&LinuxVzVmStopEvidenceV1> {
+        self.vm_stop.as_ref()
     }
 
     pub fn host_observation_claims_v1(
@@ -114,6 +127,24 @@ impl LinuxVzChannelInterruptionEvidenceV1 {
     }
 }
 
+impl LinuxVzVmStopEvidenceV1 {
+    pub fn request_frame_bytes(&self) -> u64 {
+        self.request_frame_bytes
+    }
+
+    pub fn transmitted_request_bytes(&self) -> u64 {
+        self.transmitted_request_bytes
+    }
+
+    pub fn response_bytes(&self) -> u64 {
+        self.response_bytes
+    }
+
+    pub fn fixture_active_marker_observed(&self) -> bool {
+        self.fixture_active_marker_observed
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct HostEvidenceWireV1 {
@@ -125,6 +156,16 @@ struct HostEvidenceWireV1 {
     channel_response_bytes: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     channel_transmitted_prefix_bytes: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    vm_stop_fixture_active_marker_observed: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    vm_stop_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    vm_stop_request_frame_bytes: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    vm_stop_response_bytes: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    vm_stop_transmitted_request_bytes: Option<String>,
     clone_destroyed: bool,
     dropped_frame_count: String,
     event_count: String,
@@ -203,6 +244,42 @@ pub fn decode_linux_vz_host_evidence_payload_v1(
         }
         _ => return Err(LinuxVzHostEvidencePayloadErrorV1::InvalidSchema),
     };
+    let vm_stop = match (
+        wire.vm_stop_kind.as_deref(),
+        wire.vm_stop_request_frame_bytes.as_deref(),
+        wire.vm_stop_transmitted_request_bytes.as_deref(),
+        wire.vm_stop_response_bytes.as_deref(),
+        wire.vm_stop_fixture_active_marker_observed,
+    ) {
+        (None, None, None, None, None) => None,
+        (
+            Some("host_stop_after_guest_fixture_active"),
+            Some(request_frame_bytes),
+            Some(transmitted_request_bytes),
+            Some(response_bytes),
+            Some(true),
+        ) => {
+            let request_frame_bytes = decimal_u64_v1(request_frame_bytes)?;
+            let transmitted_request_bytes = decimal_u64_v1(transmitted_request_bytes)?;
+            let response_bytes = decimal_u64_v1(response_bytes)?;
+            if request_frame_bytes <= 16
+                || transmitted_request_bytes != request_frame_bytes
+                || response_bytes != 0
+            {
+                return Err(LinuxVzHostEvidencePayloadErrorV1::InvalidSchema);
+            }
+            Some(LinuxVzVmStopEvidenceV1 {
+                request_frame_bytes,
+                transmitted_request_bytes,
+                response_bytes,
+                fixture_active_marker_observed: true,
+            })
+        }
+        _ => return Err(LinuxVzHostEvidencePayloadErrorV1::InvalidSchema),
+    };
+    if channel_interruption.is_some() && vm_stop.is_some() {
+        return Err(LinuxVzHostEvidencePayloadErrorV1::InvalidSchema);
+    }
     if wire.schema_version != LINUX_VZ_HOST_EVIDENCE_PAYLOAD_SCHEMA_V1
         || decimal_u64_v1(&wire.event_sequence_start)? != 1
         || decimal_u64_v1(&wire.event_sequence_end)? != 6
@@ -247,6 +324,7 @@ pub fn decode_linux_vz_host_evidence_payload_v1(
         payload_sha256: Sha256Digest::from_bytes(payload),
         raw_frame_count,
         channel_interruption,
+        vm_stop,
     })
 }
 
@@ -309,6 +387,17 @@ mod tests {
         value["channel_response_bytes"] = serde_json::json!("0");
         value["channel_transmitted_prefix_bytes"] = serde_json::json!("16");
         serde_json_canonicalizer::to_vec(&value).expect("channel interruption host payload")
+    }
+
+    fn canonical_vm_stop_payload() -> Vec<u8> {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&canonical_payload()).expect("host JSON");
+        value["vm_stop_fixture_active_marker_observed"] = serde_json::json!(true);
+        value["vm_stop_kind"] = serde_json::json!("host_stop_after_guest_fixture_active");
+        value["vm_stop_request_frame_bytes"] = serde_json::json!("5082");
+        value["vm_stop_response_bytes"] = serde_json::json!("0");
+        value["vm_stop_transmitted_request_bytes"] = serde_json::json!("5082");
+        serde_json_canonicalizer::to_vec(&value).expect("VM-stop host payload")
     }
 
     #[test]
@@ -391,6 +480,49 @@ mod tests {
         partial["channel_interruption_kind"] =
             serde_json::json!("host_write_half_close_after_request_header");
         let bytes = serde_json_canonicalizer::to_vec(&partial).expect("partial host JSON");
+        assert!(decode_linux_vz_host_evidence_payload_v1(&bytes).is_err());
+    }
+
+    #[test]
+    fn vm_stop_binds_full_request_zero_response_and_active_fixture() {
+        let payload = decode_linux_vz_host_evidence_payload_v1(&canonical_vm_stop_payload())
+            .expect("VM-stop payload");
+        let vm_stop = payload.vm_stop().expect("VM-stop evidence");
+        assert_eq!(vm_stop.request_frame_bytes(), 5082);
+        assert_eq!(vm_stop.transmitted_request_bytes(), 5082);
+        assert_eq!(vm_stop.response_bytes(), 0);
+        assert!(vm_stop.fixture_active_marker_observed());
+    }
+
+    #[test]
+    fn vm_stop_rejects_partial_rebound_and_channel_coexistence() {
+        for (field, changed) in [
+            ("vm_stop_request_frame_bytes", serde_json::json!("16")),
+            (
+                "vm_stop_transmitted_request_bytes",
+                serde_json::json!("5081"),
+            ),
+            ("vm_stop_response_bytes", serde_json::json!("1")),
+            (
+                "vm_stop_fixture_active_marker_observed",
+                serde_json::json!(false),
+            ),
+            ("vm_stop_kind", serde_json::json!("socket_closed")),
+        ] {
+            let mut value: serde_json::Value =
+                serde_json::from_slice(&canonical_vm_stop_payload()).expect("VM-stop JSON");
+            value[field] = changed;
+            let bytes = serde_json_canonicalizer::to_vec(&value).expect("changed JSON");
+            assert!(decode_linux_vz_host_evidence_payload_v1(&bytes).is_err());
+        }
+        let mut both: serde_json::Value =
+            serde_json::from_slice(&canonical_vm_stop_payload()).expect("VM-stop JSON");
+        both["channel_interruption_kind"] =
+            serde_json::json!("host_write_half_close_after_request_header");
+        both["channel_request_frame_bytes"] = serde_json::json!("5082");
+        both["channel_response_bytes"] = serde_json::json!("0");
+        both["channel_transmitted_prefix_bytes"] = serde_json::json!("16");
+        let bytes = serde_json_canonicalizer::to_vec(&both).expect("coexisting JSON");
         assert!(decode_linux_vz_host_evidence_payload_v1(&bytes).is_err());
     }
 }

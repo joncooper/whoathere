@@ -372,6 +372,24 @@ private struct LinuxVzSignedConformanceHarness {
         guard shutdown(connection.fileDescriptor, SHUT_WR) == 0 else {
             throw HarnessError.socketIO
         }
+        if runSpec.fixtureCase == "vm_stop" {
+            return try runVmStopCase(
+                options: options,
+                requestData: requestData,
+                runSpec: runSpec,
+                challenge: challenge,
+                backend: backend,
+                configuration: configuration,
+                virtualMachine: virtualMachine,
+                queue: queue,
+                connection: connection,
+                serialOutput: serialOutput,
+                rawFrameSocket: sockets[1],
+                deadline: deadline,
+                initialKernelSHA256: kernelSHA256,
+                initialInitramfsSHA256: initramfsSHA256
+            )
+        }
         let responseData = try readToEOF(
             connection.fileDescriptor,
             maximum: maximumLinuxVzGuestSignerResponseFrameBytesV1
@@ -1117,6 +1135,177 @@ private struct LinuxVzSignedConformanceHarness {
         return 0
     }
 
+    private static func runVmStopCase(
+        options: Options,
+        requestData: Data,
+        runSpec: LinuxVzTelemetryConformanceRunSpec,
+        challenge: LinuxVzTelemetryConformanceChallenge,
+        backend: UnqualifiedLinuxVzTelemetryBackendIdentity,
+        configuration: VZVirtualMachineConfiguration,
+        virtualMachine: VZVirtualMachine,
+        queue: DispatchQueue,
+        connection: VZVirtioSocketConnection,
+        serialOutput: FileHandle,
+        rawFrameSocket: Int32,
+        deadline: Date,
+        initialKernelSHA256: String,
+        initialInitramfsSHA256: String
+    ) throws -> Int32 {
+        let activeMarker = "WHOATHERE_SENSOR vm_stop_fixture=active"
+        try waitForSerialMarker(
+            activeMarker,
+            virtualMachine: virtualMachine,
+            queue: queue,
+            serialOutput: serialOutput,
+            serialLog: options.serialLog,
+            deadline: deadline
+        )
+        try stopVirtualMachine(virtualMachine: virtualMachine, queue: queue)
+        let responseData = try readToEOFAllowingEmpty(
+            connection.fileDescriptor,
+            maximum: maximumLinuxVzGuestSignerResponseFrameBytesV1
+        )
+        guard responseData.isEmpty else { throw HarnessError.verificationFailed }
+        try serialOutput.synchronize()
+        let serialData = try Data(contentsOf: options.serialLog)
+        if let serialText = String(data: serialData, encoding: .utf8) {
+            fputs(serialText, stderr)
+        }
+        let requiredMarkers = [
+            "WHOATHERE_LINUX_VZ_SIGNED_INERT_BEGIN",
+            "WHOATHERE_CAPABILITY kernel_release=6.18.35-0-virt",
+            "WHOATHERE_CAPABILITY architecture=aarch64",
+            "WHOATHERE_CAPABILITY kernel_btf=present",
+            "WHOATHERE_CAPABILITY kernel_btf_sha256=sha256:d7f143446e11cfd67fa53392616afdbca6511a6af432e6bd56fb053aa4e7becb",
+            "WHOATHERE_CAPABILITY cgroup_v2=mounted",
+            "WHOATHERE_CAPABILITY bpf_fs=mounted",
+            "WHOATHERE_CAPABILITY fanotify_init=available",
+            "WHOATHERE_CAPABILITY bpf_program_load=available",
+            "WHOATHERE_CAPABILITY syscall_probe=passed",
+            "WHOATHERE_CAPABILITY virtio_vsock=loaded",
+            "WHOATHERE_CAPABILITY virtio_net=loaded",
+            "WHOATHERE_GUEST_SIGNER_READY port=40551",
+            activeMarker
+        ]
+        let missingMarkers = requiredMarkers.filter {
+            !linuxVzInertSerialContainsExactMarker(serialData, marker: $0)
+        }
+        let serialLines = String(decoding: serialData, as: UTF8.self)
+            .split(whereSeparator: \.isNewline)
+            .map(String.init)
+        let forbiddenEvidence = serialLines.contains { line in
+            line == "WHOATHERE_CAPABILITY guest_receipt_signing=passed"
+                || line == "WHOATHERE_LINUX_VZ_SIGNED_INERT_OK"
+                || line == "WHOATHERE_LINUX_VZ_SIGNED_INERT_FAILED"
+                || line.hasPrefix("WHOATHERE_GUEST_PROCESS_EVIDENCE ")
+                || line.hasPrefix("WHOATHERE_GUEST_FILE_EVIDENCE ")
+                || line.hasPrefix("WHOATHERE_GUEST_NETWORK_EVIDENCE ")
+                || line.hasPrefix("WHOATHERE_GUEST_TEARDOWN_EVIDENCE ")
+                || line.hasPrefix("WHOATHERE_GUEST_SIGNER_RECEIPT_OK ")
+                || line.hasPrefix("WHOATHERE_GUEST_SIGNER_FAILED ")
+                || (line.hasPrefix("WHOATHERE_SENSOR ") && line != activeMarker)
+                || line.hasPrefix("WHOATHERE_SENSOR_PROCESS_PROBE_")
+        }
+        let packetSensor = drainRawFrames(
+            fileDescriptor: rawFrameSocket,
+            networkFixtureCase: nil,
+            networkSourcePort: nil,
+            hostFrameTriggerCount: nil,
+            boundedHostFrames: nil
+        )
+        let finalKernelSHA256 = try fileSHA256(options.kernel)
+        let finalInitramfsSHA256 = try fileSHA256(options.initramfs)
+        let imageIdentityStable = finalKernelSHA256 == initialKernelSHA256
+            && finalInitramfsSHA256 == initialInitramfsSHA256
+        let cloneDestroyed = configuration.storageDevices.isEmpty
+        guard missingMarkers.isEmpty,
+              !forbiddenEvidence,
+              packetSensor.frameCount == 0,
+              packetSensor.droppedFrameCount == 0,
+              packetSensor.unexpectedFrameCount == 0,
+              packetSensor.healthy,
+              packetSensor.terminal == "drained_would_block",
+              queue.sync(execute: { virtualMachine.state == .stopped }),
+              imageIdentityStable,
+              cloneDestroyed else {
+            throw HarnessError.verificationFailed
+        }
+        let hostEvidence = try makeLinuxVzVmStopHostEvidencePayload(
+            requestFrameBytes: UInt64(requestData.count),
+            rawFrameCount: UInt64(packetSensor.frameCount),
+            packetSensorHealthy: packetSensor.healthy,
+            packetSensorTerminal: packetSensor.terminal,
+            vmStarted: true,
+            vmStopped: true,
+            cloneDestroyed: cloneDestroyed,
+            storageDeviceCount: UInt64(configuration.storageDevices.count)
+        )
+        var hostSigningSeed = try readProtectedSeed(options.hostSigningSeed)
+        let hostPublicKey: Data
+        do {
+            hostPublicKey = try Curve25519.Signing.PrivateKey(
+                rawRepresentation: hostSigningSeed
+            ).publicKey.rawRepresentation
+        } catch {
+            hostSigningSeed.resetBytes(in: 0..<hostSigningSeed.count)
+            throw HarnessError.invalidInput("host_signing_seed")
+        }
+        let hostReceipt = try signLinuxVzTelemetryHostReceipt(
+            challenge: challenge,
+            runSpec: runSpec,
+            backend: backend,
+            claims: hostEvidence.claims,
+            signingSeed: &hostSigningSeed
+        )
+        let verifiedHost = try verifyLinuxVzTelemetryHostReceipt(
+            hostReceipt,
+            challenge: challenge,
+            runSpec: runSpec,
+            backend: backend,
+            verifyingKey: hostPublicKey,
+            expectedClaims: hostEvidence.claims
+        )
+        let completeCase = try verifyLinuxVzObservationCompleteConformanceCase(
+            challenge: challenge,
+            runSpec: runSpec,
+            backend: backend,
+            guest: nil,
+            host: verifiedHost
+        )
+        guard !completeCase.guestReceiptPresent, completeCase.hostReceiptPresent else {
+            throw HarnessError.verificationFailed
+        }
+        try writeNewPrivateFile(options.hostEvidenceOutput, data: hostEvidence.canonicalJSON)
+        try writeNewPrivateFile(options.hostReceiptOutput, data: hostReceipt)
+        emitJSON([
+            "schema_version": "whoathere.linux_vz_signed_conformance_result.v1",
+            "status": "ok",
+            "challenge_sha256": challenge.challengeSHA256,
+            "run_spec_sha256": runSpec.runSpecSHA256,
+            "backend_identity_sha256": backend.identitySHA256,
+            "host_evidence_payload_sha256": hostEvidence.payloadSHA256,
+            "host_receipt_sha256": dataSHA256(hostReceipt),
+            "complete_conformance_case_verified": true,
+            "fixture_case": runSpec.fixtureCase,
+            "guest_receipt_present": false,
+            "guest_response_bytes": "0",
+            "vm_stop_fixture_active_marker_observed": true,
+            "vm_stop_transmitted_request_bytes": String(requestData.count),
+            "raw_frame_count": packetSensor.frameCount,
+            "dropped_frame_count": String(hostEvidence.claims.droppedFrameCount),
+            "packet_sensor_healthy": packetSensor.healthy,
+            "clone_destroyed": hostEvidence.claims.cloneDestroyed,
+            "vm_stopped": true,
+            "image_identity_stable": imageIdentityStable,
+            "execution_authority": false,
+            "external_route": false,
+            "package_execution": false,
+            "sync_back": false,
+            "exit_code": 0
+        ])
+        return 0
+    }
+
     private static func waitForSignerReady(
         virtualMachine: VZVirtualMachine,
         queue: DispatchQueue,
@@ -1139,6 +1328,53 @@ private struct LinuxVzSignedConformanceHarness {
             Thread.sleep(forTimeInterval: 0.05)
         }
         throw HarnessError.signerReadyTimeout
+    }
+
+    private static func waitForSerialMarker(
+        _ marker: String,
+        virtualMachine: VZVirtualMachine,
+        queue: DispatchQueue,
+        serialOutput: FileHandle,
+        serialLog: URL,
+        deadline: Date
+    ) throws {
+        while Date() < deadline {
+            try? serialOutput.synchronize()
+            let data = (try? Data(contentsOf: serialLog)) ?? Data()
+            if linuxVzInertSerialContainsExactMarker(data, marker: marker) { return }
+            if queue.sync(execute: { virtualMachine.state == .stopped }) {
+                throw HarnessError.verificationFailed
+            }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        throw HarnessError.verificationFailed
+    }
+
+    private static func stopVirtualMachine(
+        virtualMachine: VZVirtualMachine,
+        queue: DispatchQueue
+    ) throws {
+        let successBox = LockedBox<Bool>()
+        let completion = DispatchSemaphore(value: 0)
+        let virtualMachineBox = UncheckedSendableBox(value: virtualMachine)
+        queue.async {
+            guard virtualMachineBox.value.state == .running,
+                  virtualMachineBox.value.canStop else {
+                completion.signal()
+                return
+            }
+            virtualMachineBox.value.stop { error in
+                successBox.store(error == nil)
+                completion.signal()
+            }
+        }
+        guard completion.wait(timeout: .now() + .seconds(20)) == .success,
+              successBox.load() == true else {
+            throw HarnessError.vmDidNotStop
+        }
+        guard queue.sync(execute: { virtualMachine.state == .stopped }) else {
+            throw HarnessError.vmDidNotStop
+        }
     }
 
     private static func waitForStop(

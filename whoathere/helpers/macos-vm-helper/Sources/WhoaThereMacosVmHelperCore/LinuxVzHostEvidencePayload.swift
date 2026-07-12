@@ -21,6 +21,11 @@ public struct LinuxVzHostEvidencePayload: Equatable, Sendable {
     public let channelRequestFrameBytes: UInt64?
     public let channelResponseBytes: UInt64?
     public let channelTransmittedPrefixBytes: UInt64?
+    public let vmStopKind: String?
+    public let vmStopRequestFrameBytes: UInt64?
+    public let vmStopTransmittedRequestBytes: UInt64?
+    public let vmStopResponseBytes: UInt64?
+    public let vmStopFixtureActiveMarkerObserved: Bool?
     public let claims: LinuxVzTelemetryHostObservationClaims
 }
 
@@ -45,7 +50,8 @@ public func makeLinuxVzInertHostEvidencePayload(
         cloneDestroyed: cloneDestroyed,
         storageDeviceCount: storageDeviceCount,
         observedTerminal: observedTerminal,
-        channelRequestFrameBytes: nil
+        channelRequestFrameBytes: nil,
+        vmStopRequestFrameBytes: nil
     )
 }
 
@@ -69,7 +75,33 @@ public func makeLinuxVzChannelInterruptionHostEvidencePayload(
         cloneDestroyed: cloneDestroyed,
         storageDeviceCount: storageDeviceCount,
         observedTerminal: "infrastructure_error_with_teardown",
-        channelRequestFrameBytes: requestFrameBytes
+        channelRequestFrameBytes: requestFrameBytes,
+        vmStopRequestFrameBytes: nil
+    )
+}
+
+public func makeLinuxVzVmStopHostEvidencePayload(
+    requestFrameBytes: UInt64,
+    rawFrameCount: UInt64,
+    packetSensorHealthy: Bool,
+    packetSensorTerminal: String,
+    vmStarted: Bool,
+    vmStopped: Bool,
+    cloneDestroyed: Bool,
+    storageDeviceCount: UInt64
+) throws -> LinuxVzHostEvidencePayload {
+    try makeLinuxVzHostEvidencePayload(
+        rawFrameCount: rawFrameCount,
+        packetSensorHealthy: packetSensorHealthy,
+        packetSensorTerminal: packetSensorTerminal,
+        guestChannelTerminated: true,
+        vmStarted: vmStarted,
+        vmStopped: vmStopped,
+        cloneDestroyed: cloneDestroyed,
+        storageDeviceCount: storageDeviceCount,
+        observedTerminal: "infrastructure_error_with_teardown",
+        channelRequestFrameBytes: nil,
+        vmStopRequestFrameBytes: requestFrameBytes
     )
 }
 
@@ -83,8 +115,12 @@ private func makeLinuxVzHostEvidencePayload(
     cloneDestroyed: Bool,
     storageDeviceCount: UInt64,
     observedTerminal: String,
-    channelRequestFrameBytes: UInt64?
+    channelRequestFrameBytes: UInt64?,
+    vmStopRequestFrameBytes: UInt64?
 ) throws -> LinuxVzHostEvidencePayload {
+    guard channelRequestFrameBytes == nil || vmStopRequestFrameBytes == nil else {
+        throw LinuxVzHostEvidencePayloadError.invalidSchema
+    }
     let events: [[String: String]] = [
         ["kind": "vm_started", "sequence": "1"],
         ["kind": "guest_channel_connected", "sequence": "2"],
@@ -123,17 +159,26 @@ private func makeLinuxVzHostEvidencePayload(
         value["channel_response_bytes"] = "0"
         value["channel_transmitted_prefix_bytes"] = "16"
     }
+    if let vmStopRequestFrameBytes {
+        value["vm_stop_kind"] = "host_stop_after_guest_fixture_active"
+        value["vm_stop_request_frame_bytes"] = String(vmStopRequestFrameBytes)
+        value["vm_stop_transmitted_request_bytes"] = String(vmStopRequestFrameBytes)
+        value["vm_stop_response_bytes"] = "0"
+        value["vm_stop_fixture_active_marker_observed"] = true
+    }
     return try decodeLinuxVzHostEvidencePayload(
         canonicalJSONData(value),
         observedTerminal: observedTerminal,
-        expectedChannelRequestFrameBytes: channelRequestFrameBytes
+        expectedChannelRequestFrameBytes: channelRequestFrameBytes,
+        expectedVmStopRequestFrameBytes: vmStopRequestFrameBytes
     )
 }
 
 public func decodeLinuxVzHostEvidencePayload(
     _ data: Data,
     observedTerminal: String = "observation_complete",
-    expectedChannelRequestFrameBytes: UInt64? = nil
+    expectedChannelRequestFrameBytes: UInt64? = nil,
+    expectedVmStopRequestFrameBytes: UInt64? = nil
 ) throws -> LinuxVzHostEvidencePayload {
     guard !data.isEmpty else { throw LinuxVzHostEvidencePayloadError.empty }
     guard data.count <= maximumLinuxVzHostEvidencePayloadBytesV1 else {
@@ -151,6 +196,9 @@ public func decodeLinuxVzHostEvidencePayload(
         || observedTerminal == "infrastructure_error_with_teardown" else {
         throw LinuxVzHostEvidencePayloadError.invalidSchema
     }
+    guard expectedChannelRequestFrameBytes == nil || expectedVmStopRequestFrameBytes == nil else {
+        throw LinuxVzHostEvidencePayloadError.invalidSchema
+    }
     var expectedKeys = Set([
         "clone_destroyed", "dropped_frame_count", "event_count", "event_sequence_end",
         "event_sequence_start", "events", "evidence_truncated", "external_frames_forwarded",
@@ -163,6 +211,13 @@ public func decodeLinuxVzHostEvidencePayload(
         expectedKeys.formUnion([
             "channel_interruption_kind", "channel_request_frame_bytes",
             "channel_response_bytes", "channel_transmitted_prefix_bytes"
+        ])
+    }
+    if expectedVmStopRequestFrameBytes != nil {
+        expectedKeys.formUnion([
+            "vm_stop_fixture_active_marker_observed", "vm_stop_kind",
+            "vm_stop_request_frame_bytes", "vm_stop_response_bytes",
+            "vm_stop_transmitted_request_bytes"
         ])
     }
     guard Set(value.keys) == expectedKeys,
@@ -199,6 +254,19 @@ public func decodeLinuxVzHostEvidencePayload(
                 expectedChannelRequestFrameBytes,
               hostEvidenceDecimal(value["channel_response_bytes"]) == 0,
               hostEvidenceDecimal(value["channel_transmitted_prefix_bytes"]) == 16 else {
+            throw LinuxVzHostEvidencePayloadError.invalidSchema
+        }
+    }
+    if let expectedVmStopRequestFrameBytes {
+        guard expectedVmStopRequestFrameBytes > 16,
+              value["vm_stop_kind"] as? String ==
+                "host_stop_after_guest_fixture_active",
+              hostEvidenceDecimal(value["vm_stop_request_frame_bytes"]) ==
+                expectedVmStopRequestFrameBytes,
+              hostEvidenceDecimal(value["vm_stop_transmitted_request_bytes"]) ==
+                expectedVmStopRequestFrameBytes,
+              hostEvidenceDecimal(value["vm_stop_response_bytes"]) == 0,
+              value["vm_stop_fixture_active_marker_observed"] as? Bool == true else {
             throw LinuxVzHostEvidencePayloadError.invalidSchema
         }
     }
@@ -239,6 +307,13 @@ public func decodeLinuxVzHostEvidencePayload(
         channelResponseBytes: hostEvidenceDecimal(value["channel_response_bytes"]),
         channelTransmittedPrefixBytes:
             hostEvidenceDecimal(value["channel_transmitted_prefix_bytes"]),
+        vmStopKind: value["vm_stop_kind"] as? String,
+        vmStopRequestFrameBytes: hostEvidenceDecimal(value["vm_stop_request_frame_bytes"]),
+        vmStopTransmittedRequestBytes:
+            hostEvidenceDecimal(value["vm_stop_transmitted_request_bytes"]),
+        vmStopResponseBytes: hostEvidenceDecimal(value["vm_stop_response_bytes"]),
+        vmStopFixtureActiveMarkerObserved:
+            value["vm_stop_fixture_active_marker_observed"] as? Bool,
         claims: claims
     )
 }
