@@ -139,6 +139,11 @@ The
 adds protected `sendto` and live UDP socket evidence plus one exact checksum-valid datagram carrying
 the fixed inert marker, then reruns the earlier ten cases on the new measured identity. The other
 27 cases remain pending.
+The
+[loopback-connect checkpoint](../../../docs/product-build-run/artifact-native-linux-vz-loopback-connect-checkpoint-2026-07-12.md)
+adds a root-owned guest listener, protected connect and accepted-peer evidence, live loopback socket
+corroboration, and an exact zero-NIC-frame host claim, then reruns the earlier eleven cases on the
+new measured identity. The other 26 cases remain pending.
 
 ## Closed fixture contract
 

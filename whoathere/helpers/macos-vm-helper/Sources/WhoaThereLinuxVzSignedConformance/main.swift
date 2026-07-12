@@ -322,7 +322,7 @@ private struct LinuxVzSignedConformanceHarness {
             guestEventCount = evidence.claims.eventCount
             networkSourcePort = nil
             networkFixtureCase = nil
-        case "ipv4_connect", "ipv6_connect", "udp_send":
+        case "ipv4_connect", "ipv6_connect", "udp_send", "loopback_connect":
             let evidence = try decodeLinuxVzNetworkEvidencePayloadV1(serialData)
             guard evidence.fixtureCase == runSpec.fixtureCase,
                   evidence.packageUID == UInt64(backend.packageUID),
@@ -355,7 +355,8 @@ private struct LinuxVzSignedConformanceHarness {
             runSpec.fixtureCase == "dynamic_library_load" ||
             runSpec.fixtureCase == "ipv4_connect" ||
             runSpec.fixtureCase == "ipv6_connect" ||
-            runSpec.fixtureCase == "udp_send" {
+            runSpec.fixtureCase == "udp_send" ||
+            runSpec.fixtureCase == "loopback_connect" {
             let missingProcessMarkers = linuxVzInertMissingRequiredEvidenceMarkersV2(serialData)
             let missingDoubleForkMarkers = runSpec.fixtureCase == "double_fork_daemonization"
                 ? linuxVzInertDoubleForkSensorMarkersV1.filter {
@@ -389,10 +390,14 @@ private struct LinuxVzSignedConformanceHarness {
                 ? linuxVzInertUDPSendSensorMarkersV1.filter {
                     !linuxVzInertSerialContainsExactMarker(serialData, marker: $0)
                 } : []
+            let missingLoopbackMarkers = runSpec.fixtureCase == "loopback_connect"
+                ? linuxVzInertLoopbackConnectSensorMarkersV1.filter {
+                    !linuxVzInertSerialContainsExactMarker(serialData, marker: $0)
+                } : []
             missingBaseMarkers = missingProcessMarkers + missingDoubleForkMarkers
                 + missingReparentingMarkers + missingSetsidMarkers + missingCredentialMarkers
                 + missingDynamicLibraryMarkers + missingIPv4Markers + missingIPv6Markers
-                + missingUDPMarkers
+                + missingUDPMarkers + missingLoopbackMarkers
         } else {
             let missingCapabilities = linuxVzInertMissingCapabilityMarkers(serialData)
             let missingFileMarkers = linuxVzInertFileSensorMarkersV1.filter {
@@ -432,10 +437,12 @@ private struct LinuxVzSignedConformanceHarness {
         let hostClaims: LinuxVzTelemetryHostObservationClaims
         let cloneDestroyed = configuration.storageDevices.isEmpty
         if let sourcePort = networkSourcePort, let networkFixtureCase {
-            let expectedRawFrameCount = networkFixtureCase == "ipv6_connect" ? 2 : 1
+            let expectedRawFrameCount = networkFixtureCase == "loopback_connect" ? 0 :
+                (networkFixtureCase == "ipv6_connect" ? 2 : 1)
             let expectedBootstrapFrameCount = networkFixtureCase == "ipv6_connect" ? 1 : 0
+            let expectedMatchedFrameCount = networkFixtureCase == "loopback_connect" ? 0 : 1
             if packetSensor.frameCount != expectedRawFrameCount ||
-                packetSensor.matchedFrameCount != 1 ||
+                packetSensor.matchedFrameCount != expectedMatchedFrameCount ||
                 packetSensor.bootstrapFrameCount != expectedBootstrapFrameCount ||
                 packetSensor.unexpectedFrameCount != 0 {
                 fputs(
@@ -448,6 +455,21 @@ private struct LinuxVzSignedConformanceHarness {
                 )
                 throw HarnessError.verificationFailed
             }
+            if networkFixtureCase == "loopback_connect" {
+                let hostEvidence = try makeLinuxVzInertHostEvidencePayload(
+                    rawFrameCount: UInt64(packetSensor.frameCount),
+                    packetSensorHealthy: packetSensor.healthy,
+                    packetSensorTerminal: packetSensor.terminal,
+                    guestChannelTerminated: true,
+                    vmStarted: true,
+                    vmStopped: true,
+                    cloneDestroyed: cloneDestroyed,
+                    storageDeviceCount: UInt64(configuration.storageDevices.count)
+                )
+                hostEvidenceJSON = hostEvidence.canonicalJSON
+                hostEvidencePayloadSHA256 = hostEvidence.payloadSHA256
+                hostClaims = hostEvidence.claims
+            } else {
             let hostEvidence: LinuxVzNetworkHostEvidencePayload
             if networkFixtureCase == "ipv4_connect" {
                 hostEvidence = try makeLinuxVzIPv4ConnectHostEvidencePayload(
@@ -485,6 +507,7 @@ private struct LinuxVzSignedConformanceHarness {
             hostEvidenceJSON = hostEvidence.canonicalJSON
             hostEvidencePayloadSHA256 = hostEvidence.payloadSHA256
             hostClaims = hostEvidence.claims
+            }
         } else {
             let hostEvidence = try makeLinuxVzInertHostEvidencePayload(
                 rawFrameCount: UInt64(packetSensor.frameCount),

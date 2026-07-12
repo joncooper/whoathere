@@ -189,19 +189,34 @@ pub fn decode_linux_vz_network_evidence_payload_v1(
         {
             LinuxVzTelemetryConformanceCaseV1::UdpSend
         }
+        "loopback_connect"
+            if wire.network_family == "ipv4"
+                && wire.network_source == "127.0.0.1"
+                && wire.network_target == "127.0.0.1" =>
+        {
+            LinuxVzTelemetryConformanceCaseV1::LoopbackConnect
+        }
         _ => return Err(LinuxVzNetworkEvidencePayloadErrorV1::InvalidSchema),
     };
     let (expected_action, expected_protocol, expected_socket_state, expected_event_kind) =
         if fixture_case == LinuxVzTelemetryConformanceCaseV1::UdpSend {
             ("udp_send", "udp", "unconnected_bound", "sendto")
+        } else if fixture_case == LinuxVzTelemetryConformanceCaseV1::LoopbackConnect {
+            ("tcp_connect", "tcp", "established", "connect")
         } else {
             ("tcp_connect", "tcp", "syn_sent", "connect")
         };
+    let expected_target_port = if fixture_case == LinuxVzTelemetryConformanceCaseV1::LoopbackConnect
+    {
+        40_552
+    } else {
+        443
+    };
     if wire.schema_version != LINUX_VZ_NETWORK_EVIDENCE_PAYLOAD_SCHEMA_V1
         || wire.network_action != expected_action
         || wire.network_protocol != expected_protocol
         || wire.network_socket_state != expected_socket_state
-        || decimal_u64_v1(&wire.network_target_port)? != 443
+        || decimal_u64_v1(&wire.network_target_port)? != expected_target_port
         || source_port == 0
         || source_port > u16::MAX as u64
         || decimal_u64_v1(&wire.event_sequence_start)? != 1
@@ -365,6 +380,22 @@ mod tests {
         assert_eq!(
             evidence.fixture_case(),
             LinuxVzTelemetryConformanceCaseV1::UdpSend
+        );
+    }
+
+    #[test]
+    fn loopback_payload_binds_established_guest_sinkhole() {
+        let mut value: serde_json::Value = serde_json::from_slice(&payload()).unwrap();
+        value["fixture_case"] = serde_json::json!("loopback_connect");
+        value["network_socket_state"] = serde_json::json!("established");
+        value["network_source"] = serde_json::json!("127.0.0.1");
+        value["network_target"] = serde_json::json!("127.0.0.1");
+        value["network_target_port"] = serde_json::json!("40552");
+        let encoded = serde_json_canonicalizer::to_vec(&value).unwrap();
+        let evidence = decode_linux_vz_network_evidence_payload_v1(&encoded).unwrap();
+        assert_eq!(
+            evidence.fixture_case(),
+            LinuxVzTelemetryConformanceCaseV1::LoopbackConnect
         );
     }
 }

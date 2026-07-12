@@ -73,6 +73,13 @@ public let linuxVzInertUDPSendSensorMarkersV1 = [
     "WHOATHERE_SENSOR network_target=documentation_sinkhole_192_0_2_1_443"
 ]
 
+public let linuxVzInertLoopbackConnectSensorMarkersV1 = [
+    "WHOATHERE_SENSOR network_loopback_connect=observed",
+    "WHOATHERE_SENSOR network_socket_state=established",
+    "WHOATHERE_SENSOR network_loopback_peer=accepted",
+    "WHOATHERE_SENSOR network_target=guest_loopback_sinkhole_127_0_0_1_40552"
+]
+
 public let linuxVzInertRequiredEvidenceMarkersV2 =
     linuxVzInertRequiredCapabilityMarkersV1 + linuxVzInertProcessSensorMarkersV2
 

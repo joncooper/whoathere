@@ -76,18 +76,22 @@ public func decodeLinuxVzNetworkEvidenceJSONV1(
         fixtureCase = "ipv6_connect"
     case ("udp_send", "ipv4", "192.0.2.2", "192.0.2.1"):
         fixtureCase = "udp_send"
+    case ("loopback_connect", "ipv4", "127.0.0.1", "127.0.0.1"):
+        fixtureCase = "loopback_connect"
     default:
         throw LinuxVzNetworkEvidencePayloadError.invalidSchema
     }
     let expectedAction = fixtureCase == "udp_send" ? "udp_send" : "tcp_connect"
     let expectedProtocol = fixtureCase == "udp_send" ? "udp" : "tcp"
-    let expectedSocketState = fixtureCase == "udp_send" ? "unconnected_bound" : "syn_sent"
+    let expectedSocketState = fixtureCase == "udp_send" ? "unconnected_bound" :
+        (fixtureCase == "loopback_connect" ? "established" : "syn_sent")
+    let expectedTargetPort: UInt64 = fixtureCase == "loopback_connect" ? 40_552 : 443
     guard Set(value.keys) == expectedKeys,
           value["schema_version"] as? String == linuxVzNetworkEvidencePayloadSchemaV1,
           value["network_action"] as? String == expectedAction,
           value["network_protocol"] as? String == expectedProtocol,
           value["network_socket_state"] as? String == expectedSocketState,
-          networkEvidenceDecimal(value["network_target_port"]) == 443,
+          networkEvidenceDecimal(value["network_target_port"]) == expectedTargetPort,
           let sourcePort = networkEvidenceDecimal(value["network_source_port"]),
           sourcePort > 0, sourcePort <= UInt64(UInt16.max),
           networkEvidenceDecimal(value["event_sequence_start"]) == 1,

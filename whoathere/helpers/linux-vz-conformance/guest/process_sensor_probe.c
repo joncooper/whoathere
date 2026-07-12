@@ -47,6 +47,7 @@
 #define NETWORK_REPORT_MAGIC 0x57544e34U
 #define NETWORK6_REPORT_MAGIC 0x57544e36U
 #define UDP_REPORT_MAGIC 0x57545534U
+#define LOOPBACK_REPORT_MAGIC 0x57544c34U
 #define NETWORK_INTERFACE "eth0"
 #define NETWORK_SOURCE_ADDRESS "192.0.2.2"
 #define NETWORK_TARGET_ADDRESS "192.0.2.1"
@@ -54,6 +55,8 @@
 #define NETWORK6_TARGET_ADDRESS "2001:db8::1"
 #define NETWORK_TARGET_PORT 443
 #define UDP_PAYLOAD_LENGTH 16
+#define LOOPBACK_ADDRESS "127.0.0.1"
+#define LOOPBACK_TARGET_PORT 40552
 #define SENSOR_PROGRAM_COUNT 8
 
 struct reparent_report {
@@ -957,6 +960,28 @@ static int read_exact_udp_report(int descriptor, struct udp_report *report) {
         report->payload_length == UDP_PAYLOAD_LENGTH ? 0 : -1;
 }
 
+static int read_exact_loopback_report(int descriptor, struct network_report *report) {
+    size_t offset = 0;
+    while (offset < sizeof(*report)) {
+        ssize_t length = read(descriptor, (char *)report + offset, sizeof(*report) - offset);
+        if (length < 0 && errno == EINTR) continue;
+        if (length <= 0) return -1;
+        offset += (size_t)length;
+    }
+    char trailing = 0;
+    ssize_t length;
+    do {
+        length = read(descriptor, &trailing, 1);
+    } while (length < 0 && errno == EINTR);
+    struct in_addr loopback = {0};
+    return length == 0 && report->magic == LOOPBACK_REPORT_MAGIC &&
+        report->process_pid > 0 && report->socket_inode > 0 &&
+        inet_pton(AF_INET, LOOPBACK_ADDRESS, &loopback) == 1 &&
+        report->source_address == loopback.s_addr && report->target_address == loopback.s_addr &&
+        report->source_port > 0 && report->target_port == LOOPBACK_TARGET_PORT &&
+        report->connect_errno == 0 ? 0 : -1;
+}
+
 static int add_route_attribute(
     struct nlmsghdr *header,
     size_t maximum,
@@ -1150,6 +1175,72 @@ done:
     return result;
 }
 
+static int prepare_loopback_sinkhole(void) {
+    int descriptor = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
+    if (descriptor < 0) return -1;
+    struct ifreq interface;
+    memset(&interface, 0, sizeof(interface));
+    strncpy(interface.ifr_name, "lo", IFNAMSIZ - 1);
+    if (ioctl(descriptor, SIOCGIFFLAGS, &interface) != 0) {
+        close(descriptor);
+        return -1;
+    }
+    interface.ifr_flags |= IFF_UP;
+    int reuse = 1;
+    struct sockaddr_in address = {
+        .sin_family = AF_INET,
+        .sin_port = htons(LOOPBACK_TARGET_PORT),
+    };
+    if (ioctl(descriptor, SIOCSIFFLAGS, &interface) != 0 ||
+        setsockopt(descriptor, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) != 0 ||
+        inet_pton(AF_INET, LOOPBACK_ADDRESS, &address.sin_addr) != 1 ||
+        bind(descriptor, (const struct sockaddr *)&address, sizeof(address)) != 0 ||
+        listen(descriptor, 1) != 0) {
+        close(descriptor);
+        return -1;
+    }
+    return descriptor;
+}
+
+static void cleanup_loopback_sinkhole(void) {
+    int descriptor = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    if (descriptor < 0) return;
+    struct ifreq interface;
+    memset(&interface, 0, sizeof(interface));
+    strncpy(interface.ifr_name, "lo", IFNAMSIZ - 1);
+    if (ioctl(descriptor, SIOCGIFFLAGS, &interface) == 0) {
+        interface.ifr_flags &= (short)~IFF_UP;
+        (void)ioctl(descriptor, SIOCSIFFLAGS, &interface);
+    }
+    close(descriptor);
+}
+
+static int accept_exact_loopback_peer(int listener, const struct network_report *report) {
+    struct sockaddr_in peer = {0};
+    socklen_t peer_length = sizeof(peer);
+    int descriptor = accept4(
+        listener,
+        (struct sockaddr *)&peer,
+        &peer_length,
+        SOCK_CLOEXEC
+    );
+    if (descriptor < 0) return -1;
+    struct sockaddr_in local = {0};
+    socklen_t local_length = sizeof(local);
+    struct in_addr loopback = {0};
+    if (peer_length != sizeof(peer) || peer.sin_family != AF_INET ||
+        peer.sin_addr.s_addr != report->source_address ||
+        ntohs(peer.sin_port) != report->source_port ||
+        getsockname(descriptor, (struct sockaddr *)&local, &local_length) != 0 ||
+        local_length != sizeof(local) || local.sin_family != AF_INET ||
+        inet_pton(AF_INET, LOOPBACK_ADDRESS, &loopback) != 1 ||
+        local.sin_addr.s_addr != loopback.s_addr || ntohs(local.sin_port) != LOOPBACK_TARGET_PORT) {
+        close(descriptor);
+        return -1;
+    }
+    return descriptor;
+}
+
 static void cleanup_ipv4_sinkhole(void) {
     int descriptor = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
     if (descriptor < 0) return;
@@ -1216,6 +1307,38 @@ static int proc_udp_contains_ipv4_sinkhole(const struct udp_report *report) {
                 &inode
             ) == 4 && strcmp(local, expected_local) == 0 &&
             strcmp(remote, expected_remote) == 0 && strcmp(state, "07") == 0 &&
+            inode == report->socket_inode) {
+            observed = 1;
+            break;
+        }
+    }
+    if (fclose(stream) != 0) return 0;
+    return observed;
+}
+
+static int proc_tcp_contains_loopback_sinkhole(const struct network_report *report) {
+    FILE *stream = fopen("/proc/net/tcp", "re");
+    if (stream == NULL) return 0;
+    char expected_local[14];
+    char expected_remote[14];
+    snprintf(expected_local, sizeof(expected_local), "0100007F:%04X", report->source_port);
+    snprintf(expected_remote, sizeof(expected_remote), "0100007F:%04X", report->target_port);
+    char line[512];
+    int observed = 0;
+    while (fgets(line, sizeof(line), stream) != NULL) {
+        char local[14] = {0};
+        char remote[14] = {0};
+        char state[3] = {0};
+        unsigned long long inode = 0;
+        if (sscanf(
+                line,
+                " %*d: %13s %13s %2s %*s %*s %*s %*u %*u %llu",
+                local,
+                remote,
+                state,
+                &inode
+            ) == 4 && strcmp(local, expected_local) == 0 &&
+            strcmp(remote, expected_remote) == 0 && strcmp(state, "01") == 0 &&
             inode == report->socket_inode) {
             observed = 1;
             break;
@@ -1308,14 +1431,18 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
     struct network_report network_report = {0};
     struct network6_report network6_report = {0};
     struct udp_report udp_report = {0};
+    struct network_report loopback_report = {0};
     uint64_t reparent_timestamp = 0;
     uint64_t session_timestamp = 0;
     uint64_t dynamic_timestamp = 0;
     uint64_t network_timestamp = 0;
     int report_pipe[2] = {-1, -1};
     int dynamic_fanotify = -1;
+    int loopback_listener = -1;
+    int loopback_peer = -1;
     int ipv4_prepared = 0;
     int ipv6_prepared = 0;
+    int loopback_prepared = 0;
     int child_status = 0;
     int result = 70;
     const char *failure_stage = "preflight";
@@ -1397,7 +1524,8 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
     int ipv4_connect = strcmp(fixture_case, "ipv4_connect") == 0;
     int ipv6_connect = strcmp(fixture_case, "ipv6_connect") == 0;
     int udp_send = strcmp(fixture_case, "udp_send") == 0;
-    int network_connect = ipv4_connect || ipv6_connect;
+    int loopback_connect = strcmp(fixture_case, "loopback_connect") == 0;
+    int network_connect = ipv4_connect || ipv6_connect || loopback_connect;
     int network_activity = network_connect || udp_send;
     if (credential_change) {
         const enum observation_key keys[] = {
@@ -1447,13 +1575,21 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
                 goto cleanup;
             }
             ipv4_prepared = 1;
-        } else {
+        } else if (ipv6_connect) {
             if (prepare_ipv6_sinkhole() != 0) {
                 failure_stage = "ipv6_sinkhole_prepare";
                 failure_errno = errno;
                 goto cleanup;
             }
             ipv6_prepared = 1;
+        } else {
+            loopback_listener = prepare_loopback_sinkhole();
+            if (loopback_listener < 0) {
+                failure_stage = "loopback_sinkhole_prepare";
+                failure_errno = errno;
+                goto cleanup;
+            }
+            loopback_prepared = 1;
         }
     }
     if ((double_fork || reparent) && prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0) {
@@ -1621,6 +1757,27 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
         network_timestamp = monotonic_ns();
         if (network_timestamp == 0) {
             failure_stage = "ipv6_timestamp";
+            goto cleanup;
+        }
+    }
+    if (loopback_connect) {
+        if (read_exact_loopback_report(report_pipe[0], &loopback_report) != 0) {
+            failure_stage = "loopback_report";
+            failure_errno = errno;
+            goto cleanup;
+        }
+        close_if_open(&report_pipe[0]);
+        loopback_peer = accept_exact_loopback_peer(loopback_listener, &loopback_report);
+        if (loopback_report.process_pid != child || loopback_peer < 0 ||
+            !proc_identity_matches(child, parent) ||
+            !proc_has_no_supplementary_groups(child) ||
+            !proc_tcp_contains_loopback_sinkhole(&loopback_report)) {
+            failure_stage = "loopback_live_socket";
+            goto cleanup;
+        }
+        network_timestamp = monotonic_ns();
+        if (network_timestamp == 0) {
+            failure_stage = "loopback_timestamp";
             goto cleanup;
         }
     }
@@ -1884,7 +2041,8 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
                 connect_event.count,
                 exit_event.count,
                 child,
-                ipv4_connect ? network_report.source_port : network6_report.source_port,
+                ipv4_connect ? network_report.source_port :
+                    (ipv6_connect ? network6_report.source_port : loopback_report.source_port),
                 fork_event.timestamp_ns,
                 exec_event.timestamp_ns,
                 connect_event.timestamp_ns,
@@ -1959,17 +2117,29 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
         puts("WHOATHERE_SENSOR network_payload=whoathere_udp_v1_16_bytes");
         puts("WHOATHERE_SENSOR network_target=documentation_sinkhole_192_0_2_1_443");
     }
+    if (loopback_connect) {
+        puts("WHOATHERE_SENSOR network_loopback_connect=observed");
+        puts("WHOATHERE_SENSOR network_socket_state=established");
+        puts("WHOATHERE_SENSOR network_loopback_peer=accepted");
+        puts("WHOATHERE_SENSOR network_target=guest_loopback_sinkhole_127_0_0_1_40552");
+    }
     puts("WHOATHERE_SENSOR_PROCESS_PROBE_OK");
     if (network_activity) {
         const char *network_family = ipv6_connect ? "ipv6" : "ipv4";
-        const char *network_source = ipv6_connect ? NETWORK6_SOURCE_ADDRESS : NETWORK_SOURCE_ADDRESS;
-        const char *network_target = ipv6_connect ? NETWORK6_TARGET_ADDRESS : NETWORK_TARGET_ADDRESS;
+        const char *network_source = loopback_connect ? LOOPBACK_ADDRESS :
+            (ipv6_connect ? NETWORK6_SOURCE_ADDRESS : NETWORK_SOURCE_ADDRESS);
+        const char *network_target = loopback_connect ? LOOPBACK_ADDRESS :
+            (ipv6_connect ? NETWORK6_TARGET_ADDRESS : NETWORK_TARGET_ADDRESS);
         const char *network_event_kind = udp_send ? "sendto" : "connect";
         const char *network_action = udp_send ? "udp_send" : "tcp_connect";
         const char *network_protocol = udp_send ? "udp" : "tcp";
-        const char *network_socket_state = udp_send ? "unconnected_bound" : "syn_sent";
+        const char *network_socket_state = udp_send ? "unconnected_bound" :
+            (loopback_connect ? "established" : "syn_sent");
         uint16_t network_source_port = udp_send ? udp_report.source_port :
-            (ipv4_connect ? network_report.source_port : network6_report.source_port);
+            (ipv4_connect ? network_report.source_port :
+                (ipv6_connect ? network6_report.source_port : loopback_report.source_port));
+        uint16_t network_target_port = loopback_connect
+            ? LOOPBACK_TARGET_PORT : NETWORK_TARGET_PORT;
         uint64_t network_event_timestamp = udp_send
             ? sendto_event.timestamp_ns : connect_event.timestamp_ns;
         printf(
@@ -1994,7 +2164,7 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
             "\"network_family\":\"%s\",\"network_protocol\":\"%s\","
             "\"network_socket_state\":\"%s\","
             "\"network_source\":\"%s\",\"network_source_port\":\"%u\","
-            "\"network_target\":\"%s\",\"network_target_port\":\"443\","
+            "\"network_target\":\"%s\",\"network_target_port\":\"%u\","
             "\"package_gid\":\"65534\",\"package_uid\":\"65534\","
             "\"reaped_process_count\":\"1\","
             "\"schema_version\":\"whoathere.linux_vz_network_evidence_payload.v1\","
@@ -2023,7 +2193,8 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
             network_socket_state,
             network_source,
             network_source_port,
-            network_target
+            network_target,
+            network_target_port
         );
         result = 0;
         goto cleanup;
@@ -2298,7 +2469,10 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
 cleanup:
     if (ipv4_prepared) cleanup_ipv4_sinkhole();
     if (ipv6_prepared) cleanup_ipv4_sinkhole();
+    if (loopback_prepared) cleanup_loopback_sinkhole();
     if (dynamic_fanotify >= 0) close(dynamic_fanotify);
+    if (loopback_peer >= 0) close(loopback_peer);
+    if (loopback_listener >= 0) close(loopback_listener);
     close_if_open(&report_pipe[0]);
     close_if_open(&report_pipe[1]);
     close_sensor_fds(&fds);
@@ -2328,7 +2502,8 @@ int main(int argument_count, char **arguments) {
         strcmp(arguments[2], "dynamic_library_load") == 0 ||
         strcmp(arguments[2], "ipv4_connect") == 0 ||
         strcmp(arguments[2], "ipv6_connect") == 0 ||
-        strcmp(arguments[2], "udp_send") == 0) {
+        strcmp(arguments[2], "udp_send") == 0 ||
+        strcmp(arguments[2], "loopback_connect") == 0) {
         return run_process_probe(arguments[1], arguments[2]);
     }
     if (strcmp(arguments[2], "protected_open_read_write_rename_delete") == 0 ||

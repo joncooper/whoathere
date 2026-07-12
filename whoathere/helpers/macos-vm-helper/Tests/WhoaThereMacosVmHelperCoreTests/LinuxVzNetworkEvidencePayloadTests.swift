@@ -73,6 +73,18 @@ private func networkGuestValue() -> [String: Any] {
     #expect(evidence.sourcePort == 49152)
 }
 
+@Test func networkGuestEvidenceBindsEstablishedLoopbackSinkholeTuple() throws {
+    var value = networkGuestValue()
+    value["fixture_case"] = "loopback_connect"
+    value["network_socket_state"] = "established"
+    value["network_source"] = "127.0.0.1"
+    value["network_target"] = "127.0.0.1"
+    value["network_target_port"] = "40552"
+    let evidence = try decodeLinuxVzNetworkEvidenceJSONV1(canonicalJSONData(value))
+    #expect(evidence.fixtureCase == "loopback_connect")
+    #expect(evidence.sourcePort == 49152)
+}
+
 @Test func networkHostEvidenceBindsOneExactIPv4Syn() throws {
     let evidence = try makeLinuxVzIPv4ConnectHostEvidencePayload(
         sourcePort: 49152,

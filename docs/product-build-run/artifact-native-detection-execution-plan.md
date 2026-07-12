@@ -97,6 +97,13 @@ host-observed UDP datagram carrying the fixed 16-byte inert marker. The previous
 rerun on the resulting exact identity. Eleven of 38 cases now share one backend binding; 27 remain.
 See the [UDP-send checkpoint](artifact-native-linux-vz-udp-send-checkpoint-2026-07-12.md).
 
+The `loopback_connect` case now binds one unprivileged TCP connect to a root-owned guest listener
+through protected syscall evidence, the live child socket inode, and the listener's accepted peer.
+The host separately requires zero NIC frames rather than claiming visibility into guest loopback.
+The previous eleven cases were rerun on the resulting exact identity. Twelve of 38 cases now share
+one backend binding; 26 remain. See the
+[loopback-connect checkpoint](artifact-native-linux-vz-loopback-connect-checkpoint-2026-07-12.md).
+
 Primary target: malicious npm and PyPI package detection with static analysis, AI-assisted code
 review, and behaviorally instrumented detonation in disposable virtual machines
 
@@ -1366,6 +1373,7 @@ Repository evidence:
 - [Linux VZ IPv4-connect checkpoint](artifact-native-linux-vz-ipv4-connect-checkpoint-2026-07-12.md)
 - [Linux VZ IPv6-connect checkpoint](artifact-native-linux-vz-ipv6-connect-checkpoint-2026-07-12.md)
 - [Linux VZ UDP-send checkpoint](artifact-native-linux-vz-udp-send-checkpoint-2026-07-12.md)
+- [Linux VZ loopback-connect checkpoint](artifact-native-linux-vz-loopback-connect-checkpoint-2026-07-12.md)
 - [macOS local release readiness](macos-local-release-readiness.md)
 - [macOS local beta pressure checkpoint](macos-local-beta-pressure-checkpoint.md)
 - [latest source-fixture corpus report](src-fixture-corpus-latest.md)
