@@ -117,8 +117,12 @@ int main(void) {
     ) == 0);
 
     assert(write_python_api_probe_script(workspace) == 0);
-    struct command_result probe_result = run_shell_fixture(
+    struct command_result probe_result = run_shell_fixture_with_boundary(
         workspace,
+        NULL,
+        getuid(),
+        getgid(),
+        0,
         "PYTHONPATH=target python3 .whoathere-api-probe.py probe_pkg",
         10
     );

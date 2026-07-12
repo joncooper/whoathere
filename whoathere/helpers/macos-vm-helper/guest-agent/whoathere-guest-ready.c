@@ -1049,24 +1049,9 @@ static struct command_result run_shell_fixture_with_boundary(
     }
 }
 
-static struct command_result run_shell_fixture(
-    const char *workspace,
-    const char *command,
-    unsigned int timeout_seconds
-) {
-    return run_shell_fixture_with_boundary(
-        workspace,
-        NULL,
-        getuid(),
-        getgid(),
-        0,
-        command,
-        timeout_seconds
-    );
-}
-
 static int prepare_workspace(const char *job_id, char *workspace, size_t workspace_capacity) {
-    if (mkdir_if_missing(WHOATHERE_WORK_ROOT, 0700) != 0) {
+    if (mkdir_if_missing(WHOATHERE_WORK_ROOT, 0711) != 0
+        || chmod(WHOATHERE_WORK_ROOT, 0711) != 0) {
         return -1;
     }
     int length = snprintf(workspace, workspace_capacity, "%s/%s", WHOATHERE_WORK_ROOT, job_id);
