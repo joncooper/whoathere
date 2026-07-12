@@ -252,6 +252,30 @@ static int setsid_escape(void) {
     return nanosleep(&pause, NULL) == 0 ? 0 : 100;
 }
 
+static int escaped_session(void) {
+    const pid_t process_pid = getpid();
+    const pid_t prior_session_id = getsid(0);
+    const pid_t prior_process_group_id = getpgrp();
+    if (prior_session_id < 0 || prior_process_group_id < 0) return 164;
+    const pid_t session_id = setsid();
+    const pid_t process_group_id = getpgrp();
+    if (session_id != process_pid || process_group_id != process_pid) return 165;
+    const struct session_report report = {
+        .magic = SESSION_REPORT_MAGIC,
+        .process_pid = process_pid,
+        .prior_session_id = prior_session_id,
+        .prior_process_group_id = prior_process_group_id,
+        .session_id = session_id,
+        .process_group_id = process_group_id,
+    };
+    ssize_t written = write(REPARENT_REPORT_FD, &report, sizeof(report));
+    int saved_errno = errno;
+    if (close(REPARENT_REPORT_FD) != 0 && written == (ssize_t)sizeof(report)) return 166;
+    errno = saved_errno;
+    if (written != (ssize_t)sizeof(report)) return 167;
+    for (;;) (void)pause();
+}
+
 static int credential_change(void) {
     const int group_count = getgroups(0, NULL);
     if (group_count != 0) return 101;
@@ -769,6 +793,7 @@ int main(int argument_count, char **arguments) {
     }
     if (strcmp(arguments[1], "reparenting") == 0) return reparenting();
     if (strcmp(arguments[1], "setsid_escape") == 0) return setsid_escape();
+    if (strcmp(arguments[1], "escaped_session") == 0) return escaped_session();
     if (strcmp(arguments[1], "credential_change") == 0) return credential_change();
     if (strcmp(arguments[1], "dynamic_library_load") == 0) return dynamic_library_load();
     if (strcmp(arguments[1], "ipv4_connect") == 0) return ipv4_connect();

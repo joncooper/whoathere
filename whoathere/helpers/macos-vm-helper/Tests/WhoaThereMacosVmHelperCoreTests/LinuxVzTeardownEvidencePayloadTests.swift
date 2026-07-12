@@ -11,6 +11,9 @@ private let validTimeoutPayload =
 private let validTermResistancePayload =
     #"{"cgroup_empty_after_reap":true,"cgroup_removed":true,"deadline_limit_ns":"1000000000","deadline_reached":true,"descendant_teardown_complete":true,"dropped_event_count":"0","event_count":"5","event_sequence_end":"5","event_sequence_start":"1","events":[{"actor_pid":"41","cgroup_id":"9001","kind":"fork","sequence":"1","subject_pid":"42","timestamp_ns":"100"},{"actor_pid":"42","cgroup_id":"9001","kind":"exec","sequence":"2","subject_pid":"42","timestamp_ns":"200"},{"actor_pid":"41","cgroup_id":"9001","kind":"signal_term","sequence":"3","subject_pid":"42","timestamp_ns":"300"},{"actor_pid":"41","cgroup_id":"9001","kind":"signal_kill","sequence":"4","subject_pid":"42","timestamp_ns":"600"},{"actor_pid":"42","cgroup_id":"9001","kind":"exit","sequence":"5","subject_pid":"42","timestamp_ns":"700"}],"evidence_truncated":false,"fixture_case":"term_resistance","fixture_termination_signal":"9","heartbeat_count":"2","kill_signal_count":"1","package_gid":"65534","package_uid":"65534","reaped_process_count":"1","schema_version":"whoathere.linux_vz_teardown_evidence_payload.v1","sensor_healthy":true,"sensor_teardown_complete":true,"teardown_trigger":"deadline","term_grace_limit_ns":"250000000","term_grace_reached":true,"term_resistance_proven":true,"termination_signal_count":"1"}"#
 
+private let validEscapedSessionPayload =
+    #"{"cgroup_empty_after_reap":true,"cgroup_removed":true,"deadline_limit_ns":"1000000000","deadline_reached":true,"descendant_teardown_complete":true,"dropped_event_count":"0","event_count":"5","event_sequence_end":"5","event_sequence_start":"1","events":[{"actor_pid":"41","cgroup_id":"9001","kind":"fork","sequence":"1","subject_pid":"42","timestamp_ns":"100"},{"actor_pid":"42","cgroup_id":"9001","kind":"exec","sequence":"2","subject_pid":"42","timestamp_ns":"200"},{"actor_pid":"42","cgroup_id":"9001","kind":"setsid","sequence":"3","subject_pid":"42","timestamp_ns":"300"},{"actor_pid":"41","cgroup_id":"9001","kind":"signal_term","sequence":"4","subject_pid":"42","timestamp_ns":"1400"},{"actor_pid":"42","cgroup_id":"9001","kind":"exit","sequence":"5","subject_pid":"42","timestamp_ns":"1500"}],"evidence_truncated":false,"fixture_case":"escaped_session","fixture_termination_signal":"15","heartbeat_count":"2","kill_signal_count":"0","package_gid":"65534","package_uid":"65534","reaped_process_count":"1","schema_version":"whoathere.linux_vz_teardown_evidence_payload.v1","sensor_healthy":true,"sensor_teardown_complete":true,"session_escape_count":"1","session_target":"new_session_leader_at_deadline","teardown_trigger":"deadline","termination_signal_count":"1"}"#
+
 private let normalExitPrefix = "WHOATHERE_GUEST_TEARDOWN_EVIDENCE "
 
 @Test func teardownEvidenceBindsNaturalExitLineageAndCompleteCleanup() throws {
@@ -142,6 +145,52 @@ private let normalExitPrefix = "WHOATHERE_GUEST_TEARDOWN_EVIDENCE "
 
     var rebound = try #require(
         JSONSerialization.jsonObject(with: Data(validTermResistancePayload.utf8))
+            as? [String: Any]
+    )
+    var events = try #require(rebound["events"] as? [[String: Any]])
+    events[3]["actor_pid"] = "42"
+    rebound["events"] = events
+    let data = try canonicalJSONData(rebound)
+    #expect(throws: LinuxVzTeardownEvidencePayloadError.invalidEvent) {
+        try decodeLinuxVzTeardownEvidencePayloadV1(
+            Data(normalExitPrefix.utf8) + data + Data("\n".utf8)
+        )
+    }
+}
+
+@Test func teardownEvidenceBindsEscapedSessionAtDeadlineAndCompleteCleanup() throws {
+    let payload = try decodeLinuxVzTeardownEvidencePayloadV1(
+        Data((normalExitPrefix + validEscapedSessionPayload + "\n").utf8)
+    )
+    #expect(payload.canonicalJSON == Data(validEscapedSessionPayload.utf8))
+    #expect(payload.fixtureCase == "escaped_session")
+    #expect(payload.claims.eventCount == 5)
+    #expect(payload.claims.observedTerminal == "timeout_with_teardown")
+    #expect(payload.claims.droppedEventCount == 0)
+    #expect(payload.claims.descendantTeardownComplete)
+}
+
+@Test func teardownEvidenceRejectsForgedEscapedSessionSignalAndLineage() throws {
+    for (field, changed) in [
+        ("session_escape_count", "0" as Any),
+        ("session_target", "new_session_leader" as Any),
+        ("fixture_termination_signal", "9" as Any),
+    ] {
+        var object = try #require(
+            JSONSerialization.jsonObject(with: Data(validEscapedSessionPayload.utf8))
+                as? [String: Any]
+        )
+        object[field] = changed
+        let data = try canonicalJSONData(object)
+        #expect(throws: LinuxVzTeardownEvidencePayloadError.invalidSchema) {
+            try decodeLinuxVzTeardownEvidencePayloadV1(
+                Data(normalExitPrefix.utf8) + data + Data("\n".utf8)
+            )
+        }
+    }
+
+    var rebound = try #require(
+        JSONSerialization.jsonObject(with: Data(validEscapedSessionPayload.utf8))
             as? [String: Any]
     )
     var events = try #require(rebound["events"] as? [[String: Any]])

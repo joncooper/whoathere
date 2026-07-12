@@ -128,6 +128,26 @@ public func decodeLinuxVzTeardownEvidenceJSONV1(
               teardownDecimal(value["kill_signal_count"]) == 1 else {
             throw LinuxVzTeardownEvidencePayloadError.invalidSchema
         }
+    case "escaped_session":
+        expectedKeys = baseKeys.union([
+            "fixture_termination_signal", "session_escape_count", "session_target"
+        ])
+        expectedKinds = ["fork", "exec", "setsid", "signal_term", "exit"]
+        observedTerminal = "timeout_with_teardown"
+        guard value["teardown_trigger"] as? String == "deadline",
+              teardownDecimal(value["deadline_limit_ns"]) == 1_000_000_000,
+              value["deadline_reached"] as? Bool == true,
+              value["fixture_exit_status"] == nil,
+              teardownDecimal(value["fixture_termination_signal"]) == 15,
+              teardownDecimal(value["session_escape_count"]) == 1,
+              value["session_target"] as? String == "new_session_leader_at_deadline",
+              value["term_grace_limit_ns"] == nil,
+              value["term_grace_reached"] == nil,
+              value["term_resistance_proven"] == nil,
+              teardownDecimal(value["termination_signal_count"]) == 1,
+              teardownDecimal(value["kill_signal_count"]) == 0 else {
+            throw LinuxVzTeardownEvidencePayloadError.invalidSchema
+        }
     default:
         throw LinuxVzTeardownEvidencePayloadError.invalidSchema
     }
@@ -185,6 +205,17 @@ public func decodeLinuxVzTeardownEvidenceJSONV1(
         guard events[1].actorPID == events[0].subjectPID,
               events[1].subjectPID == events[0].subjectPID,
               events[2].actorPID == events[0].actorPID,
+              events[2].subjectPID == events[0].subjectPID,
+              events[3].actorPID == events[0].actorPID,
+              events[3].subjectPID == events[0].subjectPID,
+              events[4].actorPID == events[0].subjectPID,
+              events[4].subjectPID == events[0].subjectPID else {
+            throw LinuxVzTeardownEvidencePayloadError.invalidEvent
+        }
+    case "escaped_session":
+        guard events[1].actorPID == events[0].subjectPID,
+              events[1].subjectPID == events[0].subjectPID,
+              events[2].actorPID == events[0].subjectPID,
               events[2].subjectPID == events[0].subjectPID,
               events[3].actorPID == events[0].actorPID,
               events[3].subjectPID == events[0].subjectPID,

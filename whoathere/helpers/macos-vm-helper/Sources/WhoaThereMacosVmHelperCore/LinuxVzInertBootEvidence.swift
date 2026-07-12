@@ -185,6 +185,17 @@ public let linuxVzInertTermResistanceSensorMarkersV1 = [
     "WHOATHERE_SENSOR teardown_terminal=timeout_with_teardown"
 ]
 
+public let linuxVzInertEscapedSessionSensorMarkersV1 = [
+    "WHOATHERE_SENSOR teardown_trigger=deadline",
+    "WHOATHERE_SENSOR teardown_deadline=reached",
+    "WHOATHERE_SENSOR teardown_session=escaped",
+    "WHOATHERE_SENSOR teardown_term_signal=delivered",
+    "WHOATHERE_SENSOR teardown_descendants=none_remaining",
+    "WHOATHERE_SENSOR teardown_sensor=closed",
+    "WHOATHERE_SENSOR teardown_cgroup=removed",
+    "WHOATHERE_SENSOR teardown_terminal=timeout_with_teardown"
+]
+
 public let linuxVzInertRequiredEvidenceMarkersV2 =
     linuxVzInertRequiredCapabilityMarkersV1 + linuxVzInertProcessSensorMarkersV2
 
