@@ -217,6 +217,13 @@ pub fn decode_linux_vz_network_evidence_payload_v1(
         {
             LinuxVzTelemetryConformanceCaseV1::MetadataAddressConnect
         }
+        "public_address_connect"
+            if wire.network_family == "ipv4"
+                && wire.network_source == "198.51.100.2"
+                && wire.network_target == "198.51.100.1" =>
+        {
+            LinuxVzTelemetryConformanceCaseV1::PublicAddressConnect
+        }
         _ => return Err(LinuxVzNetworkEvidencePayloadErrorV1::InvalidSchema),
     };
     let (expected_action, expected_protocol, expected_socket_state, expected_event_kind) =
@@ -459,6 +466,20 @@ mod tests {
         assert_eq!(
             evidence.fixture_case(),
             LinuxVzTelemetryConformanceCaseV1::MetadataAddressConnect
+        );
+    }
+
+    #[test]
+    fn public_payload_binds_exact_documentation_sinkhole() {
+        let mut value: serde_json::Value = serde_json::from_slice(&payload()).unwrap();
+        value["fixture_case"] = serde_json::json!("public_address_connect");
+        value["network_source"] = serde_json::json!("198.51.100.2");
+        value["network_target"] = serde_json::json!("198.51.100.1");
+        let encoded = serde_json_canonicalizer::to_vec(&value).unwrap();
+        let evidence = decode_linux_vz_network_evidence_payload_v1(&encoded).unwrap();
+        assert_eq!(
+            evidence.fixture_case(),
+            LinuxVzTelemetryConformanceCaseV1::PublicAddressConnect
         );
     }
 }

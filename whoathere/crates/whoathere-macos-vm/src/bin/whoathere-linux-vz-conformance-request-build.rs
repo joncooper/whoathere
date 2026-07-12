@@ -42,6 +42,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "private_address_connect" => LinuxVzTelemetryConformanceCaseV1::PrivateAddressConnect,
         "link_local_connect" => LinuxVzTelemetryConformanceCaseV1::LinkLocalConnect,
         "metadata_address_connect" => LinuxVzTelemetryConformanceCaseV1::MetadataAddressConnect,
+        "public_address_connect" => LinuxVzTelemetryConformanceCaseV1::PublicAddressConnect,
         "protected_open_read_write_rename_delete" => {
             LinuxVzTelemetryConformanceCaseV1::ProtectedOpenReadWriteRenameDelete
         }

@@ -84,6 +84,8 @@ public func decodeLinuxVzNetworkEvidenceJSONV1(
         fixtureCase = "link_local_connect"
     case ("metadata_address_connect", "ipv4", "169.254.169.253", "169.254.169.254"):
         fixtureCase = "metadata_address_connect"
+    case ("public_address_connect", "ipv4", "198.51.100.2", "198.51.100.1"):
+        fixtureCase = "public_address_connect"
     default:
         throw LinuxVzNetworkEvidencePayloadError.invalidSchema
     }

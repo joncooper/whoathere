@@ -28,6 +28,7 @@ static const char *dynamic_library_path = "/whoathere/dynamic-fixture-library.so
 #define PRIVATE_REPORT_MAGIC 0x57545034U
 #define LINK_LOCAL_REPORT_MAGIC 0x57544b34U
 #define METADATA_REPORT_MAGIC 0x57544d34U
+#define PUBLIC_REPORT_MAGIC 0x57544234U
 
 struct reparent_report {
     uint32_t magic;
@@ -535,6 +536,10 @@ static int metadata_address_connect(void) {
     return classified_address_connect("169.254.169.254", METADATA_REPORT_MAGIC);
 }
 
+static int public_address_connect(void) {
+    return classified_address_connect("198.51.100.1", PUBLIC_REPORT_MAGIC);
+}
+
 int main(int argument_count, char **arguments) {
     if (argument_count != 2 || getuid() != 65534 || geteuid() != 65534 ||
         getgid() != 65534 || getegid() != 65534) {
@@ -559,6 +564,7 @@ int main(int argument_count, char **arguments) {
     if (strcmp(arguments[1], "metadata_address_connect") == 0) {
         return metadata_address_connect();
     }
+    if (strcmp(arguments[1], "public_address_connect") == 0) return public_address_connect();
     if (strcmp(arguments[1], "protected_open_read_write_rename_delete") == 0 ||
         strcmp(arguments[1], "mmap_access") == 0) {
         return file_fixture();

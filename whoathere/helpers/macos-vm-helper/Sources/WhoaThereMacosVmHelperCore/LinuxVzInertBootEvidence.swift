@@ -101,6 +101,13 @@ public let linuxVzInertMetadataAddressConnectSensorMarkersV1 = [
     "WHOATHERE_SENSOR network_target=metadata_sinkhole_169_254_169_254_443"
 ]
 
+public let linuxVzInertPublicAddressConnectSensorMarkersV1 = [
+    "WHOATHERE_SENSOR network_public_address_connect=observed",
+    "WHOATHERE_SENSOR network_socket_state=syn_sent",
+    "WHOATHERE_SENSOR network_destination_class=public_documentation",
+    "WHOATHERE_SENSOR network_target=public_sinkhole_198_51_100_1_443"
+]
+
 public let linuxVzInertRequiredEvidenceMarkersV2 =
     linuxVzInertRequiredCapabilityMarkersV1 + linuxVzInertProcessSensorMarkersV2
 

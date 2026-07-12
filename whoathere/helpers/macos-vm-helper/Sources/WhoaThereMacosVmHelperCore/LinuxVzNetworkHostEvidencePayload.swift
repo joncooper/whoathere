@@ -161,6 +161,31 @@ public func makeLinuxVzMetadataAddressConnectHostEvidencePayload(
     )
 }
 
+public func makeLinuxVzPublicAddressConnectHostEvidencePayload(
+    sourcePort: UInt16,
+    rawFrameCount: UInt64,
+    matchedFrameCount: UInt64,
+    unexpectedFrameCount: UInt64,
+    packetSensorHealthy: Bool,
+    packetSensorTerminal: String,
+    storageDeviceCount: UInt64
+) throws -> LinuxVzNetworkHostEvidencePayload {
+    try makeLinuxVzConnectHostEvidencePayload(
+        fixtureCase: "public_address_connect",
+        frameKind: "ipv4_tcp_syn_public",
+        sourceAddress: "198.51.100.2",
+        targetAddress: "198.51.100.1",
+        bootstrapFrameCount: 0,
+        sourcePort: sourcePort,
+        rawFrameCount: rawFrameCount,
+        matchedFrameCount: matchedFrameCount,
+        unexpectedFrameCount: unexpectedFrameCount,
+        packetSensorHealthy: packetSensorHealthy,
+        packetSensorTerminal: packetSensorTerminal,
+        storageDeviceCount: storageDeviceCount
+    )
+}
+
 private func makeLinuxVzConnectHostEvidencePayload(
     fixtureCase: String,
     frameKind: String,
@@ -253,6 +278,8 @@ public func decodeLinuxVzNetworkHostEvidencePayload(
         fixtureCase = "link_local_connect"
     case ("metadata_address_connect", "ipv4_tcp_syn_metadata", "169.254.169.253", "169.254.169.254"):
         fixtureCase = "metadata_address_connect"
+    case ("public_address_connect", "ipv4_tcp_syn_public", "198.51.100.2", "198.51.100.1"):
+        fixtureCase = "public_address_connect"
     default:
         throw LinuxVzHostEvidencePayloadError.invalidSchema
     }

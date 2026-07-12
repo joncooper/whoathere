@@ -48,6 +48,18 @@ public func linuxVzIsExactIPv4MetadataSinkholeSYNFrame(
     )
 }
 
+public func linuxVzIsExactIPv4PublicSinkholeSYNFrame(
+    _ frame: Data,
+    sourcePort: UInt16
+) -> Bool {
+    linuxVzIsExactIPv4TCPSYNFrame(
+        frame,
+        sourcePort: sourcePort,
+        sourceAddress: [198, 51, 100, 2],
+        targetAddress: [198, 51, 100, 1]
+    )
+}
+
 private func linuxVzIsExactIPv4TCPSYNFrame(
     _ frame: Data,
     sourcePort: UInt16,

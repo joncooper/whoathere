@@ -124,6 +124,13 @@ a real metadata service. The previous fourteen cases were rerun on the new exact
 of 38 cases now share one backend binding; 23 remain. See the
 [metadata-address-connect checkpoint](artifact-native-linux-vz-metadata-address-connect-checkpoint-2026-07-12.md).
 
+The `public_address_connect` case now binds one unprivileged TCP connect to an inert RFC 5737
+documentation-network neighbor through the protected syscall, live `SYN_SENT` state, a distinct
+public-documentation classification, and exactly one checksum-valid host-observed SYN. No external
+route or live public endpoint exists. The previous fifteen cases were rerun on the new exact
+identity. Sixteen of 38 cases now share one backend binding; 22 remain. See the
+[public-address-connect checkpoint](artifact-native-linux-vz-public-address-connect-checkpoint-2026-07-12.md).
+
 Primary target: malicious npm and PyPI package detection with static analysis, AI-assisted code
 review, and behaviorally instrumented detonation in disposable virtual machines
 
