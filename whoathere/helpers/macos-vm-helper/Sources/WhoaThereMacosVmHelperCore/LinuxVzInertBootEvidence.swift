@@ -108,6 +108,14 @@ public let linuxVzInertPublicAddressConnectSensorMarkersV1 = [
     "WHOATHERE_SENSOR network_target=public_sinkhole_198_51_100_1_443"
 ]
 
+public let linuxVzInertDNSPlaintextSensorMarkersV1 = [
+    "WHOATHERE_SENSOR network_dns_plaintext=observed",
+    "WHOATHERE_SENSOR network_socket_state=unconnected_bound",
+    "WHOATHERE_SENSOR network_dns_transport=udp",
+    "WHOATHERE_SENSOR network_dns_question=whoathere_invalid_a_in",
+    "WHOATHERE_SENSOR network_target=dns_sinkhole_192_0_2_53_53"
+]
+
 public let linuxVzInertRequiredEvidenceMarkersV2 =
     linuxVzInertRequiredCapabilityMarkersV1 + linuxVzInertProcessSensorMarkersV2
 

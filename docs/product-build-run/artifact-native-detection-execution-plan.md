@@ -131,6 +131,13 @@ route or live public endpoint exists. The previous fifteen cases were rerun on t
 identity. Sixteen of 38 cases now share one backend binding; 22 remain. See the
 [public-address-connect checkpoint](artifact-native-linux-vz-public-address-connect-checkpoint-2026-07-12.md).
 
+The `dns_plaintext` case now binds one unprivileged UDP `sendto` to an inert RFC 5737 DNS neighbor
+through the protected syscall, a live unconnected socket inode, and exactly one checksum-valid
+host-observed DNS query. The host parser requires the fixed transaction ID, flags, section counts,
+and `whoathere.invalid. A IN` question; no external resolver is contacted. The previous sixteen
+cases were rerun on the new exact identity. Seventeen of 38 cases now share one backend binding; 21
+remain. See the [plaintext-DNS checkpoint](artifact-native-linux-vz-dns-plaintext-checkpoint-2026-07-12.md).
+
 Primary target: malicious npm and PyPI package detection with static analysis, AI-assisted code
 review, and behaviorally instrumented detonation in disposable virtual machines
 

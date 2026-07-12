@@ -186,6 +186,31 @@ public func makeLinuxVzPublicAddressConnectHostEvidencePayload(
     )
 }
 
+public func makeLinuxVzDNSPlaintextHostEvidencePayload(
+    sourcePort: UInt16,
+    rawFrameCount: UInt64,
+    matchedFrameCount: UInt64,
+    unexpectedFrameCount: UInt64,
+    packetSensorHealthy: Bool,
+    packetSensorTerminal: String,
+    storageDeviceCount: UInt64
+) throws -> LinuxVzNetworkHostEvidencePayload {
+    try makeLinuxVzConnectHostEvidencePayload(
+        fixtureCase: "dns_plaintext",
+        frameKind: "ipv4_udp_dns_plaintext_query",
+        sourceAddress: "192.0.2.2",
+        targetAddress: "192.0.2.53",
+        bootstrapFrameCount: 0,
+        sourcePort: sourcePort,
+        rawFrameCount: rawFrameCount,
+        matchedFrameCount: matchedFrameCount,
+        unexpectedFrameCount: unexpectedFrameCount,
+        packetSensorHealthy: packetSensorHealthy,
+        packetSensorTerminal: packetSensorTerminal,
+        storageDeviceCount: storageDeviceCount
+    )
+}
+
 private func makeLinuxVzConnectHostEvidencePayload(
     fixtureCase: String,
     frameKind: String,
@@ -238,7 +263,7 @@ private func makeLinuxVzConnectHostEvidencePayload(
         "sync_back": false,
         "target_address": targetAddress,
         "target_mac": "02:57:48:4f:41:fe",
-        "target_port": "443",
+        "target_port": fixtureCase == "dns_plaintext" ? "53" : "443",
         "transport_checksum_valid": true,
         "unexpected_frame_count": String(unexpectedFrameCount),
         "vm_started": true,
@@ -280,6 +305,8 @@ public func decodeLinuxVzNetworkHostEvidencePayload(
         fixtureCase = "metadata_address_connect"
     case ("public_address_connect", "ipv4_tcp_syn_public", "198.51.100.2", "198.51.100.1"):
         fixtureCase = "public_address_connect"
+    case ("dns_plaintext", "ipv4_udp_dns_plaintext_query", "192.0.2.2", "192.0.2.53"):
+        fixtureCase = "dns_plaintext"
     default:
         throw LinuxVzHostEvidencePayloadError.invalidSchema
     }
@@ -298,7 +325,7 @@ public func decodeLinuxVzNetworkHostEvidencePayload(
     value["target_mac"] as? String == "02:57:48:4f:41:fe",
     let sourcePort = networkHostDecimal(value["source_port"]),
     sourcePort > 0, sourcePort <= UInt64(UInt16.max),
-    networkHostDecimal(value["target_port"]) == 443,
+    networkHostDecimal(value["target_port"]) == (fixtureCase == "dns_plaintext" ? 53 : 443),
     networkHostDecimal(value["event_sequence_start"]) == 1,
     networkHostDecimal(value["event_sequence_end"]) == 7,
     networkHostDecimal(value["event_count"]) == 7,

@@ -86,14 +86,19 @@ public func decodeLinuxVzNetworkEvidenceJSONV1(
         fixtureCase = "metadata_address_connect"
     case ("public_address_connect", "ipv4", "198.51.100.2", "198.51.100.1"):
         fixtureCase = "public_address_connect"
+    case ("dns_plaintext", "ipv4", "192.0.2.2", "192.0.2.53"):
+        fixtureCase = "dns_plaintext"
     default:
         throw LinuxVzNetworkEvidencePayloadError.invalidSchema
     }
-    let expectedAction = fixtureCase == "udp_send" ? "udp_send" : "tcp_connect"
-    let expectedProtocol = fixtureCase == "udp_send" ? "udp" : "tcp"
-    let expectedSocketState = fixtureCase == "udp_send" ? "unconnected_bound" :
+    let expectedAction = fixtureCase == "dns_plaintext" ? "dns_query" :
+        (fixtureCase == "udp_send" ? "udp_send" : "tcp_connect")
+    let udpActivity = fixtureCase == "udp_send" || fixtureCase == "dns_plaintext"
+    let expectedProtocol = udpActivity ? "udp" : "tcp"
+    let expectedSocketState = udpActivity ? "unconnected_bound" :
         (fixtureCase == "loopback_connect" ? "established" : "syn_sent")
-    let expectedTargetPort: UInt64 = fixtureCase == "loopback_connect" ? 40_552 : 443
+    let expectedTargetPort: UInt64 = fixtureCase == "dns_plaintext" ? 53 :
+        (fixtureCase == "loopback_connect" ? 40_552 : 443)
     guard Set(value.keys) == expectedKeys,
           value["schema_version"] as? String == linuxVzNetworkEvidencePayloadSchemaV1,
           value["network_action"] as? String == expectedAction,
@@ -116,7 +121,7 @@ public func decodeLinuxVzNetworkEvidenceJSONV1(
           let events = value["events"] as? [[String: Any]], events.count == 4 else {
         throw LinuxVzNetworkEvidencePayloadError.invalidSchema
     }
-    let expectedKinds = ["fork", "exec", fixtureCase == "udp_send" ? "sendto" : "connect", "exit"]
+    let expectedKinds = ["fork", "exec", udpActivity ? "sendto" : "connect", "exit"]
     var childPID: UInt64?
     var cgroupID: UInt64?
     var previousTimestamp: UInt64 = 0

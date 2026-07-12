@@ -107,18 +107,53 @@ public func linuxVzIsExactIPv4SinkholeUDPFrame(
     _ frame: Data,
     sourcePort: UInt16
 ) -> Bool {
+    linuxVzIsExactIPv4UDPFrame(
+        frame,
+        sourcePort: sourcePort,
+        targetPort: 443,
+        sourceAddress: [192, 0, 2, 2],
+        targetAddress: [192, 0, 2, 1],
+        payload: [UInt8]("WHOATHERE_UDP_V1".utf8)
+    )
+}
+
+public func linuxVzIsExactIPv4PlaintextDNSQueryFrame(
+    _ frame: Data,
+    sourcePort: UInt16
+) -> Bool {
+    linuxVzIsExactIPv4UDPFrame(
+        frame,
+        sourcePort: sourcePort,
+        targetPort: 53,
+        sourceAddress: [192, 0, 2, 2],
+        targetAddress: [192, 0, 2, 53],
+        payload: [
+            0x57, 0x54, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x09, 0x77, 0x68, 0x6f, 0x61, 0x74, 0x68, 0x65, 0x72, 0x65,
+            0x07, 0x69, 0x6e, 0x76, 0x61, 0x6c, 0x69, 0x64, 0x00, 0x00, 0x01, 0x00, 0x01
+        ]
+    )
+}
+
+private func linuxVzIsExactIPv4UDPFrame(
+    _ frame: Data,
+    sourcePort: UInt16,
+    targetPort: UInt16,
+    sourceAddress: [UInt8],
+    targetAddress: [UInt8],
+    payload: [UInt8]
+) -> Bool {
     let bytes = [UInt8](frame)
     let sourceMAC: [UInt8] = [0x02, 0x57, 0x48, 0x4f, 0x41, 0x31]
     let targetMAC: [UInt8] = [0x02, 0x57, 0x48, 0x4f, 0x41, 0xfe]
-    let payload = [UInt8]("WHOATHERE_UDP_V1".utf8)
     guard bytes.count == 14 + 20 + 8 + payload.count,
           Array(bytes[0..<6]) == targetMAC,
           Array(bytes[6..<12]) == sourceMAC,
           bytes[12] == 0x08, bytes[13] == 0x00,
           bytes[14] == 0x45,
           bytes[23] == 0x11,
-          Array(bytes[26..<30]) == [192, 0, 2, 2],
-          Array(bytes[30..<34]) == [192, 0, 2, 1] else {
+          Array(bytes[26..<30]) == sourceAddress,
+          Array(bytes[30..<34]) == targetAddress else {
         return false
     }
     let totalLength = Int(bytes[16]) << 8 | Int(bytes[17])
@@ -130,7 +165,7 @@ public func linuxVzIsExactIPv4SinkholeUDPFrame(
           fragment & 0xbfff == 0,
           udpLength == 8 + payload.count,
           (UInt16(bytes[34]) << 8 | UInt16(bytes[35])) == sourcePort,
-          (UInt16(bytes[36]) << 8 | UInt16(bytes[37])) == 443,
+          (UInt16(bytes[36]) << 8 | UInt16(bytes[37])) == targetPort,
           udpChecksum != 0,
           Array(bytes[42..<bytes.count]) == payload,
           linuxVzChecksumValid(Array(bytes[14..<34])) else {

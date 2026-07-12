@@ -29,6 +29,12 @@ static const char *dynamic_library_path = "/whoathere/dynamic-fixture-library.so
 #define LINK_LOCAL_REPORT_MAGIC 0x57544b34U
 #define METADATA_REPORT_MAGIC 0x57544d34U
 #define PUBLIC_REPORT_MAGIC 0x57544234U
+#define DNS_PLAINTEXT_REPORT_MAGIC 0x57544434U
+static const unsigned char dns_plaintext_query[] = {
+    0x57, 0x54, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x09, 'w', 'h', 'o', 'a', 't', 'h', 'e', 'r', 'e',
+    0x07, 'i', 'n', 'v', 'a', 'l', 'i', 'd', 0x00, 0x00, 0x01, 0x00, 0x01,
+};
 
 struct reparent_report {
     uint32_t magic;
@@ -540,6 +546,69 @@ static int public_address_connect(void) {
     return classified_address_connect("198.51.100.1", PUBLIC_REPORT_MAGIC);
 }
 
+static int dns_plaintext(void) {
+    int descriptor = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, IPPROTO_UDP);
+    if (descriptor < 0) return 145;
+    struct sockaddr_in source = {
+        .sin_family = AF_INET,
+        .sin_port = 0,
+    };
+    struct sockaddr_in target = {
+        .sin_family = AF_INET,
+        .sin_port = htons(53),
+    };
+    if (inet_pton(AF_INET, "192.0.2.2", &source.sin_addr) != 1 ||
+        inet_pton(AF_INET, "192.0.2.53", &target.sin_addr) != 1 ||
+        bind(descriptor, (const struct sockaddr *)&source, sizeof(source)) != 0) {
+        close(descriptor);
+        return 146;
+    }
+    if (sendto(
+            descriptor,
+            dns_plaintext_query,
+            sizeof(dns_plaintext_query),
+            0,
+            (const struct sockaddr *)&target,
+            sizeof(target)
+        ) != (ssize_t)sizeof(dns_plaintext_query)) {
+        close(descriptor);
+        return 147;
+    }
+    socklen_t source_length = sizeof(source);
+    struct stat metadata;
+    if (getsockname(descriptor, (struct sockaddr *)&source, &source_length) != 0 ||
+        source_length != sizeof(source) || source.sin_family != AF_INET ||
+        source.sin_port == 0 || fstat(descriptor, &metadata) != 0) {
+        close(descriptor);
+        return 148;
+    }
+    const struct udp_report report = {
+        .magic = DNS_PLAINTEXT_REPORT_MAGIC,
+        .process_pid = getpid(),
+        .socket_inode = metadata.st_ino,
+        .source_address = source.sin_addr.s_addr,
+        .target_address = target.sin_addr.s_addr,
+        .source_port = ntohs(source.sin_port),
+        .target_port = ntohs(target.sin_port),
+        .payload_length = sizeof(dns_plaintext_query),
+    };
+    ssize_t written = write(REPARENT_REPORT_FD, &report, sizeof(report));
+    int saved_errno = errno;
+    if (close(REPARENT_REPORT_FD) != 0 && written == (ssize_t)sizeof(report)) {
+        close(descriptor);
+        return 149;
+    }
+    errno = saved_errno;
+    if (written != (ssize_t)sizeof(report)) {
+        close(descriptor);
+        return 150;
+    }
+    const struct timespec pause = {.tv_sec = 0, .tv_nsec = 200000000};
+    int result = nanosleep(&pause, NULL) == 0 ? 0 : 151;
+    if (close(descriptor) != 0 && result == 0) result = 152;
+    return result;
+}
+
 int main(int argument_count, char **arguments) {
     if (argument_count != 2 || getuid() != 65534 || geteuid() != 65534 ||
         getgid() != 65534 || getegid() != 65534) {
@@ -565,6 +634,7 @@ int main(int argument_count, char **arguments) {
         return metadata_address_connect();
     }
     if (strcmp(arguments[1], "public_address_connect") == 0) return public_address_connect();
+    if (strcmp(arguments[1], "dns_plaintext") == 0) return dns_plaintext();
     if (strcmp(arguments[1], "protected_open_read_write_rename_delete") == 0 ||
         strcmp(arguments[1], "mmap_access") == 0) {
         return file_fixture();
