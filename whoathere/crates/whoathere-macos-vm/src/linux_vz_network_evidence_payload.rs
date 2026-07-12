@@ -238,6 +238,13 @@ pub fn decode_linux_vz_network_evidence_payload_v1(
         {
             LinuxVzTelemetryConformanceCaseV1::DnsMalformed
         }
+        "encrypted_dns_connect"
+            if wire.network_family == "ipv4"
+                && wire.network_source == "192.0.2.2"
+                && wire.network_target == "192.0.2.53" =>
+        {
+            LinuxVzTelemetryConformanceCaseV1::EncryptedDnsConnect
+        }
         _ => return Err(LinuxVzNetworkEvidencePayloadErrorV1::InvalidSchema),
     };
     let (expected_action, expected_protocol, expected_socket_state, expected_event_kind) =
@@ -247,6 +254,8 @@ pub fn decode_linux_vz_network_evidence_payload_v1(
             ("dns_query", "udp", "unconnected_bound", "sendto")
         } else if fixture_case == LinuxVzTelemetryConformanceCaseV1::DnsMalformed {
             ("dns_malformed", "udp", "unconnected_bound", "sendto")
+        } else if fixture_case == LinuxVzTelemetryConformanceCaseV1::EncryptedDnsConnect {
+            ("encrypted_dns_connect", "tcp", "syn_sent", "connect")
         } else if fixture_case == LinuxVzTelemetryConformanceCaseV1::LoopbackConnect {
             ("tcp_connect", "tcp", "established", "connect")
         } else {
@@ -256,6 +265,7 @@ pub fn decode_linux_vz_network_evidence_payload_v1(
         LinuxVzTelemetryConformanceCaseV1::LoopbackConnect => 40_552,
         LinuxVzTelemetryConformanceCaseV1::DnsPlaintext => 53,
         LinuxVzTelemetryConformanceCaseV1::DnsMalformed => 53,
+        LinuxVzTelemetryConformanceCaseV1::EncryptedDnsConnect => 853,
         _ => 443,
     };
     if wire.schema_version != LINUX_VZ_NETWORK_EVIDENCE_PAYLOAD_SCHEMA_V1
@@ -534,6 +544,21 @@ mod tests {
         assert_eq!(
             evidence.fixture_case(),
             LinuxVzTelemetryConformanceCaseV1::DnsMalformed
+        );
+    }
+
+    #[test]
+    fn encrypted_dns_payload_binds_exact_dot_sinkhole() {
+        let mut value: serde_json::Value = serde_json::from_slice(&payload()).unwrap();
+        value["fixture_case"] = serde_json::json!("encrypted_dns_connect");
+        value["network_action"] = serde_json::json!("encrypted_dns_connect");
+        value["network_target"] = serde_json::json!("192.0.2.53");
+        value["network_target_port"] = serde_json::json!("853");
+        let encoded = serde_json_canonicalizer::to_vec(&value).unwrap();
+        let evidence = decode_linux_vz_network_evidence_payload_v1(&encoded).unwrap();
+        assert_eq!(
+            evidence.fixture_case(),
+            LinuxVzTelemetryConformanceCaseV1::EncryptedDnsConnect
         );
     }
 }

@@ -146,6 +146,13 @@ from satisfying the gate. The previous seventeen cases were rerun on the new exa
 Eighteen of 38 cases now share one backend binding; 20 remain. See the
 [malformed-DNS checkpoint](artifact-native-linux-vz-dns-malformed-checkpoint-2026-07-12.md).
 
+The `encrypted_dns_connect` case now binds one unprivileged nonblocking TCP `connect` to the inert
+DNS neighbor's port 853 through the protected syscall, the exact live `SYN_SENT` socket inode and
+tuple, and exactly one checksum-valid host-observed SYN. The evidence labels this as DNS-over-TLS
+connection intent; it does not claim a TLS handshake or encrypted DNS payload. The previous eighteen
+cases were rerun on the new exact identity. Nineteen of 38 cases now share one backend binding; 19
+remain. See the [encrypted-DNS-connect checkpoint](artifact-native-linux-vz-encrypted-dns-connect-checkpoint-2026-07-12.md).
+
 Primary target: malicious npm and PyPI package detection with static analysis, AI-assisted code
 review, and behaviorally instrumented detonation in disposable virtual machines
 

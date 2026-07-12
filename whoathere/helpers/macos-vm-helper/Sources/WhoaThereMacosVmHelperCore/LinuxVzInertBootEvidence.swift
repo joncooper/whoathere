@@ -124,6 +124,14 @@ public let linuxVzInertDNSMalformedSensorMarkersV1 = [
     "WHOATHERE_SENSOR network_target=dns_sinkhole_192_0_2_53_53"
 ]
 
+public let linuxVzInertEncryptedDNSSensorMarkersV1 = [
+    "WHOATHERE_SENSOR network_encrypted_dns_connect=observed",
+    "WHOATHERE_SENSOR network_socket_state=syn_sent",
+    "WHOATHERE_SENSOR network_dns_transport=tcp_853",
+    "WHOATHERE_SENSOR network_dns_encryption_intent=dot",
+    "WHOATHERE_SENSOR network_target=dns_sinkhole_192_0_2_53_853"
+]
+
 public let linuxVzInertRequiredEvidenceMarkersV2 =
     linuxVzInertRequiredCapabilityMarkersV1 + linuxVzInertProcessSensorMarkersV2
 

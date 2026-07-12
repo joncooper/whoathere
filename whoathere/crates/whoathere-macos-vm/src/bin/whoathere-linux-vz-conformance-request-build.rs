@@ -45,6 +45,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "public_address_connect" => LinuxVzTelemetryConformanceCaseV1::PublicAddressConnect,
         "dns_plaintext" => LinuxVzTelemetryConformanceCaseV1::DnsPlaintext,
         "dns_malformed" => LinuxVzTelemetryConformanceCaseV1::DnsMalformed,
+        "encrypted_dns_connect" => LinuxVzTelemetryConformanceCaseV1::EncryptedDnsConnect,
         "protected_open_read_write_rename_delete" => {
             LinuxVzTelemetryConformanceCaseV1::ProtectedOpenReadWriteRenameDelete
         }

@@ -90,19 +90,24 @@ public func decodeLinuxVzNetworkEvidenceJSONV1(
         fixtureCase = "dns_plaintext"
     case ("dns_malformed", "ipv4", "192.0.2.2", "192.0.2.53"):
         fixtureCase = "dns_malformed"
+    case ("encrypted_dns_connect", "ipv4", "192.0.2.2", "192.0.2.53"):
+        fixtureCase = "encrypted_dns_connect"
     default:
         throw LinuxVzNetworkEvidencePayloadError.invalidSchema
     }
-    let expectedAction = fixtureCase == "dns_malformed" ? "dns_malformed" :
-        (fixtureCase == "dns_plaintext" ? "dns_query" :
-            (fixtureCase == "udp_send" ? "udp_send" : "tcp_connect"))
+    let expectedAction = fixtureCase == "encrypted_dns_connect" ? "encrypted_dns_connect" :
+        (fixtureCase == "dns_malformed" ? "dns_malformed" :
+            (fixtureCase == "dns_plaintext" ? "dns_query" :
+                (fixtureCase == "udp_send" ? "udp_send" : "tcp_connect")))
     let dnsActivity = fixtureCase == "dns_plaintext" || fixtureCase == "dns_malformed"
     let udpActivity = fixtureCase == "udp_send" || dnsActivity
     let expectedProtocol = udpActivity ? "udp" : "tcp"
     let expectedSocketState = udpActivity ? "unconnected_bound" :
         (fixtureCase == "loopback_connect" ? "established" : "syn_sent")
-    let expectedTargetPort: UInt64 = dnsActivity ? 53 :
+    let expectedTargetPort: UInt64 = fixtureCase == "encrypted_dns_connect" ? 853 :
+        (dnsActivity ? 53 :
         (fixtureCase == "loopback_connect" ? 40_552 : 443)
+        )
     guard Set(value.keys) == expectedKeys,
           value["schema_version"] as? String == linuxVzNetworkEvidencePayloadSchemaV1,
           value["network_action"] as? String == expectedAction,

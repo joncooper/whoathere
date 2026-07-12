@@ -324,7 +324,8 @@ private struct LinuxVzSignedConformanceHarness {
             networkFixtureCase = nil
         case "ipv4_connect", "ipv6_connect", "udp_send", "loopback_connect",
              "private_address_connect", "link_local_connect", "metadata_address_connect",
-             "public_address_connect", "dns_plaintext", "dns_malformed":
+             "public_address_connect", "dns_plaintext", "dns_malformed",
+             "encrypted_dns_connect":
             let evidence = try decodeLinuxVzNetworkEvidencePayloadV1(serialData)
             guard evidence.fixtureCase == runSpec.fixtureCase,
                   evidence.packageUID == UInt64(backend.packageUID),
@@ -364,7 +365,8 @@ private struct LinuxVzSignedConformanceHarness {
             runSpec.fixtureCase == "metadata_address_connect" ||
             runSpec.fixtureCase == "public_address_connect" ||
             runSpec.fixtureCase == "dns_plaintext" ||
-            runSpec.fixtureCase == "dns_malformed" {
+            runSpec.fixtureCase == "dns_malformed" ||
+            runSpec.fixtureCase == "encrypted_dns_connect" {
             let missingProcessMarkers = linuxVzInertMissingRequiredEvidenceMarkersV2(serialData)
             let missingDoubleForkMarkers = runSpec.fixtureCase == "double_fork_daemonization"
                 ? linuxVzInertDoubleForkSensorMarkersV1.filter {
@@ -426,6 +428,10 @@ private struct LinuxVzSignedConformanceHarness {
                 ? linuxVzInertDNSMalformedSensorMarkersV1.filter {
                     !linuxVzInertSerialContainsExactMarker(serialData, marker: $0)
                 } : []
+            let missingEncryptedDNSMarkers = runSpec.fixtureCase == "encrypted_dns_connect"
+                ? linuxVzInertEncryptedDNSSensorMarkersV1.filter {
+                    !linuxVzInertSerialContainsExactMarker(serialData, marker: $0)
+                } : []
             missingBaseMarkers = missingProcessMarkers + missingDoubleForkMarkers
                 + missingReparentingMarkers + missingSetsidMarkers + missingCredentialMarkers
                 + missingDynamicLibraryMarkers + missingIPv4Markers + missingIPv6Markers
@@ -433,6 +439,7 @@ private struct LinuxVzSignedConformanceHarness {
                 + missingLinkLocalMarkers + missingMetadataMarkers + missingPublicMarkers
                 + missingDNSPlaintextMarkers
                 + missingDNSMalformedMarkers
+                + missingEncryptedDNSMarkers
         } else {
             let missingCapabilities = linuxVzInertMissingCapabilityMarkers(serialData)
             let missingFileMarkers = linuxVzInertFileSensorMarkersV1.filter {
@@ -588,6 +595,16 @@ private struct LinuxVzSignedConformanceHarness {
                 )
             } else if networkFixtureCase == "dns_malformed" {
                 hostEvidence = try makeLinuxVzDNSMalformedHostEvidencePayload(
+                    sourcePort: sourcePort,
+                    rawFrameCount: UInt64(packetSensor.frameCount),
+                    matchedFrameCount: UInt64(packetSensor.matchedFrameCount),
+                    unexpectedFrameCount: UInt64(packetSensor.unexpectedFrameCount),
+                    packetSensorHealthy: packetSensor.healthy,
+                    packetSensorTerminal: packetSensor.terminal,
+                    storageDeviceCount: UInt64(configuration.storageDevices.count)
+                )
+            } else if networkFixtureCase == "encrypted_dns_connect" {
+                hostEvidence = try makeLinuxVzEncryptedDNSConnectHostEvidencePayload(
                     sourcePort: sourcePort,
                     rawFrameCount: UInt64(packetSensor.frameCount),
                     matchedFrameCount: UInt64(packetSensor.matchedFrameCount),
@@ -915,6 +932,12 @@ private struct LinuxVzSignedConformanceHarness {
                 } else if networkFixtureCase == "dns_malformed",
                           let sourcePort = networkSourcePort {
                     exactMatch = linuxVzIsExactIPv4MalformedDNSQueryFrame(
+                        frame,
+                        sourcePort: sourcePort
+                    )
+                } else if networkFixtureCase == "encrypted_dns_connect",
+                          let sourcePort = networkSourcePort {
+                    exactMatch = linuxVzIsExactIPv4EncryptedDNSSinkholeSYNFrame(
                         frame,
                         sourcePort: sourcePort
                     )

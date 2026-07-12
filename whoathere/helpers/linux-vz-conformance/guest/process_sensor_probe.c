@@ -54,6 +54,7 @@
 #define PUBLIC_REPORT_MAGIC 0x57544234U
 #define DNS_PLAINTEXT_REPORT_MAGIC 0x57544434U
 #define DNS_MALFORMED_REPORT_MAGIC 0x57545834U
+#define ENCRYPTED_DNS_REPORT_MAGIC 0x57544534U
 #define NETWORK_INTERFACE "eth0"
 #define NETWORK_SOURCE_ADDRESS "192.0.2.2"
 #define NETWORK_TARGET_ADDRESS "192.0.2.1"
@@ -74,6 +75,7 @@
 #define DNS_SOURCE_ADDRESS "192.0.2.2"
 #define DNS_TARGET_ADDRESS "192.0.2.53"
 #define DNS_TARGET_PORT 53
+#define ENCRYPTED_DNS_TARGET_PORT 853
 #define DNS_PLAINTEXT_PAYLOAD_LENGTH 35
 #define DNS_MALFORMED_PAYLOAD_LENGTH 12
 #define SENSOR_PROGRAM_COUNT 8
@@ -1038,7 +1040,8 @@ static int read_exact_classified_report(
     struct network_report *report,
     uint32_t report_magic,
     const char *source_address,
-    const char *target_address
+    const char *target_address,
+    uint16_t target_port
 ) {
     size_t offset = 0;
     while (offset < sizeof(*report)) {
@@ -1059,35 +1062,42 @@ static int read_exact_classified_report(
         inet_pton(AF_INET, source_address, &source) == 1 &&
         inet_pton(AF_INET, target_address, &target) == 1 &&
         report->source_address == source.s_addr && report->target_address == target.s_addr &&
-        report->source_port > 0 && report->target_port == NETWORK_TARGET_PORT &&
+        report->source_port > 0 && report->target_port == target_port &&
         report->connect_errno == EINPROGRESS ? 0 : -1;
 }
 
 static int read_exact_private_report(int descriptor, struct network_report *report) {
     return read_exact_classified_report(
         descriptor, report, PRIVATE_REPORT_MAGIC,
-        PRIVATE_SOURCE_ADDRESS, PRIVATE_TARGET_ADDRESS
+        PRIVATE_SOURCE_ADDRESS, PRIVATE_TARGET_ADDRESS, NETWORK_TARGET_PORT
     );
 }
 
 static int read_exact_link_local_report(int descriptor, struct network_report *report) {
     return read_exact_classified_report(
         descriptor, report, LINK_LOCAL_REPORT_MAGIC,
-        LINK_LOCAL_SOURCE_ADDRESS, LINK_LOCAL_TARGET_ADDRESS
+        LINK_LOCAL_SOURCE_ADDRESS, LINK_LOCAL_TARGET_ADDRESS, NETWORK_TARGET_PORT
     );
 }
 
 static int read_exact_metadata_report(int descriptor, struct network_report *report) {
     return read_exact_classified_report(
         descriptor, report, METADATA_REPORT_MAGIC,
-        METADATA_SOURCE_ADDRESS, METADATA_TARGET_ADDRESS
+        METADATA_SOURCE_ADDRESS, METADATA_TARGET_ADDRESS, NETWORK_TARGET_PORT
     );
 }
 
 static int read_exact_public_report(int descriptor, struct network_report *report) {
     return read_exact_classified_report(
         descriptor, report, PUBLIC_REPORT_MAGIC,
-        PUBLIC_SOURCE_ADDRESS, PUBLIC_TARGET_ADDRESS
+        PUBLIC_SOURCE_ADDRESS, PUBLIC_TARGET_ADDRESS, NETWORK_TARGET_PORT
+    );
+}
+
+static int read_exact_encrypted_dns_report(int descriptor, struct network_report *report) {
+    return read_exact_classified_report(
+        descriptor, report, ENCRYPTED_DNS_REPORT_MAGIC,
+        DNS_SOURCE_ADDRESS, DNS_TARGET_ADDRESS, ENCRYPTED_DNS_TARGET_PORT
     );
 }
 
@@ -1395,8 +1405,15 @@ static int proc_tcp_contains_ipv4_sinkhole(const struct network_report *report) 
     FILE *stream = fopen("/proc/net/tcp", "re");
     if (stream == NULL) return 0;
     char expected_local[14];
-    snprintf(expected_local, sizeof(expected_local), "020200C0:%04X", report->source_port);
-    const char *expected_remote = "010200C0:01BB";
+    char expected_remote[14];
+    snprintf(
+        expected_local, sizeof(expected_local),
+        "%08X:%04X", (unsigned int)report->source_address, report->source_port
+    );
+    snprintf(
+        expected_remote, sizeof(expected_remote),
+        "%08X:%04X", (unsigned int)report->target_address, report->target_port
+    );
     char line[512];
     int observed = 0;
     while (fgets(line, sizeof(line), stream) != NULL) {
@@ -1623,6 +1640,7 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
     struct udp_report udp_report = {0};
     struct udp_report dns_report = {0};
     struct udp_report dns_malformed_report = {0};
+    struct network_report encrypted_dns_report = {0};
     struct network_report loopback_report = {0};
     struct network_report private_report = {0};
     struct network_report link_local_report = {0};
@@ -1727,10 +1745,12 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
     int public_address_connect = strcmp(fixture_case, "public_address_connect") == 0;
     int dns_plaintext = strcmp(fixture_case, "dns_plaintext") == 0;
     int dns_malformed = strcmp(fixture_case, "dns_malformed") == 0;
+    int encrypted_dns_connect = strcmp(fixture_case, "encrypted_dns_connect") == 0;
     int network_connect = ipv4_connect || ipv6_connect || loopback_connect ||
         private_address_connect || link_local_connect || metadata_address_connect ||
-        public_address_connect;
+        public_address_connect || encrypted_dns_connect;
     int dns_activity = dns_plaintext || dns_malformed;
+    int dns_sinkhole_activity = dns_activity || encrypted_dns_connect;
     int udp_activity = udp_send || dns_activity;
     int network_activity = network_connect || udp_activity;
     if (credential_change) {
@@ -1775,15 +1795,15 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
             goto cleanup;
         }
         if (ipv4_connect || udp_activity || private_address_connect || link_local_connect ||
-            metadata_address_connect || public_address_connect) {
-            int prepared = dns_activity ? prepare_dns_sinkhole() :
+            metadata_address_connect || public_address_connect || encrypted_dns_connect) {
+            int prepared = dns_sinkhole_activity ? prepare_dns_sinkhole() :
                 (private_address_connect ? prepare_private_sinkhole() :
                 (link_local_connect ? prepare_link_local_sinkhole() :
                     (metadata_address_connect ? prepare_metadata_sinkhole() :
                         (public_address_connect ? prepare_public_sinkhole() :
                             prepare_ipv4_sinkhole()))));
             if (prepared != 0) {
-                failure_stage = dns_activity ? "dns_sinkhole_prepare" :
+                failure_stage = dns_sinkhole_activity ? "dns_sinkhole_prepare" :
                     (private_address_connect ? "private_sinkhole_prepare" :
                     (link_local_connect ? "link_local_sinkhole_prepare" :
                         (metadata_address_connect ? "metadata_sinkhole_prepare" :
@@ -2139,6 +2159,26 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
             goto cleanup;
         }
     }
+    if (encrypted_dns_connect) {
+        if (read_exact_encrypted_dns_report(report_pipe[0], &encrypted_dns_report) != 0) {
+            failure_stage = "encrypted_dns_report";
+            failure_errno = errno;
+            goto cleanup;
+        }
+        close_if_open(&report_pipe[0]);
+        if (encrypted_dns_report.process_pid != child ||
+            !proc_identity_matches(child, parent) ||
+            !proc_has_no_supplementary_groups(child) ||
+            !proc_tcp_contains_ipv4_sinkhole(&encrypted_dns_report)) {
+            failure_stage = "encrypted_dns_live_socket";
+            goto cleanup;
+        }
+        network_timestamp = monotonic_ns();
+        if (network_timestamp == 0) {
+            failure_stage = "encrypted_dns_timestamp";
+            goto cleanup;
+        }
+    }
     if (waitpid(child, &child_status, 0) != child || !WIFEXITED(child_status) ||
         WEXITSTATUS(child_status) != 0) {
         failure_stage = "fixture_exit";
@@ -2379,13 +2419,14 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
                 connect_event.count,
                 exit_event.count,
                 child,
-                ipv4_connect ? network_report.source_port :
+                encrypted_dns_connect ? encrypted_dns_report.source_port :
+                (ipv4_connect ? network_report.source_port :
                     (ipv6_connect ? network6_report.source_port :
                         (loopback_connect ? loopback_report.source_port :
                             (private_address_connect ? private_report.source_port :
                                 (link_local_connect ? link_local_report.source_port :
                                     (metadata_address_connect ? metadata_report.source_port :
-                                        public_report.source_port))))),
+                                        public_report.source_port)))))),
                 fork_event.timestamp_ns,
                 exec_event.timestamp_ns,
                 connect_event.timestamp_ns,
@@ -2475,6 +2516,13 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
         puts("WHOATHERE_SENSOR network_dns_malformed_shape=question_declared_body_absent");
         puts("WHOATHERE_SENSOR network_target=dns_sinkhole_192_0_2_53_53");
     }
+    if (encrypted_dns_connect) {
+        puts("WHOATHERE_SENSOR network_encrypted_dns_connect=observed");
+        puts("WHOATHERE_SENSOR network_socket_state=syn_sent");
+        puts("WHOATHERE_SENSOR network_dns_transport=tcp_853");
+        puts("WHOATHERE_SENSOR network_dns_encryption_intent=dot");
+        puts("WHOATHERE_SENSOR network_target=dns_sinkhole_192_0_2_53_853");
+    }
     if (loopback_connect) {
         puts("WHOATHERE_SENSOR network_loopback_connect=observed");
         puts("WHOATHERE_SENSOR network_socket_state=established");
@@ -2508,13 +2556,14 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
     puts("WHOATHERE_SENSOR_PROCESS_PROBE_OK");
     if (network_activity) {
         const char *network_family = ipv6_connect ? "ipv6" : "ipv4";
-        const char *network_source = loopback_connect ? LOOPBACK_ADDRESS :
+        const char *network_source = dns_sinkhole_activity ? DNS_SOURCE_ADDRESS :
+            (loopback_connect ? LOOPBACK_ADDRESS :
             (private_address_connect ? PRIVATE_SOURCE_ADDRESS :
                 (link_local_connect ? LINK_LOCAL_SOURCE_ADDRESS :
                     (metadata_address_connect ? METADATA_SOURCE_ADDRESS :
                         (public_address_connect ? PUBLIC_SOURCE_ADDRESS :
-                            (ipv6_connect ? NETWORK6_SOURCE_ADDRESS : NETWORK_SOURCE_ADDRESS)))));
-        const char *network_target = dns_activity ? DNS_TARGET_ADDRESS :
+                            (ipv6_connect ? NETWORK6_SOURCE_ADDRESS : NETWORK_SOURCE_ADDRESS))))));
+        const char *network_target = dns_sinkhole_activity ? DNS_TARGET_ADDRESS :
             (loopback_connect ? LOOPBACK_ADDRESS :
             (private_address_connect ? PRIVATE_TARGET_ADDRESS :
                 (link_local_connect ? LINK_LOCAL_TARGET_ADDRESS :
@@ -2522,13 +2571,15 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
                         (public_address_connect ? PUBLIC_TARGET_ADDRESS :
                             (ipv6_connect ? NETWORK6_TARGET_ADDRESS : NETWORK_TARGET_ADDRESS))))));
         const char *network_event_kind = udp_activity ? "sendto" : "connect";
-        const char *network_action = dns_malformed ? "dns_malformed" :
-            (dns_plaintext ? "dns_query" :
-                (udp_send ? "udp_send" : "tcp_connect"));
+        const char *network_action = encrypted_dns_connect ? "encrypted_dns_connect" :
+            (dns_malformed ? "dns_malformed" :
+                (dns_plaintext ? "dns_query" :
+                    (udp_send ? "udp_send" : "tcp_connect")));
         const char *network_protocol = udp_activity ? "udp" : "tcp";
         const char *network_socket_state = udp_activity ? "unconnected_bound" :
             (loopback_connect ? "established" : "syn_sent");
-        uint16_t network_source_port = dns_malformed ? dns_malformed_report.source_port :
+        uint16_t network_source_port = encrypted_dns_connect ? encrypted_dns_report.source_port :
+            (dns_malformed ? dns_malformed_report.source_port :
             (dns_plaintext ? dns_report.source_port :
             (udp_send ? udp_report.source_port :
             (ipv4_connect ? network_report.source_port :
@@ -2537,9 +2588,10 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
                         (private_address_connect ? private_report.source_port :
                             (link_local_connect ? link_local_report.source_port :
                                 (metadata_address_connect ? metadata_report.source_port :
-                                    public_report.source_port))))))));
-        uint16_t network_target_port = dns_activity ? DNS_TARGET_PORT :
-            (loopback_connect ? LOOPBACK_TARGET_PORT : NETWORK_TARGET_PORT);
+                                    public_report.source_port)))))))));
+        uint16_t network_target_port = encrypted_dns_connect ? ENCRYPTED_DNS_TARGET_PORT :
+            (dns_activity ? DNS_TARGET_PORT :
+                (loopback_connect ? LOOPBACK_TARGET_PORT : NETWORK_TARGET_PORT));
         uint64_t network_event_timestamp = udp_activity
             ? sendto_event.timestamp_ns : connect_event.timestamp_ns;
         printf(
@@ -2909,7 +2961,8 @@ int main(int argument_count, char **arguments) {
         strcmp(arguments[2], "metadata_address_connect") == 0 ||
         strcmp(arguments[2], "public_address_connect") == 0 ||
         strcmp(arguments[2], "dns_plaintext") == 0 ||
-        strcmp(arguments[2], "dns_malformed") == 0) {
+        strcmp(arguments[2], "dns_malformed") == 0 ||
+        strcmp(arguments[2], "encrypted_dns_connect") == 0) {
         return run_process_probe(arguments[1], arguments[2]);
     }
     if (strcmp(arguments[2], "protected_open_read_write_rename_delete") == 0 ||

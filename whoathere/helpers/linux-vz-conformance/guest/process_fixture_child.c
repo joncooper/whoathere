@@ -31,6 +31,7 @@ static const char *dynamic_library_path = "/whoathere/dynamic-fixture-library.so
 #define PUBLIC_REPORT_MAGIC 0x57544234U
 #define DNS_PLAINTEXT_REPORT_MAGIC 0x57544434U
 #define DNS_MALFORMED_REPORT_MAGIC 0x57545834U
+#define ENCRYPTED_DNS_REPORT_MAGIC 0x57544534U
 static const unsigned char dns_plaintext_query[] = {
     0x57, 0x54, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x09, 'w', 'h', 'o', 'a', 't', 'h', 'e', 'r', 'e',
@@ -480,12 +481,16 @@ static int loopback_connect(void) {
     return result;
 }
 
-static int classified_address_connect(const char *target_address, uint32_t report_magic) {
+static int classified_address_connect(
+    const char *target_address,
+    uint16_t target_port,
+    uint32_t report_magic
+) {
     int descriptor = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, IPPROTO_TCP);
     if (descriptor < 0) return 137;
     struct sockaddr_in target = {
         .sin_family = AF_INET,
-        .sin_port = htons(443),
+        .sin_port = htons(target_port),
     };
     if (inet_pton(AF_INET, target_address, &target.sin_addr) != 1) {
         close(descriptor);
@@ -535,19 +540,23 @@ static int classified_address_connect(const char *target_address, uint32_t repor
 }
 
 static int private_address_connect(void) {
-    return classified_address_connect("10.0.0.1", PRIVATE_REPORT_MAGIC);
+    return classified_address_connect("10.0.0.1", 443, PRIVATE_REPORT_MAGIC);
 }
 
 static int link_local_connect(void) {
-    return classified_address_connect("169.254.100.1", LINK_LOCAL_REPORT_MAGIC);
+    return classified_address_connect("169.254.100.1", 443, LINK_LOCAL_REPORT_MAGIC);
 }
 
 static int metadata_address_connect(void) {
-    return classified_address_connect("169.254.169.254", METADATA_REPORT_MAGIC);
+    return classified_address_connect("169.254.169.254", 443, METADATA_REPORT_MAGIC);
 }
 
 static int public_address_connect(void) {
-    return classified_address_connect("198.51.100.1", PUBLIC_REPORT_MAGIC);
+    return classified_address_connect("198.51.100.1", 443, PUBLIC_REPORT_MAGIC);
+}
+
+static int encrypted_dns_connect(void) {
+    return classified_address_connect("192.0.2.53", 853, ENCRYPTED_DNS_REPORT_MAGIC);
 }
 
 static int dns_send_query(
@@ -659,6 +668,7 @@ int main(int argument_count, char **arguments) {
     if (strcmp(arguments[1], "public_address_connect") == 0) return public_address_connect();
     if (strcmp(arguments[1], "dns_plaintext") == 0) return dns_plaintext();
     if (strcmp(arguments[1], "dns_malformed") == 0) return dns_malformed();
+    if (strcmp(arguments[1], "encrypted_dns_connect") == 0) return encrypted_dns_connect();
     if (strcmp(arguments[1], "protected_open_read_write_rename_delete") == 0 ||
         strcmp(arguments[1], "mmap_access") == 0) {
         return file_fixture();

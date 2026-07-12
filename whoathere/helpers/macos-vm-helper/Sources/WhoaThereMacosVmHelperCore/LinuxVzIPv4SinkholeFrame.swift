@@ -7,6 +7,7 @@ public func linuxVzIsExactIPv4SinkholeSYNFrame(
     linuxVzIsExactIPv4TCPSYNFrame(
         frame,
         sourcePort: sourcePort,
+        targetPort: 443,
         sourceAddress: [192, 0, 2, 2],
         targetAddress: [192, 0, 2, 1]
     )
@@ -19,6 +20,7 @@ public func linuxVzIsExactIPv4PrivateSinkholeSYNFrame(
     linuxVzIsExactIPv4TCPSYNFrame(
         frame,
         sourcePort: sourcePort,
+        targetPort: 443,
         sourceAddress: [10, 0, 0, 2],
         targetAddress: [10, 0, 0, 1]
     )
@@ -31,6 +33,7 @@ public func linuxVzIsExactIPv4LinkLocalSinkholeSYNFrame(
     linuxVzIsExactIPv4TCPSYNFrame(
         frame,
         sourcePort: sourcePort,
+        targetPort: 443,
         sourceAddress: [169, 254, 100, 2],
         targetAddress: [169, 254, 100, 1]
     )
@@ -43,6 +46,7 @@ public func linuxVzIsExactIPv4MetadataSinkholeSYNFrame(
     linuxVzIsExactIPv4TCPSYNFrame(
         frame,
         sourcePort: sourcePort,
+        targetPort: 443,
         sourceAddress: [169, 254, 169, 253],
         targetAddress: [169, 254, 169, 254]
     )
@@ -55,14 +59,29 @@ public func linuxVzIsExactIPv4PublicSinkholeSYNFrame(
     linuxVzIsExactIPv4TCPSYNFrame(
         frame,
         sourcePort: sourcePort,
+        targetPort: 443,
         sourceAddress: [198, 51, 100, 2],
         targetAddress: [198, 51, 100, 1]
+    )
+}
+
+public func linuxVzIsExactIPv4EncryptedDNSSinkholeSYNFrame(
+    _ frame: Data,
+    sourcePort: UInt16
+) -> Bool {
+    linuxVzIsExactIPv4TCPSYNFrame(
+        frame,
+        sourcePort: sourcePort,
+        targetPort: 853,
+        sourceAddress: [192, 0, 2, 2],
+        targetAddress: [192, 0, 2, 53]
     )
 }
 
 private func linuxVzIsExactIPv4TCPSYNFrame(
     _ frame: Data,
     sourcePort: UInt16,
+    targetPort: UInt16,
     sourceAddress: [UInt8],
     targetAddress: [UInt8]
 ) -> Bool {
@@ -87,7 +106,7 @@ private func linuxVzIsExactIPv4TCPSYNFrame(
           tcpHeaderLength >= 20,
           totalLength == 20 + tcpHeaderLength,
           (UInt16(bytes[34]) << 8 | UInt16(bytes[35])) == sourcePort,
-          (UInt16(bytes[36]) << 8 | UInt16(bytes[37])) == 443,
+          (UInt16(bytes[36]) << 8 | UInt16(bytes[37])) == targetPort,
           bytes[46] & 0x0f == 0,
           bytes[47] == 0x02,
           linuxVzChecksumValid(Array(bytes[14..<34])) else {

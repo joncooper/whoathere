@@ -162,6 +162,17 @@ private func networkGuestValue() -> [String: Any] {
     #expect(evidence.sourcePort == 49152)
 }
 
+@Test func networkGuestEvidenceBindsExactEncryptedDNSConnect() throws {
+    var value = networkGuestValue()
+    value["fixture_case"] = "encrypted_dns_connect"
+    value["network_action"] = "encrypted_dns_connect"
+    value["network_target"] = "192.0.2.53"
+    value["network_target_port"] = "853"
+    let evidence = try decodeLinuxVzNetworkEvidenceJSONV1(canonicalJSONData(value))
+    #expect(evidence.fixtureCase == "encrypted_dns_connect")
+    #expect(evidence.sourcePort == 49152)
+}
+
 @Test func networkHostEvidenceBindsOneExactIPv4Syn() throws {
     let evidence = try makeLinuxVzIPv4ConnectHostEvidencePayload(
         sourcePort: 49152,
@@ -296,6 +307,20 @@ private func networkGuestValue() -> [String: Any] {
     #expect(evidence.sourcePort == 49152)
 }
 
+@Test func networkHostEvidenceBindsOneExactEncryptedDNSConnect() throws {
+    let evidence = try makeLinuxVzEncryptedDNSConnectHostEvidencePayload(
+        sourcePort: 49152,
+        rawFrameCount: 1,
+        matchedFrameCount: 1,
+        unexpectedFrameCount: 0,
+        packetSensorHealthy: true,
+        packetSensorTerminal: "drained_would_block",
+        storageDeviceCount: 0
+    )
+    #expect(evidence.fixtureCase == "encrypted_dns_connect")
+    #expect(evidence.sourcePort == 49152)
+}
+
 private func internetChecksum(_ bytes: [UInt8]) -> UInt16 {
     var sum: UInt64 = 0
     var index = 0
@@ -384,6 +409,26 @@ private func exactMetadataSinkholeSYN() -> Data {
 private func exactPublicSinkholeSYN() -> Data {
     var frame = [UInt8](exactSinkholeSYN())
     frame.replaceSubrange(26..<34, with: [198,51,100,2, 198,51,100,1])
+    frame[24] = 0
+    frame[25] = 0
+    let ipChecksum = internetChecksum(Array(frame[14..<34]))
+    frame[24] = UInt8(ipChecksum >> 8)
+    frame[25] = UInt8(ipChecksum & 0xff)
+    frame[50] = 0
+    frame[51] = 0
+    var pseudo = Array(frame[26..<34]) + [0, 6, 0, 20]
+    pseudo.append(contentsOf: frame[34..<54])
+    let tcpChecksum = internetChecksum(pseudo)
+    frame[50] = UInt8(tcpChecksum >> 8)
+    frame[51] = UInt8(tcpChecksum & 0xff)
+    return Data(frame)
+}
+
+private func exactEncryptedDNSSinkholeSYN() -> Data {
+    var frame = [UInt8](exactSinkholeSYN())
+    frame.replaceSubrange(26..<34, with: [192,0,2,2, 192,0,2,53])
+    frame[36] = 0x03
+    frame[37] = 0x55
     frame[24] = 0
     frame[25] = 0
     let ipChecksum = internetChecksum(Array(frame[14..<34]))
@@ -560,6 +605,14 @@ private func exactIPv6MLDv2Report() -> Data {
     #expect(!linuxVzIsExactIPv4PublicSinkholeSYNFrame(frame, sourcePort: 49153))
     #expect(!linuxVzIsExactIPv4SinkholeSYNFrame(frame, sourcePort: 49152))
     #expect(!linuxVzIsExactIPv4PublicSinkholeSYNFrame(exactMetadataSinkholeSYN(), sourcePort: 49152))
+}
+
+@Test func encryptedDNSSinkholeFrameParserRequiresExactDoTTuple() {
+    let frame = exactEncryptedDNSSinkholeSYN()
+    #expect(linuxVzIsExactIPv4EncryptedDNSSinkholeSYNFrame(frame, sourcePort: 49152))
+    #expect(!linuxVzIsExactIPv4EncryptedDNSSinkholeSYNFrame(frame, sourcePort: 49153))
+    #expect(!linuxVzIsExactIPv4SinkholeSYNFrame(frame, sourcePort: 49152))
+    #expect(!linuxVzIsExactIPv4EncryptedDNSSinkholeSYNFrame(exactSinkholeSYN(), sourcePort: 49152))
 }
 
 @Test func ipv6SinkholeFrameParserRequiresExactTupleAndChecksum() {
