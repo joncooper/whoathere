@@ -39,6 +39,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "ipv6_connect" => LinuxVzTelemetryConformanceCaseV1::Ipv6Connect,
         "udp_send" => LinuxVzTelemetryConformanceCaseV1::UdpSend,
         "loopback_connect" => LinuxVzTelemetryConformanceCaseV1::LoopbackConnect,
+        "private_address_connect" => LinuxVzTelemetryConformanceCaseV1::PrivateAddressConnect,
         "protected_open_read_write_rename_delete" => {
             LinuxVzTelemetryConformanceCaseV1::ProtectedOpenReadWriteRenameDelete
         }

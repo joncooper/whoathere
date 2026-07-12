@@ -167,6 +167,13 @@ pub fn decode_linux_vz_network_host_evidence_payload_v1(
         {
             LinuxVzTelemetryConformanceCaseV1::UdpSend
         }
+        "private_address_connect"
+            if wire.frame_kind == "ipv4_tcp_syn_private"
+                && wire.source_address == "10.0.0.2"
+                && wire.target_address == "10.0.0.1" =>
+        {
+            LinuxVzTelemetryConformanceCaseV1::PrivateAddressConnect
+        }
         _ => return Err(LinuxVzNetworkHostEvidencePayloadErrorV1::InvalidSchema),
     };
     if wire.schema_version != LINUX_VZ_NETWORK_HOST_EVIDENCE_PAYLOAD_SCHEMA_V1
@@ -352,6 +359,21 @@ mod tests {
         assert_eq!(
             evidence.fixture_case(),
             LinuxVzTelemetryConformanceCaseV1::UdpSend
+        );
+    }
+
+    #[test]
+    fn exact_private_ipv4_syn_derives_distinct_case() {
+        let mut value: serde_json::Value = serde_json::from_slice(&payload()).unwrap();
+        value["fixture_case"] = serde_json::json!("private_address_connect");
+        value["frame_kind"] = serde_json::json!("ipv4_tcp_syn_private");
+        value["source_address"] = serde_json::json!("10.0.0.2");
+        value["target_address"] = serde_json::json!("10.0.0.1");
+        let encoded = serde_json_canonicalizer::to_vec(&value).unwrap();
+        let evidence = decode_linux_vz_network_host_evidence_payload_v1(&encoded).unwrap();
+        assert_eq!(
+            evidence.fixture_case(),
+            LinuxVzTelemetryConformanceCaseV1::PrivateAddressConnect
         );
     }
 }

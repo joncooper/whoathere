@@ -4,6 +4,32 @@ public func linuxVzIsExactIPv4SinkholeSYNFrame(
     _ frame: Data,
     sourcePort: UInt16
 ) -> Bool {
+    linuxVzIsExactIPv4TCPSYNFrame(
+        frame,
+        sourcePort: sourcePort,
+        sourceAddress: [192, 0, 2, 2],
+        targetAddress: [192, 0, 2, 1]
+    )
+}
+
+public func linuxVzIsExactIPv4PrivateSinkholeSYNFrame(
+    _ frame: Data,
+    sourcePort: UInt16
+) -> Bool {
+    linuxVzIsExactIPv4TCPSYNFrame(
+        frame,
+        sourcePort: sourcePort,
+        sourceAddress: [10, 0, 0, 2],
+        targetAddress: [10, 0, 0, 1]
+    )
+}
+
+private func linuxVzIsExactIPv4TCPSYNFrame(
+    _ frame: Data,
+    sourcePort: UInt16,
+    sourceAddress: [UInt8],
+    targetAddress: [UInt8]
+) -> Bool {
     let bytes = [UInt8](frame)
     let sourceMAC: [UInt8] = [0x02, 0x57, 0x48, 0x4f, 0x41, 0x31]
     let targetMAC: [UInt8] = [0x02, 0x57, 0x48, 0x4f, 0x41, 0xfe]
@@ -13,8 +39,8 @@ public func linuxVzIsExactIPv4SinkholeSYNFrame(
           bytes[12] == 0x08, bytes[13] == 0x00,
           bytes[14] == 0x45,
           bytes[23] == 0x06,
-          Array(bytes[26..<30]) == [192, 0, 2, 2],
-          Array(bytes[30..<34]) == [192, 0, 2, 1] else {
+          Array(bytes[26..<30]) == sourceAddress,
+          Array(bytes[30..<34]) == targetAddress else {
         return false
     }
     let totalLength = Int(bytes[16]) << 8 | Int(bytes[17])

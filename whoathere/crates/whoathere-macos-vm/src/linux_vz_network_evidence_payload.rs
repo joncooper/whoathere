@@ -196,6 +196,13 @@ pub fn decode_linux_vz_network_evidence_payload_v1(
         {
             LinuxVzTelemetryConformanceCaseV1::LoopbackConnect
         }
+        "private_address_connect"
+            if wire.network_family == "ipv4"
+                && wire.network_source == "10.0.0.2"
+                && wire.network_target == "10.0.0.1" =>
+        {
+            LinuxVzTelemetryConformanceCaseV1::PrivateAddressConnect
+        }
         _ => return Err(LinuxVzNetworkEvidencePayloadErrorV1::InvalidSchema),
     };
     let (expected_action, expected_protocol, expected_socket_state, expected_event_kind) =
@@ -396,6 +403,20 @@ mod tests {
         assert_eq!(
             evidence.fixture_case(),
             LinuxVzTelemetryConformanceCaseV1::LoopbackConnect
+        );
+    }
+
+    #[test]
+    fn private_payload_binds_exact_rfc1918_sinkhole() {
+        let mut value: serde_json::Value = serde_json::from_slice(&payload()).unwrap();
+        value["fixture_case"] = serde_json::json!("private_address_connect");
+        value["network_source"] = serde_json::json!("10.0.0.2");
+        value["network_target"] = serde_json::json!("10.0.0.1");
+        let encoded = serde_json_canonicalizer::to_vec(&value).unwrap();
+        let evidence = decode_linux_vz_network_evidence_payload_v1(&encoded).unwrap();
+        assert_eq!(
+            evidence.fixture_case(),
+            LinuxVzTelemetryConformanceCaseV1::PrivateAddressConnect
         );
     }
 }

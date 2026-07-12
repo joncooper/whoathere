@@ -86,6 +86,31 @@ public func makeLinuxVzUDPSendHostEvidencePayload(
     )
 }
 
+public func makeLinuxVzPrivateAddressConnectHostEvidencePayload(
+    sourcePort: UInt16,
+    rawFrameCount: UInt64,
+    matchedFrameCount: UInt64,
+    unexpectedFrameCount: UInt64,
+    packetSensorHealthy: Bool,
+    packetSensorTerminal: String,
+    storageDeviceCount: UInt64
+) throws -> LinuxVzNetworkHostEvidencePayload {
+    try makeLinuxVzConnectHostEvidencePayload(
+        fixtureCase: "private_address_connect",
+        frameKind: "ipv4_tcp_syn_private",
+        sourceAddress: "10.0.0.2",
+        targetAddress: "10.0.0.1",
+        bootstrapFrameCount: 0,
+        sourcePort: sourcePort,
+        rawFrameCount: rawFrameCount,
+        matchedFrameCount: matchedFrameCount,
+        unexpectedFrameCount: unexpectedFrameCount,
+        packetSensorHealthy: packetSensorHealthy,
+        packetSensorTerminal: packetSensorTerminal,
+        storageDeviceCount: storageDeviceCount
+    )
+}
+
 private func makeLinuxVzConnectHostEvidencePayload(
     fixtureCase: String,
     frameKind: String,
@@ -172,6 +197,8 @@ public func decodeLinuxVzNetworkHostEvidencePayload(
         fixtureCase = "ipv6_connect"
     case ("udp_send", "ipv4_udp_datagram", "192.0.2.2", "192.0.2.1"):
         fixtureCase = "udp_send"
+    case ("private_address_connect", "ipv4_tcp_syn_private", "10.0.0.2", "10.0.0.1"):
+        fixtureCase = "private_address_connect"
     default:
         throw LinuxVzHostEvidencePayloadError.invalidSchema
     }

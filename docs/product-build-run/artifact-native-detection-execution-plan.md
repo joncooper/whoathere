@@ -104,6 +104,13 @@ The previous eleven cases were rerun on the resulting exact identity. Twelve of 
 one backend binding; 26 remain. See the
 [loopback-connect checkpoint](artifact-native-linux-vz-loopback-connect-checkpoint-2026-07-12.md).
 
+The `private_address_connect` case now binds one unprivileged TCP connect to the isolated RFC 1918
+sinkhole through the protected connect syscall, live `SYN_SENT` socket state, an explicit
+`private_rfc1918` destination-class marker, and exactly one checksum-valid host-observed TCP SYN.
+The previous twelve cases were rerun on the resulting exact identity. Thirteen of 38 cases now share
+one backend binding; 25 remain. See the
+[private-address-connect checkpoint](artifact-native-linux-vz-private-address-connect-checkpoint-2026-07-12.md).
+
 Primary target: malicious npm and PyPI package detection with static analysis, AI-assisted code
 review, and behaviorally instrumented detonation in disposable virtual machines
 

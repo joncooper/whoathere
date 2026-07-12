@@ -80,6 +80,13 @@ public let linuxVzInertLoopbackConnectSensorMarkersV1 = [
     "WHOATHERE_SENSOR network_target=guest_loopback_sinkhole_127_0_0_1_40552"
 ]
 
+public let linuxVzInertPrivateAddressConnectSensorMarkersV1 = [
+    "WHOATHERE_SENSOR network_private_address_connect=observed",
+    "WHOATHERE_SENSOR network_socket_state=syn_sent",
+    "WHOATHERE_SENSOR network_destination_class=private_rfc1918",
+    "WHOATHERE_SENSOR network_target=private_sinkhole_10_0_0_1_443"
+]
+
 public let linuxVzInertRequiredEvidenceMarkersV2 =
     linuxVzInertRequiredCapabilityMarkersV1 + linuxVzInertProcessSensorMarkersV2
 

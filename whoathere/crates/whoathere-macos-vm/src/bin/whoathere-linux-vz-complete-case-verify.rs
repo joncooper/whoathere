@@ -73,6 +73,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         LinuxVzTelemetryConformanceCaseV1::Ipv6Connect => "ipv6_connect",
         LinuxVzTelemetryConformanceCaseV1::UdpSend => "udp_send",
         LinuxVzTelemetryConformanceCaseV1::LoopbackConnect => "loopback_connect",
+        LinuxVzTelemetryConformanceCaseV1::PrivateAddressConnect => "private_address_connect",
         LinuxVzTelemetryConformanceCaseV1::ProtectedOpenReadWriteRenameDelete => {
             "protected_open_read_write_rename_delete"
         }
@@ -127,7 +128,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             LinuxVzTelemetryConformanceCaseV1::Ipv4Connect
             | LinuxVzTelemetryConformanceCaseV1::Ipv6Connect
             | LinuxVzTelemetryConformanceCaseV1::UdpSend
-            | LinuxVzTelemetryConformanceCaseV1::LoopbackConnect => {
+            | LinuxVzTelemetryConformanceCaseV1::LoopbackConnect
+            | LinuxVzTelemetryConformanceCaseV1::PrivateAddressConnect => {
                 let evidence = decode_linux_vz_network_evidence_from_serial_v1(&serial)?;
                 if evidence.fixture_case() != run_spec.fixture_case()
                     || evidence.package_uid() != backend.package_uid()
@@ -156,6 +158,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         LinuxVzTelemetryConformanceCaseV1::Ipv4Connect
             | LinuxVzTelemetryConformanceCaseV1::Ipv6Connect
             | LinuxVzTelemetryConformanceCaseV1::UdpSend
+            | LinuxVzTelemetryConformanceCaseV1::PrivateAddressConnect
     ) {
         let evidence = decode_linux_vz_network_host_evidence_payload_v1(&host_evidence)?;
         if evidence.fixture_case() != run_spec.fixture_case()

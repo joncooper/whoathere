@@ -78,6 +78,8 @@ public func decodeLinuxVzNetworkEvidenceJSONV1(
         fixtureCase = "udp_send"
     case ("loopback_connect", "ipv4", "127.0.0.1", "127.0.0.1"):
         fixtureCase = "loopback_connect"
+    case ("private_address_connect", "ipv4", "10.0.0.2", "10.0.0.1"):
+        fixtureCase = "private_address_connect"
     default:
         throw LinuxVzNetworkEvidencePayloadError.invalidSchema
     }
