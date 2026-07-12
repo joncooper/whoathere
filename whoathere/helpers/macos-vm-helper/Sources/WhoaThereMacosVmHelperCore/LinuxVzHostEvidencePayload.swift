@@ -28,7 +28,8 @@ public func makeLinuxVzInertHostEvidencePayload(
     vmStarted: Bool,
     vmStopped: Bool,
     cloneDestroyed: Bool,
-    storageDeviceCount: UInt64
+    storageDeviceCount: UInt64,
+    observedTerminal: String = "observation_complete"
 ) throws -> LinuxVzHostEvidencePayload {
     let events: [[String: String]] = [
         ["kind": "vm_started", "sequence": "1"],
@@ -61,11 +62,15 @@ public func makeLinuxVzInertHostEvidencePayload(
         "vm_started": vmStarted,
         "vm_stopped": vmStopped
     ]
-    return try decodeLinuxVzHostEvidencePayload(canonicalJSONData(value))
+    return try decodeLinuxVzHostEvidencePayload(
+        canonicalJSONData(value),
+        observedTerminal: observedTerminal
+    )
 }
 
 public func decodeLinuxVzHostEvidencePayload(
-    _ data: Data
+    _ data: Data,
+    observedTerminal: String = "observation_complete"
 ) throws -> LinuxVzHostEvidencePayload {
     guard !data.isEmpty else { throw LinuxVzHostEvidencePayloadError.empty }
     guard data.count <= maximumLinuxVzHostEvidencePayloadBytesV1 else {
@@ -77,7 +82,9 @@ public func decodeLinuxVzHostEvidencePayload(
     guard try canonicalJSONData(value) == data else {
         throw LinuxVzHostEvidencePayloadError.nonCanonical
     }
-    guard Set(value.keys) == Set([
+    guard observedTerminal == "observation_complete"
+        || observedTerminal == "incomplete_on_injected_gap",
+    Set(value.keys) == Set([
         "clone_destroyed", "dropped_frame_count", "event_count", "event_sequence_end",
         "event_sequence_start", "events", "evidence_truncated", "external_frames_forwarded",
         "external_route_configured", "guest_channel_terminated", "heartbeat_count",
@@ -136,7 +143,7 @@ public func decodeLinuxVzHostEvidencePayload(
         vmStopped: true,
         cloneDestroyed: true,
         externalFramesForwarded: 0,
-        observedTerminal: "observation_complete"
+        observedTerminal: observedTerminal
     )
     return LinuxVzHostEvidencePayload(
         canonicalJSON: data,

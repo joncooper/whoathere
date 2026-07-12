@@ -153,6 +153,16 @@ connection intent; it does not claim a TLS handshake or encrypted DNS payload. T
 cases were rerun on the new exact identity. Nineteen of 38 cases now share one backend binding; 19
 remain. See the [encrypted-DNS-connect checkpoint](artifact-native-linux-vz-encrypted-dns-connect-checkpoint-2026-07-12.md).
 
+The first drop-accounting case, `bpf_reservation_failure`, now exhausts a protected 4 KiB BPF ring
+buffer with 2,048 exact-process-and-syscall-filtered triggers while the host intentionally does not
+consume the buffer. The kernel accepted 255 reservations and returned `NULL` for 1,793; the BPF
+program atomically recorded every failure in a separate protected map, and strict Swift and Rust
+decoders require the arithmetic to close exactly. Both signed authorities report
+`incomplete_on_injected_gap`, zero host-frame loss, healthy sensors, complete teardown, and no
+execution authority. The previous nineteen cases were rerun and independently verified on the new
+exact identity. Twenty of 38 cases now share one backend binding; 18 remain. See the
+[BPF reservation-failure checkpoint](artifact-native-linux-vz-bpf-reservation-failure-checkpoint-2026-07-12.md).
+
 Primary target: malicious npm and PyPI package detection with static analysis, AI-assisted code
 review, and behaviorally instrumented detonation in disposable virtual machines
 

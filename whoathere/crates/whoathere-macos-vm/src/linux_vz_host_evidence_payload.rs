@@ -59,6 +59,15 @@ impl LinuxVzHostEvidencePayloadV1 {
     pub fn host_observation_claims_v1(
         &self,
     ) -> Result<LinuxVzTelemetryHostObservationClaimsV1, MacosLinuxVzTelemetryEvidenceErrorV1> {
+        self.host_observation_claims_for_terminal_v1(
+            LinuxVzTelemetryConformanceObservedTerminalV1::ObservationComplete,
+        )
+    }
+
+    pub fn host_observation_claims_for_terminal_v1(
+        &self,
+        observed_terminal: LinuxVzTelemetryConformanceObservedTerminalV1,
+    ) -> Result<LinuxVzTelemetryHostObservationClaimsV1, MacosLinuxVzTelemetryEvidenceErrorV1> {
         LinuxVzTelemetryHostObservationClaimsV1::new(
             self.payload_sha256.clone(),
             self.canonical_json.len() as u64,
@@ -74,7 +83,7 @@ impl LinuxVzHostEvidencePayloadV1 {
             true,
             true,
             0,
-            LinuxVzTelemetryConformanceObservedTerminalV1::ObservationComplete,
+            observed_terminal,
         )
     }
 }
@@ -240,6 +249,19 @@ mod tests {
         assert!(claims.vm_started());
         assert!(claims.vm_stopped());
         assert!(claims.clone_destroyed());
+        assert_eq!(
+            claims.observed_terminal(),
+            LinuxVzTelemetryConformanceObservedTerminalV1::ObservationComplete
+        );
+        let incomplete = payload
+            .host_observation_claims_for_terminal_v1(
+                LinuxVzTelemetryConformanceObservedTerminalV1::IncompleteOnInjectedGap,
+            )
+            .expect("incomplete host claims");
+        assert_eq!(
+            incomplete.observed_terminal(),
+            LinuxVzTelemetryConformanceObservedTerminalV1::IncompleteOnInjectedGap
+        );
     }
 
     #[test]

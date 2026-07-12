@@ -19,6 +19,18 @@ import Testing
     #expect(payload.claims.vmStopped)
     #expect(payload.claims.cloneDestroyed)
     #expect(payload.claims.externalFramesForwarded == 0)
+    #expect(payload.claims.observedTerminal == "observation_complete")
+    let incomplete = try decodeLinuxVzHostEvidencePayload(
+        payload.canonicalJSON,
+        observedTerminal: "incomplete_on_injected_gap"
+    )
+    #expect(incomplete.claims.observedTerminal == "incomplete_on_injected_gap")
+    #expect(throws: LinuxVzHostEvidencePayloadError.invalidSchema) {
+        try decodeLinuxVzHostEvidencePayload(
+            payload.canonicalJSON,
+            observedTerminal: "observation_complete_despite_gap"
+        )
+    }
 }
 
 @Test func linuxVzHostEvidencePayloadRejectsChangedObservation() throws {

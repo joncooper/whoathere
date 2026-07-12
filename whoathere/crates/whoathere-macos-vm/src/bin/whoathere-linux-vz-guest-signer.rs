@@ -26,11 +26,12 @@ mod linux {
     use whoathere_macos_vm::{
         decode_and_validate_macos_linux_vz_telemetry_conformance_challenge_v1,
         decode_and_validate_macos_linux_vz_telemetry_conformance_run_spec_v1,
-        decode_linux_vz_file_evidence_from_serial_v1, decode_linux_vz_guest_signer_request_v1,
-        decode_linux_vz_network_evidence_from_serial_v1,
+        decode_linux_vz_drop_evidence_from_serial_v1, decode_linux_vz_file_evidence_from_serial_v1,
+        decode_linux_vz_guest_signer_request_v1, decode_linux_vz_network_evidence_from_serial_v1,
         decode_linux_vz_process_evidence_from_serial_v1, encode_linux_vz_guest_signer_response_v1,
         sign_macos_linux_vz_telemetry_guest_receipt_v1, LinuxVzTelemetryConformanceCaseV1,
-        LinuxVzTelemetryConformanceExpectedTerminalV1, MAX_LINUX_VZ_FILE_EVIDENCE_PAYLOAD_BYTES_V1,
+        LinuxVzTelemetryConformanceExpectedTerminalV1, MAX_LINUX_VZ_DROP_EVIDENCE_PAYLOAD_BYTES_V1,
+        MAX_LINUX_VZ_FILE_EVIDENCE_PAYLOAD_BYTES_V1,
         MAX_LINUX_VZ_GUEST_SIGNER_REQUEST_FRAME_BYTES_V1,
         MAX_LINUX_VZ_NETWORK_EVIDENCE_PAYLOAD_BYTES_V1,
         MAX_LINUX_VZ_PROCESS_EVIDENCE_PAYLOAD_BYTES_V1,
@@ -45,12 +46,19 @@ mod linux {
     const DYNAMIC_DRIVER_PATH: &str = "/whoathere/dynamic-library-driver";
     const DYNAMIC_LIBRARY_PATH: &str = "/whoathere/dynamic-fixture-library.so";
     const MAX_EXECUTABLE_BYTES: u64 = 64 * 1024 * 1024;
-    const MAX_SENSOR_EVIDENCE_BYTES: usize = if MAX_LINUX_VZ_FILE_EVIDENCE_PAYLOAD_BYTES_V1
-        > MAX_LINUX_VZ_PROCESS_EVIDENCE_PAYLOAD_BYTES_V1
-    {
-        MAX_LINUX_VZ_FILE_EVIDENCE_PAYLOAD_BYTES_V1
-    } else {
-        MAX_LINUX_VZ_PROCESS_EVIDENCE_PAYLOAD_BYTES_V1
+    const MAX_SENSOR_EVIDENCE_BYTES: usize = {
+        let file_or_process = if MAX_LINUX_VZ_FILE_EVIDENCE_PAYLOAD_BYTES_V1
+            > MAX_LINUX_VZ_PROCESS_EVIDENCE_PAYLOAD_BYTES_V1
+        {
+            MAX_LINUX_VZ_FILE_EVIDENCE_PAYLOAD_BYTES_V1
+        } else {
+            MAX_LINUX_VZ_PROCESS_EVIDENCE_PAYLOAD_BYTES_V1
+        };
+        if MAX_LINUX_VZ_DROP_EVIDENCE_PAYLOAD_BYTES_V1 > file_or_process {
+            MAX_LINUX_VZ_DROP_EVIDENCE_PAYLOAD_BYTES_V1
+        } else {
+            file_or_process
+        }
     };
     const MAX_SENSOR_OUTPUT_BYTES: u64 =
         if MAX_LINUX_VZ_NETWORK_EVIDENCE_PAYLOAD_BYTES_V1 > MAX_SENSOR_EVIDENCE_BYTES {
@@ -98,8 +106,14 @@ mod linux {
                 | LinuxVzTelemetryConformanceCaseV1::EncryptedDnsConnect
                 | LinuxVzTelemetryConformanceCaseV1::ProtectedOpenReadWriteRenameDelete
                 | LinuxVzTelemetryConformanceCaseV1::MmapAccess
+                | LinuxVzTelemetryConformanceCaseV1::BpfReservationFailure
         ) || run_spec.expected_terminal()
-            != LinuxVzTelemetryConformanceExpectedTerminalV1::ObservationComplete
+            != match run_spec.fixture_case() {
+                LinuxVzTelemetryConformanceCaseV1::BpfReservationFailure => {
+                    LinuxVzTelemetryConformanceExpectedTerminalV1::IncompleteOnInjectedGap
+                }
+                _ => LinuxVzTelemetryConformanceExpectedTerminalV1::ObservationComplete,
+            }
             || run_spec.package_execution_authority_permitted()
         {
             return Err("guest_signer_run_spec_not_supported_inert_case".into());
@@ -139,6 +153,7 @@ mod linux {
                 "protected_open_read_write_rename_delete"
             }
             LinuxVzTelemetryConformanceCaseV1::MmapAccess => "mmap_access",
+            LinuxVzTelemetryConformanceCaseV1::BpfReservationFailure => "bpf_reservation_failure",
             _ => return Err("guest_signer_run_spec_not_supported_inert_case".into()),
         };
         let mut child = Command::new(SENSOR_PATH)
@@ -206,6 +221,17 @@ mod linux {
                 let evidence = decode_linux_vz_network_evidence_from_serial_v1(&sensor_output)?;
                 if evidence.fixture_case() != run_spec.fixture_case() {
                     return Err("guest_signer_network_case_mismatch".into());
+                }
+                (
+                    evidence.package_uid(),
+                    evidence.package_gid(),
+                    evidence.guest_observation_claims_v1()?,
+                )
+            }
+            LinuxVzTelemetryConformanceCaseV1::BpfReservationFailure => {
+                let evidence = decode_linux_vz_drop_evidence_from_serial_v1(&sensor_output)?;
+                if evidence.fixture_case() != run_spec.fixture_case() {
+                    return Err("guest_signer_drop_case_mismatch".into());
                 }
                 (
                     evidence.package_uid(),

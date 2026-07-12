@@ -6,15 +6,15 @@ use whoathere_detonation::ArtifactProtectedTelemetryRequirementsV1;
 use whoathere_macos_vm::{
     decode_and_validate_macos_linux_vz_telemetry_conformance_challenge_v1,
     decode_and_validate_macos_linux_vz_telemetry_conformance_run_spec_v1,
-    decode_linux_vz_file_evidence_from_serial_v1, decode_linux_vz_host_evidence_payload_v1,
-    decode_linux_vz_network_evidence_from_serial_v1,
+    decode_linux_vz_drop_evidence_from_serial_v1, decode_linux_vz_file_evidence_from_serial_v1,
+    decode_linux_vz_host_evidence_payload_v1, decode_linux_vz_network_evidence_from_serial_v1,
     decode_linux_vz_network_host_evidence_payload_v1,
     decode_linux_vz_process_evidence_from_serial_v1,
     decode_unqualified_macos_linux_vz_telemetry_backend_identity_v1,
     verify_macos_linux_vz_telemetry_conformance_case_v1,
     verify_macos_linux_vz_telemetry_guest_receipt_v1,
     verify_macos_linux_vz_telemetry_host_receipt_v1, LinuxVzTelemetryConformanceCaseV1,
-    MAX_LINUX_VZ_HOST_EVIDENCE_PAYLOAD_BYTES_V1,
+    LinuxVzTelemetryConformanceObservedTerminalV1, MAX_LINUX_VZ_HOST_EVIDENCE_PAYLOAD_BYTES_V1,
     MAX_MACOS_LINUX_VZ_TELEMETRY_BACKEND_IDENTITY_BYTES_V1,
     MAX_MACOS_LINUX_VZ_TELEMETRY_CONFORMANCE_EVIDENCE_BYTES_V1,
     MAX_MACOS_LINUX_VZ_TELEMETRY_CONFORMANCE_RUN_SPEC_BYTES_V1,
@@ -84,6 +84,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "protected_open_read_write_rename_delete"
         }
         LinuxVzTelemetryConformanceCaseV1::MmapAccess => "mmap_access",
+        LinuxVzTelemetryConformanceCaseV1::BpfReservationFailure => "bpf_reservation_failure",
         _ => return Err("complete-case verifier does not implement this inert case".into()),
     };
     let backend = decode_unqualified_macos_linux_vz_telemetry_backend_identity_v1(
@@ -155,6 +156,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     Some(evidence.source_port()),
                 )
             }
+            LinuxVzTelemetryConformanceCaseV1::BpfReservationFailure => {
+                let evidence = decode_linux_vz_drop_evidence_from_serial_v1(&serial)?;
+                if evidence.fixture_case() != run_spec.fixture_case()
+                    || evidence.package_uid() != backend.package_uid()
+                    || evidence.package_gid() != backend.package_gid()
+                {
+                    return Err("guest drop evidence binding mismatch".into());
+                }
+                (
+                    evidence.payload_sha256().clone(),
+                    evidence.guest_observation_claims_v1()?,
+                    None,
+                )
+            }
             _ => return Err("complete-case verifier does not implement this inert case".into()),
         };
     let verified_guest = verify_macos_linux_vz_telemetry_guest_receipt_v1(
@@ -190,9 +205,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         )
     } else {
         let evidence = decode_linux_vz_host_evidence_payload_v1(&host_evidence)?;
+        let terminal = if run_spec.fixture_case()
+            == LinuxVzTelemetryConformanceCaseV1::BpfReservationFailure
+        {
+            LinuxVzTelemetryConformanceObservedTerminalV1::IncompleteOnInjectedGap
+        } else {
+            LinuxVzTelemetryConformanceObservedTerminalV1::ObservationComplete
+        };
         (
             evidence.payload_sha256().clone(),
-            evidence.host_observation_claims_v1()?,
+            evidence.host_observation_claims_for_terminal_v1(terminal)?,
         )
     };
     let verified_host = verify_macos_linux_vz_telemetry_host_receipt_v1(

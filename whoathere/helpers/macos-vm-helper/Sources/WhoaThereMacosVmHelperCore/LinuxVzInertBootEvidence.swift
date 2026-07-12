@@ -132,6 +132,12 @@ public let linuxVzInertEncryptedDNSSensorMarkersV1 = [
     "WHOATHERE_SENSOR network_target=dns_sinkhole_192_0_2_53_853"
 ]
 
+public let linuxVzInertBPFReservationFailureSensorMarkersV1 = [
+    "WHOATHERE_SENSOR bpf_reservation_failure=injected",
+    "WHOATHERE_SENSOR dropped_event_accounting=observed",
+    "WHOATHERE_SENSOR drop_accounting_terminal=incomplete_on_injected_gap"
+]
+
 public let linuxVzInertRequiredEvidenceMarkersV2 =
     linuxVzInertRequiredCapabilityMarkersV1 + linuxVzInertProcessSensorMarkersV2
 

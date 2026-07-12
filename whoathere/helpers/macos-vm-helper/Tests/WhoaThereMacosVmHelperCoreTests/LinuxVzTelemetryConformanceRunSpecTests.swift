@@ -355,6 +355,117 @@ import Testing
     }
 }
 
+@Test func linuxVzInjectedBPFGapRequiresExactIncompleteTerminalAndPositiveDrop() throws {
+    var runValue = try linuxVzConformanceFixture(
+        runID: "linux-vz-bpf-gap-run",
+        evidenceID: "linux-vz-bpf-gap-evidence"
+    )
+    runValue["fixture_case"] = "bpf_reservation_failure"
+    runValue["fixture"] = "drop_accounting"
+    runValue["expected_terminal"] = "incomplete_on_injected_gap"
+    runValue["expected_sensors"] = linuxVzConformanceExpectedSensors("drop_accounting")
+    let runSpec = try decodeLinuxVzTelemetryConformanceRunSpec(
+        try canonicalJSONData(runValue)
+    )
+    let backendValue = try #require(runValue["backend_identity"] as? [String: Any])
+    let requirementsSHA256 = try #require(
+        runValue["telemetry_requirements_sha256"] as? String
+    )
+    let backend = try decodeUnqualifiedLinuxVzTelemetryBackendIdentity(
+        try canonicalJSONData(backendValue),
+        expectedTelemetryRequirementsSHA256: requirementsSHA256
+    )
+    let challengeValue: [String: Any] = [
+        "schema_version": linuxVzTelemetryConformanceChallengeSchemaV1,
+        "nonce_hex": String(repeating: "44", count: 32),
+        "challenge_purpose": "trusted_inert_telemetry_conformance_only",
+        "run_spec_sha256": runSpec.runSpecSHA256,
+        "backend_identity_sha256": backend.identitySHA256,
+        "telemetry_requirements_sha256": requirementsSHA256,
+        "clone_binding_sha256": sha256(Data("bpf gap clone".utf8)),
+        "guest_evidence_public_key_sha256": backend.guestEvidencePublicKeySHA256,
+        "host_evidence_public_key_sha256": backend.hostEvidencePublicKeySHA256,
+        "package_execution": "disabled",
+        "sync_back_policy": "structurally_absent"
+    ]
+    let challenge = try decodeLinuxVzTelemetryConformanceChallenge(
+        try canonicalJSONData(challengeValue),
+        expectedRunSpec: runSpec,
+        expectedBackend: backend
+    )
+    func guestClaims(_ dropped: UInt64, _ terminal: String = "incomplete_on_injected_gap")
+        -> LinuxVzTelemetryGuestObservationClaims {
+        LinuxVzTelemetryGuestObservationClaims(
+            evidencePayloadSHA256: sha256(Data("bpf drop evidence".utf8)),
+            evidenceByteLength: 512,
+            eventSequenceStart: 1,
+            eventSequenceEnd: 1,
+            eventCount: 1,
+            heartbeatCount: 2,
+            droppedEventCount: dropped,
+            sensorHealthy: true,
+            evidenceTruncated: false,
+            descendantTeardownComplete: true,
+            observedTerminal: terminal
+        )
+    }
+    let hostClaims = LinuxVzTelemetryHostObservationClaims(
+        evidencePayloadSHA256: sha256(Data("bpf host evidence".utf8)),
+        evidenceByteLength: 512,
+        eventSequenceStart: 1,
+        eventSequenceEnd: 6,
+        eventCount: 6,
+        heartbeatCount: 2,
+        droppedFrameCount: 0,
+        packetSensorHealthy: true,
+        evidenceTruncated: false,
+        guestChannelTerminated: true,
+        vmStarted: true,
+        vmStopped: true,
+        cloneDestroyed: true,
+        externalFramesForwarded: 0,
+        observedTerminal: "incomplete_on_injected_gap"
+    )
+    func guest(_ claims: LinuxVzTelemetryGuestObservationClaims)
+        -> VerifiedLinuxVzTelemetryGuestReceipt {
+        VerifiedLinuxVzTelemetryGuestReceipt(
+            challengeSHA256: challenge.challengeSHA256,
+            observedSensors: linuxVzConformanceExpectedGuestSensors(runSpec),
+            claims: claims
+        )
+    }
+    let host = VerifiedLinuxVzTelemetryHostReceipt(
+        challengeSHA256: challenge.challengeSHA256,
+        observedSensors: linuxVzConformanceExpectedHostSensors(runSpec),
+        claims: hostClaims
+    )
+    _ = try verifyLinuxVzObservationCompleteConformanceCase(
+        challenge: challenge,
+        runSpec: runSpec,
+        backend: backend,
+        guest: guest(guestClaims(1793)),
+        host: host
+    )
+    #expect(throws: LinuxVzTelemetryConformanceEvidenceError.invalidReceipt) {
+        try verifyLinuxVzObservationCompleteConformanceCase(
+            challenge: challenge,
+            runSpec: runSpec,
+            backend: backend,
+            guest: guest(guestClaims(0)),
+            host: host
+        )
+    }
+    #expect(throws: LinuxVzTelemetryConformanceEvidenceError.invalidReceipt) {
+        try verifyLinuxVzObservationCompleteConformanceCase(
+            challenge: challenge,
+            runSpec: runSpec,
+            backend: backend,
+            guest: guest(guestClaims(1793, "observation_complete")),
+            host: host
+        )
+    }
+}
+
 @Test func linuxVzQualificationRecordMatchesRustButParsingCannotGrantAuthority() throws {
     let guestPrivate = try Curve25519.Signing.PrivateKey(
         rawRepresentation: Data(repeating: 0x61, count: 32)

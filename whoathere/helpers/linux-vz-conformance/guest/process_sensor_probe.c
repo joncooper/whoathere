@@ -78,6 +78,8 @@
 #define ENCRYPTED_DNS_TARGET_PORT 853
 #define DNS_PLAINTEXT_PAYLOAD_LENGTH 35
 #define DNS_MALFORMED_PAYLOAD_LENGTH 12
+#define DROP_RING_BUFFER_BYTES 4096
+#define DROP_RESERVATION_ATTEMPTS 2048
 #define SENSOR_PROGRAM_COUNT 8
 
 struct reparent_report {
@@ -157,6 +159,8 @@ struct udp_report {
     INSN(BPF_ALU64 | BPF_MOV | BPF_K, destination, 0, 0, immediate)
 #define ADD64_IMM(destination, immediate) \
     INSN(BPF_ALU64 | BPF_ADD | BPF_K, destination, 0, 0, immediate)
+#define RSH64_IMM(destination, immediate) \
+    INSN(BPF_ALU64 | BPF_RSH | BPF_K, destination, 0, 0, immediate)
 #define STORE_IMM(size, destination, instruction_offset, immediate) \
     INSN(BPF_ST | BPF_MEM | size, destination, 0, instruction_offset, immediate)
 #define STORE_REG(size, destination, source, instruction_offset) \
@@ -228,6 +232,24 @@ static int create_observation_map(void) {
     return bpf_call(BPF_MAP_CREATE, &attributes);
 }
 
+static int create_drop_counter_map(void) {
+    union bpf_attr attributes;
+    memset(&attributes, 0, sizeof(attributes));
+    attributes.map_type = BPF_MAP_TYPE_ARRAY;
+    attributes.key_size = sizeof(uint32_t);
+    attributes.value_size = sizeof(uint64_t);
+    attributes.max_entries = 1;
+    return bpf_call(BPF_MAP_CREATE, &attributes);
+}
+
+static int create_drop_ring_buffer(void) {
+    union bpf_attr attributes;
+    memset(&attributes, 0, sizeof(attributes));
+    attributes.map_type = BPF_MAP_TYPE_RINGBUF;
+    attributes.max_entries = DROP_RING_BUFFER_BYTES;
+    return bpf_call(BPF_MAP_CREATE, &attributes);
+}
+
 static int load_program(const struct bpf_insn *instructions, size_t count) {
     static const char license[] = "GPL";
     char verifier_log[16384] = {0};
@@ -268,6 +290,56 @@ static int lookup_observation(int map, uint32_t key, struct observation *value) 
     attributes.key = (uint64_t)(uintptr_t)&key;
     attributes.value = (uint64_t)(uintptr_t)value;
     return bpf_call(BPF_MAP_LOOKUP_ELEM, &attributes);
+}
+
+static int lookup_drop_counter(int map, uint64_t *value) {
+    uint32_t key = 0;
+    union bpf_attr attributes;
+    memset(&attributes, 0, sizeof(attributes));
+    *value = 0;
+    attributes.map_fd = (uint32_t)map;
+    attributes.key = (uint64_t)(uintptr_t)&key;
+    attributes.value = (uint64_t)(uintptr_t)value;
+    return bpf_call(BPF_MAP_LOOKUP_ELEM, &attributes);
+}
+
+static int load_ring_buffer_reservation_fault_program(
+    int ring_buffer,
+    int drop_counter,
+    pid_t expected_process
+) {
+    const struct bpf_insn instructions[] = {
+        MOV64_REG(BPF_REG_6, BPF_REG_1),
+        LOAD_REG(BPF_DW, BPF_REG_9, BPF_REG_6, 8),
+        JUMP_IMM(BPF_JNE, BPF_REG_9, SYS_getpid, 26),
+        CALL_HELPER(BPF_FUNC_get_current_pid_tgid),
+        RSH64_IMM(BPF_REG_0, 32),
+        JUMP_IMM(BPF_JNE, BPF_REG_0, expected_process, 23),
+        LOAD_MAP_FD(BPF_REG_1, ring_buffer),
+        MOV64_IMM(BPF_REG_2, sizeof(uint64_t)),
+        MOV64_IMM(BPF_REG_3, 0),
+        CALL_HELPER(BPF_FUNC_ringbuf_reserve),
+        JUMP_IMM(BPF_JEQ, BPF_REG_0, 0, 8),
+        MOV64_REG(BPF_REG_6, BPF_REG_0),
+        CALL_HELPER(BPF_FUNC_get_current_pid_tgid),
+        STORE_REG(BPF_DW, BPF_REG_6, BPF_REG_0, 0),
+        MOV64_REG(BPF_REG_1, BPF_REG_6),
+        MOV64_IMM(BPF_REG_2, 0),
+        CALL_HELPER(BPF_FUNC_ringbuf_submit),
+        MOV64_IMM(BPF_REG_0, 0),
+        EXIT_PROGRAM(),
+        STORE_IMM(BPF_W, BPF_REG_10, -4, 0),
+        LOAD_MAP_FD(BPF_REG_1, drop_counter),
+        MOV64_REG(BPF_REG_2, BPF_REG_10),
+        ADD64_IMM(BPF_REG_2, -4),
+        CALL_HELPER(BPF_FUNC_map_lookup_elem),
+        JUMP_IMM(BPF_JEQ, BPF_REG_0, 0, 2),
+        MOV64_IMM(BPF_REG_1, 1),
+        INSN(BPF_STX | BPF_XADD | BPF_DW, BPF_REG_0, BPF_REG_1, 0, 0),
+        MOV64_IMM(BPF_REG_0, 0),
+        EXIT_PROGRAM(),
+    };
+    return load_program(instructions, sizeof(instructions) / sizeof(instructions[0]));
 }
 
 static int load_calibration_program(int map) {
@@ -537,6 +609,92 @@ static uint64_t monotonic_ns(void) {
     struct timespec value = {0};
     return clock_gettime(CLOCK_MONOTONIC, &value) == 0
         ? (uint64_t)value.tv_sec * 1000000000ULL + (uint64_t)value.tv_nsec : 0;
+}
+
+static int run_bpf_reservation_failure_probe(const char *fixture) {
+    struct rlimit unlimited = {.rlim_cur = RLIM_INFINITY, .rlim_max = RLIM_INFINITY};
+    int ring_buffer = -1;
+    int drop_counter = -1;
+    int program = -1;
+    int link = -1;
+    int result = 70;
+    const char *failure_stage = "preflight";
+    int failure_errno = 0;
+    uint64_t dropped = 0;
+
+    if (getuid() != 0 || geteuid() != 0 || verify_root_owned_executable(fixture) != 0) {
+        failure_stage = "identity";
+        goto cleanup;
+    }
+    if (setrlimit(RLIMIT_MEMLOCK, &unlimited) != 0) {
+        failure_stage = "memlock_limit";
+        failure_errno = errno;
+        goto cleanup;
+    }
+    ring_buffer = create_drop_ring_buffer();
+    drop_counter = create_drop_counter_map();
+    program = ring_buffer >= 0 && drop_counter >= 0
+        ? load_ring_buffer_reservation_fault_program(ring_buffer, drop_counter, getpid()) : -1;
+    link = program >= 0 ? attach_raw_tracepoint("sys_enter", program) : -1;
+    if (ring_buffer < 0 || drop_counter < 0 || program < 0 || link < 0) {
+        failure_stage = "bpf_fault_injector_attach";
+        failure_errno = errno;
+        goto cleanup;
+    }
+    for (size_t index = 0; index < DROP_RESERVATION_ATTEMPTS; index++) {
+        (void)syscall(SYS_getpid);
+    }
+    close_if_open(&link);
+    if (lookup_drop_counter(drop_counter, &dropped) != 0 ||
+        dropped == 0 || dropped >= DROP_RESERVATION_ATTEMPTS) {
+        failure_stage = "bpf_reservation_failure_not_observed";
+        failure_errno = errno;
+        goto cleanup;
+    }
+    uint64_t timestamp = monotonic_ns();
+    if (timestamp == 0) {
+        failure_stage = "timestamp";
+        failure_errno = errno;
+        goto cleanup;
+    }
+    puts("WHOATHERE_SENSOR bpf_reservation_failure=injected");
+    puts("WHOATHERE_SENSOR dropped_event_accounting=observed");
+    puts("WHOATHERE_SENSOR drop_accounting_terminal=incomplete_on_injected_gap");
+    printf(
+        "WHOATHERE_GUEST_DROP_EVIDENCE {\"descendant_teardown_complete\":true,"
+        "\"dropped_event_count\":\"%" PRIu64 "\",\"event_count\":\"1\","
+        "\"event_sequence_end\":\"1\",\"event_sequence_start\":\"1\","
+        "\"events\":[{\"actor_pid\":\"%d\",\"kind\":\"bpf_reservation_failure\","
+        "\"sequence\":\"1\",\"timestamp_ns\":\"%" PRIu64 "\"}],"
+        "\"evidence_truncated\":false,\"fixture_case\":\"bpf_reservation_failure\","
+        "\"heartbeat_count\":\"2\",\"injection_kind\":\"ringbuf_reserve_exhaustion\","
+        "\"package_gid\":\"65534\",\"package_uid\":\"65534\","
+        "\"reservation_attempt_count\":\"%d\",\"reservation_success_count\":\"%" PRIu64
+        "\",\"ring_buffer_capacity_bytes\":\"%d\","
+        "\"schema_version\":\"whoathere.linux_vz_drop_evidence_payload.v1\","
+        "\"sensor_healthy\":true}\n",
+        dropped,
+        getpid(),
+        timestamp,
+        DROP_RESERVATION_ATTEMPTS,
+        (uint64_t)DROP_RESERVATION_ATTEMPTS - dropped,
+        DROP_RING_BUFFER_BYTES
+    );
+    result = 0;
+
+cleanup:
+    close_if_open(&link);
+    close_if_open(&program);
+    close_if_open(&drop_counter);
+    close_if_open(&ring_buffer);
+    if (result != 0) {
+        printf(
+            "WHOATHERE_SENSOR_DROP_PROBE_FAILED stage=%s errno=%d\n",
+            failure_stage,
+            failure_errno
+        );
+    }
+    return result;
 }
 
 static int run_file_probe(const char *fixture, const char *fixture_case) {
@@ -2964,6 +3122,9 @@ int main(int argument_count, char **arguments) {
         strcmp(arguments[2], "dns_malformed") == 0 ||
         strcmp(arguments[2], "encrypted_dns_connect") == 0) {
         return run_process_probe(arguments[1], arguments[2]);
+    }
+    if (strcmp(arguments[2], "bpf_reservation_failure") == 0) {
+        return run_bpf_reservation_failure_probe(arguments[1]);
     }
     if (strcmp(arguments[2], "protected_open_read_write_rename_delete") == 0 ||
         strcmp(arguments[2], "mmap_access") == 0) {

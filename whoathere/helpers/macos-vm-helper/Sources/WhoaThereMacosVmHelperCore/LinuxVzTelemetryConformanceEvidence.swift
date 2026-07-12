@@ -267,8 +267,7 @@ public func verifyLinuxVzObservationCompleteConformanceCase(
     guest: VerifiedLinuxVzTelemetryGuestReceipt,
     host: VerifiedLinuxVzTelemetryHostReceipt
 ) throws -> VerifiedLinuxVzObservationCompleteConformanceCase {
-    guard runSpec.expectedTerminal == "observation_complete",
-          challenge.runSpecSHA256 == runSpec.runSpecSHA256,
+    guard challenge.runSpecSHA256 == runSpec.runSpecSHA256,
           challenge.backendIdentitySHA256 == backend.identitySHA256,
           guest.challengeSHA256 == challenge.challengeSHA256,
           host.challengeSHA256 == challenge.challengeSHA256,
@@ -276,20 +275,61 @@ public func verifyLinuxVzObservationCompleteConformanceCase(
           !backend.executionAuthorityPermitted,
           !guest.packageExecutionAuthorityPermitted,
           !host.packageExecutionAuthorityPermitted,
-          guest.claims.observedTerminal == "observation_complete",
-          guest.claims.sensorHealthy,
+          guest.claims.observedTerminal == runSpec.expectedTerminal,
           !guest.claims.evidenceTruncated,
-          guest.claims.droppedEventCount == 0,
           guest.claims.descendantTeardownComplete,
-          host.claims.observedTerminal == "observation_complete",
-          host.claims.packetSensorHealthy,
+          host.claims.observedTerminal == runSpec.expectedTerminal,
           !host.claims.evidenceTruncated,
-          host.claims.droppedFrameCount == 0,
           host.claims.guestChannelTerminated,
           host.claims.vmStarted,
           host.claims.vmStopped,
           host.claims.cloneDestroyed,
           host.claims.externalFramesForwarded == 0 else {
+        throw LinuxVzTelemetryConformanceEvidenceError.invalidReceipt
+    }
+    switch runSpec.expectedTerminal {
+    case "observation_complete", "timeout_with_teardown",
+         "access_denied_with_complete_evidence":
+        guard guest.claims.sensorHealthy,
+              guest.claims.droppedEventCount == 0,
+              host.claims.packetSensorHealthy,
+              host.claims.droppedFrameCount == 0 else {
+            throw LinuxVzTelemetryConformanceEvidenceError.invalidReceipt
+        }
+    case "incomplete_on_injected_gap":
+        guard guest.claims.sensorHealthy, host.claims.packetSensorHealthy else {
+            throw LinuxVzTelemetryConformanceEvidenceError.invalidReceipt
+        }
+        let exactGap: Bool
+        switch runSpec.fixtureCase {
+        case "bpf_reservation_failure", "fanotify_queue_overflow":
+            exactGap = guest.claims.droppedEventCount > 0
+                && host.claims.droppedFrameCount == 0
+        case "host_frame_overflow":
+            exactGap = guest.claims.droppedEventCount == 0
+                && host.claims.droppedFrameCount > 0
+        default:
+            exactGap = false
+        }
+        guard exactGap else {
+            throw LinuxVzTelemetryConformanceEvidenceError.invalidReceipt
+        }
+    case "infrastructure_error_with_teardown":
+        let exactHealth: Bool
+        switch runSpec.fixtureCase {
+        case "host_sensor_death":
+            exactHealth = guest.claims.sensorHealthy && !host.claims.packetSensorHealthy
+        case "channel_interruption", "vm_stop":
+            exactHealth = guest.claims.sensorHealthy && host.claims.packetSensorHealthy
+        default:
+            exactHealth = false
+        }
+        guard exactHealth,
+              guest.claims.droppedEventCount == 0,
+              host.claims.droppedFrameCount == 0 else {
+            throw LinuxVzTelemetryConformanceEvidenceError.invalidReceipt
+        }
+    default:
         throw LinuxVzTelemetryConformanceEvidenceError.invalidReceipt
     }
     return VerifiedLinuxVzObservationCompleteConformanceCase(
