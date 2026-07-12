@@ -43,6 +43,9 @@ impl std::error::Error for LinuxVzTeardownEvidencePayloadErrorV1 {}
 pub struct LinuxVzTeardownEvidencePayloadV1 {
     canonical_json: Vec<u8>,
     payload_sha256: Sha256Digest,
+    fixture_case: LinuxVzTelemetryConformanceCaseV1,
+    event_count: u64,
+    observed_terminal: LinuxVzTelemetryConformanceObservedTerminalV1,
 }
 
 impl LinuxVzTeardownEvidencePayloadV1 {
@@ -55,7 +58,7 @@ impl LinuxVzTeardownEvidencePayloadV1 {
     }
 
     pub fn fixture_case(&self) -> LinuxVzTelemetryConformanceCaseV1 {
-        LinuxVzTelemetryConformanceCaseV1::NormalExit
+        self.fixture_case
     }
 
     pub fn package_uid(&self) -> u32 {
@@ -74,14 +77,14 @@ impl LinuxVzTeardownEvidencePayloadV1 {
             self.payload_sha256.clone(),
             self.canonical_json.len() as u64,
             1,
-            3,
-            3,
+            self.event_count,
+            self.event_count,
             2,
             0,
             true,
             false,
             true,
-            LinuxVzTelemetryConformanceObservedTerminalV1::ObservationComplete,
+            self.observed_terminal,
         )
     }
 }
@@ -101,7 +104,10 @@ struct TeardownEvidenceWireV1 {
     events: Vec<TeardownEventWireV1>,
     evidence_truncated: bool,
     fixture_case: String,
-    fixture_exit_status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fixture_exit_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fixture_termination_signal: Option<String>,
     heartbeat_count: String,
     kill_signal_count: String,
     package_gid: String,
@@ -162,46 +168,81 @@ pub fn decode_linux_vz_teardown_evidence_payload_v1(
     }
 
     if wire.schema_version != LINUX_VZ_TEARDOWN_EVIDENCE_PAYLOAD_SCHEMA_V1
-        || wire.fixture_case != "normal_exit"
-        || wire.teardown_trigger != "natural_exit"
-        || decimal_u64_v1(&wire.deadline_limit_ns)? != 5_000_000_000
-        || wire.deadline_reached
         || !wire.descendant_teardown_complete
         || !wire.cgroup_empty_after_reap
         || !wire.cgroup_removed
         || !wire.sensor_teardown_complete
         || !wire.sensor_healthy
         || wire.evidence_truncated
-        || decimal_u64_v1(&wire.fixture_exit_status)? != 0
-        || decimal_u64_v1(&wire.termination_signal_count)? != 0
-        || decimal_u64_v1(&wire.kill_signal_count)? != 0
         || decimal_u64_v1(&wire.reaped_process_count)? != 1
         || decimal_u64_v1(&wire.event_sequence_start)? != 1
-        || decimal_u64_v1(&wire.event_sequence_end)? != 3
-        || decimal_u64_v1(&wire.event_count)? != 3
         || decimal_u64_v1(&wire.heartbeat_count)? != 2
         || decimal_u64_v1(&wire.dropped_event_count)? != 0
         || decimal_u64_v1(&wire.package_uid)? != 65534
         || decimal_u64_v1(&wire.package_gid)? != 65534
-        || wire.events.len() != 3
     {
         return Err(LinuxVzTeardownEvidencePayloadErrorV1::InvalidSchema);
     }
 
-    let mut actor_pids = [0_u64; 3];
-    let mut subject_pids = [0_u64; 3];
-    let mut cgroup_ids = [0_u64; 3];
-    let mut timestamps = [0_u64; 3];
+    let (fixture_case, expected_kinds, observed_terminal): (
+        LinuxVzTelemetryConformanceCaseV1,
+        &[&str],
+        LinuxVzTelemetryConformanceObservedTerminalV1,
+    ) = match wire.fixture_case.as_str() {
+        "normal_exit"
+            if wire.teardown_trigger == "natural_exit"
+                && decimal_u64_v1(&wire.deadline_limit_ns)? == 5_000_000_000
+                && !wire.deadline_reached
+                && optional_decimal_u64_v1(wire.fixture_exit_status.as_deref())? == 0
+                && wire.fixture_termination_signal.is_none()
+                && decimal_u64_v1(&wire.termination_signal_count)? == 0
+                && decimal_u64_v1(&wire.kill_signal_count)? == 0 =>
+        {
+            (
+                LinuxVzTelemetryConformanceCaseV1::NormalExit,
+                &["fork", "exec", "exit"],
+                LinuxVzTelemetryConformanceObservedTerminalV1::ObservationComplete,
+            )
+        }
+        "timeout"
+            if wire.teardown_trigger == "deadline"
+                && decimal_u64_v1(&wire.deadline_limit_ns)? == 1_000_000_000
+                && wire.deadline_reached
+                && wire.fixture_exit_status.is_none()
+                && optional_decimal_u64_v1(wire.fixture_termination_signal.as_deref())? == 15
+                && decimal_u64_v1(&wire.termination_signal_count)? == 1
+                && decimal_u64_v1(&wire.kill_signal_count)? == 0 =>
+        {
+            (
+                LinuxVzTelemetryConformanceCaseV1::Timeout,
+                &["fork", "exec", "signal_term", "exit"],
+                LinuxVzTelemetryConformanceObservedTerminalV1::TimeoutWithTeardown,
+            )
+        }
+        _ => return Err(LinuxVzTeardownEvidencePayloadErrorV1::InvalidSchema),
+    };
+    let event_count = expected_kinds.len() as u64;
+    if decimal_u64_v1(&wire.event_sequence_end)? != event_count
+        || decimal_u64_v1(&wire.event_count)? != event_count
+        || wire.events.len() != expected_kinds.len()
+    {
+        return Err(LinuxVzTeardownEvidencePayloadErrorV1::InvalidSchema);
+    }
+
+    let mut actor_pids = Vec::with_capacity(expected_kinds.len());
+    let mut subject_pids = Vec::with_capacity(expected_kinds.len());
+    let mut cgroup_ids = Vec::with_capacity(expected_kinds.len());
+    let mut timestamps = Vec::with_capacity(expected_kinds.len());
     for (index, event) in wire.events.iter().enumerate() {
-        if event.kind != ["fork", "exec", "exit"][index]
+        if event.kind != expected_kinds[index]
             || decimal_u64_v1(&event.sequence)? != (index + 1) as u64
         {
             return Err(LinuxVzTeardownEvidencePayloadErrorV1::InvalidEvent);
         }
-        actor_pids[index] = decimal_u64_v1(&event.actor_pid)?;
-        subject_pids[index] = decimal_u64_v1(&event.subject_pid)?;
-        cgroup_ids[index] = decimal_u64_v1(&event.cgroup_id)?;
-        timestamps[index] = decimal_u64_v1(&event.timestamp_ns)?;
+        actor_pids.push(decimal_u64_v1(&event.actor_pid)?);
+        subject_pids.push(decimal_u64_v1(&event.subject_pid)?);
+        cgroup_ids.push(decimal_u64_v1(&event.cgroup_id)?);
+        timestamps.push(decimal_u64_v1(&event.timestamp_ns)?);
     }
     if actor_pids.contains(&0)
         || subject_pids.contains(&0)
@@ -210,20 +251,35 @@ pub fn decode_linux_vz_teardown_evidence_payload_v1(
         || actor_pids[0] == subject_pids[0]
         || actor_pids[1] != subject_pids[0]
         || subject_pids[1] != subject_pids[0]
-        || actor_pids[2] != subject_pids[0]
-        || subject_pids[2] != subject_pids[0]
-        || cgroup_ids[1] != cgroup_ids[0]
-        || cgroup_ids[2] != cgroup_ids[0]
-        || timestamps[0] >= timestamps[1]
-        || timestamps[1] >= timestamps[2]
+        || cgroup_ids.iter().any(|value| *value != cgroup_ids[0])
+        || timestamps.windows(2).any(|pair| pair[0] >= pair[1])
     {
         return Err(LinuxVzTeardownEvidencePayloadErrorV1::InvalidEvent);
+    }
+    match fixture_case {
+        LinuxVzTelemetryConformanceCaseV1::NormalExit
+            if actor_pids[2] == subject_pids[0] && subject_pids[2] == subject_pids[0] => {}
+        LinuxVzTelemetryConformanceCaseV1::Timeout
+            if actor_pids[2] == actor_pids[0]
+                && subject_pids[2] == subject_pids[0]
+                && actor_pids[3] == subject_pids[0]
+                && subject_pids[3] == subject_pids[0] => {}
+        _ => return Err(LinuxVzTeardownEvidencePayloadErrorV1::InvalidEvent),
     }
 
     Ok(LinuxVzTeardownEvidencePayloadV1 {
         canonical_json: canonical,
         payload_sha256: Sha256Digest::from_bytes(payload),
+        fixture_case,
+        event_count,
+        observed_terminal,
     })
+}
+
+fn optional_decimal_u64_v1(
+    value: Option<&str>,
+) -> Result<u64, LinuxVzTeardownEvidencePayloadErrorV1> {
+    decimal_u64_v1(value.ok_or(LinuxVzTeardownEvidencePayloadErrorV1::InvalidSchema)?)
 }
 
 fn decimal_u64_v1(value: &str) -> Result<u64, LinuxVzTeardownEvidencePayloadErrorV1> {
@@ -243,6 +299,7 @@ mod tests {
     use super::*;
 
     const NORMAL_EXIT: &[u8] = br#"{"cgroup_empty_after_reap":true,"cgroup_removed":true,"deadline_limit_ns":"5000000000","deadline_reached":false,"descendant_teardown_complete":true,"dropped_event_count":"0","event_count":"3","event_sequence_end":"3","event_sequence_start":"1","events":[{"actor_pid":"41","cgroup_id":"9001","kind":"fork","sequence":"1","subject_pid":"42","timestamp_ns":"100"},{"actor_pid":"42","cgroup_id":"9001","kind":"exec","sequence":"2","subject_pid":"42","timestamp_ns":"200"},{"actor_pid":"42","cgroup_id":"9001","kind":"exit","sequence":"3","subject_pid":"42","timestamp_ns":"300"}],"evidence_truncated":false,"fixture_case":"normal_exit","fixture_exit_status":"0","heartbeat_count":"2","kill_signal_count":"0","package_gid":"65534","package_uid":"65534","reaped_process_count":"1","schema_version":"whoathere.linux_vz_teardown_evidence_payload.v1","sensor_healthy":true,"sensor_teardown_complete":true,"teardown_trigger":"natural_exit","termination_signal_count":"0"}"#;
+    const TIMEOUT: &[u8] = br#"{"cgroup_empty_after_reap":true,"cgroup_removed":true,"deadline_limit_ns":"1000000000","deadline_reached":true,"descendant_teardown_complete":true,"dropped_event_count":"0","event_count":"4","event_sequence_end":"4","event_sequence_start":"1","events":[{"actor_pid":"41","cgroup_id":"9001","kind":"fork","sequence":"1","subject_pid":"42","timestamp_ns":"100"},{"actor_pid":"42","cgroup_id":"9001","kind":"exec","sequence":"2","subject_pid":"42","timestamp_ns":"200"},{"actor_pid":"41","cgroup_id":"9001","kind":"signal_term","sequence":"3","subject_pid":"42","timestamp_ns":"300"},{"actor_pid":"42","cgroup_id":"9001","kind":"exit","sequence":"4","subject_pid":"42","timestamp_ns":"400"}],"evidence_truncated":false,"fixture_case":"timeout","fixture_termination_signal":"15","heartbeat_count":"2","kill_signal_count":"0","package_gid":"65534","package_uid":"65534","reaped_process_count":"1","schema_version":"whoathere.linux_vz_teardown_evidence_payload.v1","sensor_healthy":true,"sensor_teardown_complete":true,"teardown_trigger":"deadline","termination_signal_count":"1"}"#;
 
     #[test]
     fn normal_exit_binds_natural_exit_lineage_and_complete_cleanup() {
@@ -274,6 +331,45 @@ mod tests {
             String::from_utf8(NORMAL_EXIT.to_vec())
                 .unwrap()
                 .replace("\"timestamp_ns\":\"200\"", "\"timestamp_ns\":\"99\""),
+        ] {
+            assert!(decode_linux_vz_teardown_evidence_payload_v1(changed.as_bytes()).is_err());
+        }
+    }
+
+    #[test]
+    fn timeout_binds_deadline_term_lineage_and_complete_cleanup() {
+        let payload = decode_linux_vz_teardown_evidence_payload_v1(TIMEOUT).unwrap();
+        assert_eq!(
+            payload.fixture_case(),
+            LinuxVzTelemetryConformanceCaseV1::Timeout
+        );
+        let claims = payload.guest_observation_claims_v1().unwrap();
+        assert_eq!(claims.dropped_event_count(), 0);
+        assert!(claims.sensor_healthy());
+        assert!(claims.descendant_teardown_complete());
+        assert_eq!(
+            claims.observed_terminal(),
+            LinuxVzTelemetryConformanceObservedTerminalV1::TimeoutWithTeardown
+        );
+    }
+
+    #[test]
+    fn timeout_rejects_forged_deadline_signal_and_actor_claims() {
+        for changed in [
+            String::from_utf8(TIMEOUT.to_vec())
+                .unwrap()
+                .replace("\"deadline_reached\":true", "\"deadline_reached\":false"),
+            String::from_utf8(TIMEOUT.to_vec()).unwrap().replace(
+                "\"fixture_termination_signal\":\"15\"",
+                "\"fixture_termination_signal\":\"9\"",
+            ),
+            String::from_utf8(TIMEOUT.to_vec())
+                .unwrap()
+                .replace("\"kill_signal_count\":\"0\"", "\"kill_signal_count\":\"1\""),
+            String::from_utf8(TIMEOUT.to_vec()).unwrap().replace(
+                "\"actor_pid\":\"41\",\"cgroup_id\":\"9001\",\"kind\":\"signal_term\"",
+                "\"actor_pid\":\"42\",\"cgroup_id\":\"9001\",\"kind\":\"signal_term\"",
+            ),
         ] {
             assert!(decode_linux_vz_teardown_evidence_payload_v1(changed.as_bytes()).is_err());
         }

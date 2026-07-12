@@ -61,73 +61,118 @@ public func decodeLinuxVzTeardownEvidenceJSONV1(
     guard try canonicalJSONData(value) == data else {
         throw LinuxVzTeardownEvidencePayloadError.nonCanonical
     }
-    let expectedKeys = Set([
+    let baseKeys = Set([
         "cgroup_empty_after_reap", "cgroup_removed", "deadline_limit_ns", "deadline_reached",
         "descendant_teardown_complete", "dropped_event_count", "event_count",
         "event_sequence_end", "event_sequence_start", "events", "evidence_truncated",
-        "fixture_case", "fixture_exit_status", "heartbeat_count", "kill_signal_count",
+        "fixture_case", "heartbeat_count", "kill_signal_count",
         "package_gid", "package_uid", "reaped_process_count", "schema_version",
         "sensor_healthy", "sensor_teardown_complete", "teardown_trigger",
         "termination_signal_count"
     ])
+    guard let fixtureCase = value["fixture_case"] as? String else {
+        throw LinuxVzTeardownEvidencePayloadError.invalidSchema
+    }
+    let expectedKeys: Set<String>
+    let expectedKinds: [String]
+    let observedTerminal: String
+    switch fixtureCase {
+    case "normal_exit":
+        expectedKeys = baseKeys.union(["fixture_exit_status"])
+        expectedKinds = ["fork", "exec", "exit"]
+        observedTerminal = "observation_complete"
+        guard value["teardown_trigger"] as? String == "natural_exit",
+              teardownDecimal(value["deadline_limit_ns"]) == 5_000_000_000,
+              value["deadline_reached"] as? Bool == false,
+              teardownDecimal(value["fixture_exit_status"]) == 0,
+              value["fixture_termination_signal"] == nil,
+              teardownDecimal(value["termination_signal_count"]) == 0,
+              teardownDecimal(value["kill_signal_count"]) == 0 else {
+            throw LinuxVzTeardownEvidencePayloadError.invalidSchema
+        }
+    case "timeout":
+        expectedKeys = baseKeys.union(["fixture_termination_signal"])
+        expectedKinds = ["fork", "exec", "signal_term", "exit"]
+        observedTerminal = "timeout_with_teardown"
+        guard value["teardown_trigger"] as? String == "deadline",
+              teardownDecimal(value["deadline_limit_ns"]) == 1_000_000_000,
+              value["deadline_reached"] as? Bool == true,
+              value["fixture_exit_status"] == nil,
+              teardownDecimal(value["fixture_termination_signal"]) == 15,
+              teardownDecimal(value["termination_signal_count"]) == 1,
+              teardownDecimal(value["kill_signal_count"]) == 0 else {
+            throw LinuxVzTeardownEvidencePayloadError.invalidSchema
+        }
+    default:
+        throw LinuxVzTeardownEvidencePayloadError.invalidSchema
+    }
+    let eventCount = UInt64(expectedKinds.count)
     guard Set(value.keys) == expectedKeys,
           value["schema_version"] as? String == linuxVzTeardownEvidencePayloadSchemaV1,
-          value["fixture_case"] as? String == "normal_exit",
-          value["teardown_trigger"] as? String == "natural_exit",
-          teardownDecimal(value["deadline_limit_ns"]) == 5_000_000_000,
-          value["deadline_reached"] as? Bool == false,
           value["descendant_teardown_complete"] as? Bool == true,
           value["cgroup_empty_after_reap"] as? Bool == true,
           value["cgroup_removed"] as? Bool == true,
           value["sensor_teardown_complete"] as? Bool == true,
           value["sensor_healthy"] as? Bool == true,
           value["evidence_truncated"] as? Bool == false,
-          teardownDecimal(value["fixture_exit_status"]) == 0,
-          teardownDecimal(value["termination_signal_count"]) == 0,
-          teardownDecimal(value["kill_signal_count"]) == 0,
           teardownDecimal(value["reaped_process_count"]) == 1,
           teardownDecimal(value["event_sequence_start"]) == 1,
-          teardownDecimal(value["event_sequence_end"]) == 3,
-          teardownDecimal(value["event_count"]) == 3,
+          teardownDecimal(value["event_sequence_end"]) == eventCount,
+          teardownDecimal(value["event_count"]) == eventCount,
           teardownDecimal(value["heartbeat_count"]) == 2,
           teardownDecimal(value["dropped_event_count"]) == 0,
           teardownDecimal(value["package_uid"]) == 65534,
           teardownDecimal(value["package_gid"]) == 65534,
-          let rawEvents = value["events"] as? [[String: Any]], rawEvents.count == 3 else {
+          let rawEvents = value["events"] as? [[String: Any]],
+          rawEvents.count == expectedKinds.count else {
         throw LinuxVzTeardownEvidencePayloadError.invalidSchema
     }
     let events = try rawEvents.map(decodeLinuxVzTeardownEvent)
-    guard events.map(\.kind) == ["fork", "exec", "exit"],
+    guard events.map(\.kind) == expectedKinds,
           events.enumerated().allSatisfy({ $0.element.sequence == UInt64($0.offset + 1) }),
           events.allSatisfy({
               $0.actorPID > 0 && $0.subjectPID > 0 && $0.cgroupID > 0 && $0.timestampNS > 0
           }),
           events[0].actorPID != events[0].subjectPID,
-          events.dropFirst().allSatisfy({
-              $0.actorPID == events[0].subjectPID && $0.subjectPID == events[0].subjectPID
-          }),
           events.dropFirst().allSatisfy({ $0.cgroupID == events[0].cgroupID }),
-          events[0].timestampNS < events[1].timestampNS,
-          events[1].timestampNS < events[2].timestampNS else {
+          zip(events, events.dropFirst()).allSatisfy({ pair in
+              pair.0.timestampNS < pair.1.timestampNS
+          }) else {
         throw LinuxVzTeardownEvidencePayloadError.invalidEvent
+    }
+    if fixtureCase == "normal_exit" {
+        guard events.dropFirst().allSatisfy({
+            $0.actorPID == events[0].subjectPID && $0.subjectPID == events[0].subjectPID
+        }) else {
+            throw LinuxVzTeardownEvidencePayloadError.invalidEvent
+        }
+    } else {
+        guard events[1].actorPID == events[0].subjectPID,
+              events[1].subjectPID == events[0].subjectPID,
+              events[2].actorPID == events[0].actorPID,
+              events[2].subjectPID == events[0].subjectPID,
+              events[3].actorPID == events[0].subjectPID,
+              events[3].subjectPID == events[0].subjectPID else {
+            throw LinuxVzTeardownEvidencePayloadError.invalidEvent
+        }
     }
     let claims = LinuxVzTelemetryGuestObservationClaims(
         evidencePayloadSHA256: sha256(data),
         evidenceByteLength: UInt64(data.count),
         eventSequenceStart: 1,
-        eventSequenceEnd: 3,
-        eventCount: 3,
+        eventSequenceEnd: eventCount,
+        eventCount: eventCount,
         heartbeatCount: 2,
         droppedEventCount: 0,
         sensorHealthy: true,
         evidenceTruncated: false,
         descendantTeardownComplete: true,
-        observedTerminal: "observation_complete"
+        observedTerminal: observedTerminal
     )
     return LinuxVzTeardownEvidencePayload(
         canonicalJSON: data,
         payloadSHA256: claims.evidencePayloadSHA256,
-        fixtureCase: "normal_exit",
+        fixtureCase: fixtureCase,
         packageUID: 65534,
         packageGID: 65534,
         claims: claims

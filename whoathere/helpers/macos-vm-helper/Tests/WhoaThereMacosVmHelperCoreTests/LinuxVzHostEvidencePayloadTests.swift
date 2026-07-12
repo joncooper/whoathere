@@ -25,6 +25,11 @@ import Testing
         observedTerminal: "incomplete_on_injected_gap"
     )
     #expect(incomplete.claims.observedTerminal == "incomplete_on_injected_gap")
+    let timeout = try decodeLinuxVzHostEvidencePayload(
+        payload.canonicalJSON,
+        observedTerminal: "timeout_with_teardown"
+    )
+    #expect(timeout.claims.observedTerminal == "timeout_with_teardown")
     #expect(throws: LinuxVzHostEvidencePayloadError.invalidSchema) {
         try decodeLinuxVzHostEvidencePayload(
             payload.canonicalJSON,

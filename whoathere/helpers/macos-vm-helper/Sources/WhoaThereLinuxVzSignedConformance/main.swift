@@ -479,7 +479,7 @@ private struct LinuxVzSignedConformanceHarness {
             networkSourcePort = evidence.sourcePort
             networkFixtureCase = evidence.fixtureCase
             hostFrameTriggerCount = evidence.triggerCount
-        case "normal_exit":
+        case "normal_exit", "timeout":
             let evidence = try decodeLinuxVzTeardownEvidencePayloadV1(serialData)
             guard evidence.fixtureCase == runSpec.fixtureCase,
                   evidence.packageUID == UInt64(backend.packageUID),
@@ -522,7 +522,8 @@ private struct LinuxVzSignedConformanceHarness {
             runSpec.fixtureCase == "dns_plaintext" ||
             runSpec.fixtureCase == "dns_malformed" ||
             runSpec.fixtureCase == "encrypted_dns_connect" ||
-            runSpec.fixtureCase == "normal_exit" {
+            runSpec.fixtureCase == "normal_exit" ||
+            runSpec.fixtureCase == "timeout" {
             let missingProcessMarkers = linuxVzInertMissingRequiredEvidenceMarkersV2(serialData)
             let missingDoubleForkMarkers = runSpec.fixtureCase == "double_fork_daemonization"
                 ? linuxVzInertDoubleForkSensorMarkersV1.filter {
@@ -592,6 +593,10 @@ private struct LinuxVzSignedConformanceHarness {
                 ? linuxVzInertNormalExitSensorMarkersV1.filter {
                     !linuxVzInertSerialContainsExactMarker(serialData, marker: $0)
                 } : []
+            let missingTimeoutMarkers = runSpec.fixtureCase == "timeout"
+                ? linuxVzInertTimeoutSensorMarkersV1.filter {
+                    !linuxVzInertSerialContainsExactMarker(serialData, marker: $0)
+                } : []
             missingBaseMarkers = missingProcessMarkers + missingDoubleForkMarkers
                 + missingReparentingMarkers + missingSetsidMarkers + missingCredentialMarkers
                 + missingDynamicLibraryMarkers + missingIPv4Markers + missingIPv6Markers
@@ -601,6 +606,7 @@ private struct LinuxVzSignedConformanceHarness {
                 + missingDNSMalformedMarkers
                 + missingEncryptedDNSMarkers
                 + missingNormalExitMarkers
+                + missingTimeoutMarkers
         } else if runSpec.fixtureCase == "bpf_reservation_failure" {
             let missingCapabilities = linuxVzInertMissingCapabilityMarkers(serialData)
             let missingDropMarkers = linuxVzInertBPFReservationFailureSensorMarkersV1.filter {
@@ -841,10 +847,7 @@ private struct LinuxVzSignedConformanceHarness {
                 vmStopped: true,
                 cloneDestroyed: cloneDestroyed,
                 storageDeviceCount: UInt64(configuration.storageDevices.count),
-                observedTerminal: [
-                    "bpf_reservation_failure", "fanotify_queue_overflow", "host_frame_overflow"
-                ].contains(runSpec.fixtureCase)
-                    ? "incomplete_on_injected_gap" : "observation_complete"
+                observedTerminal: runSpec.expectedTerminal
             )
             hostEvidenceJSON = hostEvidence.canonicalJSON
             hostEvidencePayloadSHA256 = hostEvidence.payloadSHA256

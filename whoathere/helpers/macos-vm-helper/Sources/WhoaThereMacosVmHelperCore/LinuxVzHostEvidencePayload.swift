@@ -83,7 +83,8 @@ public func decodeLinuxVzHostEvidencePayload(
         throw LinuxVzHostEvidencePayloadError.nonCanonical
     }
     guard observedTerminal == "observation_complete"
-        || observedTerminal == "incomplete_on_injected_gap",
+        || observedTerminal == "incomplete_on_injected_gap"
+        || observedTerminal == "timeout_with_teardown",
     Set(value.keys) == Set([
         "clone_destroyed", "dropped_frame_count", "event_count", "event_sequence_end",
         "event_sequence_start", "events", "evidence_truncated", "external_frames_forwarded",

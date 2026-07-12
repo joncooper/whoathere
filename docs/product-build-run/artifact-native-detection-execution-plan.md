@@ -4,13 +4,14 @@ Date: 2026-07-09
 
 Status: canonical execution plan for the next product milestone
 
-Current execution checkpoint (2026-07-12): twenty-three of the 38 authenticated Linux VZ inert
-conformance cases now pass physically on one exact measured backend identity. The newest
-`normal_exit` case binds a natural status-0 exit, exact fork/exec/exit lineage, no deadline or
-signals, no remaining descendants, sensor closure, empty-and-removed cgroup, stopped VM, and
-destroyed diskless instance into independently verified guest and host receipts. This is still
-telemetry qualification, not package detection, and the backend remains `candidate_unqualified`.
-See the [normal-exit checkpoint](artifact-native-linux-vz-normal-exit-checkpoint-2026-07-12.md).
+Current execution checkpoint (2026-07-12): twenty-four of the 38 authenticated Linux VZ inert
+conformance cases now pass physically on one exact measured backend identity. The newest `timeout`
+case proves that the unprivileged fixture is still alive at the guest-monotonic deadline, delivers
+exactly one TERM signal, binds exact fork/exec/signal/exit lineage, requires no KILL, leaves no
+descendant, closes sensors, empties and removes the cgroup, stops the VM, and destroys the diskless
+instance. Independent guest and host receipts bind `timeout_with_teardown`. This is still telemetry
+qualification, not package detection, and the backend remains `candidate_unqualified`. See the
+[timeout checkpoint](artifact-native-linux-vz-timeout-checkpoint-2026-07-12.md).
 
 The first protected-sensor bootstrap now also observes a cgroup-filtered inert fork/exec/exit chain
 whose child runs as UID/GID 65534 and cannot read or write the root-only sensor. This remains
@@ -197,6 +198,15 @@ rerun physically, their request bytes matched locally, and every complete case p
 Rust verification on the new exact identity. Twenty-three of 38 cases now share one backend
 binding; 15 remain. See the
 [normal-exit checkpoint](artifact-native-linux-vz-normal-exit-checkpoint-2026-07-12.md).
+
+The `timeout` teardown case now proves that its exact unprivileged child remains alive when the
+guest-monotonic one-second deadline expires, then records exactly one TERM and no KILL in a strict
+fork/exec/signal/exit sequence. The launcher reaps the signaled child, proves no descendant remains,
+closes the protected sensor, empties and removes the cgroup, and only then emits canonical evidence.
+All twenty-four cases were run physically on the resulting exact identity; all 72 request inputs
+matched locally and every signed complete case passed independent Rust verification. Twenty-four of
+38 cases now share one backend binding; 14 remain. See the
+[timeout checkpoint](artifact-native-linux-vz-timeout-checkpoint-2026-07-12.md).
 
 Primary target: malicious npm and PyPI package detection with static analysis, AI-assisted code
 review, and behaviorally instrumented detonation in disposable virtual machines
@@ -1470,6 +1480,7 @@ Repository evidence:
 - [Linux VZ loopback-connect checkpoint](artifact-native-linux-vz-loopback-connect-checkpoint-2026-07-12.md)
 - [Linux VZ host-frame overflow checkpoint](artifact-native-linux-vz-host-frame-overflow-checkpoint-2026-07-12.md)
 - [Linux VZ normal-exit checkpoint](artifact-native-linux-vz-normal-exit-checkpoint-2026-07-12.md)
+- [Linux VZ timeout checkpoint](artifact-native-linux-vz-timeout-checkpoint-2026-07-12.md)
 - [macOS local release readiness](macos-local-release-readiness.md)
 - [macOS local beta pressure checkpoint](macos-local-beta-pressure-checkpoint.md)
 - [latest source-fixture corpus report](src-fixture-corpus-latest.md)

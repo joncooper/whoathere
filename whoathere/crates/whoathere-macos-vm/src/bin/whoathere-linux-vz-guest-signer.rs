@@ -33,8 +33,8 @@ mod linux {
         decode_linux_vz_network_evidence_from_serial_v1,
         decode_linux_vz_process_evidence_from_serial_v1,
         decode_linux_vz_teardown_evidence_from_serial_v1, encode_linux_vz_guest_signer_response_v1,
-        sign_macos_linux_vz_telemetry_guest_receipt_v1, LinuxVzTelemetryConformanceCaseV1,
-        LinuxVzTelemetryConformanceExpectedTerminalV1, MAX_LINUX_VZ_DROP_EVIDENCE_PAYLOAD_BYTES_V1,
+        expected_terminal_for_case_v1, sign_macos_linux_vz_telemetry_guest_receipt_v1,
+        LinuxVzTelemetryConformanceCaseV1, MAX_LINUX_VZ_DROP_EVIDENCE_PAYLOAD_BYTES_V1,
         MAX_LINUX_VZ_FANOTIFY_OVERFLOW_EVIDENCE_PAYLOAD_BYTES_V1,
         MAX_LINUX_VZ_FILE_EVIDENCE_PAYLOAD_BYTES_V1,
         MAX_LINUX_VZ_GUEST_SIGNER_REQUEST_FRAME_BYTES_V1,
@@ -135,15 +135,9 @@ mod linux {
                 | LinuxVzTelemetryConformanceCaseV1::FanotifyQueueOverflow
                 | LinuxVzTelemetryConformanceCaseV1::HostFrameOverflow
                 | LinuxVzTelemetryConformanceCaseV1::NormalExit
+                | LinuxVzTelemetryConformanceCaseV1::Timeout
         ) || run_spec.expected_terminal()
-            != match run_spec.fixture_case() {
-                LinuxVzTelemetryConformanceCaseV1::BpfReservationFailure
-                | LinuxVzTelemetryConformanceCaseV1::FanotifyQueueOverflow
-                | LinuxVzTelemetryConformanceCaseV1::HostFrameOverflow => {
-                    LinuxVzTelemetryConformanceExpectedTerminalV1::IncompleteOnInjectedGap
-                }
-                _ => LinuxVzTelemetryConformanceExpectedTerminalV1::ObservationComplete,
-            }
+            != expected_terminal_for_case_v1(run_spec.fixture_case())
             || run_spec.package_execution_authority_permitted()
         {
             return Err("guest_signer_run_spec_not_supported_inert_case".into());
@@ -187,6 +181,7 @@ mod linux {
             LinuxVzTelemetryConformanceCaseV1::FanotifyQueueOverflow => "fanotify_queue_overflow",
             LinuxVzTelemetryConformanceCaseV1::HostFrameOverflow => "host_frame_overflow",
             LinuxVzTelemetryConformanceCaseV1::NormalExit => "normal_exit",
+            LinuxVzTelemetryConformanceCaseV1::Timeout => "timeout",
             _ => return Err("guest_signer_run_spec_not_supported_inert_case".into()),
         };
         let mut child = Command::new(SENSOR_PATH)
@@ -297,7 +292,8 @@ mod linux {
                     evidence.guest_observation_claims_v1()?,
                 )
             }
-            LinuxVzTelemetryConformanceCaseV1::NormalExit => {
+            LinuxVzTelemetryConformanceCaseV1::NormalExit
+            | LinuxVzTelemetryConformanceCaseV1::Timeout => {
                 let evidence = decode_linux_vz_teardown_evidence_from_serial_v1(&sensor_output)?;
                 if evidence.fixture_case() != run_spec.fixture_case() {
                     return Err("guest_signer_teardown_case_mismatch".into());
