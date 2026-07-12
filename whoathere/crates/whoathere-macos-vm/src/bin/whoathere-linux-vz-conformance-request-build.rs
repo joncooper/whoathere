@@ -59,6 +59,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "escaped_session" => LinuxVzTelemetryConformanceCaseV1::EscapedSession,
         "reparented_child" => LinuxVzTelemetryConformanceCaseV1::ReparentedChild,
         "background_listener" => LinuxVzTelemetryConformanceCaseV1::BackgroundListener,
+        "channel_interruption" => LinuxVzTelemetryConformanceCaseV1::ChannelInterruption,
         _ => return Err("request builder fixture case is not implemented".into()),
     };
     let output_directory = Path::new(&arguments[5]);

@@ -218,6 +218,12 @@ public let linuxVzInertBackgroundListenerSensorMarkersV1 = [
     "WHOATHERE_SENSOR teardown_terminal=timeout_with_teardown"
 ]
 
+public let linuxVzInertChannelInterruptionMarkersV1 = [
+    "WHOATHERE_GUEST_SIGNER_FAILED reason=linux_vz_guest_signer_transport_length_invalid",
+    "WHOATHERE_CAPABILITY guest_receipt_signing=failed",
+    "WHOATHERE_LINUX_VZ_SIGNED_INERT_FAILED"
+]
+
 public let linuxVzInertRequiredEvidenceMarkersV2 =
     linuxVzInertRequiredCapabilityMarkersV1 + linuxVzInertProcessSensorMarkersV2
 

@@ -43,6 +43,89 @@ import Testing
     }
 }
 
+@Test func linuxVzChannelInterruptionAcceptsHostOnlyInfrastructureTeardown() throws {
+    var runValue = try linuxVzConformanceFixture(
+        runID: "linux-vz-channel-interruption-run",
+        evidenceID: "linux-vz-channel-interruption-evidence"
+    )
+    runValue["fixture_case"] = "channel_interruption"
+    runValue["fixture"] = "teardown_stress"
+    runValue["expected_terminal"] = "infrastructure_error_with_teardown"
+    runValue["expected_sensors"] = linuxVzConformanceExpectedSensors("teardown_stress")
+    let runSpec = try decodeLinuxVzTelemetryConformanceRunSpec(
+        try canonicalJSONData(runValue)
+    )
+    let backendValue = try #require(runValue["backend_identity"] as? [String: Any])
+    let requirementsSHA256 = try #require(
+        runValue["telemetry_requirements_sha256"] as? String
+    )
+    let backend = try decodeUnqualifiedLinuxVzTelemetryBackendIdentity(
+        try canonicalJSONData(backendValue),
+        expectedTelemetryRequirementsSHA256: requirementsSHA256
+    )
+    let challenge = try decodeLinuxVzTelemetryConformanceChallenge(
+        try canonicalJSONData([
+            "schema_version": linuxVzTelemetryConformanceChallengeSchemaV1,
+            "nonce_hex": String(repeating: "71", count: 32),
+            "challenge_purpose": "trusted_inert_telemetry_conformance_only",
+            "run_spec_sha256": runSpec.runSpecSHA256,
+            "backend_identity_sha256": backend.identitySHA256,
+            "telemetry_requirements_sha256": requirementsSHA256,
+            "clone_binding_sha256": sha256(Data("channel interruption clone".utf8)),
+            "guest_evidence_public_key_sha256": backend.guestEvidencePublicKeySHA256,
+            "host_evidence_public_key_sha256": backend.hostEvidencePublicKeySHA256,
+            "package_execution": "disabled",
+            "sync_back_policy": "structurally_absent"
+        ]),
+        expectedRunSpec: runSpec,
+        expectedBackend: backend
+    )
+    let host = VerifiedLinuxVzTelemetryHostReceipt(
+        challengeSHA256: challenge.challengeSHA256,
+        observedSensors: linuxVzConformanceExpectedHostSensors(runSpec),
+        claims: LinuxVzTelemetryHostObservationClaims(
+            evidencePayloadSHA256: sha256(Data("channel host evidence".utf8)),
+            evidenceByteLength: 512,
+            eventSequenceStart: 1,
+            eventSequenceEnd: 6,
+            eventCount: 6,
+            heartbeatCount: 2,
+            droppedFrameCount: 0,
+            packetSensorHealthy: true,
+            evidenceTruncated: false,
+            guestChannelTerminated: true,
+            vmStarted: true,
+            vmStopped: true,
+            cloneDestroyed: true,
+            externalFramesForwarded: 0,
+            observedTerminal: "infrastructure_error_with_teardown"
+        )
+    )
+    let complete = try verifyLinuxVzObservationCompleteConformanceCase(
+        challenge: challenge,
+        runSpec: runSpec,
+        backend: backend,
+        guest: nil,
+        host: host
+    )
+    #expect(!complete.guestReceiptPresent)
+    #expect(complete.hostReceiptPresent)
+
+    let observationRunValue = try linuxVzConformanceFixture()
+    let observationRun = try decodeLinuxVzTelemetryConformanceRunSpec(
+        try canonicalJSONData(observationRunValue)
+    )
+    #expect(throws: LinuxVzTelemetryConformanceEvidenceError.invalidReceipt) {
+        try verifyLinuxVzObservationCompleteConformanceCase(
+            challenge: challenge,
+            runSpec: observationRun,
+            backend: backend,
+            guest: nil,
+            host: host
+        )
+    }
+}
+
 @Test func linuxVzConformanceChallengeMatchesRustAndRejectsRebinding() throws {
     let runValue = try linuxVzConformanceFixture(
         runID: "linux-vz-conformance-run-challenge-golden",

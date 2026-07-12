@@ -41,6 +41,14 @@ pub struct LinuxVzHostEvidencePayloadV1 {
     canonical_json: Vec<u8>,
     payload_sha256: Sha256Digest,
     raw_frame_count: u64,
+    channel_interruption: Option<LinuxVzChannelInterruptionEvidenceV1>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinuxVzChannelInterruptionEvidenceV1 {
+    request_frame_bytes: u64,
+    transmitted_prefix_bytes: u64,
+    response_bytes: u64,
 }
 
 impl LinuxVzHostEvidencePayloadV1 {
@@ -54,6 +62,10 @@ impl LinuxVzHostEvidencePayloadV1 {
 
     pub fn raw_frame_count(&self) -> u64 {
         self.raw_frame_count
+    }
+
+    pub fn channel_interruption(&self) -> Option<&LinuxVzChannelInterruptionEvidenceV1> {
+        self.channel_interruption.as_ref()
     }
 
     pub fn host_observation_claims_v1(
@@ -88,9 +100,31 @@ impl LinuxVzHostEvidencePayloadV1 {
     }
 }
 
+impl LinuxVzChannelInterruptionEvidenceV1 {
+    pub fn request_frame_bytes(&self) -> u64 {
+        self.request_frame_bytes
+    }
+
+    pub fn transmitted_prefix_bytes(&self) -> u64 {
+        self.transmitted_prefix_bytes
+    }
+
+    pub fn response_bytes(&self) -> u64 {
+        self.response_bytes
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct HostEvidenceWireV1 {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    channel_interruption_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    channel_request_frame_bytes: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    channel_response_bytes: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    channel_transmitted_prefix_bytes: Option<String>,
     clone_destroyed: bool,
     dropped_frame_count: String,
     event_count: String,
@@ -142,6 +176,33 @@ pub fn decode_linux_vz_host_evidence_payload_v1(
         return Err(LinuxVzHostEvidencePayloadErrorV1::NonCanonical);
     }
     let raw_frame_count = decimal_u64_v1(&wire.raw_frame_count)?;
+    let channel_interruption = match (
+        wire.channel_interruption_kind.as_deref(),
+        wire.channel_request_frame_bytes.as_deref(),
+        wire.channel_response_bytes.as_deref(),
+        wire.channel_transmitted_prefix_bytes.as_deref(),
+    ) {
+        (None, None, None, None) => None,
+        (
+            Some("host_write_half_close_after_request_header"),
+            Some(request_frame_bytes),
+            Some(response_bytes),
+            Some(transmitted_prefix_bytes),
+        ) => {
+            let request_frame_bytes = decimal_u64_v1(request_frame_bytes)?;
+            let response_bytes = decimal_u64_v1(response_bytes)?;
+            let transmitted_prefix_bytes = decimal_u64_v1(transmitted_prefix_bytes)?;
+            if request_frame_bytes <= 16 || transmitted_prefix_bytes != 16 || response_bytes != 0 {
+                return Err(LinuxVzHostEvidencePayloadErrorV1::InvalidSchema);
+            }
+            Some(LinuxVzChannelInterruptionEvidenceV1 {
+                request_frame_bytes,
+                transmitted_prefix_bytes,
+                response_bytes,
+            })
+        }
+        _ => return Err(LinuxVzHostEvidencePayloadErrorV1::InvalidSchema),
+    };
     if wire.schema_version != LINUX_VZ_HOST_EVIDENCE_PAYLOAD_SCHEMA_V1
         || decimal_u64_v1(&wire.event_sequence_start)? != 1
         || decimal_u64_v1(&wire.event_sequence_end)? != 6
@@ -185,6 +246,7 @@ pub fn decode_linux_vz_host_evidence_payload_v1(
         canonical_json: canonical,
         payload_sha256: Sha256Digest::from_bytes(payload),
         raw_frame_count,
+        channel_interruption,
     })
 }
 
@@ -238,6 +300,17 @@ mod tests {
         .expect("canonical host payload")
     }
 
+    fn canonical_channel_interruption_payload() -> Vec<u8> {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&canonical_payload()).expect("host JSON");
+        value["channel_interruption_kind"] =
+            serde_json::json!("host_write_half_close_after_request_header");
+        value["channel_request_frame_bytes"] = serde_json::json!("5082");
+        value["channel_response_bytes"] = serde_json::json!("0");
+        value["channel_transmitted_prefix_bytes"] = serde_json::json!("16");
+        serde_json_canonicalizer::to_vec(&value).expect("channel interruption host payload")
+    }
+
     #[test]
     fn exact_inert_host_payload_derives_strict_claims() {
         let bytes = canonical_payload();
@@ -280,5 +353,44 @@ mod tests {
             decode_linux_vz_host_evidence_payload_v1(&changed),
             Err(LinuxVzHostEvidencePayloadErrorV1::InvalidSchema)
         );
+    }
+
+    #[test]
+    fn channel_interruption_binds_exact_header_prefix_and_zero_response() {
+        let payload =
+            decode_linux_vz_host_evidence_payload_v1(&canonical_channel_interruption_payload())
+                .expect("channel interruption payload");
+        let interruption = payload
+            .channel_interruption()
+            .expect("channel interruption evidence");
+        assert_eq!(interruption.request_frame_bytes(), 5082);
+        assert_eq!(interruption.transmitted_prefix_bytes(), 16);
+        assert_eq!(interruption.response_bytes(), 0);
+    }
+
+    #[test]
+    fn channel_interruption_rejects_partial_and_rebound_claims() {
+        for (field, changed) in [
+            ("channel_request_frame_bytes", serde_json::json!("16")),
+            ("channel_transmitted_prefix_bytes", serde_json::json!("15")),
+            ("channel_response_bytes", serde_json::json!("1")),
+            (
+                "channel_interruption_kind",
+                serde_json::json!("socket_closed"),
+            ),
+        ] {
+            let mut value: serde_json::Value =
+                serde_json::from_slice(&canonical_channel_interruption_payload())
+                    .expect("channel host JSON");
+            value[field] = changed;
+            let bytes = serde_json_canonicalizer::to_vec(&value).expect("changed host JSON");
+            assert!(decode_linux_vz_host_evidence_payload_v1(&bytes).is_err());
+        }
+        let mut partial: serde_json::Value =
+            serde_json::from_slice(&canonical_payload()).expect("host JSON");
+        partial["channel_interruption_kind"] =
+            serde_json::json!("host_write_half_close_after_request_header");
+        let bytes = serde_json_canonicalizer::to_vec(&partial).expect("partial host JSON");
+        assert!(decode_linux_vz_host_evidence_payload_v1(&bytes).is_err());
     }
 }

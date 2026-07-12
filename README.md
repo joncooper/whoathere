@@ -36,11 +36,12 @@ Current claim boundary:
 This is useful security tooling, not a promise that arbitrary packages are safe.
 
 The artifact-native detection build is now exercising a separately measured Linux VM backend. Its
-first twenty-eight physical inert guest-plus-host conformance cases passed on one measured identity
-with authenticated process, file, packet/lifecycle, natural-exit, timeout-teardown, and background-
-listener cleanup evidence, but the backend is still unqualified until all 38 closed cases pass.
+first twenty-nine physical inert guest-plus-host conformance cases passed on one measured identity
+with authenticated process, file, packet/lifecycle, timeout-teardown, background-listener cleanup,
+and interrupted-evidence-channel handling, but the backend is still unqualified until all 38 closed
+cases pass.
 See the [execution plan](docs/product-build-run/artifact-native-detection-execution-plan.md) and
-[background-listener checkpoint](docs/product-build-run/artifact-native-linux-vz-background-listener-checkpoint-2026-07-12.md).
+[channel-interruption checkpoint](docs/product-build-run/artifact-native-linux-vz-channel-interruption-checkpoint-2026-07-12.md).
 
 ## Actual Malware Experiment
 

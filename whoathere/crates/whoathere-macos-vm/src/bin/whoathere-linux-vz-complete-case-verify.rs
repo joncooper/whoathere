@@ -1,4 +1,4 @@
-use std::fs::OpenOptions;
+use std::fs::{self, OpenOptions};
 use std::io::Read;
 use std::os::unix::fs::OpenOptionsExt;
 use whoathere_artifact::Sha256Digest;
@@ -16,7 +16,7 @@ use whoathere_macos_vm::{
     decode_linux_vz_process_evidence_from_serial_v1,
     decode_linux_vz_teardown_evidence_from_serial_v1,
     decode_unqualified_macos_linux_vz_telemetry_backend_identity_v1,
-    verify_macos_linux_vz_telemetry_conformance_case_v1,
+    encode_linux_vz_guest_signer_request_v1, verify_macos_linux_vz_telemetry_conformance_case_v1,
     verify_macos_linux_vz_telemetry_guest_receipt_v1,
     verify_macos_linux_vz_telemetry_host_receipt_v1, LinuxVzTelemetryConformanceCaseV1,
     LinuxVzTelemetryConformanceObservedTerminalV1, MAX_LINUX_VZ_HOST_EVIDENCE_PAYLOAD_BYTES_V1,
@@ -52,10 +52,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let guest_public_key = exact_key(&arguments[4])?;
     let host_public_key = exact_key(&arguments[5])?;
     let serial = read_bounded(&arguments[6], 1024 * 1024)?;
-    let guest_receipt = read_bounded(
-        &arguments[7],
-        MAX_MACOS_LINUX_VZ_TELEMETRY_CONFORMANCE_EVIDENCE_BYTES_V1 as u64,
-    )?;
     let host_evidence = read_bounded(
         &arguments[8],
         MAX_LINUX_VZ_HOST_EVIDENCE_PAYLOAD_BYTES_V1 as u64,
@@ -67,6 +63,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let requirements = ArtifactProtectedTelemetryRequirementsV1::linux_vz_bulk_v1();
     let run_spec =
         decode_and_validate_macos_linux_vz_telemetry_conformance_run_spec_v1(&run_spec_bytes)?;
+    let channel_interruption =
+        run_spec.fixture_case() == LinuxVzTelemetryConformanceCaseV1::ChannelInterruption;
+    let guest_receipt = if channel_interruption {
+        require_absent(&arguments[7])?;
+        None
+    } else {
+        Some(read_bounded(
+            &arguments[7],
+            MAX_MACOS_LINUX_VZ_TELEMETRY_CONFORMANCE_EVIDENCE_BYTES_V1 as u64,
+        )?)
+    };
     let fixture_case = match run_spec.fixture_case() {
         LinuxVzTelemetryConformanceCaseV1::ForkExecExit => "fork_exec_exit",
         LinuxVzTelemetryConformanceCaseV1::Reparenting => "reparenting",
@@ -98,6 +105,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         LinuxVzTelemetryConformanceCaseV1::EscapedSession => "escaped_session",
         LinuxVzTelemetryConformanceCaseV1::ReparentedChild => "reparented_child",
         LinuxVzTelemetryConformanceCaseV1::BackgroundListener => "background_listener",
+        LinuxVzTelemetryConformanceCaseV1::ChannelInterruption => "channel_interruption",
         _ => return Err("complete-case verifier does not implement this inert case".into()),
     };
     let backend = decode_unqualified_macos_linux_vz_telemetry_backend_identity_v1(
@@ -109,8 +117,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         &run_spec,
         &backend,
     )?;
-    let (guest_evidence_payload_sha256, guest_claims, guest_source_port) =
-        match run_spec.fixture_case() {
+    let guest_observation = if channel_interruption {
+        validate_channel_interruption_serial(&serial)?;
+        None
+    } else {
+        Some(match run_spec.fixture_case() {
             LinuxVzTelemetryConformanceCaseV1::ForkExecExit
             | LinuxVzTelemetryConformanceCaseV1::Reparenting
             | LinuxVzTelemetryConformanceCaseV1::DoubleForkDaemonization
@@ -232,15 +243,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 )
             }
             _ => return Err("complete-case verifier does not implement this inert case".into()),
-        };
-    let verified_guest = verify_macos_linux_vz_telemetry_guest_receipt_v1(
-        &challenge,
-        &run_spec,
-        &backend,
-        &guest_receipt,
-        guest_public_key,
-        &guest_claims,
-    )?;
+        })
+    };
+    let verified_guest = match (&guest_observation, guest_receipt.as_deref()) {
+        (Some((_, claims, _)), Some(receipt)) => {
+            Some(verify_macos_linux_vz_telemetry_guest_receipt_v1(
+                &challenge,
+                &run_spec,
+                &backend,
+                receipt,
+                guest_public_key,
+                claims,
+            )?)
+        }
+        (None, None) => None,
+        _ => return Err("guest receipt presence does not match fixture contract".into()),
+    };
+    let guest_source_port = guest_observation
+        .as_ref()
+        .and_then(|(_, _, source_port)| *source_port);
     let (host_evidence_payload_sha256, host_claims) =
         if run_spec.fixture_case() == LinuxVzTelemetryConformanceCaseV1::HostFrameOverflow {
             let evidence =
@@ -277,6 +298,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             )
         } else {
             let evidence = decode_linux_vz_host_evidence_payload_v1(&host_evidence)?;
+            if channel_interruption {
+                let interruption = evidence
+                    .channel_interruption()
+                    .ok_or("channel interruption evidence is absent")?;
+                let expected_request_bytes =
+                    encode_linux_vz_guest_signer_request_v1(&run_spec_bytes, &challenge_bytes)?
+                        .len() as u64;
+                if interruption.request_frame_bytes() != expected_request_bytes
+                    || interruption.transmitted_prefix_bytes() != 16
+                    || interruption.response_bytes() != 0
+                {
+                    return Err("channel interruption evidence is rebound".into());
+                }
+            } else if evidence.channel_interruption().is_some() {
+                return Err("unexpected channel interruption evidence".into());
+            }
             let terminal = if matches!(
                 run_spec.fixture_case(),
                 LinuxVzTelemetryConformanceCaseV1::BpfReservationFailure
@@ -293,6 +330,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     | LinuxVzTelemetryConformanceCaseV1::BackgroundListener
             ) {
                 LinuxVzTelemetryConformanceObservedTerminalV1::TimeoutWithTeardown
+            } else if channel_interruption {
+                LinuxVzTelemetryConformanceObservedTerminalV1::InfrastructureErrorWithTeardown
             } else {
                 LinuxVzTelemetryConformanceObservedTerminalV1::ObservationComplete
             };
@@ -312,26 +351,97 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let verified_case = verify_macos_linux_vz_telemetry_conformance_case_v1(
         &challenge,
         &run_spec,
-        Some(&verified_guest),
+        verified_guest.as_ref(),
         &verified_host,
     )?;
     if verified_case.package_execution_authority_permitted()
-        || !verified_case.guest_receipt_present()
+        || verified_case.guest_receipt_present() == channel_interruption
     {
         return Err("complete case unexpectedly grants execution authority".into());
     }
-    println!(
-        "{{\"backend_identity_sha256\":\"{}\",\"challenge_sha256\":\"{}\",\"complete_conformance_case_verified\":true,\"execution_authority\":false,\"fixture_case\":\"{}\",\"guest_evidence_payload_sha256\":\"{}\",\"guest_receipt_sha256\":\"{}\",\"host_evidence_payload_sha256\":\"{}\",\"host_receipt_sha256\":\"{}\",\"package_execution\":false,\"run_spec_sha256\":\"{}\",\"schema_version\":\"whoathere.linux_vz_complete_case_verification.v1\",\"sync_back\":false}}",
-        backend.identity_sha256_v1()?,
-        challenge.challenge_sha256(),
-        fixture_case,
-        guest_evidence_payload_sha256,
-        Sha256Digest::from_bytes(&guest_receipt),
-        host_evidence_payload_sha256,
-        Sha256Digest::from_bytes(&host_receipt),
-        run_spec.run_spec_sha256(),
-    );
+    if channel_interruption {
+        println!(
+            "{{\"backend_identity_sha256\":\"{}\",\"challenge_sha256\":\"{}\",\"complete_conformance_case_verified\":true,\"execution_authority\":false,\"fixture_case\":\"{}\",\"guest_receipt_present\":false,\"host_evidence_payload_sha256\":\"{}\",\"host_receipt_sha256\":\"{}\",\"package_execution\":false,\"run_spec_sha256\":\"{}\",\"schema_version\":\"whoathere.linux_vz_complete_case_verification.v1\",\"sync_back\":false}}",
+            backend.identity_sha256_v1()?,
+            challenge.challenge_sha256(),
+            fixture_case,
+            host_evidence_payload_sha256,
+            Sha256Digest::from_bytes(&host_receipt),
+            run_spec.run_spec_sha256(),
+        );
+    } else {
+        let (guest_evidence_payload_sha256, _, _) = guest_observation
+            .as_ref()
+            .ok_or("guest observation unexpectedly absent")?;
+        let guest_receipt = guest_receipt
+            .as_deref()
+            .ok_or("guest receipt unexpectedly absent")?;
+        println!(
+            "{{\"backend_identity_sha256\":\"{}\",\"challenge_sha256\":\"{}\",\"complete_conformance_case_verified\":true,\"execution_authority\":false,\"fixture_case\":\"{}\",\"guest_evidence_payload_sha256\":\"{}\",\"guest_receipt_sha256\":\"{}\",\"host_evidence_payload_sha256\":\"{}\",\"host_receipt_sha256\":\"{}\",\"package_execution\":false,\"run_spec_sha256\":\"{}\",\"schema_version\":\"whoathere.linux_vz_complete_case_verification.v1\",\"sync_back\":false}}",
+            backend.identity_sha256_v1()?,
+            challenge.challenge_sha256(),
+            fixture_case,
+            guest_evidence_payload_sha256,
+            Sha256Digest::from_bytes(guest_receipt),
+            host_evidence_payload_sha256,
+            Sha256Digest::from_bytes(&host_receipt),
+            run_spec.run_spec_sha256(),
+        );
+    }
     Ok(())
+}
+
+fn validate_channel_interruption_serial(serial: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+    let lines = serial
+        .split(|byte| *byte == b'\n')
+        .map(|line| line.strip_suffix(b"\r").unwrap_or(line))
+        .collect::<Vec<_>>();
+    let required: &[&[u8]] = &[
+        b"WHOATHERE_LINUX_VZ_SIGNED_INERT_BEGIN",
+        b"WHOATHERE_CAPABILITY kernel_release=6.18.35-0-virt",
+        b"WHOATHERE_CAPABILITY architecture=aarch64",
+        b"WHOATHERE_CAPABILITY kernel_btf=present",
+        b"WHOATHERE_CAPABILITY kernel_btf_sha256=sha256:d7f143446e11cfd67fa53392616afdbca6511a6af432e6bd56fb053aa4e7becb",
+        b"WHOATHERE_CAPABILITY cgroup_v2=mounted",
+        b"WHOATHERE_CAPABILITY bpf_fs=mounted",
+        b"WHOATHERE_CAPABILITY fanotify_init=available",
+        b"WHOATHERE_CAPABILITY bpf_program_load=available",
+        b"WHOATHERE_CAPABILITY syscall_probe=passed",
+        b"WHOATHERE_CAPABILITY virtio_vsock=loaded",
+        b"WHOATHERE_CAPABILITY virtio_net=loaded",
+        b"WHOATHERE_GUEST_SIGNER_READY port=40551",
+        b"WHOATHERE_GUEST_SIGNER_FAILED reason=linux_vz_guest_signer_transport_length_invalid",
+        b"WHOATHERE_CAPABILITY guest_receipt_signing=failed",
+        b"WHOATHERE_CAPABILITY external_route_configured=false",
+        b"WHOATHERE_CAPABILITY package_execution=false",
+        b"WHOATHERE_CAPABILITY sync_back=false",
+        b"WHOATHERE_LINUX_VZ_SIGNED_INERT_FAILED",
+    ];
+    if required
+        .iter()
+        .any(|required_line| !lines.iter().any(|line| line == required_line))
+        || lines.iter().any(|line| {
+            *line == b"WHOATHERE_CAPABILITY guest_receipt_signing=passed"
+                || *line == b"WHOATHERE_LINUX_VZ_SIGNED_INERT_OK"
+                || line.starts_with(b"WHOATHERE_SENSOR")
+                || line.starts_with(b"WHOATHERE_GUEST_PROCESS_EVIDENCE ")
+                || line.starts_with(b"WHOATHERE_GUEST_FILE_EVIDENCE ")
+                || line.starts_with(b"WHOATHERE_GUEST_NETWORK_EVIDENCE ")
+                || line.starts_with(b"WHOATHERE_GUEST_TEARDOWN_EVIDENCE ")
+                || line.starts_with(b"WHOATHERE_GUEST_SIGNER_RECEIPT_OK ")
+        })
+    {
+        return Err("channel interruption serial evidence is incomplete or contradictory".into());
+    }
+    Ok(())
+}
+
+fn require_absent(path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+        Ok(_) => Err("guest receipt path must be absent for this fixture".into()),
+    }
 }
 
 fn exact_key(path: &str) -> Result<[u8; 32], Box<dyn std::error::Error>> {
@@ -355,4 +465,53 @@ fn read_bounded(path: &str, maximum: u64) -> Result<Vec<u8>, Box<dyn std::error:
         return Err("input is not a bounded regular non-symlink file".into());
     }
     Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_channel_interruption_serial;
+
+    const CHANNEL_SERIAL: &str = "WHOATHERE_LINUX_VZ_SIGNED_INERT_BEGIN\n\
+WHOATHERE_CAPABILITY kernel_release=6.18.35-0-virt\n\
+WHOATHERE_CAPABILITY architecture=aarch64\n\
+WHOATHERE_CAPABILITY kernel_btf=present\n\
+WHOATHERE_CAPABILITY kernel_btf_sha256=sha256:d7f143446e11cfd67fa53392616afdbca6511a6af432e6bd56fb053aa4e7becb\n\
+WHOATHERE_CAPABILITY cgroup_v2=mounted\n\
+WHOATHERE_CAPABILITY bpf_fs=mounted\n\
+WHOATHERE_CAPABILITY fanotify_init=available\n\
+WHOATHERE_CAPABILITY bpf_program_load=available\n\
+WHOATHERE_CAPABILITY syscall_probe=passed\n\
+WHOATHERE_CAPABILITY virtio_vsock=loaded\n\
+WHOATHERE_CAPABILITY virtio_net=loaded\n\
+WHOATHERE_GUEST_SIGNER_READY port=40551\n\
+WHOATHERE_GUEST_SIGNER_FAILED reason=linux_vz_guest_signer_transport_length_invalid\n\
+WHOATHERE_CAPABILITY guest_receipt_signing=failed\n\
+WHOATHERE_CAPABILITY external_route_configured=false\n\
+WHOATHERE_CAPABILITY package_execution=false\n\
+WHOATHERE_CAPABILITY sync_back=false\n\
+WHOATHERE_LINUX_VZ_SIGNED_INERT_FAILED\n";
+
+    #[test]
+    fn channel_interruption_serial_requires_exact_failure_without_evidence() {
+        validate_channel_interruption_serial(CHANNEL_SERIAL.as_bytes()).unwrap();
+        assert!(validate_channel_interruption_serial(
+            CHANNEL_SERIAL
+                .replace(
+                    "WHOATHERE_CAPABILITY guest_receipt_signing=failed\n",
+                    "WHOATHERE_CAPABILITY guest_receipt_signing=passed\n",
+                )
+                .as_bytes(),
+        )
+        .is_err());
+        assert!(validate_channel_interruption_serial(
+            format!("{CHANNEL_SERIAL}WHOATHERE_SENSOR process_exec=observed\n").as_bytes(),
+        )
+        .is_err());
+        assert!(validate_channel_interruption_serial(
+            CHANNEL_SERIAL
+                .replace("WHOATHERE_GUEST_SIGNER_FAILED reason=linux_vz_guest_signer_transport_length_invalid\n", "")
+                .as_bytes(),
+        )
+        .is_err());
+    }
 }

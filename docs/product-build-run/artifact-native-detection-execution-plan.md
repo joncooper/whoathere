@@ -4,15 +4,15 @@ Date: 2026-07-09
 
 Status: canonical execution plan for the next product milestone
 
-Current execution checkpoint (2026-07-12): twenty-eight of the 38 authenticated Linux VZ inert
+Current execution checkpoint (2026-07-12): twenty-nine of the 38 authenticated Linux VZ inert
 conformance cases now pass physically on one exact measured backend identity. The newest
-`background_listener` case proves that an adopted unprivileged descendant owns one exact loopback
-TCP listener through the guest deadline, is TERM-signaled and reaped, and leaves that listener,
-descendant set, and measured cgroup absent. Strict exec/fork/reparent/listener/TERM/exit lineage,
-two exact reaps, sensor closure, stopped VM, and destroyed diskless instance are bound by
-independent guest and host receipts. This is still telemetry qualification, not package detection,
-and the backend remains `candidate_unqualified`. See the
-[background-listener checkpoint](artifact-native-linux-vz-background-listener-checkpoint-2026-07-12.md).
+`channel_interruption` case proves that the host can send only the valid 16-byte request header,
+half-close the evidence channel, receive zero response bytes and no guest receipt, and still produce
+a challenge-bound host receipt for the naturally stopped VM and destroyed diskless instance. The
+guest rejects the declared-but-missing request bodies before decoding a run spec or launching a
+fixture. This is still telemetry qualification, not package detection, and the backend remains
+`candidate_unqualified`. See the
+[channel-interruption checkpoint](artifact-native-linux-vz-channel-interruption-checkpoint-2026-07-12.md).
 
 The first protected-sensor bootstrap now also observes a cgroup-filtered inert fork/exec/exit chain
 whose child runs as UID/GID 65534 and cannot read or write the root-only sensor. This remains
@@ -244,6 +244,17 @@ All twenty-eight cases ran physically on the resulting identity; all 84 request 
 locally and every complete case passed independent Rust verification. Twenty-eight of 38 cases now
 share one backend binding; 10 remain. See the
 [background-listener checkpoint](artifact-native-linux-vz-background-listener-checkpoint-2026-07-12.md).
+
+The `channel_interruption` teardown case now proves a host-injected evidence transport fault. The
+host writes only the valid 16-byte frame header from a 5,165-byte identity-bound request and then
+half-closes its write side. The guest records an exact transport-length failure before run-spec
+decode or fixture launch, returns zero bytes, emits no evidence or receipt, and powers off. The
+signed host payload binds the full-frame size, prefix length, zero response, channel termination,
+healthy zero-frame sensing, stopped VM, and destroyed diskless clone. All twenty-nine cases ran
+physically on the resulting identity; all 87 request inputs matched locally and every complete case
+passed independent Rust verification. Twenty-nine of 38 cases now share one backend binding; 9
+remain. See the
+[channel-interruption checkpoint](artifact-native-linux-vz-channel-interruption-checkpoint-2026-07-12.md).
 
 Primary target: malicious npm and PyPI package detection with static analysis, AI-assisted code
 review, and behaviorally instrumented detonation in disposable virtual machines
