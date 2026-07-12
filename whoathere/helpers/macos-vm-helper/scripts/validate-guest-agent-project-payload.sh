@@ -127,6 +127,39 @@ int main(void) {
     assert(length > 0 && (size_t)length < sizeof(expected_path));
     assert(path_exists(expected_path));
 
+    char telemetry_control[512];
+    assert(write_runtime_telemetry_files(workspace, telemetry_control, sizeof(telemetry_control)) == 0);
+    struct command_result clean_result = run_shell_fixture_with_boundary(
+        workspace,
+        telemetry_control,
+        getuid(),
+        getgid(),
+        0,
+        "python3 -c 'pass'",
+        10
+    );
+    assert(clean_result.exit_code == 0);
+    assert(clean_result.runtime_network_telemetry_active == 1);
+    assert(clean_result.network_telemetry_events == 0);
+    assert(clean_result.process_group_cleanup_enforced == 1);
+
+    char network_template[] = "/tmp/whoathere-network-telemetry-fixture.XXXXXX";
+    char *network_workspace = mkdtemp(network_template);
+    assert(network_workspace != NULL);
+    assert(write_runtime_telemetry_files(network_workspace, telemetry_control, sizeof(telemetry_control)) == 0);
+    struct command_result network_result = run_shell_fixture_with_boundary(
+        network_workspace,
+        telemetry_control,
+        getuid(),
+        getgid(),
+        0,
+        "python3 -c 'import socket; socket.getaddrinfo(\"payload.example\", 443)'",
+        10
+    );
+    assert(network_result.runtime_network_telemetry_active == 1);
+    assert(network_result.network_telemetry_events > 0);
+    assert(network_result.process_group_cleanup_enforced == 1);
+
     return 0;
 }
 EOF

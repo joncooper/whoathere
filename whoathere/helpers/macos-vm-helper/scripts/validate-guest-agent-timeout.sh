@@ -29,6 +29,7 @@ int main(void) {
     struct command_result result = run_shell_fixture(workspace, "sleep 10", 5);
     assert(result.timed_out == 1);
     assert(result.exit_code == 124);
+    assert(result.process_group_cleanup_enforced == 1);
     return 0;
 }
 EOF

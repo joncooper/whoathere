@@ -145,8 +145,12 @@ cd guest-agent
 cc -O2 -Wall -Wextra -o whoathere-guest-ready whoathere-guest-ready.c
 ```
 
-The agent uses `AF_VSOCK` only; it does not run package managers, import project code, mount host
-secrets, or sync files back to the host.
+The agent uses `AF_VSOCK` for its host channel. Detonation jobs run package-manager and import probes
+inside the guest as the unprivileged `nobody` user, never as the root launch daemon identity. The
+agent injects protected Node/Python DNS and socket telemetry, shadows common network command-line
+tools, records telemetry over an inherited datagram socket that package code cannot erase, and kills
+the complete job process group on completion or timeout. It does not mount host secrets. Sync-back
+remains separately gated and opt-in.
 The host stores only sanitized readiness evidence: session id, image digest, helper version,
 protocol, port, and challenge hash. It does not persist the raw readiness challenge.
 The validation script packages this source into `bundle/guest-tools.dmg` using the `hdiutil` UFBI
@@ -195,4 +199,5 @@ Security boundaries:
 - Do not use host SSH keys.
 - Do not pass real npm, PyPI, cloud, Kubernetes, Vault, `.env`, or AI-tool credentials.
 - Do not treat helper status as package-execution authorization.
-- Package-manager execution and sync-back remain out of scope for this helper slice.
+- Do not accept helper exit code `0` without the current hardened guest evidence envelope.
+- Keep sync-back opt-in and subject to package-risk, guest evidence, archive, and release gates.

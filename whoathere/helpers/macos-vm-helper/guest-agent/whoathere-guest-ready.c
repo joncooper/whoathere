@@ -1,5 +1,8 @@
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <grp.h>
+#include <pwd.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -26,14 +29,19 @@
 #define WHOATHERE_MAX_SYNC_BACK_TOTAL_BYTES (4U * 1024U * 1024U)
 #define WHOATHERE_WORK_ROOT "/private/var/tmp/whoathere-detonation"
 #define WHOATHERE_TOOL_PATH "/usr/local/whoathere/node/bin:/usr/local/whoathere/uv/bin:/usr/local/whoathere/python/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-#define WHOATHERE_PATH_PREFIX "PATH=" WHOATHERE_TOOL_PATH "; export PATH; "
+#define WHOATHERE_PATH_PREFIX "PATH=${WHOATHERE_TELEMETRY_DIR:+$WHOATHERE_TELEMETRY_DIR/bin:}" WHOATHERE_TOOL_PATH "; export PATH; "
 #define WHOATHERE_GUEST_PYTHON "/usr/local/whoathere/python/bin/python3"
 #define WHOATHERE_PIP_WHEEL_DIR "/usr/local/whoathere/python-wheels"
-#define WHOATHERE_PIP_PREFIX WHOATHERE_PATH_PREFIX "WHOATHERE_PYTHON=" WHOATHERE_GUEST_PYTHON "; if [ ! -x \"$WHOATHERE_PYTHON\" ]; then WHOATHERE_PYTHON=python3; fi; WHOATHERE_WHEEL_PATHS=\"\"; for WHOATHERE_WHEEL in " WHOATHERE_PIP_WHEEL_DIR "/*.whl; do if [ -f \"$WHOATHERE_WHEEL\" ]; then if [ -z \"$WHOATHERE_WHEEL_PATHS\" ]; then WHOATHERE_WHEEL_PATHS=\"$WHOATHERE_WHEEL\"; else WHOATHERE_WHEEL_PATHS=\"$WHOATHERE_WHEEL_PATHS:$WHOATHERE_WHEEL\"; fi; fi; done; if [ -n \"$WHOATHERE_WHEEL_PATHS\" ]; then export PYTHONPATH=\"$WHOATHERE_WHEEL_PATHS\"; fi; "
+#define WHOATHERE_PIP_PREFIX WHOATHERE_PATH_PREFIX "WHOATHERE_PYTHON=" WHOATHERE_GUEST_PYTHON "; if [ ! -x \"$WHOATHERE_PYTHON\" ]; then WHOATHERE_PYTHON=python3; fi; WHOATHERE_WHEEL_PATHS=\"\"; for WHOATHERE_WHEEL in " WHOATHERE_PIP_WHEEL_DIR "/*.whl; do if [ -f \"$WHOATHERE_WHEEL\" ]; then if [ -z \"$WHOATHERE_WHEEL_PATHS\" ]; then WHOATHERE_WHEEL_PATHS=\"$WHOATHERE_WHEEL\"; else WHOATHERE_WHEEL_PATHS=\"$WHOATHERE_WHEEL_PATHS:$WHOATHERE_WHEEL\"; fi; fi; done; if [ -n \"$WHOATHERE_WHEEL_PATHS\" ]; then export PYTHONPATH=\"$WHOATHERE_TELEMETRY_DIR:$WHOATHERE_WHEEL_PATHS\"; else export PYTHONPATH=\"$WHOATHERE_TELEMETRY_DIR\"; fi; "
+#define WHOATHERE_TELEMETRY_FD 3
 
 static char current_request_nonce[WHOATHERE_MAX_FIELD] = "";
 static char current_project_workflow[WHOATHERE_MAX_FIELD] = "";
 static int current_project_api_probe_enabled = 0;
+static int current_execution_identity_isolated = 0;
+static int current_runtime_network_telemetry_active = 0;
+static unsigned int current_network_telemetry_events = 0;
+static int current_process_group_cleanup_enforced = 0;
 
 static int path_exists(const char *path);
 static int safe_relative_path(const char *path);
@@ -775,22 +783,177 @@ static int python_available(void) {
 struct command_result {
     int exit_code;
     int timed_out;
+    int execution_identity_isolated;
+    int runtime_network_telemetry_active;
+    unsigned int network_telemetry_events;
+    int process_group_cleanup_enforced;
 };
 
-static struct command_result run_shell_fixture(
+static void drain_runtime_telemetry(int fd, struct command_result *result) {
+    if (fd < 0) {
+        return;
+    }
+    char event[32];
+    while (1) {
+        ssize_t count = recv(fd, event, sizeof(event), MSG_DONTWAIT);
+        if (count <= 0) {
+            return;
+        }
+        for (ssize_t index = 0; index < count; index++) {
+            if (event[index] == 'I') {
+                result->execution_identity_isolated = 1;
+            } else if (event[index] == 'R') {
+                result->runtime_network_telemetry_active = 1;
+            } else if (event[index] == 'N') {
+                result->network_telemetry_events++;
+            }
+        }
+    }
+}
+
+static int write_runtime_telemetry_files(const char *workspace, char *control_dir, size_t capacity) {
+    int length = snprintf(control_dir, capacity, "%s.control", workspace);
+    if (length < 0 || (size_t)length >= capacity || mkdir(control_dir, 0700) != 0) {
+        return -1;
+    }
+    char node_preload[1024];
+    char python_preload[1024];
+    char bin_dir[1024];
+    if (snprintf(node_preload, sizeof(node_preload), "%s/node-preload.cjs", control_dir) < 0
+        || snprintf(python_preload, sizeof(python_preload), "%s/sitecustomize.py", control_dir) < 0
+        || snprintf(bin_dir, sizeof(bin_dir), "%s/bin", control_dir) < 0
+        || mkdir(bin_dir, 0755) != 0) {
+        return -1;
+    }
+    const char *node_source =
+        "'use strict';\n"
+        "const fs = require('fs');\n"
+        "const fd = Number(process.env.WHOATHERE_TELEMETRY_FD);\n"
+        "let networkSent = false;\n"
+        "function emit(value) { try { if (Number.isInteger(fd)) fs.writeSync(fd, value); } catch (_) {} }\n"
+        "function mark() { if (!networkSent) { networkSent = true; emit('N'); } }\n"
+        "function wrap(object, name) { const original = object && object[name]; if (typeof original !== 'function') return; object[name] = function(...args) { mark(); return Reflect.apply(original, this, args); }; }\n"
+        "emit('R');\n"
+        "const dns = require('dns');\n"
+        "['lookup','lookupService','resolve','resolve4','resolve6','resolveAny','resolveCaa','resolveCname','resolveMx','resolveNaptr','resolveNs','resolvePtr','resolveSoa','resolveSrv','resolveTxt','reverse'].forEach((name) => wrap(dns, name));\n"
+        "if (dns.promises) ['lookup','lookupService','resolve','resolve4','resolve6','resolveAny','resolveCaa','resolveCname','resolveMx','resolveNaptr','resolveNs','resolvePtr','resolveSoa','resolveSrv','resolveTxt','reverse'].forEach((name) => wrap(dns.promises, name));\n"
+        "const net = require('net'); wrap(net.Socket && net.Socket.prototype, 'connect'); wrap(net, 'connect'); wrap(net, 'createConnection');\n"
+        "const dgram = require('dgram'); wrap(dgram.Socket && dgram.Socket.prototype, 'connect'); wrap(dgram.Socket && dgram.Socket.prototype, 'send');\n"
+        "const tls = require('tls'); wrap(tls, 'connect');\n"
+        "const http = require('http'); wrap(http, 'request'); wrap(http, 'get');\n"
+        "const https = require('https'); wrap(https, 'request'); wrap(https, 'get');\n"
+        "if (typeof globalThis.fetch === 'function') { const originalFetch = globalThis.fetch; globalThis.fetch = function(...args) { mark(); return Reflect.apply(originalFetch, this, args); }; }\n";
+    const char *python_source =
+        "import os\n"
+        "import socket\n"
+        "_fd = int(os.environ.get('WHOATHERE_TELEMETRY_FD', '-1'))\n"
+        "_network_sent = False\n"
+        "def _emit(value):\n"
+        "    try:\n"
+        "        if _fd >= 0: os.write(_fd, value)\n"
+        "    except OSError:\n"
+        "        pass\n"
+        "def _mark():\n"
+        "    global _network_sent\n"
+        "    if not _network_sent:\n"
+        "        _network_sent = True\n"
+        "        _emit(b'N')\n"
+        "def _wrap(object, name):\n"
+        "    original = getattr(object, name, None)\n"
+        "    if original is None: return\n"
+        "    def wrapped(*args, **kwargs):\n"
+        "        _mark()\n"
+        "        return original(*args, **kwargs)\n"
+        "    setattr(object, name, wrapped)\n"
+        "_emit(b'R')\n"
+        "for _name in ('getaddrinfo', 'gethostbyname', 'gethostbyname_ex', 'gethostbyaddr', 'create_connection'):\n"
+        "    _wrap(socket, _name)\n"
+        "for _name in ('connect', 'connect_ex', 'sendto', 'sendmsg'):\n"
+        "    _wrap(socket.socket, _name)\n";
+    if (write_file(node_preload, node_source) != 0
+        || write_file(python_preload, python_source) != 0
+        || chmod(node_preload, 0444) != 0
+        || chmod(python_preload, 0444) != 0) {
+        return -1;
+    }
+    const char *tools[] = {"curl", "wget", "nc", "ncat", "dig", "host", "nslookup", "ssh", "scp"};
+    for (size_t index = 0; index < sizeof(tools) / sizeof(tools[0]); index++) {
+        char wrapper[1024];
+        if (snprintf(wrapper, sizeof(wrapper), "%s/%s", bin_dir, tools[index]) < 0
+            || write_file(wrapper, "#!/bin/sh\nprintf N >&3\nexit 69\n") != 0
+            || chmod(wrapper, 0555) != 0) {
+            return -1;
+        }
+    }
+    return chmod(control_dir, 0555);
+}
+
+static int chown_workspace_tree(const char *path, uid_t uid, gid_t gid) {
+    struct stat st;
+    if (lstat(path, &st) != 0 || S_ISLNK(st.st_mode)) {
+        return -1;
+    }
+    if (S_ISDIR(st.st_mode)) {
+        DIR *dir = opendir(path);
+        if (dir == NULL) {
+            return -1;
+        }
+        struct dirent *entry = NULL;
+        while ((entry = readdir(dir)) != NULL) {
+            if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+                continue;
+            }
+            char child[1024];
+            int length = snprintf(child, sizeof(child), "%s/%s", path, entry->d_name);
+            if (length < 0 || (size_t)length >= sizeof(child)
+                || chown_workspace_tree(child, uid, gid) != 0) {
+                closedir(dir);
+                return -1;
+            }
+        }
+        closedir(dir);
+    }
+    return chown(path, uid, gid);
+}
+
+static struct command_result run_shell_fixture_with_boundary(
     const char *workspace,
+    const char *control_dir,
+    uid_t execution_uid,
+    gid_t execution_gid,
+    int require_identity_isolation,
     const char *command,
     unsigned int timeout_seconds
 ) {
     struct command_result result;
+    memset(&result, 0, sizeof(result));
     result.exit_code = 70;
-    result.timed_out = 0;
+
+    int telemetry_fds[2] = {-1, -1};
+    if (control_dir != NULL && socketpair(AF_UNIX, SOCK_DGRAM, 0, telemetry_fds) != 0) {
+        return result;
+    }
 
     pid_t pid = fork();
     if (pid < 0) {
+        if (telemetry_fds[0] >= 0) close(telemetry_fds[0]);
+        if (telemetry_fds[1] >= 0) close(telemetry_fds[1]);
         return result;
     }
     if (pid == 0) {
+        if (telemetry_fds[0] >= 0) {
+            close(telemetry_fds[0]);
+            if (telemetry_fds[1] != WHOATHERE_TELEMETRY_FD) {
+                if (dup2(telemetry_fds[1], WHOATHERE_TELEMETRY_FD) < 0) {
+                    _exit(70);
+                }
+                close(telemetry_fds[1]);
+            }
+            (void)fcntl(WHOATHERE_TELEMETRY_FD, F_SETFD, 0);
+        }
+        if (setpgid(0, 0) != 0) {
+            _exit(70);
+        }
         if (chdir(workspace) != 0) {
             _exit(70);
         }
@@ -804,16 +967,49 @@ static struct command_result run_shell_fixture(
         setenv("VAULT_TOKEN", "whoathere_fake_vault_token", 1);
         setenv("OPENAI_API_KEY", "whoathere_fake_openai_token", 1);
         setenv("CI", "true", 1);
-        setenv("PATH", WHOATHERE_TOOL_PATH, 1);
+        if (control_dir != NULL) {
+            char telemetry_fd[16];
+            char node_options[1200];
+            char path[1400];
+            snprintf(telemetry_fd, sizeof(telemetry_fd), "%d", WHOATHERE_TELEMETRY_FD);
+            snprintf(node_options, sizeof(node_options), "--require=%s/node-preload.cjs", control_dir);
+            snprintf(path, sizeof(path), "%s/bin:%s", control_dir, WHOATHERE_TOOL_PATH);
+            setenv("WHOATHERE_TELEMETRY_FD", telemetry_fd, 1);
+            setenv("WHOATHERE_TELEMETRY_DIR", control_dir, 1);
+            setenv("NODE_OPTIONS", node_options, 1);
+            setenv("PYTHONPATH", control_dir, 1);
+            setenv("PATH", path, 1);
+        } else {
+            setenv("PATH", WHOATHERE_TOOL_PATH, 1);
+        }
+        if (require_identity_isolation) {
+            if (setgroups(0, NULL) != 0
+                || setgid(execution_gid) != 0
+                || setuid(execution_uid) != 0) {
+                _exit(70);
+            }
+            if (telemetry_fds[1] >= 0) {
+                (void)write(WHOATHERE_TELEMETRY_FD, "I", 1);
+            }
+        }
         freopen("stdout.log", "w", stdout);
         freopen("stderr.log", "w", stderr);
         execl("/bin/sh", "sh", "-c", command, (char *)NULL);
         _exit(70);
     }
 
+    if (telemetry_fds[1] >= 0) {
+        close(telemetry_fds[1]);
+    }
+    int process_group_ready = setpgid(pid, pid) == 0;
+    if (!process_group_ready && (errno == EACCES || errno == EPERM)) {
+        process_group_ready = getpgid(pid) == pid;
+    }
+
     time_t start = time(NULL);
     int status = 0;
     while (1) {
+        drain_runtime_telemetry(telemetry_fds[0], &result);
         pid_t waited = waitpid(pid, &status, WNOHANG);
         if (waited == pid) {
             if (WIFEXITED(status)) {
@@ -821,21 +1017,52 @@ static struct command_result run_shell_fixture(
             } else if (WIFSIGNALED(status)) {
                 result.exit_code = 128 + WTERMSIG(status);
             }
+            if (process_group_ready) {
+                (void)kill(-pid, SIGKILL);
+                result.process_group_cleanup_enforced = 1;
+            }
+            drain_runtime_telemetry(telemetry_fds[0], &result);
+            if (telemetry_fds[0] >= 0) close(telemetry_fds[0]);
             return result;
         }
         if (waited < 0) {
             result.exit_code = 70;
+            if (process_group_ready) (void)kill(-pid, SIGKILL);
+            if (telemetry_fds[0] >= 0) close(telemetry_fds[0]);
             return result;
         }
         if ((unsigned int)(time(NULL) - start) >= timeout_seconds) {
-            kill(pid, SIGKILL);
+            if (process_group_ready) {
+                (void)kill(-pid, SIGKILL);
+                result.process_group_cleanup_enforced = 1;
+            } else {
+                (void)kill(pid, SIGKILL);
+            }
             waitpid(pid, &status, 0);
             result.exit_code = 124;
             result.timed_out = 1;
+            drain_runtime_telemetry(telemetry_fds[0], &result);
+            if (telemetry_fds[0] >= 0) close(telemetry_fds[0]);
             return result;
         }
         usleep(100000);
     }
+}
+
+static struct command_result run_shell_fixture(
+    const char *workspace,
+    const char *command,
+    unsigned int timeout_seconds
+) {
+    return run_shell_fixture_with_boundary(
+        workspace,
+        NULL,
+        getuid(),
+        getgid(),
+        0,
+        command,
+        timeout_seconds
+    );
 }
 
 static int prepare_workspace(const char *job_id, char *workspace, size_t workspace_capacity) {
@@ -846,7 +1073,7 @@ static int prepare_workspace(const char *job_id, char *workspace, size_t workspa
     if (length < 0 || (size_t)length >= workspace_capacity) {
         return -1;
     }
-    if (mkdir_if_missing(workspace, 0700) != 0) {
+    if (mkdir(workspace, 0700) != 0) {
         return -1;
     }
     char canaries[512];
@@ -861,6 +1088,28 @@ static int prepare_workspace(const char *job_id, char *workspace, size_t workspa
         return -1;
     }
     return write_file(kubeconfig, "token: whoathere_fake_kube_token\n");
+}
+
+static int safe_job_identifier(const char *value) {
+    if (value == NULL || value[0] == '\0') {
+        return 0;
+    }
+    size_t length = 0;
+    for (const char *cursor = value; *cursor != '\0'; cursor++) {
+        char byte = *cursor;
+        if (!((byte >= 'a' && byte <= 'z')
+            || (byte >= 'A' && byte <= 'Z')
+            || (byte >= '0' && byte <= '9')
+            || byte == '-'
+            || byte == '_')) {
+            return 0;
+        }
+        length++;
+        if (length > 128U) {
+            return 0;
+        }
+    }
+    return 1;
 }
 
 static int write_npm_fixture(const char *workspace, const char *fixture) {
@@ -1034,7 +1283,7 @@ static int write_detonation_response_ex(
     int length = snprintf(
         response,
         sizeof(response),
-        "{\"protocol\":\"whoathere.guest_detonation.v1\",\"schema_version\":\"whoathere.macos_vm.bundle.v1\",\"agent_version\":\"0.2.0\",\"job_id\":\"%s\",\"request_nonce\":\"%s\",\"tool\":\"%s\",\"command_class\":\"%s\",\"fixture\":\"%s\",\"project_workflow\":\"%s\",\"project_api_probe_enabled\":%s,\"status\":\"%s\",\"verdict\":\"%s\",\"reason_codes\":[%s],\"command_exit_code\":%d,\"timed_out\":%s,\"canary_access_detected\":%s,\"network_attempt_detected\":%s,\"filesystem_write_detected\":%s,\"toolchain_available\":%s,\"stdout_captured\":false,\"stderr_captured\":false,\"raw_canary_values_captured\":false,\"sync_back_enabled\":%s,\"host_package_execution_enabled\":false,\"high_risk_package_execution_enabled\":false",
+        "{\"protocol\":\"whoathere.guest_detonation.v1\",\"schema_version\":\"whoathere.macos_vm.bundle.v1\",\"agent_version\":\"0.3.0\",\"job_id\":\"%s\",\"request_nonce\":\"%s\",\"tool\":\"%s\",\"command_class\":\"%s\",\"fixture\":\"%s\",\"project_workflow\":\"%s\",\"project_api_probe_enabled\":%s,\"status\":\"%s\",\"verdict\":\"%s\",\"reason_codes\":[%s],\"command_exit_code\":%d,\"timed_out\":%s,\"canary_access_detected\":%s,\"network_attempt_detected\":%s,\"filesystem_write_detected\":%s,\"toolchain_available\":%s,\"execution_identity\":\"%s\",\"execution_identity_isolated\":%s,\"runtime_network_telemetry_active\":%s,\"network_telemetry_events\":%u,\"process_group_cleanup_enforced\":%s,\"stdout_captured\":false,\"stderr_captured\":false,\"raw_canary_values_captured\":false,\"sync_back_enabled\":%s,\"host_package_execution_enabled\":false,\"high_risk_package_execution_enabled\":false",
         job_id,
         current_request_nonce,
         tool,
@@ -1051,6 +1300,11 @@ static int write_detonation_response_ex(
         network_attempt ? "true" : "false",
         filesystem_write ? "true" : "false",
         toolchain_available ? "true" : "false",
+        current_execution_identity_isolated ? "nobody" : "unverified",
+        current_execution_identity_isolated ? "true" : "false",
+        current_runtime_network_telemetry_active ? "true" : "false",
+        current_network_telemetry_events,
+        current_process_group_cleanup_enforced ? "true" : "false",
         sync_back_enabled ? "true" : "false"
     );
     if (length < 0 || (size_t)length >= sizeof(response)) {
@@ -1136,6 +1390,13 @@ static int write_detonation_response(
 }
 
 static int run_detonation_job(int fd, const char *line) {
+    current_request_nonce[0] = '\0';
+    current_project_workflow[0] = '\0';
+    current_project_api_probe_enabled = 0;
+    current_execution_identity_isolated = 0;
+    current_runtime_network_telemetry_active = 0;
+    current_network_telemetry_events = 0;
+    current_process_group_cleanup_enforced = 0;
     char job_id[WHOATHERE_MAX_FIELD];
     char tool[WHOATHERE_MAX_FIELD];
     char command_class[WHOATHERE_MAX_FIELD];
@@ -1146,7 +1407,6 @@ static int run_detonation_job(int fd, const char *line) {
         || extract_json_string(line, "command_class", command_class, sizeof(command_class)) != 0
         || extract_json_string(line, "fixture", fixture, sizeof(fixture)) != 0
         || extract_json_string(line, "request_nonce", request_nonce, sizeof(request_nonce)) != 0) {
-        current_request_nonce[0] = '\0';
         return write_detonation_response(
             fd,
             "unknown",
@@ -1165,9 +1425,30 @@ static int run_detonation_job(int fd, const char *line) {
             0
         );
     }
+    if (!safe_job_identifier(job_id)
+        || !safe_job_identifier(request_nonce)
+        || !safe_job_identifier(tool)
+        || !safe_job_identifier(command_class)
+        || !safe_job_identifier(fixture)) {
+        return write_detonation_response(
+            fd,
+            "unknown",
+            "unknown",
+            "unknown",
+            "unknown",
+            "fail_closed",
+            "fail_closed_runner_error",
+            "\"guest_request_identifier_rejected\"",
+            70,
+            70,
+            0,
+            0,
+            0,
+            0,
+            0
+        );
+    }
     snprintf(current_request_nonce, sizeof(current_request_nonce), "%s", request_nonce);
-    current_project_workflow[0] = '\0';
-    current_project_api_probe_enabled = 0;
     unsigned int timeout_seconds = extract_json_uint(line, "timeout_seconds", 120);
     if (timeout_seconds < 5) {
         timeout_seconds = 5;
@@ -1312,13 +1593,13 @@ static int run_detonation_job(int fd, const char *line) {
                     ? snprintf(
                           import_probe_buffer,
                           sizeof(import_probe_buffer),
-                          " && PYTHONPATH=target $WHOATHERE_PYTHON .whoathere-api-probe.py %s",
+                          " && PYTHONPATH=\"$WHOATHERE_TELEMETRY_DIR:target\" $WHOATHERE_PYTHON .whoathere-api-probe.py %s",
                           project_import_module
                       )
                     : snprintf(
                           import_probe_buffer,
                           sizeof(import_probe_buffer),
-                          " && PYTHONPATH=target $WHOATHERE_PYTHON -c 'import %s'",
+                          " && PYTHONPATH=\"$WHOATHERE_TELEMETRY_DIR:target\" $WHOATHERE_PYTHON -c 'import %s'",
                           project_import_module
                       );
                 if (import_length < 0 || (size_t)import_length >= sizeof(import_probe_buffer)) {
@@ -1329,7 +1610,7 @@ static int run_detonation_job(int fd, const char *line) {
                 }
                 import_probe = import_probe_buffer;
             }
-            const char *pth_probe = " && if ls *.pth >/dev/null 2>&1; then cp *.pth target/; fi && PYTHONPATH=target $WHOATHERE_PYTHON -c 'import site; site.addsitedir(\"target\")'";
+            const char *pth_probe = " && if ls *.pth >/dev/null 2>&1; then cp *.pth target/; fi && PYTHONPATH=\"$WHOATHERE_TELEMETRY_DIR:target\" $WHOATHERE_PYTHON -c 'import site; site.addsitedir(\"target\")'";
             if (strcmp(project_workflow, "pip_project_install") == 0) {
                 int command_length = snprintf(
                     shell_command_buffer,
@@ -1366,9 +1647,9 @@ static int run_detonation_job(int fd, const char *line) {
         } else if (strcmp(fixture, "python_pth_startup_hook") == 0) {
             shell_command = WHOATHERE_PIP_PREFIX "mkdir -p target && cp whoathere_hook.pth target/ && $WHOATHERE_PYTHON -c 'import site; site.addsitedir(\"target\")'";
         } else if (strcmp(fixture, "api_compatible_canary_theft") == 0) {
-            shell_command = WHOATHERE_PIP_PREFIX "$WHOATHERE_PYTHON -m pip install --no-index --no-build-isolation . --target target && PYTHONPATH=target $WHOATHERE_PYTHON -c 'import whoathere_fixture; whoathere_fixture.run()'";
+            shell_command = WHOATHERE_PIP_PREFIX "$WHOATHERE_PYTHON -m pip install --no-index --no-build-isolation . --target target && PYTHONPATH=\"$WHOATHERE_TELEMETRY_DIR:target\" $WHOATHERE_PYTHON -c 'import whoathere_fixture; whoathere_fixture.run()'";
         } else if (strcmp(fixture, "pypi_import_time_canary") == 0 || strcmp(fixture, "python_import_time_canary") == 0) {
-            shell_command = WHOATHERE_PIP_PREFIX "$WHOATHERE_PYTHON -m pip install --no-index --no-build-isolation . --target target && PYTHONPATH=target $WHOATHERE_PYTHON -c 'import whoathere_fixture'";
+            shell_command = WHOATHERE_PIP_PREFIX "$WHOATHERE_PYTHON -m pip install --no-index --no-build-isolation . --target target && PYTHONPATH=\"$WHOATHERE_TELEMETRY_DIR:target\" $WHOATHERE_PYTHON -c 'import whoathere_fixture'";
         } else {
             shell_command = WHOATHERE_PIP_PREFIX "$WHOATHERE_PYTHON -m pip install --no-index --no-build-isolation . --target target";
         }
@@ -1388,13 +1669,13 @@ static int run_detonation_job(int fd, const char *line) {
                     ? snprintf(
                           import_probe_buffer,
                           sizeof(import_probe_buffer),
-                          " && PYTHONPATH=target $WHOATHERE_PYTHON .whoathere-api-probe.py %s",
+                          " && PYTHONPATH=\"$WHOATHERE_TELEMETRY_DIR:target\" $WHOATHERE_PYTHON .whoathere-api-probe.py %s",
                           project_import_module
                       )
                     : snprintf(
                           import_probe_buffer,
                           sizeof(import_probe_buffer),
-                          " && PYTHONPATH=target $WHOATHERE_PYTHON -c 'import %s'",
+                          " && PYTHONPATH=\"$WHOATHERE_TELEMETRY_DIR:target\" $WHOATHERE_PYTHON -c 'import %s'",
                           project_import_module
                       );
                 if (import_length < 0 || (size_t)import_length >= sizeof(import_probe_buffer)) {
@@ -1405,7 +1686,7 @@ static int run_detonation_job(int fd, const char *line) {
                 }
                 import_probe = import_probe_buffer;
             }
-            const char *pth_probe = " && if ls *.pth >/dev/null 2>&1; then cp *.pth target/; fi && PYTHONPATH=target $WHOATHERE_PYTHON -c 'import site; site.addsitedir(\"target\")'";
+            const char *pth_probe = " && if ls *.pth >/dev/null 2>&1; then cp *.pth target/; fi && PYTHONPATH=\"$WHOATHERE_TELEMETRY_DIR:target\" $WHOATHERE_PYTHON -c 'import site; site.addsitedir(\"target\")'";
             if (strcmp(project_workflow, "uv_pip_project_install") == 0) {
                 int command_length = snprintf(
                     shell_command_buffer,
@@ -1440,7 +1721,7 @@ static int run_detonation_job(int fd, const char *line) {
         } else if (write_python_fixture(workspace, fixture) != 0) {
             return write_detonation_response(fd, job_id, tool, command_class, fixture, "fail_closed", "fail_closed_runner_error", "\"guest_fixture_prepare_failed\"", 70, 70, 0, 0, 0, 0, 0);
         } else if (strcmp(fixture, "api_compatible_canary_theft") == 0) {
-            shell_command = WHOATHERE_PIP_PREFIX "uv pip install --no-index --no-build-isolation --python \"$WHOATHERE_PYTHON\" . --target target && PYTHONPATH=target $WHOATHERE_PYTHON -c 'import whoathere_fixture; whoathere_fixture.run()'";
+            shell_command = WHOATHERE_PIP_PREFIX "uv pip install --no-index --no-build-isolation --python \"$WHOATHERE_PYTHON\" . --target target && PYTHONPATH=\"$WHOATHERE_TELEMETRY_DIR:target\" $WHOATHERE_PYTHON -c 'import whoathere_fixture; whoathere_fixture.run()'";
         } else {
             shell_command = WHOATHERE_PIP_PREFIX "uv pip install --no-index --no-build-isolation --python \"$WHOATHERE_PYTHON\" . --target target";
         }
@@ -1469,7 +1750,30 @@ static int run_detonation_job(int fd, const char *line) {
         );
     }
 
-    struct command_result command_result = run_shell_fixture(workspace, shell_command, timeout_seconds);
+    struct passwd *untrusted_user = getpwnam("nobody");
+    char control_dir[1024];
+    char temp_dir[1024];
+    if (geteuid() != 0
+        || untrusted_user == NULL
+        || snprintf(temp_dir, sizeof(temp_dir), "%s/tmp", workspace) < 0
+        || mkdir(temp_dir, 0700) != 0
+        || write_runtime_telemetry_files(workspace, control_dir, sizeof(control_dir)) != 0
+        || chown_workspace_tree(workspace, untrusted_user->pw_uid, untrusted_user->pw_gid) != 0) {
+        return write_detonation_response(fd, job_id, tool, command_class, fixture, "fail_closed", "fail_closed_runner_error", "\"guest_execution_boundary_prepare_failed\"", 70, 70, 0, 0, 0, 0, available);
+    }
+    struct command_result command_result = run_shell_fixture_with_boundary(
+        workspace,
+        control_dir,
+        untrusted_user->pw_uid,
+        untrusted_user->pw_gid,
+        1,
+        shell_command,
+        timeout_seconds
+    );
+    current_execution_identity_isolated = command_result.execution_identity_isolated;
+    current_runtime_network_telemetry_active = command_result.runtime_network_telemetry_active;
+    current_network_telemetry_events = command_result.network_telemetry_events;
+    current_process_group_cleanup_enforced = command_result.process_group_cleanup_enforced;
     char marker[512];
     int canary_access = 0;
     int network_attempt = 0;
@@ -1484,6 +1788,7 @@ static int run_detonation_job(int fd, const char *line) {
     canary_access = canary_access || path_exists(marker);
     snprintf(marker, sizeof(marker), "%s/network-attempt.marker", workspace);
     network_attempt = network_attempt || path_exists(marker);
+    network_attempt = network_attempt || command_result.network_telemetry_events > 0;
     snprintf(marker, sizeof(marker), "%s/clean.marker", workspace);
     filesystem_write = filesystem_write || path_exists(marker);
     snprintf(marker, sizeof(marker), "%s/ci-activated.marker", workspace);
@@ -1494,6 +1799,11 @@ static int run_detonation_job(int fd, const char *line) {
     }
     if (canary_access || network_attempt) {
         return write_detonation_response(fd, job_id, tool, command_class, fixture, "deny", "deny_malicious_behavior", "\"guest_canary_or_network_signal_observed\"", 20, command_result.exit_code, 0, canary_access, network_attempt, filesystem_write, available);
+    }
+    if (!command_result.execution_identity_isolated
+        || !command_result.runtime_network_telemetry_active
+        || !command_result.process_group_cleanup_enforced) {
+        return write_detonation_response(fd, job_id, tool, command_class, fixture, "fail_closed", "fail_closed_runner_error", "\"guest_execution_boundary_attestation_missing\"", 70, command_result.exit_code, 0, canary_access, network_attempt, filesystem_write, available);
     }
     if (command_result.exit_code != 0) {
         return write_detonation_response(fd, job_id, tool, command_class, fixture, "fail_closed", "fail_closed_runner_error", "\"guest_command_failed\"", 20, command_result.exit_code, 0, canary_access, network_attempt, filesystem_write, available);
@@ -1613,7 +1923,7 @@ int main(void) {
     int length = snprintf(
         response,
         sizeof(response),
-        "{\"agent_version\":\"0.2.0\",\"challenge\":\"%s\",\"npm_available\":%s,\"python3_available\":%s,\"pip_available\":%s,\"protocol\":\"whoathere.guest_ready.v1\",\"status\":\"ready\",\"uv_available\":%s}\n",
+        "{\"agent_version\":\"0.3.0\",\"challenge\":\"%s\",\"npm_available\":%s,\"python3_available\":%s,\"pip_available\":%s,\"protocol\":\"whoathere.guest_ready.v1\",\"status\":\"ready\",\"uv_available\":%s}\n",
         challenge,
         command_exists("npm") ? "true" : "false",
         python_available() ? "true" : "false",

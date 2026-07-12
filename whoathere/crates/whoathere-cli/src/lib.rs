@@ -2570,6 +2570,11 @@ struct GuestJobEvidence {
     network_attempt_detected: Option<bool>,
     filesystem_write_detected: Option<bool>,
     toolchain_available: Option<bool>,
+    execution_identity: Option<String>,
+    execution_identity_isolated: Option<bool>,
+    runtime_network_telemetry_active: Option<bool>,
+    network_telemetry_events: Option<i32>,
+    process_group_cleanup_enforced: Option<bool>,
     stdout_captured: Option<bool>,
     stderr_captured: Option<bool>,
     raw_canary_values_captured: Option<bool>,
@@ -2714,8 +2719,40 @@ fn render_vm_detonate(args: VmDetonateRenderArgs<'_>) -> String {
     let helper_exit_code = helper
         .as_ref()
         .and_then(|helper| helper.exit_code)
-        .unwrap_or_else(|| ExitCode::Allow.code());
+        .unwrap_or_else(|| {
+            if helper_invocation_allowed {
+                ExitCode::InternalError.code()
+            } else {
+                ExitCode::Allow.code()
+            }
+        });
     let guest_job = parse_guest_job_evidence(helper.as_ref());
+    let clean_guest_evidence_reasons = if args.execute
+        && helper_invocation_allowed
+        && helper_exit_code == ExitCode::Allow.code()
+    {
+        guest_clean_evidence_reasons(
+            guest_job.as_ref(),
+            args.tool,
+            command_class,
+            args.fixture.unwrap_or("project_mirror"),
+            &project_plan,
+            args.sync_back,
+        )
+    } else {
+        Vec::new()
+    };
+    let clean_guest_evidence_valid = clean_guest_evidence_reasons.is_empty();
+    let clean_guest_evidence_exit_code = if clean_guest_evidence_reasons.iter().any(|reason| {
+        reason.contains("_mismatch")
+            || reason == "detonation_guest_behavior_evidence_not_clean"
+            || reason == "detonation_guest_security_flags_invalid"
+    }) {
+        ExitCode::Deny.code()
+    } else {
+        ExitCode::InternalError.code()
+    };
+    reason_codes.extend(clean_guest_evidence_reasons);
     let sync_back = evaluate_sync_back(SyncBackEvaluationArgs {
         config: &config,
         workspace: args.workspace,
@@ -2741,6 +2778,8 @@ fn render_vm_detonate(args: VmDetonateRenderArgs<'_>) -> String {
     let final_exit_code = if args.execute {
         if payload_prepare_error.is_some() {
             ExitCode::InternalError.code()
+        } else if helper_exit_code == ExitCode::Allow.code() && !clean_guest_evidence_valid {
+            clean_guest_evidence_exit_code
         } else if let Some(sync_exit_code) = sync_exit_override {
             sync_exit_code
         } else if fail_closed_before_helper {
@@ -4053,6 +4092,23 @@ fn parse_guest_job_evidence(helper: Option<&MacosVmHelperOutput>) -> Option<Gues
             "filesystem_write_detected",
         ),
         toolchain_available: json_extract_bool_field(&helper.stdout, "toolchain_available"),
+        execution_identity: json_extract_string_field(&helper.stdout, "execution_identity"),
+        execution_identity_isolated: json_extract_bool_field(
+            &helper.stdout,
+            "execution_identity_isolated",
+        ),
+        runtime_network_telemetry_active: json_extract_bool_field(
+            &helper.stdout,
+            "runtime_network_telemetry_active",
+        ),
+        network_telemetry_events: json_extract_i32_field(
+            &helper.stdout,
+            "network_telemetry_events",
+        ),
+        process_group_cleanup_enforced: json_extract_bool_field(
+            &helper.stdout,
+            "process_group_cleanup_enforced",
+        ),
         stdout_captured: json_extract_bool_field(&helper.stdout, "stdout_captured"),
         stderr_captured: json_extract_bool_field(&helper.stdout, "stderr_captured"),
         raw_canary_values_captured: json_extract_bool_field(
@@ -4099,7 +4155,7 @@ fn render_guest_job_evidence_json(evidence: Option<&GuestJobEvidence>) -> String
         return "null".to_string();
     };
     format!(
-        "{{\"protocol\": {}, \"schema_version\": {}, \"agent_version\": {}, \"job_id\": {}, \"tool\": {}, \"command_class\": {}, \"fixture\": {}, \"status\": {}, \"verdict\": {}, \"reason_codes\": {}, \"command_exit_code\": {}, \"timed_out\": {}, \"canary_access_detected\": {}, \"network_attempt_detected\": {}, \"filesystem_write_detected\": {}, \"toolchain_available\": {}, \"stdout_captured\": {}, \"stderr_captured\": {}, \"raw_canary_values_captured\": {}, \"sync_back_enabled\": {}, \"host_package_execution_enabled\": {}, \"high_risk_package_execution_enabled\": {}, \"project_mode\": {}, \"project_workflow\": {}, \"project_import_module\": {}, \"project_api_probe_enabled\": {}, \"project_requirements_path\": {}, \"vm_session_id\": {}, \"sync_output_archive_present\": {}, \"sync_output_archive_sha256\": {}, \"sync_output_file_count\": {}, \"sync_output_total_bytes\": {}, \"exit_code\": {}}}",
+        "{{\"protocol\": {}, \"schema_version\": {}, \"agent_version\": {}, \"job_id\": {}, \"tool\": {}, \"command_class\": {}, \"fixture\": {}, \"status\": {}, \"verdict\": {}, \"reason_codes\": {}, \"command_exit_code\": {}, \"timed_out\": {}, \"canary_access_detected\": {}, \"network_attempt_detected\": {}, \"filesystem_write_detected\": {}, \"toolchain_available\": {}, \"execution_identity\": {}, \"execution_identity_isolated\": {}, \"runtime_network_telemetry_active\": {}, \"network_telemetry_events\": {}, \"process_group_cleanup_enforced\": {}, \"stdout_captured\": {}, \"stderr_captured\": {}, \"raw_canary_values_captured\": {}, \"sync_back_enabled\": {}, \"host_package_execution_enabled\": {}, \"high_risk_package_execution_enabled\": {}, \"project_mode\": {}, \"project_workflow\": {}, \"project_import_module\": {}, \"project_api_probe_enabled\": {}, \"project_requirements_path\": {}, \"vm_session_id\": {}, \"sync_output_archive_present\": {}, \"sync_output_archive_sha256\": {}, \"sync_output_file_count\": {}, \"sync_output_total_bytes\": {}, \"exit_code\": {}}}",
         json_option_string_redacted(evidence.protocol.as_deref()),
         json_option_string_redacted(evidence.schema_version.as_deref()),
         json_option_string_redacted(evidence.agent_version.as_deref()),
@@ -4122,6 +4178,11 @@ fn render_guest_job_evidence_json(evidence: Option<&GuestJobEvidence>) -> String
         json_option(evidence.network_attempt_detected),
         json_option(evidence.filesystem_write_detected),
         json_option(evidence.toolchain_available),
+        json_option_string_redacted(evidence.execution_identity.as_deref()),
+        json_option(evidence.execution_identity_isolated),
+        json_option(evidence.runtime_network_telemetry_active),
+        json_option(evidence.network_telemetry_events),
+        json_option(evidence.process_group_cleanup_enforced),
         json_option(evidence.stdout_captured),
         json_option(evidence.stderr_captured),
         json_option(evidence.raw_canary_values_captured),
@@ -4140,6 +4201,84 @@ fn render_guest_job_evidence_json(evidence: Option<&GuestJobEvidence>) -> String
         json_option(evidence.sync_output_total_bytes),
         json_option(evidence.exit_code)
     )
+}
+
+fn guest_clean_evidence_reasons(
+    guest_job: Option<&GuestJobEvidence>,
+    expected_tool: &str,
+    expected_command_class: &str,
+    expected_fixture: &str,
+    project_plan: &ProjectDetonationPlan,
+    expected_sync_back: bool,
+) -> Vec<String> {
+    let Some(guest_job) = guest_job else {
+        return vec!["detonation_guest_clean_evidence_missing".to_string()];
+    };
+    let mut reasons = Vec::new();
+    if guest_job.protocol.as_deref() != Some("whoathere.guest_detonation.v1") {
+        reasons.push("detonation_guest_protocol_invalid".to_string());
+    }
+    if guest_job.schema_version.as_deref() != Some("whoathere.macos_vm.bundle.v1") {
+        reasons.push("detonation_guest_schema_invalid".to_string());
+    }
+    if guest_job.agent_version.as_deref() != Some("0.3.0") {
+        reasons.push("detonation_guest_hardened_agent_required".to_string());
+    }
+    if guest_job.job_id.as_deref().is_none_or(str::is_empty) {
+        reasons.push("detonation_guest_job_id_missing".to_string());
+    }
+    if guest_job.vm_session_id.as_deref().is_none_or(str::is_empty) {
+        reasons.push("detonation_guest_session_missing".to_string());
+    }
+    if guest_job.tool.as_deref() != Some(expected_tool) {
+        reasons.push("detonation_guest_tool_mismatch".to_string());
+    }
+    if guest_job.command_class.as_deref() != Some(expected_command_class) {
+        reasons.push("detonation_guest_command_class_mismatch".to_string());
+    }
+    if guest_job.fixture.as_deref() != Some(expected_fixture) {
+        reasons.push("detonation_guest_fixture_mismatch".to_string());
+    }
+    if guest_job.status.as_deref() != Some("ok")
+        || guest_job.verdict.as_deref() != Some("allow_observed_clean")
+        || guest_job.command_exit_code != Some(0)
+        || guest_job.exit_code != Some(0)
+    {
+        reasons.push("detonation_guest_clean_outcome_invalid".to_string());
+    }
+    if guest_job.timed_out != Some(false)
+        || guest_job.canary_access_detected != Some(false)
+        || guest_job.network_attempt_detected != Some(false)
+        || guest_job.network_telemetry_events != Some(0)
+    {
+        reasons.push("detonation_guest_behavior_evidence_not_clean".to_string());
+    }
+    if guest_job.toolchain_available != Some(true)
+        || guest_job.execution_identity.as_deref() != Some("nobody")
+        || guest_job.execution_identity_isolated != Some(true)
+        || guest_job.runtime_network_telemetry_active != Some(true)
+        || guest_job.process_group_cleanup_enforced != Some(true)
+    {
+        reasons.push("detonation_guest_execution_boundary_unverified".to_string());
+    }
+    if guest_job.stdout_captured != Some(false)
+        || guest_job.stderr_captured != Some(false)
+        || guest_job.raw_canary_values_captured != Some(false)
+        || guest_job.host_package_execution_enabled != Some(false)
+        || guest_job.high_risk_package_execution_enabled != Some(false)
+        || guest_job.sync_back_enabled != Some(expected_sync_back)
+    {
+        reasons.push("detonation_guest_security_flags_invalid".to_string());
+    }
+    if guest_job.project_mode != Some(project_plan.project_mode) {
+        reasons.push("detonation_guest_project_mode_mismatch".to_string());
+    }
+    if project_plan.project_mode
+        && guest_job.project_workflow.as_deref() != project_plan.workflow.as_deref()
+    {
+        reasons.push("detonation_guest_project_workflow_mismatch".to_string());
+    }
+    reasons
 }
 
 const SYNC_BACK_SCHEMA_VERSION: &str = "whoathere.macos_vm.sync_back.v1";
@@ -4625,6 +4764,22 @@ fn sync_back_guest_evidence_reasons(
     }
     if guest_job.network_attempt_detected != Some(false) {
         reasons.push("sync_back_guest_network_attempt_detected".to_string());
+    }
+    if guest_job.agent_version.as_deref() != Some("0.3.0") {
+        reasons.push("sync_back_guest_hardened_agent_required".to_string());
+    }
+    if guest_job.execution_identity.as_deref() != Some("nobody")
+        || guest_job.execution_identity_isolated != Some(true)
+    {
+        reasons.push("sync_back_guest_execution_identity_unverified".to_string());
+    }
+    if guest_job.runtime_network_telemetry_active != Some(true)
+        || guest_job.network_telemetry_events != Some(0)
+    {
+        reasons.push("sync_back_guest_network_telemetry_invalid".to_string());
+    }
+    if guest_job.process_group_cleanup_enforced != Some(true) {
+        reasons.push("sync_back_guest_process_cleanup_unverified".to_string());
     }
     if guest_job.raw_canary_values_captured != Some(false) {
         reasons.push("sync_back_guest_raw_canary_capture_invalid".to_string());
@@ -19398,7 +19553,10 @@ mod tests {
             json: false,
         });
 
-        assert_eq!(result.exit_code, 0);
+        assert_eq!(result.exit_code, ExitCode::InternalError.code());
+        assert!(result
+            .output
+            .contains("detonation_guest_clean_evidence_missing"));
         assert!(result.output.contains("<--fixture><project_mirror>"));
         assert!(result.output.contains("<--project-payload-path>"));
         assert!(result
@@ -19510,7 +19668,10 @@ mod tests {
             json: false,
         });
 
-        assert_eq!(result.exit_code, 0);
+        assert_eq!(result.exit_code, ExitCode::InternalError.code());
+        assert!(result
+            .output
+            .contains("detonation_guest_clean_evidence_missing"));
         assert!(result.output.contains("<--tool><npm>"));
         assert!(result.output.contains("<--fixture><project_mirror>"));
         assert!(result.output.contains("<--project-payload-path>"));
@@ -19696,7 +19857,10 @@ mod tests {
             json: false,
         });
 
-        assert_eq!(result.exit_code, 0);
+        assert_eq!(result.exit_code, ExitCode::InternalError.code());
+        assert!(result
+            .output
+            .contains("detonation_guest_clean_evidence_missing"));
         assert!(result.output.contains("<--tool><uv>"));
         assert!(result
             .output
@@ -19879,7 +20043,7 @@ mod tests {
             &helper,
             br#"#!/bin/sh
 cat <<'JSON'
-{"protocol":"whoathere.guest_detonation.v1","schema_version":"whoathere.macos_vm.bundle.v1","agent_version":"0.2.0","job_id":"job-123","tool":"pip","command_class":"pip_install_detonation","fixture":"project_mirror","status":"ok","verdict":"allow_observed_clean","reason_codes":["token=supersecret"],"command_exit_code":0,"timed_out":false,"canary_access_detected":false,"network_attempt_detected":false,"filesystem_write_detected":false,"toolchain_available":true,"stdout_captured":false,"stderr_captured":false,"raw_canary_values_captured":false,"sync_back_enabled":false,"host_package_execution_enabled":false,"high_risk_package_execution_enabled":false,"project_mode":true,"project_workflow":"pip_project_install","project_import_module":"whoathere_clean","project_requirements_path":"none","vm_session_id":"session-123","exit_code":0}
+{"protocol":"whoathere.guest_detonation.v1","schema_version":"whoathere.macos_vm.bundle.v1","agent_version":"0.3.0","job_id":"job-123","tool":"pip","command_class":"pip_install_detonation","fixture":"project_mirror","status":"ok","verdict":"allow_observed_clean","reason_codes":["token=supersecret"],"command_exit_code":0,"timed_out":false,"canary_access_detected":false,"network_attempt_detected":false,"filesystem_write_detected":false,"toolchain_available":true,"execution_identity":"nobody","execution_identity_isolated":true,"runtime_network_telemetry_active":true,"network_telemetry_events":0,"process_group_cleanup_enforced":true,"stdout_captured":false,"stderr_captured":false,"raw_canary_values_captured":false,"sync_back_enabled":false,"host_package_execution_enabled":false,"high_risk_package_execution_enabled":false,"project_mode":true,"project_workflow":"pip_project_install","project_import_module":"whoathere_clean","project_requirements_path":"none","vm_session_id":"session-123","exit_code":0}
 JSON
 exit 0
 "#,
@@ -19916,6 +20080,16 @@ exit 0
         assert!(result
             .output
             .contains("\"raw_canary_values_captured\": false"));
+        assert!(result.output.contains("\"execution_identity\": \"nobody\""));
+        assert!(result
+            .output
+            .contains("\"execution_identity_isolated\": true"));
+        assert!(result
+            .output
+            .contains("\"runtime_network_telemetry_active\": true"));
+        assert!(result
+            .output
+            .contains("\"process_group_cleanup_enforced\": true"));
         assert!(result.output.contains("\"sync_back_enabled\": false"));
         assert!(result
             .output
@@ -21658,7 +21832,16 @@ dns.resolveTxt("stage.example", function(_err, records) {
         let scanner_receipt = state_dir.join("scanner.json");
         write_scanner_run_receipt(&scanner_receipt, Some(&state_dir), &root, true, &[]);
         let helper = state_dir.join("helper.sh");
-        write_new_file(&helper, b"#!/bin/sh\nexit 0\n").expect("helper script");
+        write_new_file(
+            &helper,
+            br#"#!/bin/sh
+cat <<'JSON'
+{"protocol":"whoathere.guest_detonation.v1","schema_version":"whoathere.macos_vm.bundle.v1","agent_version":"0.3.0","job_id":"job-intake","tool":"npm","command_class":"npm_install_detonation","fixture":"project_mirror","status":"ok","verdict":"allow_observed_clean","reason_codes":[],"command_exit_code":0,"timed_out":false,"canary_access_detected":false,"network_attempt_detected":false,"filesystem_write_detected":false,"toolchain_available":true,"execution_identity":"nobody","execution_identity_isolated":true,"runtime_network_telemetry_active":true,"network_telemetry_events":0,"process_group_cleanup_enforced":true,"stdout_captured":false,"stderr_captured":false,"raw_canary_values_captured":false,"sync_back_enabled":false,"host_package_execution_enabled":false,"high_risk_package_execution_enabled":false,"project_mode":true,"project_workflow":"npm_project_install","project_import_module":"none","project_requirements_path":"none","vm_session_id":"session-intake","exit_code":0}
+JSON
+exit 0
+"#,
+        )
+        .expect("helper script");
         set_executable(&helper).expect("executable helper");
 
         let result = evaluate_command(Command::IntakeAssess {
@@ -26832,7 +27015,7 @@ exit 127
             })
             .unwrap_or_default();
         format!(
-            r#"{{"protocol":"whoathere.guest_detonation.v1","schema_version":"whoathere.macos_vm.bundle.v1","agent_version":"0.2.0","job_id":"job-sync","tool":"{tool}","command_class":"{command_class}","fixture":"project_mirror","status":"{status}","verdict":"{verdict}","reason_codes":[{reason_codes}],"command_exit_code":{command_exit_code},"timed_out":false,"canary_access_detected":{canary_access},"network_attempt_detected":{network_attempt},"filesystem_write_detected":true,"toolchain_available":true,"stdout_captured":false,"stderr_captured":false,"raw_canary_values_captured":false,"sync_back_enabled":{sync_back_enabled},"host_package_execution_enabled":false,"high_risk_package_execution_enabled":false,"project_mode":true,"project_workflow":"{workflow}","project_import_module":"whoathere_clean","project_requirements_path":"none","vm_session_id":"session-sync"{archive_fields},"exit_code":{exit_code}}}"#,
+            r#"{{"protocol":"whoathere.guest_detonation.v1","schema_version":"whoathere.macos_vm.bundle.v1","agent_version":"0.3.0","job_id":"job-sync","tool":"{tool}","command_class":"{command_class}","fixture":"project_mirror","status":"{status}","verdict":"{verdict}","reason_codes":[{reason_codes}],"command_exit_code":{command_exit_code},"timed_out":false,"canary_access_detected":{canary_access},"network_attempt_detected":{network_attempt},"filesystem_write_detected":true,"toolchain_available":true,"execution_identity":"nobody","execution_identity_isolated":true,"runtime_network_telemetry_active":true,"network_telemetry_events":{network_events},"process_group_cleanup_enforced":true,"stdout_captured":false,"stderr_captured":false,"raw_canary_values_captured":false,"sync_back_enabled":{sync_back_enabled},"host_package_execution_enabled":false,"high_risk_package_execution_enabled":false,"project_mode":true,"project_workflow":"{workflow}","project_import_module":"whoathere_clean","project_requirements_path":"none","vm_session_id":"session-sync"{archive_fields},"exit_code":{exit_code}}}"#,
             tool = args.tool,
             command_class = args.command_class,
             status = args.status,
@@ -26841,6 +27024,7 @@ exit 127
             command_exit_code = args.command_exit_code,
             canary_access = args.canary_access,
             network_attempt = args.network_attempt,
+            network_events = if args.network_attempt { 1 } else { 0 },
             sync_back_enabled = args.sync_back_enabled,
             workflow = args.workflow,
             archive_fields = archive_fields,

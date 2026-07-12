@@ -269,8 +269,18 @@ Useful output fields:
 - `guest_job.verdict`: what the guest observed.
 - `guest_job.canary_access_detected`: whether fake credentials were touched.
 - `guest_job.network_attempt_detected`: whether network behavior was observed.
+- `guest_job.execution_identity_isolated`: whether package code ran as the unprivileged guest user.
+- `guest_job.runtime_network_telemetry_active`: whether Node/Python DNS and socket telemetry loaded.
+- `guest_job.network_telemetry_events`: irreversible runtime network-attempt signals received by the
+  privileged guest agent.
+- `guest_job.process_group_cleanup_enforced`: whether the complete job process group was terminated.
 - `sync_back.applied`: whether anything copied back to the host.
 - `reason_codes`: why the command allowed, denied, or asked for review.
+
+The CLI does not trust helper exit code `0` by itself. It requires a current guest-agent evidence
+envelope with matching tool, workflow, VM session, clean behavior flags, isolated identity, active
+network telemetry, and process cleanup. A missing, stale, malformed, or mismatched envelope fails
+closed.
 
 ## Copy Files Back
 

@@ -192,8 +192,10 @@ whoathere intake assess --workspace /absolute/path/to/project \
 
 `intake assess` runs package-risk assessment with local AI review requested by default, detonates the
 requested install workflow in the VM with fake canaries, disables sync-back, and only returns clean
-when both package-risk and dynamic VM evidence are clean. Use `--no-ai-review` for deterministic
-local-only testing when a local model is unavailable.
+when both package-risk and dynamic VM evidence are clean. A clean VM result must attest that package
+code ran as the unprivileged `nobody` user, runtime network telemetry was active, no DNS/socket event
+was observed, and the job process group was terminated. Missing or legacy evidence fails closed. Use
+`--no-ai-review` for deterministic local-only testing when a local model is unavailable.
 
 Preview mode is intentionally fail-closed:
 

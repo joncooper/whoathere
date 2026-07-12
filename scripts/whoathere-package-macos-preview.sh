@@ -74,6 +74,8 @@ run_validation() {
   cargo fmt --manifest-path "$RUST_WORKSPACE/Cargo.toml" --all -- --check
   cargo test --manifest-path "$RUST_WORKSPACE/Cargo.toml"
   cargo clippy --manifest-path "$RUST_WORKSPACE/Cargo.toml" --all-targets -- -D warnings
+  "$HELPER_ROOT/scripts/validate-guest-agent-project-payload.sh"
+  "$HELPER_ROOT/scripts/validate-guest-agent-timeout.sh"
 }
 
 build_artifacts() {
