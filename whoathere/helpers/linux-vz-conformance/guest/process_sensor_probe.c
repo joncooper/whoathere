@@ -7,6 +7,10 @@
 #include <arpa/inet.h>
 #include <linux/bpf.h>
 #include <linux/fanotify.h>
+#include <linux/if_addr.h>
+#include <linux/neighbour.h>
+#include <linux/netlink.h>
+#include <linux/rtnetlink.h>
 #include <net/if.h>
 #include <net/if_arp.h>
 #include <netinet/in.h>
@@ -41,9 +45,12 @@
 #define DYNAMIC_MARKER UINT64_C(0x57544c4942465831)
 #define DYNAMIC_LIBRARY_PATH "/whoathere/dynamic-fixture-library.so"
 #define NETWORK_REPORT_MAGIC 0x57544e34U
+#define NETWORK6_REPORT_MAGIC 0x57544e36U
 #define NETWORK_INTERFACE "eth0"
 #define NETWORK_SOURCE_ADDRESS "192.0.2.2"
 #define NETWORK_TARGET_ADDRESS "192.0.2.1"
+#define NETWORK6_SOURCE_ADDRESS "2001:db8::2"
+#define NETWORK6_TARGET_ADDRESS "2001:db8::1"
 #define NETWORK_TARGET_PORT 443
 #define SENSOR_PROGRAM_COUNT 8
 
@@ -83,6 +90,17 @@ struct network_report {
     uint64_t socket_inode;
     uint32_t source_address;
     uint32_t target_address;
+    uint16_t source_port;
+    uint16_t target_port;
+    int32_t connect_errno;
+};
+
+struct network6_report {
+    uint32_t magic;
+    int32_t process_pid;
+    uint64_t socket_inode;
+    struct in6_addr source_address;
+    struct in6_addr target_address;
     uint16_t source_port;
     uint16_t target_port;
     int32_t connect_errno;
@@ -876,6 +894,183 @@ static int read_exact_network_report(int descriptor, struct network_report *repo
         report->connect_errno == EINPROGRESS ? 0 : -1;
 }
 
+static int read_exact_network6_report(int descriptor, struct network6_report *report) {
+    size_t offset = 0;
+    while (offset < sizeof(*report)) {
+        ssize_t length = read(descriptor, (char *)report + offset, sizeof(*report) - offset);
+        if (length < 0 && errno == EINTR) continue;
+        if (length <= 0) return -1;
+        offset += (size_t)length;
+    }
+    char trailing = 0;
+    ssize_t length;
+    do {
+        length = read(descriptor, &trailing, 1);
+    } while (length < 0 && errno == EINTR);
+    struct in6_addr source = IN6ADDR_ANY_INIT;
+    struct in6_addr target = IN6ADDR_ANY_INIT;
+    return length == 0 && report->magic == NETWORK6_REPORT_MAGIC &&
+        report->process_pid > 0 && report->socket_inode > 0 &&
+        inet_pton(AF_INET6, NETWORK6_SOURCE_ADDRESS, &source) == 1 &&
+        inet_pton(AF_INET6, NETWORK6_TARGET_ADDRESS, &target) == 1 &&
+        memcmp(&report->source_address, &source, sizeof(source)) == 0 &&
+        memcmp(&report->target_address, &target, sizeof(target)) == 0 &&
+        report->source_port > 0 && report->target_port == NETWORK_TARGET_PORT &&
+        report->connect_errno == EINPROGRESS ? 0 : -1;
+}
+
+static int add_route_attribute(
+    struct nlmsghdr *header,
+    size_t maximum,
+    unsigned short type,
+    const void *value,
+    size_t length
+) {
+    size_t aligned = NLMSG_ALIGN(header->nlmsg_len);
+    size_t attribute_length = RTA_LENGTH(length);
+    if (aligned + RTA_ALIGN(attribute_length) > maximum) return -1;
+    struct rtattr *attribute = (struct rtattr *)((char *)header + aligned);
+    attribute->rta_type = type;
+    attribute->rta_len = (unsigned short)attribute_length;
+    memcpy(RTA_DATA(attribute), value, length);
+    header->nlmsg_len = (unsigned int)(aligned + RTA_ALIGN(attribute_length));
+    return 0;
+}
+
+static int send_route_request(struct nlmsghdr *request) {
+    int descriptor = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_ROUTE);
+    if (descriptor < 0) return -1;
+    struct sockaddr_nl local = {.nl_family = AF_NETLINK};
+    struct sockaddr_nl kernel = {.nl_family = AF_NETLINK};
+    int result = -1;
+    if (bind(descriptor, (const struct sockaddr *)&local, sizeof(local)) != 0) goto done;
+    request->nlmsg_seq = 1;
+    if (sendto(
+            descriptor,
+            request,
+            request->nlmsg_len,
+            0,
+            (const struct sockaddr *)&kernel,
+            sizeof(kernel)
+        ) != (ssize_t)request->nlmsg_len) goto done;
+    _Alignas(struct nlmsghdr) char response[4096];
+    for (;;) {
+        ssize_t length = recv(descriptor, response, sizeof(response), 0);
+        if (length < 0 && errno == EINTR) continue;
+        if (length <= 0) goto done;
+        for (struct nlmsghdr *header = (struct nlmsghdr *)response;
+             NLMSG_OK(header, length);
+             header = NLMSG_NEXT(header, length)) {
+            if (header->nlmsg_seq != request->nlmsg_seq) continue;
+            if (header->nlmsg_type != NLMSG_ERROR ||
+                header->nlmsg_len < NLMSG_LENGTH(sizeof(struct nlmsgerr))) goto done;
+            struct nlmsgerr *error = (struct nlmsgerr *)NLMSG_DATA(header);
+            if (error->error != 0) {
+                errno = -error->error;
+                goto done;
+            }
+            result = 0;
+            goto done;
+        }
+    }
+done:
+    close(descriptor);
+    return result;
+}
+
+static int prepare_ipv6_sinkhole(void) {
+    const struct {
+        const char *path;
+        const char *value;
+    } controls[] = {
+        {"/proc/sys/net/ipv6/conf/eth0/disable_ipv6", "1\n"},
+        {"/proc/sys/net/ipv6/conf/eth0/autoconf", "0\n"},
+        {"/proc/sys/net/ipv6/conf/eth0/accept_ra", "0\n"},
+        {"/proc/sys/net/ipv6/conf/eth0/router_solicitations", "0\n"},
+        {"/proc/sys/net/ipv6/conf/eth0/dad_transmits", "0\n"},
+        {"/proc/sys/net/ipv6/conf/eth0/addr_gen_mode", "1\n"},
+        {"/proc/sys/net/ipv6/conf/eth0/mldv2_unsolicited_report_interval", "60000\n"},
+        {"/proc/sys/net/ipv6/conf/eth0/disable_ipv6", "0\n"},
+    };
+    for (size_t index = 0; index < sizeof(controls) / sizeof(controls[0]); index++) {
+        if (write_control(controls[index].path, controls[index].value) != 0) return -1;
+    }
+    int control = socket(AF_INET6, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    if (control < 0) return -1;
+    struct ifreq interface;
+    memset(&interface, 0, sizeof(interface));
+    strncpy(interface.ifr_name, NETWORK_INTERFACE, IFNAMSIZ - 1);
+    if (ioctl(control, SIOCGIFFLAGS, &interface) != 0) {
+        close(control);
+        return -1;
+    }
+    interface.ifr_flags |= IFF_UP;
+    if (ioctl(control, SIOCSIFFLAGS, &interface) != 0) {
+        close(control);
+        return -1;
+    }
+    close(control);
+    unsigned int interface_index = if_nametoindex(NETWORK_INTERFACE);
+    struct in6_addr source = IN6ADDR_ANY_INIT;
+    struct in6_addr target = IN6ADDR_ANY_INIT;
+    if (interface_index == 0 ||
+        inet_pton(AF_INET6, NETWORK6_SOURCE_ADDRESS, &source) != 1 ||
+        inet_pton(AF_INET6, NETWORK6_TARGET_ADDRESS, &target) != 1) return -1;
+
+    struct {
+        struct nlmsghdr header;
+        struct ifaddrmsg address;
+        char attributes[96];
+    } address_request;
+    memset(&address_request, 0, sizeof(address_request));
+    address_request.header.nlmsg_len = NLMSG_LENGTH(sizeof(address_request.address));
+    address_request.header.nlmsg_type = RTM_NEWADDR;
+    address_request.header.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL;
+    address_request.address.ifa_family = AF_INET6;
+    address_request.address.ifa_prefixlen = 64;
+    address_request.address.ifa_flags = IFA_F_NODAD;
+    address_request.address.ifa_scope = RT_SCOPE_UNIVERSE;
+    address_request.address.ifa_index = interface_index;
+    if (add_route_attribute(
+            &address_request.header,
+            sizeof(address_request),
+            IFA_ADDRESS,
+            &source,
+            sizeof(source)
+        ) != 0 || send_route_request(&address_request.header) != 0) return -1;
+
+    struct {
+        struct nlmsghdr header;
+        struct ndmsg neighbor;
+        char attributes[96];
+    } neighbor_request;
+    memset(&neighbor_request, 0, sizeof(neighbor_request));
+    neighbor_request.header.nlmsg_len = NLMSG_LENGTH(sizeof(neighbor_request.neighbor));
+    neighbor_request.header.nlmsg_type = RTM_NEWNEIGH;
+    neighbor_request.header.nlmsg_flags =
+        NLM_F_REQUEST | NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL;
+    neighbor_request.neighbor.ndm_family = AF_INET6;
+    neighbor_request.neighbor.ndm_ifindex = (int)interface_index;
+    neighbor_request.neighbor.ndm_state = NUD_PERMANENT;
+    neighbor_request.neighbor.ndm_type = RTN_UNICAST;
+    const unsigned char target_mac[6] = {0x02, 0x57, 0x48, 0x4f, 0x41, 0xfe};
+    if (add_route_attribute(
+            &neighbor_request.header,
+            sizeof(neighbor_request),
+            NDA_DST,
+            &target,
+            sizeof(target)
+        ) != 0 ||
+        add_route_attribute(
+            &neighbor_request.header,
+            sizeof(neighbor_request),
+            NDA_LLADDR,
+            target_mac,
+            sizeof(target_mac)
+        ) != 0 || send_route_request(&neighbor_request.header) != 0) return -1;
+    return 0;
+}
+
 static int set_interface_address(int descriptor, unsigned long request, const char *address) {
     struct ifreq interface;
     memset(&interface, 0, sizeof(interface));
@@ -961,6 +1156,58 @@ static int proc_tcp_contains_ipv4_sinkhole(const struct network_report *report) 
     return observed;
 }
 
+static void proc_ipv6_address(const struct in6_addr *address, char output[33]) {
+    for (size_t word = 0; word < 4; word++) {
+        const unsigned char *bytes = &address->s6_addr[word * 4];
+        snprintf(
+            output + word * 8,
+            9,
+            "%02X%02X%02X%02X",
+            bytes[3],
+            bytes[2],
+            bytes[1],
+            bytes[0]
+        );
+    }
+    output[32] = '\0';
+}
+
+static int proc_tcp_contains_ipv6_sinkhole(const struct network6_report *report) {
+    FILE *stream = fopen("/proc/net/tcp6", "re");
+    if (stream == NULL) return 0;
+    char source_address[33];
+    char target_address[33];
+    char expected_local[38];
+    char expected_remote[38];
+    proc_ipv6_address(&report->source_address, source_address);
+    proc_ipv6_address(&report->target_address, target_address);
+    snprintf(expected_local, sizeof(expected_local), "%s:%04X", source_address, report->source_port);
+    snprintf(expected_remote, sizeof(expected_remote), "%s:%04X", target_address, report->target_port);
+    char line[640];
+    int observed = 0;
+    while (fgets(line, sizeof(line), stream) != NULL) {
+        char local[38] = {0};
+        char remote[38] = {0};
+        char state[3] = {0};
+        unsigned long long inode = 0;
+        if (sscanf(
+                line,
+                " %*d: %37s %37s %2s %*s %*s %*s %*u %*u %llu",
+                local,
+                remote,
+                state,
+                &inode
+            ) == 4 && strcmp(local, expected_local) == 0 &&
+            strcmp(remote, expected_remote) == 0 && strcmp(state, "02") == 0 &&
+            inode == report->socket_inode) {
+            observed = 1;
+            break;
+        }
+    }
+    if (fclose(stream) != 0) return 0;
+    return observed;
+}
+
 static int run_process_probe(const char *fixture, const char *fixture_case) {
     static const char *tracepoints[] = {
         "sys_enter",
@@ -989,6 +1236,7 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
     struct credential_report credential_report = {0};
     struct dynamic_report dynamic_report = {0};
     struct network_report network_report = {0};
+    struct network6_report network6_report = {0};
     uint64_t reparent_timestamp = 0;
     uint64_t session_timestamp = 0;
     uint64_t dynamic_timestamp = 0;
@@ -996,6 +1244,7 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
     int report_pipe[2] = {-1, -1};
     int dynamic_fanotify = -1;
     int ipv4_prepared = 0;
+    int ipv6_prepared = 0;
     int child_status = 0;
     int result = 70;
     const char *failure_stage = "preflight";
@@ -1075,6 +1324,8 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
     int credential_change = strcmp(fixture_case, "credential_change") == 0;
     int dynamic_library_load = strcmp(fixture_case, "dynamic_library_load") == 0;
     int ipv4_connect = strcmp(fixture_case, "ipv4_connect") == 0;
+    int ipv6_connect = strcmp(fixture_case, "ipv6_connect") == 0;
+    int network_connect = ipv4_connect || ipv6_connect;
     if (credential_change) {
         const enum observation_key keys[] = {
             OBSERVATION_SETGROUPS, OBSERVATION_SETGID, OBSERVATION_SETUID
@@ -1103,7 +1354,7 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
             }
         }
     }
-    if (ipv4_connect) {
+    if (network_connect) {
         fds.programs[7] = load_syscall_program(
             fds.map,
             OBSERVATION_CONNECT,
@@ -1112,16 +1363,25 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
         fds.links[7] = fds.programs[7] >= 0
             ? attach_raw_tracepoint("sys_enter", fds.programs[7]) : -1;
         if (fds.programs[7] < 0 || fds.links[7] < 0) {
-            failure_stage = "ipv4_connect_attach";
+            failure_stage = "network_connect_attach";
             failure_errno = errno;
             goto cleanup;
         }
-        if (prepare_ipv4_sinkhole() != 0) {
-            failure_stage = "ipv4_sinkhole_prepare";
-            failure_errno = errno;
-            goto cleanup;
+        if (ipv4_connect) {
+            if (prepare_ipv4_sinkhole() != 0) {
+                failure_stage = "ipv4_sinkhole_prepare";
+                failure_errno = errno;
+                goto cleanup;
+            }
+            ipv4_prepared = 1;
+        } else {
+            if (prepare_ipv6_sinkhole() != 0) {
+                failure_stage = "ipv6_sinkhole_prepare";
+                failure_errno = errno;
+                goto cleanup;
+            }
+            ipv6_prepared = 1;
         }
-        ipv4_prepared = 1;
     }
     if ((double_fork || reparent) && prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0) {
         failure_stage = "subreaper_enable";
@@ -1147,7 +1407,8 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
             goto cleanup;
         }
     }
-    if ((reparent || setsid_escape || credential_change || dynamic_library_load || ipv4_connect) &&
+    if ((reparent || setsid_escape || credential_change || dynamic_library_load ||
+         ipv4_connect || ipv6_connect) &&
         pipe2(report_pipe, O_CLOEXEC) != 0) {
         failure_stage = "process_report_pipe";
         failure_errno = errno;
@@ -1173,7 +1434,8 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
             fixture,
             fixture_case,
             &fds,
-            (reparent || setsid_escape || credential_change || dynamic_library_load || ipv4_connect)
+            (reparent || setsid_escape || credential_change || dynamic_library_load ||
+             ipv4_connect || ipv6_connect)
                 ? report_pipe[1] : -1
         );
     }
@@ -1269,6 +1531,26 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
             goto cleanup;
         }
     }
+    if (ipv6_connect) {
+        if (read_exact_network6_report(report_pipe[0], &network6_report) != 0) {
+            failure_stage = "ipv6_report";
+            failure_errno = errno;
+            goto cleanup;
+        }
+        close_if_open(&report_pipe[0]);
+        if (network6_report.process_pid != child ||
+            !proc_identity_matches(child, parent) ||
+            !proc_has_no_supplementary_groups(child) ||
+            !proc_tcp_contains_ipv6_sinkhole(&network6_report)) {
+            failure_stage = "ipv6_live_socket";
+            goto cleanup;
+        }
+        network_timestamp = monotonic_ns();
+        if (network_timestamp == 0) {
+            failure_stage = "ipv6_timestamp";
+            goto cleanup;
+        }
+    }
     if (waitpid(child, &child_status, 0) != child || !WIFEXITED(child_status) ||
         WEXITSTATUS(child_status) != 0) {
         failure_stage = "fixture_exit";
@@ -1339,14 +1621,14 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
         failure_errno = errno;
         goto cleanup;
     }
-    if (ipv4_connect &&
+    if (network_connect &&
         lookup_observation(fds.map, OBSERVATION_CONNECT, &connect_event) != 0) {
-        failure_stage = "ipv4_observation_lookup";
+        failure_stage = "network_observation_lookup";
         failure_errno = errno;
         goto cleanup;
     }
     if ((!double_fork && !reparent && !setsid_escape && !credential_change &&
-         !dynamic_library_load && !ipv4_connect &&
+         !dynamic_library_load && !network_connect &&
          (!observed_pid(&fork_event, parent) || !observed_pid(&exec_event, child) ||
           !observed_pid(&exit_event, child) ||
           fork_event.timestamp_ns >= exec_event.timestamp_ns ||
@@ -1388,7 +1670,7 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
           fork_event.timestamp_ns >= exec_event.timestamp_ns ||
           exec_event.timestamp_ns >= dynamic_timestamp ||
           dynamic_timestamp >= exit_event.timestamp_ns)) ||
-        (ipv4_connect &&
+        (network_connect &&
          (!observed_pid(&fork_event, parent) || !observed_pid(&exec_event, child) ||
           !observed_pid(&connect_event, child) || !observed_pid(&exit_event, child) ||
           network_timestamp == 0 || fork_event.timestamp_ns >= exec_event.timestamp_ns ||
@@ -1483,9 +1765,9 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
                 exit_event.timestamp_ns
             );
         }
-        if (ipv4_connect) {
+        if (network_connect) {
             printf(
-                "WHOATHERE_SENSOR_IPV4_OBSERVATION_DIAGNOSTIC "
+                "WHOATHERE_SENSOR_NETWORK_OBSERVATION_DIAGNOSTIC "
                 "fork_count=%" PRIu64 " exec_count=%" PRIu64
                 " connect_count=%" PRIu64 " exit_count=%" PRIu64
                 " child=%d source_port=%u fork_ns=%" PRIu64
@@ -1496,7 +1778,7 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
                 connect_event.count,
                 exit_event.count,
                 child,
-                network_report.source_port,
+                ipv4_connect ? network_report.source_port : network6_report.source_port,
                 fork_event.timestamp_ns,
                 exec_event.timestamp_ns,
                 connect_event.timestamp_ns,
@@ -1539,8 +1821,18 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
         puts("WHOATHERE_SENSOR network_socket_state=syn_sent");
         puts("WHOATHERE_SENSOR network_target=documentation_sinkhole_192_0_2_1_443");
     }
+    if (ipv6_connect) {
+        puts("WHOATHERE_SENSOR network_ipv6_connect=observed");
+        puts("WHOATHERE_SENSOR network_socket_state=syn_sent");
+        puts("WHOATHERE_SENSOR network_target=documentation_sinkhole_2001_db8_1_443");
+    }
     puts("WHOATHERE_SENSOR_PROCESS_PROBE_OK");
-    if (ipv4_connect) {
+    if (network_connect) {
+        const char *network_family = ipv4_connect ? "ipv4" : "ipv6";
+        const char *network_source = ipv4_connect ? NETWORK_SOURCE_ADDRESS : NETWORK6_SOURCE_ADDRESS;
+        const char *network_target = ipv4_connect ? NETWORK_TARGET_ADDRESS : NETWORK6_TARGET_ADDRESS;
+        uint16_t network_source_port = ipv4_connect
+            ? network_report.source_port : network6_report.source_port;
         printf(
             "WHOATHERE_GUEST_NETWORK_EVIDENCE "
             "{\"descendant_teardown_complete\":true,\"dropped_event_count\":\"0\","
@@ -1558,12 +1850,12 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
             "{\"actor_pid\":\"%" PRIu64 "\",\"cgroup_id\":\"%" PRIu64
             "\",\"kind\":\"exit\",\"sequence\":\"4\",\"subject_pid\":\"%" PRIu64
             "\",\"timestamp_ns\":\"%" PRIu64 "\"}],"
-            "\"evidence_truncated\":false,\"fixture_case\":\"ipv4_connect\","
+            "\"evidence_truncated\":false,\"fixture_case\":\"%s\","
             "\"heartbeat_count\":\"2\",\"network_action\":\"tcp_connect\","
-            "\"network_family\":\"ipv4\",\"network_protocol\":\"tcp\","
+            "\"network_family\":\"%s\",\"network_protocol\":\"tcp\","
             "\"network_socket_state\":\"syn_sent\","
-            "\"network_source\":\"192.0.2.2\",\"network_source_port\":\"%u\","
-            "\"network_target\":\"192.0.2.1\",\"network_target_port\":\"443\","
+            "\"network_source\":\"%s\",\"network_source_port\":\"%u\","
+            "\"network_target\":\"%s\",\"network_target_port\":\"443\","
             "\"package_gid\":\"65534\",\"package_uid\":\"65534\","
             "\"reaped_process_count\":\"1\","
             "\"schema_version\":\"whoathere.linux_vz_network_evidence_payload.v1\","
@@ -1584,7 +1876,11 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
             cgroup.count,
             (uint64_t)child,
             exit_event.timestamp_ns,
-            network_report.source_port
+            fixture_case,
+            network_family,
+            network_source,
+            network_source_port,
+            network_target
         );
         result = 0;
         goto cleanup;
@@ -1858,6 +2154,7 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
 
 cleanup:
     if (ipv4_prepared) cleanup_ipv4_sinkhole();
+    if (ipv6_prepared) cleanup_ipv4_sinkhole();
     if (dynamic_fanotify >= 0) close(dynamic_fanotify);
     close_if_open(&report_pipe[0]);
     close_if_open(&report_pipe[1]);
@@ -1886,7 +2183,8 @@ int main(int argument_count, char **arguments) {
         strcmp(arguments[2], "setsid_escape") == 0 ||
         strcmp(arguments[2], "credential_change") == 0 ||
         strcmp(arguments[2], "dynamic_library_load") == 0 ||
-        strcmp(arguments[2], "ipv4_connect") == 0) {
+        strcmp(arguments[2], "ipv4_connect") == 0 ||
+        strcmp(arguments[2], "ipv6_connect") == 0) {
         return run_process_probe(arguments[1], arguments[2]);
     }
     if (strcmp(arguments[2], "protected_open_read_write_rename_delete") == 0 ||

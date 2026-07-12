@@ -20,6 +20,7 @@ static const char *dynamic_library_path = "/whoathere/dynamic-fixture-library.so
 #define SESSION_REPORT_MAGIC 0x57545353U
 #define CREDENTIAL_REPORT_MAGIC 0x57544352U
 #define NETWORK_REPORT_MAGIC 0x57544e34U
+#define NETWORK6_REPORT_MAGIC 0x57544e36U
 
 struct reparent_report {
     uint32_t magic;
@@ -51,6 +52,17 @@ struct network_report {
     uint64_t socket_inode;
     uint32_t source_address;
     uint32_t target_address;
+    uint16_t source_port;
+    uint16_t target_port;
+    int32_t connect_errno;
+};
+
+struct network6_report {
+    uint32_t magic;
+    int32_t process_pid;
+    uint64_t socket_inode;
+    struct in6_addr source_address;
+    struct in6_addr target_address;
     uint16_t source_port;
     uint16_t target_port;
     int32_t connect_errno;
@@ -274,6 +286,60 @@ static int ipv4_connect(void) {
     return result;
 }
 
+static int ipv6_connect(void) {
+    int descriptor = socket(AF_INET6, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, IPPROTO_TCP);
+    if (descriptor < 0) return 114;
+    struct sockaddr_in6 target = {
+        .sin6_family = AF_INET6,
+        .sin6_port = htons(443),
+    };
+    if (inet_pton(AF_INET6, "2001:db8::1", &target.sin6_addr) != 1) {
+        close(descriptor);
+        return 115;
+    }
+    errno = 0;
+    int connected = connect(descriptor, (const struct sockaddr *)&target, sizeof(target));
+    int connect_errno = errno;
+    if (connected != -1 || connect_errno != EINPROGRESS) {
+        close(descriptor);
+        return 116;
+    }
+    struct sockaddr_in6 source = {0};
+    socklen_t source_length = sizeof(source);
+    struct stat metadata;
+    if (getsockname(descriptor, (struct sockaddr *)&source, &source_length) != 0 ||
+        source_length != sizeof(source) || source.sin6_family != AF_INET6 ||
+        source.sin6_port == 0 || fstat(descriptor, &metadata) != 0) {
+        close(descriptor);
+        return 117;
+    }
+    const struct network6_report report = {
+        .magic = NETWORK6_REPORT_MAGIC,
+        .process_pid = getpid(),
+        .socket_inode = metadata.st_ino,
+        .source_address = source.sin6_addr,
+        .target_address = target.sin6_addr,
+        .source_port = ntohs(source.sin6_port),
+        .target_port = ntohs(target.sin6_port),
+        .connect_errno = connect_errno,
+    };
+    ssize_t written = write(REPARENT_REPORT_FD, &report, sizeof(report));
+    int saved_errno = errno;
+    if (close(REPARENT_REPORT_FD) != 0 && written == (ssize_t)sizeof(report)) {
+        close(descriptor);
+        return 118;
+    }
+    errno = saved_errno;
+    if (written != (ssize_t)sizeof(report)) {
+        close(descriptor);
+        return 119;
+    }
+    const struct timespec pause = {.tv_sec = 0, .tv_nsec = 200000000};
+    int result = nanosleep(&pause, NULL) == 0 ? 0 : 120;
+    if (close(descriptor) != 0 && result == 0) result = 121;
+    return result;
+}
+
 int main(int argument_count, char **arguments) {
     if (argument_count != 2 || getuid() != 65534 || geteuid() != 65534 ||
         getgid() != 65534 || getegid() != 65534) {
@@ -290,6 +356,7 @@ int main(int argument_count, char **arguments) {
     if (strcmp(arguments[1], "credential_change") == 0) return credential_change();
     if (strcmp(arguments[1], "dynamic_library_load") == 0) return dynamic_library_load();
     if (strcmp(arguments[1], "ipv4_connect") == 0) return ipv4_connect();
+    if (strcmp(arguments[1], "ipv6_connect") == 0) return ipv6_connect();
     if (strcmp(arguments[1], "protected_open_read_write_rename_delete") == 0 ||
         strcmp(arguments[1], "mmap_access") == 0) {
         return file_fixture();

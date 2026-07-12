@@ -1,6 +1,6 @@
 use crate::{
-    LinuxVzTelemetryConformanceObservedTerminalV1, LinuxVzTelemetryHostObservationClaimsV1,
-    MacosLinuxVzTelemetryEvidenceErrorV1,
+    LinuxVzTelemetryConformanceCaseV1, LinuxVzTelemetryConformanceObservedTerminalV1,
+    LinuxVzTelemetryHostObservationClaimsV1, MacosLinuxVzTelemetryEvidenceErrorV1,
 };
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -38,6 +38,7 @@ impl std::error::Error for LinuxVzNetworkHostEvidencePayloadErrorV1 {}
 pub struct LinuxVzNetworkHostEvidencePayloadV1 {
     canonical_json: Vec<u8>,
     payload_sha256: Sha256Digest,
+    fixture_case: LinuxVzTelemetryConformanceCaseV1,
     source_port: u16,
 }
 
@@ -48,6 +49,10 @@ impl LinuxVzNetworkHostEvidencePayloadV1 {
 
     pub fn source_port(&self) -> u16 {
         self.source_port
+    }
+
+    pub fn fixture_case(&self) -> LinuxVzTelemetryConformanceCaseV1 {
+        self.fixture_case
     }
 
     pub fn host_observation_claims_v1(
@@ -76,6 +81,7 @@ impl LinuxVzNetworkHostEvidencePayloadV1 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct NetworkHostEvidenceWireV1 {
+    bootstrap_frame_count: String,
     clone_destroyed: bool,
     dropped_frame_count: String,
     event_count: String,
@@ -139,11 +145,24 @@ pub fn decode_linux_vz_network_host_evidence_payload_v1(
         return Err(LinuxVzNetworkHostEvidencePayloadErrorV1::NonCanonical);
     }
     let source_port = decimal_u64_v1(&wire.source_port)?;
+    let fixture_case = match wire.fixture_case.as_str() {
+        "ipv4_connect"
+            if wire.frame_kind == "ipv4_tcp_syn"
+                && wire.source_address == "192.0.2.2"
+                && wire.target_address == "192.0.2.1" =>
+        {
+            LinuxVzTelemetryConformanceCaseV1::Ipv4Connect
+        }
+        "ipv6_connect"
+            if wire.frame_kind == "ipv6_tcp_syn"
+                && wire.source_address == "2001:db8::2"
+                && wire.target_address == "2001:db8::1" =>
+        {
+            LinuxVzTelemetryConformanceCaseV1::Ipv6Connect
+        }
+        _ => return Err(LinuxVzNetworkHostEvidencePayloadErrorV1::InvalidSchema),
+    };
     if wire.schema_version != LINUX_VZ_NETWORK_HOST_EVIDENCE_PAYLOAD_SCHEMA_V1
-        || wire.fixture_case != "ipv4_connect"
-        || wire.frame_kind != "ipv4_tcp_syn"
-        || wire.source_address != "192.0.2.2"
-        || wire.target_address != "192.0.2.1"
         || wire.source_mac != "02:57:48:4f:41:31"
         || wire.target_mac != "02:57:48:4f:41:fe"
         || source_port == 0
@@ -153,13 +172,25 @@ pub fn decode_linux_vz_network_host_evidence_payload_v1(
         || decimal_u64_v1(&wire.event_sequence_end)? != 7
         || decimal_u64_v1(&wire.event_count)? != 7
         || decimal_u64_v1(&wire.heartbeat_count)? != 2
-        || decimal_u64_v1(&wire.raw_frame_count)? != 1
+        || decimal_u64_v1(&wire.bootstrap_frame_count)?
+            != if fixture_case == LinuxVzTelemetryConformanceCaseV1::Ipv6Connect {
+                1
+            } else {
+                0
+            }
+        || decimal_u64_v1(&wire.raw_frame_count)?
+            != if fixture_case == LinuxVzTelemetryConformanceCaseV1::Ipv6Connect {
+                2
+            } else {
+                1
+            }
         || decimal_u64_v1(&wire.matched_frame_count)? != 1
         || decimal_u64_v1(&wire.unexpected_frame_count)? != 0
         || decimal_u64_v1(&wire.dropped_frame_count)? != 0
         || decimal_u64_v1(&wire.external_frames_forwarded)? != 0
         || decimal_u64_v1(&wire.storage_device_count)? != 0
-        || !wire.ip_checksum_valid
+        || wire.ip_checksum_valid
+            != (fixture_case == LinuxVzTelemetryConformanceCaseV1::Ipv4Connect)
         || !wire.transport_checksum_valid
         || !wire.packet_sensor_healthy
         || wire.packet_sensor_terminal != "drained_would_block"
@@ -193,6 +224,7 @@ pub fn decode_linux_vz_network_host_evidence_payload_v1(
     Ok(LinuxVzNetworkHostEvidencePayloadV1 {
         canonical_json: canonical,
         payload_sha256: Sha256Digest::from_bytes(payload),
+        fixture_case,
         source_port: source_port as u16,
     })
 }
@@ -215,6 +247,7 @@ mod tests {
 
     fn payload() -> Vec<u8> {
         serde_json_canonicalizer::to_vec(&serde_json::json!({
+            "bootstrap_frame_count": "0",
             "clone_destroyed": true,
             "dropped_frame_count": "0",
             "event_count": "7",
@@ -281,6 +314,24 @@ mod tests {
         assert_eq!(
             decode_linux_vz_network_host_evidence_payload_v1(&forged),
             Err(LinuxVzNetworkHostEvidencePayloadErrorV1::InvalidSchema)
+        );
+    }
+
+    #[test]
+    fn exact_ipv6_syn_frame_derives_distinct_case() {
+        let mut value: serde_json::Value = serde_json::from_slice(&payload()).unwrap();
+        value["fixture_case"] = serde_json::json!("ipv6_connect");
+        value["bootstrap_frame_count"] = serde_json::json!("1");
+        value["frame_kind"] = serde_json::json!("ipv6_tcp_syn");
+        value["ip_checksum_valid"] = serde_json::json!(false);
+        value["source_address"] = serde_json::json!("2001:db8::2");
+        value["target_address"] = serde_json::json!("2001:db8::1");
+        value["raw_frame_count"] = serde_json::json!("2");
+        let encoded = serde_json_canonicalizer::to_vec(&value).unwrap();
+        let evidence = decode_linux_vz_network_host_evidence_payload_v1(&encoded).unwrap();
+        assert_eq!(
+            evidence.fixture_case(),
+            LinuxVzTelemetryConformanceCaseV1::Ipv6Connect
         );
     }
 }

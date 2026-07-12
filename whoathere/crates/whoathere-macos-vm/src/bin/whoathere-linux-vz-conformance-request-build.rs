@@ -36,6 +36,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "credential_change" => LinuxVzTelemetryConformanceCaseV1::CredentialChange,
         "dynamic_library_load" => LinuxVzTelemetryConformanceCaseV1::DynamicLibraryLoad,
         "ipv4_connect" => LinuxVzTelemetryConformanceCaseV1::Ipv4Connect,
+        "ipv6_connect" => LinuxVzTelemetryConformanceCaseV1::Ipv6Connect,
         "protected_open_read_write_rename_delete" => {
             LinuxVzTelemetryConformanceCaseV1::ProtectedOpenReadWriteRenameDelete
         }

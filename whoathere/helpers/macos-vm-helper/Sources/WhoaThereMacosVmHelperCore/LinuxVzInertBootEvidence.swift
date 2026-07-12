@@ -60,6 +60,12 @@ public let linuxVzInertIPv4ConnectSensorMarkersV1 = [
     "WHOATHERE_SENSOR network_target=documentation_sinkhole_192_0_2_1_443"
 ]
 
+public let linuxVzInertIPv6ConnectSensorMarkersV1 = [
+    "WHOATHERE_SENSOR network_ipv6_connect=observed",
+    "WHOATHERE_SENSOR network_socket_state=syn_sent",
+    "WHOATHERE_SENSOR network_target=documentation_sinkhole_2001_db8_1_443"
+]
+
 public let linuxVzInertRequiredEvidenceMarkersV2 =
     linuxVzInertRequiredCapabilityMarkersV1 + linuxVzInertProcessSensorMarkersV2
 

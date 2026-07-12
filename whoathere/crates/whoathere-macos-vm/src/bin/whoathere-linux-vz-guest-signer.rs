@@ -86,6 +86,7 @@ mod linux {
                 | LinuxVzTelemetryConformanceCaseV1::CredentialChange
                 | LinuxVzTelemetryConformanceCaseV1::DynamicLibraryLoad
                 | LinuxVzTelemetryConformanceCaseV1::Ipv4Connect
+                | LinuxVzTelemetryConformanceCaseV1::Ipv6Connect
                 | LinuxVzTelemetryConformanceCaseV1::ProtectedOpenReadWriteRenameDelete
                 | LinuxVzTelemetryConformanceCaseV1::MmapAccess
         ) || run_spec.expected_terminal()
@@ -115,6 +116,7 @@ mod linux {
             LinuxVzTelemetryConformanceCaseV1::CredentialChange => "credential_change",
             LinuxVzTelemetryConformanceCaseV1::DynamicLibraryLoad => "dynamic_library_load",
             LinuxVzTelemetryConformanceCaseV1::Ipv4Connect => "ipv4_connect",
+            LinuxVzTelemetryConformanceCaseV1::Ipv6Connect => "ipv6_connect",
             LinuxVzTelemetryConformanceCaseV1::ProtectedOpenReadWriteRenameDelete => {
                 "protected_open_read_write_rename_delete"
             }
@@ -172,7 +174,8 @@ mod linux {
                     evidence.guest_observation_claims_v1()?,
                 )
             }
-            LinuxVzTelemetryConformanceCaseV1::Ipv4Connect => {
+            LinuxVzTelemetryConformanceCaseV1::Ipv4Connect
+            | LinuxVzTelemetryConformanceCaseV1::Ipv6Connect => {
                 let evidence = decode_linux_vz_network_evidence_from_serial_v1(&sensor_output)?;
                 if evidence.fixture_case() != run_spec.fixture_case() {
                     return Err("guest_signer_network_case_mismatch".into());

@@ -6,6 +6,7 @@ public let linuxVzNetworkHostEvidencePayloadSchemaV1 =
 public struct LinuxVzNetworkHostEvidencePayload: Equatable, Sendable {
     public let canonicalJSON: Data
     public let payloadSHA256: String
+    public let fixtureCase: String
     public let sourcePort: UInt16
     public let claims: LinuxVzTelemetryHostObservationClaims
 }
@@ -19,7 +20,63 @@ public func makeLinuxVzIPv4ConnectHostEvidencePayload(
     packetSensorTerminal: String,
     storageDeviceCount: UInt64
 ) throws -> LinuxVzNetworkHostEvidencePayload {
+    try makeLinuxVzConnectHostEvidencePayload(
+        fixtureCase: "ipv4_connect",
+        frameKind: "ipv4_tcp_syn",
+        sourceAddress: "192.0.2.2",
+        targetAddress: "192.0.2.1",
+        bootstrapFrameCount: 0,
+        sourcePort: sourcePort,
+        rawFrameCount: rawFrameCount,
+        matchedFrameCount: matchedFrameCount,
+        unexpectedFrameCount: unexpectedFrameCount,
+        packetSensorHealthy: packetSensorHealthy,
+        packetSensorTerminal: packetSensorTerminal,
+        storageDeviceCount: storageDeviceCount
+    )
+}
+
+public func makeLinuxVzIPv6ConnectHostEvidencePayload(
+    sourcePort: UInt16,
+    rawFrameCount: UInt64,
+    matchedFrameCount: UInt64,
+    unexpectedFrameCount: UInt64,
+    packetSensorHealthy: Bool,
+    packetSensorTerminal: String,
+    storageDeviceCount: UInt64
+) throws -> LinuxVzNetworkHostEvidencePayload {
+    try makeLinuxVzConnectHostEvidencePayload(
+        fixtureCase: "ipv6_connect",
+        frameKind: "ipv6_tcp_syn",
+        sourceAddress: "2001:db8::2",
+        targetAddress: "2001:db8::1",
+        bootstrapFrameCount: 1,
+        sourcePort: sourcePort,
+        rawFrameCount: rawFrameCount,
+        matchedFrameCount: matchedFrameCount,
+        unexpectedFrameCount: unexpectedFrameCount,
+        packetSensorHealthy: packetSensorHealthy,
+        packetSensorTerminal: packetSensorTerminal,
+        storageDeviceCount: storageDeviceCount
+    )
+}
+
+private func makeLinuxVzConnectHostEvidencePayload(
+    fixtureCase: String,
+    frameKind: String,
+    sourceAddress: String,
+    targetAddress: String,
+    bootstrapFrameCount: UInt64,
+    sourcePort: UInt16,
+    rawFrameCount: UInt64,
+    matchedFrameCount: UInt64,
+    unexpectedFrameCount: UInt64,
+    packetSensorHealthy: Bool,
+    packetSensorTerminal: String,
+    storageDeviceCount: UInt64
+) throws -> LinuxVzNetworkHostEvidencePayload {
     let value: [String: Any] = [
+        "bootstrap_frame_count": String(bootstrapFrameCount),
         "clone_destroyed": true,
         "dropped_frame_count": "0",
         "event_count": "7",
@@ -37,11 +94,11 @@ public func makeLinuxVzIPv4ConnectHostEvidencePayload(
         "evidence_truncated": false,
         "external_frames_forwarded": "0",
         "external_route_configured": false,
-        "fixture_case": "ipv4_connect",
-        "frame_kind": "ipv4_tcp_syn",
+        "fixture_case": fixtureCase,
+        "frame_kind": frameKind,
         "guest_channel_terminated": true,
         "heartbeat_count": "2",
-        "ip_checksum_valid": true,
+        "ip_checksum_valid": fixtureCase == "ipv4_connect",
         "matched_frame_count": String(matchedFrameCount),
         "package_execution": false,
         "packet_sensor_healthy": packetSensorHealthy,
@@ -49,12 +106,12 @@ public func makeLinuxVzIPv4ConnectHostEvidencePayload(
         "raw_frame_count": String(rawFrameCount),
         "root_disk_present": false,
         "schema_version": linuxVzNetworkHostEvidencePayloadSchemaV1,
-        "source_address": "192.0.2.2",
+        "source_address": sourceAddress,
         "source_mac": "02:57:48:4f:41:31",
         "source_port": String(sourcePort),
         "storage_device_count": String(storageDeviceCount),
         "sync_back": false,
-        "target_address": "192.0.2.1",
+        "target_address": targetAddress,
         "target_mac": "02:57:48:4f:41:fe",
         "target_port": "443",
         "transport_checksum_valid": true,
@@ -77,8 +134,22 @@ public func decodeLinuxVzNetworkHostEvidencePayload(
     guard try canonicalJSONData(value) == data else {
         throw LinuxVzHostEvidencePayloadError.nonCanonical
     }
+    let fixtureCase: String
+    switch (
+        value["fixture_case"] as? String,
+        value["frame_kind"] as? String,
+        value["source_address"] as? String,
+        value["target_address"] as? String
+    ) {
+    case ("ipv4_connect", "ipv4_tcp_syn", "192.0.2.2", "192.0.2.1"):
+        fixtureCase = "ipv4_connect"
+    case ("ipv6_connect", "ipv6_tcp_syn", "2001:db8::2", "2001:db8::1"):
+        fixtureCase = "ipv6_connect"
+    default:
+        throw LinuxVzHostEvidencePayloadError.invalidSchema
+    }
     guard Set(value.keys) == Set([
-        "clone_destroyed", "dropped_frame_count", "event_count", "event_sequence_end",
+        "bootstrap_frame_count", "clone_destroyed", "dropped_frame_count", "event_count", "event_sequence_end",
         "event_sequence_start", "events", "evidence_truncated", "external_frames_forwarded",
         "external_route_configured", "fixture_case", "frame_kind", "guest_channel_terminated",
         "heartbeat_count", "ip_checksum_valid", "matched_frame_count", "package_execution",
@@ -88,10 +159,6 @@ public func decodeLinuxVzNetworkHostEvidencePayload(
         "transport_checksum_valid", "unexpected_frame_count", "vm_started", "vm_stopped"
     ]),
     value["schema_version"] as? String == linuxVzNetworkHostEvidencePayloadSchemaV1,
-    value["fixture_case"] as? String == "ipv4_connect",
-    value["frame_kind"] as? String == "ipv4_tcp_syn",
-    value["source_address"] as? String == "192.0.2.2",
-    value["target_address"] as? String == "192.0.2.1",
     value["source_mac"] as? String == "02:57:48:4f:41:31",
     value["target_mac"] as? String == "02:57:48:4f:41:fe",
     let sourcePort = networkHostDecimal(value["source_port"]),
@@ -101,13 +168,14 @@ public func decodeLinuxVzNetworkHostEvidencePayload(
     networkHostDecimal(value["event_sequence_end"]) == 7,
     networkHostDecimal(value["event_count"]) == 7,
     networkHostDecimal(value["heartbeat_count"]) == 2,
-    networkHostDecimal(value["raw_frame_count"]) == 1,
+    networkHostDecimal(value["bootstrap_frame_count"]) == (fixtureCase == "ipv6_connect" ? 1 : 0),
+    networkHostDecimal(value["raw_frame_count"]) == (fixtureCase == "ipv6_connect" ? 2 : 1),
     networkHostDecimal(value["matched_frame_count"]) == 1,
     networkHostDecimal(value["unexpected_frame_count"]) == 0,
     networkHostDecimal(value["dropped_frame_count"]) == 0,
     networkHostDecimal(value["external_frames_forwarded"]) == 0,
     networkHostDecimal(value["storage_device_count"]) == 0,
-    value["ip_checksum_valid"] as? Bool == true,
+    value["ip_checksum_valid"] as? Bool == (fixtureCase == "ipv4_connect"),
     value["transport_checksum_valid"] as? Bool == true,
     value["packet_sensor_healthy"] as? Bool == true,
     value["packet_sensor_terminal"] as? String == "drained_would_block",
@@ -155,6 +223,7 @@ public func decodeLinuxVzNetworkHostEvidencePayload(
     return LinuxVzNetworkHostEvidencePayload(
         canonicalJSON: data,
         payloadSHA256: claims.evidencePayloadSHA256,
+        fixtureCase: fixtureCase,
         sourcePort: UInt16(sourcePort),
         claims: claims
     )

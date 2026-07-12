@@ -48,6 +48,17 @@ private func networkGuestValue() -> [String: Any] {
     }
 }
 
+@Test func networkGuestEvidenceBindsExactIPv6SinkholeTuple() throws {
+    var value = networkGuestValue()
+    value["fixture_case"] = "ipv6_connect"
+    value["network_family"] = "ipv6"
+    value["network_source"] = "2001:db8::2"
+    value["network_target"] = "2001:db8::1"
+    let evidence = try decodeLinuxVzNetworkEvidenceJSONV1(canonicalJSONData(value))
+    #expect(evidence.fixtureCase == "ipv6_connect")
+    #expect(evidence.sourcePort == 49152)
+}
+
 @Test func networkHostEvidenceBindsOneExactIPv4Syn() throws {
     let evidence = try makeLinuxVzIPv4ConnectHostEvidencePayload(
         sourcePort: 49152,
@@ -68,6 +79,20 @@ private func networkGuestValue() -> [String: Any] {
     #expect(throws: LinuxVzHostEvidencePayloadError.invalidSchema) {
         try decodeLinuxVzNetworkHostEvidencePayload(canonicalJSONData(value))
     }
+}
+
+@Test func networkHostEvidenceBindsOneExactIPv6Syn() throws {
+    let evidence = try makeLinuxVzIPv6ConnectHostEvidencePayload(
+        sourcePort: 49152,
+        rawFrameCount: 2,
+        matchedFrameCount: 1,
+        unexpectedFrameCount: 0,
+        packetSensorHealthy: true,
+        packetSensorTerminal: "drained_would_block",
+        storageDeviceCount: 0
+    )
+    #expect(evidence.fixtureCase == "ipv6_connect")
+    #expect(evidence.sourcePort == 49152)
 }
 
 private func internetChecksum(_ bytes: [UInt8]) -> UInt16 {
@@ -101,6 +126,42 @@ private func exactSinkholeSYN() -> Data {
     return Data(frame)
 }
 
+private func exactIPv6SinkholeSYN() -> Data {
+    var frame: [UInt8] = [
+        0x02,0x57,0x48,0x4f,0x41,0xfe, 0x02,0x57,0x48,0x4f,0x41,0x31, 0x86,0xdd,
+        0x60,0x00,0x00,0x00, 0x00,0x14, 0x06,0x40,
+        0x20,0x01,0x0d,0xb8, 0,0,0,0, 0,0,0,0, 0,0,0,2,
+        0x20,0x01,0x0d,0xb8, 0,0,0,0, 0,0,0,0, 0,0,0,1,
+        0xc0,0x00,0x01,0xbb, 0x01,0x02,0x03,0x04, 0,0,0,0,
+        0x50,0x02,0xff,0xff,0,0,0,0
+    ]
+    var pseudo = Array(frame[22..<54]) + [0,0,0,20, 0,0,0,6]
+    pseudo.append(contentsOf: frame[54..<74])
+    let checksum = internetChecksum(pseudo)
+    frame[70] = UInt8(checksum >> 8)
+    frame[71] = UInt8(checksum & 0xff)
+    return Data(frame)
+}
+
+private func exactIPv6MLDv2Report() -> Data {
+    var frame: [UInt8] = [
+        0x33,0x33,0,0,0,0x16, 0x02,0x57,0x48,0x4f,0x41,0x31, 0x86,0xdd,
+        0x60,0,0,0, 0,36, 0,1,
+        0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+        0xff,0x02,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0x16,
+        58,0,5,2,0,0,1,0,
+        143,0,0,0, 0,0,0,1,
+        4,0,0,0,
+        0xff,0x02,0,0, 0,0,0,0, 0,0,0,1, 0xff,0,0,2
+    ]
+    var pseudo = Array(frame[22..<54]) + [0,0,0,28, 0,0,0,58]
+    pseudo.append(contentsOf: frame[62..<90])
+    let checksum = internetChecksum(pseudo)
+    frame[64] = UInt8(checksum >> 8)
+    frame[65] = UInt8(checksum & 0xff)
+    return Data(frame)
+}
+
 @Test func ipv4SinkholeFrameParserRequiresTupleFlagsLengthAndChecksums() {
     let frame = exactSinkholeSYN()
     #expect(linuxVzIsExactIPv4SinkholeSYNFrame(frame, sourcePort: 49152))
@@ -122,4 +183,26 @@ private func exactSinkholeSYN() -> Data {
     fragmented[24] = UInt8(fragmentedChecksum >> 8)
     fragmented[25] = UInt8(fragmentedChecksum & 0xff)
     #expect(!linuxVzIsExactIPv4SinkholeSYNFrame(fragmented, sourcePort: 49152))
+}
+
+@Test func ipv6SinkholeFrameParserRequiresExactTupleAndChecksum() {
+    let frame = exactIPv6SinkholeSYN()
+    #expect(linuxVzIsExactIPv6SinkholeSYNFrame(frame, sourcePort: 49152))
+    #expect(!linuxVzIsExactIPv6SinkholeSYNFrame(frame, sourcePort: 49153))
+
+    var changedTarget = frame
+    changedTarget[53] = 2
+    #expect(!linuxVzIsExactIPv6SinkholeSYNFrame(changedTarget, sourcePort: 49152))
+
+    var trailing = frame
+    trailing.append(0)
+    #expect(!linuxVzIsExactIPv6SinkholeSYNFrame(trailing, sourcePort: 49152))
+}
+
+@Test func ipv6MLDv2BootstrapParserRequiresExactFixedGroup() {
+    let frame = exactIPv6MLDv2Report()
+    #expect(linuxVzIsExactIPv6MLDv2BootstrapFrame(frame))
+    var changedGroup = frame
+    changedGroup[89] = 3
+    #expect(!linuxVzIsExactIPv6MLDv2BootstrapFrame(changedGroup))
 }

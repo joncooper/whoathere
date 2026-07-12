@@ -63,15 +63,25 @@ public func decodeLinuxVzNetworkEvidenceJSONV1(
         "network_target", "network_target_port", "package_gid", "package_uid",
         "reaped_process_count", "schema_version", "sensor_healthy"
     ])
+    let fixtureCase: String
+    switch (
+        value["fixture_case"] as? String,
+        value["network_family"] as? String,
+        value["network_source"] as? String,
+        value["network_target"] as? String
+    ) {
+    case ("ipv4_connect", "ipv4", "192.0.2.2", "192.0.2.1"):
+        fixtureCase = "ipv4_connect"
+    case ("ipv6_connect", "ipv6", "2001:db8::2", "2001:db8::1"):
+        fixtureCase = "ipv6_connect"
+    default:
+        throw LinuxVzNetworkEvidencePayloadError.invalidSchema
+    }
     guard Set(value.keys) == expectedKeys,
           value["schema_version"] as? String == linuxVzNetworkEvidencePayloadSchemaV1,
-          value["fixture_case"] as? String == "ipv4_connect",
           value["network_action"] as? String == "tcp_connect",
-          value["network_family"] as? String == "ipv4",
           value["network_protocol"] as? String == "tcp",
           value["network_socket_state"] as? String == "syn_sent",
-          value["network_source"] as? String == "192.0.2.2",
-          value["network_target"] as? String == "192.0.2.1",
           networkEvidenceDecimal(value["network_target_port"]) == 443,
           let sourcePort = networkEvidenceDecimal(value["network_source_port"]),
           sourcePort > 0, sourcePort <= UInt64(UInt16.max),
@@ -134,7 +144,7 @@ public func decodeLinuxVzNetworkEvidenceJSONV1(
         canonicalJSON: data,
         payloadSHA256: claims.evidencePayloadSHA256,
         evidenceByteLength: UInt64(data.count),
-        fixtureCase: "ipv4_connect",
+        fixtureCase: fixtureCase,
         packageUID: 65534,
         packageGID: 65534,
         sourcePort: UInt16(sourcePort),

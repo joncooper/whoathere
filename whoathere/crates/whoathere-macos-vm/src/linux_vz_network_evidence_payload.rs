@@ -167,14 +167,27 @@ pub fn decode_linux_vz_network_evidence_payload_v1(
         return Err(LinuxVzNetworkEvidencePayloadErrorV1::NonCanonical);
     }
     let source_port = decimal_u64_v1(&wire.network_source_port)?;
+    let fixture_case = match wire.fixture_case.as_str() {
+        "ipv4_connect"
+            if wire.network_family == "ipv4"
+                && wire.network_source == "192.0.2.2"
+                && wire.network_target == "192.0.2.1" =>
+        {
+            LinuxVzTelemetryConformanceCaseV1::Ipv4Connect
+        }
+        "ipv6_connect"
+            if wire.network_family == "ipv6"
+                && wire.network_source == "2001:db8::2"
+                && wire.network_target == "2001:db8::1" =>
+        {
+            LinuxVzTelemetryConformanceCaseV1::Ipv6Connect
+        }
+        _ => return Err(LinuxVzNetworkEvidencePayloadErrorV1::InvalidSchema),
+    };
     if wire.schema_version != LINUX_VZ_NETWORK_EVIDENCE_PAYLOAD_SCHEMA_V1
-        || wire.fixture_case != "ipv4_connect"
         || wire.network_action != "tcp_connect"
-        || wire.network_family != "ipv4"
         || wire.network_protocol != "tcp"
         || wire.network_socket_state != "syn_sent"
-        || wire.network_source != "192.0.2.2"
-        || wire.network_target != "192.0.2.1"
         || decimal_u64_v1(&wire.network_target_port)? != 443
         || source_port == 0
         || source_port > u16::MAX as u64
@@ -228,7 +241,7 @@ pub fn decode_linux_vz_network_evidence_payload_v1(
     Ok(LinuxVzNetworkEvidencePayloadV1 {
         canonical_json: canonical,
         payload_sha256: Sha256Digest::from_bytes(payload),
-        fixture_case: LinuxVzTelemetryConformanceCaseV1::Ipv4Connect,
+        fixture_case,
         package_uid: 65534,
         package_gid: 65534,
         source_port: source_port as u16,
@@ -308,6 +321,21 @@ mod tests {
         assert_eq!(
             decode_linux_vz_network_evidence_payload_v1(&forged),
             Err(LinuxVzNetworkEvidencePayloadErrorV1::InvalidSchema)
+        );
+    }
+
+    #[test]
+    fn ipv6_payload_binds_exact_documentation_sinkhole() {
+        let mut value: serde_json::Value = serde_json::from_slice(&payload()).unwrap();
+        value["fixture_case"] = serde_json::json!("ipv6_connect");
+        value["network_family"] = serde_json::json!("ipv6");
+        value["network_source"] = serde_json::json!("2001:db8::2");
+        value["network_target"] = serde_json::json!("2001:db8::1");
+        let encoded = serde_json_canonicalizer::to_vec(&value).unwrap();
+        let evidence = decode_linux_vz_network_evidence_payload_v1(&encoded).unwrap();
+        assert_eq!(
+            evidence.fixture_case(),
+            LinuxVzTelemetryConformanceCaseV1::Ipv6Connect
         );
     }
 }

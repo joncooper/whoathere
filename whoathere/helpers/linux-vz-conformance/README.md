@@ -129,6 +129,11 @@ The
 adds protected connect-syscall and live socket-state evidence plus one exact checksum-valid host
 sinkhole SYN, then reruns the earlier eight cases on the new measured identity. The other 29 cases
 remain pending.
+The
+[IPv6-connect checkpoint](../../../docs/product-build-run/artifact-native-linux-vz-ipv6-connect-checkpoint-2026-07-12.md)
+adds a fixed no-route IPv6 neighbor, live TCP6 socket evidence, one exact MLDv2 bootstrap report,
+and one exact host-observed IPv6 SYN, then reruns the earlier nine cases on the new measured
+identity. The other 28 cases remain pending.
 
 ## Closed fixture contract
 

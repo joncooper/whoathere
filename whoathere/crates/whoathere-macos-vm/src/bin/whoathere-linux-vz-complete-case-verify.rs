@@ -70,6 +70,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         LinuxVzTelemetryConformanceCaseV1::CredentialChange => "credential_change",
         LinuxVzTelemetryConformanceCaseV1::DynamicLibraryLoad => "dynamic_library_load",
         LinuxVzTelemetryConformanceCaseV1::Ipv4Connect => "ipv4_connect",
+        LinuxVzTelemetryConformanceCaseV1::Ipv6Connect => "ipv6_connect",
         LinuxVzTelemetryConformanceCaseV1::ProtectedOpenReadWriteRenameDelete => {
             "protected_open_read_write_rename_delete"
         }
@@ -121,7 +122,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     None,
                 )
             }
-            LinuxVzTelemetryConformanceCaseV1::Ipv4Connect => {
+            LinuxVzTelemetryConformanceCaseV1::Ipv4Connect
+            | LinuxVzTelemetryConformanceCaseV1::Ipv6Connect => {
                 let evidence = decode_linux_vz_network_evidence_from_serial_v1(&serial)?;
                 if evidence.fixture_case() != run_spec.fixture_case()
                     || evidence.package_uid() != backend.package_uid()
@@ -145,23 +147,28 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         guest_public_key,
         &guest_claims,
     )?;
-    let (host_evidence_payload_sha256, host_claims) =
-        if run_spec.fixture_case() == LinuxVzTelemetryConformanceCaseV1::Ipv4Connect {
-            let evidence = decode_linux_vz_network_host_evidence_payload_v1(&host_evidence)?;
-            if Some(evidence.source_port()) != guest_source_port {
-                return Err("guest and host network source port mismatch".into());
-            }
-            (
-                evidence.payload_sha256().clone(),
-                evidence.host_observation_claims_v1()?,
-            )
-        } else {
-            let evidence = decode_linux_vz_host_evidence_payload_v1(&host_evidence)?;
-            (
-                evidence.payload_sha256().clone(),
-                evidence.host_observation_claims_v1()?,
-            )
-        };
+    let (host_evidence_payload_sha256, host_claims) = if matches!(
+        run_spec.fixture_case(),
+        LinuxVzTelemetryConformanceCaseV1::Ipv4Connect
+            | LinuxVzTelemetryConformanceCaseV1::Ipv6Connect
+    ) {
+        let evidence = decode_linux_vz_network_host_evidence_payload_v1(&host_evidence)?;
+        if evidence.fixture_case() != run_spec.fixture_case()
+            || Some(evidence.source_port()) != guest_source_port
+        {
+            return Err("guest and host network source port mismatch".into());
+        }
+        (
+            evidence.payload_sha256().clone(),
+            evidence.host_observation_claims_v1()?,
+        )
+    } else {
+        let evidence = decode_linux_vz_host_evidence_payload_v1(&host_evidence)?;
+        (
+            evidence.payload_sha256().clone(),
+            evidence.host_observation_claims_v1()?,
+        )
+    };
     let verified_host = verify_macos_linux_vz_telemetry_host_receipt_v1(
         &challenge,
         &run_spec,
