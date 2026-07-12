@@ -202,6 +202,13 @@ pub fn decode_linux_vz_network_host_evidence_payload_v1(
         {
             LinuxVzTelemetryConformanceCaseV1::DnsPlaintext
         }
+        "dns_malformed"
+            if wire.frame_kind == "ipv4_udp_dns_malformed_truncated_question"
+                && wire.source_address == "192.0.2.2"
+                && wire.target_address == "192.0.2.53" =>
+        {
+            LinuxVzTelemetryConformanceCaseV1::DnsMalformed
+        }
         _ => return Err(LinuxVzNetworkHostEvidencePayloadErrorV1::InvalidSchema),
     };
     if wire.schema_version != LINUX_VZ_NETWORK_HOST_EVIDENCE_PAYLOAD_SCHEMA_V1
@@ -210,7 +217,11 @@ pub fn decode_linux_vz_network_host_evidence_payload_v1(
         || source_port == 0
         || source_port > u16::MAX as u64
         || decimal_u64_v1(&wire.target_port)?
-            != if fixture_case == LinuxVzTelemetryConformanceCaseV1::DnsPlaintext {
+            != if matches!(
+                fixture_case,
+                LinuxVzTelemetryConformanceCaseV1::DnsPlaintext
+                    | LinuxVzTelemetryConformanceCaseV1::DnsMalformed
+            ) {
                 53
             } else {
                 443
@@ -467,6 +478,21 @@ mod tests {
         assert_eq!(
             evidence.fixture_case(),
             LinuxVzTelemetryConformanceCaseV1::DnsPlaintext
+        );
+    }
+
+    #[test]
+    fn exact_malformed_dns_query_derives_distinct_case() {
+        let mut value: serde_json::Value = serde_json::from_slice(&payload()).unwrap();
+        value["fixture_case"] = serde_json::json!("dns_malformed");
+        value["frame_kind"] = serde_json::json!("ipv4_udp_dns_malformed_truncated_question");
+        value["target_address"] = serde_json::json!("192.0.2.53");
+        value["target_port"] = serde_json::json!("53");
+        let encoded = serde_json_canonicalizer::to_vec(&value).unwrap();
+        let evidence = decode_linux_vz_network_host_evidence_payload_v1(&encoded).unwrap();
+        assert_eq!(
+            evidence.fixture_case(),
+            LinuxVzTelemetryConformanceCaseV1::DnsMalformed
         );
     }
 }

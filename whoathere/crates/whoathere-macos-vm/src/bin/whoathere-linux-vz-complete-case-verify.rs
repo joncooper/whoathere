@@ -78,6 +78,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         LinuxVzTelemetryConformanceCaseV1::MetadataAddressConnect => "metadata_address_connect",
         LinuxVzTelemetryConformanceCaseV1::PublicAddressConnect => "public_address_connect",
         LinuxVzTelemetryConformanceCaseV1::DnsPlaintext => "dns_plaintext",
+        LinuxVzTelemetryConformanceCaseV1::DnsMalformed => "dns_malformed",
         LinuxVzTelemetryConformanceCaseV1::ProtectedOpenReadWriteRenameDelete => {
             "protected_open_read_write_rename_delete"
         }
@@ -137,7 +138,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             | LinuxVzTelemetryConformanceCaseV1::LinkLocalConnect
             | LinuxVzTelemetryConformanceCaseV1::MetadataAddressConnect
             | LinuxVzTelemetryConformanceCaseV1::PublicAddressConnect
-            | LinuxVzTelemetryConformanceCaseV1::DnsPlaintext => {
+            | LinuxVzTelemetryConformanceCaseV1::DnsPlaintext
+            | LinuxVzTelemetryConformanceCaseV1::DnsMalformed => {
                 let evidence = decode_linux_vz_network_evidence_from_serial_v1(&serial)?;
                 if evidence.fixture_case() != run_spec.fixture_case()
                     || evidence.package_uid() != backend.package_uid()
@@ -171,6 +173,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             | LinuxVzTelemetryConformanceCaseV1::MetadataAddressConnect
             | LinuxVzTelemetryConformanceCaseV1::PublicAddressConnect
             | LinuxVzTelemetryConformanceCaseV1::DnsPlaintext
+            | LinuxVzTelemetryConformanceCaseV1::DnsMalformed
     ) {
         let evidence = decode_linux_vz_network_host_evidence_payload_v1(&host_evidence)?;
         if evidence.fixture_case() != run_spec.fixture_case()

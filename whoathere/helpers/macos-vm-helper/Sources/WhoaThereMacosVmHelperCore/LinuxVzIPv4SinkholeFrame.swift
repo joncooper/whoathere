@@ -135,6 +135,23 @@ public func linuxVzIsExactIPv4PlaintextDNSQueryFrame(
     )
 }
 
+public func linuxVzIsExactIPv4MalformedDNSQueryFrame(
+    _ frame: Data,
+    sourcePort: UInt16
+) -> Bool {
+    linuxVzIsExactIPv4UDPFrame(
+        frame,
+        sourcePort: sourcePort,
+        targetPort: 53,
+        sourceAddress: [192, 0, 2, 2],
+        targetAddress: [192, 0, 2, 53],
+        payload: [
+            0x57, 0x55, 0x01, 0x00, 0x00, 0x01,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+        ]
+    )
+}
+
 private func linuxVzIsExactIPv4UDPFrame(
     _ frame: Data,
     sourcePort: UInt16,

@@ -53,6 +53,7 @@
 #define METADATA_REPORT_MAGIC 0x57544d34U
 #define PUBLIC_REPORT_MAGIC 0x57544234U
 #define DNS_PLAINTEXT_REPORT_MAGIC 0x57544434U
+#define DNS_MALFORMED_REPORT_MAGIC 0x57545834U
 #define NETWORK_INTERFACE "eth0"
 #define NETWORK_SOURCE_ADDRESS "192.0.2.2"
 #define NETWORK_TARGET_ADDRESS "192.0.2.1"
@@ -74,6 +75,7 @@
 #define DNS_TARGET_ADDRESS "192.0.2.53"
 #define DNS_TARGET_PORT 53
 #define DNS_PLAINTEXT_PAYLOAD_LENGTH 35
+#define DNS_MALFORMED_PAYLOAD_LENGTH 12
 #define SENSOR_PROGRAM_COUNT 8
 
 struct reparent_report {
@@ -1001,6 +1003,14 @@ static int read_exact_dns_plaintext_report(int descriptor, struct udp_report *re
     );
 }
 
+static int read_exact_dns_malformed_report(int descriptor, struct udp_report *report) {
+    return read_exact_udp_report_for(
+        descriptor, report, DNS_MALFORMED_REPORT_MAGIC,
+        DNS_SOURCE_ADDRESS, DNS_TARGET_ADDRESS,
+        DNS_TARGET_PORT, DNS_MALFORMED_PAYLOAD_LENGTH
+    );
+}
+
 static int read_exact_loopback_report(int descriptor, struct network_report *report) {
     size_t offset = 0;
     while (offset < sizeof(*report)) {
@@ -1612,6 +1622,7 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
     struct network6_report network6_report = {0};
     struct udp_report udp_report = {0};
     struct udp_report dns_report = {0};
+    struct udp_report dns_malformed_report = {0};
     struct network_report loopback_report = {0};
     struct network_report private_report = {0};
     struct network_report link_local_report = {0};
@@ -1715,10 +1726,12 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
     int metadata_address_connect = strcmp(fixture_case, "metadata_address_connect") == 0;
     int public_address_connect = strcmp(fixture_case, "public_address_connect") == 0;
     int dns_plaintext = strcmp(fixture_case, "dns_plaintext") == 0;
+    int dns_malformed = strcmp(fixture_case, "dns_malformed") == 0;
     int network_connect = ipv4_connect || ipv6_connect || loopback_connect ||
         private_address_connect || link_local_connect || metadata_address_connect ||
         public_address_connect;
-    int udp_activity = udp_send || dns_plaintext;
+    int dns_activity = dns_plaintext || dns_malformed;
+    int udp_activity = udp_send || dns_activity;
     int network_activity = network_connect || udp_activity;
     if (credential_change) {
         const enum observation_key keys[] = {
@@ -1763,14 +1776,14 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
         }
         if (ipv4_connect || udp_activity || private_address_connect || link_local_connect ||
             metadata_address_connect || public_address_connect) {
-            int prepared = dns_plaintext ? prepare_dns_sinkhole() :
+            int prepared = dns_activity ? prepare_dns_sinkhole() :
                 (private_address_connect ? prepare_private_sinkhole() :
                 (link_local_connect ? prepare_link_local_sinkhole() :
                     (metadata_address_connect ? prepare_metadata_sinkhole() :
                         (public_address_connect ? prepare_public_sinkhole() :
                             prepare_ipv4_sinkhole()))));
             if (prepared != 0) {
-                failure_stage = dns_plaintext ? "dns_sinkhole_prepare" :
+                failure_stage = dns_activity ? "dns_sinkhole_prepare" :
                     (private_address_connect ? "private_sinkhole_prepare" :
                     (link_local_connect ? "link_local_sinkhole_prepare" :
                         (metadata_address_connect ? "metadata_sinkhole_prepare" :
@@ -2106,6 +2119,26 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
             goto cleanup;
         }
     }
+    if (dns_malformed) {
+        if (read_exact_dns_malformed_report(report_pipe[0], &dns_malformed_report) != 0) {
+            failure_stage = "dns_malformed_report";
+            failure_errno = errno;
+            goto cleanup;
+        }
+        close_if_open(&report_pipe[0]);
+        if (dns_malformed_report.process_pid != child ||
+            !proc_identity_matches(child, parent) ||
+            !proc_has_no_supplementary_groups(child) ||
+            !proc_udp_contains_ipv4_sinkhole(&dns_malformed_report)) {
+            failure_stage = "dns_malformed_live_socket";
+            goto cleanup;
+        }
+        network_timestamp = monotonic_ns();
+        if (network_timestamp == 0) {
+            failure_stage = "dns_malformed_timestamp";
+            goto cleanup;
+        }
+    }
     if (waitpid(child, &child_status, 0) != child || !WIFEXITED(child_status) ||
         WEXITSTATUS(child_status) != 0) {
         failure_stage = "fixture_exit";
@@ -2373,7 +2406,8 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
                 sendto_event.count,
                 exit_event.count,
                 child,
-                dns_plaintext ? dns_report.source_port : udp_report.source_port,
+                dns_malformed ? dns_malformed_report.source_port :
+                    (dns_plaintext ? dns_report.source_port : udp_report.source_port),
                 fork_event.timestamp_ns,
                 exec_event.timestamp_ns,
                 sendto_event.timestamp_ns,
@@ -2434,6 +2468,13 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
         puts("WHOATHERE_SENSOR network_dns_question=whoathere_invalid_a_in");
         puts("WHOATHERE_SENSOR network_target=dns_sinkhole_192_0_2_53_53");
     }
+    if (dns_malformed) {
+        puts("WHOATHERE_SENSOR network_dns_malformed=observed");
+        puts("WHOATHERE_SENSOR network_socket_state=unconnected_bound");
+        puts("WHOATHERE_SENSOR network_dns_transport=udp");
+        puts("WHOATHERE_SENSOR network_dns_malformed_shape=question_declared_body_absent");
+        puts("WHOATHERE_SENSOR network_target=dns_sinkhole_192_0_2_53_53");
+    }
     if (loopback_connect) {
         puts("WHOATHERE_SENSOR network_loopback_connect=observed");
         puts("WHOATHERE_SENSOR network_socket_state=established");
@@ -2473,7 +2514,7 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
                     (metadata_address_connect ? METADATA_SOURCE_ADDRESS :
                         (public_address_connect ? PUBLIC_SOURCE_ADDRESS :
                             (ipv6_connect ? NETWORK6_SOURCE_ADDRESS : NETWORK_SOURCE_ADDRESS)))));
-        const char *network_target = dns_plaintext ? DNS_TARGET_ADDRESS :
+        const char *network_target = dns_activity ? DNS_TARGET_ADDRESS :
             (loopback_connect ? LOOPBACK_ADDRESS :
             (private_address_connect ? PRIVATE_TARGET_ADDRESS :
                 (link_local_connect ? LINK_LOCAL_TARGET_ADDRESS :
@@ -2481,12 +2522,14 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
                         (public_address_connect ? PUBLIC_TARGET_ADDRESS :
                             (ipv6_connect ? NETWORK6_TARGET_ADDRESS : NETWORK_TARGET_ADDRESS))))));
         const char *network_event_kind = udp_activity ? "sendto" : "connect";
-        const char *network_action = dns_plaintext ? "dns_query" :
-            (udp_send ? "udp_send" : "tcp_connect");
+        const char *network_action = dns_malformed ? "dns_malformed" :
+            (dns_plaintext ? "dns_query" :
+                (udp_send ? "udp_send" : "tcp_connect"));
         const char *network_protocol = udp_activity ? "udp" : "tcp";
         const char *network_socket_state = udp_activity ? "unconnected_bound" :
             (loopback_connect ? "established" : "syn_sent");
-        uint16_t network_source_port = dns_plaintext ? dns_report.source_port :
+        uint16_t network_source_port = dns_malformed ? dns_malformed_report.source_port :
+            (dns_plaintext ? dns_report.source_port :
             (udp_send ? udp_report.source_port :
             (ipv4_connect ? network_report.source_port :
                 (ipv6_connect ? network6_report.source_port :
@@ -2494,8 +2537,8 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
                         (private_address_connect ? private_report.source_port :
                             (link_local_connect ? link_local_report.source_port :
                                 (metadata_address_connect ? metadata_report.source_port :
-                                    public_report.source_port)))))));
-        uint16_t network_target_port = dns_plaintext ? DNS_TARGET_PORT :
+                                    public_report.source_port))))))));
+        uint16_t network_target_port = dns_activity ? DNS_TARGET_PORT :
             (loopback_connect ? LOOPBACK_TARGET_PORT : NETWORK_TARGET_PORT);
         uint64_t network_event_timestamp = udp_activity
             ? sendto_event.timestamp_ns : connect_event.timestamp_ns;
@@ -2865,7 +2908,8 @@ int main(int argument_count, char **arguments) {
         strcmp(arguments[2], "link_local_connect") == 0 ||
         strcmp(arguments[2], "metadata_address_connect") == 0 ||
         strcmp(arguments[2], "public_address_connect") == 0 ||
-        strcmp(arguments[2], "dns_plaintext") == 0) {
+        strcmp(arguments[2], "dns_plaintext") == 0 ||
+        strcmp(arguments[2], "dns_malformed") == 0) {
         return run_process_probe(arguments[1], arguments[2]);
     }
     if (strcmp(arguments[2], "protected_open_read_write_rename_delete") == 0 ||

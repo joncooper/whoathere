@@ -138,6 +138,14 @@ and `whoathere.invalid. A IN` question; no external resolver is contacted. The p
 cases were rerun on the new exact identity. Seventeen of 38 cases now share one backend binding; 21
 remain. See the [plaintext-DNS checkpoint](artifact-native-linux-vz-dns-plaintext-checkpoint-2026-07-12.md).
 
+The `dns_malformed` case now binds one unprivileged UDP `sendto` to the inert DNS neighbor through
+the protected syscall, a live unconnected socket inode, and exactly one checksum-valid
+host-observed truncated DNS message. The exact 12-byte payload declares one question but omits its
+entire body; distinct guest and host discriminators prevent a valid query or generic UDP payload
+from satisfying the gate. The previous seventeen cases were rerun on the new exact identity.
+Eighteen of 38 cases now share one backend binding; 20 remain. See the
+[malformed-DNS checkpoint](artifact-native-linux-vz-dns-malformed-checkpoint-2026-07-12.md).
+
 Primary target: malicious npm and PyPI package detection with static analysis, AI-assisted code
 review, and behaviorally instrumented detonation in disposable virtual machines
 

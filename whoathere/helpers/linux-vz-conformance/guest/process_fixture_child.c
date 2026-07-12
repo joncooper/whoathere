@@ -30,10 +30,14 @@ static const char *dynamic_library_path = "/whoathere/dynamic-fixture-library.so
 #define METADATA_REPORT_MAGIC 0x57544d34U
 #define PUBLIC_REPORT_MAGIC 0x57544234U
 #define DNS_PLAINTEXT_REPORT_MAGIC 0x57544434U
+#define DNS_MALFORMED_REPORT_MAGIC 0x57545834U
 static const unsigned char dns_plaintext_query[] = {
     0x57, 0x54, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x09, 'w', 'h', 'o', 'a', 't', 'h', 'e', 'r', 'e',
     0x07, 'i', 'n', 'v', 'a', 'l', 'i', 'd', 0x00, 0x00, 0x01, 0x00, 0x01,
+};
+static const unsigned char dns_malformed_query[] = {
+    0x57, 0x55, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 };
 
 struct reparent_report {
@@ -546,9 +550,14 @@ static int public_address_connect(void) {
     return classified_address_connect("198.51.100.1", PUBLIC_REPORT_MAGIC);
 }
 
-static int dns_plaintext(void) {
+static int dns_send_query(
+    const unsigned char *payload,
+    size_t payload_length,
+    uint32_t report_magic,
+    int error_base
+) {
     int descriptor = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, IPPROTO_UDP);
-    if (descriptor < 0) return 145;
+    if (descriptor < 0) return error_base;
     struct sockaddr_in source = {
         .sin_family = AF_INET,
         .sin_port = 0,
@@ -561,18 +570,18 @@ static int dns_plaintext(void) {
         inet_pton(AF_INET, "192.0.2.53", &target.sin_addr) != 1 ||
         bind(descriptor, (const struct sockaddr *)&source, sizeof(source)) != 0) {
         close(descriptor);
-        return 146;
+        return error_base + 1;
     }
     if (sendto(
             descriptor,
-            dns_plaintext_query,
-            sizeof(dns_plaintext_query),
+            payload,
+            payload_length,
             0,
             (const struct sockaddr *)&target,
             sizeof(target)
-        ) != (ssize_t)sizeof(dns_plaintext_query)) {
+        ) != (ssize_t)payload_length) {
         close(descriptor);
-        return 147;
+        return error_base + 2;
     }
     socklen_t source_length = sizeof(source);
     struct stat metadata;
@@ -580,33 +589,47 @@ static int dns_plaintext(void) {
         source_length != sizeof(source) || source.sin_family != AF_INET ||
         source.sin_port == 0 || fstat(descriptor, &metadata) != 0) {
         close(descriptor);
-        return 148;
+        return error_base + 3;
     }
     const struct udp_report report = {
-        .magic = DNS_PLAINTEXT_REPORT_MAGIC,
+        .magic = report_magic,
         .process_pid = getpid(),
         .socket_inode = metadata.st_ino,
         .source_address = source.sin_addr.s_addr,
         .target_address = target.sin_addr.s_addr,
         .source_port = ntohs(source.sin_port),
         .target_port = ntohs(target.sin_port),
-        .payload_length = sizeof(dns_plaintext_query),
+        .payload_length = payload_length,
     };
     ssize_t written = write(REPARENT_REPORT_FD, &report, sizeof(report));
     int saved_errno = errno;
     if (close(REPARENT_REPORT_FD) != 0 && written == (ssize_t)sizeof(report)) {
         close(descriptor);
-        return 149;
+        return error_base + 4;
     }
     errno = saved_errno;
     if (written != (ssize_t)sizeof(report)) {
         close(descriptor);
-        return 150;
+        return error_base + 5;
     }
     const struct timespec pause = {.tv_sec = 0, .tv_nsec = 200000000};
-    int result = nanosleep(&pause, NULL) == 0 ? 0 : 151;
-    if (close(descriptor) != 0 && result == 0) result = 152;
+    int result = nanosleep(&pause, NULL) == 0 ? 0 : error_base + 6;
+    if (close(descriptor) != 0 && result == 0) result = error_base + 7;
     return result;
+}
+
+static int dns_plaintext(void) {
+    return dns_send_query(
+        dns_plaintext_query, sizeof(dns_plaintext_query),
+        DNS_PLAINTEXT_REPORT_MAGIC, 145
+    );
+}
+
+static int dns_malformed(void) {
+    return dns_send_query(
+        dns_malformed_query, sizeof(dns_malformed_query),
+        DNS_MALFORMED_REPORT_MAGIC, 153
+    );
 }
 
 int main(int argument_count, char **arguments) {
@@ -635,6 +658,7 @@ int main(int argument_count, char **arguments) {
     }
     if (strcmp(arguments[1], "public_address_connect") == 0) return public_address_connect();
     if (strcmp(arguments[1], "dns_plaintext") == 0) return dns_plaintext();
+    if (strcmp(arguments[1], "dns_malformed") == 0) return dns_malformed();
     if (strcmp(arguments[1], "protected_open_read_write_rename_delete") == 0 ||
         strcmp(arguments[1], "mmap_access") == 0) {
         return file_fixture();

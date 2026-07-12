@@ -146,6 +146,22 @@ private func networkGuestValue() -> [String: Any] {
     }
 }
 
+@Test func networkGuestEvidenceBindsExactMalformedDNSQuery() throws {
+    var value = networkGuestValue()
+    value["fixture_case"] = "dns_malformed"
+    value["network_action"] = "dns_malformed"
+    value["network_protocol"] = "udp"
+    value["network_socket_state"] = "unconnected_bound"
+    value["network_target"] = "192.0.2.53"
+    value["network_target_port"] = "53"
+    var events = try #require(value["events"] as? [[String: Any]])
+    events[2]["kind"] = "sendto"
+    value["events"] = events
+    let evidence = try decodeLinuxVzNetworkEvidenceJSONV1(canonicalJSONData(value))
+    #expect(evidence.fixtureCase == "dns_malformed")
+    #expect(evidence.sourcePort == 49152)
+}
+
 @Test func networkHostEvidenceBindsOneExactIPv4Syn() throws {
     let evidence = try makeLinuxVzIPv4ConnectHostEvidencePayload(
         sourcePort: 49152,
@@ -263,6 +279,20 @@ private func networkGuestValue() -> [String: Any] {
         storageDeviceCount: 0
     )
     #expect(evidence.fixtureCase == "dns_plaintext")
+    #expect(evidence.sourcePort == 49152)
+}
+
+@Test func networkHostEvidenceBindsOneExactMalformedDNSQuery() throws {
+    let evidence = try makeLinuxVzDNSMalformedHostEvidencePayload(
+        sourcePort: 49152,
+        rawFrameCount: 1,
+        matchedFrameCount: 1,
+        unexpectedFrameCount: 0,
+        packetSensorHealthy: true,
+        packetSensorTerminal: "drained_would_block",
+        storageDeviceCount: 0
+    )
+    #expect(evidence.fixtureCase == "dns_malformed")
     #expect(evidence.sourcePort == 49152)
 }
 
@@ -434,6 +464,30 @@ private func exactIPv4PlaintextDNSQuery() -> Data {
     return Data(frame)
 }
 
+private func exactIPv4MalformedDNSQuery() -> Data {
+    let payload: [UInt8] = [
+        0x57,0x55,0x01,0x00,0x00,0x01,0x00,0x00,0x00,0x00,0x00,0x00
+    ]
+    let udpLength = 8 + payload.count
+    let totalLength = 20 + udpLength
+    var frame: [UInt8] = [
+        0x02,0x57,0x48,0x4f,0x41,0xfe, 0x02,0x57,0x48,0x4f,0x41,0x31, 0x08,0x00,
+        0x45,0x00,UInt8(totalLength >> 8),UInt8(totalLength & 0xff),0x12,0x34,0x40,0x00,
+        0x40,0x11,0x00,0x00, 192,0,2,2, 192,0,2,53,
+        0xc0,0x00,0x00,0x35,UInt8(udpLength >> 8),UInt8(udpLength & 0xff),0,0
+    ]
+    frame.append(contentsOf: payload)
+    let ipChecksum = internetChecksum(Array(frame[14..<34]))
+    frame[24] = UInt8(ipChecksum >> 8)
+    frame[25] = UInt8(ipChecksum & 0xff)
+    var pseudo = Array(frame[26..<34]) + [0,17,UInt8(udpLength >> 8),UInt8(udpLength & 0xff)]
+    pseudo.append(contentsOf: frame[34..<frame.count])
+    let udpChecksum = internetChecksum(pseudo)
+    frame[40] = UInt8(udpChecksum >> 8)
+    frame[41] = UInt8(udpChecksum & 0xff)
+    return Data(frame)
+}
+
 private func exactIPv6MLDv2Report() -> Data {
     var frame: [UInt8] = [
         0x33,0x33,0,0,0,0x16, 0x02,0x57,0x48,0x4f,0x41,0x31, 0x86,0xdd,
@@ -551,6 +605,21 @@ private func exactIPv6MLDv2Report() -> Data {
     zeroChecksum[40] = 0
     zeroChecksum[41] = 0
     #expect(!linuxVzIsExactIPv4PlaintextDNSQueryFrame(zeroChecksum, sourcePort: 49152))
+}
+
+@Test func malformedDNSFrameParserRequiresExactTruncatedQuestionShape() {
+    let frame = exactIPv4MalformedDNSQuery()
+    #expect(linuxVzIsExactIPv4MalformedDNSQueryFrame(frame, sourcePort: 49152))
+    #expect(!linuxVzIsExactIPv4MalformedDNSQueryFrame(frame, sourcePort: 49153))
+    #expect(!linuxVzIsExactIPv4PlaintextDNSQueryFrame(frame, sourcePort: 49152))
+
+    var questionCountRemoved = frame
+    questionCountRemoved[47] = 0
+    #expect(!linuxVzIsExactIPv4MalformedDNSQueryFrame(questionCountRemoved, sourcePort: 49152))
+
+    var extraQuestionByte = frame
+    extraQuestionByte.append(0)
+    #expect(!linuxVzIsExactIPv4MalformedDNSQueryFrame(extraQuestionByte, sourcePort: 49152))
 }
 
 @Test func ipv6MLDv2BootstrapParserRequiresExactFixedGroup() {
