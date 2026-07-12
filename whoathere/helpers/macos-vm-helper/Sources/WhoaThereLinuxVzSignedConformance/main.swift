@@ -479,7 +479,7 @@ private struct LinuxVzSignedConformanceHarness {
             networkSourcePort = evidence.sourcePort
             networkFixtureCase = evidence.fixtureCase
             hostFrameTriggerCount = evidence.triggerCount
-        case "normal_exit", "timeout", "term_resistance", "escaped_session":
+        case "normal_exit", "timeout", "term_resistance", "escaped_session", "reparented_child":
             let evidence = try decodeLinuxVzTeardownEvidencePayloadV1(serialData)
             guard evidence.fixtureCase == runSpec.fixtureCase,
                   evidence.packageUID == UInt64(backend.packageUID),
@@ -525,7 +525,8 @@ private struct LinuxVzSignedConformanceHarness {
             runSpec.fixtureCase == "normal_exit" ||
             runSpec.fixtureCase == "timeout" ||
             runSpec.fixtureCase == "term_resistance" ||
-            runSpec.fixtureCase == "escaped_session" {
+            runSpec.fixtureCase == "escaped_session" ||
+            runSpec.fixtureCase == "reparented_child" {
             let missingProcessMarkers = linuxVzInertMissingRequiredEvidenceMarkersV2(serialData)
             let missingDoubleForkMarkers = runSpec.fixtureCase == "double_fork_daemonization"
                 ? linuxVzInertDoubleForkSensorMarkersV1.filter {
@@ -607,6 +608,10 @@ private struct LinuxVzSignedConformanceHarness {
                 ? linuxVzInertEscapedSessionSensorMarkersV1.filter {
                     !linuxVzInertSerialContainsExactMarker(serialData, marker: $0)
                 } : []
+            let missingReparentedChildMarkers = runSpec.fixtureCase == "reparented_child"
+                ? linuxVzInertReparentedChildSensorMarkersV1.filter {
+                    !linuxVzInertSerialContainsExactMarker(serialData, marker: $0)
+                } : []
             missingBaseMarkers = missingProcessMarkers + missingDoubleForkMarkers
                 + missingReparentingMarkers + missingSetsidMarkers + missingCredentialMarkers
                 + missingDynamicLibraryMarkers + missingIPv4Markers + missingIPv6Markers
@@ -619,6 +624,7 @@ private struct LinuxVzSignedConformanceHarness {
                 + missingTimeoutMarkers
                 + missingTermResistanceMarkers
                 + missingEscapedSessionMarkers
+                + missingReparentedChildMarkers
         } else if runSpec.fixtureCase == "bpf_reservation_failure" {
             let missingCapabilities = linuxVzInertMissingCapabilityMarkers(serialData)
             let missingDropMarkers = linuxVzInertBPFReservationFailureSensorMarkersV1.filter {

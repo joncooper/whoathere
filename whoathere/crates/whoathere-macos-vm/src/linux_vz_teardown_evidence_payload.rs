@@ -108,11 +108,17 @@ struct TeardownEvidenceWireV1 {
     fixture_exit_status: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     fixture_termination_signal: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fork_count: Option<String>,
     heartbeat_count: String,
     kill_signal_count: String,
     package_gid: String,
     package_uid: String,
     reaped_process_count: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reparent_target: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reparented_process_count: Option<String>,
     schema_version: String,
     sensor_healthy: bool,
     sensor_teardown_complete: bool,
@@ -184,7 +190,6 @@ pub fn decode_linux_vz_teardown_evidence_payload_v1(
         || !wire.sensor_teardown_complete
         || !wire.sensor_healthy
         || wire.evidence_truncated
-        || decimal_u64_v1(&wire.reaped_process_count)? != 1
         || decimal_u64_v1(&wire.event_sequence_start)? != 1
         || decimal_u64_v1(&wire.heartbeat_count)? != 2
         || decimal_u64_v1(&wire.dropped_event_count)? != 0
@@ -205,6 +210,10 @@ pub fn decode_linux_vz_teardown_evidence_payload_v1(
                 && !wire.deadline_reached
                 && optional_decimal_u64_v1(wire.fixture_exit_status.as_deref())? == 0
                 && wire.fixture_termination_signal.is_none()
+                && wire.fork_count.is_none()
+                && decimal_u64_v1(&wire.reaped_process_count)? == 1
+                && wire.reparent_target.is_none()
+                && wire.reparented_process_count.is_none()
                 && wire.term_grace_limit_ns.is_none()
                 && wire.term_grace_reached.is_none()
                 && wire.term_resistance_proven.is_none()
@@ -225,6 +234,10 @@ pub fn decode_linux_vz_teardown_evidence_payload_v1(
                 && wire.deadline_reached
                 && wire.fixture_exit_status.is_none()
                 && optional_decimal_u64_v1(wire.fixture_termination_signal.as_deref())? == 15
+                && wire.fork_count.is_none()
+                && decimal_u64_v1(&wire.reaped_process_count)? == 1
+                && wire.reparent_target.is_none()
+                && wire.reparented_process_count.is_none()
                 && wire.term_grace_limit_ns.is_none()
                 && wire.term_grace_reached.is_none()
                 && wire.term_resistance_proven.is_none()
@@ -245,6 +258,10 @@ pub fn decode_linux_vz_teardown_evidence_payload_v1(
                 && wire.deadline_reached
                 && wire.fixture_exit_status.is_none()
                 && optional_decimal_u64_v1(wire.fixture_termination_signal.as_deref())? == 9
+                && wire.fork_count.is_none()
+                && decimal_u64_v1(&wire.reaped_process_count)? == 1
+                && wire.reparent_target.is_none()
+                && wire.reparented_process_count.is_none()
                 && optional_decimal_u64_v1(wire.term_grace_limit_ns.as_deref())? == 250_000_000
                 && wire.term_grace_reached == Some(true)
                 && wire.term_resistance_proven == Some(true)
@@ -265,6 +282,10 @@ pub fn decode_linux_vz_teardown_evidence_payload_v1(
                 && wire.deadline_reached
                 && wire.fixture_exit_status.is_none()
                 && optional_decimal_u64_v1(wire.fixture_termination_signal.as_deref())? == 15
+                && wire.fork_count.is_none()
+                && decimal_u64_v1(&wire.reaped_process_count)? == 1
+                && wire.reparent_target.is_none()
+                && wire.reparented_process_count.is_none()
                 && wire.term_grace_limit_ns.is_none()
                 && wire.term_grace_reached.is_none()
                 && wire.term_resistance_proven.is_none()
@@ -276,6 +297,30 @@ pub fn decode_linux_vz_teardown_evidence_payload_v1(
             (
                 LinuxVzTelemetryConformanceCaseV1::EscapedSession,
                 &["fork", "exec", "setsid", "signal_term", "exit"],
+                LinuxVzTelemetryConformanceObservedTerminalV1::TimeoutWithTeardown,
+            )
+        }
+        "reparented_child"
+            if wire.teardown_trigger == "deadline"
+                && decimal_u64_v1(&wire.deadline_limit_ns)? == 1_000_000_000
+                && wire.deadline_reached
+                && wire.fixture_exit_status.is_none()
+                && optional_decimal_u64_v1(wire.fixture_termination_signal.as_deref())? == 15
+                && optional_decimal_u64_v1(wire.fork_count.as_deref())? == 2
+                && decimal_u64_v1(&wire.reaped_process_count)? == 2
+                && wire.reparent_target.as_deref() == Some("protected_subreaper_at_deadline")
+                && optional_decimal_u64_v1(wire.reparented_process_count.as_deref())? == 1
+                && wire.session_escape_count.is_none()
+                && wire.session_target.is_none()
+                && wire.term_grace_limit_ns.is_none()
+                && wire.term_grace_reached.is_none()
+                && wire.term_resistance_proven.is_none()
+                && decimal_u64_v1(&wire.termination_signal_count)? == 1
+                && decimal_u64_v1(&wire.kill_signal_count)? == 0 =>
+        {
+            (
+                LinuxVzTelemetryConformanceCaseV1::ReparentedChild,
+                &["exec", "fork", "reparent", "signal_term", "exit"],
                 LinuxVzTelemetryConformanceObservedTerminalV1::TimeoutWithTeardown,
             )
         }
@@ -308,11 +353,12 @@ pub fn decode_linux_vz_teardown_evidence_payload_v1(
         || subject_pids.contains(&0)
         || cgroup_ids.contains(&0)
         || timestamps.contains(&0)
-        || actor_pids[0] == subject_pids[0]
-        || actor_pids[1] != subject_pids[0]
-        || subject_pids[1] != subject_pids[0]
         || cgroup_ids.iter().any(|value| *value != cgroup_ids[0])
         || timestamps.windows(2).any(|pair| pair[0] >= pair[1])
+        || (fixture_case != LinuxVzTelemetryConformanceCaseV1::ReparentedChild
+            && (actor_pids[0] == subject_pids[0]
+                || actor_pids[1] != subject_pids[0]
+                || subject_pids[1] != subject_pids[0]))
     {
         return Err(LinuxVzTeardownEvidencePayloadErrorV1::InvalidEvent);
     }
@@ -338,6 +384,17 @@ pub fn decode_linux_vz_teardown_evidence_payload_v1(
                 && subject_pids[3] == subject_pids[0]
                 && actor_pids[4] == subject_pids[0]
                 && subject_pids[4] == subject_pids[0] => {}
+        LinuxVzTelemetryConformanceCaseV1::ReparentedChild
+            if actor_pids[0] == subject_pids[0]
+                && actor_pids[1] == actor_pids[0]
+                && subject_pids[1] != actor_pids[0]
+                && actor_pids[2] != actor_pids[0]
+                && actor_pids[2] != subject_pids[1]
+                && subject_pids[2] == subject_pids[1]
+                && actor_pids[3] == actor_pids[2]
+                && subject_pids[3] == subject_pids[1]
+                && actor_pids[4] == subject_pids[1]
+                && subject_pids[4] == subject_pids[1] => {}
         _ => return Err(LinuxVzTeardownEvidencePayloadErrorV1::InvalidEvent),
     }
 
@@ -376,6 +433,7 @@ mod tests {
     const TIMEOUT: &[u8] = br#"{"cgroup_empty_after_reap":true,"cgroup_removed":true,"deadline_limit_ns":"1000000000","deadline_reached":true,"descendant_teardown_complete":true,"dropped_event_count":"0","event_count":"4","event_sequence_end":"4","event_sequence_start":"1","events":[{"actor_pid":"41","cgroup_id":"9001","kind":"fork","sequence":"1","subject_pid":"42","timestamp_ns":"100"},{"actor_pid":"42","cgroup_id":"9001","kind":"exec","sequence":"2","subject_pid":"42","timestamp_ns":"200"},{"actor_pid":"41","cgroup_id":"9001","kind":"signal_term","sequence":"3","subject_pid":"42","timestamp_ns":"300"},{"actor_pid":"42","cgroup_id":"9001","kind":"exit","sequence":"4","subject_pid":"42","timestamp_ns":"400"}],"evidence_truncated":false,"fixture_case":"timeout","fixture_termination_signal":"15","heartbeat_count":"2","kill_signal_count":"0","package_gid":"65534","package_uid":"65534","reaped_process_count":"1","schema_version":"whoathere.linux_vz_teardown_evidence_payload.v1","sensor_healthy":true,"sensor_teardown_complete":true,"teardown_trigger":"deadline","termination_signal_count":"1"}"#;
     const TERM_RESISTANCE: &[u8] = br#"{"cgroup_empty_after_reap":true,"cgroup_removed":true,"deadline_limit_ns":"1000000000","deadline_reached":true,"descendant_teardown_complete":true,"dropped_event_count":"0","event_count":"5","event_sequence_end":"5","event_sequence_start":"1","events":[{"actor_pid":"41","cgroup_id":"9001","kind":"fork","sequence":"1","subject_pid":"42","timestamp_ns":"100"},{"actor_pid":"42","cgroup_id":"9001","kind":"exec","sequence":"2","subject_pid":"42","timestamp_ns":"200"},{"actor_pid":"41","cgroup_id":"9001","kind":"signal_term","sequence":"3","subject_pid":"42","timestamp_ns":"300"},{"actor_pid":"41","cgroup_id":"9001","kind":"signal_kill","sequence":"4","subject_pid":"42","timestamp_ns":"600"},{"actor_pid":"42","cgroup_id":"9001","kind":"exit","sequence":"5","subject_pid":"42","timestamp_ns":"700"}],"evidence_truncated":false,"fixture_case":"term_resistance","fixture_termination_signal":"9","heartbeat_count":"2","kill_signal_count":"1","package_gid":"65534","package_uid":"65534","reaped_process_count":"1","schema_version":"whoathere.linux_vz_teardown_evidence_payload.v1","sensor_healthy":true,"sensor_teardown_complete":true,"teardown_trigger":"deadline","term_grace_limit_ns":"250000000","term_grace_reached":true,"term_resistance_proven":true,"termination_signal_count":"1"}"#;
     const ESCAPED_SESSION: &[u8] = br#"{"cgroup_empty_after_reap":true,"cgroup_removed":true,"deadline_limit_ns":"1000000000","deadline_reached":true,"descendant_teardown_complete":true,"dropped_event_count":"0","event_count":"5","event_sequence_end":"5","event_sequence_start":"1","events":[{"actor_pid":"41","cgroup_id":"9001","kind":"fork","sequence":"1","subject_pid":"42","timestamp_ns":"100"},{"actor_pid":"42","cgroup_id":"9001","kind":"exec","sequence":"2","subject_pid":"42","timestamp_ns":"200"},{"actor_pid":"42","cgroup_id":"9001","kind":"setsid","sequence":"3","subject_pid":"42","timestamp_ns":"300"},{"actor_pid":"41","cgroup_id":"9001","kind":"signal_term","sequence":"4","subject_pid":"42","timestamp_ns":"1400"},{"actor_pid":"42","cgroup_id":"9001","kind":"exit","sequence":"5","subject_pid":"42","timestamp_ns":"1500"}],"evidence_truncated":false,"fixture_case":"escaped_session","fixture_termination_signal":"15","heartbeat_count":"2","kill_signal_count":"0","package_gid":"65534","package_uid":"65534","reaped_process_count":"1","schema_version":"whoathere.linux_vz_teardown_evidence_payload.v1","sensor_healthy":true,"sensor_teardown_complete":true,"session_escape_count":"1","session_target":"new_session_leader_at_deadline","teardown_trigger":"deadline","termination_signal_count":"1"}"#;
+    const REPARENTED_CHILD: &[u8] = br#"{"cgroup_empty_after_reap":true,"cgroup_removed":true,"deadline_limit_ns":"1000000000","deadline_reached":true,"descendant_teardown_complete":true,"dropped_event_count":"0","event_count":"5","event_sequence_end":"5","event_sequence_start":"1","events":[{"actor_pid":"42","cgroup_id":"9001","kind":"exec","sequence":"1","subject_pid":"42","timestamp_ns":"100"},{"actor_pid":"42","cgroup_id":"9001","kind":"fork","sequence":"2","subject_pid":"43","timestamp_ns":"200"},{"actor_pid":"41","cgroup_id":"9001","kind":"reparent","sequence":"3","subject_pid":"43","timestamp_ns":"300"},{"actor_pid":"41","cgroup_id":"9001","kind":"signal_term","sequence":"4","subject_pid":"43","timestamp_ns":"1400"},{"actor_pid":"43","cgroup_id":"9001","kind":"exit","sequence":"5","subject_pid":"43","timestamp_ns":"1500"}],"evidence_truncated":false,"fixture_case":"reparented_child","fixture_termination_signal":"15","fork_count":"2","heartbeat_count":"2","kill_signal_count":"0","package_gid":"65534","package_uid":"65534","reaped_process_count":"2","reparent_target":"protected_subreaper_at_deadline","reparented_process_count":"1","schema_version":"whoathere.linux_vz_teardown_evidence_payload.v1","sensor_healthy":true,"sensor_teardown_complete":true,"teardown_trigger":"deadline","termination_signal_count":"1"}"#;
 
     #[test]
     fn normal_exit_binds_natural_exit_lineage_and_complete_cleanup() {
@@ -536,6 +594,51 @@ mod tests {
                 .replace(
                     "\"actor_pid\":\"41\",\"cgroup_id\":\"9001\",\"kind\":\"signal_term\"",
                     "\"actor_pid\":\"42\",\"cgroup_id\":\"9001\",\"kind\":\"signal_term\"",
+                ),
+        ] {
+            assert!(decode_linux_vz_teardown_evidence_payload_v1(changed.as_bytes()).is_err());
+        }
+    }
+
+    #[test]
+    fn reparented_child_binds_deadline_subreaper_signal_lineage_and_cleanup() {
+        let payload = decode_linux_vz_teardown_evidence_payload_v1(REPARENTED_CHILD).unwrap();
+        assert_eq!(
+            payload.fixture_case(),
+            LinuxVzTelemetryConformanceCaseV1::ReparentedChild
+        );
+        let claims = payload.guest_observation_claims_v1().unwrap();
+        assert_eq!(claims.dropped_event_count(), 0);
+        assert!(claims.descendant_teardown_complete());
+        assert_eq!(
+            claims.observed_terminal(),
+            LinuxVzTelemetryConformanceObservedTerminalV1::TimeoutWithTeardown
+        );
+    }
+
+    #[test]
+    fn reparented_child_rejects_forged_reap_target_signal_and_lineage_claims() {
+        for changed in [
+            String::from_utf8(REPARENTED_CHILD.to_vec())
+                .unwrap()
+                .replace(
+                    "\"reaped_process_count\":\"2\"",
+                    "\"reaped_process_count\":\"1\"",
+                ),
+            String::from_utf8(REPARENTED_CHILD.to_vec())
+                .unwrap()
+                .replace("protected_subreaper_at_deadline", "protected_subreaper"),
+            String::from_utf8(REPARENTED_CHILD.to_vec())
+                .unwrap()
+                .replace(
+                    "\"fixture_termination_signal\":\"15\"",
+                    "\"fixture_termination_signal\":\"9\"",
+                ),
+            String::from_utf8(REPARENTED_CHILD.to_vec())
+                .unwrap()
+                .replace(
+                    "\"actor_pid\":\"41\",\"cgroup_id\":\"9001\",\"kind\":\"reparent\"",
+                    "\"actor_pid\":\"42\",\"cgroup_id\":\"9001\",\"kind\":\"reparent\"",
                 ),
         ] {
             assert!(decode_linux_vz_teardown_evidence_payload_v1(changed.as_bytes()).is_err());

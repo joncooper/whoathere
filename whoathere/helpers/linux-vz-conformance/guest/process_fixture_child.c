@@ -227,6 +227,24 @@ static int reparenting(void) {
     return written == (ssize_t)sizeof(report) ? 0 : 95;
 }
 
+static int reparented_child(void) {
+    pid_t child = fork();
+    if (child < 0) return 168;
+    if (child == 0) {
+        close(REPARENT_REPORT_FD);
+        for (;;) (void)pause();
+    }
+    const struct reparent_report report = {
+        .magic = REPARENT_REPORT_MAGIC,
+        .child_pid = child,
+    };
+    ssize_t written = write(REPARENT_REPORT_FD, &report, sizeof(report));
+    int saved_errno = errno;
+    if (close(REPARENT_REPORT_FD) != 0 && written == (ssize_t)sizeof(report)) return 169;
+    errno = saved_errno;
+    return written == (ssize_t)sizeof(report) ? 0 : 170;
+}
+
 static int setsid_escape(void) {
     const pid_t process_pid = getpid();
     const pid_t prior_session_id = getsid(0);
@@ -792,6 +810,7 @@ int main(int argument_count, char **arguments) {
         return double_fork_daemonization();
     }
     if (strcmp(arguments[1], "reparenting") == 0) return reparenting();
+    if (strcmp(arguments[1], "reparented_child") == 0) return reparented_child();
     if (strcmp(arguments[1], "setsid_escape") == 0) return setsid_escape();
     if (strcmp(arguments[1], "escaped_session") == 0) return escaped_session();
     if (strcmp(arguments[1], "credential_change") == 0) return credential_change();

@@ -148,6 +148,31 @@ public func decodeLinuxVzTeardownEvidenceJSONV1(
               teardownDecimal(value["kill_signal_count"]) == 0 else {
             throw LinuxVzTeardownEvidencePayloadError.invalidSchema
         }
+    case "reparented_child":
+        expectedKeys = baseKeys.union([
+            "fixture_termination_signal", "fork_count", "reparent_target",
+            "reparented_process_count"
+        ])
+        expectedKinds = ["exec", "fork", "reparent", "signal_term", "exit"]
+        observedTerminal = "timeout_with_teardown"
+        guard value["teardown_trigger"] as? String == "deadline",
+              teardownDecimal(value["deadline_limit_ns"]) == 1_000_000_000,
+              value["deadline_reached"] as? Bool == true,
+              value["fixture_exit_status"] == nil,
+              teardownDecimal(value["fixture_termination_signal"]) == 15,
+              teardownDecimal(value["fork_count"]) == 2,
+              teardownDecimal(value["reaped_process_count"]) == 2,
+              value["reparent_target"] as? String == "protected_subreaper_at_deadline",
+              teardownDecimal(value["reparented_process_count"]) == 1,
+              value["session_escape_count"] == nil,
+              value["session_target"] == nil,
+              value["term_grace_limit_ns"] == nil,
+              value["term_grace_reached"] == nil,
+              value["term_resistance_proven"] == nil,
+              teardownDecimal(value["termination_signal_count"]) == 1,
+              teardownDecimal(value["kill_signal_count"]) == 0 else {
+            throw LinuxVzTeardownEvidencePayloadError.invalidSchema
+        }
     default:
         throw LinuxVzTeardownEvidencePayloadError.invalidSchema
     }
@@ -160,7 +185,8 @@ public func decodeLinuxVzTeardownEvidenceJSONV1(
           value["sensor_teardown_complete"] as? Bool == true,
           value["sensor_healthy"] as? Bool == true,
           value["evidence_truncated"] as? Bool == false,
-          teardownDecimal(value["reaped_process_count"]) == 1,
+          teardownDecimal(value["reaped_process_count"]) ==
+            (fixtureCase == "reparented_child" ? 2 : 1),
           teardownDecimal(value["event_sequence_start"]) == 1,
           teardownDecimal(value["event_sequence_end"]) == eventCount,
           teardownDecimal(value["event_count"]) == eventCount,
@@ -178,11 +204,12 @@ public func decodeLinuxVzTeardownEvidenceJSONV1(
           events.allSatisfy({
               $0.actorPID > 0 && $0.subjectPID > 0 && $0.cgroupID > 0 && $0.timestampNS > 0
           }),
-          events[0].actorPID != events[0].subjectPID,
           events.dropFirst().allSatisfy({ $0.cgroupID == events[0].cgroupID }),
           zip(events, events.dropFirst()).allSatisfy({ pair in
               pair.0.timestampNS < pair.1.timestampNS
-          }) else {
+          }),
+          fixtureCase == "reparented_child" ||
+            events[0].actorPID != events[0].subjectPID else {
         throw LinuxVzTeardownEvidencePayloadError.invalidEvent
     }
     switch fixtureCase {
@@ -221,6 +248,19 @@ public func decodeLinuxVzTeardownEvidenceJSONV1(
               events[3].subjectPID == events[0].subjectPID,
               events[4].actorPID == events[0].subjectPID,
               events[4].subjectPID == events[0].subjectPID else {
+            throw LinuxVzTeardownEvidencePayloadError.invalidEvent
+        }
+    case "reparented_child":
+        guard events[0].actorPID == events[0].subjectPID,
+              events[1].actorPID == events[0].actorPID,
+              events[1].subjectPID != events[0].actorPID,
+              events[2].actorPID != events[0].actorPID,
+              events[2].actorPID != events[1].subjectPID,
+              events[2].subjectPID == events[1].subjectPID,
+              events[3].actorPID == events[2].actorPID,
+              events[3].subjectPID == events[1].subjectPID,
+              events[4].actorPID == events[1].subjectPID,
+              events[4].subjectPID == events[1].subjectPID else {
             throw LinuxVzTeardownEvidencePayloadError.invalidEvent
         }
     default:

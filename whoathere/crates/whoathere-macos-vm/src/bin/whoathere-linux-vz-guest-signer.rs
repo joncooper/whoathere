@@ -138,6 +138,7 @@ mod linux {
                 | LinuxVzTelemetryConformanceCaseV1::Timeout
                 | LinuxVzTelemetryConformanceCaseV1::TermResistance
                 | LinuxVzTelemetryConformanceCaseV1::EscapedSession
+                | LinuxVzTelemetryConformanceCaseV1::ReparentedChild
         ) || run_spec.expected_terminal()
             != expected_terminal_for_case_v1(run_spec.fixture_case())
             || run_spec.package_execution_authority_permitted()
@@ -186,6 +187,7 @@ mod linux {
             LinuxVzTelemetryConformanceCaseV1::Timeout => "timeout",
             LinuxVzTelemetryConformanceCaseV1::TermResistance => "term_resistance",
             LinuxVzTelemetryConformanceCaseV1::EscapedSession => "escaped_session",
+            LinuxVzTelemetryConformanceCaseV1::ReparentedChild => "reparented_child",
             _ => return Err("guest_signer_run_spec_not_supported_inert_case".into()),
         };
         let mut child = Command::new(SENSOR_PATH)
@@ -299,7 +301,8 @@ mod linux {
             LinuxVzTelemetryConformanceCaseV1::NormalExit
             | LinuxVzTelemetryConformanceCaseV1::Timeout
             | LinuxVzTelemetryConformanceCaseV1::TermResistance
-            | LinuxVzTelemetryConformanceCaseV1::EscapedSession => {
+            | LinuxVzTelemetryConformanceCaseV1::EscapedSession
+            | LinuxVzTelemetryConformanceCaseV1::ReparentedChild => {
                 let evidence = decode_linux_vz_teardown_evidence_from_serial_v1(&sensor_output)?;
                 if evidence.fixture_case() != run_spec.fixture_case() {
                     return Err("guest_signer_teardown_case_mismatch".into());

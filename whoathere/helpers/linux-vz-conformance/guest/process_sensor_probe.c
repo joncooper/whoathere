@@ -2423,6 +2423,7 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
     int term_resistance = strcmp(fixture_case, "term_resistance") == 0;
     int escaped_session = strcmp(fixture_case, "escaped_session") == 0;
     int reparent = strcmp(fixture_case, "reparenting") == 0;
+    int reparented_child = strcmp(fixture_case, "reparented_child") == 0;
     int setsid_escape = strcmp(fixture_case, "setsid_escape") == 0;
     int credential_change = strcmp(fixture_case, "credential_change") == 0;
     int dynamic_library_load = strcmp(fixture_case, "dynamic_library_load") == 0;
@@ -2444,7 +2445,7 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
     int dns_sinkhole_activity = dns_activity || encrypted_dns_connect;
     int udp_activity = udp_send || dns_activity;
     int network_activity = network_connect || udp_activity;
-    if (timeout_case || term_resistance || escaped_session) {
+    if (timeout_case || term_resistance || escaped_session || reparented_child) {
         fds.programs[4] = load_syscall_program(fds.map, OBSERVATION_KILL, SYS_kill);
         fds.links[4] = fds.programs[4] >= 0
             ? attach_raw_tracepoint("sys_enter", fds.programs[4]) : -1;
@@ -2531,7 +2532,8 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
             loopback_prepared = 1;
         }
     }
-    if ((double_fork || reparent) && prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0) {
+    if ((double_fork || reparent || reparented_child) &&
+        prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0) {
         failure_stage = "subreaper_enable";
         failure_errno = errno;
         goto cleanup;
@@ -2555,7 +2557,7 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
             goto cleanup;
         }
     }
-    if ((reparent || setsid_escape || escaped_session || credential_change ||
+    if ((reparent || reparented_child || setsid_escape || escaped_session || credential_change ||
          dynamic_library_load || network_activity || term_resistance) &&
         pipe2(report_pipe, O_CLOEXEC) != 0) {
         failure_stage = "process_report_pipe";
@@ -2598,7 +2600,7 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
             fixture,
             fixture_case,
             &fds,
-            (reparent || setsid_escape || escaped_session || credential_change ||
+            (reparent || reparented_child || setsid_escape || escaped_session || credential_change ||
              dynamic_library_load || network_activity || term_resistance)
                 ? report_pipe[1] : -1
         );
@@ -2626,6 +2628,31 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
             goto cleanup;
         }
         timeout_deadline_ns = now + 1000000000ULL;
+    }
+    if (reparented_child) {
+        if (read_exact_reparent_report(report_pipe[0], &reparent_report) != 0) {
+            failure_stage = "reparented_child_report";
+            failure_errno = errno;
+            goto cleanup;
+        }
+        close_if_open(&report_pipe[0]);
+        int launcher_status = 0;
+        if (waitpid(child, &launcher_status, 0) != child ||
+            !WIFEXITED(launcher_status) || WEXITSTATUS(launcher_status) != 0 ||
+            reparent_report.child_pid <= 0 ||
+            !proc_identity_matches(reparent_report.child_pid, parent) ||
+            !cgroup_contains_pid(reparent_report.child_pid)) {
+            failure_stage = "reparented_child_identity";
+            failure_errno = errno;
+            failure_detail = WIFEXITED(launcher_status) ? WEXITSTATUS(launcher_status) : 255;
+            goto cleanup;
+        }
+        reparent_timestamp = monotonic_ns();
+        if (reparent_timestamp == 0 || UINT64_MAX - reparent_timestamp < 1000000000ULL) {
+            failure_stage = "reparented_child_deadline_create";
+            goto cleanup;
+        }
+        timeout_deadline_ns = reparent_timestamp + 1000000000ULL;
     }
     if (setsid_escape || escaped_session) {
         if (read_exact_session_report(report_pipe[0], &session_report) != 0) {
@@ -2922,15 +2949,16 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
             goto cleanup;
         }
     }
-    if (timeout_case || term_resistance || escaped_session) {
+    if (timeout_case || term_resistance || escaped_session || reparented_child) {
+        pid_t teardown_target = reparented_child ? reparent_report.child_pid : child;
         int deadline_result = wait_until_deadline_while_child_runs(
-            child,
+            teardown_target,
             &child_status,
             timeout_deadline_ns
         );
         struct observation live_exec = {0};
-        if (deadline_result != 0 || !proc_identity_matches(child, parent) ||
-            !cgroup_contains_pid(child) ||
+        if (deadline_result != 0 || !proc_identity_matches(teardown_target, parent) ||
+            !cgroup_contains_pid(teardown_target) ||
             lookup_observation(fds.map, OBSERVATION_EXEC, &live_exec) != 0 ||
             !observed_pid(&live_exec, child)) {
             failure_stage = deadline_result == 1
@@ -2946,8 +2974,9 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
             failure_errno = errno;
             goto cleanup;
         }
-        if (timeout_case || escaped_session) {
-            if (kill(child, SIGTERM) != 0 || waitpid(child, &child_status, 0) != child ||
+        if (timeout_case || escaped_session || reparented_child) {
+            if (kill(teardown_target, SIGTERM) != 0 ||
+                waitpid(teardown_target, &child_status, 0) != teardown_target ||
                 !WIFSIGNALED(child_status) || WTERMSIG(child_status) != SIGTERM) {
                 failure_stage = "timeout_term_delivery";
                 failure_errno = errno;
@@ -3007,7 +3036,7 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
             goto cleanup;
         }
     }
-    if (normal_exit || timeout_case || term_resistance || escaped_session) {
+    if (normal_exit || timeout_case || term_resistance || escaped_session || reparented_child) {
         errno = 0;
         if (waitpid(-1, NULL, WNOHANG) != -1 || errno != ECHILD) {
             failure_stage = "normal_exit_descendant_count";
@@ -3090,7 +3119,7 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
         failure_errno = errno;
         goto cleanup;
     }
-    if ((timeout_case || term_resistance || escaped_session) &&
+    if ((timeout_case || term_resistance || escaped_session || reparented_child) &&
         lookup_observation(fds.map, OBSERVATION_KILL, &kill_event) != 0) {
         failure_stage = "teardown_kill_observation_lookup";
         failure_errno = errno;
@@ -3098,7 +3127,7 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
     }
     if ((!double_fork && !reparent && !setsid_escape && !credential_change &&
          !dynamic_library_load && !network_activity && !timeout_case && !term_resistance &&
-         !escaped_session &&
+         !escaped_session && !reparented_child &&
          (!observed_pid(&fork_event, parent) || !observed_pid(&exec_event, child) ||
           !observed_pid(&exit_event, child) ||
           fork_event.timestamp_ns >= exec_event.timestamp_ns ||
@@ -3125,6 +3154,16 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
           fork_event.timestamp_ns >= exec_event.timestamp_ns ||
           exec_event.timestamp_ns >= session_timestamp ||
           session_timestamp >= kill_event.timestamp_ns ||
+          kill_event.timestamp_ns >= exit_event.timestamp_ns)) ||
+        (reparented_child &&
+         (fork_event.count != 2 || exec_event.count != 1 || exit_event.count != 2 ||
+          (pid_t)(exec_event.pid_tgid >> 32) != child ||
+          (pid_t)(fork_event.pid_tgid >> 32) != child ||
+          kill_event.count != 1 || !observed_pid(&kill_event, parent) ||
+          (pid_t)(exit_event.pid_tgid >> 32) != reparent_report.child_pid ||
+          reparent_timestamp == 0 || exec_event.timestamp_ns >= fork_event.timestamp_ns ||
+          fork_event.timestamp_ns >= reparent_timestamp ||
+          reparent_timestamp >= kill_event.timestamp_ns ||
           kill_event.timestamp_ns >= exit_event.timestamp_ns)) ||
         (double_fork &&
          (fork_event.count != 3 || exec_event.count != 1 || exit_event.count != 3 ||
@@ -3319,7 +3358,7 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
         goto cleanup;
     }
 
-    if (normal_exit || timeout_case || term_resistance || escaped_session) {
+    if (normal_exit || timeout_case || term_resistance || escaped_session || reparented_child) {
         close_sensor_fds(&fds);
         if (write_control(ROOT_CGROUP_PROCS, "0\n") != 0) {
             failure_stage = "normal_exit_cgroup_release";
@@ -3380,6 +3419,16 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
         puts("WHOATHERE_SENSOR teardown_trigger=deadline");
         puts("WHOATHERE_SENSOR teardown_deadline=reached");
         puts("WHOATHERE_SENSOR teardown_session=escaped");
+        puts("WHOATHERE_SENSOR teardown_term_signal=delivered");
+        puts("WHOATHERE_SENSOR teardown_descendants=none_remaining");
+        puts("WHOATHERE_SENSOR teardown_sensor=closed");
+        puts("WHOATHERE_SENSOR teardown_cgroup=removed");
+        puts("WHOATHERE_SENSOR teardown_terminal=timeout_with_teardown");
+    }
+    if (reparented_child) {
+        puts("WHOATHERE_SENSOR teardown_trigger=deadline");
+        puts("WHOATHERE_SENSOR teardown_deadline=reached");
+        puts("WHOATHERE_SENSOR teardown_reparent=protected_subreaper");
         puts("WHOATHERE_SENSOR teardown_term_signal=delivered");
         puts("WHOATHERE_SENSOR teardown_descendants=none_remaining");
         puts("WHOATHERE_SENSOR teardown_sensor=closed");
@@ -3508,6 +3557,63 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
             (uint64_t)child,
             cgroup.count,
             (uint64_t)child,
+            exit_event.timestamp_ns
+        );
+        result = 0;
+        goto cleanup;
+    }
+    if (reparented_child) {
+        printf(
+            "WHOATHERE_GUEST_TEARDOWN_EVIDENCE "
+            "{\"cgroup_empty_after_reap\":true,\"cgroup_removed\":true,"
+            "\"deadline_limit_ns\":\"1000000000\",\"deadline_reached\":true,"
+            "\"descendant_teardown_complete\":true,\"dropped_event_count\":\"0\","
+            "\"event_count\":\"5\",\"event_sequence_end\":\"5\","
+            "\"event_sequence_start\":\"1\",\"events\":["
+            "{\"actor_pid\":\"%" PRIu64 "\",\"cgroup_id\":\"%" PRIu64
+            "\",\"kind\":\"exec\",\"sequence\":\"1\",\"subject_pid\":\"%" PRIu64
+            "\",\"timestamp_ns\":\"%" PRIu64 "\"},"
+            "{\"actor_pid\":\"%" PRIu64 "\",\"cgroup_id\":\"%" PRIu64
+            "\",\"kind\":\"fork\",\"sequence\":\"2\",\"subject_pid\":\"%" PRIu64
+            "\",\"timestamp_ns\":\"%" PRIu64 "\"},"
+            "{\"actor_pid\":\"%" PRIu64 "\",\"cgroup_id\":\"%" PRIu64
+            "\",\"kind\":\"reparent\",\"sequence\":\"3\","
+            "\"subject_pid\":\"%" PRIu64 "\",\"timestamp_ns\":\"%" PRIu64 "\"},"
+            "{\"actor_pid\":\"%" PRIu64 "\",\"cgroup_id\":\"%" PRIu64
+            "\",\"kind\":\"signal_term\",\"sequence\":\"4\","
+            "\"subject_pid\":\"%" PRIu64 "\",\"timestamp_ns\":\"%" PRIu64 "\"},"
+            "{\"actor_pid\":\"%" PRIu64 "\",\"cgroup_id\":\"%" PRIu64
+            "\",\"kind\":\"exit\",\"sequence\":\"5\",\"subject_pid\":\"%" PRIu64
+            "\",\"timestamp_ns\":\"%" PRIu64 "\"}],"
+            "\"evidence_truncated\":false,\"fixture_case\":\"reparented_child\","
+            "\"fixture_termination_signal\":\"15\",\"fork_count\":\"2\","
+            "\"heartbeat_count\":\"2\",\"kill_signal_count\":\"0\","
+            "\"package_gid\":\"65534\",\"package_uid\":\"65534\","
+            "\"reaped_process_count\":\"2\","
+            "\"reparent_target\":\"protected_subreaper_at_deadline\","
+            "\"reparented_process_count\":\"1\","
+            "\"schema_version\":\"whoathere.linux_vz_teardown_evidence_payload.v1\","
+            "\"sensor_healthy\":true,\"sensor_teardown_complete\":true,"
+            "\"teardown_trigger\":\"deadline\",\"termination_signal_count\":\"1\"}\n",
+            (uint64_t)child,
+            cgroup.count,
+            (uint64_t)child,
+            exec_event.timestamp_ns,
+            (uint64_t)child,
+            cgroup.count,
+            (uint64_t)reparent_report.child_pid,
+            fork_event.timestamp_ns,
+            (uint64_t)parent,
+            cgroup.count,
+            (uint64_t)reparent_report.child_pid,
+            reparent_timestamp,
+            (uint64_t)parent,
+            cgroup.count,
+            (uint64_t)reparent_report.child_pid,
+            kill_event.timestamp_ns,
+            (uint64_t)reparent_report.child_pid,
+            cgroup.count,
+            (uint64_t)reparent_report.child_pid,
             exit_event.timestamp_ns
         );
         result = 0;
@@ -4069,6 +4175,7 @@ int main(int argument_count, char **arguments) {
         strcmp(arguments[2], "timeout") == 0 ||
         strcmp(arguments[2], "term_resistance") == 0 ||
         strcmp(arguments[2], "escaped_session") == 0 ||
+        strcmp(arguments[2], "reparented_child") == 0 ||
         strcmp(arguments[2], "double_fork_daemonization") == 0 ||
         strcmp(arguments[2], "reparenting") == 0 ||
         strcmp(arguments[2], "setsid_escape") == 0 ||
