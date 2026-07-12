@@ -10,6 +10,11 @@ package execution, no sync-back, and no external route. This closes platform fea
 backend remains unqualified until protected sensors pass the authenticated 38-case inert matrix.
 See the [Linux VZ inert-boot checkpoint](artifact-native-linux-vz-inert-boot-checkpoint-2026-07-11.md).
 
+The first protected-sensor bootstrap now also observes a cgroup-filtered inert fork/exec/exit chain
+whose child runs as UID/GID 65534 and cannot read or write the root-only sensor. This remains
+unsigned bootstrap evidence rather than a conformance receipt. See the
+[process-sensor checkpoint](artifact-native-linux-vz-process-sensor-checkpoint-2026-07-11.md).
+
 Primary target: malicious npm and PyPI package detection with static analysis, AI-assisted code
 review, and behaviorally instrumented detonation in disposable virtual machines
 
@@ -1264,6 +1269,7 @@ Repository evidence:
 
 - [Current product README](../../README.md)
 - [Linux VZ inert-boot checkpoint](artifact-native-linux-vz-inert-boot-checkpoint-2026-07-11.md)
+- [Linux VZ process-sensor checkpoint](artifact-native-linux-vz-process-sensor-checkpoint-2026-07-11.md)
 - [macOS local release readiness](macos-local-release-readiness.md)
 - [macOS local beta pressure checkpoint](macos-local-beta-pressure-checkpoint.md)
 - [latest source-fixture corpus report](src-fixture-corpus-latest.md)

@@ -17,6 +17,20 @@ public let linuxVzInertRequiredCapabilityMarkersV1 = [
     "WHOATHERE_CAPABILITY sync_back=false",
 ]
 
+public let linuxVzInertProcessSensorMarkersV2 = [
+    "WHOATHERE_SENSOR process_cgroup_filter=observed",
+    "WHOATHERE_SENSOR process_fork=observed",
+    "WHOATHERE_SENSOR process_exec=observed",
+    "WHOATHERE_SENSOR process_exit=observed",
+    "WHOATHERE_SENSOR unprivileged_fixture=uid_65534_gid_65534",
+    "WHOATHERE_SENSOR protected_sensor_read=denied",
+    "WHOATHERE_SENSOR protected_sensor_write=denied",
+    "WHOATHERE_SENSOR_PROCESS_PROBE_OK",
+]
+
+public let linuxVzInertRequiredEvidenceMarkersV2 =
+    linuxVzInertRequiredCapabilityMarkersV1 + linuxVzInertProcessSensorMarkersV2
+
 public func linuxVzInertSerialContainsExactMarker(_ serialData: Data, marker: String) -> Bool {
     linuxVzInertSerialLines(serialData).contains(marker)
 }
@@ -24,6 +38,11 @@ public func linuxVzInertSerialContainsExactMarker(_ serialData: Data, marker: St
 public func linuxVzInertMissingCapabilityMarkers(_ serialData: Data) -> [String] {
     let lines = linuxVzInertSerialLines(serialData)
     return linuxVzInertRequiredCapabilityMarkersV1.filter { !lines.contains($0) }
+}
+
+public func linuxVzInertMissingRequiredEvidenceMarkersV2(_ serialData: Data) -> [String] {
+    let lines = linuxVzInertSerialLines(serialData)
+    return linuxVzInertRequiredEvidenceMarkersV2.filter { !lines.contains($0) }
 }
 
 private func linuxVzInertSerialLines(_ serialData: Data) -> Set<String> {

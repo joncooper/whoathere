@@ -42,11 +42,14 @@ config="$image/config-6.18.35-0-virt"
 system_map="$image/System.map-6.18.35-0-virt"
 guest_init="$image/overlay/init"
 capability_probe="$image/overlay/whoathere/capability-probe"
+process_sensor_probe="$image/overlay/whoathere/process-sensor-probe"
+process_fixture_child="$image/overlay/whoathere/process-fixture-child"
 
 for path in \
     "$iso" "$manifest" "$kernel" "$source_kernel_pe" "$base_initramfs" "$overlay_cpio" \
     "$overlay_cpio_gzip" \
-    "$combined_initramfs" "$config" "$system_map" "$guest_init" "$capability_probe"
+    "$combined_initramfs" "$config" "$system_map" "$guest_init" "$capability_probe" \
+    "$process_sensor_probe" "$process_fixture_child"
 do
     if [ ! -f "$path" ] || [ -L "$path" ]; then
         echo "required regular non-symlink file missing: $path" >&2
@@ -68,7 +71,7 @@ if ! cmp -s "$canonical_manifest" "$manifest"; then
     exit 65
 fi
 
-expected_keys='["architecture","base_initramfs_sha256","builder_source_sha256","canonical_newc_source_sha256","capability_probe_sha256","capability_probe_source_sha256","config_sha256","external_network","guest_init_sha256","guest_init_source_sha256","image_state","kernel_extraction","kernel_gzip_payload_offset","kernel_image_sha256","kernel_release","overlay_cpio_gzip_sha256","overlay_cpio_sha256","schema_version","source_iso_sha256","source_kernel_pe_sha256","source_url","sync_back_policy","system_map_sha256","whoathere_initramfs_sha256","zig_version"]'
+expected_keys='["architecture","base_initramfs_sha256","builder_source_sha256","canonical_newc_source_sha256","capability_probe_sha256","capability_probe_source_sha256","config_sha256","external_network","guest_init_sha256","guest_init_source_sha256","image_state","kernel_extraction","kernel_gzip_payload_offset","kernel_image_sha256","kernel_release","overlay_cpio_gzip_sha256","overlay_cpio_sha256","process_fixture_child_sha256","process_fixture_child_source_sha256","process_sensor_probe_sha256","process_sensor_probe_source_sha256","schema_version","source_iso_sha256","source_kernel_pe_sha256","source_url","sync_back_policy","system_map_sha256","whoathere_initramfs_sha256","zig_version"]'
 if [ "$(jq -c 'keys' "$manifest")" != "$expected_keys" ]; then
     echo "manifest key set mismatch" >&2
     exit 65
@@ -91,7 +94,7 @@ require_hash() {
     require_value "$field" "$actual"
 }
 
-require_value schema_version whoathere.linux_vz_inert_image_manifest.v3
+require_value schema_version whoathere.linux_vz_inert_image_manifest.v4
 require_value architecture aarch64
 require_value kernel_release 6.18.35-0-virt
 require_value image_state candidate_unqualified
@@ -118,6 +121,10 @@ require_hash guest_init_sha256 "$guest_init"
 require_hash guest_init_source_sha256 "$source_dir/guest/init"
 require_hash capability_probe_sha256 "$capability_probe"
 require_hash capability_probe_source_sha256 "$source_dir/guest/capability_probe.c"
+require_hash process_sensor_probe_sha256 "$process_sensor_probe"
+require_hash process_sensor_probe_source_sha256 "$source_dir/guest/process_sensor_probe.c"
+require_hash process_fixture_child_sha256 "$process_fixture_child"
+require_hash process_fixture_child_source_sha256 "$source_dir/guest/process_fixture_child.c"
 require_hash canonical_newc_source_sha256 "$source_dir/tools/canonical_newc.c"
 
 extracted_kernel_hash="sha256:$(tail -c +51833 "$source_kernel_pe" | gunzip -c 2>/dev/null | shasum -a 256 | awk '{print $1}')"
@@ -137,7 +144,7 @@ combined_stream_hash="sha256:$(/bin/cat "$base_initramfs" "$overlay_cpio_gzip" |
 require_value whoathere_initramfs_sha256 "$combined_stream_hash"
 
 entries=$(cpio -it < "$overlay_cpio" 2>/dev/null)
-expected_entries=$(printf 'init\nwhoathere\nwhoathere/capability-probe')
+expected_entries=$(printf 'init\nwhoathere\nwhoathere/capability-probe\nwhoathere/process-sensor-probe\nwhoathere/process-fixture-child')
 if [ "$entries" != "$expected_entries" ]; then
     echo "canonical overlay entry set or order mismatch" >&2
     exit 65
@@ -147,8 +154,18 @@ fi
     cpio -idmu < "$overlay_cpio" >/dev/null 2>&1
 )
 if ! cmp -s "$extract_root/init" "$guest_init" || \
-   ! cmp -s "$extract_root/whoathere/capability-probe" "$capability_probe"; then
+   ! cmp -s "$extract_root/whoathere/capability-probe" "$capability_probe" || \
+   ! cmp -s "$extract_root/whoathere/process-sensor-probe" "$process_sensor_probe" || \
+   ! cmp -s "$extract_root/whoathere/process-fixture-child" "$process_fixture_child"; then
     echo "canonical overlay content mismatch" >&2
+    exit 65
+fi
+if [ "$(stat -f '%Lp' "$extract_root/init")" != 755 ] || \
+   [ "$(stat -f '%Lp' "$extract_root/whoathere")" != 711 ] || \
+   [ "$(stat -f '%Lp' "$extract_root/whoathere/capability-probe")" != 700 ] || \
+   [ "$(stat -f '%Lp' "$extract_root/whoathere/process-sensor-probe")" != 700 ] || \
+   [ "$(stat -f '%Lp' "$extract_root/whoathere/process-fixture-child")" != 555 ]; then
+    echo "canonical overlay protection modes mismatch" >&2
     exit 65
 fi
 
@@ -157,6 +174,13 @@ case "$probe_description" in
     *"ARM aarch64"*"statically linked"*"stripped"*) ;;
     *) echo "capability probe is not a stripped static aarch64 Linux executable" >&2; exit 65 ;;
 esac
+for binary in "$process_sensor_probe" "$process_fixture_child"; do
+    binary_description=$(file "$binary")
+    case "$binary_description" in
+        *"ARM aarch64"*"statically linked"*"stripped"*) ;;
+        *) echo "process sensor fixture is not a stripped static aarch64 Linux executable" >&2; exit 65 ;;
+    esac
+done
 
 for required_config in \
     CONFIG_BPF=y \

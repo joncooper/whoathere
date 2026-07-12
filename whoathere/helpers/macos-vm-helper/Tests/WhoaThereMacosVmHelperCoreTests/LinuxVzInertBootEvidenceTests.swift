@@ -22,3 +22,16 @@ import Testing
     )
     #expect(!linuxVzInertSerialContainsExactMarker(forged, marker: linuxVzInertSuccessMarkerV1))
 }
+
+@Test func linuxVzInertBootEvidenceV2RequiresProtectedProcessSensorLines() {
+    let completeLines = linuxVzInertRequiredEvidenceMarkersV2 + [linuxVzInertSuccessMarkerV1]
+    let complete = Data((completeLines.joined(separator: "\n") + "\n").utf8)
+    #expect(linuxVzInertMissingRequiredEvidenceMarkersV2(complete).isEmpty)
+
+    let missingSensor = Data(
+        ((linuxVzInertRequiredCapabilityMarkersV1 + [linuxVzInertSuccessMarkerV1])
+            .joined(separator: "\n") + "\n").utf8
+    )
+    #expect(linuxVzInertMissingRequiredEvidenceMarkersV2(missingSensor)
+        == linuxVzInertProcessSensorMarkersV2)
+}

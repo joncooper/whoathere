@@ -84,6 +84,7 @@ static uint32_t checked_file_size(const char *path) {
 static void write_file_entry(
     FILE *output,
     uint32_t inode,
+    uint32_t mode,
     const char *archive_name,
     const char *source_path
 ) {
@@ -95,7 +96,7 @@ static void write_file_entry(
     write_header(
         output,
         inode,
-        0100755,
+        mode,
         1,
         file_size,
         (uint32_t)name_size
@@ -124,28 +125,37 @@ static void write_file_entry(
     write_padding(output, 4);
 }
 
-static void write_directory_entry(FILE *output, uint32_t inode, const char *archive_name) {
+static void write_directory_entry(
+    FILE *output,
+    uint32_t inode,
+    uint32_t mode,
+    const char *archive_name
+) {
     size_t name_size = strlen(archive_name) + 1;
     if (name_size > UINT32_MAX) {
         fail("archive name exceeds newc size limit");
     }
-    write_header(output, inode, 0040755, 2, 0, (uint32_t)name_size);
+    write_header(output, inode, mode, 2, 0, (uint32_t)name_size);
     write_name(output, archive_name);
 }
 
 static void write_trailer(FILE *output) {
     static const char trailer[] = "TRAILER!!!";
-    write_header(output, 4, 0, 1, 0, sizeof(trailer));
+    write_header(output, 6, 0, 1, 0, sizeof(trailer));
     write_name(output, trailer);
     write_padding(output, 512);
 }
 
 int main(int argument_count, char **arguments) {
-    if (argument_count != 4) {
-        fprintf(stderr, "usage: canonical_newc OUTPUT INIT CAPABILITY_PROBE\n");
+    if (argument_count != 6) {
+        fprintf(
+            stderr,
+            "usage: canonical_newc OUTPUT INIT CAPABILITY_PROBE PROCESS_SENSOR PROCESS_FIXTURE\n"
+        );
         return 64;
     }
-    if (checked_file_size(arguments[2]) == 0 || checked_file_size(arguments[3]) == 0) {
+    if (checked_file_size(arguments[2]) == 0 || checked_file_size(arguments[3]) == 0 ||
+        checked_file_size(arguments[4]) == 0 || checked_file_size(arguments[5]) == 0) {
         fail("input must not be empty");
     }
 
@@ -154,9 +164,11 @@ int main(int argument_count, char **arguments) {
         fprintf(stderr, "canonical_newc: output open failed: %s\n", strerror(errno));
         return 1;
     }
-    write_file_entry(output, 1, "init", arguments[2]);
-    write_directory_entry(output, 2, "whoathere");
-    write_file_entry(output, 3, "whoathere/capability-probe", arguments[3]);
+    write_file_entry(output, 1, 0100755, "init", arguments[2]);
+    write_directory_entry(output, 2, 0040711, "whoathere");
+    write_file_entry(output, 3, 0100700, "whoathere/capability-probe", arguments[3]);
+    write_file_entry(output, 4, 0100700, "whoathere/process-sensor-probe", arguments[4]);
+    write_file_entry(output, 5, 0100555, "whoathere/process-fixture-child", arguments[5]);
     write_trailer(output);
     if (fclose(output) != 0) {
         fail("output close failed");

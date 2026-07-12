@@ -104,7 +104,7 @@ private struct LinuxVzConformanceHarness {
             exit(64)
         } catch {
             emitJSON([
-                "schema_version": "whoathere.linux_vz_inert_boot_result.v1",
+                "schema_version": "whoathere.linux_vz_inert_boot_result.v2",
                 "status": "error",
                 "reason": String(describing: error),
                 "virtualization_supported": VZVirtualMachine.isSupported,
@@ -205,16 +205,21 @@ private struct LinuxVzConformanceHarness {
             serialData,
             marker: linuxVzInertSuccessMarkerV1
         )
-        let missingCapabilities = linuxVzInertMissingCapabilityMarkers(serialData)
+        let missingRequiredMarkers = linuxVzInertMissingRequiredEvidenceMarkersV2(serialData)
         let rawFrameCount = drainRawFrames(fileDescriptor: sockets[1])
         let finalKernelSHA256 = try fileSHA256(options.kernel)
         let finalInitramfsSHA256 = try fileSHA256(options.initramfs)
         let imageIdentityStable = finalKernelSHA256 == kernelSHA256
             && finalInitramfsSHA256 == initramfsSHA256
-        let success = stopped && markerPresent && missingCapabilities.isEmpty && rawFrameCount == 0
+        let processSensorMarkerPresent = linuxVzInertSerialContainsExactMarker(
+            serialData,
+            marker: "WHOATHERE_SENSOR_PROCESS_PROBE_OK"
+        )
+        let success = stopped && markerPresent && processSensorMarkerPresent
+            && missingRequiredMarkers.isEmpty && rawFrameCount == 0
             && imageIdentityStable
         emitJSON([
-            "schema_version": "whoathere.linux_vz_inert_boot_result.v1",
+            "schema_version": "whoathere.linux_vz_inert_boot_result.v2",
             "status": success ? "ok" : "error",
             "operation": "linux_vz_inert_boot",
             "kernel_sha256": kernelSHA256,
@@ -225,8 +230,10 @@ private struct LinuxVzConformanceHarness {
             "image_identity_stable": imageIdentityStable,
             "vm_stopped": stopped,
             "inert_marker_present": markerPresent,
-            "required_capability_count": linuxVzInertRequiredCapabilityMarkersV1.count,
-            "missing_capability_markers": missingCapabilities,
+            "process_sensor_marker_present": processSensorMarkerPresent,
+            "required_platform_capability_count": linuxVzInertRequiredCapabilityMarkersV1.count,
+            "required_process_sensor_marker_count": linuxVzInertProcessSensorMarkersV2.count,
+            "missing_required_markers": missingRequiredMarkers,
             "raw_frame_count": rawFrameCount,
             "external_route": false,
             "package_execution": false,

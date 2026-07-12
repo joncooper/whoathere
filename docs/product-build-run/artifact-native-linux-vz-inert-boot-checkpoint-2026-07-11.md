@@ -6,6 +6,11 @@ Status: the pinned Linux VZ candidate boots successfully on an independently ide
 Apple Silicon Mac and passes the twelve exact inert capability checks; the backend remains
 unqualified because protected sensors and the authenticated 38-case conformance matrix have not run
 
+Follow-on: the
+[process-sensor bootstrap checkpoint](artifact-native-linux-vz-process-sensor-checkpoint-2026-07-11.md)
+adds the first real cgroup-filtered fork/exec/exit observation, but still no signed conformance
+receipt or qualified backend.
+
 Canonical references:
 
 - [Artifact-Native Detection Execution Plan](artifact-native-detection-execution-plan.md)

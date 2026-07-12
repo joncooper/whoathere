@@ -6,7 +6,8 @@ package artifacts or malware.
 The first boot input is Alpine Linux 3.24.1's official aarch64 virtual ISO, pinned by SHA-256. The
 builder extracts the virt kernel, initramfs, config, and System.map, extracts and verifies the
 uncompressed arm64 Linux `Image` from the pinned PE/EFI kernel, compiles a static aarch64 syscall
-probe, and appends a tiny inert `/init` that reports capability markers and powers off. Downloads,
+probe, a root-only eBPF process-sensor bootstrap, and a separate unprivileged inert child fixture.
+The tiny inert `/init` reports exact capability and sensor markers and powers off. Downloads,
 generated images, serial output, and boot results belong under the gitignored `.whoathere/` tree.
 
 The overlay uses a repository-owned canonical `newc` writer rather than host CPIO metadata. Entry
@@ -50,14 +51,19 @@ v2, bpffs, fanotify, a BPF program load, virtio-net, no external route, no packa
 sync-back. A host without hardware virtualization emits a fail-closed preflight record and does not
 attempt a boot.
 
-The generated manifest remains `candidate_unqualified`. A successful boot marker is not protected
-telemetry conformance, does not qualify the backend, and cannot authorize package execution. Only
-the complete authenticated 38-case inert conformance matrix can construct the distinct qualified
-backend type.
+The generated manifest remains `candidate_unqualified`. The process bootstrap uses protected BPF
+map counters to require a cgroup-filtered fork/exec/exit chain from a fixture running as UID/GID
+65534, after closing sensor descriptors. The fixture must prove read and write denial against the
+root-only sensor. These exact markers are still not an authenticated conformance receipt, do not
+qualify the backend, and cannot authorize package execution. Only the complete authenticated
+38-case inert conformance matrix can construct the distinct qualified backend type.
 
 The first physical-host boot passed all twelve exact capability checks with zero raw frames and all
 three safety invariants false. See the
 [sanitized inert-boot checkpoint](../../../docs/product-build-run/artifact-native-linux-vz-inert-boot-checkpoint-2026-07-11.md).
+The follow-on
+[process-sensor checkpoint](../../../docs/product-build-run/artifact-native-linux-vz-process-sensor-checkpoint-2026-07-11.md)
+records the first successful root-owned cgroup-filtered process observation.
 
 ## Closed fixture contract
 

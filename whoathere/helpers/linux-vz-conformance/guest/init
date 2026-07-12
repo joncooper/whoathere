@@ -4,6 +4,7 @@ set -eu
 PATH=/usr/bin:/usr/sbin:/bin:/sbin
 export PATH
 busybox=/usr/bin/busybox
+"$busybox" chmod 0755 /
 
 "$busybox" mkdir -p /proc /sys /dev /run
 "$busybox" mount -t proc proc /proc
@@ -43,6 +44,12 @@ if /whoathere/capability-probe; then
     echo "WHOATHERE_CAPABILITY syscall_probe=passed"
 else
     echo "WHOATHERE_CAPABILITY syscall_probe=failed"
+    capability_failed=1
+fi
+
+if /whoathere/process-sensor-probe /whoathere/process-fixture-child; then
+    :
+else
     capability_failed=1
 fi
 
