@@ -24,13 +24,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let canonical_manifest = serde_json_canonicalizer::to_vec(&manifest)?;
     let mut canonical_manifest_with_newline = canonical_manifest.clone();
     canonical_manifest_with_newline.push(b'\n');
-    if manifest_bytes != canonical_manifest && manifest_bytes != canonical_manifest_with_newline
-        || manifest["schema_version"] != "whoathere.linux_vz_inert_image_manifest.v5"
-        || manifest["image_state"] != "candidate_unqualified"
+    if manifest_bytes != canonical_manifest && manifest_bytes != canonical_manifest_with_newline {
+        return Err("image manifest is not canonical JSON".into());
+    }
+    let signed_image = match manifest["schema_version"].as_str() {
+        Some("whoathere.linux_vz_inert_image_manifest.v5") => false,
+        Some("whoathere.linux_vz_signed_inert_image_manifest.v1") => true,
+        _ => return Err("image manifest schema is not supported".into()),
+    };
+    if manifest["image_state"] != "candidate_unqualified"
         || manifest["external_network"] != "no_external_route"
         || manifest["sync_back_policy"] != "structurally_absent"
+        || signed_image
+            && (manifest["package_execution"] != "disabled"
+                || manifest["root_disk"] != "structurally_absent"
+                || manifest["guest_seed_provisioning"] != "root_owned_mode_0600_initramfs_path")
     {
-        return Err("image manifest is not the exact unqualified v5 contract".into());
+        return Err("image manifest is not an exact unqualified contract".into());
     }
 
     let helper = read_bounded(&arguments[2], 64 * 1024 * 1024)?;
@@ -41,16 +51,48 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let root_absence = read_canonical_json(&arguments[7])?;
     let requirements = ArtifactProtectedTelemetryRequirementsV1::linux_vz_bulk_v1();
     let identity = UnqualifiedMacosLinuxVzTelemetryBackendIdentityV1::new(
-        "alpine-3.24.1-aarch64-btf-pinned-v7",
+        if signed_image {
+            "alpine-3.24.1-aarch64-signed-inert-v1"
+        } else {
+            "alpine-3.24.1-aarch64-btf-pinned-v7"
+        },
         "alpine-3.24.1-aarch64",
         required_string(&manifest, "kernel_release")?,
         required_digest(&manifest, "kernel_image_sha256")?,
-        required_digest(&manifest, "whoathere_initramfs_sha256")?,
+        required_digest(
+            &manifest,
+            if signed_image {
+                "whoathere_signed_initramfs_sha256"
+            } else {
+                "whoathere_initramfs_sha256"
+            },
+        )?,
         Sha256Digest::from_bytes(&root_absence),
-        required_digest(&manifest, "config_sha256")?,
+        required_digest(
+            &manifest,
+            if signed_image {
+                "kernel_config_sha256"
+            } else {
+                "config_sha256"
+            },
+        )?,
         required_digest(&manifest, "kernel_btf_sha256")?,
-        required_digest(&manifest, "guest_init_sha256")?,
-        required_digest(&manifest, "process_sensor_probe_sha256")?,
+        required_digest(
+            &manifest,
+            if signed_image {
+                "process_fixture_child_sha256"
+            } else {
+                "guest_init_sha256"
+            },
+        )?,
+        required_digest(
+            &manifest,
+            if signed_image {
+                "guest_signer_sha256"
+            } else {
+                "process_sensor_probe_sha256"
+            },
+        )?,
         required_digest(&manifest, "process_sensor_probe_sha256")?,
         Sha256Digest::from_bytes(&guest_config),
         Sha256Digest::from_bytes(&guest_key),

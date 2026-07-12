@@ -16,6 +16,10 @@ let package = Package(
         .executable(
             name: "whoathere-linux-vz-identity-verify",
             targets: ["WhoaThereLinuxVzIdentityVerify"]
+        ),
+        .executable(
+            name: "whoathere-linux-vz-signed-conformance",
+            targets: ["WhoaThereLinuxVzSignedConformance"]
         )
     ],
     targets: [
@@ -30,6 +34,10 @@ let package = Package(
         ),
         .executableTarget(
             name: "WhoaThereLinuxVzIdentityVerify",
+            dependencies: ["WhoaThereMacosVmHelperCore"]
+        ),
+        .executableTarget(
+            name: "WhoaThereLinuxVzSignedConformance",
             dependencies: ["WhoaThereMacosVmHelperCore"]
         ),
         .testTarget(

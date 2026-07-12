@@ -2,10 +2,15 @@
 
 Date: 2026-07-11
 
-Status: the physical inert backend now has a canonical, independently validated
+Checkpoint status: the physical inert backend had a canonical, independently validated
 `candidate_unqualified` identity binding the measured kernel BTF, image, actual signed host helper,
 sensor configurations, package UID/GID, and fresh evidence public keys; private-key provisioning,
 challenge delivery, and live receipt signing remain pending
+
+Follow-on: the
+[live guest-receipt checkpoint](artifact-native-linux-vz-live-guest-receipt-checkpoint-2026-07-12.md)
+provisions the root-only guest signer, adds the bounded virtio-vsock challenge channel, and verifies
+one live inert guest receipt in both Swift and Rust. Host lifecycle signing remains pending.
 
 Canonical references:
 

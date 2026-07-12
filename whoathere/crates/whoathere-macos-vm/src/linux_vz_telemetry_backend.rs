@@ -161,6 +161,14 @@ impl UnqualifiedMacosLinuxVzTelemetryBackendIdentityV1 {
         &self.guest_runner_sha256
     }
 
+    pub fn guest_sensor_sha256(&self) -> &Sha256Digest {
+        &self.guest_sensor_sha256
+    }
+
+    pub fn guest_bpf_bundle_sha256(&self) -> &Sha256Digest {
+        &self.guest_bpf_bundle_sha256
+    }
+
     pub fn telemetry_requirements_sha256(&self) -> &Sha256Digest {
         &self.telemetry_requirements_sha256
     }

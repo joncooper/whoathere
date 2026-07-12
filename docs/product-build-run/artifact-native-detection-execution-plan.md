@@ -5,7 +5,7 @@ Date: 2026-07-09
 Status: canonical execution plan for the next product milestone
 
 Current execution checkpoint (2026-07-11): the pinned Linux VZ inert candidate now boots on a
-physical Apple Silicon Mac and passes all twelve platform capability checks while preserving no
+physical Apple Silicon Mac and passes all thirteen platform capability checks while preserving no
 package execution, no sync-back, and no external route. This closes platform feasibility only; the
 backend remains unqualified until protected sensors pass the authenticated 38-case inert matrix.
 See the [Linux VZ inert-boot checkpoint](artifact-native-linux-vz-inert-boot-checkpoint-2026-07-11.md).
@@ -22,8 +22,14 @@ the [ordered process-evidence checkpoint](artifact-native-linux-vz-ordered-proce
 
 The pinned runtime BTF, actual signed physical-host helper, canonical sensor configurations,
 structurally absent root disk, and fresh evidence public keys now form an independently validated
-unqualified backend identity. Private-key provisioning and live receipt signing remain pending. See
+unqualified backend identity. See
 the [measured backend-identity checkpoint](artifact-native-linux-vz-measured-backend-identity-checkpoint-2026-07-11.md).
+
+The physical guest now accepts one bounded virtio-vsock challenge, validates its exact inert run
+context and measured binaries, derives claims from the ordered fork/exec/exit payload, and returns a
+live Ed25519 receipt that independent Swift and Rust implementations verify. The backend remains
+unqualified because the host lifecycle receipt and conformance matrix are pending. See the
+[live guest-receipt checkpoint](artifact-native-linux-vz-live-guest-receipt-checkpoint-2026-07-12.md).
 
 Primary target: malicious npm and PyPI package detection with static analysis, AI-assisted code
 review, and behaviorally instrumented detonation in disposable virtual machines
@@ -1282,6 +1288,7 @@ Repository evidence:
 - [Linux VZ process-sensor checkpoint](artifact-native-linux-vz-process-sensor-checkpoint-2026-07-11.md)
 - [Linux VZ ordered process-evidence checkpoint](artifact-native-linux-vz-ordered-process-evidence-checkpoint-2026-07-11.md)
 - [Linux VZ measured backend-identity checkpoint](artifact-native-linux-vz-measured-backend-identity-checkpoint-2026-07-11.md)
+- [Linux VZ live guest-receipt checkpoint](artifact-native-linux-vz-live-guest-receipt-checkpoint-2026-07-12.md)
 - [macOS local release readiness](macos-local-release-readiness.md)
 - [macOS local beta pressure checkpoint](macos-local-beta-pressure-checkpoint.md)
 - [latest source-fixture corpus report](src-fixture-corpus-latest.md)

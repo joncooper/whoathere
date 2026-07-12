@@ -166,6 +166,7 @@ pub struct MacosLinuxVzTelemetryConformanceRunSpecV1 {
     expected_sensors: Vec<ArtifactProtectedTelemetrySensorV1>,
     telemetry_requirements_sha256: Sha256Digest,
     backend_identity_sha256: Sha256Digest,
+    backend_identity: UnqualifiedMacosLinuxVzTelemetryBackendIdentityV1,
 }
 
 impl fmt::Debug for MacosLinuxVzTelemetryConformanceRunSpecV1 {
@@ -256,6 +257,10 @@ impl MacosLinuxVzTelemetryConformanceRunSpecV1 {
 
     pub fn backend_identity_sha256(&self) -> &Sha256Digest {
         &self.backend_identity_sha256
+    }
+
+    pub fn backend_identity(&self) -> &UnqualifiedMacosLinuxVzTelemetryBackendIdentityV1 {
+        &self.backend_identity
     }
 
     pub const fn package_execution_authority_permitted(&self) -> bool {
@@ -461,6 +466,7 @@ fn validate_and_build_run_spec_v1(
         expected_sensors: wire.expected_sensors,
         telemetry_requirements_sha256: wire.telemetry_requirements_sha256,
         backend_identity_sha256: wire.backend_identity_sha256,
+        backend_identity: backend,
     })
 }
 

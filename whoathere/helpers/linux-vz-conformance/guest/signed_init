@@ -1,0 +1,88 @@
+#!/usr/bin/sh
+set -eu
+
+PATH=/usr/bin:/usr/sbin:/bin:/sbin
+export PATH
+busybox=/usr/bin/busybox
+"$busybox" chmod 0755 /
+
+"$busybox" mkdir -p /proc /sys /dev /run
+"$busybox" mount -t proc proc /proc
+"$busybox" mount -t sysfs sysfs /sys
+"$busybox" mount -t devtmpfs devtmpfs /dev || true
+"$busybox" mount -t tmpfs -o mode=0700 tmpfs /run
+"$busybox" mkdir -p /sys/fs/bpf /sys/fs/cgroup
+
+capability_failed=0
+
+echo "WHOATHERE_LINUX_VZ_SIGNED_INERT_BEGIN"
+echo "WHOATHERE_CAPABILITY kernel_release=$("$busybox" uname -r)"
+echo "WHOATHERE_CAPABILITY architecture=$("$busybox" uname -m)"
+
+if [ -r /sys/kernel/btf/vmlinux ]; then
+    echo "WHOATHERE_CAPABILITY kernel_btf=present"
+    kernel_btf_sha256=$("$busybox" sha256sum /sys/kernel/btf/vmlinux | "$busybox" awk '{print $1}')
+    echo "WHOATHERE_CAPABILITY kernel_btf_sha256=sha256:$kernel_btf_sha256"
+else
+    echo "WHOATHERE_CAPABILITY kernel_btf=missing"
+    capability_failed=1
+fi
+
+if "$busybox" mount -t cgroup2 cgroup2 /sys/fs/cgroup; then
+    echo "WHOATHERE_CAPABILITY cgroup_v2=mounted"
+else
+    echo "WHOATHERE_CAPABILITY cgroup_v2=failed"
+    capability_failed=1
+fi
+
+if "$busybox" mount -t bpf bpf /sys/fs/bpf; then
+    echo "WHOATHERE_CAPABILITY bpf_fs=mounted"
+else
+    echo "WHOATHERE_CAPABILITY bpf_fs=failed"
+    capability_failed=1
+fi
+
+if /whoathere/capability-probe; then
+    echo "WHOATHERE_CAPABILITY syscall_probe=passed"
+else
+    echo "WHOATHERE_CAPABILITY syscall_probe=failed"
+    capability_failed=1
+fi
+
+if "$busybox" insmod /whoathere/modules/vsock.ko && \
+   "$busybox" insmod /whoathere/modules/vmw_vsock_virtio_transport_common.ko && \
+   "$busybox" insmod /whoathere/modules/vmw_vsock_virtio_transport.ko
+then
+    echo "WHOATHERE_CAPABILITY virtio_vsock=loaded"
+else
+    echo "WHOATHERE_CAPABILITY virtio_vsock=failed"
+    capability_failed=1
+fi
+
+if modprobe virtio_net 2>/dev/null; then
+    echo "WHOATHERE_CAPABILITY virtio_net=loaded"
+else
+    echo "WHOATHERE_CAPABILITY virtio_net=unavailable"
+    capability_failed=1
+fi
+
+if [ "$capability_failed" -eq 0 ] && /whoathere/guest-signer; then
+    echo "WHOATHERE_CAPABILITY guest_receipt_signing=passed"
+else
+    echo "WHOATHERE_CAPABILITY guest_receipt_signing=failed"
+    capability_failed=1
+fi
+
+echo "WHOATHERE_CAPABILITY external_route_configured=false"
+echo "WHOATHERE_CAPABILITY package_execution=false"
+echo "WHOATHERE_CAPABILITY sync_back=false"
+if [ "$capability_failed" -eq 0 ]; then
+    echo "WHOATHERE_LINUX_VZ_SIGNED_INERT_OK"
+else
+    echo "WHOATHERE_LINUX_VZ_SIGNED_INERT_FAILED"
+fi
+"$busybox" sync
+"$busybox" poweroff -f
+"$busybox" sleep 5
+echo "WHOATHERE_LINUX_VZ_POWER_OFF_FAILED"
+exit 1

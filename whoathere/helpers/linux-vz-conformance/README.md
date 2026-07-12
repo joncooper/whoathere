@@ -15,8 +15,9 @@ order, inode values, root ownership, modes, timestamps, and padding are fixed. T
 compressed with deterministic gzip settings before concatenation with Alpine's gzip initramfs. Two
 clean builds from the same ISO must therefore produce byte-identical raw kernel, overlay, combined
 initramfs, and manifest bytes.
-The builder requires Xcode's Clang and Zig; the independent verifier additionally uses `jq`, `cpio`,
-`file`, and `shasum`.
+The base builder requires Xcode's Clang and Zig; the independent verifier additionally uses `jq`,
+`cpio`, `file`, and `shasum`. The signed overlay builder also requires pinned Rust,
+`cargo-zigbuild`, and `unsquashfs`.
 
 ```sh
 scripts/build-alpine-inert-image.sh \
@@ -32,6 +33,21 @@ required kernel configuration:
 scripts/verify-alpine-inert-image.sh \
   /absolute/path/alpine-virt-3.24.1-aarch64.iso \
   /absolute/path/output
+```
+
+Build and verify the separate guest-signing overlay with a protected seed. The seed and every image
+containing it must remain under restricted, gitignored storage:
+
+```sh
+scripts/build-alpine-signed-inert-image.sh \
+  /absolute/path/alpine-virt-3.24.1-aarch64.iso \
+  /absolute/protected/guest-ed25519.seed \
+  /absolute/path/signed-output
+
+scripts/verify-alpine-signed-inert-image.sh \
+  /absolute/path/alpine-virt-3.24.1-aarch64.iso \
+  /absolute/protected/guest-ed25519.seed \
+  /absolute/path/signed-output
 ```
 
 On a physical Apple Silicon Mac with `kern.hv_support=1`, build and sign the dedicated
@@ -58,7 +74,7 @@ root-only sensor. These exact markers are still not an authenticated conformance
 qualify the backend, and cannot authorize package execution. Only the complete authenticated
 38-case inert conformance matrix can construct the distinct qualified backend type.
 
-The first physical-host boot passed all twelve exact capability checks with zero raw frames and all
+The first physical-host boot passed all thirteen exact capability checks with zero raw frames and all
 three safety invariants false. See the
 [sanitized inert-boot checkpoint](../../../docs/product-build-run/artifact-native-linux-vz-inert-boot-checkpoint-2026-07-11.md).
 The follow-on
@@ -72,6 +88,10 @@ The
 [measured backend-identity checkpoint](../../../docs/product-build-run/artifact-native-linux-vz-measured-backend-identity-checkpoint-2026-07-11.md)
 pins the runtime BTF and binds the actual physical-host helper, configurations, and fresh evidence
 public keys into the still-unqualified backend identity.
+The
+[live guest-receipt checkpoint](../../../docs/product-build-run/artifact-native-linux-vz-live-guest-receipt-checkpoint-2026-07-12.md)
+adds a bounded host-CID-only virtio-vsock challenge, root-only guest signer, reproducible signed
+initramfs overlay, and independently verified inert guest receipt. It does not qualify the backend.
 
 ## Closed fixture contract
 
