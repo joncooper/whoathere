@@ -53,6 +53,12 @@ and independently verified on the new exact backend. Four of 38 cases now share 
 remain. See the
 [double-fork checkpoint](artifact-native-linux-vz-double-fork-checkpoint-2026-07-12.md).
 
+The distinct `reparenting` case now binds a package child first to its launcher and then to the
+protected subreaper through BPF counts, PID lineage, live procfs parent/credential corroboration,
+cgroup membership, and complete reaping. The previous four cases were rerun on the resulting exact
+identity. Five of 38 cases now share one backend binding; 33 remain. See the
+[reparenting checkpoint](artifact-native-linux-vz-reparenting-checkpoint-2026-07-12.md).
+
 Primary target: malicious npm and PyPI package detection with static analysis, AI-assisted code
 review, and behaviorally instrumented detonation in disposable virtual machines
 
@@ -1315,6 +1321,7 @@ Repository evidence:
 - [Linux VZ file-telemetry checkpoint](artifact-native-linux-vz-file-telemetry-checkpoint-2026-07-12.md)
 - [Linux VZ mmap checkpoint](artifact-native-linux-vz-mmap-checkpoint-2026-07-12.md)
 - [Linux VZ double-fork checkpoint](artifact-native-linux-vz-double-fork-checkpoint-2026-07-12.md)
+- [Linux VZ reparenting checkpoint](artifact-native-linux-vz-reparenting-checkpoint-2026-07-12.md)
 - [macOS local release readiness](macos-local-release-readiness.md)
 - [macOS local beta pressure checkpoint](macos-local-beta-pressure-checkpoint.md)
 - [latest source-fixture corpus report](src-fixture-corpus-latest.md)

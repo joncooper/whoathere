@@ -68,6 +68,7 @@ mod linux {
         if !matches!(
             run_spec.fixture_case(),
             LinuxVzTelemetryConformanceCaseV1::ForkExecExit
+                | LinuxVzTelemetryConformanceCaseV1::Reparenting
                 | LinuxVzTelemetryConformanceCaseV1::DoubleForkDaemonization
                 | LinuxVzTelemetryConformanceCaseV1::ProtectedOpenReadWriteRenameDelete
                 | LinuxVzTelemetryConformanceCaseV1::MmapAccess
@@ -90,6 +91,7 @@ mod linux {
 
         let fixture_case_argument = match run_spec.fixture_case() {
             LinuxVzTelemetryConformanceCaseV1::ForkExecExit => "fork_exec_exit",
+            LinuxVzTelemetryConformanceCaseV1::Reparenting => "reparenting",
             LinuxVzTelemetryConformanceCaseV1::DoubleForkDaemonization => {
                 "double_fork_daemonization"
             }
@@ -123,6 +125,7 @@ mod linux {
         }
         let (package_uid, package_gid, claims) = match run_spec.fixture_case() {
             LinuxVzTelemetryConformanceCaseV1::ForkExecExit
+            | LinuxVzTelemetryConformanceCaseV1::Reparenting
             | LinuxVzTelemetryConformanceCaseV1::DoubleForkDaemonization => {
                 let evidence = decode_linux_vz_process_evidence_from_serial_v1(&sensor_output)?;
                 if evidence.fixture_case() != run_spec.fixture_case() {

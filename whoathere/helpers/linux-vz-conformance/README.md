@@ -107,6 +107,10 @@ The
 [double-fork checkpoint](../../../docs/product-build-run/artifact-native-linux-vz-double-fork-checkpoint-2026-07-12.md)
 adds protected double-fork lineage and daemon teardown, then reruns the earlier three cases on the
 new measured identity. The other 34 cases remain pending.
+The
+[reparenting checkpoint](../../../docs/product-build-run/artifact-native-linux-vz-reparenting-checkpoint-2026-07-12.md)
+adds live parent-transition corroboration and protected reaping, then reruns the earlier four cases
+on the new measured identity. The other 33 cases remain pending.
 
 ## Closed fixture contract
 

@@ -1,6 +1,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -9,6 +10,13 @@
 
 static const char *sensor_path = "/whoathere/process-sensor-probe";
 static const char *fixture_root = "/run/whoathere-file-fixture";
+#define REPARENT_REPORT_FD 3
+#define REPARENT_REPORT_MAGIC 0x57545052U
+
+struct reparent_report {
+    uint32_t magic;
+    int32_t child_pid;
+};
 
 static int protected_sensor_denied(void) {
     int descriptor = open(sensor_path, O_WRONLY | O_CLOEXEC);
@@ -98,6 +106,26 @@ static int double_fork_daemonization(void) {
     _exit(0);
 }
 
+static int reparenting(void) {
+    pid_t child = fork();
+    if (child < 0) return 92;
+    if (child == 0) {
+        close(REPARENT_REPORT_FD);
+        const struct timespec pause = {.tv_sec = 0, .tv_nsec = 200000000};
+        if (nanosleep(&pause, NULL) != 0) _exit(93);
+        _exit(0);
+    }
+    const struct reparent_report report = {
+        .magic = REPARENT_REPORT_MAGIC,
+        .child_pid = child,
+    };
+    ssize_t written = write(REPARENT_REPORT_FD, &report, sizeof(report));
+    int saved_errno = errno;
+    if (close(REPARENT_REPORT_FD) != 0 && written == (ssize_t)sizeof(report)) return 94;
+    errno = saved_errno;
+    return written == (ssize_t)sizeof(report) ? 0 : 95;
+}
+
 int main(int argument_count, char **arguments) {
     if (argument_count != 2 || getuid() != 65534 || geteuid() != 65534 ||
         getgid() != 65534 || getegid() != 65534) {
@@ -109,6 +137,7 @@ int main(int argument_count, char **arguments) {
     if (strcmp(arguments[1], "double_fork_daemonization") == 0) {
         return double_fork_daemonization();
     }
+    if (strcmp(arguments[1], "reparenting") == 0) return reparenting();
     if (strcmp(arguments[1], "protected_open_read_write_rename_delete") == 0 ||
         strcmp(arguments[1], "mmap_access") == 0) {
         return file_fixture();

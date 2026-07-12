@@ -30,6 +30,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     let fixture_case = match arguments[2].as_str() {
         "fork_exec_exit" => LinuxVzTelemetryConformanceCaseV1::ForkExecExit,
+        "reparenting" => LinuxVzTelemetryConformanceCaseV1::Reparenting,
         "double_fork_daemonization" => LinuxVzTelemetryConformanceCaseV1::DoubleForkDaemonization,
         "protected_open_read_write_rename_delete" => {
             LinuxVzTelemetryConformanceCaseV1::ProtectedOpenReadWriteRenameDelete

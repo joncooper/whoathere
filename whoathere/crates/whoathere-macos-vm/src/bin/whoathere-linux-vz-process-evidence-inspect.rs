@@ -33,6 +33,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let claims = payload.guest_observation_claims_v1()?;
     let fixture_case = match payload.fixture_case() {
         LinuxVzTelemetryConformanceCaseV1::ForkExecExit => "fork_exec_exit",
+        LinuxVzTelemetryConformanceCaseV1::Reparenting => "reparenting",
         LinuxVzTelemetryConformanceCaseV1::DoubleForkDaemonization => "double_fork_daemonization",
         _ => return Err("unsupported process evidence fixture case".into()),
     };

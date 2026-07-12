@@ -34,6 +34,11 @@ public let linuxVzInertDoubleForkSensorMarkersV1 = [
     "WHOATHERE_SENSOR process_daemon_reaped=observed",
 ]
 
+public let linuxVzInertReparentingSensorMarkersV1 = [
+    "WHOATHERE_SENSOR process_reparenting=observed",
+    "WHOATHERE_SENSOR process_subreaper_teardown=observed",
+]
+
 public let linuxVzInertRequiredEvidenceMarkersV2 =
     linuxVzInertRequiredCapabilityMarkersV1 + linuxVzInertProcessSensorMarkersV2
 

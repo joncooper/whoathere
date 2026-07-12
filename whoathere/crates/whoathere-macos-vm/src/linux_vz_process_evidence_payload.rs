@@ -141,6 +141,10 @@ struct ProcessEvidenceWireV1 {
     package_gid: String,
     package_uid: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    reparent_target: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reparented_process_count: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     reaped_process_count: Option<String>,
     schema_version: String,
     sensor_healthy: bool,
@@ -213,46 +217,70 @@ pub fn decode_linux_vz_process_evidence_payload_v1(
         || wire.evidence_truncated
         || !wire.descendant_teardown_complete
         || event_sequence_start != 1
-        || event_sequence_end != 3
-        || event_count != 3
         || heartbeat_count != 2
         || dropped_event_count != 0
         || package_uid != 65534
         || package_gid != 65534
-        || wire.events.len() != 3
     {
         return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema);
     }
 
-    let fixture_case = match wire.fixture_case.as_deref() {
-        None => {
-            if wire.fork_count.is_some()
-                || wire.exec_count.is_some()
-                || wire.exit_count.is_some()
-                || wire.reaped_process_count.is_some()
-            {
-                return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema);
+    let (fixture_case, expected_kinds): (LinuxVzTelemetryConformanceCaseV1, &[&str]) =
+        match wire.fixture_case.as_deref() {
+            None => {
+                if wire.fork_count.is_some()
+                    || wire.exec_count.is_some()
+                    || wire.exit_count.is_some()
+                    || wire.reaped_process_count.is_some()
+                    || wire.reparent_target.is_some()
+                    || wire.reparented_process_count.is_some()
+                {
+                    return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema);
+                }
+                (
+                    LinuxVzTelemetryConformanceCaseV1::ForkExecExit,
+                    &["fork", "exec", "exit"],
+                )
             }
-            LinuxVzTelemetryConformanceCaseV1::ForkExecExit
-        }
-        Some("double_fork_daemonization") => {
-            if optional_decimal_u64_v1(wire.fork_count.as_deref())? != 3
-                || optional_decimal_u64_v1(wire.exec_count.as_deref())? != 1
-                || optional_decimal_u64_v1(wire.exit_count.as_deref())? != 3
-                || optional_decimal_u64_v1(wire.reaped_process_count.as_deref())? != 3
-            {
-                return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema);
+            Some("double_fork_daemonization") => {
+                if optional_decimal_u64_v1(wire.fork_count.as_deref())? != 3
+                    || optional_decimal_u64_v1(wire.exec_count.as_deref())? != 1
+                    || optional_decimal_u64_v1(wire.exit_count.as_deref())? != 3
+                    || optional_decimal_u64_v1(wire.reaped_process_count.as_deref())? != 3
+                    || wire.reparent_target.is_some()
+                    || wire.reparented_process_count.is_some()
+                {
+                    return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema);
+                }
+                (
+                    LinuxVzTelemetryConformanceCaseV1::DoubleForkDaemonization,
+                    &["exec", "fork", "exit"],
+                )
             }
-            LinuxVzTelemetryConformanceCaseV1::DoubleForkDaemonization
-        }
-        _ => return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema),
-    };
-    let expected_kinds = match fixture_case {
-        LinuxVzTelemetryConformanceCaseV1::ForkExecExit => ["fork", "exec", "exit"],
-        LinuxVzTelemetryConformanceCaseV1::DoubleForkDaemonization => ["exec", "fork", "exit"],
-        _ => return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema),
-    };
-    let mut events = Vec::with_capacity(3);
+            Some("reparenting") => {
+                if optional_decimal_u64_v1(wire.fork_count.as_deref())? != 2
+                    || optional_decimal_u64_v1(wire.exec_count.as_deref())? != 1
+                    || optional_decimal_u64_v1(wire.exit_count.as_deref())? != 2
+                    || optional_decimal_u64_v1(wire.reaped_process_count.as_deref())? != 2
+                    || optional_decimal_u64_v1(wire.reparented_process_count.as_deref())? != 1
+                    || wire.reparent_target.as_deref() != Some("protected_subreaper")
+                {
+                    return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema);
+                }
+                (
+                    LinuxVzTelemetryConformanceCaseV1::Reparenting,
+                    &["exec", "fork", "reparent", "exit"],
+                )
+            }
+            _ => return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema),
+        };
+    if event_sequence_end != expected_kinds.len() as u64
+        || event_count != expected_kinds.len() as u64
+        || wire.events.len() != expected_kinds.len()
+    {
+        return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema);
+    }
+    let mut events = Vec::with_capacity(expected_kinds.len());
     for (index, event) in wire.events.iter().enumerate() {
         if event.kind != expected_kinds[index]
             || decimal_u64_v1(&event.sequence)? != index as u64 + 1
@@ -270,11 +298,9 @@ pub fn decode_linux_vz_process_evidence_payload_v1(
         }
         events.push(event);
     }
-    if events[0].cgroup_id != events[1].cgroup_id
-        || events[1].cgroup_id != events[2].cgroup_id
-        || events[0].timestamp_ns >= events[1].timestamp_ns
-        || events[1].timestamp_ns >= events[2].timestamp_ns
-    {
+    if events.windows(2).any(|pair| {
+        pair[0].cgroup_id != pair[1].cgroup_id || pair[0].timestamp_ns >= pair[1].timestamp_ns
+    }) {
         return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidEvent);
     }
     match fixture_case {
@@ -295,6 +321,19 @@ pub fn decode_linux_vz_process_evidence_payload_v1(
                 || events[1].subject_pid != events[2].actor_pid
                 || events[0].actor_pid == events[1].actor_pid
                 || events[0].actor_pid == events[2].actor_pid
+            {
+                return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidEvent);
+            }
+        }
+        LinuxVzTelemetryConformanceCaseV1::Reparenting => {
+            if events[0].actor_pid != events[0].subject_pid
+                || events[1].actor_pid != events[0].actor_pid
+                || events[1].actor_pid == events[1].subject_pid
+                || events[2].actor_pid == events[2].subject_pid
+                || events[2].subject_pid != events[1].subject_pid
+                || events[2].actor_pid == events[0].actor_pid
+                || events[3].actor_pid != events[3].subject_pid
+                || events[3].actor_pid != events[1].subject_pid
             {
                 return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidEvent);
             }
@@ -340,6 +379,7 @@ mod tests {
     use super::*;
 
     const DOUBLE_FORK: &[u8] = br#"{"descendant_teardown_complete":true,"dropped_event_count":"0","event_count":"3","event_sequence_end":"3","event_sequence_start":"1","events":[{"actor_pid":"42","cgroup_id":"9001","kind":"exec","sequence":"1","subject_pid":"42","timestamp_ns":"100"},{"actor_pid":"43","cgroup_id":"9001","kind":"fork","sequence":"2","subject_pid":"44","timestamp_ns":"200"},{"actor_pid":"44","cgroup_id":"9001","kind":"exit","sequence":"3","subject_pid":"44","timestamp_ns":"300"}],"evidence_truncated":false,"exec_count":"1","exit_count":"3","fixture_case":"double_fork_daemonization","fork_count":"3","heartbeat_count":"2","package_gid":"65534","package_uid":"65534","reaped_process_count":"3","schema_version":"whoathere.linux_vz_process_evidence_payload.v1","sensor_healthy":true}"#;
+    const REPARENTING: &[u8] = br#"{"descendant_teardown_complete":true,"dropped_event_count":"0","event_count":"4","event_sequence_end":"4","event_sequence_start":"1","events":[{"actor_pid":"42","cgroup_id":"9001","kind":"exec","sequence":"1","subject_pid":"42","timestamp_ns":"100"},{"actor_pid":"42","cgroup_id":"9001","kind":"fork","sequence":"2","subject_pid":"43","timestamp_ns":"200"},{"actor_pid":"41","cgroup_id":"9001","kind":"reparent","sequence":"3","subject_pid":"43","timestamp_ns":"300"},{"actor_pid":"43","cgroup_id":"9001","kind":"exit","sequence":"4","subject_pid":"43","timestamp_ns":"400"}],"evidence_truncated":false,"exec_count":"1","exit_count":"2","fixture_case":"reparenting","fork_count":"2","heartbeat_count":"2","package_gid":"65534","package_uid":"65534","reaped_process_count":"2","reparent_target":"protected_subreaper","reparented_process_count":"1","schema_version":"whoathere.linux_vz_process_evidence_payload.v1","sensor_healthy":true}"#;
 
     #[test]
     fn double_fork_payload_binds_counts_lineage_and_teardown() {
@@ -357,6 +397,28 @@ mod tests {
         let changed = String::from_utf8(DOUBLE_FORK.to_vec())
             .unwrap()
             .replace("\"fork_count\":\"3\"", "\"fork_count\":\"2\"");
+        assert_eq!(
+            decode_linux_vz_process_evidence_payload_v1(changed.as_bytes()),
+            Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema)
+        );
+    }
+
+    #[test]
+    fn reparenting_payload_binds_kernel_parent_transition_and_teardown() {
+        let payload = decode_linux_vz_process_evidence_payload_v1(REPARENTING).unwrap();
+        assert_eq!(
+            payload.fixture_case(),
+            LinuxVzTelemetryConformanceCaseV1::Reparenting
+        );
+        assert_eq!(payload.event_count(), 4);
+        assert_eq!(payload.dropped_event_count(), 0);
+    }
+
+    #[test]
+    fn reparenting_payload_rejects_forged_target() {
+        let changed = String::from_utf8(REPARENTING.to_vec())
+            .unwrap()
+            .replace("protected_subreaper", "package_process");
         assert_eq!(
             decode_linux_vz_process_evidence_payload_v1(changed.as_bytes()),
             Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema)
