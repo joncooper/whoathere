@@ -16,7 +16,8 @@ use whoathere_macos_vm::{
     decode_linux_vz_process_evidence_from_serial_v1,
     decode_linux_vz_teardown_evidence_from_serial_v1,
     decode_unqualified_macos_linux_vz_telemetry_backend_identity_v1,
-    encode_linux_vz_guest_signer_request_v1, verify_macos_linux_vz_telemetry_conformance_case_v1,
+    encode_linux_vz_guest_signer_request_v1, encode_linux_vz_guest_signer_response_v1,
+    verify_macos_linux_vz_telemetry_conformance_case_v1,
     verify_macos_linux_vz_telemetry_guest_receipt_v1,
     verify_macos_linux_vz_telemetry_host_receipt_v1, LinuxVzTelemetryConformanceCaseV1,
     LinuxVzTelemetryConformanceObservedTerminalV1, MAX_LINUX_VZ_HOST_EVIDENCE_PAYLOAD_BYTES_V1,
@@ -112,6 +113,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         LinuxVzTelemetryConformanceCaseV1::ChannelInterruption => "channel_interruption",
         LinuxVzTelemetryConformanceCaseV1::VmStop => "vm_stop",
         LinuxVzTelemetryConformanceCaseV1::GuestSensorDeath => "guest_sensor_death",
+        LinuxVzTelemetryConformanceCaseV1::HostSensorDeath => "host_sensor_death",
         _ => return Err("complete-case verifier does not implement this inert case".into()),
     };
     let backend = decode_unqualified_macos_linux_vz_telemetry_backend_identity_v1(
@@ -135,6 +137,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         Some(match run_spec.fixture_case() {
             LinuxVzTelemetryConformanceCaseV1::ForkExecExit
+            | LinuxVzTelemetryConformanceCaseV1::HostSensorDeath
             | LinuxVzTelemetryConformanceCaseV1::Reparenting
             | LinuxVzTelemetryConformanceCaseV1::DoubleForkDaemonization
             | LinuxVzTelemetryConformanceCaseV1::SetsidEscape
@@ -149,7 +152,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 (
                     evidence.payload_sha256().clone(),
-                    evidence.guest_observation_claims_v1()?,
+                    if run_spec.fixture_case() == LinuxVzTelemetryConformanceCaseV1::HostSensorDeath
+                    {
+                        evidence.guest_observation_claims_for_terminal_v1(
+                            LinuxVzTelemetryConformanceObservedTerminalV1::InfrastructureErrorWithTeardown,
+                        )?
+                    } else {
+                        evidence.guest_observation_claims_v1()?
+                    },
                     None,
                 )
             }
@@ -274,130 +284,168 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let guest_source_port = guest_observation
         .as_ref()
         .and_then(|(_, _, source_port)| *source_port);
-    let (host_evidence_payload_sha256, host_claims) =
-        if run_spec.fixture_case() == LinuxVzTelemetryConformanceCaseV1::HostFrameOverflow {
-            let evidence =
-                decode_linux_vz_host_frame_overflow_host_evidence_payload_v1(&host_evidence)?;
-            if Some(evidence.source_port()) != guest_source_port {
-                return Err("guest and host overflow source port mismatch".into());
+    let (host_evidence_payload_sha256, host_claims) = if run_spec.fixture_case()
+        == LinuxVzTelemetryConformanceCaseV1::HostFrameOverflow
+    {
+        let evidence =
+            decode_linux_vz_host_frame_overflow_host_evidence_payload_v1(&host_evidence)?;
+        if Some(evidence.source_port()) != guest_source_port {
+            return Err("guest and host overflow source port mismatch".into());
+        }
+        (
+            evidence.payload_sha256().clone(),
+            evidence.host_observation_claims_v1()?,
+        )
+    } else if matches!(
+        run_spec.fixture_case(),
+        LinuxVzTelemetryConformanceCaseV1::Ipv4Connect
+            | LinuxVzTelemetryConformanceCaseV1::Ipv6Connect
+            | LinuxVzTelemetryConformanceCaseV1::UdpSend
+            | LinuxVzTelemetryConformanceCaseV1::PrivateAddressConnect
+            | LinuxVzTelemetryConformanceCaseV1::LinkLocalConnect
+            | LinuxVzTelemetryConformanceCaseV1::MetadataAddressConnect
+            | LinuxVzTelemetryConformanceCaseV1::PublicAddressConnect
+            | LinuxVzTelemetryConformanceCaseV1::DnsPlaintext
+            | LinuxVzTelemetryConformanceCaseV1::DnsMalformed
+            | LinuxVzTelemetryConformanceCaseV1::EncryptedDnsConnect
+    ) {
+        let evidence = decode_linux_vz_network_host_evidence_payload_v1(&host_evidence)?;
+        if evidence.fixture_case() != run_spec.fixture_case()
+            || Some(evidence.source_port()) != guest_source_port
+        {
+            return Err("guest and host network source port mismatch".into());
+        }
+        (
+            evidence.payload_sha256().clone(),
+            evidence.host_observation_claims_v1()?,
+        )
+    } else {
+        let evidence = decode_linux_vz_host_evidence_payload_v1(&host_evidence)?;
+        if channel_interruption {
+            let interruption = evidence
+                .channel_interruption()
+                .ok_or("channel interruption evidence is absent")?;
+            let expected_request_bytes =
+                encode_linux_vz_guest_signer_request_v1(&run_spec_bytes, &challenge_bytes)?.len()
+                    as u64;
+            if interruption.request_frame_bytes() != expected_request_bytes
+                || interruption.transmitted_prefix_bytes() != 16
+                || interruption.response_bytes() != 0
+            {
+                return Err("channel interruption evidence is rebound".into());
             }
-            (
-                evidence.payload_sha256().clone(),
-                evidence.host_observation_claims_v1()?,
-            )
+        } else if vm_stop {
+            let stop = evidence.vm_stop().ok_or("VM-stop evidence is absent")?;
+            let expected_request_bytes =
+                encode_linux_vz_guest_signer_request_v1(&run_spec_bytes, &challenge_bytes)?.len()
+                    as u64;
+            if stop.request_frame_bytes() != expected_request_bytes
+                || stop.transmitted_request_bytes() != expected_request_bytes
+                || stop.response_bytes() != 0
+                || !stop.fixture_active_marker_observed()
+            {
+                return Err("VM-stop evidence is rebound".into());
+            }
+        } else if guest_sensor_death {
+            let death = evidence
+                .guest_sensor_death()
+                .ok_or("guest-sensor-death evidence is absent")?;
+            let expected_request_bytes =
+                encode_linux_vz_guest_signer_request_v1(&run_spec_bytes, &challenge_bytes)?.len()
+                    as u64;
+            if death.request_frame_bytes() != expected_request_bytes
+                || death.transmitted_request_bytes() != expected_request_bytes
+                || death.response_bytes() != 0
+                || !death.fixture_active_marker_observed()
+                || death.signal() != 9
+            {
+                return Err("guest-sensor-death evidence is rebound".into());
+            }
+        } else if run_spec.fixture_case() == LinuxVzTelemetryConformanceCaseV1::HostSensorDeath {
+            let death = evidence
+                .host_sensor_death()
+                .ok_or("host-sensor-death evidence is absent")?;
+            let expected_request_bytes =
+                encode_linux_vz_guest_signer_request_v1(&run_spec_bytes, &challenge_bytes)?.len()
+                    as u64;
+            let expected_response_bytes = encode_linux_vz_guest_signer_response_v1(
+                guest_receipt
+                    .as_deref()
+                    .ok_or("host-sensor-death guest receipt is absent")?,
+            )?
+            .len() as u64;
+            if death.request_frame_bytes() != expected_request_bytes
+                || death.transmitted_request_bytes() != expected_request_bytes
+                || death.response_bytes() != expected_response_bytes
+                || !death.worker_started()
+                || !death.injected()
+                || !death.worker_terminated()
+            {
+                return Err("host-sensor-death evidence is rebound".into());
+            }
+        } else if evidence.channel_interruption().is_some()
+            || evidence.vm_stop().is_some()
+            || evidence.guest_sensor_death().is_some()
+            || evidence.host_sensor_death().is_some()
+        {
+            return Err("unexpected host-fault evidence".into());
+        }
+        if channel_interruption
+            && (evidence.vm_stop().is_some()
+                || evidence.guest_sensor_death().is_some()
+                || evidence.host_sensor_death().is_some())
+        {
+            return Err("unexpected non-channel host-fault evidence".into());
+        }
+        if vm_stop
+            && (evidence.channel_interruption().is_some()
+                || evidence.guest_sensor_death().is_some()
+                || evidence.host_sensor_death().is_some())
+        {
+            return Err("unexpected non-VM-stop host-fault evidence".into());
+        }
+        if guest_sensor_death
+            && (evidence.channel_interruption().is_some()
+                || evidence.vm_stop().is_some()
+                || evidence.host_sensor_death().is_some())
+        {
+            return Err("unexpected non-guest-sensor-death host-fault evidence".into());
+        }
+        if run_spec.fixture_case() == LinuxVzTelemetryConformanceCaseV1::HostSensorDeath
+            && (evidence.channel_interruption().is_some()
+                || evidence.vm_stop().is_some()
+                || evidence.guest_sensor_death().is_some())
+        {
+            return Err("unexpected non-host-sensor-death host-fault evidence".into());
+        }
+        let terminal = if matches!(
+            run_spec.fixture_case(),
+            LinuxVzTelemetryConformanceCaseV1::BpfReservationFailure
+                | LinuxVzTelemetryConformanceCaseV1::FanotifyQueueOverflow
+                | LinuxVzTelemetryConformanceCaseV1::HostFrameOverflow
+        ) {
+            LinuxVzTelemetryConformanceObservedTerminalV1::IncompleteOnInjectedGap
         } else if matches!(
             run_spec.fixture_case(),
-            LinuxVzTelemetryConformanceCaseV1::Ipv4Connect
-                | LinuxVzTelemetryConformanceCaseV1::Ipv6Connect
-                | LinuxVzTelemetryConformanceCaseV1::UdpSend
-                | LinuxVzTelemetryConformanceCaseV1::PrivateAddressConnect
-                | LinuxVzTelemetryConformanceCaseV1::LinkLocalConnect
-                | LinuxVzTelemetryConformanceCaseV1::MetadataAddressConnect
-                | LinuxVzTelemetryConformanceCaseV1::PublicAddressConnect
-                | LinuxVzTelemetryConformanceCaseV1::DnsPlaintext
-                | LinuxVzTelemetryConformanceCaseV1::DnsMalformed
-                | LinuxVzTelemetryConformanceCaseV1::EncryptedDnsConnect
+            LinuxVzTelemetryConformanceCaseV1::Timeout
+                | LinuxVzTelemetryConformanceCaseV1::TermResistance
+                | LinuxVzTelemetryConformanceCaseV1::EscapedSession
+                | LinuxVzTelemetryConformanceCaseV1::ReparentedChild
+                | LinuxVzTelemetryConformanceCaseV1::BackgroundListener
         ) {
-            let evidence = decode_linux_vz_network_host_evidence_payload_v1(&host_evidence)?;
-            if evidence.fixture_case() != run_spec.fixture_case()
-                || Some(evidence.source_port()) != guest_source_port
-            {
-                return Err("guest and host network source port mismatch".into());
-            }
-            (
-                evidence.payload_sha256().clone(),
-                evidence.host_observation_claims_v1()?,
-            )
+            LinuxVzTelemetryConformanceObservedTerminalV1::TimeoutWithTeardown
+        } else if host_only
+            || run_spec.fixture_case() == LinuxVzTelemetryConformanceCaseV1::HostSensorDeath
+        {
+            LinuxVzTelemetryConformanceObservedTerminalV1::InfrastructureErrorWithTeardown
         } else {
-            let evidence = decode_linux_vz_host_evidence_payload_v1(&host_evidence)?;
-            if channel_interruption {
-                let interruption = evidence
-                    .channel_interruption()
-                    .ok_or("channel interruption evidence is absent")?;
-                let expected_request_bytes =
-                    encode_linux_vz_guest_signer_request_v1(&run_spec_bytes, &challenge_bytes)?
-                        .len() as u64;
-                if interruption.request_frame_bytes() != expected_request_bytes
-                    || interruption.transmitted_prefix_bytes() != 16
-                    || interruption.response_bytes() != 0
-                {
-                    return Err("channel interruption evidence is rebound".into());
-                }
-            } else if vm_stop {
-                let stop = evidence.vm_stop().ok_or("VM-stop evidence is absent")?;
-                let expected_request_bytes =
-                    encode_linux_vz_guest_signer_request_v1(&run_spec_bytes, &challenge_bytes)?
-                        .len() as u64;
-                if stop.request_frame_bytes() != expected_request_bytes
-                    || stop.transmitted_request_bytes() != expected_request_bytes
-                    || stop.response_bytes() != 0
-                    || !stop.fixture_active_marker_observed()
-                {
-                    return Err("VM-stop evidence is rebound".into());
-                }
-            } else if guest_sensor_death {
-                let death = evidence
-                    .guest_sensor_death()
-                    .ok_or("guest-sensor-death evidence is absent")?;
-                let expected_request_bytes =
-                    encode_linux_vz_guest_signer_request_v1(&run_spec_bytes, &challenge_bytes)?
-                        .len() as u64;
-                if death.request_frame_bytes() != expected_request_bytes
-                    || death.transmitted_request_bytes() != expected_request_bytes
-                    || death.response_bytes() != 0
-                    || !death.fixture_active_marker_observed()
-                    || death.signal() != 9
-                {
-                    return Err("guest-sensor-death evidence is rebound".into());
-                }
-            } else if evidence.channel_interruption().is_some()
-                || evidence.vm_stop().is_some()
-                || evidence.guest_sensor_death().is_some()
-            {
-                return Err("unexpected host-fault evidence".into());
-            }
-            if channel_interruption
-                && (evidence.vm_stop().is_some() || evidence.guest_sensor_death().is_some())
-            {
-                return Err("unexpected non-channel host-fault evidence".into());
-            }
-            if vm_stop
-                && (evidence.channel_interruption().is_some()
-                    || evidence.guest_sensor_death().is_some())
-            {
-                return Err("unexpected non-VM-stop host-fault evidence".into());
-            }
-            if guest_sensor_death
-                && (evidence.channel_interruption().is_some() || evidence.vm_stop().is_some())
-            {
-                return Err("unexpected non-guest-sensor-death host-fault evidence".into());
-            }
-            let terminal = if matches!(
-                run_spec.fixture_case(),
-                LinuxVzTelemetryConformanceCaseV1::BpfReservationFailure
-                    | LinuxVzTelemetryConformanceCaseV1::FanotifyQueueOverflow
-                    | LinuxVzTelemetryConformanceCaseV1::HostFrameOverflow
-            ) {
-                LinuxVzTelemetryConformanceObservedTerminalV1::IncompleteOnInjectedGap
-            } else if matches!(
-                run_spec.fixture_case(),
-                LinuxVzTelemetryConformanceCaseV1::Timeout
-                    | LinuxVzTelemetryConformanceCaseV1::TermResistance
-                    | LinuxVzTelemetryConformanceCaseV1::EscapedSession
-                    | LinuxVzTelemetryConformanceCaseV1::ReparentedChild
-                    | LinuxVzTelemetryConformanceCaseV1::BackgroundListener
-            ) {
-                LinuxVzTelemetryConformanceObservedTerminalV1::TimeoutWithTeardown
-            } else if host_only {
-                LinuxVzTelemetryConformanceObservedTerminalV1::InfrastructureErrorWithTeardown
-            } else {
-                LinuxVzTelemetryConformanceObservedTerminalV1::ObservationComplete
-            };
-            (
-                evidence.payload_sha256().clone(),
-                evidence.host_observation_claims_for_terminal_v1(terminal)?,
-            )
+            LinuxVzTelemetryConformanceObservedTerminalV1::ObservationComplete
         };
+        (
+            evidence.payload_sha256().clone(),
+            evidence.host_observation_claims_for_terminal_v1(terminal)?,
+        )
+    };
     let verified_host = verify_macos_linux_vz_telemetry_host_receipt_v1(
         &challenge,
         &run_spec,

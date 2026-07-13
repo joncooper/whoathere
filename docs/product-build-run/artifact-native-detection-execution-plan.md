@@ -4,15 +4,15 @@ Date: 2026-07-09
 
 Status: canonical execution plan for the next product milestone
 
-Current execution checkpoint (2026-07-12): thirty-one of the 38 authenticated Linux VZ inert
+Current execution checkpoint (2026-07-12): thirty-two of the 38 authenticated Linux VZ inert
 conformance cases now pass physically on one exact measured backend identity. The newest
-`guest_sensor_death` case proves the measured guest signer waits for a protected-sensor readiness
-record backed by live fixture identity and BPF fork/exec observations, terminates that exact sensor
-with SIGKILL, records signal 9, emits no guest receipt, and fails closed. Signed host evidence binds
-the full request, readiness marker, signal, zero response, naturally stopped VM, healthy zero-frame
-packet sensor, and destroyed diskless instance. This is still telemetry qualification, not package
-detection, and the backend remains `candidate_unqualified`. See the
-[guest-sensor-death checkpoint](artifact-native-linux-vz-guest-sensor-death-checkpoint-2026-07-12.md).
+`host_sensor_death` case starts a dedicated host packet-sensor worker before VM launch, transmits
+the complete request, deliberately terminates that worker while the guest runs, and still receives
+healthy signed guest process evidence. Signed host evidence binds the worker start, injected
+termination, complete request and response sizes, unhealthy packet-sensor state, zero frames and
+drops, stopped VM, and destroyed diskless instance. This is still telemetry qualification, not
+package detection, and the backend remains `candidate_unqualified`. See the
+[host-sensor-death checkpoint](artifact-native-linux-vz-host-sensor-death-checkpoint-2026-07-12.md).
 
 The first protected-sensor bootstrap now also observes a cgroup-filtered inert fork/exec/exit chain
 whose child runs as UID/GID 65534 and cannot read or write the root-only sensor. This remains
@@ -277,6 +277,17 @@ thirty-one cases ran physically on the resulting identity; all 93 request inputs
 every complete case passed independent Rust verification. Thirty-one of 38 cases now share one
 backend binding; 7 remain. See the
 [guest-sensor-death checkpoint](artifact-native-linux-vz-guest-sensor-death-checkpoint-2026-07-12.md).
+
+The `host_sensor_death` tamper case now proves the mirror-image failure mode. A dedicated host
+packet-sensor worker starts before the VM, is explicitly terminated immediately after the complete
+guest request is transmitted, and cannot be replaced by a later normal socket drain. The guest
+still completes a cgroup-filtered fork/exec/exit observation and returns healthy signed evidence,
+while signed host evidence binds worker start, injected termination, the exact 5,171-byte request,
+the exact 1,675-byte framed response, unhealthy sensor status, zero ingress and drops, stopped VM,
+and destroyed clone. All thirty-two implemented cases ran physically on the resulting identity;
+all 96 request inputs matched locally and every complete case passed independent Rust verification.
+Thirty-two of 38 cases now share one backend binding; 6 remain. See the
+[host-sensor-death checkpoint](artifact-native-linux-vz-host-sensor-death-checkpoint-2026-07-12.md).
 
 Primary target: malicious npm and PyPI package detection with static analysis, AI-assisted code
 review, and behaviorally instrumented detonation in disposable virtual machines

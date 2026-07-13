@@ -91,6 +91,79 @@ private final class BoundedHostFrameCollector: @unchecked Sendable {
     }
 }
 
+private struct HostSensorDeathCollection: Sendable {
+    let ingressFrameCount: Int
+    let workerStarted: Bool
+    let injected: Bool
+    let workerTerminated: Bool
+    let healthy: Bool
+    let terminal: String
+}
+
+private final class HostSensorDeathCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var ingressFrameCount = 0
+    private var running = false
+    private var injectedDeathRequested = false
+    private var cleanupStopRequested = false
+
+    func requestInjectedDeath() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard running, !injectedDeathRequested, !cleanupStopRequested else { return false }
+        injectedDeathRequested = true
+        return true
+    }
+
+    func requestCleanupStop() {
+        lock.lock()
+        cleanupStopRequested = true
+        lock.unlock()
+    }
+
+    func run(fileDescriptor: Int32) -> HostSensorDeathCollection {
+        lock.lock()
+        running = true
+        lock.unlock()
+        var buffer = [UInt8](repeating: 0, count: 65_535)
+        var socketHealthy = true
+        while true {
+            let received = recv(fileDescriptor, &buffer, buffer.count, MSG_DONTWAIT)
+            if received >= 0 {
+                lock.lock()
+                ingressFrameCount += 1
+                lock.unlock()
+                continue
+            }
+            if errno != EAGAIN && errno != EWOULDBLOCK {
+                socketHealthy = false
+                break
+            }
+            lock.lock()
+            let injected = injectedDeathRequested
+            let cleanup = cleanupStopRequested
+            lock.unlock()
+            if injected || cleanup { break }
+            usleep(1_000)
+        }
+        lock.lock()
+        let injected = injectedDeathRequested
+        let cleanup = cleanupStopRequested
+        let ingress = ingressFrameCount
+        running = false
+        lock.unlock()
+        return HostSensorDeathCollection(
+            ingressFrameCount: ingress,
+            workerStarted: true,
+            injected: injected,
+            workerTerminated: injected,
+            healthy: !injected && !cleanup && socketHealthy,
+            terminal: injected ? "injected_sensor_death" :
+                (socketHealthy ? "cleanup_stop" : "socket_error")
+        )
+    }
+}
+
 private struct Options {
     let kernel: URL
     let initramfs: URL
@@ -266,9 +339,14 @@ private struct LinuxVzSignedConformanceHarness {
         }
         let overflowCollector = runSpec.fixtureCase == "host_frame_overflow"
             ? BoundedHostFrameCollector(capacity: 64) : nil
+        let hostSensorDeathCollector = runSpec.fixtureCase == "host_sensor_death"
+            ? HostSensorDeathCollector() : nil
         let overflowCollectionResult = LockedBox<BoundedHostFrameCollection>()
         let overflowCollectionDone = DispatchSemaphore(value: 0)
         var overflowCollectionFinished = false
+        let hostSensorDeathCollectionResult = LockedBox<HostSensorDeathCollection>()
+        let hostSensorDeathCollectionDone = DispatchSemaphore(value: 0)
+        var hostSensorDeathCollectionFinished = false
         if let overflowCollector {
             let collectorBox = UncheckedSendableBox(value: overflowCollector)
             let descriptor = sockets[1]
@@ -279,10 +357,24 @@ private struct LinuxVzSignedConformanceHarness {
                 overflowCollectionDone.signal()
             }
         }
+        if let hostSensorDeathCollector {
+            let collectorBox = UncheckedSendableBox(value: hostSensorDeathCollector)
+            let descriptor = sockets[1]
+            DispatchQueue.global(qos: .userInitiated).async {
+                hostSensorDeathCollectionResult.store(
+                    collectorBox.value.run(fileDescriptor: descriptor)
+                )
+                hostSensorDeathCollectionDone.signal()
+            }
+        }
         defer {
             if let overflowCollector, !overflowCollectionFinished {
                 overflowCollector.requestStop()
                 _ = overflowCollectionDone.wait(timeout: .now() + .seconds(2))
+            }
+            if let hostSensorDeathCollector, !hostSensorDeathCollectionFinished {
+                hostSensorDeathCollector.requestCleanupStop()
+                _ = hostSensorDeathCollectionDone.wait(timeout: .now() + .seconds(2))
             }
         }
         let guestNetworkSocket = FileHandle(fileDescriptor: sockets[0], closeOnDealloc: false)
@@ -372,6 +464,16 @@ private struct LinuxVzSignedConformanceHarness {
         guard shutdown(connection.fileDescriptor, SHUT_WR) == 0 else {
             throw HarnessError.socketIO
         }
+        var hostSensorDeathCollection: HostSensorDeathCollection?
+        if let hostSensorDeathCollector {
+            guard hostSensorDeathCollector.requestInjectedDeath(),
+                  hostSensorDeathCollectionDone.wait(timeout: .now() + .seconds(2)) == .success,
+                  let collection = hostSensorDeathCollectionResult.load() else {
+                throw HarnessError.verificationFailed
+            }
+            hostSensorDeathCollectionFinished = true
+            hostSensorDeathCollection = collection
+        }
         if runSpec.fixtureCase == "vm_stop" {
             return try runVmStopCase(
                 options: options,
@@ -439,7 +541,8 @@ private struct LinuxVzSignedConformanceHarness {
         let networkFixtureCase: String?
         let hostFrameTriggerCount: UInt64?
         switch runSpec.fixtureCase {
-        case "fork_exec_exit", "reparenting", "double_fork_daemonization", "setsid_escape",
+        case "fork_exec_exit", "host_sensor_death", "reparenting",
+             "double_fork_daemonization", "setsid_escape",
              "credential_change", "dynamic_library_load":
             let evidence = try decodeLinuxVzProcessEvidencePayloadV1(serialData)
             guard evidence.fixtureCase == runSpec.fixtureCase,
@@ -458,7 +561,8 @@ private struct LinuxVzSignedConformanceHarness {
                 sensorHealthy: evidence.sensorHealthy,
                 evidenceTruncated: evidence.evidenceTruncated,
                 descendantTeardownComplete: evidence.descendantTeardownComplete,
-                observedTerminal: "observation_complete"
+                observedTerminal: runSpec.fixtureCase == "host_sensor_death"
+                    ? "infrastructure_error_with_teardown" : "observation_complete"
             )
             guestEvidencePayloadSHA256 = evidence.payloadSHA256
             guestEventCount = evidence.eventCount
@@ -560,6 +664,7 @@ private struct LinuxVzSignedConformanceHarness {
 
         let missingBaseMarkers: [String]
         if runSpec.fixtureCase == "fork_exec_exit" ||
+            runSpec.fixtureCase == "host_sensor_death" ||
             runSpec.fixtureCase == "reparenting" ||
             runSpec.fixtureCase == "double_fork_daemonization" ||
             runSpec.fixtureCase == "setsid_escape" ||
@@ -724,13 +829,30 @@ private struct LinuxVzSignedConformanceHarness {
             serialData,
             marker: "WHOATHERE_GUEST_SIGNER_READY port=40551"
         ) && serialText.contains("WHOATHERE_GUEST_SIGNER_RECEIPT_OK challenge_sha256=")
-        let packetSensor = drainRawFrames(
-            fileDescriptor: sockets[1],
-            networkFixtureCase: networkFixtureCase,
-            networkSourcePort: networkSourcePort,
-            hostFrameTriggerCount: hostFrameTriggerCount,
-            boundedHostFrames: boundedHostFrames
-        )
+        let packetSensor: PacketSensorResult
+        if let hostSensorDeathCollection {
+            packetSensor = PacketSensorResult(
+                frameCount: hostSensorDeathCollection.ingressFrameCount,
+                ingressFrameCount: hostSensorDeathCollection.ingressFrameCount,
+                droppedFrameCount: 0,
+                matchedFrameCount: 0,
+                bootstrapFrameCount: 0,
+                uniqueSequenceCount: 0,
+                duplicateFrameCount: 0,
+                unexpectedFrameCount: hostSensorDeathCollection.ingressFrameCount,
+                unexpectedFrameKinds: [],
+                healthy: hostSensorDeathCollection.healthy,
+                terminal: hostSensorDeathCollection.terminal
+            )
+        } else {
+            packetSensor = drainRawFrames(
+                fileDescriptor: sockets[1],
+                networkFixtureCase: networkFixtureCase,
+                networkSourcePort: networkSourcePort,
+                hostFrameTriggerCount: hostFrameTriggerCount,
+                boundedHostFrames: boundedHostFrames
+            )
+        }
         let finalKernelSHA256 = try fileSHA256(options.kernel)
         let finalInitramfsSHA256 = try fileSHA256(options.initramfs)
         let imageIdentityStable = finalKernelSHA256 == kernelSHA256
@@ -743,7 +865,35 @@ private struct LinuxVzSignedConformanceHarness {
         let hostEvidencePayloadSHA256: String
         let hostClaims: LinuxVzTelemetryHostObservationClaims
         let cloneDestroyed = configuration.storageDevices.isEmpty
-        if runSpec.fixtureCase == "host_frame_overflow" {
+        if runSpec.fixtureCase == "host_sensor_death" {
+            guard let hostSensorDeathCollection,
+                  hostSensorDeathCollection.workerStarted,
+                  hostSensorDeathCollection.injected,
+                  hostSensorDeathCollection.workerTerminated,
+                  packetSensor.frameCount == 0,
+                  packetSensor.ingressFrameCount == 0,
+                  packetSensor.droppedFrameCount == 0,
+                  packetSensor.unexpectedFrameCount == 0,
+                  !packetSensor.healthy,
+                  packetSensor.terminal == "injected_sensor_death",
+                  cloneDestroyed else {
+                throw HarnessError.verificationFailed
+            }
+            let hostEvidence = try makeLinuxVzHostSensorDeathHostEvidencePayload(
+                requestFrameBytes: UInt64(requestData.count),
+                responseBytes: UInt64(responseData.count),
+                rawFrameCount: UInt64(packetSensor.frameCount),
+                packetSensorHealthy: packetSensor.healthy,
+                packetSensorTerminal: packetSensor.terminal,
+                vmStarted: true,
+                vmStopped: true,
+                cloneDestroyed: cloneDestroyed,
+                storageDeviceCount: UInt64(configuration.storageDevices.count)
+            )
+            hostEvidenceJSON = hostEvidence.canonicalJSON
+            hostEvidencePayloadSHA256 = hostEvidence.payloadSHA256
+            hostClaims = hostEvidence.claims
+        } else if runSpec.fixtureCase == "host_frame_overflow" {
             guard let sourcePort = networkSourcePort,
                   let triggerCount = hostFrameTriggerCount,
                   triggerCount == 512,

@@ -44,6 +44,7 @@ pub struct LinuxVzHostEvidencePayloadV1 {
     channel_interruption: Option<LinuxVzChannelInterruptionEvidenceV1>,
     vm_stop: Option<LinuxVzVmStopEvidenceV1>,
     guest_sensor_death: Option<LinuxVzGuestSensorDeathEvidenceV1>,
+    host_sensor_death: Option<LinuxVzHostSensorDeathEvidenceV1>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,6 +69,16 @@ pub struct LinuxVzGuestSensorDeathEvidenceV1 {
     response_bytes: u64,
     fixture_active_marker_observed: bool,
     signal: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinuxVzHostSensorDeathEvidenceV1 {
+    request_frame_bytes: u64,
+    transmitted_request_bytes: u64,
+    response_bytes: u64,
+    worker_started: bool,
+    injected: bool,
+    worker_terminated: bool,
 }
 
 impl LinuxVzHostEvidencePayloadV1 {
@@ -95,6 +106,10 @@ impl LinuxVzHostEvidencePayloadV1 {
         self.guest_sensor_death.as_ref()
     }
 
+    pub fn host_sensor_death(&self) -> Option<&LinuxVzHostSensorDeathEvidenceV1> {
+        self.host_sensor_death.as_ref()
+    }
+
     pub fn host_observation_claims_v1(
         &self,
     ) -> Result<LinuxVzTelemetryHostObservationClaimsV1, MacosLinuxVzTelemetryEvidenceErrorV1> {
@@ -107,6 +122,12 @@ impl LinuxVzHostEvidencePayloadV1 {
         &self,
         observed_terminal: LinuxVzTelemetryConformanceObservedTerminalV1,
     ) -> Result<LinuxVzTelemetryHostObservationClaimsV1, MacosLinuxVzTelemetryEvidenceErrorV1> {
+        if self.host_sensor_death.is_some()
+            && observed_terminal
+                != LinuxVzTelemetryConformanceObservedTerminalV1::InfrastructureErrorWithTeardown
+        {
+            return Err(MacosLinuxVzTelemetryEvidenceErrorV1::ConformanceFailed);
+        }
         LinuxVzTelemetryHostObservationClaimsV1::new(
             self.payload_sha256.clone(),
             self.canonical_json.len() as u64,
@@ -115,7 +136,7 @@ impl LinuxVzHostEvidencePayloadV1 {
             6,
             2,
             0,
-            true,
+            self.host_sensor_death.is_none(),
             false,
             true,
             true,
@@ -181,6 +202,32 @@ impl LinuxVzGuestSensorDeathEvidenceV1 {
     }
 }
 
+impl LinuxVzHostSensorDeathEvidenceV1 {
+    pub fn request_frame_bytes(&self) -> u64 {
+        self.request_frame_bytes
+    }
+
+    pub fn transmitted_request_bytes(&self) -> u64 {
+        self.transmitted_request_bytes
+    }
+
+    pub fn response_bytes(&self) -> u64 {
+        self.response_bytes
+    }
+
+    pub fn worker_started(&self) -> bool {
+        self.worker_started
+    }
+
+    pub fn injected(&self) -> bool {
+        self.injected
+    }
+
+    pub fn worker_terminated(&self) -> bool {
+        self.worker_terminated
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct HostEvidenceWireV1 {
@@ -214,6 +261,20 @@ struct HostEvidenceWireV1 {
     guest_sensor_death_signal: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     guest_sensor_death_transmitted_request_bytes: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    host_sensor_death_injected: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    host_sensor_death_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    host_sensor_death_request_frame_bytes: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    host_sensor_death_response_bytes: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    host_sensor_death_transmitted_request_bytes: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    host_sensor_death_worker_started: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    host_sensor_death_worker_terminated: Option<bool>,
     clone_destroyed: bool,
     dropped_frame_count: String,
     event_count: String,
@@ -363,10 +424,50 @@ pub fn decode_linux_vz_host_evidence_payload_v1(
         }
         _ => return Err(LinuxVzHostEvidencePayloadErrorV1::InvalidSchema),
     };
+    let host_sensor_death = match (
+        wire.host_sensor_death_kind.as_deref(),
+        wire.host_sensor_death_request_frame_bytes.as_deref(),
+        wire.host_sensor_death_transmitted_request_bytes.as_deref(),
+        wire.host_sensor_death_response_bytes.as_deref(),
+        wire.host_sensor_death_worker_started,
+        wire.host_sensor_death_injected,
+        wire.host_sensor_death_worker_terminated,
+    ) {
+        (None, None, None, None, None, None, None) => None,
+        (
+            Some("host_packet_sensor_worker_terminated_after_full_request"),
+            Some(request_frame_bytes),
+            Some(transmitted_request_bytes),
+            Some(response_bytes),
+            Some(true),
+            Some(true),
+            Some(true),
+        ) => {
+            let request_frame_bytes = decimal_u64_v1(request_frame_bytes)?;
+            let transmitted_request_bytes = decimal_u64_v1(transmitted_request_bytes)?;
+            let response_bytes = decimal_u64_v1(response_bytes)?;
+            if request_frame_bytes <= 16
+                || transmitted_request_bytes != request_frame_bytes
+                || response_bytes == 0
+            {
+                return Err(LinuxVzHostEvidencePayloadErrorV1::InvalidSchema);
+            }
+            Some(LinuxVzHostSensorDeathEvidenceV1 {
+                request_frame_bytes,
+                transmitted_request_bytes,
+                response_bytes,
+                worker_started: true,
+                injected: true,
+                worker_terminated: true,
+            })
+        }
+        _ => return Err(LinuxVzHostEvidencePayloadErrorV1::InvalidSchema),
+    };
     if [
         channel_interruption.is_some(),
         vm_stop.is_some(),
         guest_sensor_death.is_some(),
+        host_sensor_death.is_some(),
     ]
     .into_iter()
     .filter(|present| *present)
@@ -384,8 +485,13 @@ pub fn decode_linux_vz_host_evidence_payload_v1(
         || decimal_u64_v1(&wire.external_frames_forwarded)? != 0
         || raw_frame_count != 0
         || decimal_u64_v1(&wire.storage_device_count)? != 0
-        || !wire.packet_sensor_healthy
-        || wire.packet_sensor_terminal != "drained_would_block"
+        || wire.packet_sensor_healthy != host_sensor_death.is_none()
+        || wire.packet_sensor_terminal
+            != if host_sensor_death.is_some() {
+                "injected_sensor_death"
+            } else {
+                "drained_would_block"
+            }
         || wire.evidence_truncated
         || !wire.guest_channel_terminated
         || !wire.vm_started
@@ -403,7 +509,11 @@ pub fn decode_linux_vz_host_evidence_payload_v1(
         "vm_started",
         "guest_channel_connected",
         "guest_channel_terminated",
-        "host_packet_sensor_complete",
+        if host_sensor_death.is_some() {
+            "host_packet_sensor_terminated"
+        } else {
+            "host_packet_sensor_complete"
+        },
         "vm_stopped",
         "ephemeral_clone_destroyed",
     ];
@@ -421,6 +531,7 @@ pub fn decode_linux_vz_host_evidence_payload_v1(
         channel_interruption,
         vm_stop,
         guest_sensor_death,
+        host_sensor_death,
     })
 }
 
@@ -507,6 +618,71 @@ mod tests {
         value["guest_sensor_death_signal"] = serde_json::json!("9");
         value["guest_sensor_death_transmitted_request_bytes"] = serde_json::json!("5082");
         serde_json_canonicalizer::to_vec(&value).expect("guest-sensor-death host payload")
+    }
+
+    fn canonical_host_sensor_death_payload() -> Vec<u8> {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&canonical_payload()).expect("host JSON");
+        value["events"][3]["kind"] = serde_json::json!("host_packet_sensor_terminated");
+        value["host_sensor_death_injected"] = serde_json::json!(true);
+        value["host_sensor_death_kind"] =
+            serde_json::json!("host_packet_sensor_worker_terminated_after_full_request");
+        value["host_sensor_death_request_frame_bytes"] = serde_json::json!("5082");
+        value["host_sensor_death_response_bytes"] = serde_json::json!("4096");
+        value["host_sensor_death_transmitted_request_bytes"] = serde_json::json!("5082");
+        value["host_sensor_death_worker_started"] = serde_json::json!(true);
+        value["host_sensor_death_worker_terminated"] = serde_json::json!(true);
+        value["packet_sensor_healthy"] = serde_json::json!(false);
+        value["packet_sensor_terminal"] = serde_json::json!("injected_sensor_death");
+        serde_json_canonicalizer::to_vec(&value).expect("host-sensor-death host payload")
+    }
+
+    #[test]
+    fn host_sensor_death_binds_full_request_response_and_injected_worker_termination() {
+        let payload =
+            decode_linux_vz_host_evidence_payload_v1(&canonical_host_sensor_death_payload())
+                .expect("host-sensor-death payload");
+        let death = payload
+            .host_sensor_death()
+            .expect("host-sensor-death evidence");
+        assert_eq!(death.request_frame_bytes(), 5082);
+        assert_eq!(death.transmitted_request_bytes(), 5082);
+        assert_eq!(death.response_bytes(), 4096);
+        assert!(death.worker_started());
+        assert!(death.injected());
+        assert!(death.worker_terminated());
+        let claims = payload
+            .host_observation_claims_for_terminal_v1(
+                LinuxVzTelemetryConformanceObservedTerminalV1::InfrastructureErrorWithTeardown,
+            )
+            .expect("host claims");
+        assert!(!claims.packet_sensor_healthy());
+        assert!(payload.host_observation_claims_v1().is_err());
+    }
+
+    #[test]
+    fn host_sensor_death_rejects_partial_rebound_and_healthy_sensor_claims() {
+        for (field, changed) in [
+            (
+                "host_sensor_death_request_frame_bytes",
+                serde_json::json!("16"),
+            ),
+            ("host_sensor_death_response_bytes", serde_json::json!("0")),
+            ("host_sensor_death_worker_started", serde_json::json!(false)),
+            ("host_sensor_death_injected", serde_json::json!(false)),
+            (
+                "host_sensor_death_worker_terminated",
+                serde_json::json!(false),
+            ),
+            ("packet_sensor_healthy", serde_json::json!(true)),
+        ] {
+            let mut value: serde_json::Value =
+                serde_json::from_slice(&canonical_host_sensor_death_payload())
+                    .expect("host-sensor-death JSON");
+            value[field] = changed;
+            let bytes = serde_json_canonicalizer::to_vec(&value).expect("changed JSON");
+            assert!(decode_linux_vz_host_evidence_payload_v1(&bytes).is_err());
+        }
     }
 
     #[test]

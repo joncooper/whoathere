@@ -8,7 +8,8 @@ use whoathere_macos_vm::{
     decode_and_validate_macos_linux_vz_telemetry_conformance_run_spec_v1,
     decode_linux_vz_process_evidence_from_serial_v1,
     decode_unqualified_macos_linux_vz_telemetry_backend_identity_v1,
-    verify_macos_linux_vz_telemetry_guest_receipt_v1,
+    verify_macos_linux_vz_telemetry_guest_receipt_v1, LinuxVzTelemetryConformanceCaseV1,
+    LinuxVzTelemetryConformanceObservedTerminalV1,
     MAX_MACOS_LINUX_VZ_TELEMETRY_BACKEND_IDENTITY_BYTES_V1,
     MAX_MACOS_LINUX_VZ_TELEMETRY_CONFORMANCE_EVIDENCE_BYTES_V1,
     MAX_MACOS_LINUX_VZ_TELEMETRY_CONFORMANCE_RUN_SPEC_BYTES_V1,
@@ -60,7 +61,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         &backend,
     )?;
     let evidence = decode_linux_vz_process_evidence_from_serial_v1(&serial)?;
-    let claims = evidence.guest_observation_claims_v1()?;
+    if evidence.fixture_case() != run_spec.fixture_case()
+        || evidence.package_uid() != backend.package_uid()
+        || evidence.package_gid() != backend.package_gid()
+    {
+        return Err("guest process evidence binding mismatch".into());
+    }
+    let claims = if run_spec.fixture_case() == LinuxVzTelemetryConformanceCaseV1::HostSensorDeath {
+        evidence.guest_observation_claims_for_terminal_v1(
+            LinuxVzTelemetryConformanceObservedTerminalV1::InfrastructureErrorWithTeardown,
+        )?
+    } else {
+        evidence.guest_observation_claims_v1()?
+    };
     let public_key: [u8; 32] = public_key
         .try_into()
         .map_err(|_| "guest public key must be exactly 32 bytes")?;

@@ -76,6 +76,9 @@ public func decodeLinuxVzProcessEvidencePayloadV1(
     case "fork_exec_exit":
         expectedKeys = baseKeys
         expectedKinds = ["fork", "exec", "exit"]
+    case "host_sensor_death":
+        expectedKeys = baseKeys.union(["fixture_case"])
+        expectedKinds = ["fork", "exec", "exit"]
     case "double_fork_daemonization":
         expectedKeys = baseKeys.union([
             "exec_count", "exit_count", "fixture_case", "fork_count", "reaped_process_count"
@@ -186,7 +189,7 @@ public func decodeLinuxVzProcessEvidencePayloadV1(
           }) else {
         throw LinuxVzProcessEvidencePayloadError.invalidEvent
     }
-    if fixtureCase == "fork_exec_exit" {
+    if fixtureCase == "fork_exec_exit" || fixtureCase == "host_sensor_death" {
         guard events[0].actorPID != events[0].subjectPID,
               events[1].actorPID == events[0].subjectPID,
               events[1].subjectPID == events[0].subjectPID,

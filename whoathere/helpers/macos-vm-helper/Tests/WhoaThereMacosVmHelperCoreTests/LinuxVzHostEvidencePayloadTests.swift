@@ -2,6 +2,71 @@ import Foundation
 import Testing
 @testable import WhoaThereMacosVmHelperCore
 
+@Test func linuxVzHostEvidenceBindsExactHostSensorDeath() throws {
+    let payload = try makeLinuxVzHostSensorDeathHostEvidencePayload(
+        requestFrameBytes: 5_082,
+        responseBytes: 4_096,
+        rawFrameCount: 0,
+        packetSensorHealthy: false,
+        packetSensorTerminal: "injected_sensor_death",
+        vmStarted: true,
+        vmStopped: true,
+        cloneDestroyed: true,
+        storageDeviceCount: 0
+    )
+    #expect(payload.hostSensorDeathKind ==
+        "host_packet_sensor_worker_terminated_after_full_request")
+    #expect(payload.hostSensorDeathRequestFrameBytes == 5_082)
+    #expect(payload.hostSensorDeathTransmittedRequestBytes == 5_082)
+    #expect(payload.hostSensorDeathResponseBytes == 4_096)
+    #expect(payload.hostSensorDeathWorkerStarted == true)
+    #expect(payload.hostSensorDeathInjected == true)
+    #expect(payload.hostSensorDeathWorkerTerminated == true)
+    #expect(!payload.claims.packetSensorHealthy)
+    #expect(payload.claims.observedTerminal == "infrastructure_error_with_teardown")
+    #expect(payload == (try decodeLinuxVzHostEvidencePayload(
+        payload.canonicalJSON,
+        observedTerminal: "infrastructure_error_with_teardown",
+        expectedHostSensorDeathRequestFrameBytes: 5_082,
+        expectedHostSensorDeathResponseBytes: 4_096
+    )))
+}
+
+@Test func linuxVzHostEvidenceRejectsHostSensorDeathRebinding() throws {
+    let payload = try makeLinuxVzHostSensorDeathHostEvidencePayload(
+        requestFrameBytes: 5_082,
+        responseBytes: 4_096,
+        rawFrameCount: 0,
+        packetSensorHealthy: false,
+        packetSensorTerminal: "injected_sensor_death",
+        vmStarted: true,
+        vmStopped: true,
+        cloneDestroyed: true,
+        storageDeviceCount: 0
+    )
+    for (field, changed): (String, Any) in [
+        ("host_sensor_death_request_frame_bytes", "16"),
+        ("host_sensor_death_response_bytes", "0"),
+        ("host_sensor_death_worker_started", false),
+        ("host_sensor_death_injected", false),
+        ("host_sensor_death_worker_terminated", false),
+        ("packet_sensor_healthy", true),
+    ] {
+        var value = try #require(
+            JSONSerialization.jsonObject(with: payload.canonicalJSON) as? [String: Any]
+        )
+        value[field] = changed
+        #expect(throws: LinuxVzHostEvidencePayloadError.invalidSchema) {
+            try decodeLinuxVzHostEvidencePayload(
+                canonicalJSONData(value),
+                observedTerminal: "infrastructure_error_with_teardown",
+                expectedHostSensorDeathRequestFrameBytes: 5_082,
+                expectedHostSensorDeathResponseBytes: 4_096
+            )
+        }
+    }
+}
+
 @Test func linuxVzHostEvidencePayloadDerivesStrictInertClaims() throws {
     let payload = try makeLinuxVzInertHostEvidencePayload(
         rawFrameCount: 0,

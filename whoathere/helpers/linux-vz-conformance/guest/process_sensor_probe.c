@@ -2574,6 +2574,7 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
     int background_listener = strcmp(fixture_case, "background_listener") == 0;
     int vm_stop = strcmp(fixture_case, "vm_stop") == 0;
     int guest_sensor_death = strcmp(fixture_case, "guest_sensor_death") == 0;
+    int host_sensor_death = strcmp(fixture_case, "host_sensor_death") == 0;
     int setsid_escape = strcmp(fixture_case, "setsid_escape") == 0;
     int credential_change = strcmp(fixture_case, "credential_change") == 0;
     int dynamic_library_load = strcmp(fixture_case, "dynamic_library_load") == 0;
@@ -4429,7 +4430,7 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
         "{\"actor_pid\":\"%" PRIu64 "\",\"cgroup_id\":\"%" PRIu64
         "\",\"kind\":\"exit\",\"sequence\":\"3\",\"subject_pid\":\"%" PRIu64
         "\",\"timestamp_ns\":\"%" PRIu64 "\"}],"
-        "\"evidence_truncated\":false,\"heartbeat_count\":\"2\","
+        "\"evidence_truncated\":false%s,\"heartbeat_count\":\"2\","
         "\"package_gid\":\"65534\",\"package_uid\":\"65534\","
         "\"schema_version\":\"whoathere.linux_vz_process_evidence_payload.v1\","
         "\"sensor_healthy\":true}\n",
@@ -4444,7 +4445,8 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
         (uint64_t)child,
         cgroup.count,
         (uint64_t)child,
-        exit_event.timestamp_ns
+        exit_event.timestamp_ns,
+        host_sensor_death ? ",\"fixture_case\":\"host_sensor_death\"" : ""
     );
     result = 0;
 
@@ -4485,6 +4487,7 @@ int main(int argument_count, char **arguments) {
         strcmp(arguments[2], "background_listener") == 0 ||
         strcmp(arguments[2], "vm_stop") == 0 ||
         strcmp(arguments[2], "guest_sensor_death") == 0 ||
+        strcmp(arguments[2], "host_sensor_death") == 0 ||
         strcmp(arguments[2], "double_fork_daemonization") == 0 ||
         strcmp(arguments[2], "reparenting") == 0 ||
         strcmp(arguments[2], "setsid_escape") == 0 ||

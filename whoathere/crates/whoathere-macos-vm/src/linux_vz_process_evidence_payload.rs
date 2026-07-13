@@ -103,6 +103,29 @@ impl LinuxVzProcessEvidencePayloadV1 {
         &self,
     ) -> Result<LinuxVzTelemetryGuestObservationClaimsV1, MacosLinuxVzTelemetryEvidenceErrorV1>
     {
+        self.guest_observation_claims_for_terminal_v1(
+            LinuxVzTelemetryConformanceObservedTerminalV1::ObservationComplete,
+        )
+    }
+
+    pub fn guest_observation_claims_for_terminal_v1(
+        &self,
+        observed_terminal: LinuxVzTelemetryConformanceObservedTerminalV1,
+    ) -> Result<LinuxVzTelemetryGuestObservationClaimsV1, MacosLinuxVzTelemetryEvidenceErrorV1>
+    {
+        let valid_binding = matches!(
+            (self.fixture_case, observed_terminal),
+            (
+                LinuxVzTelemetryConformanceCaseV1::HostSensorDeath,
+                LinuxVzTelemetryConformanceObservedTerminalV1::InfrastructureErrorWithTeardown
+            )
+        ) || (self.fixture_case
+            != LinuxVzTelemetryConformanceCaseV1::HostSensorDeath
+            && observed_terminal
+                == LinuxVzTelemetryConformanceObservedTerminalV1::ObservationComplete);
+        if !valid_binding {
+            return Err(MacosLinuxVzTelemetryEvidenceErrorV1::ConformanceFailed);
+        }
         LinuxVzTelemetryGuestObservationClaimsV1::new(
             self.payload_sha256.clone(),
             self.evidence_byte_length,
@@ -114,7 +137,7 @@ impl LinuxVzProcessEvidencePayloadV1 {
             true,
             false,
             true,
-            LinuxVzTelemetryConformanceObservedTerminalV1::ObservationComplete,
+            observed_terminal,
         )
     }
 }
@@ -260,6 +283,27 @@ pub fn decode_linux_vz_process_evidence_payload_v1(
                     &["fork", "exec", "exit"],
                 )
             }
+            Some("host_sensor_death") => {
+                if wire.credential_change_count.is_some()
+                    || wire.credential_target.is_some()
+                    || wire.dynamic_library_load_count.is_some()
+                    || wire.dynamic_library_target.is_some()
+                    || wire.fork_count.is_some()
+                    || wire.exec_count.is_some()
+                    || wire.exit_count.is_some()
+                    || wire.reaped_process_count.is_some()
+                    || wire.reparent_target.is_some()
+                    || wire.reparented_process_count.is_some()
+                    || wire.session_escape_count.is_some()
+                    || wire.session_target.is_some()
+                {
+                    return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema);
+                }
+                (
+                    LinuxVzTelemetryConformanceCaseV1::HostSensorDeath,
+                    &["fork", "exec", "exit"],
+                )
+            }
             Some("double_fork_daemonization") => {
                 if wire.credential_change_count.is_some()
                     || wire.credential_target.is_some()
@@ -399,7 +443,8 @@ pub fn decode_linux_vz_process_evidence_payload_v1(
         return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidEvent);
     }
     match fixture_case {
-        LinuxVzTelemetryConformanceCaseV1::ForkExecExit => {
+        LinuxVzTelemetryConformanceCaseV1::ForkExecExit
+        | LinuxVzTelemetryConformanceCaseV1::HostSensorDeath => {
             if events[0].actor_pid == events[0].subject_pid
                 || events[1].actor_pid != events[0].subject_pid
                 || events[1].subject_pid != events[0].subject_pid
@@ -510,6 +555,27 @@ mod tests {
     const SETSID_ESCAPE: &[u8] = br#"{"descendant_teardown_complete":true,"dropped_event_count":"0","event_count":"4","event_sequence_end":"4","event_sequence_start":"1","events":[{"actor_pid":"41","cgroup_id":"9001","kind":"fork","sequence":"1","subject_pid":"42","timestamp_ns":"100"},{"actor_pid":"42","cgroup_id":"9001","kind":"exec","sequence":"2","subject_pid":"42","timestamp_ns":"200"},{"actor_pid":"42","cgroup_id":"9001","kind":"setsid","sequence":"3","subject_pid":"42","timestamp_ns":"300"},{"actor_pid":"42","cgroup_id":"9001","kind":"exit","sequence":"4","subject_pid":"42","timestamp_ns":"400"}],"evidence_truncated":false,"exec_count":"1","exit_count":"1","fixture_case":"setsid_escape","fork_count":"1","heartbeat_count":"2","package_gid":"65534","package_uid":"65534","reaped_process_count":"1","schema_version":"whoathere.linux_vz_process_evidence_payload.v1","sensor_healthy":true,"session_escape_count":"1","session_target":"new_session_leader"}"#;
     const CREDENTIAL_CHANGE: &[u8] = br#"{"credential_change_count":"3","credential_target":"uid_65534_gid_65534_no_supplementary_groups","descendant_teardown_complete":true,"dropped_event_count":"0","event_count":"6","event_sequence_end":"6","event_sequence_start":"1","events":[{"actor_pid":"41","cgroup_id":"9001","kind":"fork","sequence":"1","subject_pid":"42","timestamp_ns":"100"},{"actor_pid":"42","cgroup_id":"9001","kind":"setgroups","sequence":"2","subject_pid":"42","timestamp_ns":"200"},{"actor_pid":"42","cgroup_id":"9001","kind":"setgid","sequence":"3","subject_pid":"42","timestamp_ns":"300"},{"actor_pid":"42","cgroup_id":"9001","kind":"setuid","sequence":"4","subject_pid":"42","timestamp_ns":"400"},{"actor_pid":"42","cgroup_id":"9001","kind":"exec","sequence":"5","subject_pid":"42","timestamp_ns":"500"},{"actor_pid":"42","cgroup_id":"9001","kind":"exit","sequence":"6","subject_pid":"42","timestamp_ns":"600"}],"evidence_truncated":false,"exec_count":"1","exit_count":"1","fixture_case":"credential_change","fork_count":"1","heartbeat_count":"2","package_gid":"65534","package_uid":"65534","reaped_process_count":"1","schema_version":"whoathere.linux_vz_process_evidence_payload.v1","sensor_healthy":true}"#;
     const DYNAMIC_LIBRARY_LOAD: &[u8] = br#"{"descendant_teardown_complete":true,"dropped_event_count":"0","dynamic_library_load_count":"1","dynamic_library_target":"measured_inert_fixture_library","event_count":"4","event_sequence_end":"4","event_sequence_start":"1","events":[{"actor_pid":"41","cgroup_id":"9001","kind":"fork","sequence":"1","subject_pid":"42","timestamp_ns":"100"},{"actor_pid":"42","cgroup_id":"9001","kind":"exec","sequence":"2","subject_pid":"42","timestamp_ns":"200"},{"actor_pid":"42","cgroup_id":"9001","kind":"dynamic_library_load","sequence":"3","subject_pid":"42","timestamp_ns":"300"},{"actor_pid":"42","cgroup_id":"9001","kind":"exit","sequence":"4","subject_pid":"42","timestamp_ns":"400"}],"evidence_truncated":false,"exec_count":"2","exit_count":"1","fixture_case":"dynamic_library_load","fork_count":"1","heartbeat_count":"2","package_gid":"65534","package_uid":"65534","reaped_process_count":"1","schema_version":"whoathere.linux_vz_process_evidence_payload.v1","sensor_healthy":true}"#;
+    const HOST_SENSOR_DEATH: &[u8] = br#"{"descendant_teardown_complete":true,"dropped_event_count":"0","event_count":"3","event_sequence_end":"3","event_sequence_start":"1","events":[{"actor_pid":"41","cgroup_id":"9001","kind":"fork","sequence":"1","subject_pid":"42","timestamp_ns":"100"},{"actor_pid":"42","cgroup_id":"9001","kind":"exec","sequence":"2","subject_pid":"42","timestamp_ns":"200"},{"actor_pid":"42","cgroup_id":"9001","kind":"exit","sequence":"3","subject_pid":"42","timestamp_ns":"300"}],"evidence_truncated":false,"fixture_case":"host_sensor_death","heartbeat_count":"2","package_gid":"65534","package_uid":"65534","schema_version":"whoathere.linux_vz_process_evidence_payload.v1","sensor_healthy":true}"#;
+
+    #[test]
+    fn host_sensor_death_binds_healthy_guest_to_infrastructure_terminal_only() {
+        let payload = decode_linux_vz_process_evidence_payload_v1(HOST_SENSOR_DEATH).unwrap();
+        assert_eq!(
+            payload.fixture_case(),
+            LinuxVzTelemetryConformanceCaseV1::HostSensorDeath
+        );
+        let claims = payload
+            .guest_observation_claims_for_terminal_v1(
+                LinuxVzTelemetryConformanceObservedTerminalV1::InfrastructureErrorWithTeardown,
+            )
+            .unwrap();
+        assert!(claims.sensor_healthy());
+        assert_eq!(
+            claims.observed_terminal(),
+            LinuxVzTelemetryConformanceObservedTerminalV1::InfrastructureErrorWithTeardown
+        );
+        assert!(payload.guest_observation_claims_v1().is_err());
+    }
 
     #[test]
     fn double_fork_payload_binds_counts_lineage_and_teardown() {

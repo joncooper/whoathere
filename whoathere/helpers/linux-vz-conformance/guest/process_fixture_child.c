@@ -885,6 +885,7 @@ int main(int argument_count, char **arguments) {
     int denied = protected_sensor_denied();
     if (denied != 0) return denied;
     if (strcmp(arguments[1], "fork_exec_exit") == 0) return 0;
+    if (strcmp(arguments[1], "host_sensor_death") == 0) return 0;
     if (strcmp(arguments[1], "normal_exit") == 0) return 0;
     if (strcmp(arguments[1], "timeout") == 0) {
         for (;;) (void)pause();
