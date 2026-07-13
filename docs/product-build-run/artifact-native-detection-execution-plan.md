@@ -118,6 +118,19 @@ turns the physical result into programmatic input without treating the probe run
 runner. See the
 [runtime qualification-record checkpoint](artifact-native-linux-vz-runtime-qualification-record-checkpoint-2026-07-13.md).
 
+The one-use execution-grant wire is now implemented without making grants issuable. A
+domain-separated Ed25519 grant binds the exact artifact, typed scenario, prequalification request,
+qualified telemetry backend, future execution-runtime qualification record and measured runtime
+bytes, distinct grant-issuer key, request and grant challenges, attempt, clone, short validity
+window, UID/GID 65534, one-attempt scope, no external route, and structurally absent sync-back. The
+verifier intended for the protected guest agent burns its one attempt before time checks, parsing,
+canonicalization, binding, or signature verification, so malformed, early, expired, rebound, and
+valid inputs all consume it.
+Production issuance is intentionally impossible: the required execution-runtime qualification type
+has no public constructor and must later come only from authenticated physical evidence for a new
+execution-capable runner. The current nonexecuting record cannot satisfy it. See the
+[execution-grant protocol checkpoint](artifact-native-linux-vz-package-execution-grant-protocol-checkpoint-2026-07-13.md).
+
 The first protected-sensor bootstrap now also observes a cgroup-filtered inert fork/exec/exit chain
 whose child runs as UID/GID 65534 and cannot read or write the root-only sensor. This remains
 unsigned bootstrap evidence rather than a conformance receipt. See the

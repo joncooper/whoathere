@@ -263,6 +263,10 @@ pub struct MacosLinuxVzPackageAuthorityRequestV1 {
     scenario_plan_sha256: Sha256Digest,
     scenario_template_sha256: Sha256Digest,
     runtime_profile_sha256: Sha256Digest,
+    candidate_runtime_rootfs_sha256: Sha256Digest,
+    candidate_runtime_rootfs_byte_length: u64,
+    candidate_runtime_manifest_sha256: Sha256Digest,
+    candidate_package_runner_sha256: Sha256Digest,
     qualified_telemetry_backend_sha256: Sha256Digest,
     request_challenge_sha256: Sha256Digest,
     clone_binding_sha256: Sha256Digest,
@@ -316,6 +320,22 @@ impl MacosLinuxVzPackageAuthorityRequestV1 {
 
     pub fn runtime_profile_sha256(&self) -> &Sha256Digest {
         &self.runtime_profile_sha256
+    }
+
+    pub fn candidate_runtime_rootfs_sha256(&self) -> &Sha256Digest {
+        &self.candidate_runtime_rootfs_sha256
+    }
+
+    pub const fn candidate_runtime_rootfs_byte_length(&self) -> u64 {
+        self.candidate_runtime_rootfs_byte_length
+    }
+
+    pub fn candidate_runtime_manifest_sha256(&self) -> &Sha256Digest {
+        &self.candidate_runtime_manifest_sha256
+    }
+
+    pub fn candidate_package_runner_sha256(&self) -> &Sha256Digest {
+        &self.candidate_package_runner_sha256
     }
 
     pub fn qualified_telemetry_backend_sha256(&self) -> &Sha256Digest {
@@ -559,6 +579,10 @@ pub fn build_macos_linux_vz_package_authority_request_v1(
         scenario_plan_sha256: binding.scenario_plan_sha256,
         scenario_template_sha256: binding.scenario_template_sha256,
         runtime_profile_sha256: binding.runtime_profile_sha256,
+        candidate_runtime_rootfs_sha256: candidate_runtime.rootfs_sha256.clone(),
+        candidate_runtime_rootfs_byte_length: candidate_runtime.rootfs_byte_length,
+        candidate_runtime_manifest_sha256: candidate_runtime.runtime_manifest_sha256.clone(),
+        candidate_package_runner_sha256: candidate_runtime.package_runner_sha256.clone(),
         qualified_telemetry_backend_sha256: qualified_backend.qualified_backend_sha256().clone(),
         request_challenge_sha256,
         clone_binding_sha256,
