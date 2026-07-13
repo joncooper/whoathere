@@ -403,15 +403,33 @@ mod linux {
         {
             return Err("runtime_qualification_fixed_probe_failed".into());
         }
-        let evidence = &output.stdout[MACOS_LINUX_VZ_PACKAGE_RUNTIME_PROBE_REPORT_V1.len()..];
-        if evidence.is_empty()
-            || !evidence.starts_with(b"WHOATHERE_GUEST_PROCESS_EVIDENCE ")
-            || !evidence.ends_with(b"\n")
-            || evidence.iter().filter(|byte| **byte == b'\n').count() != 1
-        {
-            return Err("runtime_qualification_fixed_probe_output_invalid".into());
+        const REQUIRED_SENSOR_MARKERS: &[u8] = b"WHOATHERE_SENSOR process_cgroup_filter=observed\n\
+WHOATHERE_SENSOR process_fork=observed\n\
+WHOATHERE_SENSOR process_exec=observed\n\
+WHOATHERE_SENSOR process_exit=observed\n\
+WHOATHERE_SENSOR unprivileged_fixture=uid_65534_gid_65534\n\
+WHOATHERE_SENSOR protected_sensor_read=denied\n\
+WHOATHERE_SENSOR protected_sensor_write=denied\n\
+WHOATHERE_SENSOR_PROCESS_PROBE_OK\n";
+        let sensor_output = &output.stdout[MACOS_LINUX_VZ_PACKAGE_RUNTIME_PROBE_REPORT_V1.len()..];
+        if !sensor_output.starts_with(REQUIRED_SENSOR_MARKERS) {
+            return Err("runtime_qualification_fixed_probe_sensor_markers_invalid".into());
         }
-        decode_linux_vz_process_evidence_from_serial_v1(evidence)?;
+        let evidence = &sensor_output[REQUIRED_SENSOR_MARKERS.len()..];
+        if evidence.is_empty() {
+            return Err("runtime_qualification_fixed_probe_evidence_empty".into());
+        }
+        if !evidence.starts_with(b"WHOATHERE_GUEST_PROCESS_EVIDENCE ") {
+            return Err("runtime_qualification_fixed_probe_evidence_prefix_invalid".into());
+        }
+        if !evidence.ends_with(b"\n") {
+            return Err("runtime_qualification_fixed_probe_evidence_terminator_invalid".into());
+        }
+        if evidence.iter().filter(|byte| **byte == b'\n').count() != 1 {
+            return Err("runtime_qualification_fixed_probe_evidence_line_count_invalid".into());
+        }
+        decode_linux_vz_process_evidence_from_serial_v1(evidence)
+            .map_err(|_| "runtime_qualification_fixed_probe_evidence_payload_invalid")?;
         Ok(evidence.to_vec())
     }
 

@@ -2,9 +2,8 @@
 
 Date: 2026-07-13
 
-Status: the fail-closed macOS launcher and independently verified host lifecycle receipt are
-implemented and pass local non-boot preflight; no runtime-qualification VM has booted and the
-candidate runtime remains unqualified
+Status: implementation and local non-boot checkpoint; the final corrected image and this launcher
+subsequently passed inert physical qualification on the approved cloud Mac
 
 ## Outcome
 
@@ -68,10 +67,10 @@ Two fresh offline builds produced byte-identical trees and both passed the indep
 
 Current physical-candidate identities:
 
-- qualification manifest: `sha256:1a633affee36d9bf3cc57c8895d7c2c8c3f5932259f53cac258d412aa5cc147e`;
-- Rust source closure: `sha256:d6012b0117eb3082078d6c0ea12e5340347e5ad2a5f819b8068bc65829a62bbb`;
-- qualification initramfs: `sha256:4393945d789691ff41667b2f24d92bcbffaf1a0ed2edd3e8c72e34fcf2ba995b`;
-- static guest agent: `sha256:3288dcd93432c424807b75f05c16754435686dcc8486fb2b669c2324ca29b366`;
+- qualification manifest: `sha256:74dd24aae8f023826b30c76ecc9ad8f192037f1b4b9497f2e8c70a2320aac86c`;
+- Rust source closure: `sha256:ea72ffa2c6192d3db3e6c4ba96ba58f379869177ed378fc2b5fe1a748ab8779c`;
+- qualification initramfs: `sha256:7cc5eaf5019e7bb33815ec79088aefdf4a154e6f229c17397b87e22b9a5dbd3d`;
+- static guest agent: `sha256:1eb8fbb393ed2b373e6fa32f411150a91e32150fc6f044e302a05e8ac993ca93`;
 - candidate runtime rootfs: `sha256:0114f1508ca2214787af2befc64641801f26904d7d6771cbb8cd9a746d7029ae`;
 - candidate runtime manifest: `sha256:bcfa7106cd4a604af531b7c3320625a4434009a692bbde01c953ef61e2fb23a5`;
 - candidate package runner: `sha256:96c9ab2127e11029c1b23259afcbd7dfab984ab3ae4528555f0a8b34dc48d658`.
@@ -88,19 +87,28 @@ The full Rust crate passes 181 tests with formatting clean and Clippy warnings d
 helper, including the new launcher product, passes 197 tests and a complete debug build. The
 launcher usage path also returns a structured false-authority exit 64 without touching VZ.
 
+## Physical follow-up
+
+The approved cloud-Mac run subsequently exposed and safely closed two prerequisites: the release
+launcher needed the repository's existing virtualization entitlement, and the guest needed to bind
+the protected sensor's exact eight fixed marker lines before its canonical evidence payload. Each
+failed attempt issued no receipt or authority and left no runtime clone. The final corrected image
+passed with zero raw frames, a stopped VM, a destroyed clone, and independently verified guest and
+host receipts. See the
+[physical qualification checkpoint](artifact-native-linux-vz-runtime-qualification-physical-checkpoint-2026-07-13.md).
+
 ## Claim boundary
 
-No VZ VM was started locally or remotely for this checkpoint. No live guest receipt or host
-lifecycle receipt exists yet, and the runtime is not qualified. No package manager ran, no package
-artifact was processed, no one-use execution grant exists, and no detection result changed.
+No VZ VM was started locally for this work. At the time of the local launcher checkpoint, no live
+receipt existed; the separate physical gate linked above has now qualified the exact inert runtime.
+No package manager ran, no package artifact was processed, no one-use execution grant exists, and
+no detection result changed.
 
 Real malware remains restricted to the approved cloud Mac lab workflow. This checkpoint did not
 download, inspect, unpack, transfer, or execute any real sample.
 
 ## Next gate
 
-Transfer only the measured inert qualification image, candidate runtime, qualified backend inputs,
-public verification keys, and built host/request/verifier tools to the approved cloud Mac. Run one
-inert physical qualification, independently reverify both signed receipts and zero-frame lifecycle
-evidence, and preserve only sanitized hashes and false-authority claims in tracked documentation.
-Do not transfer or run malware for this gate.
+This gate is complete. The next gate is to bind one-use execution grants to the qualified runtime
+and run the first inert npm tarball, wheel, and nested-sdist scenarios with sync-back structurally
+absent. Real malware remains out of scope until the inert ecosystem matrix and benign controls pass.

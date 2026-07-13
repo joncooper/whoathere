@@ -94,6 +94,18 @@ byte-identical and independently verified. No VM has booted, so the next gate is
 run on the approved cloud Mac; package execution remains unavailable. See the
 [runtime-qualification host-launcher checkpoint](artifact-native-linux-vz-runtime-qualification-host-launcher-checkpoint-2026-07-13.md).
 
+The inert physical runtime gate now passes on the approved cloud Mac. The gate first caught a
+missing macOS virtualization entitlement and then an overly narrow guest parser that omitted the
+protected sensor's fixed capability markers; every failed attempt issued no receipt or authority
+and left no runtime clone. The corrected guest now requires the exact ordered eight-marker sensor
+sequence before one canonical process-evidence line. Two final builds were byte-identical and
+independently verified. The successful run observed zero raw frames, stopped the VM, destroyed the
+clone after stop, and produced guest and host receipts independently verified in Rust both remotely
+and locally. Package execution, external routing, and sync-back remained false. Runtime
+qualification is complete; the next engineering gate is one-use grants plus inert npm, wheel, and
+nested-sdist scenarios. See the
+[runtime-qualification physical checkpoint](artifact-native-linux-vz-runtime-qualification-physical-checkpoint-2026-07-13.md).
+
 The first protected-sensor bootstrap now also observes a cgroup-filtered inert fork/exec/exit chain
 whose child runs as UID/GID 65534 and cannot read or write the root-only sensor. This remains
 unsigned bootstrap evidence rather than a conformance receipt. See the
@@ -1712,6 +1724,7 @@ Repository evidence:
 - [Linux VZ package-runtime clone preflight checkpoint](artifact-native-linux-vz-package-runtime-clone-preflight-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification guest-candidate checkpoint](artifact-native-linux-vz-runtime-qualification-guest-candidate-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification host-launcher checkpoint](artifact-native-linux-vz-runtime-qualification-host-launcher-checkpoint-2026-07-13.md)
+- [Linux VZ runtime-qualification physical checkpoint](artifact-native-linux-vz-runtime-qualification-physical-checkpoint-2026-07-13.md)
 - [macOS local release readiness](macos-local-release-readiness.md)
 - [macOS local beta pressure checkpoint](macos-local-beta-pressure-checkpoint.md)
 - [latest source-fixture corpus report](src-fixture-corpus-latest.md)
