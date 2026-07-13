@@ -157,6 +157,7 @@ pub fn decode_linux_vz_file_evidence_payload_v1(
         return Err(LinuxVzFileEvidencePayloadErrorV1::NonCanonical);
     }
     let fixture_case = match wire.fixture_case.as_str() {
+        "fanotify_permission" => LinuxVzTelemetryConformanceCaseV1::FanotifyPermission,
         "protected_open_read_write_rename_delete" => {
             LinuxVzTelemetryConformanceCaseV1::ProtectedOpenReadWriteRenameDelete
         }
@@ -165,13 +166,16 @@ pub fn decode_linux_vz_file_evidence_payload_v1(
     };
     let package_uid = decimal_u64(&wire.package_uid)?;
     let package_gid = decimal_u64(&wire.package_gid)?;
+    let permission_responses = decimal_u64(&wire.fanotify_permission_responses)?;
     if wire.schema_version != LINUX_VZ_FILE_EVIDENCE_PAYLOAD_SCHEMA_V1
         || decimal_u64(&wire.event_sequence_start)? != 1
         || decimal_u64(&wire.event_sequence_end)? != 8
         || decimal_u64(&wire.event_count)? != 8
         || decimal_u64(&wire.heartbeat_count)? != 2
         || decimal_u64(&wire.dropped_event_count)? != 0
-        || decimal_u64(&wire.fanotify_permission_responses)? < 2
+        || permission_responses < 2
+        || fixture_case == LinuxVzTelemetryConformanceCaseV1::FanotifyPermission
+            && permission_responses != 5
         || package_uid != 65534
         || package_gid != 65534
         || !wire.sensor_healthy
@@ -315,6 +319,27 @@ mod tests {
         assert_eq!(
             decode_linux_vz_file_evidence_payload_v1(&changed),
             Err(LinuxVzFileEvidencePayloadErrorV1::InvalidEvent)
+        );
+    }
+
+    #[test]
+    fn fanotify_platform_case_requires_the_same_complete_permission_evidence() {
+        let mut value: serde_json::Value = serde_json::from_slice(&payload()).expect("JSON");
+        value["fixture_case"] = serde_json::json!("fanotify_permission");
+        value["fanotify_permission_responses"] = serde_json::json!("5");
+        let canonical = serde_json_canonicalizer::to_vec(&value).expect("canonical");
+        let evidence = decode_linux_vz_file_evidence_payload_v1(&canonical).expect("evidence");
+        assert_eq!(
+            evidence.fixture_case(),
+            LinuxVzTelemetryConformanceCaseV1::FanotifyPermission
+        );
+        assert!(evidence.guest_observation_claims_v1().is_ok());
+
+        value["fanotify_permission_responses"] = serde_json::json!("4");
+        let incomplete = serde_json_canonicalizer::to_vec(&value).expect("incomplete");
+        assert_eq!(
+            decode_linux_vz_file_evidence_payload_v1(&incomplete),
+            Err(LinuxVzFileEvidencePayloadErrorV1::InvalidSchema)
         );
     }
 }

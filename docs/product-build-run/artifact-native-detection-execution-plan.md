@@ -4,14 +4,14 @@ Date: 2026-07-09
 
 Status: canonical execution plan for the next product milestone
 
-Current execution checkpoint (2026-07-12): thirty-five of the 38 authenticated Linux VZ inert
+Current execution checkpoint (2026-07-12): thirty-six of the 38 authenticated Linux VZ inert
 conformance cases now pass physically on one exact measured backend identity. The newest
-`cgroup_v2` case binds the live cgroup2 filesystem magic and mount record, seven controllers, a
-temporary domain cgroup, measured-signer self-membership and population, return to the root
-cgroup, empty-child observation, and cgroup removal. Strict signed evidence requires healthy
-sensors, zero drops, complete teardown, and no execution authority. This is still telemetry
-qualification, not package detection, and the backend remains `candidate_unqualified`. See the
-[cgroup-v2 checkpoint](artifact-native-linux-vz-cgroup-v2-checkpoint-2026-07-12.md).
+`fanotify_permission` case binds a measured `FAN_CLASS_CONTENT` mount mark, exact
+`FAN_OPEN_PERM`/`FAN_ACCESS_PERM` handling, five protected permission responses, an unprivileged
+actor and cgroup, complete file-state corroboration, healthy sensors, zero drops, complete
+teardown, and no execution authority. This is still telemetry qualification, not package
+detection, and the backend remains `candidate_unqualified`. See the
+[fanotify-permission checkpoint](artifact-native-linux-vz-fanotify-permission-checkpoint-2026-07-12.md).
 
 The first protected-sensor bootstrap now also observes a cgroup-filtered inert fork/exec/exit chain
 whose child runs as UID/GID 65534 and cannot read or write the root-only sensor. This remains
@@ -315,6 +315,16 @@ on the resulting identity; all 105 request inputs were generated from that ident
 complete case passed independent Rust verification. Thirty-five of 38 cases now share one backend
 binding; 3 remain. See the
 [cgroup-v2 checkpoint](artifact-native-linux-vz-cgroup-v2-checkpoint-2026-07-12.md).
+
+The `fanotify_permission` platform case now runs the measured permission sensor against a UID/GID
+65534 inert file fixture. The exact sensor binary binds `FAN_CLASS_CONTENT`, the mount-scoped mark,
+`FAN_OPEN_PERM`, `FAN_ACCESS_PERM`, and `FAN_CLOSE_WRITE`; live evidence requires exactly five
+permission responses, the actor/cgroup-bound file sequence, BPF mmap corroboration, final
+filesystem diff, healthy zero-drop evidence, and complete teardown. All thirty-six implemented
+cases ran physically on the resulting identity; all 108 request inputs were generated from that
+identity and every complete case passed independent Rust verification. Thirty-six of 38 cases now
+share one backend binding; 2 remain. See the
+[fanotify-permission checkpoint](artifact-native-linux-vz-fanotify-permission-checkpoint-2026-07-12.md).
 
 Primary target: malicious npm and PyPI package detection with static analysis, AI-assisted code
 review, and behaviorally instrumented detonation in disposable virtual machines
@@ -1595,6 +1605,7 @@ Repository evidence:
 - [Linux VZ package-isolation checkpoint](artifact-native-linux-vz-package-isolation-checkpoint-2026-07-12.md)
 - [Linux VZ kernel-config/BTF checkpoint](artifact-native-linux-vz-kernel-config-btf-checkpoint-2026-07-12.md)
 - [Linux VZ cgroup-v2 checkpoint](artifact-native-linux-vz-cgroup-v2-checkpoint-2026-07-12.md)
+- [Linux VZ fanotify-permission checkpoint](artifact-native-linux-vz-fanotify-permission-checkpoint-2026-07-12.md)
 - [macOS local release readiness](macos-local-release-readiness.md)
 - [macOS local beta pressure checkpoint](macos-local-beta-pressure-checkpoint.md)
 - [latest source-fixture corpus report](src-fixture-corpus-latest.md)

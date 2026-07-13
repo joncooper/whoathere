@@ -83,6 +83,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let fixture_case = match run_spec.fixture_case() {
         LinuxVzTelemetryConformanceCaseV1::KernelConfigAndBtf => "kernel_config_and_btf",
         LinuxVzTelemetryConformanceCaseV1::CgroupV2 => "cgroup_v2",
+        LinuxVzTelemetryConformanceCaseV1::FanotifyPermission => "fanotify_permission",
         LinuxVzTelemetryConformanceCaseV1::ForkExecExit => "fork_exec_exit",
         LinuxVzTelemetryConformanceCaseV1::Reparenting => "reparenting",
         LinuxVzTelemetryConformanceCaseV1::DoubleForkDaemonization => "double_fork_daemonization",
@@ -189,7 +190,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     None,
                 )
             }
-            LinuxVzTelemetryConformanceCaseV1::ProtectedOpenReadWriteRenameDelete
+            LinuxVzTelemetryConformanceCaseV1::FanotifyPermission
+            | LinuxVzTelemetryConformanceCaseV1::ProtectedOpenReadWriteRenameDelete
             | LinuxVzTelemetryConformanceCaseV1::MmapAccess => {
                 let evidence = decode_linux_vz_file_evidence_from_serial_v1(&serial)?;
                 if evidence.fixture_case() != run_spec.fixture_case()

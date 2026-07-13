@@ -55,7 +55,8 @@ public func decodeLinuxVzFileEvidencePayload(
     ]),
     value["schema_version"] as? String == linuxVzFileEvidencePayloadSchemaV1,
     let fixtureCase = value["fixture_case"] as? String,
-    ["protected_open_read_write_rename_delete", "mmap_access"].contains(fixtureCase),
+    ["fanotify_permission", "protected_open_read_write_rename_delete", "mmap_access"]
+        .contains(fixtureCase),
     fileEvidenceDecimal(value["event_sequence_start"]) == 1,
     fileEvidenceDecimal(value["event_sequence_end"]) == 8,
     fileEvidenceDecimal(value["event_count"]) == 8,
@@ -63,6 +64,7 @@ public func decodeLinuxVzFileEvidencePayload(
     fileEvidenceDecimal(value["dropped_event_count"]) == 0,
     let permissionResponses = fileEvidenceDecimal(value["fanotify_permission_responses"]),
     permissionResponses >= 2,
+    fixtureCase != "fanotify_permission" || permissionResponses == 5,
     let packageUID = fileEvidenceDecimal(value["package_uid"]),
     let packageGID = fileEvidenceDecimal(value["package_gid"]),
     packageUID == 65534,

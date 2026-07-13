@@ -4635,7 +4635,8 @@ int main(int argument_count, char **arguments) {
     if (strcmp(arguments[2], "host_frame_overflow") == 0) {
         return run_host_frame_overflow_probe(arguments[1]);
     }
-    if (strcmp(arguments[2], "protected_open_read_write_rename_delete") == 0 ||
+    if (strcmp(arguments[2], "fanotify_permission") == 0 ||
+        strcmp(arguments[2], "protected_open_read_write_rename_delete") == 0 ||
         strcmp(arguments[2], "mmap_access") == 0) {
         return run_file_probe(arguments[1], arguments[2]);
     }

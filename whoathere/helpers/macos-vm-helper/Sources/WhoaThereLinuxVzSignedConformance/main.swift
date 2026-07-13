@@ -593,7 +593,7 @@ private struct LinuxVzSignedConformanceHarness {
             networkSourcePort = nil
             networkFixtureCase = nil
             hostFrameTriggerCount = nil
-        case "protected_open_read_write_rename_delete", "mmap_access":
+        case "fanotify_permission", "protected_open_read_write_rename_delete", "mmap_access":
             let evidence = try decodeLinuxVzFileEvidencePayload(serialData)
             guard evidence.fixtureCase == runSpec.fixtureCase,
                   evidence.packageUID == UInt64(backend.packageUID),

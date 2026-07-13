@@ -36,6 +36,27 @@ import Testing
     }
 }
 
+@Test func linuxVzFanotifyPlatformCaseUsesCompletePermissionEvidence() throws {
+    var value = try #require(
+        JSONSerialization.jsonObject(with: fileEvidencePayload()) as? [String: Any]
+    )
+    value["fixture_case"] = "fanotify_permission"
+    value["fanotify_permission_responses"] = "5"
+    let evidence = try decodeLinuxVzFileEvidencePayload(
+        Data(linuxVzFileEvidenceSerialPrefixV1.utf8) + canonicalJSONData(value)
+    )
+    #expect(evidence.fixtureCase == "fanotify_permission")
+    #expect(evidence.claims.sensorHealthy)
+    #expect(evidence.claims.droppedEventCount == 0)
+
+    value["fanotify_permission_responses"] = "4"
+    #expect(throws: LinuxVzFileEvidencePayloadError.invalidSchema) {
+        try decodeLinuxVzFileEvidencePayload(
+            Data(linuxVzFileEvidenceSerialPrefixV1.utf8) + canonicalJSONData(value)
+        )
+    }
+}
+
 private func fileEvidencePayload() throws -> Data {
     let kinds = [
         "file_open", "file_read", "file_write", "file_rename", "file_delete",

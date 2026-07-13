@@ -152,6 +152,7 @@ mod linux {
                 | LinuxVzTelemetryConformanceCaseV1::AllProtectedAssetsDenied
                 | LinuxVzTelemetryConformanceCaseV1::KernelConfigAndBtf
                 | LinuxVzTelemetryConformanceCaseV1::CgroupV2
+                | LinuxVzTelemetryConformanceCaseV1::FanotifyPermission
         ) || run_spec.expected_terminal()
             != expected_terminal_for_case_v1(run_spec.fixture_case())
             || run_spec.package_execution_authority_permitted()
@@ -210,6 +211,7 @@ mod linux {
             }
             LinuxVzTelemetryConformanceCaseV1::KernelConfigAndBtf => "kernel_config_and_btf",
             LinuxVzTelemetryConformanceCaseV1::CgroupV2 => "cgroup_v2",
+            LinuxVzTelemetryConformanceCaseV1::FanotifyPermission => "fanotify_permission",
             _ => return Err("guest_signer_run_spec_not_supported_inert_case".into()),
         };
         let sensor_output = match run_spec.fixture_case() {
@@ -334,7 +336,8 @@ mod linux {
                     },
                 )
             }
-            LinuxVzTelemetryConformanceCaseV1::ProtectedOpenReadWriteRenameDelete
+            LinuxVzTelemetryConformanceCaseV1::FanotifyPermission
+            | LinuxVzTelemetryConformanceCaseV1::ProtectedOpenReadWriteRenameDelete
             | LinuxVzTelemetryConformanceCaseV1::MmapAccess => {
                 let evidence = decode_linux_vz_file_evidence_from_serial_v1(&sensor_output)?;
                 if evidence.fixture_case() != run_spec.fixture_case() {

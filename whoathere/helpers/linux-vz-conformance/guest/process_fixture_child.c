@@ -974,7 +974,8 @@ int main(int argument_count, char **arguments) {
     if (strcmp(arguments[1], "dns_malformed") == 0) return dns_malformed();
     if (strcmp(arguments[1], "encrypted_dns_connect") == 0) return encrypted_dns_connect();
     if (strcmp(arguments[1], "host_frame_overflow") == 0) return host_frame_overflow();
-    if (strcmp(arguments[1], "protected_open_read_write_rename_delete") == 0 ||
+    if (strcmp(arguments[1], "fanotify_permission") == 0 ||
+        strcmp(arguments[1], "protected_open_read_write_rename_delete") == 0 ||
         strcmp(arguments[1], "mmap_access") == 0) {
         return file_fixture();
     }
