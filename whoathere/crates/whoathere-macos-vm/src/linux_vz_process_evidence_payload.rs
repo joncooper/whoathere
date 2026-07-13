@@ -118,11 +118,16 @@ impl LinuxVzProcessEvidencePayloadV1 {
             (
                 LinuxVzTelemetryConformanceCaseV1::HostSensorDeath,
                 LinuxVzTelemetryConformanceObservedTerminalV1::InfrastructureErrorWithTeardown
+            ) | (
+                LinuxVzTelemetryConformanceCaseV1::AllProtectedAssetsDenied,
+                LinuxVzTelemetryConformanceObservedTerminalV1::AccessDeniedWithCompleteEvidence
             )
-        ) || (self.fixture_case
-            != LinuxVzTelemetryConformanceCaseV1::HostSensorDeath
-            && observed_terminal
-                == LinuxVzTelemetryConformanceObservedTerminalV1::ObservationComplete);
+        ) || (!matches!(
+            self.fixture_case,
+            LinuxVzTelemetryConformanceCaseV1::HostSensorDeath
+                | LinuxVzTelemetryConformanceCaseV1::AllProtectedAssetsDenied
+        ) && observed_terminal
+            == LinuxVzTelemetryConformanceObservedTerminalV1::ObservationComplete);
         if !valid_binding {
             return Err(MacosLinuxVzTelemetryEvidenceErrorV1::ConformanceFailed);
         }
@@ -171,6 +176,14 @@ struct ProcessEvidenceWireV1 {
     heartbeat_count: String,
     package_gid: String,
     package_uid: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    protected_asset_count: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    protected_asset_read_denied_count: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    protected_asset_write_denied_count: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    protected_assets: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     reparent_target: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -260,159 +273,208 @@ pub fn decode_linux_vz_process_evidence_payload_v1(
         return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema);
     }
 
-    let (fixture_case, expected_kinds): (LinuxVzTelemetryConformanceCaseV1, &[&str]) =
-        match wire.fixture_case.as_deref() {
-            None => {
-                if wire.credential_change_count.is_some()
-                    || wire.credential_target.is_some()
-                    || wire.dynamic_library_load_count.is_some()
-                    || wire.dynamic_library_target.is_some()
-                    || wire.fork_count.is_some()
-                    || wire.exec_count.is_some()
-                    || wire.exit_count.is_some()
-                    || wire.reaped_process_count.is_some()
-                    || wire.reparent_target.is_some()
-                    || wire.reparented_process_count.is_some()
-                    || wire.session_escape_count.is_some()
-                    || wire.session_target.is_some()
-                {
-                    return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema);
-                }
-                (
-                    LinuxVzTelemetryConformanceCaseV1::ForkExecExit,
-                    &["fork", "exec", "exit"],
-                )
+    let protected_fields_present = wire.protected_asset_count.is_some()
+        || wire.protected_asset_read_denied_count.is_some()
+        || wire.protected_asset_write_denied_count.is_some()
+        || wire.protected_assets.is_some();
+    if wire.fixture_case.as_deref() != Some("all_protected_assets_denied")
+        && protected_fields_present
+    {
+        return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema);
+    }
+
+    let (fixture_case, expected_kinds): (LinuxVzTelemetryConformanceCaseV1, &[&str]) = match wire
+        .fixture_case
+        .as_deref()
+    {
+        None => {
+            if wire.credential_change_count.is_some()
+                || wire.credential_target.is_some()
+                || wire.dynamic_library_load_count.is_some()
+                || wire.dynamic_library_target.is_some()
+                || wire.fork_count.is_some()
+                || wire.exec_count.is_some()
+                || wire.exit_count.is_some()
+                || wire.reaped_process_count.is_some()
+                || wire.reparent_target.is_some()
+                || wire.reparented_process_count.is_some()
+                || wire.session_escape_count.is_some()
+                || wire.session_target.is_some()
+            {
+                return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema);
             }
-            Some("host_sensor_death") => {
-                if wire.credential_change_count.is_some()
-                    || wire.credential_target.is_some()
-                    || wire.dynamic_library_load_count.is_some()
-                    || wire.dynamic_library_target.is_some()
-                    || wire.fork_count.is_some()
-                    || wire.exec_count.is_some()
-                    || wire.exit_count.is_some()
-                    || wire.reaped_process_count.is_some()
-                    || wire.reparent_target.is_some()
-                    || wire.reparented_process_count.is_some()
-                    || wire.session_escape_count.is_some()
-                    || wire.session_target.is_some()
-                {
-                    return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema);
-                }
-                (
-                    LinuxVzTelemetryConformanceCaseV1::HostSensorDeath,
-                    &["fork", "exec", "exit"],
-                )
+            (
+                LinuxVzTelemetryConformanceCaseV1::ForkExecExit,
+                &["fork", "exec", "exit"],
+            )
+        }
+        Some("host_sensor_death") => {
+            if wire.credential_change_count.is_some()
+                || wire.credential_target.is_some()
+                || wire.dynamic_library_load_count.is_some()
+                || wire.dynamic_library_target.is_some()
+                || wire.fork_count.is_some()
+                || wire.exec_count.is_some()
+                || wire.exit_count.is_some()
+                || wire.reaped_process_count.is_some()
+                || wire.reparent_target.is_some()
+                || wire.reparented_process_count.is_some()
+                || wire.session_escape_count.is_some()
+                || wire.session_target.is_some()
+            {
+                return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema);
             }
-            Some("double_fork_daemonization") => {
-                if wire.credential_change_count.is_some()
-                    || wire.credential_target.is_some()
-                    || wire.dynamic_library_load_count.is_some()
-                    || wire.dynamic_library_target.is_some()
-                    || optional_decimal_u64_v1(wire.fork_count.as_deref())? != 3
-                    || optional_decimal_u64_v1(wire.exec_count.as_deref())? != 1
-                    || optional_decimal_u64_v1(wire.exit_count.as_deref())? != 3
-                    || optional_decimal_u64_v1(wire.reaped_process_count.as_deref())? != 3
-                    || wire.reparent_target.is_some()
-                    || wire.reparented_process_count.is_some()
-                    || wire.session_escape_count.is_some()
-                    || wire.session_target.is_some()
-                {
-                    return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema);
-                }
-                (
-                    LinuxVzTelemetryConformanceCaseV1::DoubleForkDaemonization,
-                    &["exec", "fork", "exit"],
-                )
+            (
+                LinuxVzTelemetryConformanceCaseV1::HostSensorDeath,
+                &["fork", "exec", "exit"],
+            )
+        }
+        Some("all_protected_assets_denied") => {
+            const EXPECTED_ASSETS: &[&str] = &[
+                "capability_probe",
+                "guest_ed25519_seed",
+                "guest_signer",
+                "process_sensor_probe",
+                "virtio_vsock_module",
+                "virtio_vsock_transport_common_module",
+                "virtio_vsock_transport_module",
+            ];
+            if optional_decimal_u64_v1(wire.protected_asset_count.as_deref())? != 7
+                || optional_decimal_u64_v1(wire.protected_asset_read_denied_count.as_deref())? != 7
+                || optional_decimal_u64_v1(wire.protected_asset_write_denied_count.as_deref())? != 7
+                || wire
+                    .protected_assets
+                    .as_deref()
+                    .map(|assets| assets.iter().map(String::as_str).collect::<Vec<_>>())
+                    != Some(EXPECTED_ASSETS.to_vec())
+                || wire.credential_change_count.is_some()
+                || wire.credential_target.is_some()
+                || wire.dynamic_library_load_count.is_some()
+                || wire.dynamic_library_target.is_some()
+                || wire.fork_count.is_some()
+                || wire.exec_count.is_some()
+                || wire.exit_count.is_some()
+                || wire.reaped_process_count.is_some()
+                || wire.reparent_target.is_some()
+                || wire.reparented_process_count.is_some()
+                || wire.session_escape_count.is_some()
+                || wire.session_target.is_some()
+            {
+                return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema);
             }
-            Some("reparenting") => {
-                if wire.credential_change_count.is_some()
-                    || wire.credential_target.is_some()
-                    || wire.dynamic_library_load_count.is_some()
-                    || wire.dynamic_library_target.is_some()
-                    || optional_decimal_u64_v1(wire.fork_count.as_deref())? != 2
-                    || optional_decimal_u64_v1(wire.exec_count.as_deref())? != 1
-                    || optional_decimal_u64_v1(wire.exit_count.as_deref())? != 2
-                    || optional_decimal_u64_v1(wire.reaped_process_count.as_deref())? != 2
-                    || optional_decimal_u64_v1(wire.reparented_process_count.as_deref())? != 1
-                    || wire.reparent_target.as_deref() != Some("protected_subreaper")
-                    || wire.session_escape_count.is_some()
-                    || wire.session_target.is_some()
-                {
-                    return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema);
-                }
-                (
-                    LinuxVzTelemetryConformanceCaseV1::Reparenting,
-                    &["exec", "fork", "reparent", "exit"],
-                )
+            (
+                LinuxVzTelemetryConformanceCaseV1::AllProtectedAssetsDenied,
+                &["fork", "exec", "exit"],
+            )
+        }
+        Some("double_fork_daemonization") => {
+            if wire.credential_change_count.is_some()
+                || wire.credential_target.is_some()
+                || wire.dynamic_library_load_count.is_some()
+                || wire.dynamic_library_target.is_some()
+                || optional_decimal_u64_v1(wire.fork_count.as_deref())? != 3
+                || optional_decimal_u64_v1(wire.exec_count.as_deref())? != 1
+                || optional_decimal_u64_v1(wire.exit_count.as_deref())? != 3
+                || optional_decimal_u64_v1(wire.reaped_process_count.as_deref())? != 3
+                || wire.reparent_target.is_some()
+                || wire.reparented_process_count.is_some()
+                || wire.session_escape_count.is_some()
+                || wire.session_target.is_some()
+            {
+                return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema);
             }
-            Some("setsid_escape") => {
-                if wire.credential_change_count.is_some()
-                    || wire.credential_target.is_some()
-                    || wire.dynamic_library_load_count.is_some()
-                    || wire.dynamic_library_target.is_some()
-                    || optional_decimal_u64_v1(wire.fork_count.as_deref())? != 1
-                    || optional_decimal_u64_v1(wire.exec_count.as_deref())? != 1
-                    || optional_decimal_u64_v1(wire.exit_count.as_deref())? != 1
-                    || optional_decimal_u64_v1(wire.reaped_process_count.as_deref())? != 1
-                    || optional_decimal_u64_v1(wire.session_escape_count.as_deref())? != 1
-                    || wire.session_target.as_deref() != Some("new_session_leader")
-                    || wire.reparent_target.is_some()
-                    || wire.reparented_process_count.is_some()
-                {
-                    return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema);
-                }
-                (
-                    LinuxVzTelemetryConformanceCaseV1::SetsidEscape,
-                    &["fork", "exec", "setsid", "exit"],
-                )
+            (
+                LinuxVzTelemetryConformanceCaseV1::DoubleForkDaemonization,
+                &["exec", "fork", "exit"],
+            )
+        }
+        Some("reparenting") => {
+            if wire.credential_change_count.is_some()
+                || wire.credential_target.is_some()
+                || wire.dynamic_library_load_count.is_some()
+                || wire.dynamic_library_target.is_some()
+                || optional_decimal_u64_v1(wire.fork_count.as_deref())? != 2
+                || optional_decimal_u64_v1(wire.exec_count.as_deref())? != 1
+                || optional_decimal_u64_v1(wire.exit_count.as_deref())? != 2
+                || optional_decimal_u64_v1(wire.reaped_process_count.as_deref())? != 2
+                || optional_decimal_u64_v1(wire.reparented_process_count.as_deref())? != 1
+                || wire.reparent_target.as_deref() != Some("protected_subreaper")
+                || wire.session_escape_count.is_some()
+                || wire.session_target.is_some()
+            {
+                return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema);
             }
-            Some("credential_change") => {
-                if optional_decimal_u64_v1(wire.credential_change_count.as_deref())? != 3
-                    || wire.credential_target.as_deref()
-                        != Some("uid_65534_gid_65534_no_supplementary_groups")
-                    || optional_decimal_u64_v1(wire.fork_count.as_deref())? != 1
-                    || optional_decimal_u64_v1(wire.exec_count.as_deref())? != 1
-                    || optional_decimal_u64_v1(wire.exit_count.as_deref())? != 1
-                    || optional_decimal_u64_v1(wire.reaped_process_count.as_deref())? != 1
-                    || wire.reparent_target.is_some()
-                    || wire.reparented_process_count.is_some()
-                    || wire.session_escape_count.is_some()
-                    || wire.session_target.is_some()
-                    || wire.dynamic_library_load_count.is_some()
-                    || wire.dynamic_library_target.is_some()
-                {
-                    return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema);
-                }
-                (
-                    LinuxVzTelemetryConformanceCaseV1::CredentialChange,
-                    &["fork", "setgroups", "setgid", "setuid", "exec", "exit"],
-                )
+            (
+                LinuxVzTelemetryConformanceCaseV1::Reparenting,
+                &["exec", "fork", "reparent", "exit"],
+            )
+        }
+        Some("setsid_escape") => {
+            if wire.credential_change_count.is_some()
+                || wire.credential_target.is_some()
+                || wire.dynamic_library_load_count.is_some()
+                || wire.dynamic_library_target.is_some()
+                || optional_decimal_u64_v1(wire.fork_count.as_deref())? != 1
+                || optional_decimal_u64_v1(wire.exec_count.as_deref())? != 1
+                || optional_decimal_u64_v1(wire.exit_count.as_deref())? != 1
+                || optional_decimal_u64_v1(wire.reaped_process_count.as_deref())? != 1
+                || optional_decimal_u64_v1(wire.session_escape_count.as_deref())? != 1
+                || wire.session_target.as_deref() != Some("new_session_leader")
+                || wire.reparent_target.is_some()
+                || wire.reparented_process_count.is_some()
+            {
+                return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema);
             }
-            Some("dynamic_library_load") => {
-                if optional_decimal_u64_v1(wire.dynamic_library_load_count.as_deref())? != 1
-                    || wire.dynamic_library_target.as_deref()
-                        != Some("measured_inert_fixture_library")
-                    || optional_decimal_u64_v1(wire.fork_count.as_deref())? != 1
-                    || optional_decimal_u64_v1(wire.exec_count.as_deref())? != 2
-                    || optional_decimal_u64_v1(wire.exit_count.as_deref())? != 1
-                    || optional_decimal_u64_v1(wire.reaped_process_count.as_deref())? != 1
-                    || wire.credential_change_count.is_some()
-                    || wire.credential_target.is_some()
-                    || wire.reparent_target.is_some()
-                    || wire.reparented_process_count.is_some()
-                    || wire.session_escape_count.is_some()
-                    || wire.session_target.is_some()
-                {
-                    return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema);
-                }
-                (
-                    LinuxVzTelemetryConformanceCaseV1::DynamicLibraryLoad,
-                    &["fork", "exec", "dynamic_library_load", "exit"],
-                )
+            (
+                LinuxVzTelemetryConformanceCaseV1::SetsidEscape,
+                &["fork", "exec", "setsid", "exit"],
+            )
+        }
+        Some("credential_change") => {
+            if optional_decimal_u64_v1(wire.credential_change_count.as_deref())? != 3
+                || wire.credential_target.as_deref()
+                    != Some("uid_65534_gid_65534_no_supplementary_groups")
+                || optional_decimal_u64_v1(wire.fork_count.as_deref())? != 1
+                || optional_decimal_u64_v1(wire.exec_count.as_deref())? != 1
+                || optional_decimal_u64_v1(wire.exit_count.as_deref())? != 1
+                || optional_decimal_u64_v1(wire.reaped_process_count.as_deref())? != 1
+                || wire.reparent_target.is_some()
+                || wire.reparented_process_count.is_some()
+                || wire.session_escape_count.is_some()
+                || wire.session_target.is_some()
+                || wire.dynamic_library_load_count.is_some()
+                || wire.dynamic_library_target.is_some()
+            {
+                return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema);
             }
-            _ => return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema),
-        };
+            (
+                LinuxVzTelemetryConformanceCaseV1::CredentialChange,
+                &["fork", "setgroups", "setgid", "setuid", "exec", "exit"],
+            )
+        }
+        Some("dynamic_library_load") => {
+            if optional_decimal_u64_v1(wire.dynamic_library_load_count.as_deref())? != 1
+                || wire.dynamic_library_target.as_deref() != Some("measured_inert_fixture_library")
+                || optional_decimal_u64_v1(wire.fork_count.as_deref())? != 1
+                || optional_decimal_u64_v1(wire.exec_count.as_deref())? != 2
+                || optional_decimal_u64_v1(wire.exit_count.as_deref())? != 1
+                || optional_decimal_u64_v1(wire.reaped_process_count.as_deref())? != 1
+                || wire.credential_change_count.is_some()
+                || wire.credential_target.is_some()
+                || wire.reparent_target.is_some()
+                || wire.reparented_process_count.is_some()
+                || wire.session_escape_count.is_some()
+                || wire.session_target.is_some()
+            {
+                return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema);
+            }
+            (
+                LinuxVzTelemetryConformanceCaseV1::DynamicLibraryLoad,
+                &["fork", "exec", "dynamic_library_load", "exit"],
+            )
+        }
+        _ => return Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema),
+    };
     if event_sequence_end != expected_kinds.len() as u64
         || event_count != expected_kinds.len() as u64
         || wire.events.len() != expected_kinds.len()
@@ -444,7 +506,8 @@ pub fn decode_linux_vz_process_evidence_payload_v1(
     }
     match fixture_case {
         LinuxVzTelemetryConformanceCaseV1::ForkExecExit
-        | LinuxVzTelemetryConformanceCaseV1::HostSensorDeath => {
+        | LinuxVzTelemetryConformanceCaseV1::HostSensorDeath
+        | LinuxVzTelemetryConformanceCaseV1::AllProtectedAssetsDenied => {
             if events[0].actor_pid == events[0].subject_pid
                 || events[1].actor_pid != events[0].subject_pid
                 || events[1].subject_pid != events[0].subject_pid
@@ -556,6 +619,34 @@ mod tests {
     const CREDENTIAL_CHANGE: &[u8] = br#"{"credential_change_count":"3","credential_target":"uid_65534_gid_65534_no_supplementary_groups","descendant_teardown_complete":true,"dropped_event_count":"0","event_count":"6","event_sequence_end":"6","event_sequence_start":"1","events":[{"actor_pid":"41","cgroup_id":"9001","kind":"fork","sequence":"1","subject_pid":"42","timestamp_ns":"100"},{"actor_pid":"42","cgroup_id":"9001","kind":"setgroups","sequence":"2","subject_pid":"42","timestamp_ns":"200"},{"actor_pid":"42","cgroup_id":"9001","kind":"setgid","sequence":"3","subject_pid":"42","timestamp_ns":"300"},{"actor_pid":"42","cgroup_id":"9001","kind":"setuid","sequence":"4","subject_pid":"42","timestamp_ns":"400"},{"actor_pid":"42","cgroup_id":"9001","kind":"exec","sequence":"5","subject_pid":"42","timestamp_ns":"500"},{"actor_pid":"42","cgroup_id":"9001","kind":"exit","sequence":"6","subject_pid":"42","timestamp_ns":"600"}],"evidence_truncated":false,"exec_count":"1","exit_count":"1","fixture_case":"credential_change","fork_count":"1","heartbeat_count":"2","package_gid":"65534","package_uid":"65534","reaped_process_count":"1","schema_version":"whoathere.linux_vz_process_evidence_payload.v1","sensor_healthy":true}"#;
     const DYNAMIC_LIBRARY_LOAD: &[u8] = br#"{"descendant_teardown_complete":true,"dropped_event_count":"0","dynamic_library_load_count":"1","dynamic_library_target":"measured_inert_fixture_library","event_count":"4","event_sequence_end":"4","event_sequence_start":"1","events":[{"actor_pid":"41","cgroup_id":"9001","kind":"fork","sequence":"1","subject_pid":"42","timestamp_ns":"100"},{"actor_pid":"42","cgroup_id":"9001","kind":"exec","sequence":"2","subject_pid":"42","timestamp_ns":"200"},{"actor_pid":"42","cgroup_id":"9001","kind":"dynamic_library_load","sequence":"3","subject_pid":"42","timestamp_ns":"300"},{"actor_pid":"42","cgroup_id":"9001","kind":"exit","sequence":"4","subject_pid":"42","timestamp_ns":"400"}],"evidence_truncated":false,"exec_count":"2","exit_count":"1","fixture_case":"dynamic_library_load","fork_count":"1","heartbeat_count":"2","package_gid":"65534","package_uid":"65534","reaped_process_count":"1","schema_version":"whoathere.linux_vz_process_evidence_payload.v1","sensor_healthy":true}"#;
     const HOST_SENSOR_DEATH: &[u8] = br#"{"descendant_teardown_complete":true,"dropped_event_count":"0","event_count":"3","event_sequence_end":"3","event_sequence_start":"1","events":[{"actor_pid":"41","cgroup_id":"9001","kind":"fork","sequence":"1","subject_pid":"42","timestamp_ns":"100"},{"actor_pid":"42","cgroup_id":"9001","kind":"exec","sequence":"2","subject_pid":"42","timestamp_ns":"200"},{"actor_pid":"42","cgroup_id":"9001","kind":"exit","sequence":"3","subject_pid":"42","timestamp_ns":"300"}],"evidence_truncated":false,"fixture_case":"host_sensor_death","heartbeat_count":"2","package_gid":"65534","package_uid":"65534","schema_version":"whoathere.linux_vz_process_evidence_payload.v1","sensor_healthy":true}"#;
+    const ALL_PROTECTED_ASSETS_DENIED: &[u8] = br#"{"descendant_teardown_complete":true,"dropped_event_count":"0","event_count":"3","event_sequence_end":"3","event_sequence_start":"1","events":[{"actor_pid":"41","cgroup_id":"9001","kind":"fork","sequence":"1","subject_pid":"42","timestamp_ns":"100"},{"actor_pid":"42","cgroup_id":"9001","kind":"exec","sequence":"2","subject_pid":"42","timestamp_ns":"200"},{"actor_pid":"42","cgroup_id":"9001","kind":"exit","sequence":"3","subject_pid":"42","timestamp_ns":"300"}],"evidence_truncated":false,"fixture_case":"all_protected_assets_denied","heartbeat_count":"2","package_gid":"65534","package_uid":"65534","protected_asset_count":"7","protected_asset_read_denied_count":"7","protected_asset_write_denied_count":"7","protected_assets":["capability_probe","guest_ed25519_seed","guest_signer","process_sensor_probe","virtio_vsock_module","virtio_vsock_transport_common_module","virtio_vsock_transport_module"],"schema_version":"whoathere.linux_vz_process_evidence_payload.v1","sensor_healthy":true}"#;
+
+    #[test]
+    fn package_isolation_binds_every_exact_asset_and_access_denied_terminal() {
+        let payload =
+            decode_linux_vz_process_evidence_payload_v1(ALL_PROTECTED_ASSETS_DENIED).unwrap();
+        assert_eq!(
+            payload.fixture_case(),
+            LinuxVzTelemetryConformanceCaseV1::AllProtectedAssetsDenied
+        );
+        let claims = payload
+            .guest_observation_claims_for_terminal_v1(
+                LinuxVzTelemetryConformanceObservedTerminalV1::AccessDeniedWithCompleteEvidence,
+            )
+            .unwrap();
+        assert!(claims.sensor_healthy());
+        assert_eq!(claims.dropped_event_count(), 0);
+        assert!(payload.guest_observation_claims_v1().is_err());
+
+        let mut changed: serde_json::Value =
+            serde_json::from_slice(ALL_PROTECTED_ASSETS_DENIED).unwrap();
+        changed["protected_asset_read_denied_count"] = serde_json::json!("6");
+        let changed = serde_json_canonicalizer::to_vec(&changed).unwrap();
+        assert_eq!(
+            decode_linux_vz_process_evidence_payload_v1(&changed),
+            Err(LinuxVzProcessEvidencePayloadErrorV1::InvalidSchema)
+        );
+    }
 
     #[test]
     fn host_sensor_death_binds_healthy_guest_to_infrastructure_terminal_only() {

@@ -30,12 +30,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     let serial = fs::read(path)?;
     let payload = decode_linux_vz_process_evidence_from_serial_v1(&serial)?;
-    let claims = if payload.fixture_case() == LinuxVzTelemetryConformanceCaseV1::HostSensorDeath {
-        payload.guest_observation_claims_for_terminal_v1(
-            whoathere_macos_vm::LinuxVzTelemetryConformanceObservedTerminalV1::InfrastructureErrorWithTeardown,
-        )?
-    } else {
-        payload.guest_observation_claims_v1()?
+    let claims = match payload.fixture_case() {
+        LinuxVzTelemetryConformanceCaseV1::HostSensorDeath => payload
+            .guest_observation_claims_for_terminal_v1(
+                whoathere_macos_vm::LinuxVzTelemetryConformanceObservedTerminalV1::InfrastructureErrorWithTeardown,
+            )?,
+        LinuxVzTelemetryConformanceCaseV1::AllProtectedAssetsDenied => payload
+            .guest_observation_claims_for_terminal_v1(
+                whoathere_macos_vm::LinuxVzTelemetryConformanceObservedTerminalV1::AccessDeniedWithCompleteEvidence,
+            )?,
+        _ => payload.guest_observation_claims_v1()?,
     };
     let fixture_case = match payload.fixture_case() {
         LinuxVzTelemetryConformanceCaseV1::ForkExecExit => "fork_exec_exit",
@@ -45,6 +49,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         LinuxVzTelemetryConformanceCaseV1::CredentialChange => "credential_change",
         LinuxVzTelemetryConformanceCaseV1::DynamicLibraryLoad => "dynamic_library_load",
         LinuxVzTelemetryConformanceCaseV1::HostSensorDeath => "host_sensor_death",
+        LinuxVzTelemetryConformanceCaseV1::AllProtectedAssetsDenied => {
+            "all_protected_assets_denied"
+        }
         _ => return Err("unsupported process evidence fixture case".into()),
     };
     let result = serde_json::json!({

@@ -95,6 +95,11 @@ import Testing
         observedTerminal: "timeout_with_teardown"
     )
     #expect(timeout.claims.observedTerminal == "timeout_with_teardown")
+    let accessDenied = try decodeLinuxVzHostEvidencePayload(
+        payload.canonicalJSON,
+        observedTerminal: "access_denied_with_complete_evidence"
+    )
+    #expect(accessDenied.claims.observedTerminal == "access_denied_with_complete_evidence")
     #expect(throws: LinuxVzHostEvidencePayloadError.invalidSchema) {
         try decodeLinuxVzHostEvidencePayload(
             payload.canonicalJSON,

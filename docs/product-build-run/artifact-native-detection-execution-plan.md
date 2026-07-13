@@ -4,15 +4,15 @@ Date: 2026-07-09
 
 Status: canonical execution plan for the next product milestone
 
-Current execution checkpoint (2026-07-12): thirty-two of the 38 authenticated Linux VZ inert
+Current execution checkpoint (2026-07-12): thirty-three of the 38 authenticated Linux VZ inert
 conformance cases now pass physically on one exact measured backend identity. The newest
-`host_sensor_death` case starts a dedicated host packet-sensor worker before VM launch, transmits
-the complete request, deliberately terminates that worker while the guest runs, and still receives
-healthy signed guest process evidence. Signed host evidence binds the worker start, injected
-termination, complete request and response sizes, unhealthy packet-sensor state, zero frames and
-drops, stopped VM, and destroyed diskless instance. This is still telemetry qualification, not
-package detection, and the backend remains `candidate_unqualified`. See the
-[host-sensor-death checkpoint](artifact-native-linux-vz-host-sensor-death-checkpoint-2026-07-12.md).
+`all_protected_assets_denied` case binds an unprivileged fixture's read and write denials across the
+exact seven root-only sensor, signing, and module assets to independently verified ownership,
+mode, PID, credentials, cgroup, and ordered process evidence. Both signed authorities report
+`access_denied_with_complete_evidence`, healthy sensors, zero drops, complete teardown, and no
+execution authority. This is still telemetry qualification, not package detection, and the backend
+remains `candidate_unqualified`. See the
+[package-isolation checkpoint](artifact-native-linux-vz-package-isolation-checkpoint-2026-07-12.md).
 
 The first protected-sensor bootstrap now also observes a cgroup-filtered inert fork/exec/exit chain
 whose child runs as UID/GID 65534 and cannot read or write the root-only sensor. This remains
@@ -288,6 +288,15 @@ and destroyed clone. All thirty-two implemented cases ran physically on the resu
 all 96 request inputs matched locally and every complete case passed independent Rust verification.
 Thirty-two of 38 cases now share one backend binding; 6 remain. See the
 [host-sensor-death checkpoint](artifact-native-linux-vz-host-sensor-death-checkpoint-2026-07-12.md).
+
+The `all_protected_assets_denied` package-isolation case now proves that the UID/GID 65534 fixture
+cannot read or write the exact seven root-only capability, signing, sensor, and module assets. The
+root sensor independently validates every file's root ownership, single-link identity, and exact
+mode before binding both complete denial bitmaps to the fixture's credentials, cgroup, and ordered
+fork/exec/exit evidence. All thirty-three implemented cases ran physically on the resulting
+identity; all 99 request inputs matched locally and every complete case passed independent Rust
+verification. Thirty-three of 38 cases now share one backend binding; 5 remain. See the
+[package-isolation checkpoint](artifact-native-linux-vz-package-isolation-checkpoint-2026-07-12.md).
 
 Primary target: malicious npm and PyPI package detection with static analysis, AI-assisted code
 review, and behaviorally instrumented detonation in disposable virtual machines
@@ -1565,6 +1574,7 @@ Repository evidence:
 - [Linux VZ TERM-resistance checkpoint](artifact-native-linux-vz-term-resistance-checkpoint-2026-07-12.md)
 - [Linux VZ escaped-session checkpoint](artifact-native-linux-vz-escaped-session-checkpoint-2026-07-12.md)
 - [Linux VZ reparented-child checkpoint](artifact-native-linux-vz-reparented-child-checkpoint-2026-07-12.md)
+- [Linux VZ package-isolation checkpoint](artifact-native-linux-vz-package-isolation-checkpoint-2026-07-12.md)
 - [macOS local release readiness](macos-local-release-readiness.md)
 - [macOS local beta pressure checkpoint](macos-local-beta-pressure-checkpoint.md)
 - [latest source-fixture corpus report](src-fixture-corpus-latest.md)

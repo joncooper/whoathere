@@ -312,6 +312,7 @@ public func decodeLinuxVzHostEvidencePayload(
     guard observedTerminal == "observation_complete"
         || observedTerminal == "incomplete_on_injected_gap"
         || observedTerminal == "timeout_with_teardown"
+        || observedTerminal == "access_denied_with_complete_evidence"
         || observedTerminal == "infrastructure_error_with_teardown" else {
         throw LinuxVzHostEvidencePayloadError.invalidSchema
     }

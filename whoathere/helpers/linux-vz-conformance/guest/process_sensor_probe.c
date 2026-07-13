@@ -95,6 +95,8 @@
 #define TERM_RESISTANCE_REPORT_MAGIC 0x57545452U
 #define VM_STOP_REPORT_MAGIC 0x57545653U
 #define GUEST_SENSOR_DEATH_REPORT_MAGIC 0x57544744U
+#define PACKAGE_ISOLATION_REPORT_MAGIC 0x57545049U
+#define PROTECTED_ASSET_COUNT 7U
 #define TERM_RESISTANCE_GRACE_NS 250000000ULL
 #define BACKGROUND_LISTENER_REPORT_MAGIC 0x57544c53U
 #define BACKGROUND_LISTENER_PORT 40552U
@@ -137,6 +139,29 @@ struct vm_stop_report {
 struct guest_sensor_death_report {
     uint32_t magic;
     int32_t process_pid;
+};
+
+struct package_isolation_report {
+    uint32_t magic;
+    int32_t process_pid;
+    uint32_t asset_count;
+    uint32_t read_denied_mask;
+    uint32_t write_denied_mask;
+};
+
+struct protected_asset {
+    const char *path;
+    mode_t mode;
+};
+
+static const struct protected_asset protected_assets[PROTECTED_ASSET_COUNT] = {
+    {"/whoathere/capability-probe", 0100700},
+    {"/whoathere/guest-ed25519.seed", 0100600},
+    {"/whoathere/guest-signer", 0100700},
+    {"/whoathere/process-sensor-probe", 0100700},
+    {"/whoathere/modules/vsock.ko", 0100400},
+    {"/whoathere/modules/vmw_vsock_virtio_transport_common.ko", 0100400},
+    {"/whoathere/modules/vmw_vsock_virtio_transport.ko", 0100400},
 };
 
 struct background_listener_report {
@@ -1341,6 +1366,44 @@ static int read_exact_guest_sensor_death_report(
         report->process_pid > 0 ? 0 : -1;
 }
 
+static int read_exact_package_isolation_report(
+    int descriptor,
+    struct package_isolation_report *report
+) {
+    size_t offset = 0;
+    while (offset < sizeof(*report)) {
+        ssize_t length = read(descriptor, (char *)report + offset, sizeof(*report) - offset);
+        if (length < 0 && errno == EINTR) continue;
+        if (length <= 0) return -1;
+        offset += (size_t)length;
+    }
+    char trailing = 0;
+    ssize_t length;
+    do {
+        length = read(descriptor, &trailing, 1);
+    } while (length < 0 && errno == EINTR);
+    return length == 0 && report->magic == PACKAGE_ISOLATION_REPORT_MAGIC &&
+        report->process_pid > 0 ? 0 : -1;
+}
+
+static int protected_asset_metadata_valid(void) {
+    struct stat metadata;
+    if (lstat("/whoathere/modules", &metadata) != 0 || !S_ISDIR(metadata.st_mode) ||
+        metadata.st_uid != 0 || metadata.st_gid != 0 || metadata.st_nlink < 2 ||
+        (metadata.st_mode & (S_IFMT | 07777)) != (S_IFDIR | 0700)) {
+        return 0;
+    }
+    for (size_t index = 0; index < PROTECTED_ASSET_COUNT; index++) {
+        if (lstat(protected_assets[index].path, &metadata) != 0 ||
+            !S_ISREG(metadata.st_mode) || metadata.st_uid != 0 || metadata.st_gid != 0 ||
+            metadata.st_nlink != 1 ||
+            (metadata.st_mode & (S_IFMT | 07777)) != protected_assets[index].mode) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static int read_exact_background_listener_report(
     int descriptor,
     struct background_listener_report *report
@@ -2462,6 +2525,7 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
     struct term_resistance_report term_resistance_report = {0};
     struct vm_stop_report vm_stop_report = {0};
     struct guest_sensor_death_report guest_sensor_death_report = {0};
+    struct package_isolation_report package_isolation_report = {0};
     struct background_listener_report background_listener_report = {0};
     struct dynamic_report dynamic_report = {0};
     struct network_report network_report = {0};
@@ -2575,6 +2639,7 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
     int vm_stop = strcmp(fixture_case, "vm_stop") == 0;
     int guest_sensor_death = strcmp(fixture_case, "guest_sensor_death") == 0;
     int host_sensor_death = strcmp(fixture_case, "host_sensor_death") == 0;
+    int package_isolation = strcmp(fixture_case, "all_protected_assets_denied") == 0;
     int setsid_escape = strcmp(fixture_case, "setsid_escape") == 0;
     int credential_change = strcmp(fixture_case, "credential_change") == 0;
     int dynamic_library_load = strcmp(fixture_case, "dynamic_library_load") == 0;
@@ -2711,7 +2776,7 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
     }
     if ((reparent || reparented_child || background_listener || setsid_escape ||
          escaped_session || credential_change || dynamic_library_load || network_activity ||
-         term_resistance || vm_stop || guest_sensor_death) &&
+         term_resistance || vm_stop || guest_sensor_death || package_isolation) &&
         pipe2(report_pipe, O_CLOEXEC) != 0) {
         failure_stage = "process_report_pipe";
         failure_errno = errno;
@@ -2755,7 +2820,7 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
             &fds,
             (reparent || reparented_child || background_listener || setsid_escape ||
              escaped_session || credential_change || dynamic_library_load || network_activity ||
-             term_resistance || vm_stop || guest_sensor_death)
+             term_resistance || vm_stop || guest_sensor_death || package_isolation)
                 ? report_pipe[1] : -1
         );
     }
@@ -2829,6 +2894,25 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
             goto cleanup;
         }
         timeout_deadline_ns = now + 1000000000ULL;
+    }
+    if (package_isolation) {
+        if (read_exact_package_isolation_report(
+                report_pipe[0], &package_isolation_report
+            ) != 0) {
+            failure_stage = "package_isolation_report";
+            failure_errno = errno;
+            goto cleanup;
+        }
+        close_if_open(&report_pipe[0]);
+        uint32_t expected_mask = (UINT32_C(1) << PROTECTED_ASSET_COUNT) - 1;
+        if (package_isolation_report.process_pid != child ||
+            package_isolation_report.asset_count != PROTECTED_ASSET_COUNT ||
+            package_isolation_report.read_denied_mask != expected_mask ||
+            package_isolation_report.write_denied_mask != expected_mask ||
+            !protected_asset_metadata_valid()) {
+            failure_stage = "package_isolation_binding";
+            goto cleanup;
+        }
     }
     if (reparented_child) {
         if (read_exact_reparent_report(report_pipe[0], &reparent_report) != 0) {
@@ -4416,6 +4500,41 @@ static int run_process_probe(const char *fixture, const char *fixture_case) {
         result = 0;
         goto cleanup;
     }
+    if (package_isolation) {
+        puts("WHOATHERE_SENSOR protected_assets_read_denied=7");
+        puts("WHOATHERE_SENSOR protected_assets_write_denied=7");
+        printf(
+            "WHOATHERE_GUEST_PROCESS_EVIDENCE "
+            "{\"descendant_teardown_complete\":true,\"dropped_event_count\":\"0\","
+            "\"event_count\":\"3\",\"event_sequence_end\":\"3\","
+            "\"event_sequence_start\":\"1\",\"events\":["
+            "{\"actor_pid\":\"%" PRIu64 "\",\"cgroup_id\":\"%" PRIu64
+            "\",\"kind\":\"fork\",\"sequence\":\"1\",\"subject_pid\":\"%" PRIu64
+            "\",\"timestamp_ns\":\"%" PRIu64 "\"},"
+            "{\"actor_pid\":\"%" PRIu64 "\",\"cgroup_id\":\"%" PRIu64
+            "\",\"kind\":\"exec\",\"sequence\":\"2\",\"subject_pid\":\"%" PRIu64
+            "\",\"timestamp_ns\":\"%" PRIu64 "\"},"
+            "{\"actor_pid\":\"%" PRIu64 "\",\"cgroup_id\":\"%" PRIu64
+            "\",\"kind\":\"exit\",\"sequence\":\"3\",\"subject_pid\":\"%" PRIu64
+            "\",\"timestamp_ns\":\"%" PRIu64 "\"}],"
+            "\"evidence_truncated\":false,\"fixture_case\":\"all_protected_assets_denied\","
+            "\"heartbeat_count\":\"2\",\"package_gid\":\"65534\","
+            "\"package_uid\":\"65534\",\"protected_asset_count\":\"7\","
+            "\"protected_asset_read_denied_count\":\"7\","
+            "\"protected_asset_write_denied_count\":\"7\",\"protected_assets\":["
+            "\"capability_probe\",\"guest_ed25519_seed\",\"guest_signer\","
+            "\"process_sensor_probe\",\"virtio_vsock_module\","
+            "\"virtio_vsock_transport_common_module\","
+            "\"virtio_vsock_transport_module\"],"
+            "\"schema_version\":\"whoathere.linux_vz_process_evidence_payload.v1\","
+            "\"sensor_healthy\":true}\n",
+            (uint64_t)parent, cgroup.count, (uint64_t)child, fork_event.timestamp_ns,
+            (uint64_t)child, cgroup.count, (uint64_t)child, exec_event.timestamp_ns,
+            (uint64_t)child, cgroup.count, (uint64_t)child, exit_event.timestamp_ns
+        );
+        result = 0;
+        goto cleanup;
+    }
     printf(
         "WHOATHERE_GUEST_PROCESS_EVIDENCE "
         "{\"descendant_teardown_complete\":true,\"dropped_event_count\":\"0\","
@@ -4488,6 +4607,7 @@ int main(int argument_count, char **arguments) {
         strcmp(arguments[2], "vm_stop") == 0 ||
         strcmp(arguments[2], "guest_sensor_death") == 0 ||
         strcmp(arguments[2], "host_sensor_death") == 0 ||
+        strcmp(arguments[2], "all_protected_assets_denied") == 0 ||
         strcmp(arguments[2], "double_fork_daemonization") == 0 ||
         strcmp(arguments[2], "reparenting") == 0 ||
         strcmp(arguments[2], "setsid_escape") == 0 ||

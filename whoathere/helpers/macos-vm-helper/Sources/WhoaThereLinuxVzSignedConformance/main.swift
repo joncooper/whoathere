@@ -541,7 +541,7 @@ private struct LinuxVzSignedConformanceHarness {
         let networkFixtureCase: String?
         let hostFrameTriggerCount: UInt64?
         switch runSpec.fixtureCase {
-        case "fork_exec_exit", "host_sensor_death", "reparenting",
+        case "fork_exec_exit", "host_sensor_death", "all_protected_assets_denied", "reparenting",
              "double_fork_daemonization", "setsid_escape",
              "credential_change", "dynamic_library_load":
             let evidence = try decodeLinuxVzProcessEvidencePayloadV1(serialData)
@@ -562,7 +562,9 @@ private struct LinuxVzSignedConformanceHarness {
                 evidenceTruncated: evidence.evidenceTruncated,
                 descendantTeardownComplete: evidence.descendantTeardownComplete,
                 observedTerminal: runSpec.fixtureCase == "host_sensor_death"
-                    ? "infrastructure_error_with_teardown" : "observation_complete"
+                    ? "infrastructure_error_with_teardown"
+                    : runSpec.fixtureCase == "all_protected_assets_denied"
+                        ? "access_denied_with_complete_evidence" : "observation_complete"
             )
             guestEvidencePayloadSHA256 = evidence.payloadSHA256
             guestEventCount = evidence.eventCount
@@ -665,6 +667,7 @@ private struct LinuxVzSignedConformanceHarness {
         let missingBaseMarkers: [String]
         if runSpec.fixtureCase == "fork_exec_exit" ||
             runSpec.fixtureCase == "host_sensor_death" ||
+            runSpec.fixtureCase == "all_protected_assets_denied" ||
             runSpec.fixtureCase == "reparenting" ||
             runSpec.fixtureCase == "double_fork_daemonization" ||
             runSpec.fixtureCase == "setsid_escape" ||
@@ -706,6 +709,13 @@ private struct LinuxVzSignedConformanceHarness {
                 } : []
             let missingDynamicLibraryMarkers = runSpec.fixtureCase == "dynamic_library_load"
                 ? linuxVzInertDynamicLibrarySensorMarkersV1.filter {
+                    !linuxVzInertSerialContainsExactMarker(serialData, marker: $0)
+                } : []
+            let missingPackageIsolationMarkers = runSpec.fixtureCase == "all_protected_assets_denied"
+                ? [
+                    "WHOATHERE_SENSOR protected_assets_read_denied=7",
+                    "WHOATHERE_SENSOR protected_assets_write_denied=7"
+                ].filter {
                     !linuxVzInertSerialContainsExactMarker(serialData, marker: $0)
                 } : []
             let missingIPv4Markers = runSpec.fixtureCase == "ipv4_connect"
@@ -779,6 +789,7 @@ private struct LinuxVzSignedConformanceHarness {
             missingBaseMarkers = missingProcessMarkers + missingDoubleForkMarkers
                 + missingReparentingMarkers + missingSetsidMarkers + missingCredentialMarkers
                 + missingDynamicLibraryMarkers + missingIPv4Markers + missingIPv6Markers
+                + missingPackageIsolationMarkers
                 + missingUDPMarkers + missingLoopbackMarkers + missingPrivateMarkers
                 + missingLinkLocalMarkers + missingMetadataMarkers + missingPublicMarkers
                 + missingDNSPlaintextMarkers

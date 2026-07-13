@@ -79,6 +79,12 @@ public func decodeLinuxVzProcessEvidencePayloadV1(
     case "host_sensor_death":
         expectedKeys = baseKeys.union(["fixture_case"])
         expectedKinds = ["fork", "exec", "exit"]
+    case "all_protected_assets_denied":
+        expectedKeys = baseKeys.union([
+            "fixture_case", "protected_asset_count", "protected_asset_read_denied_count",
+            "protected_asset_write_denied_count", "protected_assets"
+        ])
+        expectedKinds = ["fork", "exec", "exit"]
     case "double_fork_daemonization":
         expectedKeys = baseKeys.union([
             "exec_count", "exit_count", "fixture_case", "fork_count", "reaped_process_count"
@@ -178,6 +184,18 @@ public func decodeLinuxVzProcessEvidencePayloadV1(
               decimalUInt64(value["reaped_process_count"]) == 1 else {
             throw LinuxVzProcessEvidencePayloadError.invalidSchema
         }
+    } else if fixtureCase == "all_protected_assets_denied" {
+        let expectedAssets = [
+            "capability_probe", "guest_ed25519_seed", "guest_signer",
+            "process_sensor_probe", "virtio_vsock_module",
+            "virtio_vsock_transport_common_module", "virtio_vsock_transport_module"
+        ]
+        guard decimalUInt64(value["protected_asset_count"]) == 7,
+              decimalUInt64(value["protected_asset_read_denied_count"]) == 7,
+              decimalUInt64(value["protected_asset_write_denied_count"]) == 7,
+              value["protected_assets"] as? [String] == expectedAssets else {
+            throw LinuxVzProcessEvidencePayloadError.invalidSchema
+        }
     }
 
     let events = try rawEvents.map(decodeLinuxVzProcessEventV1)
@@ -189,7 +207,8 @@ public func decodeLinuxVzProcessEvidencePayloadV1(
           }) else {
         throw LinuxVzProcessEvidencePayloadError.invalidEvent
     }
-    if fixtureCase == "fork_exec_exit" || fixtureCase == "host_sensor_death" {
+    if fixtureCase == "fork_exec_exit" || fixtureCase == "host_sensor_death" ||
+        fixtureCase == "all_protected_assets_denied" {
         guard events[0].actorPID != events[0].subjectPID,
               events[1].actorPID == events[0].subjectPID,
               events[1].subjectPID == events[0].subjectPID,

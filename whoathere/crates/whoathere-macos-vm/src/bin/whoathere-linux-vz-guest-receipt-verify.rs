@@ -67,12 +67,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     {
         return Err("guest process evidence binding mismatch".into());
     }
-    let claims = if run_spec.fixture_case() == LinuxVzTelemetryConformanceCaseV1::HostSensorDeath {
-        evidence.guest_observation_claims_for_terminal_v1(
-            LinuxVzTelemetryConformanceObservedTerminalV1::InfrastructureErrorWithTeardown,
-        )?
-    } else {
-        evidence.guest_observation_claims_v1()?
+    let claims = match run_spec.fixture_case() {
+        LinuxVzTelemetryConformanceCaseV1::HostSensorDeath => evidence
+            .guest_observation_claims_for_terminal_v1(
+                LinuxVzTelemetryConformanceObservedTerminalV1::InfrastructureErrorWithTeardown,
+            )?,
+        LinuxVzTelemetryConformanceCaseV1::AllProtectedAssetsDenied => evidence
+            .guest_observation_claims_for_terminal_v1(
+                LinuxVzTelemetryConformanceObservedTerminalV1::AccessDeniedWithCompleteEvidence,
+            )?,
+        _ => evidence.guest_observation_claims_v1()?,
     };
     let public_key: [u8; 32] = public_key
         .try_into()

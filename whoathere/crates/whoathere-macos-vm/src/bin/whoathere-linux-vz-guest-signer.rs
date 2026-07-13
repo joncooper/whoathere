@@ -144,6 +144,7 @@ mod linux {
                 | LinuxVzTelemetryConformanceCaseV1::VmStop
                 | LinuxVzTelemetryConformanceCaseV1::GuestSensorDeath
                 | LinuxVzTelemetryConformanceCaseV1::HostSensorDeath
+                | LinuxVzTelemetryConformanceCaseV1::AllProtectedAssetsDenied
         ) || run_spec.expected_terminal()
             != expected_terminal_for_case_v1(run_spec.fixture_case())
             || run_spec.package_execution_authority_permitted()
@@ -197,6 +198,9 @@ mod linux {
             LinuxVzTelemetryConformanceCaseV1::VmStop => "vm_stop",
             LinuxVzTelemetryConformanceCaseV1::GuestSensorDeath => "guest_sensor_death",
             LinuxVzTelemetryConformanceCaseV1::HostSensorDeath => "host_sensor_death",
+            LinuxVzTelemetryConformanceCaseV1::AllProtectedAssetsDenied => {
+                "all_protected_assets_denied"
+            }
             _ => return Err("guest_signer_run_spec_not_supported_inert_case".into()),
         };
         let mut child = Command::new(SENSOR_PATH)
@@ -243,6 +247,7 @@ mod linux {
         let (package_uid, package_gid, claims) = match run_spec.fixture_case() {
             LinuxVzTelemetryConformanceCaseV1::ForkExecExit
             | LinuxVzTelemetryConformanceCaseV1::HostSensorDeath
+            | LinuxVzTelemetryConformanceCaseV1::AllProtectedAssetsDenied
             | LinuxVzTelemetryConformanceCaseV1::Reparenting
             | LinuxVzTelemetryConformanceCaseV1::DoubleForkDaemonization
             | LinuxVzTelemetryConformanceCaseV1::SetsidEscape
@@ -255,13 +260,16 @@ mod linux {
                 (
                     evidence.package_uid(),
                     evidence.package_gid(),
-                    if run_spec.fixture_case() == LinuxVzTelemetryConformanceCaseV1::HostSensorDeath
-                    {
-                        evidence.guest_observation_claims_for_terminal_v1(
-                            whoathere_macos_vm::LinuxVzTelemetryConformanceObservedTerminalV1::InfrastructureErrorWithTeardown,
-                        )?
-                    } else {
-                        evidence.guest_observation_claims_v1()?
+                    match run_spec.fixture_case() {
+                        LinuxVzTelemetryConformanceCaseV1::HostSensorDeath => evidence
+                            .guest_observation_claims_for_terminal_v1(
+                                whoathere_macos_vm::LinuxVzTelemetryConformanceObservedTerminalV1::InfrastructureErrorWithTeardown,
+                            )?,
+                        LinuxVzTelemetryConformanceCaseV1::AllProtectedAssetsDenied => evidence
+                            .guest_observation_claims_for_terminal_v1(
+                                whoathere_macos_vm::LinuxVzTelemetryConformanceObservedTerminalV1::AccessDeniedWithCompleteEvidence,
+                            )?,
+                        _ => evidence.guest_observation_claims_v1()?,
                     },
                 )
             }

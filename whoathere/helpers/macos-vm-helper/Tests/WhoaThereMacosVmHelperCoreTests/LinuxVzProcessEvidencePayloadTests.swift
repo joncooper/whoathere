@@ -23,6 +23,33 @@ private let validDynamicLibraryPayload =
 private let validHostSensorDeathProcessPayload =
     #"{"descendant_teardown_complete":true,"dropped_event_count":"0","event_count":"3","event_sequence_end":"3","event_sequence_start":"1","events":[{"actor_pid":"41","cgroup_id":"9001","kind":"fork","sequence":"1","subject_pid":"42","timestamp_ns":"100"},{"actor_pid":"42","cgroup_id":"9001","kind":"exec","sequence":"2","subject_pid":"42","timestamp_ns":"200"},{"actor_pid":"42","cgroup_id":"9001","kind":"exit","sequence":"3","subject_pid":"42","timestamp_ns":"300"}],"evidence_truncated":false,"fixture_case":"host_sensor_death","heartbeat_count":"2","package_gid":"65534","package_uid":"65534","schema_version":"whoathere.linux_vz_process_evidence_payload.v1","sensor_healthy":true}"#
 
+private let validAllProtectedAssetsDeniedPayload =
+    #"{"descendant_teardown_complete":true,"dropped_event_count":"0","event_count":"3","event_sequence_end":"3","event_sequence_start":"1","events":[{"actor_pid":"41","cgroup_id":"9001","kind":"fork","sequence":"1","subject_pid":"42","timestamp_ns":"100"},{"actor_pid":"42","cgroup_id":"9001","kind":"exec","sequence":"2","subject_pid":"42","timestamp_ns":"200"},{"actor_pid":"42","cgroup_id":"9001","kind":"exit","sequence":"3","subject_pid":"42","timestamp_ns":"300"}],"evidence_truncated":false,"fixture_case":"all_protected_assets_denied","heartbeat_count":"2","package_gid":"65534","package_uid":"65534","protected_asset_count":"7","protected_asset_read_denied_count":"7","protected_asset_write_denied_count":"7","protected_assets":["capability_probe","guest_ed25519_seed","guest_signer","process_sensor_probe","virtio_vsock_module","virtio_vsock_transport_common_module","virtio_vsock_transport_module"],"schema_version":"whoathere.linux_vz_process_evidence_payload.v1","sensor_healthy":true}"#
+
+@Test func processEvidencePayloadBindsEveryProtectedAssetDenial() throws {
+    let serial = Data(
+        (linuxVzProcessEvidenceSerialPrefixV1 + validAllProtectedAssetsDeniedPayload + "\n").utf8
+    )
+    let payload = try decodeLinuxVzProcessEvidencePayloadV1(serial)
+    #expect(payload.fixtureCase == "all_protected_assets_denied")
+    #expect(payload.eventCount == 3)
+    #expect(payload.sensorHealthy)
+    #expect(payload.droppedEventCount == 0)
+
+    var object = try #require(
+        JSONSerialization.jsonObject(
+            with: Data(validAllProtectedAssetsDeniedPayload.utf8)
+        ) as? [String: Any]
+    )
+    object["protected_asset_write_denied_count"] = "6"
+    let changed = try canonicalJSONData(object)
+    #expect(throws: LinuxVzProcessEvidencePayloadError.invalidSchema) {
+        try decodeLinuxVzProcessEvidencePayloadV1(
+            Data(linuxVzProcessEvidenceSerialPrefixV1.utf8) + changed + Data("\n".utf8)
+        )
+    }
+}
+
 @Test func processEvidencePayloadBindsHostSensorDeathAsHealthyGuestEvidence() throws {
     let serial = Data(
         (linuxVzProcessEvidenceSerialPrefixV1 + validHostSensorDeathProcessPayload + "\n").utf8

@@ -114,6 +114,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         LinuxVzTelemetryConformanceCaseV1::VmStop => "vm_stop",
         LinuxVzTelemetryConformanceCaseV1::GuestSensorDeath => "guest_sensor_death",
         LinuxVzTelemetryConformanceCaseV1::HostSensorDeath => "host_sensor_death",
+        LinuxVzTelemetryConformanceCaseV1::AllProtectedAssetsDenied => {
+            "all_protected_assets_denied"
+        }
         _ => return Err("complete-case verifier does not implement this inert case".into()),
     };
     let backend = decode_unqualified_macos_linux_vz_telemetry_backend_identity_v1(
@@ -138,6 +141,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Some(match run_spec.fixture_case() {
             LinuxVzTelemetryConformanceCaseV1::ForkExecExit
             | LinuxVzTelemetryConformanceCaseV1::HostSensorDeath
+            | LinuxVzTelemetryConformanceCaseV1::AllProtectedAssetsDenied
             | LinuxVzTelemetryConformanceCaseV1::Reparenting
             | LinuxVzTelemetryConformanceCaseV1::DoubleForkDaemonization
             | LinuxVzTelemetryConformanceCaseV1::SetsidEscape
@@ -152,13 +156,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 (
                     evidence.payload_sha256().clone(),
-                    if run_spec.fixture_case() == LinuxVzTelemetryConformanceCaseV1::HostSensorDeath
-                    {
-                        evidence.guest_observation_claims_for_terminal_v1(
-                            LinuxVzTelemetryConformanceObservedTerminalV1::InfrastructureErrorWithTeardown,
-                        )?
-                    } else {
-                        evidence.guest_observation_claims_v1()?
+                    match run_spec.fixture_case() {
+                        LinuxVzTelemetryConformanceCaseV1::HostSensorDeath => evidence
+                            .guest_observation_claims_for_terminal_v1(
+                                LinuxVzTelemetryConformanceObservedTerminalV1::InfrastructureErrorWithTeardown,
+                            )?,
+                        LinuxVzTelemetryConformanceCaseV1::AllProtectedAssetsDenied => evidence
+                            .guest_observation_claims_for_terminal_v1(
+                                LinuxVzTelemetryConformanceObservedTerminalV1::AccessDeniedWithCompleteEvidence,
+                            )?,
+                        _ => evidence.guest_observation_claims_v1()?,
                     },
                     None,
                 )
@@ -438,6 +445,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             || run_spec.fixture_case() == LinuxVzTelemetryConformanceCaseV1::HostSensorDeath
         {
             LinuxVzTelemetryConformanceObservedTerminalV1::InfrastructureErrorWithTeardown
+        } else if run_spec.fixture_case()
+            == LinuxVzTelemetryConformanceCaseV1::AllProtectedAssetsDenied
+        {
+            LinuxVzTelemetryConformanceObservedTerminalV1::AccessDeniedWithCompleteEvidence
         } else {
             LinuxVzTelemetryConformanceObservedTerminalV1::ObservationComplete
         };

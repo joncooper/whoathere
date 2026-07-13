@@ -39,6 +39,8 @@ static const char *dynamic_library_path = "/whoathere/dynamic-fixture-library.so
 #define TERM_RESISTANCE_REPORT_MAGIC 0x57545452U
 #define VM_STOP_REPORT_MAGIC 0x57545653U
 #define GUEST_SENSOR_DEATH_REPORT_MAGIC 0x57544744U
+#define PACKAGE_ISOLATION_REPORT_MAGIC 0x57545049U
+#define PROTECTED_ASSET_COUNT 7U
 #define BACKGROUND_LISTENER_REPORT_MAGIC 0x57544c53U
 #define BACKGROUND_LISTENER_PORT 40552U
 static const unsigned char dns_plaintext_query[] = {
@@ -133,6 +135,14 @@ struct guest_sensor_death_report {
     int32_t process_pid;
 };
 
+struct package_isolation_report {
+    uint32_t magic;
+    int32_t process_pid;
+    uint32_t asset_count;
+    uint32_t read_denied_mask;
+    uint32_t write_denied_mask;
+};
+
 struct background_listener_report {
     uint32_t magic;
     int32_t process_pid;
@@ -156,6 +166,50 @@ static int protected_sensor_denied(void) {
         return 78;
     }
     return errno == EACCES || errno == EPERM ? 0 : 79;
+}
+
+static int protected_asset_access_denied(const char *path, int flags) {
+    errno = 0;
+    int descriptor = open(path, flags | O_CLOEXEC | O_NOFOLLOW);
+    if (descriptor >= 0) {
+        close(descriptor);
+        return 0;
+    }
+    return errno == EACCES || errno == EPERM;
+}
+
+static int all_protected_assets_denied(void) {
+    static const char *const paths[PROTECTED_ASSET_COUNT] = {
+        "/whoathere/capability-probe",
+        "/whoathere/guest-ed25519.seed",
+        "/whoathere/guest-signer",
+        "/whoathere/process-sensor-probe",
+        "/whoathere/modules/vsock.ko",
+        "/whoathere/modules/vmw_vsock_virtio_transport_common.ko",
+        "/whoathere/modules/vmw_vsock_virtio_transport.ko",
+    };
+    uint32_t read_denied_mask = 0;
+    uint32_t write_denied_mask = 0;
+    for (uint32_t index = 0; index < PROTECTED_ASSET_COUNT; index++) {
+        if (protected_asset_access_denied(paths[index], O_RDONLY)) {
+            read_denied_mask |= UINT32_C(1) << index;
+        }
+        if (protected_asset_access_denied(paths[index], O_WRONLY)) {
+            write_denied_mask |= UINT32_C(1) << index;
+        }
+    }
+    const struct package_isolation_report report = {
+        .magic = PACKAGE_ISOLATION_REPORT_MAGIC,
+        .process_pid = getpid(),
+        .asset_count = PROTECTED_ASSET_COUNT,
+        .read_denied_mask = read_denied_mask,
+        .write_denied_mask = write_denied_mask,
+    };
+    ssize_t written = write(REPARENT_REPORT_FD, &report, sizeof(report));
+    int saved_errno = errno;
+    if (close(REPARENT_REPORT_FD) != 0 && written == (ssize_t)sizeof(report)) return 179;
+    errno = saved_errno;
+    return written == (ssize_t)sizeof(report) ? 0 : 180;
 }
 
 static int write_exact(const char *path, const char *value) {
@@ -886,6 +940,9 @@ int main(int argument_count, char **arguments) {
     if (denied != 0) return denied;
     if (strcmp(arguments[1], "fork_exec_exit") == 0) return 0;
     if (strcmp(arguments[1], "host_sensor_death") == 0) return 0;
+    if (strcmp(arguments[1], "all_protected_assets_denied") == 0) {
+        return all_protected_assets_denied();
+    }
     if (strcmp(arguments[1], "normal_exit") == 0) return 0;
     if (strcmp(arguments[1], "timeout") == 0) {
         for (;;) (void)pause();
