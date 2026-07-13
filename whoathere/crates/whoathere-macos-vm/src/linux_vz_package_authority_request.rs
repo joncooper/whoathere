@@ -6,7 +6,7 @@ use std::fs::OpenOptions;
 use std::io::Read;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
-use whoathere_artifact::Sha256Digest;
+use whoathere_artifact::{ArtifactFormat, Sha256Digest};
 use whoathere_detonation::{
     decode_and_validate_artifact_scenario_plan_v1,
     decode_and_validate_artifact_scenario_template_v1, decode_and_validate_sdist_scenario_plan_v1,
@@ -444,6 +444,7 @@ pub struct MacosLinuxVzTypedPackageScenarioBindingV1 {
     artifact_sha256: Sha256Digest,
     envelope_sha256: Sha256Digest,
     manifest_sha256: Sha256Digest,
+    artifact_format: ArtifactFormat,
     artifact_byte_length: u64,
     scenario_plan_sha256: Sha256Digest,
     scenario_plan_id: String,
@@ -467,6 +468,10 @@ impl MacosLinuxVzTypedPackageScenarioBindingV1 {
 
     pub fn manifest_sha256(&self) -> &Sha256Digest {
         &self.manifest_sha256
+    }
+
+    pub const fn artifact_format(&self) -> ArtifactFormat {
+        self.artifact_format
     }
 
     pub const fn artifact_byte_length(&self) -> u64 {
@@ -552,6 +557,7 @@ pub fn build_macos_linux_vz_package_authority_request_v1(
     let exact_artifact_sha256 = Sha256Digest::from_bytes(artifact_bytes);
     if binding.artifact_sha256 != exact_artifact_sha256
         || binding.artifact_byte_length != artifact_bytes.len() as u64
+        || !artifact_magic_matches_format_v1(binding.artifact_format, artifact_bytes)
     {
         return Err(MacosLinuxVzPackageAuthorityRequestErrorV1::ArtifactInvalid);
     }
@@ -707,6 +713,7 @@ pub fn validate_macos_linux_vz_typed_package_scenario_binding_v1(
                 template.envelope_sha256().clone(),
                 template.manifest_sha256().clone(),
                 template.artifact_byte_length(),
+                ArtifactFormat::NpmTarGzip,
                 plan.plan_sha256().clone(),
                 plan.plan_id().to_string(),
                 template.template_sha256().clone(),
@@ -745,6 +752,7 @@ pub fn validate_macos_linux_vz_typed_package_scenario_binding_v1(
                 template.envelope_sha256().clone(),
                 template.manifest_sha256().clone(),
                 template.artifact_byte_length(),
+                ArtifactFormat::WheelZip,
                 plan.plan_sha256().clone(),
                 plan.plan_id().to_string(),
                 template.template_sha256().clone(),
@@ -781,6 +789,7 @@ pub fn validate_macos_linux_vz_typed_package_scenario_binding_v1(
                 template.envelope_sha256().clone(),
                 template.manifest_sha256().clone(),
                 template.artifact_byte_length(),
+                template.artifact_format(),
                 plan.plan_sha256().clone(),
                 plan.plan_id().to_string(),
                 template.template_sha256().clone(),
@@ -871,6 +880,7 @@ fn scenario_binding_v1<T: Serialize>(
     envelope_sha256: Sha256Digest,
     manifest_sha256: Sha256Digest,
     artifact_byte_length: u64,
+    artifact_format: ArtifactFormat,
     scenario_plan_sha256: Sha256Digest,
     scenario_plan_id: String,
     scenario_template_sha256: Sha256Digest,
@@ -888,6 +898,7 @@ fn scenario_binding_v1<T: Serialize>(
         artifact_sha256,
         envelope_sha256,
         manifest_sha256,
+        artifact_format,
         artifact_byte_length,
         scenario_plan_sha256,
         scenario_plan_id,
@@ -899,4 +910,51 @@ fn scenario_binding_v1<T: Serialize>(
         dependency_closure_sha256,
         runtime_profile_sha256,
     })
+}
+
+fn artifact_magic_matches_format_v1(format: ArtifactFormat, bytes: &[u8]) -> bool {
+    match format {
+        ArtifactFormat::NpmTarGzip | ArtifactFormat::SdistTarGzip => {
+            bytes.starts_with(&[0x1f, 0x8b])
+        }
+        ArtifactFormat::WheelZip | ArtifactFormat::SdistZip => {
+            bytes.starts_with(b"PK\x03\x04")
+                || bytes.starts_with(b"PK\x05\x06")
+                || bytes.starts_with(b"PK\x07\x08")
+        }
+        ArtifactFormat::Unknown => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exact_artifact_kind_rejects_cross_archive_magic() {
+        assert!(artifact_magic_matches_format_v1(
+            ArtifactFormat::NpmTarGzip,
+            b"\x1f\x8bfixture"
+        ));
+        assert!(artifact_magic_matches_format_v1(
+            ArtifactFormat::WheelZip,
+            b"PK\x03\x04fixture"
+        ));
+        assert!(artifact_magic_matches_format_v1(
+            ArtifactFormat::SdistZip,
+            b"PK\x05\x06"
+        ));
+        assert!(!artifact_magic_matches_format_v1(
+            ArtifactFormat::SdistTarGzip,
+            b"PK\x03\x04fixture"
+        ));
+        assert!(!artifact_magic_matches_format_v1(
+            ArtifactFormat::SdistZip,
+            b"\x1f\x8bfixture"
+        ));
+        assert!(!artifact_magic_matches_format_v1(
+            ArtifactFormat::Unknown,
+            b"PK\x03\x04fixture"
+        ));
+    }
 }

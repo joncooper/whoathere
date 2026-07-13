@@ -144,6 +144,11 @@ nothing: the separately measured execution runner, protected launch channel, evi
 and physical qualification remain the next gate. See the
 [execution-request protocol checkpoint](artifact-native-linux-vz-package-execution-request-protocol-checkpoint-2026-07-13.md).
 
+The first runner-oriented ambiguity found after that checkpoint is now closed: every sdist
+template and derived build recipe binds whether the exact bytes are `sdist_tar_gzip` or
+`sdist_zip`, and package-authority construction independently rejects mismatched gzip/ZIP magic.
+The future runner therefore does not infer archive form from an untrusted or guessed path.
+
 The first protected-sensor bootstrap now also observes a cgroup-filtered inert fork/exec/exit chain
 whose child runs as UID/GID 65534 and cannot read or write the root-only sensor. This remains
 unsigned bootstrap evidence rather than a conformance receipt. See the

@@ -303,6 +303,7 @@ fn exact_sdist_compiles_build_inspect_install_and_import_scenarios() {
             decode_and_validate_sdist_scenario_template_v1(&wire).expect("validated template");
         assert_eq!(decoded.template_sha256(), template.template_sha256());
         assert_eq!(decoded.artifact_sha256(), &fixture.envelope.original_sha256);
+        assert_eq!(decoded.artifact_format(), ArtifactFormat::SdistTarGzip);
         assert_eq!(
             decoded.artifact_byte_length(),
             fixture.envelope.original_byte_length
@@ -310,6 +311,7 @@ fn exact_sdist_compiles_build_inspect_install_and_import_scenarios() {
         assert_eq!(decoded.build_closure_sha256(), &closure_sha256);
         let text = std::str::from_utf8(&wire).expect("wire utf8");
         assert!(text.contains("\"build_environment\":\"fresh_isolated_virtual_environment\""));
+        assert!(text.contains("\"artifact_format\":\"sdist_tar_gzip\""));
         assert!(text.contains("\"resolver_policy\":\"no_index_fixed_closure_only\""));
         assert!(
             text.contains("\"dynamic_build_requirements_policy\":\"deny_outside_fixed_closure\"")

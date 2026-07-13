@@ -6,7 +6,7 @@ use crate::{
 use serde::Serialize;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
-use whoathere_artifact::Sha256Digest;
+use whoathere_artifact::{ArtifactFormat, Sha256Digest};
 use whoathere_detonation::{
     decode_and_validate_artifact_scenario_template_v1, decode_and_validate_sdist_scenario_plan_v1,
     decode_and_validate_sdist_scenario_template_v1, decode_and_validate_wheel_scenario_plan_v1,
@@ -39,6 +39,7 @@ pub enum MacosLinuxVzPackageExecutionArtifactInputV1 {
 #[serde(deny_unknown_fields)]
 pub struct MacosLinuxVzSdistBuildRecipeV1 {
     build_template_sha256: Sha256Digest,
+    artifact_format: ArtifactFormat,
     build_mode: SdistBuildModeV1,
     build_backend: Option<String>,
     backend_paths: Vec<String>,
@@ -48,6 +49,10 @@ pub struct MacosLinuxVzSdistBuildRecipeV1 {
 impl MacosLinuxVzSdistBuildRecipeV1 {
     pub fn build_template_sha256(&self) -> &Sha256Digest {
         &self.build_template_sha256
+    }
+
+    pub const fn artifact_format(&self) -> ArtifactFormat {
+        self.artifact_format
     }
 
     pub const fn build_mode(&self) -> SdistBuildModeV1 {
@@ -498,7 +503,11 @@ fn operation_and_limits_v1(
                 .map_err(|_| MacosLinuxVzPackageExecutionRequestErrorV1::ScenarioInvalid)?;
             let template = decode_and_validate_sdist_scenario_template_v1(scenario_template_bytes)
                 .map_err(|_| MacosLinuxVzPackageExecutionRequestErrorV1::ScenarioInvalid)?;
-            let operation = sdist_operation_v1(plan.templates(), template.scenario_kind())?;
+            let operation = sdist_operation_v1(
+                plan.templates(),
+                template.artifact_format(),
+                template.scenario_kind(),
+            )?;
             Ok((operation, template.limits().clone()))
         }
     }
@@ -551,6 +560,7 @@ fn wheel_operation_v1(
 
 fn sdist_operation_v1(
     templates: &[(String, SdistScenarioKindV1, Sha256Digest)],
+    artifact_format: ArtifactFormat,
     selected: &SdistScenarioKindV1,
 ) -> Result<MacosLinuxVzPackageExecutionOperationV1, MacosLinuxVzPackageExecutionRequestErrorV1> {
     let build = templates
@@ -563,6 +573,7 @@ fn sdist_operation_v1(
                 build_requires_sha256,
             } => Some(MacosLinuxVzSdistBuildRecipeV1 {
                 build_template_sha256: digest.clone(),
+                artifact_format,
                 build_mode: *build_mode,
                 build_backend: build_backend.clone(),
                 backend_paths: backend_paths.clone(),
@@ -801,6 +812,7 @@ mod tests {
         ];
         let operation = sdist_operation_v1(
             &templates,
+            ArtifactFormat::SdistTarGzip,
             &SdistScenarioKindV1::ImportRoot {
                 module: "safe_fixture".to_string(),
             },
@@ -815,6 +827,7 @@ mod tests {
         };
         assert_eq!(module, "safe_fixture");
         assert_eq!(build.build_template_sha256(), &build_digest);
+        assert_eq!(build.artifact_format(), ArtifactFormat::SdistTarGzip);
         assert_eq!(build.build_requires_sha256(), &build_requires);
         assert_eq!(build.build_backend(), Some("fixture_backend"));
         assert_eq!(build.backend_paths(), &["backend".to_string()]);

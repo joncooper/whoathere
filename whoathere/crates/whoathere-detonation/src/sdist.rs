@@ -642,6 +642,7 @@ pub struct SdistScenarioTemplateV1 {
     identity: ArtifactScenarioExecutionIdentityV1,
     subject: ArtifactEvidenceSubjectV2,
     package: PackageIdentity,
+    artifact_format: ArtifactFormat,
     canonical_package_root: String,
     artifact_byte_length: u64,
     policy_sha256: Sha256Digest,
@@ -673,6 +674,9 @@ impl SdistScenarioTemplateV1 {
     }
     pub fn package(&self) -> &PackageIdentity {
         &self.package
+    }
+    pub const fn artifact_format(&self) -> ArtifactFormat {
+        self.artifact_format
     }
     pub fn canonical_package_root(&self) -> &str {
         &self.canonical_package_root
@@ -855,6 +859,7 @@ pub fn compile_sdist_scenarios_v1(
                 .clone(),
             subject: request.subject.clone(),
             package: identity.clone(),
+            artifact_format: request.manifest.magic_detected_format,
             canonical_package_root: request.manifest.canonical_package_root.clone(),
             artifact_byte_length: request.envelope.original_byte_length,
             policy_sha256: request.policy.policy_sha256.clone(),
@@ -995,6 +1000,7 @@ struct SdistScenarioTemplateWireV1 {
     identity: ScenarioIdentityWireV1,
     subject: SubjectWireV1,
     package: PackageIdentity,
+    artifact_format: ArtifactFormat,
     canonical_package_root: String,
     artifact_byte_length: u64,
     policy_sha256: Sha256Digest,
@@ -1041,6 +1047,7 @@ impl SdistScenarioTemplateWireV1 {
                 cas_object_key: subject.cas_object_key().to_string(),
             },
             package: template.package.clone(),
+            artifact_format: template.artifact_format,
             canonical_package_root: template.canonical_package_root.clone(),
             artifact_byte_length: template.artifact_byte_length,
             policy_sha256: template.policy_sha256.clone(),
@@ -1093,6 +1100,7 @@ pub struct ValidatedSdistScenarioTemplateWireV1 {
     artifact_sha256: Sha256Digest,
     envelope_sha256: Sha256Digest,
     manifest_sha256: Sha256Digest,
+    artifact_format: ArtifactFormat,
     artifact_byte_length: u64,
     policy_sha256: Sha256Digest,
     scenario_id: String,
@@ -1120,6 +1128,9 @@ impl ValidatedSdistScenarioTemplateWireV1 {
     }
     pub fn manifest_sha256(&self) -> &Sha256Digest {
         &self.manifest_sha256
+    }
+    pub const fn artifact_format(&self) -> ArtifactFormat {
+        self.artifact_format
     }
     pub fn artifact_byte_length(&self) -> u64 {
         self.artifact_byte_length
@@ -1188,6 +1199,7 @@ pub fn decode_and_validate_sdist_scenario_template_v1(
         artifact_sha256: wire.subject.artifact_sha256,
         envelope_sha256: wire.subject.envelope_sha256,
         manifest_sha256: wire.subject.manifest_sha256,
+        artifact_format: wire.artifact_format,
         artifact_byte_length: wire.artifact_byte_length,
         policy_sha256: wire.policy_sha256,
         scenario_id: wire.identity.scenario_id,
@@ -1227,6 +1239,10 @@ fn validate_sdist_template_wire_v1(
         || wire.artifact_byte_length == 0
         || wire.artifact_byte_length > MAX_ARTIFACT_SCENARIO_BYTES_V1
         || wire.package.ecosystem != Ecosystem::Pypi
+        || !matches!(
+            wire.artifact_format,
+            ArtifactFormat::SdistTarGzip | ArtifactFormat::SdistZip
+        )
         || !valid_package_text(&wire.package.display_name)
         || !valid_package_text(&wire.package.normalized_name)
         || !valid_package_text(&wire.package.version)

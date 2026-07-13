@@ -44,6 +44,7 @@ Every derived request binds:
 - the complete package-authority request and consumed signed-grant digests;
 - the future execution-runtime qualification-record digest;
 - exact artifact kind, SHA-256, and byte length;
+- for sdists, the exact magic-detected `sdist_tar_gzip` or `sdist_zip` transport form;
 - scenario plan, selected template, scenario id, scenario-kind, scenario-policy, dependency- or
   build-closure, and runtime-profile digests;
 - request, grant, attempt, and unique-clone bindings;
@@ -78,6 +79,10 @@ The current canonical scenario types compile into these runner operations:
 The composite forms are intentional. A fresh clone cannot depend on mutable output from a previous
 scenario. Wheel probes therefore include their exact install prerequisite, and sdist probes include
 their exact build prerequisite.
+
+The sdist template also binds the magic-detected archive form. The package-authority boundary
+independently rejects gzip/ZIP magic that does not match the template, and the closed build recipe
+carries that form forward so the runner never guesses a filename or unpacking mode.
 
 The scenario compiler does not yet emit npm main/export or npm bin probes. They remain required by
 the execution plan and must gain canonical templates before they can enter this closed operation
