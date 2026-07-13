@@ -47,8 +47,16 @@ case "$(run_as_package 'exec /usr/bin/env -i HOME=/workspace TMPDIR=/tmp PATH=/u
 esac
 test "$(run_as_package 'exec /usr/bin/env -i HOME=/workspace TMPDIR=/tmp PATH=/usr/bin:/bin /whoathere/package-runtime-probe --runtime-probe')" = \
     '{"execution_authority":false,"package_execution":false,"schema_version":"whoathere.linux_vz_package_runtime_probe.v1","status":"candidate_runtime_nonexecuting","sync_back":false}'
+test "$(run_as_package 'exec /usr/bin/env -i HOME=/workspace TMPDIR=/tmp PATH=/usr/bin:/bin /whoathere/package-runtime-probe fork_exec_exit')" = \
+    '{"execution_authority":false,"package_execution":false,"schema_version":"whoathere.linux_vz_package_runtime_probe.v1","status":"candidate_runtime_nonexecuting","sync_back":false}'
 if run_as_package 'exec /usr/bin/env -i HOME=/workspace TMPDIR=/tmp PATH=/usr/bin:/bin /whoathere/package-runtime-probe' >/dev/null 2>&1; then
     echo "verified runtime probe accepted an unauthorized invocation" >&2
+    exit 65
+else
+    test "$?" = 64
+fi
+if run_as_package 'exec /usr/bin/env -i HOME=/workspace TMPDIR=/tmp PATH=/usr/bin:/bin /whoathere/package-runtime-probe package_install' >/dev/null 2>&1; then
+    echo "verified runtime probe accepted an open-ended invocation" >&2
     exit 65
 else
     test "$?" = 64

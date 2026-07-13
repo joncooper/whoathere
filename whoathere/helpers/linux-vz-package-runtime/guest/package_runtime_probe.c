@@ -29,7 +29,9 @@ int main(int argc, char **argv) {
     static const char usage[] =
         "whoathere package runtime probe: execution authority unavailable\n";
 
-    if (argc == 2 && strcmp(argv[1], "--runtime-probe") == 0) {
+    if (argc == 2 &&
+        (strcmp(argv[1], "--runtime-probe") == 0 ||
+         strcmp(argv[1], "fork_exec_exit") == 0)) {
         if (write_all(STDOUT_FILENO, report, sizeof(report) - 1) != 0) {
             return 74;
         }

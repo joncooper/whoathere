@@ -87,7 +87,7 @@ require_value python_version 3.14.5
 require_value pip_version 26.1.2
 require_value package_uid 65534
 require_value package_gid 65534
-require_value package_runner_mode nonexecuting_runtime_probe_only
+require_value package_runner_mode nonexecuting_runtime_probe_with_closed_sensor_alias
 require_value external_network structurally_absent
 require_value zig_version 0.15.2
 require_value package_execution false

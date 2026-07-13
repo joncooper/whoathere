@@ -53,6 +53,15 @@ sensor-required closed `fork_exec_exit` alias, so its bytes must be rebuilt and 
 the inert physical qualification can start. See the
 [runtime-qualification request checkpoint](artifact-native-linux-vz-runtime-qualification-request-checkpoint-2026-07-13.md).
 
+The runner mismatch is now resolved without adding package execution. The rebuilt static probe
+accepts only `--runtime-probe` and the sensor-required `fork_exec_exit` alias; both return the exact
+same fixed false-authority report and every other argument still exits 64. Two clean pinned offline
+builds produced byte-identical rootfs, archive, runner, manifest, and lock outputs, both passed the
+independent filesystem/runtime verifier, and two new APFS clones had distinct bindings before
+destruction. The new rootfs and runner identities supersede the earlier candidate, but the runtime
+is still unqualified because it has not booted under VZ. See the
+[closed sensor-alias rebuild checkpoint](artifact-native-linux-vz-runtime-sensor-alias-rebuild-checkpoint-2026-07-13.md).
+
 The first protected-sensor bootstrap now also observes a cgroup-filtered inert fork/exec/exit chain
 whose child runs as UID/GID 65534 and cannot read or write the root-only sensor. This remains
 unsigned bootstrap evidence rather than a conformance receipt. See the

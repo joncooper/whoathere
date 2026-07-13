@@ -41,6 +41,7 @@ npm_version=$(run_as_package 'exec /usr/bin/env -i HOME=/workspace TMPDIR=/tmp P
 python_version=$(run_as_package 'exec /usr/bin/env -i HOME=/workspace TMPDIR=/tmp PATH=/usr/bin:/bin /usr/bin/python3 --version')
 pip_version=$(run_as_package 'exec /usr/bin/env -i HOME=/workspace TMPDIR=/tmp PATH=/usr/bin:/bin /usr/bin/python3 -m pip --version')
 probe_report=$(run_as_package 'exec /usr/bin/env -i HOME=/workspace TMPDIR=/tmp PATH=/usr/bin:/bin /whoathere/package-runtime-probe --runtime-probe')
+sensor_probe_report=$(run_as_package 'exec /usr/bin/env -i HOME=/workspace TMPDIR=/tmp PATH=/usr/bin:/bin /whoathere/package-runtime-probe fork_exec_exit')
 test "$node_version" = v24.17.0
 test "$npm_version" = 11.12.1
 test "$python_version" = 'Python 3.14.5'
@@ -49,8 +50,15 @@ case "$pip_version" in
     *) echo "unexpected pip runtime identity" >&2; exit 65 ;;
 esac
 test "$probe_report" = '{"execution_authority":false,"package_execution":false,"schema_version":"whoathere.linux_vz_package_runtime_probe.v1","status":"candidate_runtime_nonexecuting","sync_back":false}'
+test "$sensor_probe_report" = "$probe_report"
 if run_as_package 'exec /usr/bin/env -i HOME=/workspace TMPDIR=/tmp PATH=/usr/bin:/bin /whoathere/package-runtime-probe' >/dev/null 2>&1; then
     echo "non-executing runtime probe accepted an unauthorized invocation" >&2
+    exit 65
+else
+    test "$?" = 64
+fi
+if run_as_package 'exec /usr/bin/env -i HOME=/workspace TMPDIR=/tmp PATH=/usr/bin:/bin /whoathere/package-runtime-probe package_install' >/dev/null 2>&1; then
+    echo "non-executing runtime probe accepted an open-ended invocation" >&2
     exit 65
 else
     test "$?" = 64

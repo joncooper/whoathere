@@ -79,7 +79,8 @@ public func decodeLinuxVzPackageRuntimeManifest(
           value["pip_version"] as? String == "26.1.2",
           value["python_version"] as? String == "3.14.5",
           value["package_execution"] as? Bool == false,
-          value["package_runner_mode"] as? String == "nonexecuting_runtime_probe_only",
+          value["package_runner_mode"] as? String
+            == "nonexecuting_runtime_probe_with_closed_sensor_alias",
           value["package_uid"] as? String == "65534",
           value["package_gid"] as? String == "65534",
           value["reproducible_epoch"] as? String == "1783900800",

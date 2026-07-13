@@ -58,7 +58,7 @@ func linuxVzPackageRuntimeManifestFixture(
         "npm_version": "11.12.1",
         "package_execution": false,
         "package_gid": "65534",
-        "package_runner_mode": "nonexecuting_runtime_probe_only",
+        "package_runner_mode": "nonexecuting_runtime_probe_with_closed_sensor_alias",
         "package_runner_sha256": sha256(runner),
         "package_uid": "65534",
         "pip_entrypoint_sha256": sha256(Data("pip".utf8)),

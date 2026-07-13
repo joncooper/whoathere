@@ -61,11 +61,12 @@ swift run --package-path ../macos-vm-helper \
 That verifier exercises only the pre-boot clone lifecycle. It does not attach the clone to a VM,
 qualify the runtime, issue execution authority, or run a package.
 
-The current probe supports only `--runtime-probe`. Every other invocation fails with exit 64, and
-the successful response says `package_execution:false`, `execution_authority:false`, and
-`sync_back:false`. Replacing it with an execution-capable runner will change the rootfs and manifest
-identities and requires a new runtime qualification. No request, manifest, or successful probe in
-this directory grants package execution.
+The current probe supports only `--runtime-probe` and the protected sensor's closed
+`fork_exec_exit` alias. Both return the same fixed response saying `package_execution:false`,
+`execution_authority:false`, and `sync_back:false`; every other invocation fails with exit 64.
+Replacing it with an execution-capable runner will change the rootfs and manifest identities and
+requires a new runtime qualification. No request, manifest, or successful probe in this directory
+grants package execution.
 
 The rootfs is a distinct runtime composition, not part of the already-qualified diskless telemetry
 backend. Adding a storage device, init integration, or runner changes the measured VM configuration;

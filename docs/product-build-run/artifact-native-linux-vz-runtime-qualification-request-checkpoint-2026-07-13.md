@@ -6,6 +6,10 @@ Status: a closed, exact-byte, non-authorizing runtime-qualification request is i
 independently decoded by Rust and Swift; no package-runtime VM has booted and the candidate remains
 unqualified
 
+Follow-up: the fail-closed runner mismatch described below was resolved by the
+[closed sensor-alias rebuild](artifact-native-linux-vz-runtime-sensor-alias-rebuild-checkpoint-2026-07-13.md).
+That follow-up does not qualify the runtime; it only makes the inert physical test possible.
+
 ## Outcome
 
 The host now has a distinct request domain for qualifying the package-runtime composition. It is
