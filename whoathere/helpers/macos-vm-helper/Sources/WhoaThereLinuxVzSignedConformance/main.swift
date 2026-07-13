@@ -563,6 +563,18 @@ private struct LinuxVzSignedConformanceHarness {
             networkSourcePort = nil
             networkFixtureCase = nil
             hostFrameTriggerCount = nil
+        case "bpf_program_types":
+            let evidence = try decodeLinuxVzBpfProgramTypeEvidencePayloadV1(serialData)
+            guard evidence.packageUID == UInt64(backend.packageUID),
+                  evidence.packageGID == UInt64(backend.packageGID) else {
+                throw HarnessError.verificationFailed
+            }
+            claims = evidence.claims
+            guestEvidencePayloadSHA256 = evidence.payloadSHA256
+            guestEventCount = evidence.claims.eventCount
+            networkSourcePort = nil
+            networkFixtureCase = nil
+            hostFrameTriggerCount = nil
         case "fork_exec_exit", "host_sensor_death", "all_protected_assets_denied", "reparenting",
              "double_fork_daemonization", "setsid_escape",
              "credential_change", "dynamic_library_load":
@@ -823,7 +835,8 @@ private struct LinuxVzSignedConformanceHarness {
                 + missingEscapedSessionMarkers
                 + missingReparentedChildMarkers
                 + missingBackgroundListenerMarkers
-        } else if ["kernel_config_and_btf", "cgroup_v2"].contains(runSpec.fixtureCase) {
+        } else if ["kernel_config_and_btf", "cgroup_v2", "bpf_program_types"]
+            .contains(runSpec.fixtureCase) {
             missingBaseMarkers = linuxVzInertMissingCapabilityMarkers(serialData)
         } else if runSpec.fixtureCase == "bpf_reservation_failure" {
             let missingCapabilities = linuxVzInertMissingCapabilityMarkers(serialData)

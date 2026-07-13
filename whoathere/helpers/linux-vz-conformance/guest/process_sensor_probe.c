@@ -101,6 +101,8 @@
 #define BACKGROUND_LISTENER_REPORT_MAGIC 0x57544c53U
 #define BACKGROUND_LISTENER_PORT 40552U
 #define SENSOR_PROGRAM_COUNT 8
+#define BPF_SOCKET_FILTER_INPUT_BYTES 8U
+#define BPF_SOCKET_FILTER_OUTPUT_BYTES 4U
 
 struct reparent_report {
     uint32_t magic;
@@ -328,12 +330,16 @@ static int create_drop_ring_buffer(void) {
     return bpf_call(BPF_MAP_CREATE, &attributes);
 }
 
-static int load_program(const struct bpf_insn *instructions, size_t count) {
+static int load_program_of_type(
+    enum bpf_prog_type program_type,
+    const struct bpf_insn *instructions,
+    size_t count
+) {
     static const char license[] = "GPL";
     char verifier_log[16384] = {0};
     union bpf_attr attributes;
     memset(&attributes, 0, sizeof(attributes));
-    attributes.prog_type = BPF_PROG_TYPE_RAW_TRACEPOINT;
+    attributes.prog_type = program_type;
     attributes.insn_cnt = (uint32_t)count;
     attributes.insns = (uint64_t)(uintptr_t)instructions;
     attributes.license = (uint64_t)(uintptr_t)license;
@@ -350,6 +356,39 @@ static int load_program(const struct bpf_insn *instructions, size_t count) {
         );
     }
     return descriptor;
+}
+
+static int load_program(const struct bpf_insn *instructions, size_t count) {
+    return load_program_of_type(BPF_PROG_TYPE_RAW_TRACEPOINT, instructions, count);
+}
+
+static int load_socket_filter_program(void) {
+    const struct bpf_insn instructions[] = {
+        MOV64_IMM(BPF_REG_0, 4),
+        EXIT_PROGRAM(),
+    };
+    return load_program_of_type(
+        BPF_PROG_TYPE_SOCKET_FILTER,
+        instructions,
+        sizeof(instructions) / sizeof(instructions[0])
+    );
+}
+
+static int lookup_program_identity(int descriptor, uint32_t *program_type, uint32_t *program_id) {
+    struct bpf_prog_info info;
+    union bpf_attr attributes;
+    memset(&info, 0, sizeof(info));
+    memset(&attributes, 0, sizeof(attributes));
+    attributes.info.bpf_fd = (uint32_t)descriptor;
+    attributes.info.info_len = sizeof(info);
+    attributes.info.info = (uint64_t)(uintptr_t)&info;
+    if (bpf_call(BPF_OBJ_GET_INFO_BY_FD, &attributes) != 0 ||
+        attributes.info.info_len < sizeof(info)) {
+        return -1;
+    }
+    *program_type = info.type;
+    *program_id = info.id;
+    return 0;
 }
 
 static int attach_raw_tracepoint(const char *name, int program) {
@@ -727,6 +766,208 @@ static int wait_until_deadline_while_child_runs(
         if (now >= deadline_ns) return 0;
         if (nanosleep(&poll_interval, NULL) != 0 && errno != EINTR) return -1;
     }
+}
+
+static int run_bpf_program_types_probe(const char *fixture) {
+    struct sensor_fds fds = {
+        .map = -1,
+        .programs = {-1, -1, -1, -1, -1, -1, -1, -1},
+        .links = {-1, -1, -1, -1, -1, -1, -1, -1},
+    };
+    struct rlimit unlimited = {.rlim_cur = RLIM_INFINITY, .rlim_max = RLIM_INFINITY};
+    struct observation cgroup = {0};
+    struct observation raw_tracepoint = {0};
+    unsigned char socket_payload[BPF_SOCKET_FILTER_INPUT_BYTES] = {0};
+    const unsigned char expected_payload[BPF_SOCKET_FILTER_OUTPUT_BYTES] = {
+        'W', 'H', 'O', 'A'
+    };
+    int sockets[2] = {-1, -1};
+    pid_t child = -1;
+    int child_status = 0;
+    int child_reaped = 0;
+    int cgroup_removed = 0;
+    uint32_t raw_program_type = 0;
+    uint32_t raw_program_id = 0;
+    uint32_t socket_program_type = 0;
+    uint32_t socket_program_id = 0;
+    ssize_t socket_payload_length = -1;
+    int result = 70;
+    const char *failure_stage = "preflight";
+    int failure_errno = 0;
+
+    if (getuid() != 0 || geteuid() != 0 || verify_root_owned_executable(fixture) != 0) {
+        failure_stage = "identity";
+        goto cleanup;
+    }
+    if (setrlimit(RLIMIT_MEMLOCK, &unlimited) != 0) {
+        failure_stage = "memlock_limit";
+        failure_errno = errno;
+        goto cleanup;
+    }
+    if (mkdir(FIXTURE_CGROUP, 0755) != 0 ||
+        write_control(FIXTURE_CGROUP_PROCS, "0\n") != 0) {
+        failure_stage = "cgroup_enter";
+        failure_errno = errno;
+        goto cleanup;
+    }
+    fds.map = create_observation_map();
+    fds.programs[0] = fds.map >= 0 ? load_calibration_program(fds.map) : -1;
+    fds.links[0] = fds.programs[0] >= 0
+        ? attach_raw_tracepoint("sys_enter", fds.programs[0]) : -1;
+    if (fds.map < 0 || fds.programs[0] < 0 || fds.links[0] < 0) {
+        failure_stage = "raw_tracepoint_calibration_attach";
+        failure_errno = errno;
+        goto cleanup;
+    }
+    (void)syscall(SYS_getpid);
+    close_if_open(&fds.links[0]);
+    close_if_open(&fds.programs[0]);
+    if (lookup_observation(fds.map, OBSERVATION_CGROUP, &cgroup) != 0 ||
+        cgroup.count == 0) {
+        failure_stage = "cgroup_calibration";
+        failure_errno = errno;
+        goto cleanup;
+    }
+    fds.programs[0] = load_syscall_program(fds.map, OBSERVATION_EXEC, SYS_getpid);
+    fds.links[0] = fds.programs[0] >= 0
+        ? attach_raw_tracepoint("sys_enter", fds.programs[0]) : -1;
+    if (fds.programs[0] < 0 || fds.links[0] < 0 ||
+        lookup_program_identity(
+            fds.programs[0],
+            &raw_program_type,
+            &raw_program_id
+        ) != 0) {
+        failure_stage = "raw_tracepoint_program_attach";
+        failure_errno = errno;
+        goto cleanup;
+    }
+    if (socketpair(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0, sockets) != 0) {
+        failure_stage = "socketpair";
+        failure_errno = errno;
+        goto cleanup;
+    }
+    fds.programs[1] = load_socket_filter_program();
+    if (fds.programs[1] < 0 ||
+        lookup_program_identity(
+            fds.programs[1],
+            &socket_program_type,
+            &socket_program_id
+        ) != 0 ||
+        setsockopt(
+            sockets[1],
+            SOL_SOCKET,
+            SO_ATTACH_BPF,
+            &fds.programs[1],
+            sizeof(fds.programs[1])
+        ) != 0) {
+        failure_stage = "socket_filter_program_attach";
+        failure_errno = errno;
+        goto cleanup;
+    }
+    child = fork();
+    if (child < 0) {
+        failure_stage = "fixture_fork";
+        failure_errno = errno;
+        goto cleanup;
+    }
+    if (child == 0) {
+        close_if_open(&sockets[1]);
+        child_fixture(fixture, "bpf_program_types", &fds, sockets[0]);
+    }
+    close_if_open(&sockets[0]);
+    struct pollfd poll_descriptor = {.fd = sockets[1], .events = POLLIN};
+    int polled;
+    do {
+        polled = poll(&poll_descriptor, 1, 2000);
+    } while (polled < 0 && errno == EINTR);
+    if (polled != 1 || (poll_descriptor.revents & POLLIN) == 0) {
+        failure_stage = "socket_filter_fixture_timeout";
+        failure_errno = errno;
+        goto cleanup;
+    }
+    do {
+        socket_payload_length = recv(
+            sockets[1],
+            socket_payload,
+            sizeof(socket_payload),
+            0
+        );
+    } while (socket_payload_length < 0 && errno == EINTR);
+    if (waitpid(child, &child_status, 0) != child) {
+        failure_stage = "fixture_wait";
+        failure_errno = errno;
+        goto cleanup;
+    }
+    child_reaped = 1;
+    close_if_open(&fds.links[0]);
+    if (lookup_observation(fds.map, OBSERVATION_EXEC, &raw_tracepoint) != 0 ||
+        !WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0 ||
+        !observed_pid(&raw_tracepoint, child) ||
+        raw_program_type != BPF_PROG_TYPE_RAW_TRACEPOINT || raw_program_id == 0 ||
+        socket_program_type != BPF_PROG_TYPE_SOCKET_FILTER || socket_program_id == 0 ||
+        raw_program_id == socket_program_id ||
+        socket_payload_length != BPF_SOCKET_FILTER_OUTPUT_BYTES ||
+        memcmp(socket_payload, expected_payload, sizeof(expected_payload)) != 0) {
+        failure_stage = "program_type_observation_match";
+        goto cleanup;
+    }
+    close_if_open(&sockets[1]);
+    close_sensor_fds(&fds);
+    if (write_control(ROOT_CGROUP_PROCS, "0\n") != 0 || rmdir(FIXTURE_CGROUP) != 0) {
+        failure_stage = "cgroup_teardown";
+        failure_errno = errno;
+        goto cleanup;
+    }
+    cgroup_removed = 1;
+    printf(
+        "WHOATHERE_GUEST_BPF_PROGRAM_TYPE_EVIDENCE "
+        "{\"descendant_teardown_complete\":true,\"dropped_event_count\":\"0\","
+        "\"event_count\":\"2\",\"event_sequence_end\":\"2\","
+        "\"event_sequence_start\":\"1\",\"evidence_truncated\":false,"
+        "\"fixture_case\":\"bpf_program_types\",\"heartbeat_count\":\"2\","
+        "\"observation_map_type\":\"BPF_MAP_TYPE_ARRAY\",\"package_gid\":\"65534\","
+        "\"package_uid\":\"65534\",\"raw_tracepoint_actor_pid\":\"%d\","
+        "\"raw_tracepoint_attach_command\":\"BPF_RAW_TRACEPOINT_OPEN\","
+        "\"raw_tracepoint_cgroup_id\":\"%" PRIu64 "\","
+        "\"raw_tracepoint_name\":\"sys_enter\","
+        "\"raw_tracepoint_observation_count\":\"%" PRIu64 "\","
+        "\"raw_tracepoint_program_id\":\"%u\","
+        "\"raw_tracepoint_program_type\":\"BPF_PROG_TYPE_RAW_TRACEPOINT\","
+        "\"raw_tracepoint_timestamp_ns\":\"%" PRIu64 "\","
+        "\"resource_teardown_complete\":true,"
+        "\"schema_version\":\"whoathere.linux_vz_bpf_program_type_evidence_payload.v1\","
+        "\"sensor_healthy\":true,\"socket_filter_attach_option\":\"SO_ATTACH_BPF\","
+        "\"socket_filter_input_bytes\":\"8\",\"socket_filter_output_bytes\":\"4\","
+        "\"socket_filter_program_id\":\"%u\","
+        "\"socket_filter_program_type\":\"BPF_PROG_TYPE_SOCKET_FILTER\"}\n",
+        child,
+        cgroup.count,
+        raw_tracepoint.count,
+        raw_program_id,
+        raw_tracepoint.timestamp_ns,
+        socket_program_id
+    );
+    result = 0;
+
+cleanup:
+    if (child > 0 && !child_reaped) {
+        (void)kill(child, SIGKILL);
+        (void)waitpid(child, &child_status, 0);
+    }
+    close_if_open(&sockets[0]);
+    close_if_open(&sockets[1]);
+    close_sensor_fds(&fds);
+    if (!cgroup_removed && write_control(ROOT_CGROUP_PROCS, "0\n") == 0) {
+        (void)rmdir(FIXTURE_CGROUP);
+    }
+    if (result != 0) {
+        printf(
+            "WHOATHERE_SENSOR_BPF_PROGRAM_TYPES_FAILED stage=%s errno=%d\n",
+            failure_stage,
+            failure_errno
+        );
+    }
+    return result;
 }
 
 static int run_bpf_reservation_failure_probe(const char *fixture) {
@@ -4628,6 +4869,9 @@ int main(int argument_count, char **arguments) {
     }
     if (strcmp(arguments[2], "bpf_reservation_failure") == 0) {
         return run_bpf_reservation_failure_probe(arguments[1]);
+    }
+    if (strcmp(arguments[2], "bpf_program_types") == 0) {
+        return run_bpf_program_types_probe(arguments[1]);
     }
     if (strcmp(arguments[2], "fanotify_queue_overflow") == 0) {
         return run_fanotify_queue_overflow_probe(arguments[1]);

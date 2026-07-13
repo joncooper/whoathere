@@ -931,6 +931,18 @@ static int guest_sensor_death(void) {
     for (;;) (void)pause();
 }
 
+static int bpf_program_types(void) {
+    static const unsigned char payload[8] = {
+        'W', 'H', 'O', 'A', 'B', 'P', 'F', 'X'
+    };
+    if (getpid() <= 0) return 179;
+    ssize_t sent;
+    do {
+        sent = send(REPARENT_REPORT_FD, payload, sizeof(payload), MSG_NOSIGNAL);
+    } while (sent < 0 && errno == EINTR);
+    return sent == (ssize_t)sizeof(payload) ? 0 : 180;
+}
+
 int main(int argument_count, char **arguments) {
     if (argument_count != 2 || getuid() != 65534 || geteuid() != 65534 ||
         getgid() != 65534 || getegid() != 65534) {
@@ -974,6 +986,7 @@ int main(int argument_count, char **arguments) {
     if (strcmp(arguments[1], "dns_malformed") == 0) return dns_malformed();
     if (strcmp(arguments[1], "encrypted_dns_connect") == 0) return encrypted_dns_connect();
     if (strcmp(arguments[1], "host_frame_overflow") == 0) return host_frame_overflow();
+    if (strcmp(arguments[1], "bpf_program_types") == 0) return bpf_program_types();
     if (strcmp(arguments[1], "fanotify_permission") == 0 ||
         strcmp(arguments[1], "protected_open_read_write_rename_delete") == 0 ||
         strcmp(arguments[1], "mmap_access") == 0) {

@@ -4,14 +4,15 @@ Date: 2026-07-09
 
 Status: canonical execution plan for the next product milestone
 
-Current execution checkpoint (2026-07-12): thirty-six of the 38 authenticated Linux VZ inert
+Current execution checkpoint (2026-07-13): thirty-seven of the 38 authenticated Linux VZ inert
 conformance cases now pass physically on one exact measured backend identity. The newest
-`fanotify_permission` case binds a measured `FAN_CLASS_CONTENT` mount mark, exact
-`FAN_OPEN_PERM`/`FAN_ACCESS_PERM` handling, five protected permission responses, an unprivileged
-actor and cgroup, complete file-state corroboration, healthy sensors, zero drops, complete
-teardown, and no execution authority. This is still telemetry qualification, not package
-detection, and the backend remains `candidate_unqualified`. See the
-[fanotify-permission checkpoint](artifact-native-linux-vz-fanotify-permission-checkpoint-2026-07-12.md).
+`bpf_program_types` case proves live load, attachment, and execution of both a cgroup-filtered
+`BPF_PROG_TYPE_RAW_TRACEPOINT` program and an `SO_ATTACH_BPF` socket filter, including distinct
+kernel-assigned program IDs, one exact actor/cgroup observation, the filter's exact 8-to-4-byte
+result, healthy sensors, zero drops, complete teardown, and no execution authority. This is still
+telemetry qualification, not package detection, and the backend remains `candidate_unqualified`.
+See the
+[BPF program-types checkpoint](artifact-native-linux-vz-bpf-program-types-checkpoint-2026-07-13.md).
 
 The first protected-sensor bootstrap now also observes a cgroup-filtered inert fork/exec/exit chain
 whose child runs as UID/GID 65534 and cannot read or write the root-only sensor. This remains
@@ -325,6 +326,16 @@ cases ran physically on the resulting identity; all 108 request inputs were gene
 identity and every complete case passed independent Rust verification. Thirty-six of 38 cases now
 share one backend binding; 2 remain. See the
 [fanotify-permission checkpoint](artifact-native-linux-vz-fanotify-permission-checkpoint-2026-07-12.md).
+
+The `bpf_program_types` platform case now proves actual load, attachment, and execution of the two
+program types required by the current protected telemetry design. A measured raw-tracepoint program
+records exactly one cgroup-filtered syscall by the unprivileged fixture, while a distinct measured
+socket filter truncates its exact fixed datagram from eight bytes to four. Both runtime program
+types and distinct kernel-assigned IDs are queried directly, and strict decoders bind complete
+resource teardown. All thirty-seven implemented cases ran physically on the resulting identity;
+all 111 request inputs were generated from that identity and every complete case passed independent
+Rust verification. Thirty-seven of 38 cases now share one backend binding; 1 remains. See the
+[BPF program-types checkpoint](artifact-native-linux-vz-bpf-program-types-checkpoint-2026-07-13.md).
 
 Primary target: malicious npm and PyPI package detection with static analysis, AI-assisted code
 review, and behaviorally instrumented detonation in disposable virtual machines
@@ -1606,6 +1617,7 @@ Repository evidence:
 - [Linux VZ kernel-config/BTF checkpoint](artifact-native-linux-vz-kernel-config-btf-checkpoint-2026-07-12.md)
 - [Linux VZ cgroup-v2 checkpoint](artifact-native-linux-vz-cgroup-v2-checkpoint-2026-07-12.md)
 - [Linux VZ fanotify-permission checkpoint](artifact-native-linux-vz-fanotify-permission-checkpoint-2026-07-12.md)
+- [Linux VZ BPF program-types checkpoint](artifact-native-linux-vz-bpf-program-types-checkpoint-2026-07-13.md)
 - [macOS local release readiness](macos-local-release-readiness.md)
 - [macOS local beta pressure checkpoint](macos-local-beta-pressure-checkpoint.md)
 - [latest source-fixture corpus report](src-fixture-corpus-latest.md)

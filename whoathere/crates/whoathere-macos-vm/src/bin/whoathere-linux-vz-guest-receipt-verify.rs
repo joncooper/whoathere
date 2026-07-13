@@ -6,6 +6,7 @@ use whoathere_detonation::ArtifactProtectedTelemetryRequirementsV1;
 use whoathere_macos_vm::{
     decode_and_validate_macos_linux_vz_telemetry_conformance_challenge_v1,
     decode_and_validate_macos_linux_vz_telemetry_conformance_run_spec_v1,
+    decode_linux_vz_bpf_program_type_evidence_from_serial_v1,
     decode_linux_vz_cgroup_evidence_from_serial_v1, decode_linux_vz_file_evidence_from_serial_v1,
     decode_linux_vz_platform_evidence_from_serial_v1,
     decode_linux_vz_process_evidence_from_serial_v1,
@@ -92,6 +93,30 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         )?;
         println!(
             "{{\"backend_identity_sha256\":\"{}\",\"cgroup_evidence_payload_sha256\":\"{}\",\"challenge_sha256\":\"{}\",\"execution_authority\":false,\"package_execution\":false,\"receipt_sha256\":\"{}\",\"run_spec_sha256\":\"{}\",\"schema_version\":\"whoathere.linux_vz_guest_receipt_verification.v1\",\"status\":\"verified\",\"sync_back\":false}}",
+            backend.identity_sha256_v1()?,
+            evidence.payload_sha256(),
+            verified.challenge_sha256(),
+            Sha256Digest::from_bytes(&receipt),
+            run_spec.run_spec_sha256(),
+        );
+        return Ok(());
+    }
+    if run_spec.fixture_case() == LinuxVzTelemetryConformanceCaseV1::BpfProgramTypes {
+        let evidence = decode_linux_vz_bpf_program_type_evidence_from_serial_v1(&serial)?;
+        if evidence.package_uid() != backend.package_uid()
+            || evidence.package_gid() != backend.package_gid()
+        {
+            return Err("guest BPF program-type evidence binding mismatch".into());
+        }
+        let claims = evidence.guest_observation_claims_v1()?;
+        let public_key: [u8; 32] = public_key
+            .try_into()
+            .map_err(|_| "guest public key must be exactly 32 bytes")?;
+        let verified = verify_macos_linux_vz_telemetry_guest_receipt_v1(
+            &challenge, &run_spec, &backend, &receipt, public_key, &claims,
+        )?;
+        println!(
+            "{{\"backend_identity_sha256\":\"{}\",\"bpf_program_type_evidence_payload_sha256\":\"{}\",\"challenge_sha256\":\"{}\",\"execution_authority\":false,\"package_execution\":false,\"receipt_sha256\":\"{}\",\"run_spec_sha256\":\"{}\",\"schema_version\":\"whoathere.linux_vz_guest_receipt_verification.v1\",\"status\":\"verified\",\"sync_back\":false}}",
             backend.identity_sha256_v1()?,
             evidence.payload_sha256(),
             verified.challenge_sha256(),

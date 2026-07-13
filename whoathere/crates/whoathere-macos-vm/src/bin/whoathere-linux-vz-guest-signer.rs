@@ -29,6 +29,7 @@ mod linux {
         build_linux_vz_cgroup_v2_evidence_v1, build_linux_vz_kernel_config_and_btf_evidence_v1,
         decode_and_validate_macos_linux_vz_telemetry_conformance_challenge_v1,
         decode_and_validate_macos_linux_vz_telemetry_conformance_run_spec_v1,
+        decode_linux_vz_bpf_program_type_evidence_from_serial_v1,
         decode_linux_vz_cgroup_evidence_from_serial_v1,
         decode_linux_vz_drop_evidence_from_serial_v1,
         decode_linux_vz_fanotify_overflow_evidence_from_serial_v1,
@@ -153,6 +154,7 @@ mod linux {
                 | LinuxVzTelemetryConformanceCaseV1::KernelConfigAndBtf
                 | LinuxVzTelemetryConformanceCaseV1::CgroupV2
                 | LinuxVzTelemetryConformanceCaseV1::FanotifyPermission
+                | LinuxVzTelemetryConformanceCaseV1::BpfProgramTypes
         ) || run_spec.expected_terminal()
             != expected_terminal_for_case_v1(run_spec.fixture_case())
             || run_spec.package_execution_authority_permitted()
@@ -212,6 +214,7 @@ mod linux {
             LinuxVzTelemetryConformanceCaseV1::KernelConfigAndBtf => "kernel_config_and_btf",
             LinuxVzTelemetryConformanceCaseV1::CgroupV2 => "cgroup_v2",
             LinuxVzTelemetryConformanceCaseV1::FanotifyPermission => "fanotify_permission",
+            LinuxVzTelemetryConformanceCaseV1::BpfProgramTypes => "bpf_program_types",
             _ => return Err("guest_signer_run_spec_not_supported_inert_case".into()),
         };
         let sensor_output = match run_spec.fixture_case() {
@@ -293,6 +296,15 @@ mod linux {
             LinuxVzTelemetryConformanceCaseV1::KernelConfigAndBtf => {
                 let evidence =
                     decode_linux_vz_platform_evidence_from_serial_v1(&sensor_output, backend)?;
+                (
+                    evidence.package_uid(),
+                    evidence.package_gid(),
+                    evidence.guest_observation_claims_v1()?,
+                )
+            }
+            LinuxVzTelemetryConformanceCaseV1::BpfProgramTypes => {
+                let evidence =
+                    decode_linux_vz_bpf_program_type_evidence_from_serial_v1(&sensor_output)?;
                 (
                     evidence.package_uid(),
                     evidence.package_gid(),
