@@ -102,9 +102,21 @@ sequence before one canonical process-evidence line. Two final builds were byte-
 independently verified. The successful run observed zero raw frames, stopped the VM, destroyed the
 clone after stop, and produced guest and host receipts independently verified in Rust both remotely
 and locally. Package execution, external routing, and sync-back remained false. Runtime
-qualification is complete; the next engineering gate is one-use grants plus inert npm, wheel, and
-nested-sdist scenarios. See the
+qualification for the fixed nonexecuting probe is complete; the next engineering gate is one-use
+grants plus inert npm, wheel, and nested-sdist scenarios. See the
 [runtime-qualification physical checkpoint](artifact-native-linux-vz-runtime-qualification-physical-checkpoint-2026-07-13.md).
+
+The successful physical guest and host receipts now also produce one canonical typed runtime
+qualification record. The builder independently verifies the request frame, fixed probe, protected
+process evidence, guest signature, host lifecycle evidence, and host signature before emitting the
+record; verification rebuilds it from those authenticated inputs byte-for-byte. The physical inert
+evidence produced record
+`sha256:327ff0316a72f3a5570b39979693f37c69bc5d5fd6fd9fce721d3b40b3df1036`.
+Its only state is `fixed_nonexecuting_probe_passed`; its execution-runner capability is
+`not_qualified`, and it cannot issue execution authority, run a package, or enable sync-back. This
+turns the physical result into programmatic input without treating the probe runner as a detonation
+runner. See the
+[runtime qualification-record checkpoint](artifact-native-linux-vz-runtime-qualification-record-checkpoint-2026-07-13.md).
 
 The first protected-sensor bootstrap now also observes a cgroup-filtered inert fork/exec/exit chain
 whose child runs as UID/GID 65534 and cannot read or write the root-only sensor. This remains

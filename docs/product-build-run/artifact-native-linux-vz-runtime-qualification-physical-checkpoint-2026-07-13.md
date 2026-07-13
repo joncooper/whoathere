@@ -66,6 +66,29 @@ events and accepted the request frame, response frame, evidence, host key, and s
 verifiers passed first on the cloud Mac and then again against the inert copied-back evidence.
 Neither verifier can grant execution or sync-back authority.
 
+## Programmatic qualification record
+
+The authenticated run can now be converted into a canonical typed record. The builder first
+repeats both independent receipt-verification paths, validates the fixed `fork_exec_exit` evidence,
+and checks the request frame, response frame, rootfs, UID/GID, challenge, and clone bindings. It
+then records the exact evidence digests and lifecycle facts. The copied-back inert evidence produced
+record:
+
+`sha256:327ff0316a72f3a5570b39979693f37c69bc5d5fd6fd9fce721d3b40b3df1036`
+
+The record is intentionally capability-limited:
+
+- qualification state: `fixed_nonexecuting_probe_passed`;
+- execution-runner capability: `not_qualified`;
+- execution-authority issuance permitted: `false`;
+- package execution: `false`; and
+- sync-back: `false`.
+
+The verifier does not trust the record as a free-standing assertion. It decodes the supplied record,
+rebuilds the expected record from the original authenticated guest and host evidence, and requires
+exact equality. See the separate
+[qualification-record checkpoint](artifact-native-linux-vz-runtime-qualification-record-checkpoint-2026-07-13.md).
+
 The final serial record ended in the exact receipt-success and qualification-success markers. The
 runtime run directory was empty afterward, independently confirming clone destruction. The host
 signing seed remained on the cloud Mac and was neither printed nor copied back.
