@@ -3,7 +3,7 @@ use crate::{
     MacosLinuxVzPackageAuthorityRequestV1, MacosLinuxVzPackageExecutionGrantObservationV1,
     MacosLinuxVzPackageExecutionScopeV1,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use whoathere_artifact::{ArtifactFormat, Sha256Digest};
@@ -13,6 +13,7 @@ use whoathere_detonation::{
     decode_and_validate_wheel_scenario_template_v1, ArtifactScenarioLimitsV1,
     ArtifactTelemetrySyncBackPolicyV1, NpmEnvironmentProfileV1, SdistBuildModeV1,
     SdistScenarioKindV1, WheelConsoleArgumentProfileV1, WheelScenarioKindV1,
+    MAX_ARTIFACT_SCENARIO_BYTES_V1,
 };
 use zeroize::Zeroize;
 
@@ -28,14 +29,14 @@ const PACKAGE_GID_V1: u32 = 65_534;
 ///
 /// The protected guest agent supplies the already rehashed artifact through a fixed read-only file
 /// descriptor. No package-controlled path crosses this wire.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MacosLinuxVzPackageExecutionArtifactInputV1 {
     ExactRehashedReadOnlyDescriptor,
 }
 
 /// A build recipe derived from the validated sdist plan rather than from runner input.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MacosLinuxVzSdistBuildRecipeV1 {
     build_template_sha256: Sha256Digest,
@@ -77,7 +78,7 @@ impl MacosLinuxVzSdistBuildRecipeV1 {
 /// Probe operations are deliberately composite. For example, an import-root scenario means
 /// install the exact wheel in a fresh virtual environment and then import the validated module.
 /// The runner never accepts a free-form executable, argv vector, path, or shell fragment.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MacosLinuxVzPackageExecutionOperationV1 {
     NpmInstallExactLocalTarball {
@@ -116,7 +117,31 @@ pub enum MacosLinuxVzPackageExecutionOperationV1 {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+impl MacosLinuxVzPackageExecutionOperationV1 {
+    pub const fn operation_name(&self) -> &'static str {
+        match self {
+            Self::NpmInstallExactLocalTarball { .. } => "npm_install_exact_local_tarball",
+            Self::WheelInstallExact { .. } => "wheel_install_exact",
+            Self::WheelInstallThenFreshInterpreterPth { .. } => {
+                "wheel_install_then_fresh_interpreter_pth"
+            }
+            Self::WheelInstallThenImportRoot { .. } => "wheel_install_then_import_root",
+            Self::WheelInstallThenConsoleEntryPointHelp { .. } => {
+                "wheel_install_then_console_entry_point_help"
+            }
+            Self::SdistBuildExact { .. } => "sdist_build_exact",
+            Self::SdistBuildThenInspectDerivedWheel { .. } => {
+                "sdist_build_then_inspect_derived_wheel"
+            }
+            Self::SdistBuildThenInstallDerivedWheel { .. } => {
+                "sdist_build_then_install_derived_wheel"
+            }
+            Self::SdistBuildInstallThenImportRoot { .. } => "sdist_build_install_then_import_root",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PackageExecutionRequestWireV1 {
     schema_version: String,
@@ -241,6 +266,367 @@ impl MacosLinuxVzPackageExecutionRequestV1 {
     }
 }
 
+/// Strict structural view of a canonical runner request.
+///
+/// This type is deliberately not an execution capability. The protected runner must separately
+/// prove its one-boot root-sensor launch and one-use transport before acting on this data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructurallyValidatedMacosLinuxVzPackageExecutionRequestV1 {
+    request_sha256: Sha256Digest,
+    package_authority_request_sha256: Sha256Digest,
+    execution_grant_sha256: Sha256Digest,
+    execution_runtime_qualification_record_sha256: Sha256Digest,
+    artifact_kind: MacosLinuxVzPackageArtifactKindV1,
+    artifact_sha256: Sha256Digest,
+    artifact_byte_length: u64,
+    scenario_template_sha256: Sha256Digest,
+    attempt_binding_sha256: Sha256Digest,
+    clone_binding_sha256: Sha256Digest,
+    package_uid: u32,
+    package_gid: u32,
+    operation: MacosLinuxVzPackageExecutionOperationV1,
+    limits: ArtifactScenarioLimitsV1,
+}
+
+impl StructurallyValidatedMacosLinuxVzPackageExecutionRequestV1 {
+    pub fn request_sha256(&self) -> &Sha256Digest {
+        &self.request_sha256
+    }
+
+    pub fn package_authority_request_sha256(&self) -> &Sha256Digest {
+        &self.package_authority_request_sha256
+    }
+
+    pub fn execution_grant_sha256(&self) -> &Sha256Digest {
+        &self.execution_grant_sha256
+    }
+
+    pub fn execution_runtime_qualification_record_sha256(&self) -> &Sha256Digest {
+        &self.execution_runtime_qualification_record_sha256
+    }
+
+    pub const fn artifact_kind(&self) -> MacosLinuxVzPackageArtifactKindV1 {
+        self.artifact_kind
+    }
+
+    pub fn artifact_sha256(&self) -> &Sha256Digest {
+        &self.artifact_sha256
+    }
+
+    pub const fn artifact_byte_length(&self) -> u64 {
+        self.artifact_byte_length
+    }
+
+    pub fn scenario_template_sha256(&self) -> &Sha256Digest {
+        &self.scenario_template_sha256
+    }
+
+    pub fn attempt_binding_sha256(&self) -> &Sha256Digest {
+        &self.attempt_binding_sha256
+    }
+
+    pub fn clone_binding_sha256(&self) -> &Sha256Digest {
+        &self.clone_binding_sha256
+    }
+
+    pub const fn package_uid(&self) -> u32 {
+        self.package_uid
+    }
+
+    pub const fn package_gid(&self) -> u32 {
+        self.package_gid
+    }
+
+    pub fn operation(&self) -> &MacosLinuxVzPackageExecutionOperationV1 {
+        &self.operation
+    }
+
+    pub fn limits(&self) -> &ArtifactScenarioLimitsV1 {
+        &self.limits
+    }
+
+    pub const fn package_execution_authority_permitted(&self) -> bool {
+        false
+    }
+
+    pub const fn sync_back_permitted(&self) -> bool {
+        false
+    }
+}
+
+pub fn structurally_decode_macos_linux_vz_package_execution_request_v1(
+    bytes: &[u8],
+) -> Result<
+    StructurallyValidatedMacosLinuxVzPackageExecutionRequestV1,
+    MacosLinuxVzPackageExecutionRequestErrorV1,
+> {
+    if bytes.is_empty() || bytes.len() > MAX_MACOS_LINUX_VZ_PACKAGE_EXECUTION_REQUEST_BYTES_V1 {
+        return Err(MacosLinuxVzPackageExecutionRequestErrorV1::LimitExceeded);
+    }
+    let mut deserializer = serde_json::Deserializer::from_slice(bytes);
+    let wire = PackageExecutionRequestWireV1::deserialize(&mut deserializer)
+        .map_err(|_| MacosLinuxVzPackageExecutionRequestErrorV1::InvalidRequest)?;
+    deserializer
+        .end()
+        .map_err(|_| MacosLinuxVzPackageExecutionRequestErrorV1::InvalidRequest)?;
+    let canonical = serde_json_canonicalizer::to_vec(&wire)
+        .map_err(|_| MacosLinuxVzPackageExecutionRequestErrorV1::Serialization)?;
+    if canonical != bytes {
+        return Err(MacosLinuxVzPackageExecutionRequestErrorV1::NonCanonical);
+    }
+
+    let artifact_byte_length = canonical_u64_v1(&wire.artifact_byte_length)?;
+    let issued_at = canonical_u64_v1(&wire.grant_issued_at_unix_seconds)?;
+    let expires_at = canonical_u64_v1(&wire.grant_expires_at_unix_seconds)?;
+    let verified_at = canonical_u64_v1(&wire.grant_verified_at_unix_seconds)?;
+    let package_uid = canonical_u32_v1(&wire.package_uid)?;
+    let package_gid = canonical_u32_v1(&wire.package_gid)?;
+    let attempt_limit = canonical_u64_v1(&wire.attempt_limit)?;
+    let empty = Sha256Digest::from_bytes(&[]);
+    let required_digests = [
+        &wire.package_authority_request_sha256,
+        &wire.execution_grant_sha256,
+        &wire.execution_runtime_qualification_record_sha256,
+        &wire.artifact_sha256,
+        &wire.scenario_plan_sha256,
+        &wire.scenario_template_sha256,
+        &wire.scenario_kind_sha256,
+        &wire.scenario_policy_sha256,
+        &wire.dependency_closure_sha256,
+        &wire.runtime_profile_sha256,
+        &wire.request_challenge_sha256,
+        &wire.grant_challenge_sha256,
+        &wire.attempt_binding_sha256,
+        &wire.clone_binding_sha256,
+    ];
+    if wire.schema_version != MACOS_LINUX_VZ_PACKAGE_EXECUTION_REQUEST_SCHEMA_V1
+        || wire.authority != EXECUTION_REQUEST_AUTHORITY_V1
+        || required_digests.contains(&&empty)
+        || !valid_identity_component_v1(&wire.scenario_id)
+        || artifact_byte_length == 0
+        || artifact_byte_length > MAX_ARTIFACT_SCENARIO_BYTES_V1
+        || issued_at == 0
+        || verified_at < issued_at
+        || verified_at >= expires_at
+        || package_uid != PACKAGE_UID_V1
+        || package_gid != PACKAGE_GID_V1
+        || attempt_limit != 1
+        || wire.artifact_input
+            != MacosLinuxVzPackageExecutionArtifactInputV1::ExactRehashedReadOnlyDescriptor
+        || wire.execution_scope != MacosLinuxVzPackageExecutionScopeV1::OneTypedScenarioOneAttempt
+        || wire.public_network_route_present
+        || wire.arbitrary_command_input_present
+        || !wire.execution_grant_consumed
+        || !wire.package_execution_permitted
+        || wire.sync_back_policy != ArtifactTelemetrySyncBackPolicyV1::StructurallyAbsent
+        || wire.limits.validate().is_err()
+        || validate_closed_operation_v1(wire.artifact_kind, &wire.operation).is_err()
+    {
+        return Err(MacosLinuxVzPackageExecutionRequestErrorV1::InvalidRequest);
+    }
+
+    Ok(StructurallyValidatedMacosLinuxVzPackageExecutionRequestV1 {
+        request_sha256: Sha256Digest::from_bytes(bytes),
+        package_authority_request_sha256: wire.package_authority_request_sha256,
+        execution_grant_sha256: wire.execution_grant_sha256,
+        execution_runtime_qualification_record_sha256: wire
+            .execution_runtime_qualification_record_sha256,
+        artifact_kind: wire.artifact_kind,
+        artifact_sha256: wire.artifact_sha256,
+        artifact_byte_length,
+        scenario_template_sha256: wire.scenario_template_sha256,
+        attempt_binding_sha256: wire.attempt_binding_sha256,
+        clone_binding_sha256: wire.clone_binding_sha256,
+        package_uid,
+        package_gid,
+        operation: wire.operation,
+        limits: wire.limits,
+    })
+}
+
+fn canonical_u64_v1(value: &str) -> Result<u64, MacosLinuxVzPackageExecutionRequestErrorV1> {
+    if value.is_empty()
+        || (value.len() > 1 && value.starts_with('0'))
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err(MacosLinuxVzPackageExecutionRequestErrorV1::InvalidRequest);
+    }
+    value
+        .parse::<u64>()
+        .map_err(|_| MacosLinuxVzPackageExecutionRequestErrorV1::InvalidRequest)
+}
+
+fn canonical_u32_v1(value: &str) -> Result<u32, MacosLinuxVzPackageExecutionRequestErrorV1> {
+    let parsed = canonical_u64_v1(value)?;
+    u32::try_from(parsed).map_err(|_| MacosLinuxVzPackageExecutionRequestErrorV1::InvalidRequest)
+}
+
+fn validate_closed_operation_v1(
+    artifact_kind: MacosLinuxVzPackageArtifactKindV1,
+    operation: &MacosLinuxVzPackageExecutionOperationV1,
+) -> Result<(), MacosLinuxVzPackageExecutionRequestErrorV1> {
+    let empty = Sha256Digest::from_bytes(&[]);
+    match (artifact_kind, operation) {
+        (
+            MacosLinuxVzPackageArtifactKindV1::NpmTarball,
+            MacosLinuxVzPackageExecutionOperationV1::NpmInstallExactLocalTarball { .. },
+        ) => Ok(()),
+        (
+            MacosLinuxVzPackageArtifactKindV1::PypiWheel,
+            MacosLinuxVzPackageExecutionOperationV1::WheelInstallExact {
+                install_template_sha256,
+            },
+        ) if install_template_sha256 != &empty => Ok(()),
+        (
+            MacosLinuxVzPackageArtifactKindV1::PypiWheel,
+            MacosLinuxVzPackageExecutionOperationV1::WheelInstallThenFreshInterpreterPth {
+                install_template_sha256,
+                pth_file_ids,
+            },
+        ) if install_template_sha256 != &empty
+            && !pth_file_ids.is_empty()
+            && !pth_file_ids.contains(&empty)
+            && !pth_file_ids.windows(2).any(|pair| pair[0] >= pair[1]) =>
+        {
+            Ok(())
+        }
+        (
+            MacosLinuxVzPackageArtifactKindV1::PypiWheel,
+            MacosLinuxVzPackageExecutionOperationV1::WheelInstallThenImportRoot {
+                install_template_sha256,
+                module,
+            },
+        ) if install_template_sha256 != &empty && valid_python_target_v1(module) => Ok(()),
+        (
+            MacosLinuxVzPackageArtifactKindV1::PypiWheel,
+            MacosLinuxVzPackageExecutionOperationV1::WheelInstallThenConsoleEntryPointHelp {
+                install_template_sha256,
+                command_name,
+                module,
+                callable,
+                target_sha256,
+            },
+        ) if install_template_sha256 != &empty
+            && valid_console_name_v1(command_name)
+            && valid_python_target_v1(module)
+            && valid_python_target_v1(callable)
+            && target_sha256
+                == &Sha256Digest::from_bytes(format!("{module}:{callable}").as_bytes()) =>
+        {
+            Ok(())
+        }
+        (
+            MacosLinuxVzPackageArtifactKindV1::PypiSdist,
+            MacosLinuxVzPackageExecutionOperationV1::SdistBuildExact { build }
+            | MacosLinuxVzPackageExecutionOperationV1::SdistBuildThenInspectDerivedWheel { build }
+            | MacosLinuxVzPackageExecutionOperationV1::SdistBuildThenInstallDerivedWheel { build },
+        ) => validate_sdist_build_recipe_v1(build),
+        (
+            MacosLinuxVzPackageArtifactKindV1::PypiSdist,
+            MacosLinuxVzPackageExecutionOperationV1::SdistBuildInstallThenImportRoot {
+                build,
+                module,
+            },
+        ) if valid_python_target_v1(module) => validate_sdist_build_recipe_v1(build),
+        _ => Err(MacosLinuxVzPackageExecutionRequestErrorV1::ClosedOperationInvalid),
+    }
+}
+
+fn validate_sdist_build_recipe_v1(
+    build: &MacosLinuxVzSdistBuildRecipeV1,
+) -> Result<(), MacosLinuxVzPackageExecutionRequestErrorV1> {
+    let empty = Sha256Digest::from_bytes(&[]);
+    if build.build_template_sha256 == empty
+        || build.build_requires_sha256 == empty
+        || !matches!(
+            build.artifact_format,
+            ArtifactFormat::SdistTarGzip | ArtifactFormat::SdistZip
+        )
+        || build
+            .backend_paths
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+        || build
+            .backend_paths
+            .iter()
+            .any(|path| !valid_backend_path_v1(path))
+    {
+        return Err(MacosLinuxVzPackageExecutionRequestErrorV1::ClosedOperationInvalid);
+    }
+    match build.build_mode {
+        SdistBuildModeV1::Pep517
+            if build
+                .build_backend
+                .as_deref()
+                .is_some_and(valid_backend_target_v1) =>
+        {
+            Ok(())
+        }
+        SdistBuildModeV1::LegacySetupPy
+            if build.build_backend.is_none() && build.backend_paths.is_empty() =>
+        {
+            Ok(())
+        }
+        _ => Err(MacosLinuxVzPackageExecutionRequestErrorV1::ClosedOperationInvalid),
+    }
+}
+
+fn valid_identity_component_v1(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value.is_ascii()
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b':' | b'@')
+        })
+}
+
+fn valid_python_target_v1(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 256
+        && value.is_ascii()
+        && value.split('.').all(|component| {
+            !component.is_empty()
+                && component
+                    .bytes()
+                    .next()
+                    .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
+                && component
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        })
+}
+
+fn valid_console_name_v1(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && !value.starts_with('-')
+        && value.is_ascii()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+fn valid_backend_target_v1(value: &str) -> bool {
+    if value.is_empty() || value.len() > 256 || !value.is_ascii() {
+        return false;
+    }
+    let (module, object) = value
+        .split_once(':')
+        .map_or((value, None), |(module, object)| (module, Some(object)));
+    valid_python_target_v1(module) && object.is_none_or(valid_python_target_v1)
+}
+
+fn valid_backend_path_v1(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 512
+        && value.is_ascii()
+        && !value.starts_with('/')
+        && !value.ends_with('/')
+        && !value
+            .split('/')
+            .any(|component| component.is_empty() || component == "." || component == "..")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MacosLinuxVzPackageExecutionRequestErrorV1 {
     GrantInvalid,
@@ -250,6 +636,8 @@ pub enum MacosLinuxVzPackageExecutionRequestErrorV1 {
     ScenarioInvalid,
     ScenarioBindingMismatch,
     ClosedOperationInvalid,
+    InvalidRequest,
+    NonCanonical,
     AlreadyConsumed,
     LimitExceeded,
     Serialization,
@@ -271,6 +659,8 @@ impl MacosLinuxVzPackageExecutionRequestErrorV1 {
             Self::ClosedOperationInvalid => {
                 "macos_linux_vz_execution_request_closed_operation_invalid"
             }
+            Self::InvalidRequest => "macos_linux_vz_execution_request_invalid",
+            Self::NonCanonical => "macos_linux_vz_execution_request_noncanonical",
             Self::AlreadyConsumed => "macos_linux_vz_execution_request_already_consumed",
             Self::LimitExceeded => "macos_linux_vz_execution_request_limit_exceeded",
             Self::Serialization => "macos_linux_vz_execution_request_serialization_failed",
@@ -915,5 +1305,53 @@ mod tests {
                 "unexpected process interface: {forbidden}"
             );
         }
+
+        let decoded = structurally_decode_macos_linux_vz_package_execution_request_v1(
+            request.canonical_json_v1(),
+        )
+        .expect("structurally validated request");
+        assert_eq!(decoded.request_sha256(), request.request_sha256());
+        assert_eq!(decoded.artifact_sha256(), request.artifact_sha256());
+        assert_eq!(decoded.operation(), request.operation());
+        assert!(!decoded.package_execution_authority_permitted());
+        assert!(!decoded.sync_back_permitted());
+
+        let mut noncanonical = b" ".to_vec();
+        noncanonical.extend_from_slice(request.canonical_json_v1());
+        assert_eq!(
+            structurally_decode_macos_linux_vz_package_execution_request_v1(&noncanonical),
+            Err(MacosLinuxVzPackageExecutionRequestErrorV1::NonCanonical)
+        );
+
+        let mut elevated: serde_json::Value =
+            serde_json::from_slice(request.canonical_json_v1()).expect("request value");
+        elevated["public_network_route_present"] = serde_json::json!(true);
+        let elevated = serde_json_canonicalizer::to_vec(&elevated).expect("elevated request");
+        assert_eq!(
+            structurally_decode_macos_linux_vz_package_execution_request_v1(&elevated),
+            Err(MacosLinuxVzPackageExecutionRequestErrorV1::InvalidRequest)
+        );
+
+        let mut cross_ecosystem: serde_json::Value =
+            serde_json::from_slice(request.canonical_json_v1()).expect("request value");
+        cross_ecosystem["operation"] = serde_json::json!({
+            "kind": "wheel_install_exact",
+            "install_template_sha256": digest("forged wheel install")
+        });
+        let cross_ecosystem =
+            serde_json_canonicalizer::to_vec(&cross_ecosystem).expect("cross-ecosystem request");
+        assert_eq!(
+            structurally_decode_macos_linux_vz_package_execution_request_v1(&cross_ecosystem),
+            Err(MacosLinuxVzPackageExecutionRequestErrorV1::InvalidRequest)
+        );
+
+        let mut unknown: serde_json::Value =
+            serde_json::from_slice(request.canonical_json_v1()).expect("request value");
+        unknown["shell"] = serde_json::json!("/bin/sh");
+        let unknown = serde_json_canonicalizer::to_vec(&unknown).expect("unknown request");
+        assert_eq!(
+            structurally_decode_macos_linux_vz_package_execution_request_v1(&unknown),
+            Err(MacosLinuxVzPackageExecutionRequestErrorV1::InvalidRequest)
+        );
     }
 }

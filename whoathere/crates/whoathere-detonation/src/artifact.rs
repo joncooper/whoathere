@@ -297,7 +297,7 @@ impl ArtifactScenarioLimitsV1 {
         }
     }
 
-    pub(crate) fn validate(&self) -> Result<(), ArtifactScenarioCompileErrorV1> {
+    pub fn validate(&self) -> Result<(), ArtifactScenarioCompileErrorV1> {
         if self.max_artifact_bytes == 0
             || self.max_artifact_bytes > MAX_ARTIFACT_SCENARIO_BYTES_V1
             || !(1_000..=900_000).contains(&self.wall_clock_millis)

@@ -149,6 +149,18 @@ template and derived build recipe binds whether the exact bytes are `sdist_tar_g
 `sdist_zip`, and package-authority construction independently rejects mismatched gzip/ZIP magic.
 The future runner therefore does not infer archive form from an untrusted or guessed path.
 
+The first distinct execution-runner binary now exists, but it deliberately executes no package
+yet. Its non-authorizing decoder rejects noncanonical, unknown, elevated, cross-ecosystem, and
+invalid-target requests. Its Linux protected mode requires UID/GID 65534, non-dumpable and
+no-new-privileges state, an all-root parent, fixed read-only pipe/artifact descriptors, closure of
+all other descriptors, and an exact artifact rehash before returning a false-authority validation
+report. Two clean offline builds produced byte-identical stripped static aarch64 binaries, and the
+fixed probe plus negative invocation checks passed in the pinned network-disabled Alpine container
+without any package input. This is protected ingress, not detonation or detection; fixed
+package-manager operations, cgroup teardown, evidence, a new runtime image, and physical inert
+qualification remain open. See the
+[execution-runner ingress checkpoint](artifact-native-linux-vz-package-execution-runner-ingress-checkpoint-2026-07-13.md).
+
 The first protected-sensor bootstrap now also observes a cgroup-filtered inert fork/exec/exit chain
 whose child runs as UID/GID 65534 and cannot read or write the root-only sensor. This remains
 unsigned bootstrap evidence rather than a conformance receipt. See the
