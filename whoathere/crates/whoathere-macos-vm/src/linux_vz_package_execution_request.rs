@@ -11,8 +11,8 @@ use whoathere_detonation::{
     decode_and_validate_artifact_scenario_template_v1, decode_and_validate_sdist_scenario_plan_v1,
     decode_and_validate_sdist_scenario_template_v1, decode_and_validate_wheel_scenario_plan_v1,
     decode_and_validate_wheel_scenario_template_v1, ArtifactScenarioLimitsV1,
-    ArtifactTelemetrySyncBackPolicyV1, NpmEnvironmentProfileV1, SdistBuildModeV1,
-    SdistScenarioKindV1, WheelConsoleArgumentProfileV1, WheelScenarioKindV1,
+    ArtifactTelemetrySyncBackPolicyV1, NpmEnvironmentProfileV1, SdistBuildClosureV1,
+    SdistBuildModeV1, SdistScenarioKindV1, WheelConsoleArgumentProfileV1, WheelScenarioKindV1,
     MAX_ARTIFACT_SCENARIO_BYTES_V1,
 };
 use zeroize::Zeroize;
@@ -35,35 +35,60 @@ pub enum MacosLinuxVzPackageExecutionArtifactInputV1 {
     ExactRehashedReadOnlyDescriptor,
 }
 
+/// Exact package-runtime executable identities copied from the validated scenario profile.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MacosLinuxVzPackageRuntimeExecutablesV1 {
+    NodeNpm {
+        node_version: String,
+        node_executable_sha256: Sha256Digest,
+        npm_version: String,
+        npm_cli_sha256: Sha256Digest,
+    },
+    PythonPip {
+        python_version: String,
+        python_executable_sha256: Sha256Digest,
+        pip_version: String,
+        pip_cli_sha256: Sha256Digest,
+    },
+}
+
 /// A build recipe derived from the validated sdist plan rather than from runner input.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MacosLinuxVzSdistBuildRecipeV1 {
     build_template_sha256: Sha256Digest,
     artifact_format: ArtifactFormat,
+    canonical_package_root: String,
     build_mode: SdistBuildModeV1,
     build_backend: Option<String>,
     backend_paths: Vec<String>,
     build_requires_sha256: Sha256Digest,
+    build_closure: SdistBuildClosureV1,
 }
 
 impl MacosLinuxVzSdistBuildRecipeV1 {
     #[cfg(test)]
     pub(crate) fn new_for_execution_program_test_v1(
-        build_template_sha256: Sha256Digest,
         artifact_format: ArtifactFormat,
+        canonical_package_root: String,
         build_mode: SdistBuildModeV1,
         build_backend: Option<String>,
         backend_paths: Vec<String>,
         build_requires_sha256: Sha256Digest,
+        build_closure: SdistBuildClosureV1,
     ) -> Self {
         Self {
-            build_template_sha256,
+            build_template_sha256: Sha256Digest::from_bytes(
+                b"inert test-only sdist build template",
+            ),
             artifact_format,
+            canonical_package_root,
             build_mode,
             build_backend,
             backend_paths,
             build_requires_sha256,
+            build_closure,
         }
     }
 
@@ -73,6 +98,10 @@ impl MacosLinuxVzSdistBuildRecipeV1 {
 
     pub const fn artifact_format(&self) -> ArtifactFormat {
         self.artifact_format
+    }
+
+    pub fn canonical_package_root(&self) -> &str {
+        &self.canonical_package_root
     }
 
     pub const fn build_mode(&self) -> SdistBuildModeV1 {
@@ -89,6 +118,10 @@ impl MacosLinuxVzSdistBuildRecipeV1 {
 
     pub fn build_requires_sha256(&self) -> &Sha256Digest {
         &self.build_requires_sha256
+    }
+
+    pub fn build_closure(&self) -> &SdistBuildClosureV1 {
+        &self.build_closure
     }
 }
 
@@ -200,6 +233,7 @@ struct PackageExecutionRequestWireV1 {
     package_uid: String,
     package_gid: String,
     artifact_input: MacosLinuxVzPackageExecutionArtifactInputV1,
+    runtime_executables: MacosLinuxVzPackageRuntimeExecutablesV1,
     operation: MacosLinuxVzPackageExecutionOperationV1,
     limits: ArtifactScenarioLimitsV1,
     attempt_limit: String,
@@ -315,6 +349,7 @@ pub struct StructurallyValidatedMacosLinuxVzPackageExecutionRequestV1 {
     clone_binding_sha256: Sha256Digest,
     package_uid: u32,
     package_gid: u32,
+    runtime_executables: MacosLinuxVzPackageRuntimeExecutablesV1,
     operation: MacosLinuxVzPackageExecutionOperationV1,
     limits: ArtifactScenarioLimitsV1,
 }
@@ -366,6 +401,10 @@ impl StructurallyValidatedMacosLinuxVzPackageExecutionRequestV1 {
 
     pub const fn package_gid(&self) -> u32 {
         self.package_gid
+    }
+
+    pub fn runtime_executables(&self) -> &MacosLinuxVzPackageRuntimeExecutablesV1 {
+        &self.runtime_executables
     }
 
     pub fn operation(&self) -> &MacosLinuxVzPackageExecutionOperationV1 {
@@ -451,6 +490,7 @@ pub fn structurally_decode_macos_linux_vz_package_execution_request_v1(
         || !wire.package_execution_permitted
         || wire.sync_back_policy != ArtifactTelemetrySyncBackPolicyV1::StructurallyAbsent
         || wire.limits.validate().is_err()
+        || validate_runtime_executables_v1(wire.artifact_kind, &wire.runtime_executables).is_err()
         || validate_closed_operation_v1(wire.artifact_kind, &wire.operation).is_err()
     {
         return Err(MacosLinuxVzPackageExecutionRequestErrorV1::InvalidRequest);
@@ -470,6 +510,7 @@ pub fn structurally_decode_macos_linux_vz_package_execution_request_v1(
         clone_binding_sha256: wire.clone_binding_sha256,
         package_uid,
         package_gid,
+        runtime_executables: wire.runtime_executables,
         operation: wire.operation,
         limits: wire.limits,
     })
@@ -490,6 +531,56 @@ fn canonical_u64_v1(value: &str) -> Result<u64, MacosLinuxVzPackageExecutionRequ
 fn canonical_u32_v1(value: &str) -> Result<u32, MacosLinuxVzPackageExecutionRequestErrorV1> {
     let parsed = canonical_u64_v1(value)?;
     u32::try_from(parsed).map_err(|_| MacosLinuxVzPackageExecutionRequestErrorV1::InvalidRequest)
+}
+
+fn validate_runtime_executables_v1(
+    artifact_kind: MacosLinuxVzPackageArtifactKindV1,
+    runtime: &MacosLinuxVzPackageRuntimeExecutablesV1,
+) -> Result<(), MacosLinuxVzPackageExecutionRequestErrorV1> {
+    let empty = Sha256Digest::from_bytes(&[]);
+    let valid_version = |value: &str| {
+        !value.is_empty()
+            && value.len() <= 64
+            && value.is_ascii()
+            && value.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b'+')
+            })
+    };
+    let valid = match (artifact_kind, runtime) {
+        (
+            MacosLinuxVzPackageArtifactKindV1::NpmTarball,
+            MacosLinuxVzPackageRuntimeExecutablesV1::NodeNpm {
+                node_version,
+                node_executable_sha256,
+                npm_version,
+                npm_cli_sha256,
+            },
+        ) => {
+            valid_version(node_version)
+                && node_executable_sha256 != &empty
+                && valid_version(npm_version)
+                && npm_cli_sha256 != &empty
+        }
+        (
+            MacosLinuxVzPackageArtifactKindV1::PypiWheel
+            | MacosLinuxVzPackageArtifactKindV1::PypiSdist,
+            MacosLinuxVzPackageRuntimeExecutablesV1::PythonPip {
+                python_version,
+                python_executable_sha256,
+                pip_version,
+                pip_cli_sha256,
+            },
+        ) => {
+            valid_version(python_version)
+                && python_executable_sha256 != &empty
+                && valid_version(pip_version)
+                && pip_cli_sha256 != &empty
+        }
+        _ => false,
+    };
+    valid
+        .then_some(())
+        .ok_or(MacosLinuxVzPackageExecutionRequestErrorV1::ClosedOperationInvalid)
 }
 
 fn validate_closed_operation_v1(
@@ -608,10 +699,13 @@ fn validate_sdist_build_recipe_v1(
     let empty = Sha256Digest::from_bytes(&[]);
     if build.build_template_sha256 == empty
         || build.build_requires_sha256 == empty
+        || build.build_closure.validate().is_err()
+        || build.build_closure.declaration_set_sha256() != &build.build_requires_sha256
         || !matches!(
             build.artifact_format,
             ArtifactFormat::SdistTarGzip | ArtifactFormat::SdistZip
         )
+        || !valid_sdist_package_root_v1(&build.canonical_package_root)
         || build
             .backend_paths
             .windows(2)
@@ -695,6 +789,15 @@ fn valid_backend_path_v1(value: &str) -> bool {
         && !value
             .split('/')
             .any(|component| component.is_empty() || component == "." || component == "..")
+}
+
+fn valid_sdist_package_root_v1(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 256
+        && value.is_ascii()
+        && !value.contains('/')
+        && value != "."
+        && value != ".."
 }
 
 fn valid_wheel_filename_v1(
@@ -935,7 +1038,7 @@ fn build_execution_request_v1(
         return Err(MacosLinuxVzPackageExecutionRequestErrorV1::ScenarioBindingMismatch);
     }
 
-    let (operation, limits) = operation_and_limits_v1(
+    let (operation, limits, runtime_executables) = operation_and_limits_v1(
         authority_request.artifact_kind(),
         scenario_plan_bytes,
         scenario_template_bytes,
@@ -969,6 +1072,7 @@ fn build_execution_request_v1(
         package_gid: grant.package_gid().to_string(),
         artifact_input:
             MacosLinuxVzPackageExecutionArtifactInputV1::ExactRehashedReadOnlyDescriptor,
+        runtime_executables,
         operation: operation.clone(),
         limits: limits.clone(),
         attempt_limit: "1".to_string(),
@@ -1008,6 +1112,7 @@ fn operation_and_limits_v1(
     (
         MacosLinuxVzPackageExecutionOperationV1,
         ArtifactScenarioLimitsV1,
+        MacosLinuxVzPackageRuntimeExecutablesV1,
     ),
     MacosLinuxVzPackageExecutionRequestErrorV1,
 > {
@@ -1021,6 +1126,12 @@ fn operation_and_limits_v1(
                     environment: template.environment(),
                 },
                 template.limits().clone(),
+                MacosLinuxVzPackageRuntimeExecutablesV1::NodeNpm {
+                    node_version: template.node_version().to_string(),
+                    node_executable_sha256: template.node_executable_sha256().clone(),
+                    npm_version: template.npm_version().to_string(),
+                    npm_cli_sha256: template.npm_cli_sha256().clone(),
+                },
             ))
         }
         MacosLinuxVzPackageArtifactKindV1::PypiWheel => {
@@ -1035,7 +1146,16 @@ fn operation_and_limits_v1(
                 template.package_version(),
                 template.scenario_kind(),
             )?;
-            Ok((operation, template.limits().clone()))
+            Ok((
+                operation,
+                template.limits().clone(),
+                MacosLinuxVzPackageRuntimeExecutablesV1::PythonPip {
+                    python_version: template.python_version().to_string(),
+                    python_executable_sha256: template.python_executable_sha256().clone(),
+                    pip_version: template.pip_version().to_string(),
+                    pip_cli_sha256: template.pip_cli_sha256().clone(),
+                },
+            ))
         }
         MacosLinuxVzPackageArtifactKindV1::PypiSdist => {
             let plan = decode_and_validate_sdist_scenario_plan_v1(scenario_plan_bytes)
@@ -1045,9 +1165,20 @@ fn operation_and_limits_v1(
             let operation = sdist_operation_v1(
                 plan.templates(),
                 template.artifact_format(),
+                template.canonical_package_root(),
+                template.build_closure(),
                 template.scenario_kind(),
             )?;
-            Ok((operation, template.limits().clone()))
+            Ok((
+                operation,
+                template.limits().clone(),
+                MacosLinuxVzPackageRuntimeExecutablesV1::PythonPip {
+                    python_version: template.python_version().to_string(),
+                    python_executable_sha256: template.python_executable_sha256().clone(),
+                    pip_version: template.pip_version().to_string(),
+                    pip_cli_sha256: template.pip_cli_sha256().clone(),
+                },
+            ))
         }
     }
 }
@@ -1115,6 +1246,8 @@ fn wheel_operation_v1(
 fn sdist_operation_v1(
     templates: &[(String, SdistScenarioKindV1, Sha256Digest)],
     artifact_format: ArtifactFormat,
+    canonical_package_root: &str,
+    build_closure: &SdistBuildClosureV1,
     selected: &SdistScenarioKindV1,
 ) -> Result<MacosLinuxVzPackageExecutionOperationV1, MacosLinuxVzPackageExecutionRequestErrorV1> {
     let build = templates
@@ -1128,10 +1261,12 @@ fn sdist_operation_v1(
             } => Some(MacosLinuxVzSdistBuildRecipeV1 {
                 build_template_sha256: digest.clone(),
                 artifact_format,
+                canonical_package_root: canonical_package_root.to_string(),
                 build_mode: *build_mode,
                 build_backend: build_backend.clone(),
                 backend_paths: backend_paths.clone(),
                 build_requires_sha256: build_requires_sha256.clone(),
+                build_closure: build_closure.clone(),
             }),
             _ => None,
         })
@@ -1170,6 +1305,7 @@ mod tests {
         compile_artifact_scenarios_v1, ArtifactRuntimeTargetV1,
         ArtifactScenarioCompilationRequestV1, ArtifactScenarioExecutionIdentityV1,
         ArtifactScenarioIdentitySetV1, ArtifactScenarioPolicyV1, NpmRuntimeProfileV1,
+        SdistBuildClosureArtifactFormatV1, SdistBuildClosureArtifactV1,
     };
     use whoathere_evidence::v2::{
         canonical_cas_object_key_for_artifact, ArtifactEvidenceSubjectV2,
@@ -1377,7 +1513,20 @@ mod tests {
     #[test]
     fn sdist_probe_carries_plan_bound_build_prerequisite() {
         let build_digest = digest("sdist build template");
-        let build_requires = digest("sdist build requirements");
+        let build_closure = SdistBuildClosureV1::new(
+            &["setuptools==75.0.0".to_string()],
+            vec![SdistBuildClosureArtifactV1::new(
+                "setuptools",
+                "75.0.0",
+                "setuptools-75.0.0-py3-none-any.whl",
+                SdistBuildClosureArtifactFormatV1::Wheel,
+                digest("setuptools wheel"),
+                1024,
+            )
+            .expect("build artifact")],
+        )
+        .expect("build closure");
+        let build_requires = build_closure.declaration_set_sha256().clone();
         let templates = vec![
             (
                 "build".to_string(),
@@ -1400,6 +1549,8 @@ mod tests {
         let operation = sdist_operation_v1(
             &templates,
             ArtifactFormat::SdistTarGzip,
+            "safe-fixture-1.0.0",
+            &build_closure,
             &SdistScenarioKindV1::ImportRoot {
                 module: "safe_fixture".to_string(),
             },
@@ -1415,7 +1566,9 @@ mod tests {
         assert_eq!(module, "safe_fixture");
         assert_eq!(build.build_template_sha256(), &build_digest);
         assert_eq!(build.artifact_format(), ArtifactFormat::SdistTarGzip);
+        assert_eq!(build.canonical_package_root(), "safe-fixture-1.0.0");
         assert_eq!(build.build_requires_sha256(), &build_requires);
+        assert_eq!(build.build_closure(), &build_closure);
         assert_eq!(build.build_backend(), Some("fixture_backend"));
         assert_eq!(build.backend_paths(), &["backend".to_string()]);
     }
@@ -1513,6 +1666,14 @@ mod tests {
         assert_eq!(decoded.request_sha256(), request.request_sha256());
         assert_eq!(decoded.artifact_sha256(), request.artifact_sha256());
         assert_eq!(decoded.operation(), request.operation());
+        assert!(matches!(
+            decoded.runtime_executables(),
+            MacosLinuxVzPackageRuntimeExecutablesV1::NodeNpm {
+                node_version,
+                npm_version,
+                ..
+            } if node_version == "24.17.0" && npm_version == "11.12.1"
+        ));
         assert!(!decoded.package_execution_authority_permitted());
         assert!(!decoded.sync_back_permitted());
         let program = crate::derive_macos_linux_vz_package_execution_program_v1(&decoded)
@@ -1560,6 +1721,22 @@ mod tests {
             serde_json_canonicalizer::to_vec(&cross_ecosystem).expect("cross-ecosystem request");
         assert_eq!(
             structurally_decode_macos_linux_vz_package_execution_request_v1(&cross_ecosystem),
+            Err(MacosLinuxVzPackageExecutionRequestErrorV1::InvalidRequest)
+        );
+
+        let mut cross_runtime: serde_json::Value =
+            serde_json::from_slice(request.canonical_json_v1()).expect("request value");
+        cross_runtime["runtime_executables"] = serde_json::json!({
+            "kind": "python_pip",
+            "python_version": "3.14.5",
+            "python_executable_sha256": digest("forged python"),
+            "pip_version": "26.1.2",
+            "pip_cli_sha256": digest("forged pip")
+        });
+        let cross_runtime =
+            serde_json_canonicalizer::to_vec(&cross_runtime).expect("cross-runtime request");
+        assert_eq!(
+            structurally_decode_macos_linux_vz_package_execution_request_v1(&cross_runtime),
             Err(MacosLinuxVzPackageExecutionRequestErrorV1::InvalidRequest)
         );
 

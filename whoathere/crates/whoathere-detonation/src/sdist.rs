@@ -352,7 +352,7 @@ impl SdistBuildClosureV1 {
             .map_err(|_| ArtifactScenarioCompileErrorV1::Serialization)
     }
 
-    fn validate(&self) -> Result<(), ArtifactScenarioCompileErrorV1> {
+    pub fn validate(&self) -> Result<(), ArtifactScenarioCompileErrorV1> {
         if self.schema_version != SDIST_BUILD_CLOSURE_SCHEMA_V1
             || self.artifacts.windows(2).any(|pair| pair[0] >= pair[1])
             || closure_artifact_filenames_are_not_unique(&self.artifacts)
@@ -1101,6 +1101,7 @@ pub struct ValidatedSdistScenarioTemplateWireV1 {
     envelope_sha256: Sha256Digest,
     manifest_sha256: Sha256Digest,
     artifact_format: ArtifactFormat,
+    canonical_package_root: String,
     artifact_byte_length: u64,
     policy_sha256: Sha256Digest,
     scenario_id: String,
@@ -1131,6 +1132,9 @@ impl ValidatedSdistScenarioTemplateWireV1 {
     }
     pub const fn artifact_format(&self) -> ArtifactFormat {
         self.artifact_format
+    }
+    pub fn canonical_package_root(&self) -> &str {
+        &self.canonical_package_root
     }
     pub fn artifact_byte_length(&self) -> u64 {
         self.artifact_byte_length
@@ -1200,6 +1204,7 @@ pub fn decode_and_validate_sdist_scenario_template_v1(
         envelope_sha256: wire.subject.envelope_sha256,
         manifest_sha256: wire.subject.manifest_sha256,
         artifact_format: wire.artifact_format,
+        canonical_package_root: wire.canonical_package_root,
         artifact_byte_length: wire.artifact_byte_length,
         policy_sha256: wire.policy_sha256,
         scenario_id: wire.identity.scenario_id,

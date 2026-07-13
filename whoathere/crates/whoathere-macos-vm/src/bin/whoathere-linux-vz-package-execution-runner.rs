@@ -13,6 +13,7 @@ use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use whoathere_artifact::Sha256Digest;
 #[cfg(target_os = "linux")]
 use whoathere_macos_vm::{
+    derive_macos_linux_vz_package_execution_process_plan_v1,
     derive_macos_linux_vz_package_execution_program_v1,
     structurally_decode_macos_linux_vz_package_execution_request_v1,
     MAX_MACOS_LINUX_VZ_PACKAGE_EXECUTION_REQUEST_BYTES_V1,
@@ -49,6 +50,8 @@ enum RunnerError {
     ArtifactInvalid,
     #[cfg(target_os = "linux")]
     ProgramInvalid,
+    #[cfg(target_os = "linux")]
+    ProcessPlanInvalid,
     Output,
 }
 
@@ -70,6 +73,8 @@ impl RunnerError {
             Self::ArtifactInvalid => "package_execution_runner_artifact_invalid",
             #[cfg(target_os = "linux")]
             Self::ProgramInvalid => "package_execution_runner_program_invalid",
+            #[cfg(target_os = "linux")]
+            Self::ProcessPlanInvalid => "package_execution_runner_process_plan_invalid",
             Self::Output => "package_execution_runner_output_failed",
         }
     }
@@ -82,7 +87,10 @@ impl RunnerError {
             #[cfg(target_os = "linux")]
             Self::PrivilegeBoundary | Self::ParentBoundary | Self::DescriptorBoundary => 77,
             #[cfg(target_os = "linux")]
-            Self::RequestInvalid | Self::ArtifactInvalid | Self::ProgramInvalid => 65,
+            Self::RequestInvalid
+            | Self::ArtifactInvalid
+            | Self::ProgramInvalid
+            | Self::ProcessPlanInvalid => 65,
             Self::Output => 74,
         }
     }
@@ -128,15 +136,20 @@ fn validate_protected_request() -> Result<(), RunnerError> {
     request_bytes.zeroize();
     let program = derive_macos_linux_vz_package_execution_program_v1(&request)
         .map_err(|_| RunnerError::ProgramInvalid)?;
+    let process_plan = derive_macos_linux_vz_package_execution_process_plan_v1(&program)
+        .map_err(|_| RunnerError::ProcessPlanInvalid)?;
 
     let report = serde_json_canonicalizer::to_vec(&serde_json::json!({
+        "action_count": process_plan.actions().len().to_string(),
         "artifact_rehashed": true,
         "closed_execution_program_derived": true,
         "execution_authority": false,
         "execution_program_sha256": program.program_sha256(),
         "execution_request_sha256": request.request_sha256(),
+        "fixed_process_plan_derived": true,
         "operation": request.operation().operation_name(),
         "package_execution": false,
+        "process_plan_sha256": process_plan.process_plan_sha256(),
         "request_structurally_validated": true,
         "schema_version": "whoathere.linux_vz_package_execution_runner_validation.v1",
         "stage_count": program.stages().len().to_string(),

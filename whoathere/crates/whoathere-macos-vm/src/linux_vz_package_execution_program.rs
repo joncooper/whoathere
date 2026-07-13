@@ -1,12 +1,14 @@
 use crate::{
     MacosLinuxVzPackageArtifactKindV1, MacosLinuxVzPackageExecutionOperationV1,
-    MacosLinuxVzSdistBuildRecipeV1, StructurallyValidatedMacosLinuxVzPackageExecutionRequestV1,
+    MacosLinuxVzPackageRuntimeExecutablesV1, MacosLinuxVzSdistBuildRecipeV1,
+    StructurallyValidatedMacosLinuxVzPackageExecutionRequestV1,
 };
 use serde::Serialize;
 use std::fmt;
 use whoathere_artifact::{ArtifactFormat, Sha256Digest};
 use whoathere_detonation::{
     ArtifactScenarioLimitsV1, ArtifactTelemetrySyncBackPolicyV1, NpmEnvironmentProfileV1,
+    SdistBuildClosureV1,
 };
 
 pub const MACOS_LINUX_VZ_PACKAGE_EXECUTION_PROGRAM_SCHEMA_V1: &str =
@@ -84,10 +86,12 @@ pub enum MacosLinuxVzPackageExecutionStageV1 {
     PythonSafelyExtractExactSdist {
         input_basename: String,
         artifact_format: ArtifactFormat,
+        expected_archive_root: String,
     },
     PythonCreateFreshSdistBuildVirtualEnvironment,
     PythonInstallExactSdistBuildClosure {
         build_requires_sha256: Sha256Digest,
+        build_closure: SdistBuildClosureV1,
         resolver_policy: MacosLinuxVzPackageDependencyPolicyV1,
     },
     PythonBuildExactSdist {
@@ -154,6 +158,7 @@ struct PackageExecutionProgramWireV1<'a> {
     network_policy: MacosLinuxVzPackageExecutionNetworkPolicyV1,
     package_uid: String,
     package_gid: String,
+    runtime_executables: &'a MacosLinuxVzPackageRuntimeExecutablesV1,
     stages: &'a [MacosLinuxVzPackageExecutionStageV1],
     limits: &'a ArtifactScenarioLimitsV1,
     arbitrary_command_input_present: bool,
@@ -168,6 +173,7 @@ pub struct MacosLinuxVzPackageExecutionProgramV1 {
     program_sha256: Sha256Digest,
     execution_request_sha256: Sha256Digest,
     artifact_sha256: Sha256Digest,
+    runtime_executables: MacosLinuxVzPackageRuntimeExecutablesV1,
     operation: &'static str,
     stages: Vec<MacosLinuxVzPackageExecutionStageV1>,
     limits: ArtifactScenarioLimitsV1,
@@ -180,6 +186,7 @@ impl fmt::Debug for MacosLinuxVzPackageExecutionProgramV1 {
             .field("program_sha256", &self.program_sha256)
             .field("execution_request_sha256", &self.execution_request_sha256)
             .field("artifact_sha256", &self.artifact_sha256)
+            .field("runtime_executables", &self.runtime_executables)
             .field("operation", &self.operation)
             .field("stage_count", &self.stages.len())
             .finish()
@@ -203,6 +210,10 @@ impl MacosLinuxVzPackageExecutionProgramV1 {
         &self.artifact_sha256
     }
 
+    pub fn runtime_executables(&self) -> &MacosLinuxVzPackageRuntimeExecutablesV1 {
+        &self.runtime_executables
+    }
+
     pub const fn operation_name(&self) -> &'static str {
         self.operation
     }
@@ -221,6 +232,25 @@ impl MacosLinuxVzPackageExecutionProgramV1 {
 
     pub const fn sync_back_permitted(&self) -> bool {
         false
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_macos_linux_vz_package_execution_program_v1(
+    runtime_executables: MacosLinuxVzPackageRuntimeExecutablesV1,
+    operation: &'static str,
+    stages: Vec<MacosLinuxVzPackageExecutionStageV1>,
+) -> MacosLinuxVzPackageExecutionProgramV1 {
+    let canonical_json = b"inert test-only execution program".to_vec();
+    MacosLinuxVzPackageExecutionProgramV1 {
+        program_sha256: Sha256Digest::from_bytes(&canonical_json),
+        canonical_json,
+        execution_request_sha256: Sha256Digest::from_bytes(b"inert test-only request"),
+        artifact_sha256: Sha256Digest::from_bytes(b"inert test-only artifact"),
+        runtime_executables,
+        operation,
+        stages,
+        limits: ArtifactScenarioLimitsV1::first_slice_defaults(),
     }
 }
 
@@ -275,6 +305,7 @@ pub fn derive_macos_linux_vz_package_execution_program_v1(
         network_policy: MacosLinuxVzPackageExecutionNetworkPolicyV1::NoPublicRoute,
         package_uid: request.package_uid().to_string(),
         package_gid: request.package_gid().to_string(),
+        runtime_executables: request.runtime_executables(),
         stages: &stages,
         limits: request.limits(),
         arbitrary_command_input_present: false,
@@ -294,6 +325,7 @@ pub fn derive_macos_linux_vz_package_execution_program_v1(
         canonical_json,
         execution_request_sha256: request.request_sha256().clone(),
         artifact_sha256: request.artifact_sha256().clone(),
+        runtime_executables: request.runtime_executables().clone(),
         operation: request.operation().operation_name(),
         stages,
         limits: request.limits().clone(),
@@ -435,10 +467,12 @@ fn sdist_stages_v1(
         MacosLinuxVzPackageExecutionStageV1::PythonSafelyExtractExactSdist {
             input_basename: input_basename.to_string(),
             artifact_format: build.artifact_format(),
+            expected_archive_root: build.canonical_package_root().to_string(),
         },
         MacosLinuxVzPackageExecutionStageV1::PythonCreateFreshSdistBuildVirtualEnvironment,
         MacosLinuxVzPackageExecutionStageV1::PythonInstallExactSdistBuildClosure {
             build_requires_sha256: build.build_requires_sha256().clone(),
+            build_closure: build.build_closure().clone(),
             resolver_policy: MacosLinuxVzPackageDependencyPolicyV1::NoIndexFixedClosureOnly,
         },
         MacosLinuxVzPackageExecutionStageV1::PythonBuildExactSdist {
@@ -474,20 +508,37 @@ fn sdist_stages_v1(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use whoathere_detonation::SdistBuildModeV1;
+    use whoathere_detonation::{
+        SdistBuildClosureArtifactFormatV1, SdistBuildClosureArtifactV1, SdistBuildClosureV1,
+        SdistBuildModeV1,
+    };
 
     fn digest(label: &str) -> Sha256Digest {
         Sha256Digest::from_bytes(label.as_bytes())
     }
 
     fn sdist_build(format: ArtifactFormat) -> MacosLinuxVzSdistBuildRecipeV1 {
+        let build_closure = SdistBuildClosureV1::new(
+            &["setuptools==75.0.0".to_string()],
+            vec![SdistBuildClosureArtifactV1::new(
+                "setuptools",
+                "75.0.0",
+                "setuptools-75.0.0-py3-none-any.whl",
+                SdistBuildClosureArtifactFormatV1::Wheel,
+                digest("setuptools wheel"),
+                1024,
+            )
+            .expect("build artifact")],
+        )
+        .expect("build closure");
         MacosLinuxVzSdistBuildRecipeV1::new_for_execution_program_test_v1(
-            digest("build template"),
             format,
+            "fixture-pkg-1.0.0".to_string(),
             SdistBuildModeV1::Pep517,
             Some("setuptools.build_meta".to_string()),
             Vec::new(),
-            digest("build closure"),
+            build_closure.declaration_set_sha256().clone(),
+            build_closure,
         )
     }
 

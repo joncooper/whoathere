@@ -183,6 +183,20 @@ program contract, not a process launcher: the measured executable/argv mapping, 
 cgroup sensor, and physical inert qualification remain open. See the
 [closed execution-program checkpoint](artifact-native-linux-vz-closed-execution-program-checkpoint-2026-07-13.md).
 
+The semantic program now also derives one canonical fixed process plan. It binds the exact measured
+Node/npm or Python/pip identities, separates the executable from fixed post-`argv[0]` arguments,
+clears the environment before installing one exact map, fixes working directories and bounded I/O,
+and accepts no caller process input. npm maps only to the exact offline local-tarball lifecycle
+install under the two typed CI profiles. Wheels map to a fresh environment, exact no-index/no-deps
+install, and only the selected closed probe. Sdists now preserve their normalization-validated
+archive root through request and safe-extraction planning, carry the exact build closure rather than
+only its digest, validate one derived wheel, and use a typed derived-wheel path slot for any later
+install. The runner reports the process-plan digest and action count but still executes nothing.
+The root materializer, safe extractor, verified launcher, cgroup enforcement, signed results, new
+runtime image, and physical inert qualification remain open. The 7/11 malicious-package detection
+score is unchanged. See the
+[fixed process-plan checkpoint](artifact-native-linux-vz-fixed-process-plan-checkpoint-2026-07-13.md).
+
 The first protected-sensor bootstrap now also observes a cgroup-filtered inert fork/exec/exit chain
 whose child runs as UID/GID 65534 and cannot read or write the root-only sensor. This remains
 unsigned bootstrap evidence rather than a conformance receipt. See the
