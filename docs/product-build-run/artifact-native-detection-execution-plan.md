@@ -24,6 +24,15 @@ rebinding. The candidate runtime is explicitly unqualified, so package execution
 remain unavailable. See the
 [Linux VZ package authority-request checkpoint](artifact-native-linux-vz-package-authority-request-checkpoint-2026-07-13.md).
 
+The first separate package-runtime candidate is now byte-reproducible. It contains a fully
+hash-locked Alpine 3.24.1 aarch64 closure for Node/npm and Python/pip, a UID/GID 65534 writable
+workspace, and a static runner that supports only a fixed non-executing identity probe. Two clean
+offline builds produced byte-identical rootfs, archive, manifest, runner, and lock outputs; both
+passed independent archive-to-ext2, filesystem, version, ownership, policy, and runner checks.
+The candidate has not booted under VZ and is not qualified, so package execution remains
+unavailable. See the
+[pinned package-runtime candidate checkpoint](artifact-native-linux-vz-pinned-package-runtime-candidate-checkpoint-2026-07-13.md).
+
 The first protected-sensor bootstrap now also observes a cgroup-filtered inert fork/exec/exit chain
 whose child runs as UID/GID 65534 and cannot read or write the root-only sensor. This remains
 unsigned bootstrap evidence rather than a conformance receipt. See the
