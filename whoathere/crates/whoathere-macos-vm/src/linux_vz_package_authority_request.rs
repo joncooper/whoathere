@@ -1,6 +1,11 @@
 use crate::QualifiedMacosLinuxVzTelemetryBackendV1;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::fmt;
+use std::fs::OpenOptions;
+use std::io::Read;
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::Path;
 use whoathere_artifact::Sha256Digest;
 use whoathere_detonation::{
     decode_and_validate_artifact_scenario_plan_v1,
@@ -70,6 +75,33 @@ impl MacosLinuxVzCandidatePackageRuntimeV1 {
         Ok(value)
     }
 
+    pub fn from_exact_files(
+        rootfs_path: &Path,
+        runtime_manifest_path: &Path,
+        package_runner_path: &Path,
+    ) -> Result<Self, MacosLinuxVzPackageAuthorityRequestErrorV1> {
+        let (rootfs_sha256, rootfs_byte_length) = hash_regular_nofollow_v1(
+            rootfs_path,
+            MAX_MACOS_LINUX_VZ_CANDIDATE_RUNTIME_ROOTFS_BYTES_V1,
+        )?;
+        let runtime_manifest_bytes = read_regular_nofollow_v1(
+            runtime_manifest_path,
+            MAX_MACOS_LINUX_VZ_CANDIDATE_RUNTIME_MANIFEST_BYTES_V1 as u64,
+        )?;
+        let package_runner_bytes = read_regular_nofollow_v1(
+            package_runner_path,
+            MAX_MACOS_LINUX_VZ_CANDIDATE_PACKAGE_RUNNER_BYTES_V1 as u64,
+        )?;
+        let value = Self {
+            rootfs_sha256,
+            rootfs_byte_length,
+            runtime_manifest_sha256: Sha256Digest::from_bytes(&runtime_manifest_bytes),
+            package_runner_sha256: Sha256Digest::from_bytes(&package_runner_bytes),
+        };
+        value.validate()?;
+        Ok(value)
+    }
+
     pub(crate) fn validate(&self) -> Result<(), MacosLinuxVzPackageAuthorityRequestErrorV1> {
         let empty = Sha256Digest::from_bytes(&[]);
         if self.rootfs_byte_length == 0
@@ -101,6 +133,85 @@ impl MacosLinuxVzCandidatePackageRuntimeV1 {
     pub fn package_runner_sha256(&self) -> &Sha256Digest {
         &self.package_runner_sha256
     }
+}
+
+fn read_regular_nofollow_v1(
+    path: &Path,
+    maximum: u64,
+) -> Result<Vec<u8>, MacosLinuxVzPackageAuthorityRequestErrorV1> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+        .map_err(|_| MacosLinuxVzPackageAuthorityRequestErrorV1::CandidateRuntimeInvalid)?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| MacosLinuxVzPackageAuthorityRequestErrorV1::CandidateRuntimeInvalid)?;
+    if !metadata.file_type().is_file() || metadata.len() == 0 || metadata.len() > maximum {
+        return Err(MacosLinuxVzPackageAuthorityRequestErrorV1::CandidateRuntimeInvalid);
+    }
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.take(maximum + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| MacosLinuxVzPackageAuthorityRequestErrorV1::CandidateRuntimeInvalid)?;
+    if bytes.len() as u64 != metadata.len() || bytes.len() as u64 > maximum {
+        return Err(MacosLinuxVzPackageAuthorityRequestErrorV1::CandidateRuntimeInvalid);
+    }
+    Ok(bytes)
+}
+
+fn hash_regular_nofollow_v1(
+    path: &Path,
+    maximum: u64,
+) -> Result<(Sha256Digest, u64), MacosLinuxVzPackageAuthorityRequestErrorV1> {
+    let mut file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+        .map_err(|_| MacosLinuxVzPackageAuthorityRequestErrorV1::CandidateRuntimeInvalid)?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| MacosLinuxVzPackageAuthorityRequestErrorV1::CandidateRuntimeInvalid)?;
+    let length = metadata.len();
+    if !metadata.file_type().is_file() || length == 0 || length > maximum {
+        return Err(MacosLinuxVzPackageAuthorityRequestErrorV1::CandidateRuntimeInvalid);
+    }
+    let mut hasher = Sha256::new();
+    let mut observed = 0_u64;
+    let mut buffer = vec![0_u8; 1024 * 1024];
+    while observed < length {
+        let requested = usize::try_from((length - observed).min(buffer.len() as u64))
+            .map_err(|_| MacosLinuxVzPackageAuthorityRequestErrorV1::CandidateRuntimeInvalid)?;
+        let count = file
+            .read(&mut buffer[..requested])
+            .map_err(|_| MacosLinuxVzPackageAuthorityRequestErrorV1::CandidateRuntimeInvalid)?;
+        if count == 0 {
+            return Err(MacosLinuxVzPackageAuthorityRequestErrorV1::CandidateRuntimeInvalid);
+        }
+        hasher.update(&buffer[..count]);
+        observed += count as u64;
+    }
+    let mut trailing = [0_u8; 1];
+    if file
+        .read(&mut trailing)
+        .map_err(|_| MacosLinuxVzPackageAuthorityRequestErrorV1::CandidateRuntimeInvalid)?
+        != 0
+    {
+        return Err(MacosLinuxVzPackageAuthorityRequestErrorV1::CandidateRuntimeInvalid);
+    }
+    let digest = hasher.finalize();
+    let mut text = String::with_capacity(71);
+    text.push_str("sha256:");
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for byte in digest {
+        text.push(HEX[(byte >> 4) as usize] as char);
+        text.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    Ok((
+        Sha256Digest::parse(text)
+            .map_err(|_| MacosLinuxVzPackageAuthorityRequestErrorV1::CandidateRuntimeInvalid)?,
+        length,
+    ))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

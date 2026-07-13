@@ -19,7 +19,8 @@ use whoathere_macos_vm::{
     compile_macos_linux_vz_telemetry_conformance_run_spec_v1,
     decode_and_verify_macos_linux_vz_package_authority_request_v1,
     decode_and_verify_macos_linux_vz_package_runtime_qualification_request_v1,
-    decode_macos_linux_vz_package_runtime_qualification_request_v1, expected_terminal_for_case_v1,
+    decode_macos_linux_vz_package_runtime_qualification_request_v1,
+    decode_qualified_macos_linux_vz_telemetry_backend_v1, expected_terminal_for_case_v1,
     qualify_macos_linux_vz_telemetry_backend_v1,
     sign_macos_linux_vz_package_runtime_qualification_guest_receipt_v1,
     sign_macos_linux_vz_telemetry_guest_receipt_v1, sign_macos_linux_vz_telemetry_host_receipt_v1,
@@ -362,6 +363,20 @@ fn exact_complete_matrix_constructs_distinct_non_authorizing_qualified_backend()
     assert_eq!(
         qualified.qualified_backend_sha256().as_str(),
         "sha256:455c3566f07451d9a763ba594652938aced20bd8f90eb7c712995a8e13e91c1a"
+    );
+    let decoded = decode_qualified_macos_linux_vz_telemetry_backend_v1(
+        qualified.canonical_json_v1(),
+        &backend,
+    )
+    .expect("decoded exact qualified backend");
+    assert_eq!(decoded, qualified);
+    let mut elevated: serde_json::Value =
+        serde_json::from_slice(qualified.canonical_json_v1()).expect("qualified backend value");
+    elevated["execution_authority_issued"] = serde_json::json!(true);
+    let elevated = serde_json_canonicalizer::to_vec(&elevated).expect("elevated backend");
+    assert_eq!(
+        decode_qualified_macos_linux_vz_telemetry_backend_v1(&elevated, &backend),
+        Err(MacosLinuxVzTelemetryQualificationErrorV1::BackendInvalid)
     );
 
     let mut reversed = matrix;

@@ -1,0 +1,92 @@
+#!/usr/bin/sh
+set -eu
+
+PATH=/usr/bin:/usr/sbin:/bin:/sbin
+export PATH
+busybox=/usr/bin/busybox
+"$busybox" chmod 0755 /
+
+"$busybox" mkdir -p /proc /sys /dev /run /runtime /etc
+"$busybox" mount -t proc proc /proc
+"$busybox" mount -t sysfs sysfs /sys
+"$busybox" mount -t devtmpfs devtmpfs /dev || true
+"$busybox" mount -t tmpfs -o mode=0700 tmpfs /run
+"$busybox" chmod 0700 /runtime
+: > /etc/resolv.conf
+"$busybox" chmod 0600 /etc/resolv.conf
+"$busybox" mkdir -p /sys/fs/bpf /sys/fs/cgroup
+
+failed=0
+
+echo "WHOATHERE_RUNTIME_QUALIFICATION_BEGIN"
+echo "WHOATHERE_CAPABILITY kernel_release=$("$busybox" uname -r)"
+echo "WHOATHERE_CAPABILITY architecture=$("$busybox" uname -m)"
+
+if "$busybox" mount -t cgroup2 cgroup2 /sys/fs/cgroup; then
+    echo "WHOATHERE_CAPABILITY cgroup_v2=mounted"
+else
+    echo "WHOATHERE_CAPABILITY cgroup_v2=failed"
+    failed=1
+fi
+
+if "$busybox" mount -t bpf bpf /sys/fs/bpf; then
+    echo "WHOATHERE_CAPABILITY bpf_fs=mounted"
+else
+    echo "WHOATHERE_CAPABILITY bpf_fs=failed"
+    failed=1
+fi
+
+if "$busybox" insmod /whoathere/modules/vsock.ko && \
+   "$busybox" insmod /whoathere/modules/vmw_vsock_virtio_transport_common.ko && \
+   "$busybox" insmod /whoathere/modules/vmw_vsock_virtio_transport.ko && \
+   "$busybox" insmod /whoathere/modules/virtio_blk.ko && \
+   "$busybox" insmod /whoathere/modules/crc16.ko && \
+   "$busybox" insmod /whoathere/modules/mbcache.ko && \
+   "$busybox" insmod /whoathere/modules/jbd2.ko && \
+   "$busybox" insmod /whoathere/modules/ext4.ko
+then
+    echo "WHOATHERE_CAPABILITY runtime_modules=loaded"
+else
+    echo "WHOATHERE_CAPABILITY runtime_modules=failed"
+    failed=1
+fi
+
+if modprobe virtio_net 2>/dev/null; then
+    echo "WHOATHERE_CAPABILITY virtio_net=loaded_without_configuration"
+else
+    echo "WHOATHERE_CAPABILITY virtio_net=unavailable"
+    failed=1
+fi
+
+attempt=0
+while [ ! -b /dev/vda ] && [ "$attempt" -lt 50 ]; do
+    "$busybox" sleep 0.1
+    attempt=$((attempt + 1))
+done
+if [ -b /dev/vda ]; then
+    echo "WHOATHERE_CAPABILITY candidate_rootfs_block_device=present"
+else
+    echo "WHOATHERE_CAPABILITY candidate_rootfs_block_device=missing"
+    failed=1
+fi
+
+if [ "$failed" -eq 0 ] && /whoathere/runtime-qualification-agent; then
+    echo "WHOATHERE_CAPABILITY runtime_qualification_receipt=passed"
+else
+    echo "WHOATHERE_CAPABILITY runtime_qualification_receipt=failed"
+    failed=1
+fi
+
+echo "WHOATHERE_CAPABILITY external_route_configured=false"
+echo "WHOATHERE_CAPABILITY package_execution=false"
+echo "WHOATHERE_CAPABILITY sync_back=false"
+if [ "$failed" -eq 0 ]; then
+    echo "WHOATHERE_RUNTIME_QUALIFICATION_OK"
+else
+    echo "WHOATHERE_RUNTIME_QUALIFICATION_FAILED"
+fi
+"$busybox" sync
+"$busybox" poweroff -f
+"$busybox" sleep 5
+echo "WHOATHERE_RUNTIME_QUALIFICATION_POWER_OFF_FAILED"
+exit 1

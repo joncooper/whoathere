@@ -35,6 +35,14 @@ public struct ParsedLinuxVzPackageRuntimeQualificationRequest: Equatable, Sendab
     public let requestSHA256: String
     public let qualifiedTelemetryBackendSHA256: String
     public let backendIdentitySHA256: String
+    public let telemetryRequirementsSHA256: String
+    public let conformanceEvidenceSetSHA256: String
+    public let kernelImageSHA256: String
+    public let qualifiedInitramfsSHA256: String
+    public let qualifiedGuestSignerSHA256: String
+    public let qualifiedProtectedSensorSHA256: String
+    public let guestEvidencePublicKeySHA256: String
+    public let hostEvidencePublicKeySHA256: String
     public let runtimeQualificationInitramfsSHA256: String
     public let runtimeQualificationGuestAgentSHA256: String
     public let runtimeQualificationGuestInitSHA256: String
@@ -168,6 +176,14 @@ public func decodeLinuxVzPackageRuntimeQualificationRequest(
         requestSHA256: sha256(data),
         qualifiedTelemetryBackendSHA256: digests["qualified_telemetry_backend_sha256"]!,
         backendIdentitySHA256: digests["backend_identity_sha256"]!,
+        telemetryRequirementsSHA256: digests["telemetry_requirements_sha256"]!,
+        conformanceEvidenceSetSHA256: digests["conformance_evidence_set_sha256"]!,
+        kernelImageSHA256: digests["kernel_image_sha256"]!,
+        qualifiedInitramfsSHA256: digests["qualified_initramfs_sha256"]!,
+        qualifiedGuestSignerSHA256: digests["qualified_guest_signer_sha256"]!,
+        qualifiedProtectedSensorSHA256: digests["qualified_protected_sensor_sha256"]!,
+        guestEvidencePublicKeySHA256: digests["guest_evidence_public_key_sha256"]!,
+        hostEvidencePublicKeySHA256: digests["host_evidence_public_key_sha256"]!,
         runtimeQualificationInitramfsSHA256: imageDigests[0],
         runtimeQualificationGuestAgentSHA256: imageDigests[1],
         runtimeQualificationGuestInitSHA256: imageDigests[2],

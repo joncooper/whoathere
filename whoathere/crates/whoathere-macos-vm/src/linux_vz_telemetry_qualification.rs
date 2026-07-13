@@ -240,3 +240,117 @@ pub fn qualify_macos_linux_vz_telemetry_backend_v1(
         conformance_evidence_set_sha256: evidence_sha256,
     })
 }
+
+pub fn decode_qualified_macos_linux_vz_telemetry_backend_v1(
+    bytes: &[u8],
+    expected_backend: &UnqualifiedMacosLinuxVzTelemetryBackendIdentityV1,
+) -> Result<QualifiedMacosLinuxVzTelemetryBackendV1, MacosLinuxVzTelemetryQualificationErrorV1> {
+    if bytes.is_empty()
+        || bytes.len() > crate::MAX_MACOS_LINUX_VZ_TELEMETRY_CONFORMANCE_EVIDENCE_BYTES_V1
+    {
+        return Err(MacosLinuxVzTelemetryQualificationErrorV1::LimitExceeded);
+    }
+    let mut deserializer = serde_json::Deserializer::from_slice(bytes);
+    let wire = QualifiedBackendWireV1::deserialize(&mut deserializer)
+        .map_err(|_| MacosLinuxVzTelemetryQualificationErrorV1::BackendInvalid)?;
+    deserializer
+        .end()
+        .map_err(|_| MacosLinuxVzTelemetryQualificationErrorV1::BackendInvalid)?;
+    let canonical = serde_json_canonicalizer::to_vec(&wire)
+        .map_err(|_| MacosLinuxVzTelemetryQualificationErrorV1::Serialization)?;
+    if canonical != bytes {
+        return Err(MacosLinuxVzTelemetryQualificationErrorV1::BackendInvalid);
+    }
+    let expected_backend_bytes = expected_backend
+        .canonical_json_v1()
+        .map_err(|_| MacosLinuxVzTelemetryQualificationErrorV1::BackendInvalid)?;
+    let expected_backend_value: serde_json::Value = serde_json::from_slice(&expected_backend_bytes)
+        .map_err(|_| MacosLinuxVzTelemetryQualificationErrorV1::BackendInvalid)?;
+    let expected_backend_sha256 = Sha256Digest::from_bytes(&expected_backend_bytes);
+    let expected_requirements_sha256 = expected_backend.telemetry_requirements_sha256().clone();
+    if wire.schema_version != MACOS_LINUX_VZ_QUALIFIED_TELEMETRY_BACKEND_SCHEMA_V1
+        || wire.qualification_state
+            != MacosLinuxVzTelemetryQualifiedStateV1::CompleteInertConformanceMatrixVerified
+        || wire.backend_identity != expected_backend_value
+        || wire.backend_identity_sha256 != expected_backend_sha256
+        || wire.telemetry_requirements_sha256 != expected_requirements_sha256
+        || wire.clone_policy != "one_unique_clone_per_case_destroyed"
+        || wire.execution_eligibility != "typed_package_scenario_authority_request_only"
+        || wire.execution_authority_issued
+        || wire.sync_back_policy != ArtifactTelemetrySyncBackPolicyV1::StructurallyAbsent
+        || wire.conformance_case_count
+            != ALL_LINUX_VZ_TELEMETRY_CONFORMANCE_CASES_V1
+                .len()
+                .to_string()
+        || wire.conformance_cases.len() != ALL_LINUX_VZ_TELEMETRY_CONFORMANCE_CASES_V1.len()
+    {
+        return Err(MacosLinuxVzTelemetryQualificationErrorV1::BackendInvalid);
+    }
+
+    let expected_cases: BTreeSet<_> = ALL_LINUX_VZ_TELEMETRY_CONFORMANCE_CASES_V1
+        .into_iter()
+        .collect();
+    let mut seen_cases = BTreeSet::new();
+    let mut seen_challenges = BTreeSet::new();
+    let mut seen_run_specs = BTreeSet::new();
+    let mut seen_clones = BTreeSet::new();
+    let empty = Sha256Digest::from_bytes(&[]);
+    for binding in &wire.conformance_cases {
+        if binding.challenge_sha256 == empty
+            || binding.run_spec_sha256 == empty
+            || binding.clone_binding_sha256 == empty
+            || binding.challenge_sha256 == binding.run_spec_sha256
+            || binding.challenge_sha256 == binding.clone_binding_sha256
+            || binding.run_spec_sha256 == binding.clone_binding_sha256
+        {
+            return Err(MacosLinuxVzTelemetryQualificationErrorV1::BackendInvalid);
+        }
+        if !seen_cases.insert(binding.fixture_case) {
+            return Err(MacosLinuxVzTelemetryQualificationErrorV1::DuplicateCase);
+        }
+        if !seen_challenges.insert(binding.challenge_sha256.clone()) {
+            return Err(MacosLinuxVzTelemetryQualificationErrorV1::ChallengeReuse);
+        }
+        if !seen_run_specs.insert(binding.run_spec_sha256.clone()) {
+            return Err(MacosLinuxVzTelemetryQualificationErrorV1::RunSpecReuse);
+        }
+        if !seen_clones.insert(binding.clone_binding_sha256.clone()) {
+            return Err(MacosLinuxVzTelemetryQualificationErrorV1::CloneReuse);
+        }
+        if binding.fixture_case == LinuxVzTelemetryConformanceCaseV1::GuestSensorDeath
+            && binding.guest_receipt_present
+        {
+            return Err(MacosLinuxVzTelemetryQualificationErrorV1::BackendInvalid);
+        }
+        if !matches!(
+            binding.fixture_case,
+            LinuxVzTelemetryConformanceCaseV1::GuestSensorDeath
+                | LinuxVzTelemetryConformanceCaseV1::ChannelInterruption
+                | LinuxVzTelemetryConformanceCaseV1::VmStop
+        ) && !binding.guest_receipt_present
+        {
+            return Err(MacosLinuxVzTelemetryQualificationErrorV1::BackendInvalid);
+        }
+    }
+    if seen_cases != expected_cases {
+        return Err(MacosLinuxVzTelemetryQualificationErrorV1::IncompleteMatrix);
+    }
+    let mut sorted_bindings = wire.conformance_cases.clone();
+    sorted_bindings.sort_by_key(|binding| binding.fixture_case);
+    if sorted_bindings != wire.conformance_cases {
+        return Err(MacosLinuxVzTelemetryQualificationErrorV1::BackendInvalid);
+    }
+    let evidence_bytes = serde_json_canonicalizer::to_vec(&wire.conformance_cases)
+        .map_err(|_| MacosLinuxVzTelemetryQualificationErrorV1::Serialization)?;
+    let evidence_sha256 = Sha256Digest::from_bytes(&evidence_bytes);
+    if wire.conformance_evidence_set_sha256 != evidence_sha256 {
+        return Err(MacosLinuxVzTelemetryQualificationErrorV1::BackendInvalid);
+    }
+    Ok(QualifiedMacosLinuxVzTelemetryBackendV1 {
+        canonical_json: canonical,
+        qualified_backend_sha256: Sha256Digest::from_bytes(bytes),
+        backend_identity_sha256: expected_backend_sha256,
+        telemetry_requirements_sha256: expected_requirements_sha256,
+        conformance_evidence_set_sha256: evidence_sha256,
+    })
+}

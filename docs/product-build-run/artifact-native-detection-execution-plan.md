@@ -72,6 +72,17 @@ denied. This is protocol qualification only: the guest agent and overlay do not 
 package-runtime VM has booted. See the
 [runtime-qualification receipt-protocol checkpoint](artifact-native-linux-vz-runtime-qualification-receipt-protocol-checkpoint-2026-07-13.md).
 
+The deterministic runtime-qualification guest candidate now exists. Its strict vsock agent
+remeasures the exact guest composition and candidate block device, mounts the ext filesystem
+read-only with `nodev,nosuid`, permits only the fixed false-authority probe through the qualified
+protected sensor, and signs the exact report plus complete process evidence. A strict Rust request
+builder and independent Rust and Swift receipt verifiers bind the qualified backend, fresh
+challenge, unique clone, image, runtime, and guest key. Two clean offline image builds were
+byte-identical and both passed the independent image verifier; the Rust crate passes 180 tests and
+the Swift helper passes 195. The image has not booted, so the runtime remains unqualified and no
+package authority exists. See the
+[runtime-qualification guest-candidate checkpoint](artifact-native-linux-vz-runtime-qualification-guest-candidate-checkpoint-2026-07-13.md).
+
 The first protected-sensor bootstrap now also observes a cgroup-filtered inert fork/exec/exit chain
 whose child runs as UID/GID 65534 and cannot read or write the root-only sensor. This remains
 unsigned bootstrap evidence rather than a conformance receipt. See the
@@ -1688,6 +1699,7 @@ Repository evidence:
 - [Linux VZ raw-frame and qualification checkpoint](artifact-native-linux-vz-raw-frame-qualification-checkpoint-2026-07-13.md)
 - [Linux VZ package authority-request checkpoint](artifact-native-linux-vz-package-authority-request-checkpoint-2026-07-13.md)
 - [Linux VZ package-runtime clone preflight checkpoint](artifact-native-linux-vz-package-runtime-clone-preflight-checkpoint-2026-07-13.md)
+- [Linux VZ runtime-qualification guest-candidate checkpoint](artifact-native-linux-vz-runtime-qualification-guest-candidate-checkpoint-2026-07-13.md)
 - [macOS local release readiness](macos-local-release-readiness.md)
 - [macOS local beta pressure checkpoint](macos-local-beta-pressure-checkpoint.md)
 - [latest source-fixture corpus report](src-fixture-corpus-latest.md)
