@@ -70,6 +70,26 @@ impl LinuxVzTelemetryGuestObservationClaimsV1 {
         &self.evidence_payload_sha256
     }
 
+    pub const fn evidence_byte_length(&self) -> u64 {
+        self.evidence_byte_length
+    }
+
+    pub const fn event_sequence_start(&self) -> u64 {
+        self.event_sequence_start
+    }
+
+    pub const fn event_sequence_end(&self) -> u64 {
+        self.event_sequence_end
+    }
+
+    pub const fn event_count(&self) -> u64 {
+        self.event_count
+    }
+
+    pub const fn heartbeat_count(&self) -> u64 {
+        self.heartbeat_count
+    }
+
     pub fn dropped_event_count(&self) -> u64 {
         self.dropped_event_count
     }

@@ -19,15 +19,20 @@ use whoathere_macos_vm::{
     compile_macos_linux_vz_telemetry_conformance_run_spec_v1,
     decode_and_verify_macos_linux_vz_package_authority_request_v1,
     decode_and_verify_macos_linux_vz_package_runtime_qualification_request_v1,
-    expected_terminal_for_case_v1, qualify_macos_linux_vz_telemetry_backend_v1,
+    decode_macos_linux_vz_package_runtime_qualification_request_v1, expected_terminal_for_case_v1,
+    qualify_macos_linux_vz_telemetry_backend_v1,
+    sign_macos_linux_vz_package_runtime_qualification_guest_receipt_v1,
     sign_macos_linux_vz_telemetry_guest_receipt_v1, sign_macos_linux_vz_telemetry_host_receipt_v1,
+    verify_macos_linux_vz_package_runtime_qualification_guest_receipt_v1,
     verify_macos_linux_vz_telemetry_conformance_case_v1,
     verify_macos_linux_vz_telemetry_guest_receipt_v1,
     verify_macos_linux_vz_telemetry_host_receipt_v1, LinuxVzTelemetryConformanceCaseV1,
     LinuxVzTelemetryConformanceExpectedTerminalV1, LinuxVzTelemetryConformanceObservedTerminalV1,
     LinuxVzTelemetryGuestObservationClaimsV1, LinuxVzTelemetryHostObservationClaimsV1,
     MacosLinuxVzCandidatePackageRuntimeV1, MacosLinuxVzPackageArtifactKindV1,
-    MacosLinuxVzPackageAuthorityRequestErrorV1, MacosLinuxVzPackageRuntimeQualificationImageV1,
+    MacosLinuxVzPackageAuthorityRequestErrorV1,
+    MacosLinuxVzPackageRuntimeQualificationGuestClaimsV1,
+    MacosLinuxVzPackageRuntimeQualificationImageV1,
     MacosLinuxVzPackageRuntimeQualificationRequestErrorV1,
     MacosLinuxVzTelemetryConformanceChallengeV1, MacosLinuxVzTelemetryEvidenceErrorV1,
     MacosLinuxVzTelemetryQualificationErrorV1, UnqualifiedMacosLinuxVzTelemetryBackendIdentityV1,
@@ -590,6 +595,98 @@ fn runtime_qualification_binds_one_fixed_probe_without_issuing_execution_authori
     assert!(!text.contains("capability"));
     assert!(!text.contains("allow"));
 
+    let structurally_verified =
+        decode_macos_linux_vz_package_runtime_qualification_request_v1(request.canonical_json_v1())
+            .expect("structurally verified qualification request");
+    assert_eq!(
+        structurally_verified.backend_identity_sha256(),
+        qualified.backend_identity_sha256()
+    );
+    assert_eq!(
+        structurally_verified.qualified_protected_sensor_sha256(),
+        backend.guest_bpf_bundle_sha256()
+    );
+    assert_eq!(
+        structurally_verified.runtime_qualification_guest_agent_sha256(),
+        qualification_image.guest_agent_sha256()
+    );
+    assert_eq!(
+        structurally_verified.runtime_qualification_guest_init_sha256(),
+        qualification_image.guest_init_sha256()
+    );
+    assert_eq!(
+        structurally_verified.runtime_qualification_module_bundle_sha256(),
+        qualification_image.module_bundle_sha256()
+    );
+    assert_eq!(
+        structurally_verified.candidate_runtime_rootfs_byte_length(),
+        candidate_runtime.rootfs_byte_length()
+    );
+    assert_eq!(structurally_verified.package_uid(), backend.package_uid());
+    assert_eq!(structurally_verified.package_gid(), backend.package_gid());
+
+    let process_evidence = b"inert protected fork exec exit evidence";
+    let process_claims = LinuxVzTelemetryGuestObservationClaimsV1::new(
+        Sha256Digest::from_bytes(process_evidence),
+        process_evidence.len() as u64,
+        1,
+        3,
+        3,
+        2,
+        0,
+        true,
+        false,
+        true,
+        LinuxVzTelemetryConformanceObservedTerminalV1::ObservationComplete,
+    )
+    .expect("runtime qualification process claims");
+    let qualification_claims = MacosLinuxVzPackageRuntimeQualificationGuestClaimsV1::new(
+        &structurally_verified,
+        process_claims,
+        MACOS_LINUX_VZ_PACKAGE_RUNTIME_PROBE_REPORT_V1,
+        candidate_runtime.rootfs_sha256().clone(),
+    )
+    .expect("runtime qualification guest claims");
+    let guest_receipt = sign_macos_linux_vz_package_runtime_qualification_guest_receipt_v1(
+        &structurally_verified,
+        &qualification_claims,
+        GUEST_SEED,
+    )
+    .expect("runtime qualification guest receipt");
+    let guest_key = SigningKey::from_bytes(&GUEST_SEED).verifying_key();
+    let verified_guest = verify_macos_linux_vz_package_runtime_qualification_guest_receipt_v1(
+        &structurally_verified,
+        &guest_receipt,
+        guest_key.to_bytes(),
+        &qualification_claims,
+    )
+    .expect("verified runtime qualification guest receipt");
+    assert_eq!(
+        verified_guest.qualification_request_sha256(),
+        request.request_sha256()
+    );
+    assert!(!verified_guest.package_execution_authority_permitted());
+    assert!(!verified_guest.sync_back_permitted());
+    let receipt_text = std::str::from_utf8(&guest_receipt).expect("guest receipt UTF-8");
+    assert!(receipt_text.contains("\"nonexecuting_probe_observed\":true"));
+    assert!(receipt_text.contains("\"package_execution\":false"));
+    assert!(receipt_text.contains("\"execution_authority_issued\":false"));
+
+    let mut elevated_receipt: serde_json::Value =
+        serde_json::from_slice(&guest_receipt).expect("guest receipt value");
+    elevated_receipt["package_execution"] = serde_json::json!(true);
+    let elevated_receipt =
+        serde_json_canonicalizer::to_vec(&elevated_receipt).expect("elevated guest receipt");
+    assert_eq!(
+        verify_macos_linux_vz_package_runtime_qualification_guest_receipt_v1(
+            &structurally_verified,
+            &elevated_receipt,
+            guest_key.to_bytes(),
+            &qualification_claims,
+        ),
+        Err(MacosLinuxVzTelemetryEvidenceErrorV1::InvalidReceipt)
+    );
+
     let verified = decode_and_verify_macos_linux_vz_package_runtime_qualification_request_v1(
         request.canonical_json_v1(),
         &qualified,
@@ -674,7 +771,7 @@ fn runtime_qualification_binds_one_fixed_probe_without_issuing_execution_authori
             challenge,
             clone_binding,
         ),
-        Err(MacosLinuxVzPackageRuntimeQualificationRequestErrorV1::BindingMismatch)
+        Err(MacosLinuxVzPackageRuntimeQualificationRequestErrorV1::InvalidRequest)
     );
 }
 

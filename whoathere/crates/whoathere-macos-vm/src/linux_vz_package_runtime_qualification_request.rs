@@ -1,6 +1,7 @@
 use crate::{
     MacosLinuxVzCandidatePackageRuntimeV1, QualifiedMacosLinuxVzTelemetryBackendV1,
     UnqualifiedMacosLinuxVzTelemetryBackendIdentityV1,
+    MAX_MACOS_LINUX_VZ_CANDIDATE_RUNTIME_ROOTFS_BYTES_V1,
 };
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -158,13 +159,28 @@ pub struct MacosLinuxVzPackageRuntimeQualificationRequestV1 {
     canonical_json: Vec<u8>,
     request_sha256: Sha256Digest,
     qualified_telemetry_backend_sha256: Sha256Digest,
+    backend_identity_sha256: Sha256Digest,
+    telemetry_requirements_sha256: Sha256Digest,
+    conformance_evidence_set_sha256: Sha256Digest,
+    kernel_image_sha256: Sha256Digest,
+    qualified_initramfs_sha256: Sha256Digest,
+    qualified_guest_signer_sha256: Sha256Digest,
+    qualified_protected_sensor_sha256: Sha256Digest,
+    guest_evidence_public_key_sha256: Sha256Digest,
+    host_evidence_public_key_sha256: Sha256Digest,
     runtime_qualification_initramfs_sha256: Sha256Digest,
+    runtime_qualification_guest_agent_sha256: Sha256Digest,
+    runtime_qualification_guest_init_sha256: Sha256Digest,
+    runtime_qualification_module_bundle_sha256: Sha256Digest,
     candidate_runtime_rootfs_sha256: Sha256Digest,
+    candidate_runtime_rootfs_byte_length: u64,
     candidate_runtime_manifest_sha256: Sha256Digest,
     candidate_package_runner_sha256: Sha256Digest,
     expected_probe_report_sha256: Sha256Digest,
     request_challenge_sha256: Sha256Digest,
     clone_binding_sha256: Sha256Digest,
+    package_uid: u32,
+    package_gid: u32,
 }
 
 impl fmt::Debug for MacosLinuxVzPackageRuntimeQualificationRequestV1 {
@@ -204,12 +220,64 @@ impl MacosLinuxVzPackageRuntimeQualificationRequestV1 {
         &self.qualified_telemetry_backend_sha256
     }
 
+    pub fn backend_identity_sha256(&self) -> &Sha256Digest {
+        &self.backend_identity_sha256
+    }
+
+    pub fn telemetry_requirements_sha256(&self) -> &Sha256Digest {
+        &self.telemetry_requirements_sha256
+    }
+
+    pub fn conformance_evidence_set_sha256(&self) -> &Sha256Digest {
+        &self.conformance_evidence_set_sha256
+    }
+
+    pub fn kernel_image_sha256(&self) -> &Sha256Digest {
+        &self.kernel_image_sha256
+    }
+
+    pub fn qualified_initramfs_sha256(&self) -> &Sha256Digest {
+        &self.qualified_initramfs_sha256
+    }
+
+    pub fn qualified_guest_signer_sha256(&self) -> &Sha256Digest {
+        &self.qualified_guest_signer_sha256
+    }
+
+    pub fn qualified_protected_sensor_sha256(&self) -> &Sha256Digest {
+        &self.qualified_protected_sensor_sha256
+    }
+
+    pub fn guest_evidence_public_key_sha256(&self) -> &Sha256Digest {
+        &self.guest_evidence_public_key_sha256
+    }
+
+    pub fn host_evidence_public_key_sha256(&self) -> &Sha256Digest {
+        &self.host_evidence_public_key_sha256
+    }
+
     pub fn runtime_qualification_initramfs_sha256(&self) -> &Sha256Digest {
         &self.runtime_qualification_initramfs_sha256
     }
 
+    pub fn runtime_qualification_guest_agent_sha256(&self) -> &Sha256Digest {
+        &self.runtime_qualification_guest_agent_sha256
+    }
+
+    pub fn runtime_qualification_guest_init_sha256(&self) -> &Sha256Digest {
+        &self.runtime_qualification_guest_init_sha256
+    }
+
+    pub fn runtime_qualification_module_bundle_sha256(&self) -> &Sha256Digest {
+        &self.runtime_qualification_module_bundle_sha256
+    }
+
     pub fn candidate_runtime_rootfs_sha256(&self) -> &Sha256Digest {
         &self.candidate_runtime_rootfs_sha256
+    }
+
+    pub const fn candidate_runtime_rootfs_byte_length(&self) -> u64 {
+        self.candidate_runtime_rootfs_byte_length
     }
 
     pub fn candidate_runtime_manifest_sha256(&self) -> &Sha256Digest {
@@ -230,6 +298,14 @@ impl MacosLinuxVzPackageRuntimeQualificationRequestV1 {
 
     pub fn clone_binding_sha256(&self) -> &Sha256Digest {
         &self.clone_binding_sha256
+    }
+
+    pub const fn package_uid(&self) -> u32 {
+        self.package_uid
+    }
+
+    pub const fn package_gid(&self) -> u32 {
+        self.package_gid
     }
 
     pub const fn fixed_nonexecuting_probe_permitted(&self) -> bool {
@@ -291,6 +367,150 @@ impl fmt::Display for MacosLinuxVzPackageRuntimeQualificationRequestErrorV1 {
 }
 
 impl std::error::Error for MacosLinuxVzPackageRuntimeQualificationRequestErrorV1 {}
+
+fn request_from_wire_v1(
+    wire: RuntimeQualificationRequestWireV1,
+    canonical_json: Vec<u8>,
+) -> Result<
+    MacosLinuxVzPackageRuntimeQualificationRequestV1,
+    MacosLinuxVzPackageRuntimeQualificationRequestErrorV1,
+> {
+    if canonical_json.is_empty()
+        || canonical_json.len() > MAX_MACOS_LINUX_VZ_PACKAGE_RUNTIME_QUALIFICATION_REQUEST_BYTES_V1
+    {
+        return Err(MacosLinuxVzPackageRuntimeQualificationRequestErrorV1::LimitExceeded);
+    }
+    if wire.schema_version != MACOS_LINUX_VZ_PACKAGE_RUNTIME_QUALIFICATION_REQUEST_SCHEMA_V1
+        || wire.operation != MacosLinuxVzRuntimeQualificationOperationV1::FixedNonexecutingProbe
+        || wire.protected_sensor_case != "fork_exec_exit"
+        || wire.package_runner_argument != "fork_exec_exit"
+        || wire.storage_policy
+            != MacosLinuxVzRuntimeQualificationStoragePolicyV1::OneUniqueWritableCloneDestroyAfterVmStop
+        || wire.network_policy
+            != MacosLinuxVzRuntimeQualificationNetworkPolicyV1::HostRawFrameSinkholeNoExternalRoute
+        || wire.directory_share_policy
+            != MacosLinuxVzRuntimeQualificationDirectorySharePolicyV1::StructurallyAbsent
+        || wire.public_resolver_reachable
+        || !wire.nonexecuting_probe_permitted
+        || wire.execution_authority_issued
+        || wire.package_execution_permitted
+        || wire.sync_back_policy != ArtifactTelemetrySyncBackPolicyV1::StructurallyAbsent
+    {
+        return Err(MacosLinuxVzPackageRuntimeQualificationRequestErrorV1::InvalidRequest);
+    }
+    let candidate_runtime_rootfs_byte_length =
+        strict_positive_decimal_u64_v1(&wire.candidate_runtime_rootfs_byte_length)
+            .filter(|length| *length <= MAX_MACOS_LINUX_VZ_CANDIDATE_RUNTIME_ROOTFS_BYTES_V1)
+            .ok_or(MacosLinuxVzPackageRuntimeQualificationRequestErrorV1::InvalidRequest)?;
+    let package_uid = strict_positive_decimal_u32_v1(&wire.package_uid)
+        .ok_or(MacosLinuxVzPackageRuntimeQualificationRequestErrorV1::InvalidRequest)?;
+    let package_gid = strict_positive_decimal_u32_v1(&wire.package_gid)
+        .ok_or(MacosLinuxVzPackageRuntimeQualificationRequestErrorV1::InvalidRequest)?;
+    let empty = Sha256Digest::from_bytes(&[]);
+    let all_digests = [
+        &wire.qualified_telemetry_backend_sha256,
+        &wire.backend_identity_sha256,
+        &wire.telemetry_requirements_sha256,
+        &wire.conformance_evidence_set_sha256,
+        &wire.kernel_image_sha256,
+        &wire.qualified_initramfs_sha256,
+        &wire.qualified_guest_signer_sha256,
+        &wire.qualified_protected_sensor_sha256,
+        &wire.guest_evidence_public_key_sha256,
+        &wire.host_evidence_public_key_sha256,
+        &wire.runtime_qualification_initramfs_sha256,
+        &wire.runtime_qualification_guest_agent_sha256,
+        &wire.runtime_qualification_guest_init_sha256,
+        &wire.runtime_qualification_module_bundle_sha256,
+        &wire.candidate_runtime_rootfs_sha256,
+        &wire.candidate_runtime_manifest_sha256,
+        &wire.candidate_package_runner_sha256,
+        &wire.expected_probe_report_sha256,
+        &wire.request_challenge_sha256,
+        &wire.clone_binding_sha256,
+    ];
+    let candidate_digests = [
+        &wire.candidate_runtime_rootfs_sha256,
+        &wire.candidate_runtime_manifest_sha256,
+        &wire.candidate_package_runner_sha256,
+    ];
+    let image_digests = [
+        &wire.runtime_qualification_initramfs_sha256,
+        &wire.runtime_qualification_guest_agent_sha256,
+        &wire.runtime_qualification_guest_init_sha256,
+        &wire.runtime_qualification_module_bundle_sha256,
+    ];
+    if all_digests.contains(&&empty)
+        || candidate_digests
+            .iter()
+            .enumerate()
+            .any(|(index, digest)| candidate_digests[..index].contains(digest))
+        || image_digests
+            .iter()
+            .enumerate()
+            .any(|(index, digest)| image_digests[..index].contains(digest))
+        || wire.runtime_qualification_initramfs_sha256 == wire.qualified_initramfs_sha256
+        || wire.runtime_qualification_guest_agent_sha256 == wire.qualified_guest_signer_sha256
+        || wire.runtime_qualification_module_bundle_sha256 == wire.qualified_protected_sensor_sha256
+        || wire.expected_probe_report_sha256
+            != Sha256Digest::from_bytes(MACOS_LINUX_VZ_PACKAGE_RUNTIME_PROBE_REPORT_V1)
+        || wire.clone_binding_sha256 == wire.request_challenge_sha256
+        || wire.clone_binding_sha256 == wire.candidate_runtime_rootfs_sha256
+        || wire.clone_binding_sha256 == wire.runtime_qualification_initramfs_sha256
+    {
+        return Err(MacosLinuxVzPackageRuntimeQualificationRequestErrorV1::BindingMismatch);
+    }
+
+    Ok(MacosLinuxVzPackageRuntimeQualificationRequestV1 {
+        request_sha256: Sha256Digest::from_bytes(&canonical_json),
+        canonical_json,
+        qualified_telemetry_backend_sha256: wire.qualified_telemetry_backend_sha256,
+        backend_identity_sha256: wire.backend_identity_sha256,
+        telemetry_requirements_sha256: wire.telemetry_requirements_sha256,
+        conformance_evidence_set_sha256: wire.conformance_evidence_set_sha256,
+        kernel_image_sha256: wire.kernel_image_sha256,
+        qualified_initramfs_sha256: wire.qualified_initramfs_sha256,
+        qualified_guest_signer_sha256: wire.qualified_guest_signer_sha256,
+        qualified_protected_sensor_sha256: wire.qualified_protected_sensor_sha256,
+        guest_evidence_public_key_sha256: wire.guest_evidence_public_key_sha256,
+        host_evidence_public_key_sha256: wire.host_evidence_public_key_sha256,
+        runtime_qualification_initramfs_sha256: wire.runtime_qualification_initramfs_sha256,
+        runtime_qualification_guest_agent_sha256: wire.runtime_qualification_guest_agent_sha256,
+        runtime_qualification_guest_init_sha256: wire.runtime_qualification_guest_init_sha256,
+        runtime_qualification_module_bundle_sha256: wire.runtime_qualification_module_bundle_sha256,
+        candidate_runtime_rootfs_sha256: wire.candidate_runtime_rootfs_sha256,
+        candidate_runtime_rootfs_byte_length,
+        candidate_runtime_manifest_sha256: wire.candidate_runtime_manifest_sha256,
+        candidate_package_runner_sha256: wire.candidate_package_runner_sha256,
+        expected_probe_report_sha256: wire.expected_probe_report_sha256,
+        request_challenge_sha256: wire.request_challenge_sha256,
+        clone_binding_sha256: wire.clone_binding_sha256,
+        package_uid,
+        package_gid,
+    })
+}
+
+fn strict_positive_decimal_u64_v1(value: &str) -> Option<u64> {
+    if value.is_empty()
+        || value.len() > 20
+        || (value.len() > 1 && value.starts_with('0'))
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    value.parse::<u64>().ok().filter(|parsed| *parsed > 0)
+}
+
+fn strict_positive_decimal_u32_v1(value: &str) -> Option<u32> {
+    if value.is_empty()
+        || value.len() > 10
+        || (value.len() > 1 && value.starts_with('0'))
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    value.parse::<u32>().ok().filter(|parsed| *parsed > 0)
+}
 
 #[allow(clippy::too_many_arguments)]
 pub fn build_macos_linux_vz_package_runtime_qualification_request_v1(
@@ -401,36 +621,11 @@ pub fn build_macos_linux_vz_package_runtime_qualification_request_v1(
     };
     let canonical_json = serde_json_canonicalizer::to_vec(&wire)
         .map_err(|_| MacosLinuxVzPackageRuntimeQualificationRequestErrorV1::Serialization)?;
-    if canonical_json.is_empty()
-        || canonical_json.len() > MAX_MACOS_LINUX_VZ_PACKAGE_RUNTIME_QUALIFICATION_REQUEST_BYTES_V1
-    {
-        return Err(MacosLinuxVzPackageRuntimeQualificationRequestErrorV1::LimitExceeded);
-    }
-    Ok(MacosLinuxVzPackageRuntimeQualificationRequestV1 {
-        request_sha256: Sha256Digest::from_bytes(&canonical_json),
-        canonical_json,
-        qualified_telemetry_backend_sha256: qualified_backend.qualified_backend_sha256().clone(),
-        runtime_qualification_initramfs_sha256: qualification_image.initramfs_sha256().clone(),
-        candidate_runtime_rootfs_sha256: candidate_runtime.rootfs_sha256().clone(),
-        candidate_runtime_manifest_sha256: candidate_runtime.runtime_manifest_sha256().clone(),
-        candidate_package_runner_sha256: candidate_runtime.package_runner_sha256().clone(),
-        expected_probe_report_sha256: Sha256Digest::from_bytes(
-            MACOS_LINUX_VZ_PACKAGE_RUNTIME_PROBE_REPORT_V1,
-        ),
-        request_challenge_sha256,
-        clone_binding_sha256,
-    })
+    request_from_wire_v1(wire, canonical_json)
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn decode_and_verify_macos_linux_vz_package_runtime_qualification_request_v1(
+pub fn decode_macos_linux_vz_package_runtime_qualification_request_v1(
     bytes: &[u8],
-    qualified_backend: &QualifiedMacosLinuxVzTelemetryBackendV1,
-    backend_identity: &UnqualifiedMacosLinuxVzTelemetryBackendIdentityV1,
-    candidate_runtime: &MacosLinuxVzCandidatePackageRuntimeV1,
-    qualification_image: &MacosLinuxVzPackageRuntimeQualificationImageV1,
-    request_challenge: [u8; 32],
-    clone_binding_sha256: Sha256Digest,
 ) -> Result<
     MacosLinuxVzPackageRuntimeQualificationRequestV1,
     MacosLinuxVzPackageRuntimeQualificationRequestErrorV1,
@@ -451,6 +646,23 @@ pub fn decode_and_verify_macos_linux_vz_package_runtime_qualification_request_v1
     if canonical != bytes {
         return Err(MacosLinuxVzPackageRuntimeQualificationRequestErrorV1::NonCanonical);
     }
+    request_from_wire_v1(wire, canonical)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn decode_and_verify_macos_linux_vz_package_runtime_qualification_request_v1(
+    bytes: &[u8],
+    qualified_backend: &QualifiedMacosLinuxVzTelemetryBackendV1,
+    backend_identity: &UnqualifiedMacosLinuxVzTelemetryBackendIdentityV1,
+    candidate_runtime: &MacosLinuxVzCandidatePackageRuntimeV1,
+    qualification_image: &MacosLinuxVzPackageRuntimeQualificationImageV1,
+    request_challenge: [u8; 32],
+    clone_binding_sha256: Sha256Digest,
+) -> Result<
+    MacosLinuxVzPackageRuntimeQualificationRequestV1,
+    MacosLinuxVzPackageRuntimeQualificationRequestErrorV1,
+> {
+    let decoded = decode_macos_linux_vz_package_runtime_qualification_request_v1(bytes)?;
     let expected = build_macos_linux_vz_package_runtime_qualification_request_v1(
         qualified_backend,
         backend_identity,
@@ -459,7 +671,7 @@ pub fn decode_and_verify_macos_linux_vz_package_runtime_qualification_request_v1
         request_challenge,
         clone_binding_sha256,
     )?;
-    if expected.canonical_json_v1() != bytes {
+    if expected.canonical_json_v1() != decoded.canonical_json_v1() {
         return Err(MacosLinuxVzPackageRuntimeQualificationRequestErrorV1::BindingMismatch);
     }
     Ok(expected)

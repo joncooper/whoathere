@@ -62,6 +62,16 @@ destruction. The new rootfs and runner identities supersede the earlier candidat
 is still unqualified because it has not booted under VZ. See the
 [closed sensor-alias rebuild checkpoint](artifact-native-linux-vz-runtime-sensor-alias-rebuild-checkpoint-2026-07-13.md).
 
+The runtime-qualification wire and evidence boundary is now closed before any guest is allowed to
+implement it. A strict structural request decoder, bounded one-request/one-response transport, and
+domain-separated Ed25519 guest receipt bind the exact inert request, runtime image, candidate
+rootfs, fixed report, and complete healthy `fork`/`exec`/`exit` evidence. The receipt can express
+neither package authority nor sync-back, and verification independently rebuilds every expected
+claim before checking the signature. The full Rust crate passed 180 tests with Clippy warnings
+denied. This is protocol qualification only: the guest agent and overlay do not yet exist, and no
+package-runtime VM has booted. See the
+[runtime-qualification receipt-protocol checkpoint](artifact-native-linux-vz-runtime-qualification-receipt-protocol-checkpoint-2026-07-13.md).
+
 The first protected-sensor bootstrap now also observes a cgroup-filtered inert fork/exec/exit chain
 whose child runs as UID/GID 65534 and cannot read or write the root-only sensor. This remains
 unsigned bootstrap evidence rather than a conformance receipt. See the
