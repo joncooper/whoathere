@@ -157,6 +157,14 @@ impl UnqualifiedMacosLinuxVzTelemetryBackendIdentityV1 {
         &self.root_disk_sha256
     }
 
+    pub fn kernel_config_sha256(&self) -> &Sha256Digest {
+        &self.kernel_config_sha256
+    }
+
+    pub fn kernel_btf_sha256(&self) -> &Sha256Digest {
+        &self.btf_sha256
+    }
+
     pub fn guest_runner_sha256(&self) -> &Sha256Digest {
         &self.guest_runner_sha256
     }

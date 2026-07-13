@@ -13,6 +13,7 @@ use whoathere_macos_vm::{
     decode_linux_vz_host_frame_overflow_host_evidence_payload_v1,
     decode_linux_vz_network_evidence_from_serial_v1,
     decode_linux_vz_network_host_evidence_payload_v1,
+    decode_linux_vz_platform_evidence_from_serial_v1,
     decode_linux_vz_process_evidence_from_serial_v1,
     decode_linux_vz_teardown_evidence_from_serial_v1,
     decode_unqualified_macos_linux_vz_telemetry_backend_identity_v1,
@@ -80,6 +81,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         )?)
     };
     let fixture_case = match run_spec.fixture_case() {
+        LinuxVzTelemetryConformanceCaseV1::KernelConfigAndBtf => "kernel_config_and_btf",
         LinuxVzTelemetryConformanceCaseV1::ForkExecExit => "fork_exec_exit",
         LinuxVzTelemetryConformanceCaseV1::Reparenting => "reparenting",
         LinuxVzTelemetryConformanceCaseV1::DoubleForkDaemonization => "double_fork_daemonization",
@@ -139,6 +141,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         None
     } else {
         Some(match run_spec.fixture_case() {
+            LinuxVzTelemetryConformanceCaseV1::KernelConfigAndBtf => {
+                let evidence = decode_linux_vz_platform_evidence_from_serial_v1(&serial, &backend)?;
+                (
+                    evidence.payload_sha256().clone(),
+                    evidence.guest_observation_claims_v1()?,
+                    None,
+                )
+            }
             LinuxVzTelemetryConformanceCaseV1::ForkExecExit
             | LinuxVzTelemetryConformanceCaseV1::HostSensorDeath
             | LinuxVzTelemetryConformanceCaseV1::AllProtectedAssetsDenied

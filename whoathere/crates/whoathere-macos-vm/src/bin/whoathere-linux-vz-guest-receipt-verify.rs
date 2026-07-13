@@ -6,6 +6,7 @@ use whoathere_detonation::ArtifactProtectedTelemetryRequirementsV1;
 use whoathere_macos_vm::{
     decode_and_validate_macos_linux_vz_telemetry_conformance_challenge_v1,
     decode_and_validate_macos_linux_vz_telemetry_conformance_run_spec_v1,
+    decode_linux_vz_platform_evidence_from_serial_v1,
     decode_linux_vz_process_evidence_from_serial_v1,
     decode_unqualified_macos_linux_vz_telemetry_backend_identity_v1,
     verify_macos_linux_vz_telemetry_guest_receipt_v1, LinuxVzTelemetryConformanceCaseV1,
@@ -60,6 +61,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         &run_spec,
         &backend,
     )?;
+    if run_spec.fixture_case() == LinuxVzTelemetryConformanceCaseV1::KernelConfigAndBtf {
+        let evidence = decode_linux_vz_platform_evidence_from_serial_v1(&serial, &backend)?;
+        let claims = evidence.guest_observation_claims_v1()?;
+        let public_key: [u8; 32] = public_key
+            .try_into()
+            .map_err(|_| "guest public key must be exactly 32 bytes")?;
+        let verified = verify_macos_linux_vz_telemetry_guest_receipt_v1(
+            &challenge, &run_spec, &backend, &receipt, public_key, &claims,
+        )?;
+        println!(
+            "{{\"backend_identity_sha256\":\"{}\",\"challenge_sha256\":\"{}\",\"execution_authority\":false,\"package_execution\":false,\"platform_evidence_payload_sha256\":\"{}\",\"receipt_sha256\":\"{}\",\"run_spec_sha256\":\"{}\",\"schema_version\":\"whoathere.linux_vz_guest_receipt_verification.v1\",\"status\":\"verified\",\"sync_back\":false}}",
+            backend.identity_sha256_v1()?,
+            verified.challenge_sha256(),
+            evidence.payload_sha256(),
+            Sha256Digest::from_bytes(&receipt),
+            run_spec.run_spec_sha256(),
+        );
+        return Ok(());
+    }
     let evidence = decode_linux_vz_process_evidence_from_serial_v1(&serial)?;
     if evidence.fixture_case() != run_spec.fixture_case()
         || evidence.package_uid() != backend.package_uid()

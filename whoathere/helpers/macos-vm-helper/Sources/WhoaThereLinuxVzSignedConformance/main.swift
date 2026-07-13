@@ -541,6 +541,17 @@ private struct LinuxVzSignedConformanceHarness {
         let networkFixtureCase: String?
         let hostFrameTriggerCount: UInt64?
         switch runSpec.fixtureCase {
+        case "kernel_config_and_btf":
+            let evidence = try decodeLinuxVzPlatformEvidencePayloadV1(
+                serialData,
+                backend: backend
+            )
+            claims = evidence.claims
+            guestEvidencePayloadSHA256 = evidence.payloadSHA256
+            guestEventCount = evidence.claims.eventCount
+            networkSourcePort = nil
+            networkFixtureCase = nil
+            hostFrameTriggerCount = nil
         case "fork_exec_exit", "host_sensor_death", "all_protected_assets_denied", "reparenting",
              "double_fork_daemonization", "setsid_escape",
              "credential_change", "dynamic_library_load":
@@ -801,6 +812,8 @@ private struct LinuxVzSignedConformanceHarness {
                 + missingEscapedSessionMarkers
                 + missingReparentedChildMarkers
                 + missingBackgroundListenerMarkers
+        } else if runSpec.fixtureCase == "kernel_config_and_btf" {
+            missingBaseMarkers = linuxVzInertMissingCapabilityMarkers(serialData)
         } else if runSpec.fixtureCase == "bpf_reservation_failure" {
             let missingCapabilities = linuxVzInertMissingCapabilityMarkers(serialData)
             let missingDropMarkers = linuxVzInertBPFReservationFailureSensorMarkersV1.filter {

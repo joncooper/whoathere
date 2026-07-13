@@ -29,6 +29,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     let fixture_case = match arguments[2].as_str() {
+        "kernel_config_and_btf" => LinuxVzTelemetryConformanceCaseV1::KernelConfigAndBtf,
         "fork_exec_exit" => LinuxVzTelemetryConformanceCaseV1::ForkExecExit,
         "reparenting" => LinuxVzTelemetryConformanceCaseV1::Reparenting,
         "double_fork_daemonization" => LinuxVzTelemetryConformanceCaseV1::DoubleForkDaemonization,

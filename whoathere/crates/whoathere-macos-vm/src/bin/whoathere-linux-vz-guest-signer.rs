@@ -25,6 +25,7 @@ mod linux {
     use std::process::{Command, Stdio};
     use whoathere_artifact::Sha256Digest;
     use whoathere_macos_vm::{
+        build_linux_vz_kernel_config_and_btf_evidence_v1,
         decode_and_validate_macos_linux_vz_telemetry_conformance_challenge_v1,
         decode_and_validate_macos_linux_vz_telemetry_conformance_run_spec_v1,
         decode_linux_vz_drop_evidence_from_serial_v1,
@@ -32,10 +33,12 @@ mod linux {
         decode_linux_vz_file_evidence_from_serial_v1, decode_linux_vz_guest_signer_request_v1,
         decode_linux_vz_host_frame_overflow_guest_evidence_from_serial_v1,
         decode_linux_vz_network_evidence_from_serial_v1,
+        decode_linux_vz_platform_evidence_from_serial_v1,
         decode_linux_vz_process_evidence_from_serial_v1,
         decode_linux_vz_teardown_evidence_from_serial_v1, encode_linux_vz_guest_signer_response_v1,
         expected_terminal_for_case_v1, sign_macos_linux_vz_telemetry_guest_receipt_v1,
-        LinuxVzTelemetryConformanceCaseV1, MAX_LINUX_VZ_DROP_EVIDENCE_PAYLOAD_BYTES_V1,
+        LinuxVzTelemetryConformanceCaseV1, LINUX_VZ_PLATFORM_EVIDENCE_SERIAL_PREFIX_V1,
+        MAX_LINUX_VZ_DROP_EVIDENCE_PAYLOAD_BYTES_V1,
         MAX_LINUX_VZ_FANOTIFY_OVERFLOW_EVIDENCE_PAYLOAD_BYTES_V1,
         MAX_LINUX_VZ_FILE_EVIDENCE_PAYLOAD_BYTES_V1,
         MAX_LINUX_VZ_GUEST_SIGNER_REQUEST_FRAME_BYTES_V1,
@@ -145,6 +148,7 @@ mod linux {
                 | LinuxVzTelemetryConformanceCaseV1::GuestSensorDeath
                 | LinuxVzTelemetryConformanceCaseV1::HostSensorDeath
                 | LinuxVzTelemetryConformanceCaseV1::AllProtectedAssetsDenied
+                | LinuxVzTelemetryConformanceCaseV1::KernelConfigAndBtf
         ) || run_spec.expected_terminal()
             != expected_terminal_for_case_v1(run_spec.fixture_case())
             || run_spec.package_execution_authority_permitted()
@@ -201,50 +205,77 @@ mod linux {
             LinuxVzTelemetryConformanceCaseV1::AllProtectedAssetsDenied => {
                 "all_protected_assets_denied"
             }
+            LinuxVzTelemetryConformanceCaseV1::KernelConfigAndBtf => "kernel_config_and_btf",
             _ => return Err("guest_signer_run_spec_not_supported_inert_case".into()),
         };
-        let mut child = Command::new(SENSOR_PATH)
-            .arg(FIXTURE_PATH)
-            .arg(fixture_case_argument)
-            .env_clear()
-            .current_dir("/")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()?;
-        let sensor_stdout = child
-            .stdout
-            .take()
-            .ok_or("guest_signer_sensor_stdout_missing")?;
-        if run_spec.fixture_case() == LinuxVzTelemetryConformanceCaseV1::GuestSensorDeath {
-            let mut reader = BufReader::new(sensor_stdout);
-            let mut marker = Vec::new();
-            reader.by_ref().take(257).read_until(b'\n', &mut marker)?;
-            if marker != b"WHOATHERE_SENSOR guest_sensor_death_fixture=active\n" {
-                return Err("guest_sensor_death_readiness_invalid".into());
-            }
-            std::io::stdout().write_all(&marker)?;
-            std::io::stdout().flush()?;
-            drop(reader);
-            child.kill()?;
-            let status = child.wait()?;
-            if status.signal() != Some(libc::SIGKILL) {
-                return Err("guest_sensor_death_signal_invalid".into());
-            }
-            println!("WHOATHERE_GUEST_SENSOR_DEATH observed_signal=9");
-            return Err("guest_sensor_death_injected".into());
-        }
-        let mut sensor_output = Vec::new();
-        sensor_stdout
-            .take(MAX_SENSOR_OUTPUT_BYTES + 1)
-            .read_to_end(&mut sensor_output)?;
-        let status = child.wait()?;
-        std::io::stdout().write_all(&sensor_output)?;
-        std::io::stdout().flush()?;
-        if !status.success() || sensor_output.len() as u64 > MAX_SENSOR_OUTPUT_BYTES {
-            return Err("guest_signer_sensor_failed".into());
-        }
+        let sensor_output =
+            if run_spec.fixture_case() == LinuxVzTelemetryConformanceCaseV1::KernelConfigAndBtf {
+                let release_bytes = read_virtual_file_bounded("/proc/sys/kernel/osrelease", 256)?;
+                let release = std::str::from_utf8(&release_bytes)?.trim_end_matches(['\r', '\n']);
+                let btf = read_virtual_file_bounded("/sys/kernel/btf/vmlinux", 128 * 1024 * 1024)?;
+                let evidence =
+                    build_linux_vz_kernel_config_and_btf_evidence_v1(backend, release, &btf)?;
+                let mut output = Vec::with_capacity(evidence.evidence_byte_length() as usize + 64);
+                output.extend_from_slice(LINUX_VZ_PLATFORM_EVIDENCE_SERIAL_PREFIX_V1);
+                output.extend_from_slice(evidence.canonical_json_v1());
+                output.push(b'\n');
+                std::io::stdout().write_all(&output)?;
+                std::io::stdout().flush()?;
+                output
+            } else {
+                let mut child = Command::new(SENSOR_PATH)
+                    .arg(FIXTURE_PATH)
+                    .arg(fixture_case_argument)
+                    .env_clear()
+                    .current_dir("/")
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::inherit())
+                    .spawn()?;
+                let sensor_stdout = child
+                    .stdout
+                    .take()
+                    .ok_or("guest_signer_sensor_stdout_missing")?;
+                if run_spec.fixture_case() == LinuxVzTelemetryConformanceCaseV1::GuestSensorDeath {
+                    let mut reader = BufReader::new(sensor_stdout);
+                    let mut marker = Vec::new();
+                    reader.by_ref().take(257).read_until(b'\n', &mut marker)?;
+                    if marker != b"WHOATHERE_SENSOR guest_sensor_death_fixture=active\n" {
+                        return Err("guest_sensor_death_readiness_invalid".into());
+                    }
+                    std::io::stdout().write_all(&marker)?;
+                    std::io::stdout().flush()?;
+                    drop(reader);
+                    child.kill()?;
+                    let status = child.wait()?;
+                    if status.signal() != Some(libc::SIGKILL) {
+                        return Err("guest_sensor_death_signal_invalid".into());
+                    }
+                    println!("WHOATHERE_GUEST_SENSOR_DEATH observed_signal=9");
+                    return Err("guest_sensor_death_injected".into());
+                }
+                let mut output = Vec::new();
+                sensor_stdout
+                    .take(MAX_SENSOR_OUTPUT_BYTES + 1)
+                    .read_to_end(&mut output)?;
+                let status = child.wait()?;
+                std::io::stdout().write_all(&output)?;
+                std::io::stdout().flush()?;
+                if !status.success() || output.len() as u64 > MAX_SENSOR_OUTPUT_BYTES {
+                    return Err("guest_signer_sensor_failed".into());
+                }
+                output
+            };
         let (package_uid, package_gid, claims) = match run_spec.fixture_case() {
+            LinuxVzTelemetryConformanceCaseV1::KernelConfigAndBtf => {
+                let evidence =
+                    decode_linux_vz_platform_evidence_from_serial_v1(&sensor_output, backend)?;
+                (
+                    evidence.package_uid(),
+                    evidence.package_gid(),
+                    evidence.guest_observation_claims_v1()?,
+                )
+            }
             LinuxVzTelemetryConformanceCaseV1::ForkExecExit
             | LinuxVzTelemetryConformanceCaseV1::HostSensorDeath
             | LinuxVzTelemetryConformanceCaseV1::AllProtectedAssetsDenied
@@ -508,6 +539,26 @@ mod linux {
         file.take(maximum + 1).read_to_end(&mut value)?;
         if value.is_empty() || value.len() as u64 > maximum {
             return Err("guest_signer_input_limit_exceeded".into());
+        }
+        Ok(value)
+    }
+
+    fn read_virtual_file_bounded(
+        path: &str,
+        maximum: u64,
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(path)?;
+        let metadata = file.metadata()?;
+        if !metadata.file_type().is_file() {
+            return Err("guest_signer_virtual_input_metadata_invalid".into());
+        }
+        let mut value = Vec::new();
+        file.take(maximum + 1).read_to_end(&mut value)?;
+        if value.is_empty() || value.len() as u64 > maximum {
+            return Err("guest_signer_virtual_input_limit_exceeded".into());
         }
         Ok(value)
     }
