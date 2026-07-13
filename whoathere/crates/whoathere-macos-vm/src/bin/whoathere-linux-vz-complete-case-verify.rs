@@ -6,7 +6,7 @@ use whoathere_detonation::ArtifactProtectedTelemetryRequirementsV1;
 use whoathere_macos_vm::{
     decode_and_validate_macos_linux_vz_telemetry_conformance_challenge_v1,
     decode_and_validate_macos_linux_vz_telemetry_conformance_run_spec_v1,
-    decode_linux_vz_drop_evidence_from_serial_v1,
+    decode_linux_vz_cgroup_evidence_from_serial_v1, decode_linux_vz_drop_evidence_from_serial_v1,
     decode_linux_vz_fanotify_overflow_evidence_from_serial_v1,
     decode_linux_vz_file_evidence_from_serial_v1, decode_linux_vz_host_evidence_payload_v1,
     decode_linux_vz_host_frame_overflow_guest_evidence_from_serial_v1,
@@ -82,6 +82,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
     let fixture_case = match run_spec.fixture_case() {
         LinuxVzTelemetryConformanceCaseV1::KernelConfigAndBtf => "kernel_config_and_btf",
+        LinuxVzTelemetryConformanceCaseV1::CgroupV2 => "cgroup_v2",
         LinuxVzTelemetryConformanceCaseV1::ForkExecExit => "fork_exec_exit",
         LinuxVzTelemetryConformanceCaseV1::Reparenting => "reparenting",
         LinuxVzTelemetryConformanceCaseV1::DoubleForkDaemonization => "double_fork_daemonization",
@@ -143,6 +144,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Some(match run_spec.fixture_case() {
             LinuxVzTelemetryConformanceCaseV1::KernelConfigAndBtf => {
                 let evidence = decode_linux_vz_platform_evidence_from_serial_v1(&serial, &backend)?;
+                (
+                    evidence.payload_sha256().clone(),
+                    evidence.guest_observation_claims_v1()?,
+                    None,
+                )
+            }
+            LinuxVzTelemetryConformanceCaseV1::CgroupV2 => {
+                let evidence = decode_linux_vz_cgroup_evidence_from_serial_v1(&serial, &backend)?;
                 (
                     evidence.payload_sha256().clone(),
                     evidence.guest_observation_claims_v1()?,

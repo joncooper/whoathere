@@ -4,14 +4,14 @@ Date: 2026-07-09
 
 Status: canonical execution plan for the next product milestone
 
-Current execution checkpoint (2026-07-12): thirty-four of the 38 authenticated Linux VZ inert
+Current execution checkpoint (2026-07-12): thirty-five of the 38 authenticated Linux VZ inert
 conformance cases now pass physically on one exact measured backend identity. The newest
-`kernel_config_and_btf` case binds the host-measured kernel config and image identity to all
-4,254,009 runtime BTF bytes exposed by the running guest kernel. Strict signed evidence requires
-the exact release, config and BTF digests, BTF magic and length, healthy sensors, zero drops,
-complete teardown, and no execution authority. This is still telemetry qualification, not package
-detection, and the backend remains `candidate_unqualified`. See the
-[kernel-config/BTF checkpoint](artifact-native-linux-vz-kernel-config-btf-checkpoint-2026-07-12.md).
+`cgroup_v2` case binds the live cgroup2 filesystem magic and mount record, seven controllers, a
+temporary domain cgroup, measured-signer self-membership and population, return to the root
+cgroup, empty-child observation, and cgroup removal. Strict signed evidence requires healthy
+sensors, zero drops, complete teardown, and no execution authority. This is still telemetry
+qualification, not package detection, and the backend remains `candidate_unqualified`. See the
+[cgroup-v2 checkpoint](artifact-native-linux-vz-cgroup-v2-checkpoint-2026-07-12.md).
 
 The first protected-sensor bootstrap now also observes a cgroup-filtered inert fork/exec/exit chain
 whose child runs as UID/GID 65534 and cannot read or write the root-only sensor. This remains
@@ -305,6 +305,16 @@ physically on the resulting identity; all 102 request inputs matched locally and
 case passed independent Rust verification. Thirty-four of 38 cases now share one backend binding;
 4 remain. See the
 [kernel-config/BTF checkpoint](artifact-native-linux-vz-kernel-config-btf-checkpoint-2026-07-12.md).
+
+The `cgroup_v2` platform case now proves the live cgroup2 superblock and exact mount record, reads
+and signs seven available controllers, creates a temporary domain cgroup, moves the measured guest
+signer into it through the kernel's self-migration interface, and independently observes both
+membership and `populated 1`. It then returns the signer to the root cgroup, proves the child empty
+with `populated 0`, and removes it before signing. All thirty-five implemented cases ran physically
+on the resulting identity; all 105 request inputs were generated from that identity and every
+complete case passed independent Rust verification. Thirty-five of 38 cases now share one backend
+binding; 3 remain. See the
+[cgroup-v2 checkpoint](artifact-native-linux-vz-cgroup-v2-checkpoint-2026-07-12.md).
 
 Primary target: malicious npm and PyPI package detection with static analysis, AI-assisted code
 review, and behaviorally instrumented detonation in disposable virtual machines
@@ -1584,6 +1594,7 @@ Repository evidence:
 - [Linux VZ reparented-child checkpoint](artifact-native-linux-vz-reparented-child-checkpoint-2026-07-12.md)
 - [Linux VZ package-isolation checkpoint](artifact-native-linux-vz-package-isolation-checkpoint-2026-07-12.md)
 - [Linux VZ kernel-config/BTF checkpoint](artifact-native-linux-vz-kernel-config-btf-checkpoint-2026-07-12.md)
+- [Linux VZ cgroup-v2 checkpoint](artifact-native-linux-vz-cgroup-v2-checkpoint-2026-07-12.md)
 - [macOS local release readiness](macos-local-release-readiness.md)
 - [macOS local beta pressure checkpoint](macos-local-beta-pressure-checkpoint.md)
 - [latest source-fixture corpus report](src-fixture-corpus-latest.md)

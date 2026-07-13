@@ -15,7 +15,8 @@ fn main() {
 #[cfg(target_os = "linux")]
 mod linux {
     use serde_json::Value;
-    use std::fs::{File, OpenOptions};
+    use std::ffi::CString;
+    use std::fs::{self, File, OpenOptions};
     use std::io::{BufRead, BufReader, Read, Write};
     use std::mem::{size_of, zeroed};
     use std::os::fd::{FromRawFd, RawFd};
@@ -25,9 +26,10 @@ mod linux {
     use std::process::{Command, Stdio};
     use whoathere_artifact::Sha256Digest;
     use whoathere_macos_vm::{
-        build_linux_vz_kernel_config_and_btf_evidence_v1,
+        build_linux_vz_cgroup_v2_evidence_v1, build_linux_vz_kernel_config_and_btf_evidence_v1,
         decode_and_validate_macos_linux_vz_telemetry_conformance_challenge_v1,
         decode_and_validate_macos_linux_vz_telemetry_conformance_run_spec_v1,
+        decode_linux_vz_cgroup_evidence_from_serial_v1,
         decode_linux_vz_drop_evidence_from_serial_v1,
         decode_linux_vz_fanotify_overflow_evidence_from_serial_v1,
         decode_linux_vz_file_evidence_from_serial_v1, decode_linux_vz_guest_signer_request_v1,
@@ -37,8 +39,8 @@ mod linux {
         decode_linux_vz_process_evidence_from_serial_v1,
         decode_linux_vz_teardown_evidence_from_serial_v1, encode_linux_vz_guest_signer_response_v1,
         expected_terminal_for_case_v1, sign_macos_linux_vz_telemetry_guest_receipt_v1,
-        LinuxVzTelemetryConformanceCaseV1, LINUX_VZ_PLATFORM_EVIDENCE_SERIAL_PREFIX_V1,
-        MAX_LINUX_VZ_DROP_EVIDENCE_PAYLOAD_BYTES_V1,
+        LinuxVzTelemetryConformanceCaseV1, LINUX_VZ_CGROUP_EVIDENCE_SERIAL_PREFIX_V1,
+        LINUX_VZ_PLATFORM_EVIDENCE_SERIAL_PREFIX_V1, MAX_LINUX_VZ_DROP_EVIDENCE_PAYLOAD_BYTES_V1,
         MAX_LINUX_VZ_FANOTIFY_OVERFLOW_EVIDENCE_PAYLOAD_BYTES_V1,
         MAX_LINUX_VZ_FILE_EVIDENCE_PAYLOAD_BYTES_V1,
         MAX_LINUX_VZ_GUEST_SIGNER_REQUEST_FRAME_BYTES_V1,
@@ -149,6 +151,7 @@ mod linux {
                 | LinuxVzTelemetryConformanceCaseV1::HostSensorDeath
                 | LinuxVzTelemetryConformanceCaseV1::AllProtectedAssetsDenied
                 | LinuxVzTelemetryConformanceCaseV1::KernelConfigAndBtf
+                | LinuxVzTelemetryConformanceCaseV1::CgroupV2
         ) || run_spec.expected_terminal()
             != expected_terminal_for_case_v1(run_spec.fixture_case())
             || run_spec.package_execution_authority_permitted()
@@ -206,10 +209,11 @@ mod linux {
                 "all_protected_assets_denied"
             }
             LinuxVzTelemetryConformanceCaseV1::KernelConfigAndBtf => "kernel_config_and_btf",
+            LinuxVzTelemetryConformanceCaseV1::CgroupV2 => "cgroup_v2",
             _ => return Err("guest_signer_run_spec_not_supported_inert_case".into()),
         };
-        let sensor_output =
-            if run_spec.fixture_case() == LinuxVzTelemetryConformanceCaseV1::KernelConfigAndBtf {
+        let sensor_output = match run_spec.fixture_case() {
+            LinuxVzTelemetryConformanceCaseV1::KernelConfigAndBtf => {
                 let release_bytes = read_virtual_file_bounded("/proc/sys/kernel/osrelease", 256)?;
                 let release = std::str::from_utf8(&release_bytes)?.trim_end_matches(['\r', '\n']);
                 let btf = read_virtual_file_bounded("/sys/kernel/btf/vmlinux", 128 * 1024 * 1024)?;
@@ -222,7 +226,23 @@ mod linux {
                 std::io::stdout().write_all(&output)?;
                 std::io::stdout().flush()?;
                 output
-            } else {
+            }
+            LinuxVzTelemetryConformanceCaseV1::CgroupV2 => {
+                let observation = probe_cgroup_v2()?;
+                let evidence = build_linux_vz_cgroup_v2_evidence_v1(
+                    backend,
+                    &observation.controllers,
+                    observation.membership_pid,
+                )?;
+                let mut output = Vec::with_capacity(evidence.evidence_byte_length() as usize + 64);
+                output.extend_from_slice(LINUX_VZ_CGROUP_EVIDENCE_SERIAL_PREFIX_V1);
+                output.extend_from_slice(evidence.canonical_json_v1());
+                output.push(b'\n');
+                std::io::stdout().write_all(&output)?;
+                std::io::stdout().flush()?;
+                output
+            }
+            _ => {
                 let mut child = Command::new(SENSOR_PATH)
                     .arg(FIXTURE_PATH)
                     .arg(fixture_case_argument)
@@ -265,11 +285,21 @@ mod linux {
                     return Err("guest_signer_sensor_failed".into());
                 }
                 output
-            };
+            }
+        };
         let (package_uid, package_gid, claims) = match run_spec.fixture_case() {
             LinuxVzTelemetryConformanceCaseV1::KernelConfigAndBtf => {
                 let evidence =
                     decode_linux_vz_platform_evidence_from_serial_v1(&sensor_output, backend)?;
+                (
+                    evidence.package_uid(),
+                    evidence.package_gid(),
+                    evidence.guest_observation_claims_v1()?,
+                )
+            }
+            LinuxVzTelemetryConformanceCaseV1::CgroupV2 => {
+                let evidence =
+                    decode_linux_vz_cgroup_evidence_from_serial_v1(&sensor_output, backend)?;
                 (
                     evidence.package_uid(),
                     evidence.package_gid(),
@@ -558,6 +588,169 @@ mod linux {
         let mut value = Vec::new();
         file.take(maximum + 1).read_to_end(&mut value)?;
         if value.is_empty() || value.len() as u64 > maximum {
+            return Err("guest_signer_virtual_input_limit_exceeded".into());
+        }
+        Ok(value)
+    }
+
+    struct CgroupV2Observation {
+        controllers: Vec<String>,
+        membership_pid: u32,
+    }
+
+    fn probe_cgroup_v2() -> Result<CgroupV2Observation, Box<dyn std::error::Error>> {
+        const CGROUP_ROOT: &str = "/sys/fs/cgroup";
+        const PROBE_CGROUP: &str = "/sys/fs/cgroup/whoathere-cgroup-v2-probe";
+        const CGROUP2_SUPER_MAGIC: i64 = 0x6367_7270;
+
+        let root = CString::new(CGROUP_ROOT)?;
+        let mut filesystem: libc::statfs = unsafe { zeroed() };
+        if unsafe { libc::statfs(root.as_ptr(), &mut filesystem) } != 0
+            || filesystem.f_type as i64 != CGROUP2_SUPER_MAGIC
+        {
+            return Err("guest_signer_cgroup2_filesystem_invalid".into());
+        }
+        let mountinfo = read_virtual_file_bounded("/proc/self/mountinfo", 256 * 1024)
+            .map_err(|_| "guest_signer_cgroup2_mountinfo_read_failed")?;
+        let mountinfo = std::str::from_utf8(&mountinfo)?;
+        let matching_mounts = mountinfo
+            .lines()
+            .filter(|line| {
+                let fields = line.split_ascii_whitespace().collect::<Vec<_>>();
+                let Some(separator) = fields.iter().position(|field| *field == "-") else {
+                    return false;
+                };
+                fields.get(4) == Some(&CGROUP_ROOT) && fields.get(separator + 1) == Some(&"cgroup2")
+            })
+            .count();
+        if matching_mounts != 1 {
+            return Err("guest_signer_cgroup2_mountinfo_invalid".into());
+        }
+        let controller_bytes =
+            read_virtual_file_bounded("/sys/fs/cgroup/cgroup.controllers", 16 * 1024)
+                .map_err(|_| "guest_signer_cgroup2_controllers_read_failed")?;
+        let mut controllers = std::str::from_utf8(&controller_bytes)?
+            .split_ascii_whitespace()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        controllers.sort();
+        controllers.dedup();
+        if controllers.is_empty() {
+            return Err("guest_signer_cgroup2_controllers_missing".into());
+        }
+        if fs::symlink_metadata(PROBE_CGROUP).is_ok() {
+            return Err("guest_signer_cgroup2_probe_already_exists".into());
+        }
+        fs::create_dir(PROBE_CGROUP).map_err(|_| "guest_signer_cgroup2_probe_create_failed")?;
+
+        let result = (|| -> Result<CgroupV2Observation, Box<dyn std::error::Error>> {
+            let cgroup_type = read_virtual_file_bounded(
+                "/sys/fs/cgroup/whoathere-cgroup-v2-probe/cgroup.type",
+                128,
+            )
+            .map_err(|_| "guest_signer_cgroup2_type_read_failed")?;
+            if std::str::from_utf8(&cgroup_type)?.trim() != "domain" {
+                return Err("guest_signer_cgroup2_type_invalid".into());
+            }
+            let membership_pid = unsafe { libc::getpid() } as u32;
+            let membership_result = (|| -> Result<(), Box<dyn std::error::Error>> {
+                let mut membership = OpenOptions::new()
+                    .write(true)
+                    .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                    .open("/sys/fs/cgroup/whoathere-cgroup-v2-probe/cgroup.procs")
+                    .map_err(|_| "guest_signer_cgroup2_membership_open_failed")?;
+                membership
+                    .write_all(b"0\n")
+                    .map_err(|_| "guest_signer_cgroup2_membership_write_failed")?;
+                membership
+                    .flush()
+                    .map_err(|_| "guest_signer_cgroup2_membership_flush_failed")?;
+                let members = read_virtual_file_bounded(
+                    "/sys/fs/cgroup/whoathere-cgroup-v2-probe/cgroup.procs",
+                    16 * 1024,
+                )
+                .map_err(|_| "guest_signer_cgroup2_membership_read_failed")?;
+                if !std::str::from_utf8(&members)?
+                    .lines()
+                    .any(|line| line == membership_pid.to_string())
+                {
+                    return Err("guest_signer_cgroup2_membership_missing".into());
+                }
+                let events = read_virtual_file_bounded(
+                    "/sys/fs/cgroup/whoathere-cgroup-v2-probe/cgroup.events",
+                    16 * 1024,
+                )
+                .map_err(|_| "guest_signer_cgroup2_populated_read_failed")?;
+                if !std::str::from_utf8(&events)?
+                    .lines()
+                    .any(|line| line == "populated 1")
+                {
+                    return Err("guest_signer_cgroup2_population_missing".into());
+                }
+                Ok(())
+            })();
+            let return_to_root_result = (|| -> Result<(), Box<dyn std::error::Error>> {
+                let mut root_membership = OpenOptions::new()
+                    .write(true)
+                    .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                    .open("/sys/fs/cgroup/cgroup.procs")
+                    .map_err(|_| "guest_signer_cgroup2_root_membership_open_failed")?;
+                root_membership
+                    .write_all(b"0\n")
+                    .map_err(|_| "guest_signer_cgroup2_root_membership_write_failed")?;
+                root_membership
+                    .flush()
+                    .map_err(|_| "guest_signer_cgroup2_root_membership_flush_failed")?;
+                Ok(())
+            })();
+            membership_result?;
+            return_to_root_result?;
+            let remaining_members = read_virtual_file_bounded_allow_empty(
+                "/sys/fs/cgroup/whoathere-cgroup-v2-probe/cgroup.procs",
+                16 * 1024,
+            )
+            .map_err(|_| "guest_signer_cgroup2_empty_membership_read_failed")?;
+            let events = read_virtual_file_bounded(
+                "/sys/fs/cgroup/whoathere-cgroup-v2-probe/cgroup.events",
+                16 * 1024,
+            )
+            .map_err(|_| "guest_signer_cgroup2_empty_events_read_failed")?;
+            if !remaining_members.is_empty()
+                || !std::str::from_utf8(&events)?
+                    .lines()
+                    .any(|line| line == "populated 0")
+            {
+                return Err("guest_signer_cgroup2_teardown_incomplete".into());
+            }
+            Ok(CgroupV2Observation {
+                controllers,
+                membership_pid,
+            })
+        })();
+        let remove_result = fs::remove_dir(PROBE_CGROUP);
+        let observation = result?;
+        remove_result.map_err(|_| "guest_signer_cgroup2_probe_remove_failed")?;
+        if fs::symlink_metadata(PROBE_CGROUP).is_ok() {
+            return Err("guest_signer_cgroup2_probe_remove_failed".into());
+        }
+        Ok(observation)
+    }
+
+    fn read_virtual_file_bounded_allow_empty(
+        path: &str,
+        maximum: u64,
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(path)?;
+        let metadata = file.metadata()?;
+        if !metadata.file_type().is_file() {
+            return Err("guest_signer_virtual_input_metadata_invalid".into());
+        }
+        let mut value = Vec::new();
+        file.take(maximum + 1).read_to_end(&mut value)?;
+        if value.len() as u64 > maximum {
             return Err("guest_signer_virtual_input_limit_exceeded".into());
         }
         Ok(value)
