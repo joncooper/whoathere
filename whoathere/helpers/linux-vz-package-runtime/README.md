@@ -44,6 +44,23 @@ scripts/verify-pinned-runtime-rootfs.sh \
   /absolute/path/to/.whoathere/linux-vz-package-runtime-build
 ```
 
+The macOS helper also contains an independent Swift decoder and locked-file verifier. It binds the
+rootfs, manifest, and runner to externally supplied identities, creates a unique writable APFS
+clone, rehashes that clone through its held directory descriptor, and destroys it before returning:
+
+```sh
+swift run --package-path ../macos-vm-helper \
+  whoathere-linux-vz-package-runtime-identity-verify \
+  --runtime-directory /absolute/path/to/.whoathere/linux-vz-package-runtime-build \
+  --expected-rootfs-sha256 sha256:... \
+  --expected-rootfs-byte-length 1073741824 \
+  --expected-runtime-manifest-sha256 sha256:... \
+  --expected-package-runner-sha256 sha256:...
+```
+
+That verifier exercises only the pre-boot clone lifecycle. It does not attach the clone to a VM,
+qualify the runtime, issue execution authority, or run a package.
+
 The current probe supports only `--runtime-probe`. Every other invocation fails with exit 64, and
 the successful response says `package_execution:false`, `execution_authority:false`, and
 `sync_back:false`. Replacing it with an execution-capable runner will change the rootfs and manifest

@@ -753,7 +753,7 @@ func openLockedMeasuredFile(
     }
 }
 
-private func hashDescriptor(
+func hashDescriptor(
     _ descriptor: Int32,
     expectedLength: UInt64,
     captureData: Bool

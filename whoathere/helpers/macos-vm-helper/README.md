@@ -32,6 +32,13 @@ Build and test:
 swift test
 ```
 
+The Linux VZ package-runtime composition has a separate pre-boot path. Its strict manifest decoder
+and locked-file lifecycle bind an exact rootfs, manifest, and non-executing runner, create a unique
+writable APFS clone, and remove the clone after verification. Its VM configuration has one writable
+block device, one raw-frame sinkhole NIC with no forwarding path, one vsock device, no directory
+shares, and no sync-back surface. This is not a package-execution path and remains unqualified until
+the exact composition passes the dedicated physical inert-boot and authenticated-evidence gate.
+
 Local signing for Virtualization.framework:
 
 ```sh

@@ -33,6 +33,14 @@ The candidate has not booted under VZ and is not qualified, so package execution
 unavailable. See the
 [pinned package-runtime candidate checkpoint](artifact-native-linux-vz-pinned-package-runtime-candidate-checkpoint-2026-07-13.md).
 
+The host-side pre-boot composition boundary now strictly decodes that exact runtime manifest, locks
+and rehashes the rootfs, manifest, and runner through non-following descriptors, creates a distinct
+writable APFS clone with a canonical binding, and defines a separate Linux VZ configuration with
+one block device, the no-forwarding raw-frame NIC, vsock, and no directory shares. The real 1 GiB
+candidate passed two unique clone-and-destroy cycles and the full 192-test Swift suite. No VM has
+booted with the rootfs, so this is not runtime qualification and execution remains unavailable. See
+the [package-runtime clone preflight checkpoint](artifact-native-linux-vz-package-runtime-clone-preflight-checkpoint-2026-07-13.md).
+
 The first protected-sensor bootstrap now also observes a cgroup-filtered inert fork/exec/exit chain
 whose child runs as UID/GID 65534 and cannot read or write the root-only sensor. This remains
 unsigned bootstrap evidence rather than a conformance receipt. See the
@@ -1648,6 +1656,7 @@ Repository evidence:
 - [Linux VZ BPF program-types checkpoint](artifact-native-linux-vz-bpf-program-types-checkpoint-2026-07-13.md)
 - [Linux VZ raw-frame and qualification checkpoint](artifact-native-linux-vz-raw-frame-qualification-checkpoint-2026-07-13.md)
 - [Linux VZ package authority-request checkpoint](artifact-native-linux-vz-package-authority-request-checkpoint-2026-07-13.md)
+- [Linux VZ package-runtime clone preflight checkpoint](artifact-native-linux-vz-package-runtime-clone-preflight-checkpoint-2026-07-13.md)
 - [macOS local release readiness](macos-local-release-readiness.md)
 - [macOS local beta pressure checkpoint](macos-local-beta-pressure-checkpoint.md)
 - [latest source-fixture corpus report](src-fixture-corpus-latest.md)

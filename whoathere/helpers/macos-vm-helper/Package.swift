@@ -24,6 +24,10 @@ let package = Package(
         .executable(
             name: "whoathere-linux-vz-host-keygen",
             targets: ["WhoaThereLinuxVzHostKeygen"]
+        ),
+        .executable(
+            name: "whoathere-linux-vz-package-runtime-identity-verify",
+            targets: ["WhoaThereLinuxVzPackageRuntimeIdentityVerify"]
         )
     ],
     targets: [
@@ -46,6 +50,10 @@ let package = Package(
         ),
         .executableTarget(
             name: "WhoaThereLinuxVzHostKeygen"
+        ),
+        .executableTarget(
+            name: "WhoaThereLinuxVzPackageRuntimeIdentityVerify",
+            dependencies: ["WhoaThereMacosVmHelperCore"]
         ),
         .testTarget(
             name: "WhoaThereMacosVmHelperCoreTests",
