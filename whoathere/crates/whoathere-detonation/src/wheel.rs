@@ -432,6 +432,7 @@ pub struct WheelScenarioTemplateV1 {
     identity: ArtifactScenarioExecutionIdentityV1,
     subject: ArtifactEvidenceSubjectV2,
     package: PackageIdentity,
+    artifact_filename: String,
     artifact_byte_length: u64,
     policy_sha256: Sha256Digest,
     runtime_profile: WheelRuntimeProfileV1,
@@ -465,6 +466,10 @@ impl WheelScenarioTemplateV1 {
 
     pub fn package(&self) -> &PackageIdentity {
         &self.package
+    }
+
+    pub fn artifact_filename(&self) -> &str {
+        &self.artifact_filename
     }
 
     pub fn artifact_byte_length(&self) -> u64 {
@@ -697,6 +702,7 @@ pub fn compile_wheel_scenarios_v1(
             identity: request.identities.identity_for(&kind)?.clone(),
             subject: request.subject.clone(),
             package: identity.clone(),
+            artifact_filename: request.envelope.original_filename.clone(),
             artifact_byte_length: request.envelope.original_byte_length,
             policy_sha256: request.policy.policy_sha256().clone(),
             runtime_profile: request.policy.runtime_profile().clone(),
@@ -888,6 +894,7 @@ struct WheelScenarioTemplateWireV1 {
     identity: ScenarioIdentityWireV1,
     subject: SubjectWireV1,
     package: PackageIdentity,
+    artifact_filename: String,
     artifact_byte_length: u64,
     policy_sha256: Sha256Digest,
     runtime_profile: WheelRuntimeProfileWireV1,
@@ -931,6 +938,7 @@ impl WheelScenarioTemplateWireV1 {
                 cas_object_key: subject.cas_object_key().to_string(),
             },
             package: template.package().clone(),
+            artifact_filename: template.artifact_filename().to_string(),
             artifact_byte_length: template.artifact_byte_length(),
             policy_sha256: template.policy_sha256().clone(),
             runtime_profile: WheelRuntimeProfileWireV1 {
@@ -979,6 +987,9 @@ pub struct ValidatedWheelScenarioTemplateWireV1 {
     artifact_sha256: Sha256Digest,
     envelope_sha256: Sha256Digest,
     manifest_sha256: Sha256Digest,
+    artifact_filename: String,
+    package_normalized_name: String,
+    package_version: String,
     artifact_byte_length: u64,
     policy_sha256: Sha256Digest,
     dependency_closure_sha256: Sha256Digest,
@@ -1001,6 +1012,9 @@ impl fmt::Debug for ValidatedWheelScenarioTemplateWireV1 {
             .field("artifact_sha256", &self.artifact_sha256)
             .field("envelope_sha256", &self.envelope_sha256)
             .field("manifest_sha256", &self.manifest_sha256)
+            .field("artifact_filename", &self.artifact_filename)
+            .field("package_normalized_name", &self.package_normalized_name)
+            .field("package_version", &self.package_version)
             .field("artifact_byte_length", &self.artifact_byte_length)
             .field("policy_sha256", &self.policy_sha256)
             .field("dependency_closure_sha256", &self.dependency_closure_sha256)
@@ -1031,6 +1045,18 @@ impl ValidatedWheelScenarioTemplateWireV1 {
 
     pub fn manifest_sha256(&self) -> &Sha256Digest {
         &self.manifest_sha256
+    }
+
+    pub fn artifact_filename(&self) -> &str {
+        &self.artifact_filename
+    }
+
+    pub fn package_normalized_name(&self) -> &str {
+        &self.package_normalized_name
+    }
+
+    pub fn package_version(&self) -> &str {
+        &self.package_version
     }
 
     pub fn artifact_byte_length(&self) -> u64 {
@@ -1107,6 +1133,9 @@ pub fn decode_and_validate_wheel_scenario_template_v1(
         artifact_sha256: wire.subject.artifact_sha256,
         envelope_sha256: wire.subject.envelope_sha256,
         manifest_sha256: wire.subject.manifest_sha256,
+        artifact_filename: wire.artifact_filename,
+        package_normalized_name: wire.package.normalized_name,
+        package_version: wire.package.version,
         artifact_byte_length: wire.artifact_byte_length,
         policy_sha256: wire.policy_sha256,
         dependency_closure_sha256: wire.dependency_closure.declaration_set_sha256().clone(),
@@ -1147,6 +1176,7 @@ fn validate_wheel_template_wire_v1(
         || !valid_package_text(&wire.package.display_name)
         || !valid_package_text(&wire.package.normalized_name)
         || !valid_package_text(&wire.package.version)
+        || !valid_wheel_artifact_filename_v1(&wire.artifact_filename, &wire.package)
         || wire.runtime_profile.target_os != wire.target_os
         || wire.runtime_profile.target_arch != wire.target_arch
         || wire.install_environment != WheelInstallEnvironmentV1::FreshVirtualEnvironment
@@ -1195,6 +1225,76 @@ fn validate_wheel_template_wire_v1(
         return Err(ArtifactScenarioCompileErrorV1::InvalidWire);
     }
     Ok(())
+}
+
+fn valid_wheel_artifact_filename_v1(value: &str, package: &PackageIdentity) -> bool {
+    if value.is_empty()
+        || value.len() > 255
+        || !value.is_ascii()
+        || value.starts_with('.')
+        || value.contains('/')
+        || value.contains('\\')
+        || !value.ends_with(".whl")
+        || !value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b'+' | b'!')
+        })
+    {
+        return false;
+    }
+    let Some(stem) = value.strip_suffix(".whl") else {
+        return false;
+    };
+    let parts = stem.split('-').collect::<Vec<_>>();
+    if !matches!(parts.len(), 5 | 6)
+        || normalize_pypi_filename_name_v1(parts[0]).as_deref()
+            != Some(package.normalized_name.as_str())
+        || parts[1] != package.version
+    {
+        return false;
+    }
+    if parts.len() == 6
+        && (!parts[2]
+            .bytes()
+            .next()
+            .is_some_and(|byte| byte.is_ascii_digit())
+            || !parts[2]
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_'))
+    {
+        return false;
+    }
+    parts[parts.len() - 3..].iter().all(|compressed| {
+        compressed.split('.').all(|tag| {
+            !tag.is_empty()
+                && tag
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        })
+    })
+}
+
+fn normalize_pypi_filename_name_v1(value: &str) -> Option<String> {
+    if value.is_empty()
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return None;
+    }
+    let mut output = String::new();
+    let mut separator = false;
+    for byte in value.bytes() {
+        if matches!(byte, b'-' | b'_' | b'.') {
+            if !separator {
+                output.push('-');
+                separator = true;
+            }
+        } else {
+            output.push((byte as char).to_ascii_lowercase());
+            separator = false;
+        }
+    }
+    (!output.starts_with('-') && !output.ends_with('-')).then_some(output)
 }
 
 fn expected_empty_closure_sha256_v1(

@@ -161,6 +161,16 @@ package-manager operations, cgroup teardown, evidence, a new runtime image, and 
 qualification remain open. See the
 [execution-runner ingress checkpoint](artifact-native-linux-vz-package-execution-runner-ingress-checkpoint-2026-07-13.md).
 
+The first package-manager input ambiguity found while deriving fixed operations is now closed.
+Every wheel scenario template preserves the exact normalization-validated `.whl` basename, and the
+closed wheel execution operation carries that same basename alongside its install-template digest.
+Artifact normalization, template decoding, and runner-request decoding independently reject path
+separators, traversal-like basenames, ambiguous wheel part counts, malformed build or compatibility
+tags, and package-identity rebinding. This gives pip a digest-bound valid wheel name without
+accepting a caller path. It still executes nothing and does not change the 7/11 detection result.
+See the
+[wheel install-basename checkpoint](artifact-native-wheel-install-basename-checkpoint-2026-07-13.md).
+
 The first protected-sensor bootstrap now also observes a cgroup-filtered inert fork/exec/exit chain
 whose child runs as UID/GID 65534 and cannot read or write the root-only sensor. This remains
 unsigned bootstrap evidence rather than a conformance receipt. See the

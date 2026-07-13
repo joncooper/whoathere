@@ -321,6 +321,29 @@ fn normalizes_wheel_zip_with_complete_record_and_execution_surfaces() {
 }
 
 #[test]
+fn rejects_wheel_paths_ambiguous_parts_and_invalid_build_tags() {
+    let bytes = wheel_zip();
+    for filename in [
+        "../fixture_pkg-1.2.3-py3-none-any.whl",
+        "fixture_pkg-1.2.3-extra-py3-none-any-extra.whl",
+        "fixture_pkg-1.2.3-build-py3-none-any.whl",
+    ] {
+        let envelope = envelope(
+            Ecosystem::Pypi,
+            "fixture-pkg",
+            "1.2.3",
+            filename,
+            ArtifactFormat::WheelZip,
+            &bytes,
+        );
+        assert!(matches!(
+            normalize_artifact(&envelope, &bytes, NormalizationLimits::default()),
+            Err(NormalizationError::IdentityMismatch(_))
+        ));
+    }
+}
+
+#[test]
 fn normalizes_nested_root_sdist_tgz_with_pep517_and_setup_metadata() {
     let bytes = sdist_tgz();
     let envelope = envelope(

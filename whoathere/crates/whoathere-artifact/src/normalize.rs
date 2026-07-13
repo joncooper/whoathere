@@ -1118,14 +1118,20 @@ fn verify_wheel_filename(
     version: &str,
     metadata_tags: &[String],
 ) -> Result<(), NormalizationError> {
+    if !valid_wheel_basename(&envelope.original_filename) {
+        return Err(NormalizationError::IdentityMismatch(
+            "wheel filename is not a safe canonical basename".to_string(),
+        ));
+    }
     let stem = envelope
         .original_filename
         .strip_suffix(".whl")
         .ok_or_else(|| NormalizationError::IdentityMismatch("wheel filename suffix".to_string()))?;
     let parts = stem.split('-').collect::<Vec<_>>();
-    if parts.len() < 5 {
+    if !matches!(parts.len(), 5 | 6) {
         return Err(NormalizationError::IdentityMismatch(
-            "wheel filename does not contain distribution, version, and three tags".to_string(),
+            "wheel filename must contain distribution, version, optional build, and three tags"
+                .to_string(),
         ));
     }
     if normalize_pypi_name(parts[0])? != normalized_name || parts[1] != version {
@@ -1134,9 +1140,27 @@ fn verify_wheel_filename(
             envelope.original_filename
         )));
     }
+    if parts.len() == 6 && !valid_wheel_build_tag(parts[2]) {
+        return Err(NormalizationError::IdentityMismatch(
+            "wheel filename build tag is invalid".to_string(),
+        ));
+    }
     let python_tags = parts[parts.len() - 3].split('.').collect::<Vec<_>>();
     let abi_tags = parts[parts.len() - 2].split('.').collect::<Vec<_>>();
     let platform_tags = parts[parts.len() - 1].split('.').collect::<Vec<_>>();
+    if python_tags
+        .iter()
+        .chain(&abi_tags)
+        .chain(&platform_tags)
+        .any(|tag| !valid_wheel_tag_component(tag))
+        || metadata_tags
+            .iter()
+            .any(|tag| !valid_expanded_wheel_tag(tag))
+    {
+        return Err(NormalizationError::IdentityMismatch(
+            "wheel filename or WHEEL metadata tag grammar is invalid".to_string(),
+        ));
+    }
     for python in &python_tags {
         for abi in &abi_tags {
             for platform in &platform_tags {
@@ -1150,6 +1174,41 @@ fn verify_wheel_filename(
         }
     }
     Ok(())
+}
+
+fn valid_wheel_basename(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 255
+        && value.is_ascii()
+        && !value.starts_with('.')
+        && !value.contains('/')
+        && !value.contains('\\')
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b'+' | b'!')
+        })
+}
+
+fn valid_wheel_build_tag(value: &str) -> bool {
+    value
+        .bytes()
+        .next()
+        .is_some_and(|byte| byte.is_ascii_digit())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+}
+
+fn valid_wheel_tag_component(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+}
+
+fn valid_expanded_wheel_tag(value: &str) -> bool {
+    let mut components = value.split('-');
+    let valid = components.by_ref().take(3).all(valid_wheel_tag_component);
+    valid && components.next().is_none() && value.matches('-').count() == 2
 }
 
 fn validate_wheel_record(

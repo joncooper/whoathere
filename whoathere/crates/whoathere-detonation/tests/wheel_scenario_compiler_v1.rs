@@ -268,6 +268,12 @@ fn exact_wheel_compiles_install_pth_import_and_console_scenarios() {
             decode_and_validate_wheel_scenario_template_v1(&wire).expect("validated template");
         assert_eq!(decoded.template_sha256(), template.template_sha256());
         assert_eq!(decoded.artifact_sha256(), &fixture.envelope.original_sha256);
+        assert_eq!(
+            decoded.artifact_filename(),
+            "wheel_fixture-1.0.0-py3-none-any.whl"
+        );
+        assert_eq!(decoded.package_normalized_name(), "wheel-fixture");
+        assert_eq!(decoded.package_version(), "1.0.0");
         let text = std::str::from_utf8(&wire).expect("wire utf8");
         assert!(text.contains("\"install_environment\":\"fresh_virtual_environment\""));
         assert!(text.contains("\"resolver_policy\":\"no_index_no_dependencies\""));
@@ -382,6 +388,14 @@ fn wheel_wire_is_closed_canonical_and_tamper_evident() {
     let trigger = serde_json_canonicalizer::to_vec(&trigger).expect("trigger wire");
     assert_eq!(
         decode_and_validate_wheel_scenario_template_v1(&trigger),
+        Err(ArtifactScenarioCompileErrorV1::InvalidWire)
+    );
+
+    let mut filename: serde_json::Value = serde_json::from_slice(&canonical).expect("wire value");
+    filename["artifact_filename"] = serde_json::json!("../wheel_fixture-1.0.0-py3-none-any.whl");
+    let filename = serde_json_canonicalizer::to_vec(&filename).expect("filename wire");
+    assert_eq!(
+        decode_and_validate_wheel_scenario_template_v1(&filename),
         Err(ArtifactScenarioCompileErrorV1::InvalidWire)
     );
 

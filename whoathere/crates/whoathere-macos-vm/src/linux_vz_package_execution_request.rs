@@ -86,17 +86,29 @@ pub enum MacosLinuxVzPackageExecutionOperationV1 {
     },
     WheelInstallExact {
         install_template_sha256: Sha256Digest,
+        artifact_filename: String,
+        package_normalized_name: String,
+        package_version: String,
     },
     WheelInstallThenFreshInterpreterPth {
         install_template_sha256: Sha256Digest,
+        artifact_filename: String,
+        package_normalized_name: String,
+        package_version: String,
         pth_file_ids: Vec<Sha256Digest>,
     },
     WheelInstallThenImportRoot {
         install_template_sha256: Sha256Digest,
+        artifact_filename: String,
+        package_normalized_name: String,
+        package_version: String,
         module: String,
     },
     WheelInstallThenConsoleEntryPointHelp {
         install_template_sha256: Sha256Digest,
+        artifact_filename: String,
+        package_normalized_name: String,
+        package_version: String,
         command_name: String,
         module: String,
         callable: String,
@@ -475,15 +487,34 @@ fn validate_closed_operation_v1(
             MacosLinuxVzPackageArtifactKindV1::PypiWheel,
             MacosLinuxVzPackageExecutionOperationV1::WheelInstallExact {
                 install_template_sha256,
+                artifact_filename,
+                package_normalized_name,
+                package_version,
             },
-        ) if install_template_sha256 != &empty => Ok(()),
+        ) if install_template_sha256 != &empty
+            && valid_wheel_filename_v1(
+                artifact_filename,
+                package_normalized_name,
+                package_version,
+            ) =>
+        {
+            Ok(())
+        }
         (
             MacosLinuxVzPackageArtifactKindV1::PypiWheel,
             MacosLinuxVzPackageExecutionOperationV1::WheelInstallThenFreshInterpreterPth {
                 install_template_sha256,
+                artifact_filename,
+                package_normalized_name,
+                package_version,
                 pth_file_ids,
             },
         ) if install_template_sha256 != &empty
+            && valid_wheel_filename_v1(
+                artifact_filename,
+                package_normalized_name,
+                package_version,
+            )
             && !pth_file_ids.is_empty()
             && !pth_file_ids.contains(&empty)
             && !pth_file_ids.windows(2).any(|pair| pair[0] >= pair[1]) =>
@@ -494,19 +525,39 @@ fn validate_closed_operation_v1(
             MacosLinuxVzPackageArtifactKindV1::PypiWheel,
             MacosLinuxVzPackageExecutionOperationV1::WheelInstallThenImportRoot {
                 install_template_sha256,
+                artifact_filename,
+                package_normalized_name,
+                package_version,
                 module,
             },
-        ) if install_template_sha256 != &empty && valid_python_target_v1(module) => Ok(()),
+        ) if install_template_sha256 != &empty
+            && valid_wheel_filename_v1(
+                artifact_filename,
+                package_normalized_name,
+                package_version,
+            )
+            && valid_python_target_v1(module) =>
+        {
+            Ok(())
+        }
         (
             MacosLinuxVzPackageArtifactKindV1::PypiWheel,
             MacosLinuxVzPackageExecutionOperationV1::WheelInstallThenConsoleEntryPointHelp {
                 install_template_sha256,
+                artifact_filename,
+                package_normalized_name,
+                package_version,
                 command_name,
                 module,
                 callable,
                 target_sha256,
             },
         ) if install_template_sha256 != &empty
+            && valid_wheel_filename_v1(
+                artifact_filename,
+                package_normalized_name,
+                package_version,
+            )
             && valid_console_name_v1(command_name)
             && valid_python_target_v1(module)
             && valid_python_target_v1(callable)
@@ -625,6 +676,79 @@ fn valid_backend_path_v1(value: &str) -> bool {
         && !value
             .split('/')
             .any(|component| component.is_empty() || component == "." || component == "..")
+}
+
+fn valid_wheel_filename_v1(
+    value: &str,
+    package_normalized_name: &str,
+    package_version: &str,
+) -> bool {
+    if value.is_empty()
+        || value.len() > 255
+        || !value.is_ascii()
+        || value.starts_with('.')
+        || value.contains('/')
+        || value.contains('\\')
+        || !value.ends_with(".whl")
+        || !value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b'+' | b'!')
+        })
+    {
+        return false;
+    }
+    let Some(stem) = value.strip_suffix(".whl") else {
+        return false;
+    };
+    let parts = stem.split('-').collect::<Vec<_>>();
+    if !matches!(parts.len(), 5 | 6)
+        || normalize_pypi_filename_name_v1(parts[0]).as_deref() != Some(package_normalized_name)
+        || parts[1] != package_version
+    {
+        return false;
+    }
+    if parts.len() == 6
+        && (!parts[2]
+            .bytes()
+            .next()
+            .is_some_and(|byte| byte.is_ascii_digit())
+            || !parts[2]
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_'))
+    {
+        return false;
+    }
+    parts[parts.len() - 3..].iter().all(|compressed| {
+        compressed.split('.').all(|tag| {
+            !tag.is_empty()
+                && tag
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        })
+    })
+}
+
+fn normalize_pypi_filename_name_v1(value: &str) -> Option<String> {
+    if value.is_empty()
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return None;
+    }
+    let mut output = String::new();
+    let mut separator = false;
+    for byte in value.bytes() {
+        if matches!(byte, b'-' | b'_' | b'.') {
+            if !separator {
+                output.push('-');
+                separator = true;
+            }
+        } else {
+            output.push((byte as char).to_ascii_lowercase());
+            separator = false;
+        }
+    }
+    (!output.starts_with('-') && !output.ends_with('-')).then_some(output)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -885,7 +1009,13 @@ fn operation_and_limits_v1(
                 .map_err(|_| MacosLinuxVzPackageExecutionRequestErrorV1::ScenarioInvalid)?;
             let template = decode_and_validate_wheel_scenario_template_v1(scenario_template_bytes)
                 .map_err(|_| MacosLinuxVzPackageExecutionRequestErrorV1::ScenarioInvalid)?;
-            let operation = wheel_operation_v1(plan.templates(), template.scenario_kind())?;
+            let operation = wheel_operation_v1(
+                plan.templates(),
+                template.artifact_filename(),
+                template.package_normalized_name(),
+                template.package_version(),
+                template.scenario_kind(),
+            )?;
             Ok((operation, template.limits().clone()))
         }
         MacosLinuxVzPackageArtifactKindV1::PypiSdist => {
@@ -905,6 +1035,9 @@ fn operation_and_limits_v1(
 
 fn wheel_operation_v1(
     templates: &[(String, WheelScenarioKindV1, Sha256Digest)],
+    artifact_filename: &str,
+    package_normalized_name: &str,
+    package_version: &str,
     selected: &WheelScenarioKindV1,
 ) -> Result<MacosLinuxVzPackageExecutionOperationV1, MacosLinuxVzPackageExecutionRequestErrorV1> {
     let install_template_sha256 = templates
@@ -917,17 +1050,26 @@ fn wheel_operation_v1(
         WheelScenarioKindV1::InstallExactWheel => {
             MacosLinuxVzPackageExecutionOperationV1::WheelInstallExact {
                 install_template_sha256,
+                artifact_filename: artifact_filename.to_string(),
+                package_normalized_name: package_normalized_name.to_string(),
+                package_version: package_version.to_string(),
             }
         }
         WheelScenarioKindV1::FreshInterpreterPth { pth_file_ids } => {
             MacosLinuxVzPackageExecutionOperationV1::WheelInstallThenFreshInterpreterPth {
                 install_template_sha256,
+                artifact_filename: artifact_filename.to_string(),
+                package_normalized_name: package_normalized_name.to_string(),
+                package_version: package_version.to_string(),
                 pth_file_ids: pth_file_ids.clone(),
             }
         }
         WheelScenarioKindV1::ImportRoot { module } => {
             MacosLinuxVzPackageExecutionOperationV1::WheelInstallThenImportRoot {
                 install_template_sha256,
+                artifact_filename: artifact_filename.to_string(),
+                package_normalized_name: package_normalized_name.to_string(),
+                package_version: package_version.to_string(),
                 module: module.clone(),
             }
         }
@@ -939,6 +1081,9 @@ fn wheel_operation_v1(
             argument_profile: WheelConsoleArgumentProfileV1::HelpOnly,
         } => MacosLinuxVzPackageExecutionOperationV1::WheelInstallThenConsoleEntryPointHelp {
             install_template_sha256,
+            artifact_filename: artifact_filename.to_string(),
+            package_normalized_name: package_normalized_name.to_string(),
+            package_version: package_version.to_string(),
             command_name: command_name.clone(),
             module: module.clone(),
             callable: callable.clone(),
@@ -1143,6 +1288,9 @@ mod tests {
         ];
         let operation = wheel_operation_v1(
             &templates,
+            "safe_fixture-1.0.0-py3-none-any.whl",
+            "safe-fixture",
+            "1.0.0",
             &WheelScenarioKindV1::ImportRoot {
                 module: "safe_fixture".to_string(),
             },
@@ -1152,6 +1300,9 @@ mod tests {
             operation,
             MacosLinuxVzPackageExecutionOperationV1::WheelInstallThenImportRoot {
                 install_template_sha256: install_digest,
+                artifact_filename: "safe_fixture-1.0.0-py3-none-any.whl".to_string(),
+                package_normalized_name: "safe-fixture".to_string(),
+                package_version: "1.0.0".to_string(),
                 module: "safe_fixture".to_string(),
             }
         );
@@ -1169,12 +1320,39 @@ mod tests {
         assert_eq!(
             wheel_operation_v1(
                 &templates,
+                "safe_fixture-1.0.0-py3-none-any.whl",
+                "safe-fixture",
+                "1.0.0",
                 &WheelScenarioKindV1::ImportRoot {
                     module: "safe_fixture".to_string(),
                 },
             ),
             Err(MacosLinuxVzPackageExecutionRequestErrorV1::ClosedOperationInvalid)
         );
+    }
+
+    #[test]
+    fn runner_wheel_filename_binding_rejects_paths_and_other_package_identity() {
+        assert!(valid_wheel_filename_v1(
+            "safe_fixture-1.0.0-py3-none-any.whl",
+            "safe-fixture",
+            "1.0.0"
+        ));
+        assert!(!valid_wheel_filename_v1(
+            "../safe_fixture-1.0.0-py3-none-any.whl",
+            "safe-fixture",
+            "1.0.0"
+        ));
+        assert!(!valid_wheel_filename_v1(
+            "other_fixture-1.0.0-py3-none-any.whl",
+            "safe-fixture",
+            "1.0.0"
+        ));
+        assert!(!valid_wheel_filename_v1(
+            "safe_fixture-2.0.0-py3-none-any.whl",
+            "safe-fixture",
+            "1.0.0"
+        ));
     }
 
     #[test]
@@ -1228,6 +1406,9 @@ mod tests {
         let operation =
             MacosLinuxVzPackageExecutionOperationV1::WheelInstallThenConsoleEntryPointHelp {
                 install_template_sha256: digest("install"),
+                artifact_filename: "fixture-1.0.0-py3-none-any.whl".to_string(),
+                package_normalized_name: "fixture".to_string(),
+                package_version: "1.0.0".to_string(),
                 command_name: "fixture-cli".to_string(),
                 module: "fixture.cli".to_string(),
                 callable: "main".to_string(),
