@@ -260,8 +260,13 @@ pub struct MacosLinuxVzPackageAuthorityRequestV1 {
     request_sha256: Sha256Digest,
     artifact_kind: MacosLinuxVzPackageArtifactKindV1,
     artifact_sha256: Sha256Digest,
+    artifact_byte_length: u64,
     scenario_plan_sha256: Sha256Digest,
     scenario_template_sha256: Sha256Digest,
+    scenario_id: String,
+    scenario_kind_sha256: Sha256Digest,
+    scenario_policy_sha256: Sha256Digest,
+    dependency_closure_sha256: Sha256Digest,
     runtime_profile_sha256: Sha256Digest,
     candidate_runtime_rootfs_sha256: Sha256Digest,
     candidate_runtime_rootfs_byte_length: u64,
@@ -310,12 +315,32 @@ impl MacosLinuxVzPackageAuthorityRequestV1 {
         &self.artifact_sha256
     }
 
+    pub const fn artifact_byte_length(&self) -> u64 {
+        self.artifact_byte_length
+    }
+
     pub fn scenario_plan_sha256(&self) -> &Sha256Digest {
         &self.scenario_plan_sha256
     }
 
     pub fn scenario_template_sha256(&self) -> &Sha256Digest {
         &self.scenario_template_sha256
+    }
+
+    pub fn scenario_id(&self) -> &str {
+        &self.scenario_id
+    }
+
+    pub fn scenario_kind_sha256(&self) -> &Sha256Digest {
+        &self.scenario_kind_sha256
+    }
+
+    pub fn scenario_policy_sha256(&self) -> &Sha256Digest {
+        &self.scenario_policy_sha256
+    }
+
+    pub fn dependency_closure_sha256(&self) -> &Sha256Digest {
+        &self.dependency_closure_sha256
     }
 
     pub fn runtime_profile_sha256(&self) -> &Sha256Digest {
@@ -456,6 +481,14 @@ impl MacosLinuxVzTypedPackageScenarioBindingV1 {
         &self.scenario_template_sha256
     }
 
+    pub fn scenario_id(&self) -> &str {
+        &self.scenario_id
+    }
+
+    pub fn scenario_kind_sha256(&self) -> &Sha256Digest {
+        &self.scenario_kind_sha256
+    }
+
     pub fn scenario_policy_sha256(&self) -> &Sha256Digest {
         &self.scenario_policy_sha256
     }
@@ -533,11 +566,11 @@ pub fn build_macos_linux_vz_package_authority_request_v1(
         scenario_plan_sha256: binding.scenario_plan_sha256.clone(),
         scenario_plan_id: binding.scenario_plan_id,
         scenario_template_sha256: binding.scenario_template_sha256.clone(),
-        scenario_id: binding.scenario_id,
+        scenario_id: binding.scenario_id.clone(),
         scenario_kind: binding.scenario_kind,
-        scenario_kind_sha256: binding.scenario_kind_sha256,
-        scenario_policy_sha256: binding.scenario_policy_sha256,
-        dependency_closure_sha256: binding.dependency_closure_sha256,
+        scenario_kind_sha256: binding.scenario_kind_sha256.clone(),
+        scenario_policy_sha256: binding.scenario_policy_sha256.clone(),
+        dependency_closure_sha256: binding.dependency_closure_sha256.clone(),
         runtime_target: ArtifactRuntimeTargetV1::LinuxArm64,
         runtime_profile_sha256: binding.runtime_profile_sha256.clone(),
         candidate_runtime_qualification_state:
@@ -576,8 +609,13 @@ pub fn build_macos_linux_vz_package_authority_request_v1(
         canonical_json,
         artifact_kind,
         artifact_sha256: exact_artifact_sha256,
+        artifact_byte_length: binding.artifact_byte_length,
         scenario_plan_sha256: binding.scenario_plan_sha256,
         scenario_template_sha256: binding.scenario_template_sha256,
+        scenario_id: binding.scenario_id,
+        scenario_kind_sha256: binding.scenario_kind_sha256,
+        scenario_policy_sha256: binding.scenario_policy_sha256,
+        dependency_closure_sha256: binding.dependency_closure_sha256,
         runtime_profile_sha256: binding.runtime_profile_sha256,
         candidate_runtime_rootfs_sha256: candidate_runtime.rootfs_sha256.clone(),
         candidate_runtime_rootfs_byte_length: candidate_runtime.rootfs_byte_length,
@@ -755,6 +793,76 @@ pub fn validate_macos_linux_vz_typed_package_scenario_binding_v1(
         }
     };
     Ok(binding)
+}
+
+#[cfg(test)]
+pub(crate) fn test_macos_linux_vz_package_authority_request_for_execution_v1(
+    request_sha256: Sha256Digest,
+    artifact_kind: MacosLinuxVzPackageArtifactKindV1,
+    artifact_sha256: Sha256Digest,
+    request_challenge_sha256: Sha256Digest,
+    clone_binding_sha256: Sha256Digest,
+) -> MacosLinuxVzPackageAuthorityRequestV1 {
+    MacosLinuxVzPackageAuthorityRequestV1 {
+        canonical_json: b"test-only-package-authority-request".to_vec(),
+        request_sha256,
+        artifact_kind,
+        artifact_sha256,
+        artifact_byte_length: 1,
+        scenario_plan_sha256: Sha256Digest::from_bytes(b"test scenario plan"),
+        scenario_template_sha256: Sha256Digest::from_bytes(b"test scenario template"),
+        scenario_id: "test-scenario".to_string(),
+        scenario_kind_sha256: Sha256Digest::from_bytes(b"test scenario kind"),
+        scenario_policy_sha256: Sha256Digest::from_bytes(b"test scenario policy"),
+        dependency_closure_sha256: Sha256Digest::from_bytes(b"test dependency closure"),
+        runtime_profile_sha256: Sha256Digest::from_bytes(b"test runtime profile"),
+        candidate_runtime_rootfs_sha256: Sha256Digest::from_bytes(b"test rootfs"),
+        candidate_runtime_rootfs_byte_length: 1,
+        candidate_runtime_manifest_sha256: Sha256Digest::from_bytes(b"test runtime manifest"),
+        candidate_package_runner_sha256: Sha256Digest::from_bytes(b"test package runner"),
+        qualified_telemetry_backend_sha256: Sha256Digest::from_bytes(b"test telemetry backend"),
+        request_challenge_sha256,
+        clone_binding_sha256,
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_macos_linux_vz_package_authority_request_from_scenario_v1(
+    artifact_kind: MacosLinuxVzPackageArtifactKindV1,
+    artifact_bytes: &[u8],
+    scenario_plan_bytes: &[u8],
+    scenario_template_bytes: &[u8],
+    request_challenge_sha256: Sha256Digest,
+    clone_binding_sha256: Sha256Digest,
+) -> MacosLinuxVzPackageAuthorityRequestV1 {
+    let binding = validate_macos_linux_vz_typed_package_scenario_binding_v1(
+        artifact_kind,
+        scenario_plan_bytes,
+        scenario_template_bytes,
+    )
+    .expect("test scenario binding");
+    let canonical_json = b"test-only-exact-package-authority-request".to_vec();
+    MacosLinuxVzPackageAuthorityRequestV1 {
+        request_sha256: Sha256Digest::from_bytes(&canonical_json),
+        canonical_json,
+        artifact_kind,
+        artifact_sha256: Sha256Digest::from_bytes(artifact_bytes),
+        artifact_byte_length: artifact_bytes.len() as u64,
+        scenario_plan_sha256: binding.scenario_plan_sha256,
+        scenario_template_sha256: binding.scenario_template_sha256,
+        scenario_id: binding.scenario_id,
+        scenario_kind_sha256: binding.scenario_kind_sha256,
+        scenario_policy_sha256: binding.scenario_policy_sha256,
+        dependency_closure_sha256: binding.dependency_closure_sha256,
+        runtime_profile_sha256: binding.runtime_profile_sha256,
+        candidate_runtime_rootfs_sha256: Sha256Digest::from_bytes(b"test rootfs"),
+        candidate_runtime_rootfs_byte_length: 1,
+        candidate_runtime_manifest_sha256: Sha256Digest::from_bytes(b"test runtime manifest"),
+        candidate_package_runner_sha256: Sha256Digest::from_bytes(b"test package runner"),
+        qualified_telemetry_backend_sha256: Sha256Digest::from_bytes(b"test telemetry backend"),
+        request_challenge_sha256,
+        clone_binding_sha256,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

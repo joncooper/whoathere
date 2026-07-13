@@ -497,23 +497,38 @@ impl Drop for MacosLinuxVzPackageExecutionGrantBytesV1 {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct MacosLinuxVzPackageExecutionGrantObservationV1 {
+    execution_grant_sha256: Sha256Digest,
     package_authority_request_sha256: Sha256Digest,
     execution_runtime_qualification_record_sha256: Sha256Digest,
+    request_challenge_sha256: Sha256Digest,
     grant_challenge_sha256: Sha256Digest,
     attempt_binding_sha256: Sha256Digest,
     clone_binding_sha256: Sha256Digest,
+    issued_at_unix_seconds: u64,
+    expires_at_unix_seconds: u64,
+    verified_at_unix_seconds: u64,
+    package_uid: u32,
+    package_gid: u32,
     consumed: bool,
 }
 
 impl MacosLinuxVzPackageExecutionGrantObservationV1 {
+    pub fn execution_grant_sha256(&self) -> &Sha256Digest {
+        &self.execution_grant_sha256
+    }
+
     pub fn package_authority_request_sha256(&self) -> &Sha256Digest {
         &self.package_authority_request_sha256
     }
 
     pub fn execution_runtime_qualification_record_sha256(&self) -> &Sha256Digest {
         &self.execution_runtime_qualification_record_sha256
+    }
+
+    pub fn request_challenge_sha256(&self) -> &Sha256Digest {
+        &self.request_challenge_sha256
     }
 
     pub fn grant_challenge_sha256(&self) -> &Sha256Digest {
@@ -526,6 +541,26 @@ impl MacosLinuxVzPackageExecutionGrantObservationV1 {
 
     pub fn clone_binding_sha256(&self) -> &Sha256Digest {
         &self.clone_binding_sha256
+    }
+
+    pub const fn issued_at_unix_seconds(&self) -> u64 {
+        self.issued_at_unix_seconds
+    }
+
+    pub const fn expires_at_unix_seconds(&self) -> u64 {
+        self.expires_at_unix_seconds
+    }
+
+    pub const fn verified_at_unix_seconds(&self) -> u64 {
+        self.verified_at_unix_seconds
+    }
+
+    pub const fn package_uid(&self) -> u32 {
+        self.package_uid
+    }
+
+    pub const fn package_gid(&self) -> u32 {
+        self.package_gid
     }
 
     pub const fn consumed(&self) -> bool {
@@ -671,13 +706,20 @@ fn decode_and_verify_grant_v1(
         .verify_strict(&signature_message_v1(&unsigned_bytes), &signature)
         .map_err(|_| MacosLinuxVzPackageExecutionGrantErrorV1::SignatureFailed)?;
     Ok(MacosLinuxVzPackageExecutionGrantObservationV1 {
+        execution_grant_sha256: Sha256Digest::from_bytes(bytes),
         package_authority_request_sha256: context.package_authority_request_sha256.clone(),
         execution_runtime_qualification_record_sha256: context
             .execution_runtime_qualification_record_sha256
             .clone(),
+        request_challenge_sha256: context.request_challenge_sha256.clone(),
         grant_challenge_sha256: context.grant_challenge_sha256.clone(),
         attempt_binding_sha256: context.attempt_binding_sha256.clone(),
         clone_binding_sha256: context.clone_binding_sha256.clone(),
+        issued_at_unix_seconds: context.issued_at_unix_seconds,
+        expires_at_unix_seconds: context.expires_at_unix_seconds,
+        verified_at_unix_seconds: observed_unix_seconds,
+        package_uid: context.package_uid,
+        package_gid: context.package_gid,
         consumed: true,
     })
 }
@@ -721,6 +763,29 @@ fn unsigned_grant_v1(
         execution_authority_issued: true,
         package_execution_permitted: true,
         sync_back_policy: ArtifactTelemetrySyncBackPolicyV1::StructurallyAbsent,
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_macos_linux_vz_package_execution_grant_observation_v1(
+    request: &MacosLinuxVzPackageAuthorityRequestV1,
+) -> MacosLinuxVzPackageExecutionGrantObservationV1 {
+    MacosLinuxVzPackageExecutionGrantObservationV1 {
+        execution_grant_sha256: Sha256Digest::from_bytes(b"test exact signed execution grant"),
+        package_authority_request_sha256: request.request_sha256().clone(),
+        execution_runtime_qualification_record_sha256: Sha256Digest::from_bytes(
+            b"test execution runtime qualification record",
+        ),
+        request_challenge_sha256: request.request_challenge_sha256().clone(),
+        grant_challenge_sha256: Sha256Digest::from_bytes(b"test grant challenge"),
+        attempt_binding_sha256: Sha256Digest::from_bytes(b"test attempt binding"),
+        clone_binding_sha256: request.clone_binding_sha256().clone(),
+        issued_at_unix_seconds: 1_784_044_800,
+        expires_at_unix_seconds: 1_784_045_100,
+        verified_at_unix_seconds: 1_784_044_801,
+        package_uid: PACKAGE_UID_V1,
+        package_gid: PACKAGE_GID_V1,
+        consumed: true,
     }
 }
 
@@ -877,9 +942,60 @@ mod tests {
             context.package_authority_request_sha256()
         );
         assert_eq!(
+            observed.execution_grant_sha256(),
+            &Sha256Digest::from_bytes(grant.as_bytes())
+        );
+        assert_eq!(
+            observed.request_challenge_sha256(),
+            &context.request_challenge_sha256
+        );
+        assert_eq!(
+            observed.verified_at_unix_seconds(),
+            context.issued_at_unix_seconds()
+        );
+        assert_eq!(
             verifier
                 .verify_and_consume(grant.as_bytes().to_vec(), context.issued_at_unix_seconds()),
             Err(MacosLinuxVzPackageExecutionGrantErrorV1::AlreadyConsumed)
+        );
+    }
+
+    #[test]
+    fn execution_request_derivation_burns_before_artifact_or_scenario_validation() {
+        let context = context();
+        let public_key = SigningKey::from_bytes(&SIGNING_SEED)
+            .verifying_key()
+            .to_bytes();
+        let grant =
+            sign_macos_linux_vz_package_execution_grant_v1(&context, SIGNING_SEED).expect("sign");
+        let verifier =
+            MacosLinuxVzPackageExecutionGrantVerifierV1::new(context.clone(), public_key)
+                .expect("verifier");
+        let observed = verifier
+            .verify_and_consume(grant.as_bytes().to_vec(), context.issued_at_unix_seconds())
+            .expect("verify");
+        let authority_request =
+            crate::linux_vz_package_authority_request::test_macos_linux_vz_package_authority_request_for_execution_v1(
+                context.package_authority_request_sha256.clone(),
+                context.artifact_kind,
+                context.artifact_sha256.clone(),
+                context.request_challenge_sha256.clone(),
+                context.clone_binding_sha256.clone(),
+            );
+        let authorizer = crate::MacosLinuxVzPackageExecutionRequestAuthorizerV1::new(observed)
+            .expect("request authorizer");
+        assert_eq!(
+            authorizer
+                .build_and_consume(&authority_request, b"", b"", b"")
+                .expect_err("empty artifact must fail"),
+            crate::MacosLinuxVzPackageExecutionRequestErrorV1::ArtifactMismatch
+        );
+        assert!(authorizer.consumed());
+        assert_eq!(
+            authorizer
+                .build_and_consume(&authority_request, b"x", b"plan", b"template")
+                .expect_err("burned authorizer must reject retry"),
+            crate::MacosLinuxVzPackageExecutionRequestErrorV1::AlreadyConsumed
         );
     }
 

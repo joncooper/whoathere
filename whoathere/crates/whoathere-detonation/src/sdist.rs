@@ -1105,6 +1105,7 @@ pub struct ValidatedSdistScenarioTemplateWireV1 {
     pip_cli_sha256: Sha256Digest,
     build_closure_sha256: Sha256Digest,
     build_closure: SdistBuildClosureV1,
+    limits: ArtifactScenarioLimitsV1,
 }
 
 impl ValidatedSdistScenarioTemplateWireV1 {
@@ -1156,6 +1157,9 @@ impl ValidatedSdistScenarioTemplateWireV1 {
     pub fn build_closure(&self) -> &SdistBuildClosureV1 {
         &self.build_closure
     }
+    pub fn limits(&self) -> &ArtifactScenarioLimitsV1 {
+        &self.limits
+    }
 }
 
 pub fn decode_and_validate_sdist_scenario_template_v1(
@@ -1196,6 +1200,7 @@ pub fn decode_and_validate_sdist_scenario_template_v1(
         pip_cli_sha256: wire.runtime_profile.pip_cli_sha256,
         build_closure_sha256: wire.build_closure.closure_sha256.clone(),
         build_closure: wire.build_closure,
+        limits: wire.limits,
     })
 }
 

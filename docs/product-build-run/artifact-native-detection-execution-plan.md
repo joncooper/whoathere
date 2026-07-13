@@ -131,6 +131,19 @@ has no public constructor and must later come only from authenticated physical e
 execution-capable runner. The current nonexecuting record cannot satisfy it. See the
 [execution-grant protocol checkpoint](artifact-native-linux-vz-package-execution-grant-protocol-checkpoint-2026-07-13.md).
 
+The post-grant runner-request boundary is now closed as well. A non-clonable verified grant
+observation moves into a second burn-first authorizer, which derives exactly one canonical request
+from the exact artifact bytes and validated selected scenario. No caller can supply an executable,
+argv vector, path, working directory, or shell fragment. Wheel probe operations bind and include
+their exact install prerequisite; sdist probe operations bind and include the plan's exact build
+recipe and build-template digest so no fresh clone depends on prior mutable output. The request
+binds the consumed grant, qualification record, artifact, scenario, limits, UID/GID 65534,
+attempt, clone, fixed read-only descriptor input, no public route, and structurally absent
+sync-back. Exact inert npm CI=true derivation and burn/replay tests pass. This still launches
+nothing: the separately measured execution runner, protected launch channel, evidence protocol,
+and physical qualification remain the next gate. See the
+[execution-request protocol checkpoint](artifact-native-linux-vz-package-execution-request-protocol-checkpoint-2026-07-13.md).
+
 The first protected-sensor bootstrap now also observes a cgroup-filtered inert fork/exec/exit chain
 whose child runs as UID/GID 65534 and cannot read or write the root-only sensor. This remains
 unsigned bootstrap evidence rather than a conformance receipt. See the

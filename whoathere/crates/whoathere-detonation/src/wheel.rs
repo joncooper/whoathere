@@ -990,6 +990,7 @@ pub struct ValidatedWheelScenarioTemplateWireV1 {
     python_executable_sha256: Sha256Digest,
     pip_version: String,
     pip_cli_sha256: Sha256Digest,
+    limits: ArtifactScenarioLimitsV1,
 }
 
 impl fmt::Debug for ValidatedWheelScenarioTemplateWireV1 {
@@ -1075,6 +1076,10 @@ impl ValidatedWheelScenarioTemplateWireV1 {
     pub fn pip_cli_sha256(&self) -> &Sha256Digest {
         &self.pip_cli_sha256
     }
+
+    pub fn limits(&self) -> &ArtifactScenarioLimitsV1 {
+        &self.limits
+    }
 }
 
 pub fn decode_and_validate_wheel_scenario_template_v1(
@@ -1113,6 +1118,7 @@ pub fn decode_and_validate_wheel_scenario_template_v1(
         python_executable_sha256: wire.runtime_profile.python_executable_sha256,
         pip_version: wire.runtime_profile.pip_version,
         pip_cli_sha256: wire.runtime_profile.pip_cli_sha256,
+        limits: wire.limits,
     })
 }
 

@@ -156,6 +156,7 @@ pub struct ValidatedArtifactScenarioTemplateWireV1 {
     node_executable_sha256: Sha256Digest,
     npm_version: String,
     npm_cli_sha256: Sha256Digest,
+    limits: ArtifactScenarioLimitsV1,
 }
 
 impl std::fmt::Debug for ValidatedArtifactScenarioTemplateWireV1 {
@@ -241,6 +242,10 @@ impl ValidatedArtifactScenarioTemplateWireV1 {
     pub fn npm_cli_sha256(&self) -> &Sha256Digest {
         &self.npm_cli_sha256
     }
+
+    pub fn limits(&self) -> &ArtifactScenarioLimitsV1 {
+        &self.limits
+    }
 }
 
 pub fn decode_and_validate_artifact_scenario_template_v1(
@@ -283,6 +288,7 @@ pub fn decode_and_validate_artifact_scenario_template_v1(
         node_executable_sha256: wire.runtime_profile.node_executable_sha256,
         npm_version: wire.runtime_profile.npm_version,
         npm_cli_sha256: wire.runtime_profile.npm_cli_sha256,
+        limits: wire.limits,
     })
 }
 
