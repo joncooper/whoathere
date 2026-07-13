@@ -11,9 +11,9 @@ use whoathere_artifact::{
     ArtifactSourceType, Ecosystem, NormalizationLimits, Sha256Digest,
 };
 use whoathere_detonation::{
-    compile_artifact_scenarios_v1, ArtifactScenarioCompilationRequestV1,
-    ArtifactScenarioExecutionIdentityV1, ArtifactScenarioIdentitySetV1, ArtifactScenarioPolicyV1,
-    NpmRuntimeProfileV1, MAX_ARTIFACT_SCENARIO_BYTES_V1,
+    compile_artifact_scenarios_v1, ArtifactRuntimeTargetV1, ArtifactScenarioCompilationRequestV1,
+    ArtifactScenarioExecutionIdentityV1, ArtifactScenarioIdentitySetV1, ArtifactScenarioPlanV1,
+    ArtifactScenarioPolicyV1, NpmRuntimeProfileV1, MAX_ARTIFACT_SCENARIO_BYTES_V1,
 };
 use whoathere_evidence::v2::{canonical_cas_object_key_for_artifact, ArtifactEvidenceSubjectV2};
 use whoathere_macos_vm::{
@@ -23,6 +23,7 @@ use whoathere_macos_vm::{
     require_macos_artifact_guest_control_eof_v1, run_macos_artifact_guest_nonexecuting_session_v1,
     sign_macos_artifact_guest_auth_response_v1, sign_macos_artifact_guest_staging_receipt_v1,
     stage_macos_artifact_guest_submission_v1, stream_macos_artifact_guest_submission_v1,
+    validate_macos_linux_vz_typed_package_scenario_binding_v1,
     verify_macos_artifact_guest_auth_response_v1, verify_macos_artifact_guest_staging_receipt_v1,
     write_macos_artifact_guest_control_frame_v1, write_macos_artifact_submission_frame_v1,
     ArtifactGuestRehashPhaseV1, MacosArtifactBackendCapabilitiesV1, MacosArtifactBackendIdentityV1,
@@ -32,7 +33,8 @@ use whoathere_macos_vm::{
     MacosArtifactGuestStagingPolicyV1, MacosArtifactGuestStagingReceiptClaimsV1,
     MacosArtifactGuestSupervisorPrimaryErrorV1, MacosArtifactRunErrorV1,
     MacosArtifactSubmissionBindingsV1, MacosArtifactSubmissionErrorV1,
-    MacosArtifactSubmissionHeaderV1, MACOS_ARTIFACT_GUEST_SUBMISSION_MAGIC_V1,
+    MacosArtifactSubmissionHeaderV1, MacosLinuxVzPackageArtifactKindV1,
+    MacosLinuxVzPackageAuthorityRequestErrorV1, MACOS_ARTIFACT_GUEST_SUBMISSION_MAGIC_V1,
     MACOS_ARTIFACT_SUBMISSION_FIXED_PREFIX_BYTES_V1,
 };
 
@@ -64,6 +66,11 @@ fn npm_tgz(entries: &[(&str, &[u8])]) -> Vec<u8> {
 }
 
 fn compiled_template() -> (whoathere_detonation::ArtifactScenarioTemplateV1, Vec<u8>) {
+    let (plan, bytes) = compiled_plan(ArtifactRuntimeTargetV1::MacosArm64);
+    (plan.templates()[0].clone(), bytes)
+}
+
+fn compiled_plan(runtime_target: ArtifactRuntimeTargetV1) -> (ArtifactScenarioPlanV1, Vec<u8>) {
     let bytes = npm_tgz(&[
         (
             "package/package.json",
@@ -104,8 +111,12 @@ fn compiled_template() -> (whoathere_detonation::ArtifactScenarioTemplateV1, Vec
             .expect("CAS key"),
     )
     .expect("subject");
-    let runtime = NpmRuntimeProfileV1::new(
-        "macos-arm64-node22-npm11-inert",
+    let runtime = NpmRuntimeProfileV1::new_for_target(
+        runtime_target,
+        match runtime_target {
+            ArtifactRuntimeTargetV1::MacosArm64 => "macos-arm64-node22-npm11-inert",
+            ArtifactRuntimeTargetV1::LinuxArm64 => "linux-arm64-node22-npm11-inert",
+        },
         "22.17.0",
         digest(b"measured node"),
         "11.18.0",
@@ -143,7 +154,67 @@ fn compiled_template() -> (whoathere_detonation::ArtifactScenarioTemplateV1, Vec
         identities: &identities,
     })
     .expect("scenario plan");
-    (plan.templates()[0].clone(), bytes)
+    (plan, bytes)
+}
+
+#[test]
+fn linux_vz_npm_binding_requires_a_linux_plan_and_exact_selected_template() {
+    let (plan, _) = compiled_plan(ArtifactRuntimeTargetV1::LinuxArm64);
+    let plan_bytes = plan.canonical_json_v1().expect("Linux plan bytes");
+    let template_bytes = plan.templates()[0]
+        .canonical_json_v1()
+        .expect("Linux template bytes");
+    let binding = validate_macos_linux_vz_typed_package_scenario_binding_v1(
+        MacosLinuxVzPackageArtifactKindV1::NpmTarball,
+        &plan_bytes,
+        &template_bytes,
+    )
+    .expect("Linux npm binding");
+    assert_eq!(
+        binding.runtime_target(),
+        ArtifactRuntimeTargetV1::LinuxArm64
+    );
+    assert_eq!(binding.scenario_plan_sha256(), plan.plan_sha256());
+    assert_eq!(
+        binding.scenario_template_sha256(),
+        plan.templates()[0].template_sha256()
+    );
+    assert!(!binding.package_execution_authority_permitted());
+    assert!(!binding.sync_back_permitted());
+
+    let mut rebound_template: serde_json::Value =
+        serde_json::from_slice(&template_bytes).expect("template value");
+    rebound_template["identity"]["scenario_id"] = serde_json::json!("scenario-rebound");
+    let rebound_template =
+        serde_json_canonicalizer::to_vec(&rebound_template).expect("rebound template");
+    assert_eq!(
+        validate_macos_linux_vz_typed_package_scenario_binding_v1(
+            MacosLinuxVzPackageArtifactKindV1::NpmTarball,
+            &plan_bytes,
+            &rebound_template,
+        ),
+        Err(MacosLinuxVzPackageAuthorityRequestErrorV1::PlanTemplateMismatch)
+    );
+    assert_eq!(
+        validate_macos_linux_vz_typed_package_scenario_binding_v1(
+            MacosLinuxVzPackageArtifactKindV1::PypiWheel,
+            &plan_bytes,
+            &template_bytes,
+        ),
+        Err(MacosLinuxVzPackageAuthorityRequestErrorV1::ScenarioPlanInvalid)
+    );
+
+    let (macos_plan, _) = compiled_plan(ArtifactRuntimeTargetV1::MacosArm64);
+    assert_eq!(
+        validate_macos_linux_vz_typed_package_scenario_binding_v1(
+            MacosLinuxVzPackageArtifactKindV1::NpmTarball,
+            &macos_plan.canonical_json_v1().expect("macOS plan bytes"),
+            &macos_plan.templates()[0]
+                .canonical_json_v1()
+                .expect("macOS template bytes"),
+        ),
+        Err(MacosLinuxVzPackageAuthorityRequestErrorV1::RuntimeTargetMismatch)
+    );
 }
 
 fn backend(npm_digest: Sha256Digest) -> MacosArtifactBackendCapabilitiesV1 {

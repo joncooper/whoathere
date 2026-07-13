@@ -15,6 +15,15 @@ execution authority and permits no sync-back. This closes the telemetry-backend 
 package detection and does not improve the July malicious-package score by itself. See the
 [raw-frame and qualification checkpoint](artifact-native-linux-vz-raw-frame-qualification-checkpoint-2026-07-13.md).
 
+The typed package boundary now distinguishes the original macOS/arm64 scenario profiles from new
+Linux/arm64 npm, wheel, and sdist profiles. Canonical Linux plans and selected templates can be
+bound to exact artifact bytes, the qualified telemetry record, candidate runtime components, a
+fresh challenge, and a dedicated clone in a non-authorizing request. Strict verification rejects
+cross-target, cross-ecosystem, plan/template, artifact, challenge, clone, and authority-bit
+rebinding. The candidate runtime is explicitly unqualified, so package execution and sync-back
+remain unavailable. See the
+[Linux VZ package authority-request checkpoint](artifact-native-linux-vz-package-authority-request-checkpoint-2026-07-13.md).
+
 The first protected-sensor bootstrap now also observes a cgroup-filtered inert fork/exec/exit chain
 whose child runs as UID/GID 65534 and cannot read or write the root-only sensor. This remains
 unsigned bootstrap evidence rather than a conformance receipt. See the
@@ -1629,6 +1638,7 @@ Repository evidence:
 - [Linux VZ fanotify-permission checkpoint](artifact-native-linux-vz-fanotify-permission-checkpoint-2026-07-12.md)
 - [Linux VZ BPF program-types checkpoint](artifact-native-linux-vz-bpf-program-types-checkpoint-2026-07-13.md)
 - [Linux VZ raw-frame and qualification checkpoint](artifact-native-linux-vz-raw-frame-qualification-checkpoint-2026-07-13.md)
+- [Linux VZ package authority-request checkpoint](artifact-native-linux-vz-package-authority-request-checkpoint-2026-07-13.md)
 - [macOS local release readiness](macos-local-release-readiness.md)
 - [macOS local beta pressure checkpoint](macos-local-beta-pressure-checkpoint.md)
 - [latest source-fixture corpus report](src-fixture-corpus-latest.md)

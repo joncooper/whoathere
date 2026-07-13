@@ -1,7 +1,7 @@
 use crate::artifact::{
     required_evidence_classes_v1, valid_identity_component_v1, valid_version_component_v1,
     ArtifactCloneDispositionV1, ArtifactNetworkPolicyV1, ArtifactPackagePrivilegeV1,
-    ArtifactScenarioCompileErrorV1, ArtifactScenarioEvidenceClassV1,
+    ArtifactRuntimeTargetV1, ArtifactScenarioCompileErrorV1, ArtifactScenarioEvidenceClassV1,
     ArtifactScenarioExecutionIdentityV1, ArtifactScenarioLimitsV1, ArtifactTransportV1,
     MAX_ARTIFACT_SCENARIO_BYTES_V1,
 };
@@ -386,6 +386,7 @@ fn closure_artifact_filenames_are_not_unique(artifacts: &[SdistBuildClosureArtif
 #[derive(Clone, PartialEq, Eq)]
 pub struct SdistRuntimeProfileV1 {
     profile_id: String,
+    runtime_target: ArtifactRuntimeTargetV1,
     python_version: String,
     python_executable_sha256: Sha256Digest,
     pip_version: String,
@@ -399,6 +400,7 @@ impl fmt::Debug for SdistRuntimeProfileV1 {
         formatter
             .debug_struct("SdistRuntimeProfileV1")
             .field("profile_id", &self.profile_id)
+            .field("runtime_target", &self.runtime_target)
             .field("python_version", &self.python_version)
             .field("python_executable_sha256", &self.python_executable_sha256)
             .field("pip_version", &self.pip_version)
@@ -431,6 +433,24 @@ impl SdistRuntimeProfileV1 {
         pip_version: impl Into<String>,
         pip_cli_sha256: Sha256Digest,
     ) -> Result<Self, ArtifactScenarioCompileErrorV1> {
+        Self::new_for_target(
+            ArtifactRuntimeTargetV1::MacosArm64,
+            profile_id,
+            python_version,
+            python_executable_sha256,
+            pip_version,
+            pip_cli_sha256,
+        )
+    }
+
+    pub fn new_for_target(
+        runtime_target: ArtifactRuntimeTargetV1,
+        profile_id: impl Into<String>,
+        python_version: impl Into<String>,
+        python_executable_sha256: Sha256Digest,
+        pip_version: impl Into<String>,
+        pip_cli_sha256: Sha256Digest,
+    ) -> Result<Self, ArtifactScenarioCompileErrorV1> {
         let profile_id = profile_id.into();
         let python_version = python_version.into();
         let pip_version = pip_version.into();
@@ -445,8 +465,8 @@ impl SdistRuntimeProfileV1 {
         let bytes = serde_json_canonicalizer::to_vec(&SdistRuntimeProfileDigestWireV1 {
             schema_version: "whoathere.sdist_runtime_profile.v1",
             profile_id: &profile_id,
-            target_os: "macos",
-            target_arch: "arm64",
+            target_os: runtime_target.target_os(),
+            target_arch: runtime_target.target_arch(),
             python_version: &python_version,
             python_executable_sha256: &python_executable_sha256,
             pip_version: &pip_version,
@@ -456,6 +476,7 @@ impl SdistRuntimeProfileV1 {
         .map_err(|_| ArtifactScenarioCompileErrorV1::Serialization)?;
         Ok(Self {
             profile_id,
+            runtime_target,
             python_version,
             python_executable_sha256,
             pip_version,
@@ -463,6 +484,10 @@ impl SdistRuntimeProfileV1 {
             command_template_sha256,
             profile_sha256: Sha256Digest::from_bytes(&bytes),
         })
+    }
+
+    pub const fn runtime_target(&self) -> ArtifactRuntimeTargetV1 {
+        self.runtime_target
     }
 
     pub fn profile_sha256(&self) -> &Sha256Digest {
@@ -1022,8 +1047,8 @@ impl SdistScenarioTemplateWireV1 {
             runtime_profile: SdistRuntimeProfileWireV1 {
                 profile_id: runtime.profile_id.clone(),
                 profile_sha256: runtime.profile_sha256.clone(),
-                target_os: "macos".to_string(),
-                target_arch: "arm64".to_string(),
+                target_os: runtime.runtime_target().target_os().to_string(),
+                target_arch: runtime.runtime_target().target_arch().to_string(),
                 python_version: runtime.python_version.clone(),
                 python_executable_sha256: runtime.python_executable_sha256.clone(),
                 pip_version: runtime.pip_version.clone(),
@@ -1038,8 +1063,8 @@ impl SdistScenarioTemplateWireV1 {
                 SdistDynamicBuildRequirementsPolicyV1::DenyOutsideFixedClosure,
             derived_wheel_policy: SdistDerivedWheelPolicyV1::RehashValidateFreshScenarioNoHostCopy,
             interpreter_policy: SdistInterpreterPolicyV1::FreshInterpreterPerProbe,
-            target_os: "macos".to_string(),
-            target_arch: "arm64".to_string(),
+            target_os: runtime.runtime_target().target_os().to_string(),
+            target_arch: runtime.runtime_target().target_arch().to_string(),
             transport: ArtifactTransportV1::DigestCheckedBoundedRawBytes,
             network_policy: ArtifactNetworkPolicyV1::NoNetworkDevice,
             package_privilege: ArtifactPackagePrivilegeV1::DedicatedUnprivilegedUidGid,
@@ -1066,9 +1091,13 @@ fn canonical_sdist_template_json_v1(
 pub struct ValidatedSdistScenarioTemplateWireV1 {
     template_sha256: Sha256Digest,
     artifact_sha256: Sha256Digest,
+    envelope_sha256: Sha256Digest,
+    manifest_sha256: Sha256Digest,
     artifact_byte_length: u64,
+    policy_sha256: Sha256Digest,
     scenario_id: String,
     scenario_kind: SdistScenarioKindV1,
+    runtime_target: ArtifactRuntimeTargetV1,
     runtime_profile_sha256: Sha256Digest,
     python_version: String,
     python_executable_sha256: Sha256Digest,
@@ -1085,14 +1114,26 @@ impl ValidatedSdistScenarioTemplateWireV1 {
     pub fn artifact_sha256(&self) -> &Sha256Digest {
         &self.artifact_sha256
     }
+    pub fn envelope_sha256(&self) -> &Sha256Digest {
+        &self.envelope_sha256
+    }
+    pub fn manifest_sha256(&self) -> &Sha256Digest {
+        &self.manifest_sha256
+    }
     pub fn artifact_byte_length(&self) -> u64 {
         self.artifact_byte_length
+    }
+    pub fn policy_sha256(&self) -> &Sha256Digest {
+        &self.policy_sha256
     }
     pub fn scenario_id(&self) -> &str {
         &self.scenario_id
     }
     pub fn scenario_kind(&self) -> &SdistScenarioKindV1 {
         &self.scenario_kind
+    }
+    pub const fn runtime_target(&self) -> ArtifactRuntimeTargetV1 {
+        self.runtime_target
     }
     pub fn runtime_profile_sha256(&self) -> &Sha256Digest {
         &self.runtime_profile_sha256
@@ -1136,12 +1177,18 @@ pub fn decode_and_validate_sdist_scenario_template_v1(
         return Err(ArtifactScenarioCompileErrorV1::InvalidWire);
     }
     validate_sdist_template_wire_v1(&wire)?;
+    let runtime_target = ArtifactRuntimeTargetV1::from_wire(&wire.target_os, &wire.target_arch)
+        .ok_or(ArtifactScenarioCompileErrorV1::InvalidWire)?;
     Ok(ValidatedSdistScenarioTemplateWireV1 {
         template_sha256: Sha256Digest::from_bytes(bytes),
         artifact_sha256: wire.subject.artifact_sha256,
+        envelope_sha256: wire.subject.envelope_sha256,
+        manifest_sha256: wire.subject.manifest_sha256,
         artifact_byte_length: wire.artifact_byte_length,
+        policy_sha256: wire.policy_sha256,
         scenario_id: wire.identity.scenario_id,
         scenario_kind: wire.scenario_kind,
+        runtime_target,
         runtime_profile_sha256: wire.runtime_profile.profile_sha256,
         python_version: wire.runtime_profile.python_version,
         python_executable_sha256: wire.runtime_profile.python_executable_sha256,
@@ -1155,6 +1202,11 @@ pub fn decode_and_validate_sdist_scenario_template_v1(
 fn validate_sdist_template_wire_v1(
     wire: &SdistScenarioTemplateWireV1,
 ) -> Result<(), ArtifactScenarioCompileErrorV1> {
+    let Some(runtime_target) =
+        ArtifactRuntimeTargetV1::from_wire(&wire.target_os, &wire.target_arch)
+    else {
+        return Err(ArtifactScenarioCompileErrorV1::InvalidWire);
+    };
     if wire.schema_version != SDIST_SCENARIO_TEMPLATE_SCHEMA_V1
         || wire.canonicalization != SDIST_SCENARIO_CANONICALIZATION_V1
         || wire.compiler_id != SDIST_SCENARIO_COMPILER_ID_V1
@@ -1173,10 +1225,8 @@ fn validate_sdist_template_wire_v1(
         || !valid_package_text(&wire.package.display_name)
         || !valid_package_text(&wire.package.normalized_name)
         || !valid_package_text(&wire.package.version)
-        || wire.target_os != "macos"
-        || wire.target_arch != "arm64"
-        || wire.runtime_profile.target_os != "macos"
-        || wire.runtime_profile.target_arch != "arm64"
+        || wire.runtime_profile.target_os != wire.target_os
+        || wire.runtime_profile.target_arch != wire.target_arch
         || wire.build_environment != SdistBuildEnvironmentV1::FreshIsolatedVirtualEnvironment
         || wire.resolver_policy != SdistResolverPolicyV1::NoIndexFixedClosureOnly
         || wire.dynamic_build_requirements_policy
@@ -1208,7 +1258,8 @@ fn validate_sdist_template_wire_v1(
     wire.build_closure
         .validate()
         .map_err(|_| ArtifactScenarioCompileErrorV1::InvalidWire)?;
-    let runtime = SdistRuntimeProfileV1::new(
+    let runtime = SdistRuntimeProfileV1::new_for_target(
+        runtime_target,
         &wire.runtime_profile.profile_id,
         &wire.runtime_profile.python_version,
         wire.runtime_profile.python_executable_sha256.clone(),
@@ -1297,6 +1348,8 @@ pub struct ValidatedSdistScenarioPlanWireV1 {
     plan_sha256: Sha256Digest,
     plan_id: String,
     artifact_sha256: Sha256Digest,
+    envelope_sha256: Sha256Digest,
+    manifest_sha256: Sha256Digest,
     policy_sha256: Sha256Digest,
     templates: Vec<(String, SdistScenarioKindV1, Sha256Digest)>,
 }
@@ -1312,6 +1365,14 @@ impl ValidatedSdistScenarioPlanWireV1 {
 
     pub fn artifact_sha256(&self) -> &Sha256Digest {
         &self.artifact_sha256
+    }
+
+    pub fn envelope_sha256(&self) -> &Sha256Digest {
+        &self.envelope_sha256
+    }
+
+    pub fn manifest_sha256(&self) -> &Sha256Digest {
+        &self.manifest_sha256
     }
 
     pub fn policy_sha256(&self) -> &Sha256Digest {
@@ -1387,6 +1448,8 @@ pub fn decode_and_validate_sdist_scenario_plan_v1(
         plan_sha256: Sha256Digest::from_bytes(bytes),
         plan_id: wire.plan_id,
         artifact_sha256: wire.subject.artifact_sha256,
+        envelope_sha256: wire.subject.envelope_sha256,
+        manifest_sha256: wire.subject.manifest_sha256,
         policy_sha256: wire.policy_sha256,
         templates: wire
             .templates

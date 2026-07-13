@@ -9,7 +9,7 @@ use whoathere_artifact::{
 use whoathere_detonation::{
     compile_sdist_scenarios_v1, decode_and_validate_sdist_scenario_plan_v1,
     decode_and_validate_sdist_scenario_template_v1, expected_sdist_scenario_kinds_v1,
-    ArtifactScenarioCompileErrorV1, ArtifactScenarioExecutionIdentityV1,
+    ArtifactRuntimeTargetV1, ArtifactScenarioCompileErrorV1, ArtifactScenarioExecutionIdentityV1,
     SdistBuildClosureArtifactFormatV1, SdistBuildClosureArtifactV1, SdistBuildClosureV1,
     SdistBuildModeV1, SdistRuntimeProfileV1, SdistScenarioCompilationRequestV1,
     SdistScenarioIdentitySetV1, SdistScenarioKindV1, SdistScenarioPlanV1, SdistScenarioPolicyV1,
@@ -675,5 +675,56 @@ fn exact_bytes_runtime_subject_and_identity_set_rebind_or_reject_the_plan() {
     assert_eq!(
         compile(&first, &first_policy, &missing),
         Err(ArtifactScenarioCompileErrorV1::InvalidIdentifiers)
+    );
+}
+
+#[test]
+fn linux_sdist_runtime_is_distinct_and_cross_target_rebinding_fails_closed() {
+    let fixture = default_fixture();
+    let linux_runtime = SdistRuntimeProfileV1::new_for_target(
+        ArtifactRuntimeTargetV1::LinuxArm64,
+        "linux-arm64-python312-pip26-inert",
+        "3.12.13",
+        Sha256Digest::from_bytes(b"measured inert python executable"),
+        "26.1.2",
+        Sha256Digest::from_bytes(b"measured inert pip cli"),
+    )
+    .expect("Linux sdist runtime");
+    assert_eq!(
+        linux_runtime.runtime_target(),
+        ArtifactRuntimeTargetV1::LinuxArm64
+    );
+    assert_ne!(
+        linux_runtime.profile_sha256(),
+        runtime_profile().profile_sha256()
+    );
+    let policy = SdistScenarioPolicyV1::inert_qualification_only(
+        fixture.envelope.original_sha256.clone(),
+        linux_runtime,
+        fixture_build_closure(&fixture).expect("Linux closure"),
+    )
+    .expect("Linux sdist policy");
+    let plan = compile(
+        &fixture,
+        &policy,
+        &identities(&fixture, "linux").expect("Linux identities"),
+    )
+    .expect("Linux sdist plan");
+    let bytes = plan.templates()[0]
+        .canonical_json_v1()
+        .expect("Linux sdist template");
+    let validated = decode_and_validate_sdist_scenario_template_v1(&bytes)
+        .expect("strict Linux sdist template");
+    assert_eq!(
+        validated.runtime_target(),
+        ArtifactRuntimeTargetV1::LinuxArm64
+    );
+
+    let mut rebound: serde_json::Value = serde_json::from_slice(&bytes).expect("template value");
+    rebound["target_arch"] = serde_json::json!("x86_64");
+    let rebound = serde_json_canonicalizer::to_vec(&rebound).expect("canonical rebound template");
+    assert_eq!(
+        decode_and_validate_sdist_scenario_template_v1(&rebound),
+        Err(ArtifactScenarioCompileErrorV1::InvalidWire)
     );
 }

@@ -1,8 +1,22 @@
 use ed25519_dalek::SigningKey;
-use whoathere_artifact::Sha256Digest;
-use whoathere_detonation::ArtifactProtectedTelemetryRequirementsV1;
+use flate2::write::GzEncoder;
+use flate2::Compression;
+use std::io::Cursor;
+use whoathere_artifact::{
+    normalize_artifact, AcquisitionMethod, ArtifactEnvelope, ArtifactEnvelopeInput, ArtifactFormat,
+    ArtifactSourceType, Ecosystem, NormalizationLimits, Sha256Digest,
+};
+use whoathere_detonation::{
+    compile_artifact_scenarios_v1, ArtifactProtectedTelemetryRequirementsV1,
+    ArtifactRuntimeTargetV1, ArtifactScenarioCompilationRequestV1,
+    ArtifactScenarioExecutionIdentityV1, ArtifactScenarioIdentitySetV1, ArtifactScenarioPlanV1,
+    ArtifactScenarioPolicyV1, NpmRuntimeProfileV1,
+};
+use whoathere_evidence::v2::{canonical_cas_object_key_for_artifact, ArtifactEvidenceSubjectV2};
 use whoathere_macos_vm::{
-    compile_macos_linux_vz_telemetry_conformance_run_spec_v1, expected_terminal_for_case_v1,
+    build_macos_linux_vz_package_authority_request_v1,
+    compile_macos_linux_vz_telemetry_conformance_run_spec_v1,
+    decode_and_verify_macos_linux_vz_package_authority_request_v1, expected_terminal_for_case_v1,
     qualify_macos_linux_vz_telemetry_backend_v1, sign_macos_linux_vz_telemetry_guest_receipt_v1,
     sign_macos_linux_vz_telemetry_host_receipt_v1,
     verify_macos_linux_vz_telemetry_conformance_case_v1,
@@ -10,9 +24,11 @@ use whoathere_macos_vm::{
     verify_macos_linux_vz_telemetry_host_receipt_v1, LinuxVzTelemetryConformanceCaseV1,
     LinuxVzTelemetryConformanceExpectedTerminalV1, LinuxVzTelemetryConformanceObservedTerminalV1,
     LinuxVzTelemetryGuestObservationClaimsV1, LinuxVzTelemetryHostObservationClaimsV1,
-    MacosLinuxVzTelemetryConformanceChallengeV1, MacosLinuxVzTelemetryEvidenceErrorV1,
-    MacosLinuxVzTelemetryQualificationErrorV1, UnqualifiedMacosLinuxVzTelemetryBackendIdentityV1,
-    VerifiedLinuxVzTelemetryConformanceCaseV1, ALL_LINUX_VZ_TELEMETRY_CONFORMANCE_CASES_V1,
+    MacosLinuxVzCandidatePackageRuntimeV1, MacosLinuxVzPackageArtifactKindV1,
+    MacosLinuxVzPackageAuthorityRequestErrorV1, MacosLinuxVzTelemetryConformanceChallengeV1,
+    MacosLinuxVzTelemetryEvidenceErrorV1, MacosLinuxVzTelemetryQualificationErrorV1,
+    UnqualifiedMacosLinuxVzTelemetryBackendIdentityV1, VerifiedLinuxVzTelemetryConformanceCaseV1,
+    ALL_LINUX_VZ_TELEMETRY_CONFORMANCE_CASES_V1,
 };
 
 const GUEST_SEED: [u8; 32] = [0x61; 32];
@@ -198,6 +214,113 @@ fn complete_matrix(
         .collect()
 }
 
+fn npm_tgz(entries: &[(&str, &[u8])]) -> Vec<u8> {
+    let encoder = GzEncoder::new(Vec::new(), Compression::default());
+    let mut archive = tar::Builder::new(encoder);
+    for (path, bytes) in entries {
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Regular);
+        header.set_size(bytes.len() as u64);
+        header.set_mode(0o644);
+        header.set_uid(0);
+        header.set_gid(0);
+        header.set_mtime(0);
+        header.set_cksum();
+        archive
+            .append_data(&mut header, *path, Cursor::new(*bytes))
+            .expect("append inert npm member");
+    }
+    archive
+        .into_inner()
+        .expect("finish inert tar")
+        .finish()
+        .expect("finish inert gzip")
+}
+
+fn linux_npm_plan() -> (ArtifactScenarioPlanV1, Vec<u8>) {
+    let bytes = npm_tgz(&[
+        (
+            "package/package.json",
+            br#"{"name":"linux-vz-authority-fixture","version":"1.0.0","scripts":{"postinstall":"node post.js"}}"#,
+        ),
+        ("package/post.js", b"process.exit(0)"),
+    ]);
+    let envelope = ArtifactEnvelope::from_original_bytes(
+        ArtifactEnvelopeInput {
+            ecosystem: Ecosystem::Npm,
+            package_name: Some("linux-vz-authority-fixture".to_string()),
+            package_version: Some("1.0.0".to_string()),
+            source_coordinate: "fixture:linux-vz-authority-fixture@1.0.0".to_string(),
+            source_type: ArtifactSourceType::LocalFile,
+            acquired_at: "2026-07-13T00:00:00Z".to_string(),
+            acquisition_method: AcquisitionMethod::LocalInertFixture,
+            original_filename: "linux-vz-authority-fixture-1.0.0.tgz".to_string(),
+            declared_format: Some(ArtifactFormat::NpmTarGzip),
+            custody_reference: "repository-inert-linux-vz-authority-fixture".to_string(),
+            resolver_metadata_sha256: None,
+            registry_metadata_sha256: None,
+            policy_version: "linux-vz-authority-request.v1".to_string(),
+            requires_external_dependency_resolution: false,
+        },
+        &bytes,
+        ArtifactFormat::NpmTarGzip,
+    );
+    let artifact = normalize_artifact(&envelope, &bytes, NormalizationLimits::default())
+        .expect("normalize inert npm fixture");
+    let subject = ArtifactEvidenceSubjectV2::new(
+        artifact.manifest.artifact_sha256.as_str(),
+        envelope
+            .envelope_sha256()
+            .expect("envelope digest")
+            .as_str(),
+        artifact.manifest.manifest_sha256.as_str(),
+        canonical_cas_object_key_for_artifact(artifact.manifest.artifact_sha256.as_str())
+            .expect("CAS key"),
+    )
+    .expect("evidence subject");
+    let runtime = NpmRuntimeProfileV1::new_for_target(
+        ArtifactRuntimeTargetV1::LinuxArm64,
+        "linux-arm64-node22-npm11-inert",
+        "22.17.0",
+        digest(b"measured Linux node"),
+        "11.18.0",
+        digest(b"measured Linux npm"),
+    )
+    .expect("Linux npm runtime");
+    let policy = ArtifactScenarioPolicyV1::inert_qualification_only(
+        envelope.original_sha256.clone(),
+        runtime,
+    )
+    .expect("Linux npm policy");
+    let identities = ArtifactScenarioIdentitySetV1::new(
+        "linux-vz-authority-plan",
+        ArtifactScenarioExecutionIdentityV1::new(
+            "linux-vz-authority-job-false",
+            "linux-vz-authority-run-false",
+            "linux-vz-authority-evidence-false",
+            "linux-vz-authority-scenario-false",
+        )
+        .expect("false identity"),
+        ArtifactScenarioExecutionIdentityV1::new(
+            "linux-vz-authority-job-true",
+            "linux-vz-authority-run-true",
+            "linux-vz-authority-evidence-true",
+            "linux-vz-authority-scenario-true",
+        )
+        .expect("true identity"),
+    )
+    .expect("identity set");
+    let plan = compile_artifact_scenarios_v1(ArtifactScenarioCompilationRequestV1 {
+        envelope: &envelope,
+        manifest: &artifact.manifest,
+        subject: &subject,
+        policy: &policy,
+        identities: &identities,
+    })
+    .expect("Linux npm plan");
+    (plan, bytes)
+}
+
 #[test]
 fn exact_complete_matrix_constructs_distinct_non_authorizing_qualified_backend() {
     let requirements = ArtifactProtectedTelemetryRequirementsV1::linux_vz_bulk_v1();
@@ -237,6 +360,162 @@ fn exact_complete_matrix_constructs_distinct_non_authorizing_qualified_backend()
     let reversed = qualify_macos_linux_vz_telemetry_backend_v1(&backend, reversed)
         .expect("order-independent qualified backend");
     assert_eq!(reversed, qualified);
+}
+
+#[test]
+fn qualified_backend_binds_an_exact_linux_npm_request_without_issuing_authority() {
+    let requirements = ArtifactProtectedTelemetryRequirementsV1::linux_vz_bulk_v1();
+    let backend = build_backend(&requirements, b"inert kernel image");
+    let qualified = qualify_macos_linux_vz_telemetry_backend_v1(
+        &backend,
+        complete_matrix(&requirements, &backend),
+    )
+    .expect("qualified backend");
+    let (plan, artifact_bytes) = linux_npm_plan();
+    let plan_bytes = plan.canonical_json_v1().expect("plan bytes");
+    let template_bytes = plan.templates()[0]
+        .canonical_json_v1()
+        .expect("template bytes");
+    let candidate_runtime = MacosLinuxVzCandidatePackageRuntimeV1::from_exact_bytes(
+        b"inert candidate Linux runtime rootfs bytes",
+        br#"{"schema_version":"whoathere.inert_candidate_runtime_manifest.v1"}"#,
+        b"inert candidate package runner bytes",
+    )
+    .expect("candidate runtime");
+    let challenge = [0x91; 32];
+    let clone_binding = digest(b"dedicated disposable package clone");
+    let request = build_macos_linux_vz_package_authority_request_v1(
+        &qualified,
+        MacosLinuxVzPackageArtifactKindV1::NpmTarball,
+        &artifact_bytes,
+        &plan_bytes,
+        &template_bytes,
+        &candidate_runtime,
+        challenge,
+        clone_binding.clone(),
+    )
+    .expect("bound authority request");
+    assert!(request.eligible_for_independent_runtime_qualification());
+    assert!(!request.package_execution_authority_permitted());
+    assert!(!request.sync_back_permitted());
+    assert_eq!(
+        request.qualified_telemetry_backend_sha256(),
+        qualified.qualified_backend_sha256()
+    );
+    assert_eq!(request.scenario_plan_sha256(), plan.plan_sha256());
+    let text = std::str::from_utf8(request.canonical_json_v1()).expect("request UTF-8");
+    assert!(text.contains("candidate_exact_bytes_not_yet_independently_qualified"));
+    assert!(text.contains("\"execution_authority_issued\":false"));
+    assert!(text.contains("\"package_execution_permitted\":false"));
+    assert!(text.contains("\"sync_back_policy\":\"structurally_absent\""));
+    assert!(!text.contains("capability"));
+    assert!(!text.contains("allow"));
+
+    let verified = decode_and_verify_macos_linux_vz_package_authority_request_v1(
+        request.canonical_json_v1(),
+        &qualified,
+        MacosLinuxVzPackageArtifactKindV1::NpmTarball,
+        &artifact_bytes,
+        &plan_bytes,
+        &template_bytes,
+        &candidate_runtime,
+        challenge,
+        clone_binding.clone(),
+    )
+    .expect("independently verified request");
+    assert_eq!(verified.request_sha256(), request.request_sha256());
+
+    assert_eq!(
+        build_macos_linux_vz_package_authority_request_v1(
+            &qualified,
+            MacosLinuxVzPackageArtifactKindV1::NpmTarball,
+            &artifact_bytes,
+            &plan_bytes,
+            &template_bytes,
+            &candidate_runtime,
+            [0_u8; 32],
+            clone_binding.clone(),
+        ),
+        Err(MacosLinuxVzPackageAuthorityRequestErrorV1::ChallengeInvalid)
+    );
+    assert_eq!(
+        build_macos_linux_vz_package_authority_request_v1(
+            &qualified,
+            MacosLinuxVzPackageArtifactKindV1::NpmTarball,
+            &artifact_bytes,
+            &plan_bytes,
+            &template_bytes,
+            &candidate_runtime,
+            challenge,
+            Sha256Digest::from_bytes(&challenge),
+        ),
+        Err(MacosLinuxVzPackageAuthorityRequestErrorV1::CloneBindingInvalid)
+    );
+    let mut noncanonical = b" ".to_vec();
+    noncanonical.extend_from_slice(request.canonical_json_v1());
+    assert_eq!(
+        decode_and_verify_macos_linux_vz_package_authority_request_v1(
+            &noncanonical,
+            &qualified,
+            MacosLinuxVzPackageArtifactKindV1::NpmTarball,
+            &artifact_bytes,
+            &plan_bytes,
+            &template_bytes,
+            &candidate_runtime,
+            challenge,
+            clone_binding.clone(),
+        ),
+        Err(MacosLinuxVzPackageAuthorityRequestErrorV1::NonCanonical)
+    );
+
+    let mut changed_artifact = artifact_bytes.clone();
+    changed_artifact[0] ^= 0x01;
+    assert_eq!(
+        build_macos_linux_vz_package_authority_request_v1(
+            &qualified,
+            MacosLinuxVzPackageArtifactKindV1::NpmTarball,
+            &changed_artifact,
+            &plan_bytes,
+            &template_bytes,
+            &candidate_runtime,
+            challenge,
+            clone_binding.clone(),
+        ),
+        Err(MacosLinuxVzPackageAuthorityRequestErrorV1::ArtifactInvalid)
+    );
+    assert_eq!(
+        decode_and_verify_macos_linux_vz_package_authority_request_v1(
+            request.canonical_json_v1(),
+            &qualified,
+            MacosLinuxVzPackageArtifactKindV1::NpmTarball,
+            &artifact_bytes,
+            &plan_bytes,
+            &template_bytes,
+            &candidate_runtime,
+            challenge,
+            digest(b"rebound clone"),
+        ),
+        Err(MacosLinuxVzPackageAuthorityRequestErrorV1::BindingMismatch)
+    );
+    let mut elevated: serde_json::Value =
+        serde_json::from_slice(request.canonical_json_v1()).expect("request value");
+    elevated["execution_authority_issued"] = serde_json::json!(true);
+    elevated["package_execution_permitted"] = serde_json::json!(true);
+    let elevated = serde_json_canonicalizer::to_vec(&elevated).expect("elevated request");
+    assert_eq!(
+        decode_and_verify_macos_linux_vz_package_authority_request_v1(
+            &elevated,
+            &qualified,
+            MacosLinuxVzPackageArtifactKindV1::NpmTarball,
+            &artifact_bytes,
+            &plan_bytes,
+            &template_bytes,
+            &candidate_runtime,
+            challenge,
+            clone_binding,
+        ),
+        Err(MacosLinuxVzPackageAuthorityRequestErrorV1::BindingMismatch)
+    );
 }
 
 #[test]

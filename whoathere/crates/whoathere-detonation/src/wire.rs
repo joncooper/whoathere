@@ -1,13 +1,13 @@
 use crate::artifact::{
     required_evidence_classes_v1, valid_identity_component_v1, ArtifactCloneDispositionV1,
-    ArtifactNetworkPolicyV1, ArtifactPackagePrivilegeV1, ArtifactScenarioCompileErrorV1,
-    ArtifactScenarioEvidenceClassV1, ArtifactScenarioKindV1, ArtifactScenarioLimitsV1,
-    ArtifactScenarioPlanV1, ArtifactScenarioTemplateV1, ArtifactTransportV1, DependencyClosureV1,
-    LifecycleHookBindingV1, NpmEnvironmentProfileV1, NpmLifecycleHookV1, NpmRuntimeProfileV1,
-    ARTIFACT_SCENARIO_CANONICALIZATION_V1, ARTIFACT_SCENARIO_COMPILER_ID_V1,
-    ARTIFACT_SCENARIO_PLAN_SCHEMA_V1, ARTIFACT_SCENARIO_TEMPLATE_SCHEMA_V1,
-    EMPTY_DEPENDENCY_CLOSURE_SCHEMA_V1, MAX_ARTIFACT_SCENARIO_BYTES_V1,
-    NPM_LOCAL_TARBALL_COMMAND_TEMPLATE_V1,
+    ArtifactNetworkPolicyV1, ArtifactPackagePrivilegeV1, ArtifactRuntimeTargetV1,
+    ArtifactScenarioCompileErrorV1, ArtifactScenarioEvidenceClassV1, ArtifactScenarioKindV1,
+    ArtifactScenarioLimitsV1, ArtifactScenarioPlanV1, ArtifactScenarioTemplateV1,
+    ArtifactTransportV1, DependencyClosureV1, LifecycleHookBindingV1, NpmEnvironmentProfileV1,
+    NpmLifecycleHookV1, NpmRuntimeProfileV1, ARTIFACT_SCENARIO_CANONICALIZATION_V1,
+    ARTIFACT_SCENARIO_COMPILER_ID_V1, ARTIFACT_SCENARIO_PLAN_SCHEMA_V1,
+    ARTIFACT_SCENARIO_TEMPLATE_SCHEMA_V1, EMPTY_DEPENDENCY_CLOSURE_SCHEMA_V1,
+    MAX_ARTIFACT_SCENARIO_BYTES_V1, NPM_LOCAL_TARBALL_COMMAND_TEMPLATE_V1,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -104,8 +104,8 @@ impl ArtifactScenarioTemplateWireV1 {
             runtime_profile: RuntimeProfileWireV1 {
                 profile_id: runtime.profile_id().to_string(),
                 profile_sha256: runtime.profile_sha256().clone(),
-                target_os: "macos".to_string(),
-                target_arch: "arm64".to_string(),
+                target_os: runtime.runtime_target().target_os().to_string(),
+                target_arch: runtime.runtime_target().target_arch().to_string(),
                 node_version: runtime.node_version().to_string(),
                 node_executable_sha256: runtime.node_executable_sha256().clone(),
                 npm_version: runtime.npm_version().to_string(),
@@ -115,8 +115,8 @@ impl ArtifactScenarioTemplateWireV1 {
             dependency_closure: template.dependency_closure().clone(),
             scenario_kind: template.scenario_kind(),
             lifecycle_hooks: template.lifecycle_hooks().to_vec(),
-            target_os: "macos".to_string(),
-            target_arch: "arm64".to_string(),
+            target_os: runtime.runtime_target().target_os().to_string(),
+            target_arch: runtime.runtime_target().target_arch().to_string(),
             transport: ArtifactTransportV1::DigestCheckedBoundedRawBytes,
             network_policy: ArtifactNetworkPolicyV1::NoNetworkDevice,
             package_privilege: ArtifactPackagePrivilegeV1::DedicatedUnprivilegedUidGid,
@@ -143,9 +143,14 @@ pub(crate) fn canonical_template_json_v1(
 pub struct ValidatedArtifactScenarioTemplateWireV1 {
     template_sha256: Sha256Digest,
     artifact_sha256: Sha256Digest,
+    envelope_sha256: Sha256Digest,
+    manifest_sha256: Sha256Digest,
     artifact_byte_length: u64,
+    policy_sha256: Sha256Digest,
+    dependency_closure_sha256: Sha256Digest,
     scenario_id: String,
     environment: NpmEnvironmentProfileV1,
+    runtime_target: ArtifactRuntimeTargetV1,
     runtime_profile_sha256: Sha256Digest,
     node_version: String,
     node_executable_sha256: Sha256Digest,
@@ -159,9 +164,14 @@ impl std::fmt::Debug for ValidatedArtifactScenarioTemplateWireV1 {
             .debug_struct("ValidatedArtifactScenarioTemplateWireV1")
             .field("template_sha256", &self.template_sha256)
             .field("artifact_sha256", &self.artifact_sha256)
+            .field("envelope_sha256", &self.envelope_sha256)
+            .field("manifest_sha256", &self.manifest_sha256)
             .field("artifact_byte_length", &self.artifact_byte_length)
+            .field("policy_sha256", &self.policy_sha256)
+            .field("dependency_closure_sha256", &self.dependency_closure_sha256)
             .field("scenario_id", &self.scenario_id)
             .field("environment", &self.environment)
+            .field("runtime_target", &self.runtime_target)
             .field("runtime_profile_sha256", &self.runtime_profile_sha256)
             .field("node_version", &self.node_version)
             .field("node_executable_sha256", &self.node_executable_sha256)
@@ -180,8 +190,24 @@ impl ValidatedArtifactScenarioTemplateWireV1 {
         &self.artifact_sha256
     }
 
+    pub fn envelope_sha256(&self) -> &Sha256Digest {
+        &self.envelope_sha256
+    }
+
+    pub fn manifest_sha256(&self) -> &Sha256Digest {
+        &self.manifest_sha256
+    }
+
     pub fn artifact_byte_length(&self) -> u64 {
         self.artifact_byte_length
+    }
+
+    pub fn policy_sha256(&self) -> &Sha256Digest {
+        &self.policy_sha256
+    }
+
+    pub fn dependency_closure_sha256(&self) -> &Sha256Digest {
+        &self.dependency_closure_sha256
     }
 
     pub fn scenario_id(&self) -> &str {
@@ -190,6 +216,10 @@ impl ValidatedArtifactScenarioTemplateWireV1 {
 
     pub fn environment(&self) -> NpmEnvironmentProfileV1 {
         self.environment
+    }
+
+    pub const fn runtime_target(&self) -> ArtifactRuntimeTargetV1 {
+        self.runtime_target
     }
 
     pub fn runtime_profile_sha256(&self) -> &Sha256Digest {
@@ -235,12 +265,19 @@ pub fn decode_and_validate_artifact_scenario_template_v1(
         .scenario_kind
         .environment()
         .ok_or(ArtifactScenarioCompileErrorV1::InvalidWire)?;
+    let runtime_target = ArtifactRuntimeTargetV1::from_wire(&wire.target_os, &wire.target_arch)
+        .ok_or(ArtifactScenarioCompileErrorV1::InvalidWire)?;
     Ok(ValidatedArtifactScenarioTemplateWireV1 {
         template_sha256: Sha256Digest::from_bytes(bytes),
         artifact_sha256: wire.subject.artifact_sha256,
+        envelope_sha256: wire.subject.envelope_sha256,
+        manifest_sha256: wire.subject.manifest_sha256,
         artifact_byte_length: wire.artifact_byte_length,
+        policy_sha256: wire.policy_sha256,
+        dependency_closure_sha256: wire.dependency_closure.declaration_set_sha256().clone(),
         scenario_id: wire.identity.scenario_id,
         environment,
+        runtime_target,
         runtime_profile_sha256: wire.runtime_profile.profile_sha256,
         node_version: wire.runtime_profile.node_version,
         node_executable_sha256: wire.runtime_profile.node_executable_sha256,
@@ -252,6 +289,11 @@ pub fn decode_and_validate_artifact_scenario_template_v1(
 fn validate_template_wire_v1(
     wire: &ArtifactScenarioTemplateWireV1,
 ) -> Result<(), ArtifactScenarioCompileErrorV1> {
+    let Some(runtime_target) =
+        ArtifactRuntimeTargetV1::from_wire(&wire.target_os, &wire.target_arch)
+    else {
+        return Err(ArtifactScenarioCompileErrorV1::InvalidWire);
+    };
     if wire.schema_version != ARTIFACT_SCENARIO_TEMPLATE_SCHEMA_V1
         || wire.canonicalization != ARTIFACT_SCENARIO_CANONICALIZATION_V1
         || wire.compiler_id != ARTIFACT_SCENARIO_COMPILER_ID_V1
@@ -269,10 +311,8 @@ fn validate_template_wire_v1(
         || !valid_package_text_v1(&wire.package.display_name)
         || !valid_package_text_v1(&wire.package.normalized_name)
         || !valid_package_text_v1(&wire.package.version)
-        || wire.target_os != "macos"
-        || wire.target_arch != "arm64"
-        || wire.runtime_profile.target_os != "macos"
-        || wire.runtime_profile.target_arch != "arm64"
+        || wire.runtime_profile.target_os != wire.target_os
+        || wire.runtime_profile.target_arch != wire.target_arch
         || wire.transport != ArtifactTransportV1::DigestCheckedBoundedRawBytes
         || wire.network_policy != ArtifactNetworkPolicyV1::NoNetworkDevice
         || wire.package_privilege != ArtifactPackagePrivilegeV1::DedicatedUnprivilegedUidGid
@@ -292,7 +332,8 @@ fn validate_template_wire_v1(
         .validate()
         .map_err(|_| ArtifactScenarioCompileErrorV1::InvalidWire)?;
 
-    let runtime = NpmRuntimeProfileV1::new(
+    let runtime = NpmRuntimeProfileV1::new_for_target(
+        runtime_target,
         &wire.runtime_profile.profile_id,
         &wire.runtime_profile.node_version,
         wire.runtime_profile.node_executable_sha256.clone(),
@@ -418,7 +459,11 @@ pub(crate) fn canonical_plan_json_v1(
 pub struct ValidatedArtifactScenarioPlanWireV1 {
     plan_sha256: Sha256Digest,
     artifact_sha256: Sha256Digest,
+    envelope_sha256: Sha256Digest,
+    manifest_sha256: Sha256Digest,
+    policy_sha256: Sha256Digest,
     plan_id: String,
+    templates: Vec<(String, NpmEnvironmentProfileV1, Sha256Digest)>,
 }
 
 impl ValidatedArtifactScenarioPlanWireV1 {
@@ -430,8 +475,24 @@ impl ValidatedArtifactScenarioPlanWireV1 {
         &self.artifact_sha256
     }
 
+    pub fn envelope_sha256(&self) -> &Sha256Digest {
+        &self.envelope_sha256
+    }
+
+    pub fn manifest_sha256(&self) -> &Sha256Digest {
+        &self.manifest_sha256
+    }
+
+    pub fn policy_sha256(&self) -> &Sha256Digest {
+        &self.policy_sha256
+    }
+
     pub fn plan_id(&self) -> &str {
         &self.plan_id
+    }
+
+    pub fn templates(&self) -> &[(String, NpmEnvironmentProfileV1, Sha256Digest)] {
+        &self.templates
     }
 }
 
@@ -458,6 +519,7 @@ pub fn decode_and_validate_artifact_scenario_plan_v1(
         || wire.templates[0].environment != NpmEnvironmentProfileV1::CiFalse
         || wire.templates[1].environment != NpmEnvironmentProfileV1::CiTrue
         || wire.templates[0].scenario_id == wire.templates[1].scenario_id
+        || wire.templates[0].template_sha256 == wire.templates[1].template_sha256
         || !wire
             .templates
             .iter()
@@ -475,7 +537,21 @@ pub fn decode_and_validate_artifact_scenario_plan_v1(
     Ok(ValidatedArtifactScenarioPlanWireV1 {
         plan_sha256: Sha256Digest::from_bytes(bytes),
         artifact_sha256: wire.subject.artifact_sha256,
+        envelope_sha256: wire.subject.envelope_sha256,
+        manifest_sha256: wire.subject.manifest_sha256,
+        policy_sha256: wire.policy_sha256,
         plan_id: wire.plan_id,
+        templates: wire
+            .templates
+            .into_iter()
+            .map(|reference| {
+                (
+                    reference.scenario_id,
+                    reference.environment,
+                    reference.template_sha256,
+                )
+            })
+            .collect(),
     })
 }
 

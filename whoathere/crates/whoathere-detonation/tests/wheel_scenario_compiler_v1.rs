@@ -7,7 +7,7 @@ use whoathere_artifact::{
 use whoathere_detonation::{
     compile_wheel_scenarios_v1, decode_and_validate_wheel_scenario_plan_v1,
     decode_and_validate_wheel_scenario_template_v1, expected_wheel_scenario_kinds_v1,
-    ArtifactScenarioCompileErrorV1, ArtifactScenarioExecutionIdentityV1,
+    ArtifactRuntimeTargetV1, ArtifactScenarioCompileErrorV1, ArtifactScenarioExecutionIdentityV1,
     WheelConsoleArgumentProfileV1, WheelRuntimeProfileV1, WheelScenarioCompilationRequestV1,
     WheelScenarioIdentitySetV1, WheelScenarioKindV1, WheelScenarioPlanV1, WheelScenarioPolicyV1,
 };
@@ -533,5 +533,55 @@ fn subject_policy_and_complete_identity_set_are_fail_closed() {
     assert_eq!(
         compile(&fixture, &policy, &missing),
         Err(ArtifactScenarioCompileErrorV1::InvalidIdentifiers)
+    );
+}
+
+#[test]
+fn linux_wheel_runtime_is_distinct_and_cross_target_rebinding_fails_closed() {
+    let fixture = default_fixture();
+    let linux_runtime = WheelRuntimeProfileV1::new_for_target(
+        ArtifactRuntimeTargetV1::LinuxArm64,
+        "linux-arm64-python312-pip26-inert",
+        "3.12.13",
+        Sha256Digest::from_bytes(b"measured inert python executable"),
+        "26.1.2",
+        Sha256Digest::from_bytes(b"measured inert pip cli"),
+    )
+    .expect("Linux wheel runtime");
+    assert_eq!(
+        linux_runtime.runtime_target(),
+        ArtifactRuntimeTargetV1::LinuxArm64
+    );
+    assert_ne!(
+        linux_runtime.profile_sha256(),
+        runtime_profile().profile_sha256()
+    );
+    let policy = WheelScenarioPolicyV1::inert_qualification_only(
+        fixture.envelope.original_sha256.clone(),
+        linux_runtime,
+    )
+    .expect("Linux wheel policy");
+    let plan = compile(
+        &fixture,
+        &policy,
+        &identities(&fixture, "linux").expect("Linux identities"),
+    )
+    .expect("Linux wheel plan");
+    let bytes = plan.templates()[0]
+        .canonical_json_v1()
+        .expect("Linux wheel template");
+    let validated = decode_and_validate_wheel_scenario_template_v1(&bytes)
+        .expect("strict Linux wheel template");
+    assert_eq!(
+        validated.runtime_target(),
+        ArtifactRuntimeTargetV1::LinuxArm64
+    );
+
+    let mut rebound: serde_json::Value = serde_json::from_slice(&bytes).expect("template value");
+    rebound["runtime_profile"]["target_os"] = serde_json::json!("macos");
+    let rebound = serde_json_canonicalizer::to_vec(&rebound).expect("canonical rebound template");
+    assert_eq!(
+        decode_and_validate_wheel_scenario_template_v1(&rebound),
+        Err(ArtifactScenarioCompileErrorV1::InvalidWire)
     );
 }

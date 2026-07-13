@@ -1,7 +1,7 @@
 use crate::artifact::{
     required_evidence_classes_v1, valid_identity_component_v1, valid_version_component_v1,
     ArtifactCloneDispositionV1, ArtifactNetworkPolicyV1, ArtifactPackagePrivilegeV1,
-    ArtifactScenarioCompileErrorV1, ArtifactScenarioEvidenceClassV1,
+    ArtifactRuntimeTargetV1, ArtifactScenarioCompileErrorV1, ArtifactScenarioEvidenceClassV1,
     ArtifactScenarioExecutionIdentityV1, ArtifactScenarioLimitsV1, ArtifactTransportV1,
     DependencyClosureV1, EMPTY_DEPENDENCY_CLOSURE_SCHEMA_V1, MAX_ARTIFACT_SCENARIO_BYTES_V1,
 };
@@ -122,6 +122,7 @@ pub enum WheelInterpreterPolicyV1 {
 #[derive(Clone, PartialEq, Eq)]
 pub struct WheelRuntimeProfileV1 {
     profile_id: String,
+    runtime_target: ArtifactRuntimeTargetV1,
     python_version: String,
     python_executable_sha256: Sha256Digest,
     pip_version: String,
@@ -135,6 +136,7 @@ impl fmt::Debug for WheelRuntimeProfileV1 {
         formatter
             .debug_struct("WheelRuntimeProfileV1")
             .field("profile_id", &self.profile_id)
+            .field("runtime_target", &self.runtime_target)
             .field("python_version", &self.python_version)
             .field("python_executable_sha256", &self.python_executable_sha256)
             .field("pip_version", &self.pip_version)
@@ -167,6 +169,24 @@ impl WheelRuntimeProfileV1 {
         pip_version: impl Into<String>,
         pip_cli_sha256: Sha256Digest,
     ) -> Result<Self, ArtifactScenarioCompileErrorV1> {
+        Self::new_for_target(
+            ArtifactRuntimeTargetV1::MacosArm64,
+            profile_id,
+            python_version,
+            python_executable_sha256,
+            pip_version,
+            pip_cli_sha256,
+        )
+    }
+
+    pub fn new_for_target(
+        runtime_target: ArtifactRuntimeTargetV1,
+        profile_id: impl Into<String>,
+        python_version: impl Into<String>,
+        python_executable_sha256: Sha256Digest,
+        pip_version: impl Into<String>,
+        pip_cli_sha256: Sha256Digest,
+    ) -> Result<Self, ArtifactScenarioCompileErrorV1> {
         let profile_id = profile_id.into();
         let python_version = python_version.into();
         let pip_version = pip_version.into();
@@ -181,8 +201,8 @@ impl WheelRuntimeProfileV1 {
         let bytes = serde_json_canonicalizer::to_vec(&WheelRuntimeProfileDigestWireV1 {
             schema_version: "whoathere.wheel_runtime_profile.v1",
             profile_id: &profile_id,
-            target_os: "macos",
-            target_arch: "arm64",
+            target_os: runtime_target.target_os(),
+            target_arch: runtime_target.target_arch(),
             python_version: &python_version,
             python_executable_sha256: &python_executable_sha256,
             pip_version: &pip_version,
@@ -192,6 +212,7 @@ impl WheelRuntimeProfileV1 {
         .map_err(|_| ArtifactScenarioCompileErrorV1::Serialization)?;
         Ok(Self {
             profile_id,
+            runtime_target,
             python_version,
             python_executable_sha256,
             pip_version,
@@ -203,6 +224,10 @@ impl WheelRuntimeProfileV1 {
 
     pub fn profile_id(&self) -> &str {
         &self.profile_id
+    }
+
+    pub const fn runtime_target(&self) -> ArtifactRuntimeTargetV1 {
+        self.runtime_target
     }
 
     pub fn python_version(&self) -> &str {
@@ -911,8 +936,8 @@ impl WheelScenarioTemplateWireV1 {
             runtime_profile: WheelRuntimeProfileWireV1 {
                 profile_id: runtime.profile_id().to_string(),
                 profile_sha256: runtime.profile_sha256().clone(),
-                target_os: "macos".to_string(),
-                target_arch: "arm64".to_string(),
+                target_os: runtime.runtime_target().target_os().to_string(),
+                target_arch: runtime.runtime_target().target_arch().to_string(),
                 python_version: runtime.python_version().to_string(),
                 python_executable_sha256: runtime.python_executable_sha256().clone(),
                 pip_version: runtime.pip_version().to_string(),
@@ -924,8 +949,8 @@ impl WheelScenarioTemplateWireV1 {
             install_environment: WheelInstallEnvironmentV1::FreshVirtualEnvironment,
             resolver_policy: WheelResolverPolicyV1::NoIndexNoDependencies,
             interpreter_policy: WheelInterpreterPolicyV1::FreshInterpreterPerProbe,
-            target_os: "macos".to_string(),
-            target_arch: "arm64".to_string(),
+            target_os: runtime.runtime_target().target_os().to_string(),
+            target_arch: runtime.runtime_target().target_arch().to_string(),
             transport: ArtifactTransportV1::DigestCheckedBoundedRawBytes,
             network_policy: ArtifactNetworkPolicyV1::NoNetworkDevice,
             package_privilege: ArtifactPackagePrivilegeV1::DedicatedUnprivilegedUidGid,
@@ -952,9 +977,14 @@ fn canonical_wheel_template_json_v1(
 pub struct ValidatedWheelScenarioTemplateWireV1 {
     template_sha256: Sha256Digest,
     artifact_sha256: Sha256Digest,
+    envelope_sha256: Sha256Digest,
+    manifest_sha256: Sha256Digest,
     artifact_byte_length: u64,
+    policy_sha256: Sha256Digest,
+    dependency_closure_sha256: Sha256Digest,
     scenario_id: String,
     scenario_kind: WheelScenarioKindV1,
+    runtime_target: ArtifactRuntimeTargetV1,
     runtime_profile_sha256: Sha256Digest,
     python_version: String,
     python_executable_sha256: Sha256Digest,
@@ -968,9 +998,14 @@ impl fmt::Debug for ValidatedWheelScenarioTemplateWireV1 {
             .debug_struct("ValidatedWheelScenarioTemplateWireV1")
             .field("template_sha256", &self.template_sha256)
             .field("artifact_sha256", &self.artifact_sha256)
+            .field("envelope_sha256", &self.envelope_sha256)
+            .field("manifest_sha256", &self.manifest_sha256)
             .field("artifact_byte_length", &self.artifact_byte_length)
+            .field("policy_sha256", &self.policy_sha256)
+            .field("dependency_closure_sha256", &self.dependency_closure_sha256)
             .field("scenario_id", &self.scenario_id)
             .field("scenario_kind", &self.scenario_kind)
+            .field("runtime_target", &self.runtime_target)
             .field("runtime_profile_sha256", &self.runtime_profile_sha256)
             .field("python_version", &self.python_version)
             .field("python_executable_sha256", &self.python_executable_sha256)
@@ -989,8 +1024,24 @@ impl ValidatedWheelScenarioTemplateWireV1 {
         &self.artifact_sha256
     }
 
+    pub fn envelope_sha256(&self) -> &Sha256Digest {
+        &self.envelope_sha256
+    }
+
+    pub fn manifest_sha256(&self) -> &Sha256Digest {
+        &self.manifest_sha256
+    }
+
     pub fn artifact_byte_length(&self) -> u64 {
         self.artifact_byte_length
+    }
+
+    pub fn policy_sha256(&self) -> &Sha256Digest {
+        &self.policy_sha256
+    }
+
+    pub fn dependency_closure_sha256(&self) -> &Sha256Digest {
+        &self.dependency_closure_sha256
     }
 
     pub fn scenario_id(&self) -> &str {
@@ -999,6 +1050,10 @@ impl ValidatedWheelScenarioTemplateWireV1 {
 
     pub fn scenario_kind(&self) -> &WheelScenarioKindV1 {
         &self.scenario_kind
+    }
+
+    pub const fn runtime_target(&self) -> ArtifactRuntimeTargetV1 {
+        self.runtime_target
     }
 
     pub fn runtime_profile_sha256(&self) -> &Sha256Digest {
@@ -1040,12 +1095,19 @@ pub fn decode_and_validate_wheel_scenario_template_v1(
         return Err(ArtifactScenarioCompileErrorV1::InvalidWire);
     }
     validate_wheel_template_wire_v1(&wire)?;
+    let runtime_target = ArtifactRuntimeTargetV1::from_wire(&wire.target_os, &wire.target_arch)
+        .ok_or(ArtifactScenarioCompileErrorV1::InvalidWire)?;
     Ok(ValidatedWheelScenarioTemplateWireV1 {
         template_sha256: Sha256Digest::from_bytes(bytes),
         artifact_sha256: wire.subject.artifact_sha256,
+        envelope_sha256: wire.subject.envelope_sha256,
+        manifest_sha256: wire.subject.manifest_sha256,
         artifact_byte_length: wire.artifact_byte_length,
+        policy_sha256: wire.policy_sha256,
+        dependency_closure_sha256: wire.dependency_closure.declaration_set_sha256().clone(),
         scenario_id: wire.identity.scenario_id,
         scenario_kind: wire.scenario_kind,
+        runtime_target,
         runtime_profile_sha256: wire.runtime_profile.profile_sha256,
         python_version: wire.runtime_profile.python_version,
         python_executable_sha256: wire.runtime_profile.python_executable_sha256,
@@ -1057,6 +1119,11 @@ pub fn decode_and_validate_wheel_scenario_template_v1(
 fn validate_wheel_template_wire_v1(
     wire: &WheelScenarioTemplateWireV1,
 ) -> Result<(), ArtifactScenarioCompileErrorV1> {
+    let Some(runtime_target) =
+        ArtifactRuntimeTargetV1::from_wire(&wire.target_os, &wire.target_arch)
+    else {
+        return Err(ArtifactScenarioCompileErrorV1::InvalidWire);
+    };
     if wire.schema_version != WHEEL_SCENARIO_TEMPLATE_SCHEMA_V1
         || wire.canonicalization != WHEEL_SCENARIO_CANONICALIZATION_V1
         || wire.compiler_id != WHEEL_SCENARIO_COMPILER_ID_V1
@@ -1074,10 +1141,8 @@ fn validate_wheel_template_wire_v1(
         || !valid_package_text(&wire.package.display_name)
         || !valid_package_text(&wire.package.normalized_name)
         || !valid_package_text(&wire.package.version)
-        || wire.target_os != "macos"
-        || wire.target_arch != "arm64"
-        || wire.runtime_profile.target_os != "macos"
-        || wire.runtime_profile.target_arch != "arm64"
+        || wire.runtime_profile.target_os != wire.target_os
+        || wire.runtime_profile.target_arch != wire.target_arch
         || wire.install_environment != WheelInstallEnvironmentV1::FreshVirtualEnvironment
         || wire.resolver_policy != WheelResolverPolicyV1::NoIndexNoDependencies
         || wire.interpreter_policy != WheelInterpreterPolicyV1::FreshInterpreterPerProbe
@@ -1103,7 +1168,8 @@ fn validate_wheel_template_wire_v1(
         .validate()
         .map_err(|_| ArtifactScenarioCompileErrorV1::InvalidWire)?;
 
-    let runtime = WheelRuntimeProfileV1::new(
+    let runtime = WheelRuntimeProfileV1::new_for_target(
+        runtime_target,
         &wire.runtime_profile.profile_id,
         &wire.runtime_profile.python_version,
         wire.runtime_profile.python_executable_sha256.clone(),
@@ -1199,6 +1265,8 @@ pub struct ValidatedWheelScenarioPlanWireV1 {
     plan_sha256: Sha256Digest,
     plan_id: String,
     artifact_sha256: Sha256Digest,
+    envelope_sha256: Sha256Digest,
+    manifest_sha256: Sha256Digest,
     policy_sha256: Sha256Digest,
     templates: Vec<(String, WheelScenarioKindV1, Sha256Digest)>,
 }
@@ -1214,6 +1282,14 @@ impl ValidatedWheelScenarioPlanWireV1 {
 
     pub fn artifact_sha256(&self) -> &Sha256Digest {
         &self.artifact_sha256
+    }
+
+    pub fn envelope_sha256(&self) -> &Sha256Digest {
+        &self.envelope_sha256
+    }
+
+    pub fn manifest_sha256(&self) -> &Sha256Digest {
+        &self.manifest_sha256
     }
 
     pub fn policy_sha256(&self) -> &Sha256Digest {
@@ -1289,6 +1365,8 @@ pub fn decode_and_validate_wheel_scenario_plan_v1(
         plan_sha256: Sha256Digest::from_bytes(bytes),
         plan_id: wire.plan_id,
         artifact_sha256: wire.subject.artifact_sha256,
+        envelope_sha256: wire.subject.envelope_sha256,
+        manifest_sha256: wire.subject.manifest_sha256,
         policy_sha256: wire.policy_sha256,
         templates: wire
             .templates

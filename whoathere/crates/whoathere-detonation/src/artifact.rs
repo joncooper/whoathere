@@ -164,6 +164,38 @@ pub enum ArtifactPackagePrivilegeV1 {
     DedicatedUnprivilegedUidGid,
 }
 
+/// Execution target committed into a package runtime profile and every typed scenario template.
+///
+/// The original first-slice profiles were macOS/arm64-only. Linux/arm64 is a distinct identity so
+/// a scenario compiled for the older macOS guest lane cannot be rebound to the Linux VZ backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactRuntimeTargetV1 {
+    MacosArm64,
+    LinuxArm64,
+}
+
+impl ArtifactRuntimeTargetV1 {
+    pub const fn target_os(self) -> &'static str {
+        match self {
+            Self::MacosArm64 => "macos",
+            Self::LinuxArm64 => "linux",
+        }
+    }
+
+    pub const fn target_arch(self) -> &'static str {
+        "arm64"
+    }
+
+    pub(crate) fn from_wire(target_os: &str, target_arch: &str) -> Option<Self> {
+        match (target_os, target_arch) {
+            ("macos", "arm64") => Some(Self::MacosArm64),
+            ("linux", "arm64") => Some(Self::LinuxArm64),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactScenarioEvidenceClassV1 {
@@ -287,6 +319,7 @@ impl ArtifactScenarioLimitsV1 {
 #[derive(Clone, PartialEq, Eq)]
 pub struct NpmRuntimeProfileV1 {
     profile_id: String,
+    runtime_target: ArtifactRuntimeTargetV1,
     node_version: String,
     node_executable_sha256: Sha256Digest,
     npm_version: String,
@@ -300,6 +333,7 @@ impl fmt::Debug for NpmRuntimeProfileV1 {
         formatter
             .debug_struct("NpmRuntimeProfileV1")
             .field("profile_id", &self.profile_id)
+            .field("runtime_target", &self.runtime_target)
             .field("node_version", &self.node_version)
             .field("node_executable_sha256", &self.node_executable_sha256)
             .field("npm_version", &self.npm_version)
@@ -332,6 +366,24 @@ impl NpmRuntimeProfileV1 {
         npm_version: impl Into<String>,
         npm_cli_sha256: Sha256Digest,
     ) -> Result<Self, ArtifactScenarioCompileErrorV1> {
+        Self::new_for_target(
+            ArtifactRuntimeTargetV1::MacosArm64,
+            profile_id,
+            node_version,
+            node_executable_sha256,
+            npm_version,
+            npm_cli_sha256,
+        )
+    }
+
+    pub fn new_for_target(
+        runtime_target: ArtifactRuntimeTargetV1,
+        profile_id: impl Into<String>,
+        node_version: impl Into<String>,
+        node_executable_sha256: Sha256Digest,
+        npm_version: impl Into<String>,
+        npm_cli_sha256: Sha256Digest,
+    ) -> Result<Self, ArtifactScenarioCompileErrorV1> {
         let profile_id = profile_id.into();
         let node_version = node_version.into();
         let npm_version = npm_version.into();
@@ -346,8 +398,8 @@ impl NpmRuntimeProfileV1 {
         let bytes = serde_json_canonicalizer::to_vec(&NpmRuntimeProfileDigestWireV1 {
             schema_version: "whoathere.npm_runtime_profile.v1",
             profile_id: &profile_id,
-            target_os: "macos",
-            target_arch: "arm64",
+            target_os: runtime_target.target_os(),
+            target_arch: runtime_target.target_arch(),
             node_version: &node_version,
             node_executable_sha256: &node_executable_sha256,
             npm_version: &npm_version,
@@ -357,6 +409,7 @@ impl NpmRuntimeProfileV1 {
         .map_err(|_| ArtifactScenarioCompileErrorV1::Serialization)?;
         Ok(Self {
             profile_id,
+            runtime_target,
             node_version,
             node_executable_sha256,
             npm_version,
@@ -368,6 +421,10 @@ impl NpmRuntimeProfileV1 {
 
     pub fn profile_id(&self) -> &str {
         &self.profile_id
+    }
+
+    pub const fn runtime_target(&self) -> ArtifactRuntimeTargetV1 {
+        self.runtime_target
     }
 
     pub fn node_version(&self) -> &str {

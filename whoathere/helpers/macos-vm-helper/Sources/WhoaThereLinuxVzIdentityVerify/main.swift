@@ -11,6 +11,12 @@ private struct LinuxVzIdentityVerify {
                 try verifyQualificationRecord(path: CommandLine.arguments[2])
                 return
             }
+            if CommandLine.arguments.count == 3,
+               CommandLine.arguments[1] == "--package-authority-request",
+               CommandLine.arguments[2].hasPrefix("/") {
+                try verifyPackageAuthorityRequest(path: CommandLine.arguments[2])
+                return
+            }
             guard CommandLine.arguments.count == 3,
                   CommandLine.arguments[1].hasPrefix("/") else {
                 throw LinuxVzTelemetryBackendIdentityError.invalidIdentity
@@ -72,6 +78,38 @@ private struct LinuxVzIdentityVerify {
             "schema_version": "whoathere.linux_vz_telemetry_qualification_verification.v1",
             "status": "verified",
             "sync_back": record.syncBackPermitted
+        ]
+        let output = try JSONSerialization.data(
+            withJSONObject: result,
+            options: [.sortedKeys, .withoutEscapingSlashes]
+        )
+        print(String(decoding: output, as: UTF8.self))
+    }
+
+    private static func verifyPackageAuthorityRequest(path: String) throws {
+        let url = URL(fileURLWithPath: path)
+        let values = try url.resourceValues(forKeys: [
+            .isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey
+        ])
+        guard values.isRegularFile == true, values.isSymbolicLink != true,
+              let size = values.fileSize, size > 0,
+              size <= maximumLinuxVzPackageAuthorityRequestBytesV1 else {
+            throw LinuxVzPackageAuthorityRequestError.invalidSchema
+        }
+        let data = try Data(contentsOf: url, options: [.mappedIfSafe])
+        let request = try decodeLinuxVzPackageAuthorityRequest(data)
+        let result: [String: Any] = [
+            "artifact_kind": request.artifactKind,
+            "artifact_sha256": request.artifactSHA256,
+            "execution_authority": request.packageExecutionAuthorityPermitted,
+            "package_execution": false,
+            "qualified_backend_sha256": request.qualifiedTelemetryBackendSHA256,
+            "request_sha256": request.requestSHA256,
+            "scenario_plan_sha256": request.scenarioPlanSHA256,
+            "scenario_template_sha256": request.scenarioTemplateSHA256,
+            "schema_version": "whoathere.linux_vz_package_authority_request_verification.v1",
+            "status": "verified_candidate_runtime_unqualified",
+            "sync_back": request.syncBackPermitted
         ]
         let output = try JSONSerialization.data(
             withJSONObject: result,

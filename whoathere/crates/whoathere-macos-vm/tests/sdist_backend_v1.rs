@@ -13,11 +13,11 @@ use whoathere_artifact::{
     ArtifactSourceType, Ecosystem, NormalizationLimits, Sha256Digest,
 };
 use whoathere_detonation::{
-    compile_sdist_scenarios_v1, expected_sdist_scenario_kinds_v1,
+    compile_sdist_scenarios_v1, expected_sdist_scenario_kinds_v1, ArtifactRuntimeTargetV1,
     ArtifactScenarioExecutionIdentityV1, SdistBuildClosureArtifactFormatV1,
     SdistBuildClosureArtifactV1, SdistBuildClosureV1, SdistRuntimeProfileV1,
     SdistScenarioCompilationRequestV1, SdistScenarioIdentitySetV1, SdistScenarioKindV1,
-    SdistScenarioPolicyV1, SdistScenarioTemplateV1,
+    SdistScenarioPlanV1, SdistScenarioPolicyV1, SdistScenarioTemplateV1,
 };
 use whoathere_evidence::v2::{canonical_cas_object_key_for_artifact, ArtifactEvidenceSubjectV2};
 use whoathere_macos_vm::{
@@ -33,9 +33,12 @@ use whoathere_macos_vm::{
     sign_macos_sdist_guest_auth_response_v1, sign_macos_sdist_guest_staging_receipt_v1,
     stage_macos_sdist_guest_submission_followed_by_closure_v1,
     stage_macos_sdist_guest_submission_v1, stream_macos_sdist_guest_build_closure_v1,
-    stream_macos_sdist_guest_submission_v1, verify_macos_sdist_guest_auth_response_v1,
-    verify_macos_sdist_guest_staging_receipt_v1, write_macos_sdist_guest_control_frame_v1,
-    MacosArtifactRunErrorV1, MacosSdistBackendCapabilitiesV1, MacosSdistBackendIdentityV1,
+    stream_macos_sdist_guest_submission_v1,
+    validate_macos_linux_vz_typed_package_scenario_binding_v1,
+    verify_macos_sdist_guest_auth_response_v1, verify_macos_sdist_guest_staging_receipt_v1,
+    write_macos_sdist_guest_control_frame_v1, MacosArtifactRunErrorV1,
+    MacosLinuxVzPackageArtifactKindV1, MacosLinuxVzPackageAuthorityRequestErrorV1,
+    MacosSdistBackendCapabilitiesV1, MacosSdistBackendIdentityV1,
     MacosSdistBuildExecutionGrantErrorV1, MacosSdistBuildExecutionGrantVerifierV1,
     MacosSdistGuestAuthChallengeV1, MacosSdistGuestAuthClaimsV1, MacosSdistGuestAuthErrorV1,
     MacosSdistGuestControlErrorV1, MacosSdistGuestControlFrameTypeV1,
@@ -84,6 +87,14 @@ fn tar_gzip(entries: &[(String, Vec<u8>)]) -> Vec<u8> {
 }
 
 fn compiled_templates(init_bytes: &[u8]) -> (Vec<SdistScenarioTemplateV1>, Vec<u8>) {
+    let (plan, bytes) = compiled_plan(ArtifactRuntimeTargetV1::MacosArm64, init_bytes);
+    (plan.templates().to_vec(), bytes)
+}
+
+fn compiled_plan(
+    runtime_target: ArtifactRuntimeTargetV1,
+    init_bytes: &[u8],
+) -> (SdistScenarioPlanV1, Vec<u8>) {
     const ROOT: &str = "macos_sdist_fixture-1.0.0";
     let mut entries = vec![
         (
@@ -145,8 +156,12 @@ fn compiled_templates(init_bytes: &[u8]) -> (Vec<SdistScenarioTemplateV1>, Vec<u
             .expect("CAS key"),
     )
     .expect("subject");
-    let runtime = SdistRuntimeProfileV1::new(
-        "macos-arm64-python312-pip26-inert",
+    let runtime = SdistRuntimeProfileV1::new_for_target(
+        runtime_target,
+        match runtime_target {
+            ArtifactRuntimeTargetV1::MacosArm64 => "macos-arm64-python312-pip26-inert",
+            ArtifactRuntimeTargetV1::LinuxArm64 => "linux-arm64-python312-pip26-inert",
+        },
         "3.12.13",
         digest(b"measured python"),
         "26.1.2",
@@ -220,7 +235,49 @@ fn compiled_templates(init_bytes: &[u8]) -> (Vec<SdistScenarioTemplateV1>, Vec<u
         identities: &identities,
     })
     .expect("sdist plan");
-    (plan.templates().to_vec(), bytes)
+    (plan, bytes)
+}
+
+#[test]
+fn linux_vz_sdist_binding_requires_a_linux_plan_and_exact_selected_template() {
+    let (plan, _) = compiled_plan(
+        ArtifactRuntimeTargetV1::LinuxArm64,
+        b"VALUE = 'linux inert'\n",
+    );
+    let plan_bytes = plan.canonical_json_v1().expect("Linux sdist plan bytes");
+    let template_bytes = plan.templates()[0]
+        .canonical_json_v1()
+        .expect("Linux sdist template bytes");
+    let binding = validate_macos_linux_vz_typed_package_scenario_binding_v1(
+        MacosLinuxVzPackageArtifactKindV1::PypiSdist,
+        &plan_bytes,
+        &template_bytes,
+    )
+    .expect("Linux sdist binding");
+    assert_eq!(
+        binding.runtime_target(),
+        ArtifactRuntimeTargetV1::LinuxArm64
+    );
+    assert_eq!(binding.scenario_plan_sha256(), plan.plan_sha256());
+    assert_eq!(
+        binding.scenario_template_sha256(),
+        plan.templates()[0].template_sha256()
+    );
+
+    let (macos_plan, _) = compiled_plan(
+        ArtifactRuntimeTargetV1::MacosArm64,
+        b"VALUE = 'linux inert'\n",
+    );
+    assert_eq!(
+        validate_macos_linux_vz_typed_package_scenario_binding_v1(
+            MacosLinuxVzPackageArtifactKindV1::PypiSdist,
+            &macos_plan.canonical_json_v1().expect("macOS sdist plan"),
+            &macos_plan.templates()[0]
+                .canonical_json_v1()
+                .expect("macOS sdist template"),
+        ),
+        Err(MacosLinuxVzPackageAuthorityRequestErrorV1::RuntimeTargetMismatch)
+    );
 }
 
 #[test]

@@ -10,9 +10,10 @@ use whoathere_artifact::{
     ArtifactSourceType, Ecosystem, NormalizationLimits, Sha256Digest,
 };
 use whoathere_detonation::{
-    compile_wheel_scenarios_v1, expected_wheel_scenario_kinds_v1,
+    compile_wheel_scenarios_v1, expected_wheel_scenario_kinds_v1, ArtifactRuntimeTargetV1,
     ArtifactScenarioExecutionIdentityV1, WheelRuntimeProfileV1, WheelScenarioCompilationRequestV1,
-    WheelScenarioIdentitySetV1, WheelScenarioPolicyV1, WheelScenarioTemplateV1,
+    WheelScenarioIdentitySetV1, WheelScenarioPlanV1, WheelScenarioPolicyV1,
+    WheelScenarioTemplateV1,
 };
 use whoathere_evidence::v2::{canonical_cas_object_key_for_artifact, ArtifactEvidenceSubjectV2};
 use whoathere_macos_vm::{
@@ -23,15 +24,18 @@ use whoathere_macos_vm::{
     read_macos_wheel_guest_control_frame_v1, require_macos_wheel_guest_control_eof_v1,
     run_macos_wheel_guest_nonexecuting_session_v1, sign_macos_wheel_guest_auth_response_v1,
     sign_macos_wheel_guest_staging_receipt_v1, stage_macos_wheel_guest_submission_v1,
-    stream_macos_wheel_guest_submission_v1, verify_macos_wheel_guest_auth_response_v1,
-    verify_macos_wheel_guest_staging_receipt_v1, write_macos_wheel_guest_control_frame_v1,
-    MacosArtifactRunErrorV1, MacosWheelBackendCapabilitiesV1, MacosWheelBackendIdentityV1,
-    MacosWheelGuestAuthChallengeV1, MacosWheelGuestAuthClaimsV1, MacosWheelGuestAuthErrorV1,
-    MacosWheelGuestControlErrorV1, MacosWheelGuestControlFrameTypeV1,
-    MacosWheelGuestStagingErrorV1, MacosWheelGuestStagingPolicyV1,
-    MacosWheelGuestStagingReceiptClaimsV1, MacosWheelGuestSupervisorPrimaryErrorV1,
-    MacosWheelLaunchAuthorityErrorV1, MacosWheelSubmissionBindingsV1, MacosWheelSubmissionErrorV1,
-    MacosWheelSubmissionHeaderV1, WheelGuestRehashPhaseV1, MACOS_WHEEL_GUEST_SUBMISSION_MAGIC_V1,
+    stream_macos_wheel_guest_submission_v1,
+    validate_macos_linux_vz_typed_package_scenario_binding_v1,
+    verify_macos_wheel_guest_auth_response_v1, verify_macos_wheel_guest_staging_receipt_v1,
+    write_macos_wheel_guest_control_frame_v1, MacosArtifactRunErrorV1,
+    MacosLinuxVzPackageArtifactKindV1, MacosLinuxVzPackageAuthorityRequestErrorV1,
+    MacosWheelBackendCapabilitiesV1, MacosWheelBackendIdentityV1, MacosWheelGuestAuthChallengeV1,
+    MacosWheelGuestAuthClaimsV1, MacosWheelGuestAuthErrorV1, MacosWheelGuestControlErrorV1,
+    MacosWheelGuestControlFrameTypeV1, MacosWheelGuestStagingErrorV1,
+    MacosWheelGuestStagingPolicyV1, MacosWheelGuestStagingReceiptClaimsV1,
+    MacosWheelGuestSupervisorPrimaryErrorV1, MacosWheelLaunchAuthorityErrorV1,
+    MacosWheelSubmissionBindingsV1, MacosWheelSubmissionErrorV1, MacosWheelSubmissionHeaderV1,
+    WheelGuestRehashPhaseV1, MACOS_WHEEL_GUEST_SUBMISSION_MAGIC_V1,
     MACOS_WHEEL_LAUNCH_AUTHORITY_SCHEMA_V1, MACOS_WHEEL_SUBMISSION_FIXED_PREFIX_BYTES_V1,
     MACOS_WHEEL_SUBMISSION_MAGIC_V1, MAX_MACOS_WHEEL_LAUNCH_AUTHORITY_LIFETIME_SECONDS_V1,
 };
@@ -42,6 +46,14 @@ fn digest(bytes: &[u8]) -> Sha256Digest {
 }
 
 fn compiled_template(init_bytes: &[u8]) -> (WheelScenarioTemplateV1, Vec<u8>) {
+    let (plan, bytes) = compiled_plan(ArtifactRuntimeTargetV1::MacosArm64, init_bytes);
+    (plan.templates()[1].clone(), bytes)
+}
+
+fn compiled_plan(
+    runtime_target: ArtifactRuntimeTargetV1,
+    init_bytes: &[u8],
+) -> (WheelScenarioPlanV1, Vec<u8>) {
     const DIST_INFO: &str = "macos_wheel_fixture-1.0.0.dist-info";
     let members = vec![
         (
@@ -88,8 +100,12 @@ fn compiled_template(init_bytes: &[u8]) -> (WheelScenarioTemplateV1, Vec<u8>) {
             .expect("CAS key"),
     )
     .expect("subject");
-    let runtime = WheelRuntimeProfileV1::new(
-        "macos-arm64-python312-pip26-inert",
+    let runtime = WheelRuntimeProfileV1::new_for_target(
+        runtime_target,
+        match runtime_target {
+            ArtifactRuntimeTargetV1::MacosArm64 => "macos-arm64-python312-pip26-inert",
+            ArtifactRuntimeTargetV1::LinuxArm64 => "linux-arm64-python312-pip26-inert",
+        },
         "3.12.13",
         digest(b"measured python"),
         "26.1.2",
@@ -127,7 +143,43 @@ fn compiled_template(init_bytes: &[u8]) -> (WheelScenarioTemplateV1, Vec<u8>) {
         identities: &identities,
     })
     .expect("wheel plan");
-    (plan.templates()[1].clone(), bytes)
+    (plan, bytes)
+}
+
+#[test]
+fn linux_vz_wheel_binding_requires_a_linux_plan_and_exact_selected_template() {
+    let (plan, _) = compiled_plan(ArtifactRuntimeTargetV1::LinuxArm64, b"VALUE = 1\n");
+    let plan_bytes = plan.canonical_json_v1().expect("Linux wheel plan bytes");
+    let template_bytes = plan.templates()[0]
+        .canonical_json_v1()
+        .expect("Linux wheel template bytes");
+    let binding = validate_macos_linux_vz_typed_package_scenario_binding_v1(
+        MacosLinuxVzPackageArtifactKindV1::PypiWheel,
+        &plan_bytes,
+        &template_bytes,
+    )
+    .expect("Linux wheel binding");
+    assert_eq!(
+        binding.runtime_target(),
+        ArtifactRuntimeTargetV1::LinuxArm64
+    );
+    assert_eq!(binding.scenario_plan_sha256(), plan.plan_sha256());
+    assert_eq!(
+        binding.scenario_template_sha256(),
+        plan.templates()[0].template_sha256()
+    );
+
+    let (macos_plan, _) = compiled_plan(ArtifactRuntimeTargetV1::MacosArm64, b"VALUE = 1\n");
+    assert_eq!(
+        validate_macos_linux_vz_typed_package_scenario_binding_v1(
+            MacosLinuxVzPackageArtifactKindV1::PypiWheel,
+            &macos_plan.canonical_json_v1().expect("macOS wheel plan"),
+            &macos_plan.templates()[0]
+                .canonical_json_v1()
+                .expect("macOS wheel template"),
+        ),
+        Err(MacosLinuxVzPackageAuthorityRequestErrorV1::RuntimeTargetMismatch)
+    );
 }
 
 fn wheel_zip(members: &[(String, Vec<u8>)], dist_info: &str) -> Vec<u8> {

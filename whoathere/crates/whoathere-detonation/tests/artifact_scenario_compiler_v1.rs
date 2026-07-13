@@ -8,10 +8,10 @@ use whoathere_artifact::{
 };
 use whoathere_detonation::{
     compile_artifact_scenarios_v1, decode_and_validate_artifact_scenario_plan_v1,
-    decode_and_validate_artifact_scenario_template_v1, ArtifactScenarioCompilationRequestV1,
-    ArtifactScenarioCompileErrorV1, ArtifactScenarioExecutionIdentityV1,
-    ArtifactScenarioIdentitySetV1, ArtifactScenarioPolicyV1, NpmEnvironmentProfileV1,
-    NpmRuntimeProfileV1,
+    decode_and_validate_artifact_scenario_template_v1, ArtifactRuntimeTargetV1,
+    ArtifactScenarioCompilationRequestV1, ArtifactScenarioCompileErrorV1,
+    ArtifactScenarioExecutionIdentityV1, ArtifactScenarioIdentitySetV1, ArtifactScenarioPolicyV1,
+    NpmEnvironmentProfileV1, NpmRuntimeProfileV1,
 };
 use whoathere_evidence::v2::{canonical_cas_object_key_for_artifact, ArtifactEvidenceSubjectV2};
 
@@ -412,5 +412,56 @@ fn trusted_identity_changes_rebind_template_and_plan_digests() {
     assert_ne!(
         first.templates()[0].template_sha256(),
         changed.templates()[0].template_sha256()
+    );
+}
+
+#[test]
+fn linux_runtime_is_distinct_and_cross_target_template_rebinding_fails_closed() {
+    let fixture = fixture(
+        br#"{"name":"artifact-scenario-fixture","version":"1.0.0","scripts":{"postinstall":"node post.js"}}"#,
+        &[("odd-root/post.js", b"process.exit(0)")],
+        false,
+    );
+    let linux_runtime = NpmRuntimeProfileV1::new_for_target(
+        ArtifactRuntimeTargetV1::LinuxArm64,
+        "linux-arm64-node22-npm11-inert",
+        "22.17.0",
+        Sha256Digest::from_bytes(b"measured inert node executable"),
+        "11.18.0",
+        Sha256Digest::from_bytes(b"measured inert npm cli"),
+    )
+    .expect("Linux runtime profile");
+    assert_eq!(
+        linux_runtime.runtime_target(),
+        ArtifactRuntimeTargetV1::LinuxArm64
+    );
+    assert_ne!(
+        linux_runtime.profile_sha256(),
+        runtime_profile().profile_sha256()
+    );
+
+    let policy = ArtifactScenarioPolicyV1::inert_qualification_only(
+        fixture.envelope.original_sha256.clone(),
+        linux_runtime,
+    )
+    .expect("Linux policy");
+    let plan = compile(&fixture, &policy, &identities("linux")).expect("Linux plan");
+    let template_bytes = plan.templates()[0]
+        .canonical_json_v1()
+        .expect("Linux template");
+    let validated = decode_and_validate_artifact_scenario_template_v1(&template_bytes)
+        .expect("strict Linux template");
+    assert_eq!(
+        validated.runtime_target(),
+        ArtifactRuntimeTargetV1::LinuxArm64
+    );
+
+    let mut rebound: serde_json::Value =
+        serde_json::from_slice(&template_bytes).expect("template value");
+    rebound["target_os"] = json!("macos");
+    let rebound = serde_json_canonicalizer::to_vec(&rebound).expect("canonical rebound template");
+    assert_eq!(
+        decode_and_validate_artifact_scenario_template_v1(&rebound),
+        Err(ArtifactScenarioCompileErrorV1::InvalidWire)
     );
 }
