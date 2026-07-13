@@ -101,6 +101,25 @@ import Testing
     }
 }
 
+@Test func linuxVzPackageRuntimeCloneCanBePreservedWhenVMStopIsUnproven() throws {
+    let fixture = try linuxVzPackageRuntimeLifecycleFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let base = try verifyAndLockLinuxVzPackageRuntimeBase(
+        layout: fixture.layout,
+        expectedRootfsSHA256: sha256(fixture.manifest.rootfs),
+        expectedRootfsByteLength: UInt64(fixture.manifest.rootfs.count),
+        expectedRuntimeManifestSHA256: sha256(fixture.manifest.data),
+        expectedPackageRunnerSHA256: sha256(fixture.manifest.runner)
+    )
+    var preservedPath = ""
+    do {
+        let clone = try base.createDisposableClone()
+        preservedPath = clone.runDirectory.path
+        clone.preserveUntilVerifiedVMStop()
+    }
+    #expect(linuxVzRuntimePathExists(preservedPath))
+}
+
 private struct LinuxVzPackageRuntimeLifecycleFixture {
     let root: URL
     let layout: LinuxVzPackageRuntimeBaseLayout

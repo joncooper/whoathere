@@ -43,7 +43,7 @@ if [ -e "$final_output" ] || [ -L "$final_output" ]; then
     echo "output path must not already exist" >&2
     exit 73
 fi
-for command in cargo cargo-zigbuild file gzip jq rustc shasum unsquashfs xcrun; do
+for command in cargo cargo-zigbuild file find gzip jq rustc shasum sort stat unsquashfs xcrun; do
     if ! command -v "$command" >/dev/null 2>&1; then
         echo "required command missing: $command" >&2
         exit 69
@@ -270,6 +270,19 @@ newc_source_sha256="sha256:$(shasum -a 256 "$source_dir/tools/canonical_runtime_
 agent_source_sha256="sha256:$(shasum -a 256 "$whoathere_root/crates/whoathere-macos-vm/src/bin/whoathere-linux-vz-runtime-qualification-agent.rs" | awk '{print $1}')"
 init_source_sha256="sha256:$(shasum -a 256 "$source_dir/guest/init" | awk '{print $1}')"
 cargo_lock_sha256="sha256:$(shasum -a 256 "$whoathere_root/Cargo.lock" | awk '{print $1}')"
+rust_source_list="$build_root/rust-source-list"
+{
+    printf '%s\n' "$whoathere_root/Cargo.toml"
+    find "$whoathere_root/crates" -type f \( -name '*.rs' -o -name Cargo.toml \) -print
+} | LC_ALL=C sort > "$rust_source_list"
+rust_source_tree_sha256="sha256:$({
+    while IFS= read -r source_path; do
+        relative_path=${source_path#"$whoathere_root/"}
+        source_length=$(stat -f '%z' "$source_path")
+        printf '%s\0%s\0' "$relative_path" "$source_length"
+        /bin/cat "$source_path"
+    done < "$rust_source_list"
+} | shasum -a 256 | awk '{print $1}')"
 process_sensor_sha256=$(jq -er '.process_sensor_probe_sha256' "$base_manifest")
 guest_signer_sha256=$(jq -er '.guest_signer_sha256' "$base_manifest")
 
@@ -295,10 +308,11 @@ jq -ncS \
     --arg rootfs_sha256 "$runtime_rootfs_sha256" \
     --arg runtime_manifest_sha256 "$runtime_manifest_sha256" \
     --arg runner_sha256 "$runtime_runner_sha256" \
+    --arg rust_source_tree_sha256 "$rust_source_tree_sha256" \
     --arg rustc_version "$rustc_version" \
     --arg verifier_source_sha256 "$verifier_source_sha256" \
     --arg zig_version "$zig_version" \
-    '{architecture:"aarch64",base_signed_initramfs_sha256:$base_initramfs_sha256,base_signed_manifest_sha256:$base_manifest_sha256,builder_source_sha256:$builder_source_sha256,candidate_package_runner_sha256:$runner_sha256,candidate_runtime_manifest_sha256:$runtime_manifest_sha256,candidate_runtime_rootfs_byte_length:$rootfs_byte_length,candidate_runtime_rootfs_sha256:$rootfs_sha256,canonical_newc_source_sha256:$newc_source_sha256,cargo_lock_sha256:$cargo_lock_sha256,cargo_zigbuild_version:$cargo_zigbuild_version,external_network:"host_raw_frame_sinkhole_no_external_route",guest_signer_sha256:$guest_signer_sha256,image_state:"candidate_unqualified",kernel_image_sha256:$kernel_sha256,kernel_release:"6.18.35-0-virt",package_execution:false,process_sensor_probe_sha256:$process_sensor_sha256,runtime_qualification_agent_sha256:$agent_sha256,runtime_qualification_agent_source_sha256:$agent_source_sha256,runtime_qualification_init_sha256:$init_sha256,runtime_qualification_init_source_sha256:$init_source_sha256,runtime_qualification_initramfs_sha256:$qualification_initramfs_sha256,runtime_qualification_module_bundle_sha256:$module_bundle_sha256,runtime_qualification_operation:"fixed_nonexecuting_probe",runtime_qualification_overlay_cpio_gzip_sha256:$overlay_gzip_sha256,runtime_qualification_overlay_cpio_sha256:$overlay_sha256,rustc_version:$rustc_version,schema_version:"whoathere.linux_vz_package_runtime_qualification_image_manifest.v1",sync_back_policy:"structurally_absent",verifier_source_sha256:$verifier_source_sha256,zig_version:$zig_version}' \
+    '{architecture:"aarch64",base_signed_initramfs_sha256:$base_initramfs_sha256,base_signed_manifest_sha256:$base_manifest_sha256,builder_source_sha256:$builder_source_sha256,candidate_package_runner_sha256:$runner_sha256,candidate_runtime_manifest_sha256:$runtime_manifest_sha256,candidate_runtime_rootfs_byte_length:$rootfs_byte_length,candidate_runtime_rootfs_sha256:$rootfs_sha256,canonical_newc_source_sha256:$newc_source_sha256,cargo_lock_sha256:$cargo_lock_sha256,cargo_zigbuild_version:$cargo_zigbuild_version,external_network:"host_raw_frame_sinkhole_no_external_route",guest_signer_sha256:$guest_signer_sha256,image_state:"candidate_unqualified",kernel_image_sha256:$kernel_sha256,kernel_release:"6.18.35-0-virt",package_execution:false,process_sensor_probe_sha256:$process_sensor_sha256,runtime_qualification_agent_sha256:$agent_sha256,runtime_qualification_agent_source_sha256:$agent_source_sha256,runtime_qualification_init_sha256:$init_sha256,runtime_qualification_init_source_sha256:$init_source_sha256,runtime_qualification_initramfs_sha256:$qualification_initramfs_sha256,runtime_qualification_module_bundle_sha256:$module_bundle_sha256,runtime_qualification_operation:"fixed_nonexecuting_probe",runtime_qualification_overlay_cpio_gzip_sha256:$overlay_gzip_sha256,runtime_qualification_overlay_cpio_sha256:$overlay_sha256,rust_source_tree_sha256:$rust_source_tree_sha256,rustc_version:$rustc_version,schema_version:"whoathere.linux_vz_package_runtime_qualification_image_manifest.v1",sync_back_policy:"structurally_absent",verifier_source_sha256:$verifier_source_sha256,zig_version:$zig_version}' \
     > "$output/manifest.json"
 
 if [ -e "$final_output" ] || [ -L "$final_output" ]; then

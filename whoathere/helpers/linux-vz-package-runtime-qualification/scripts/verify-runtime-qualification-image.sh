@@ -20,7 +20,7 @@ for path in "$base_image" "$runtime_rootfs" "$runtime_manifest" "$image"; do
         *) echo "all paths must be absolute" >&2; exit 64 ;;
     esac
 done
-for command in cpio file gzip jq shasum; do
+for command in cpio file find gzip jq shasum sort stat; do
     if ! command -v "$command" >/dev/null 2>&1; then
         echo "required command missing: $command" >&2
         exit 69
@@ -61,8 +61,10 @@ canonical_manifest=$(mktemp "${TMPDIR:-/tmp}/whoathere-runtime-qualification-man
 canonical_module_bundle=$(mktemp "${TMPDIR:-/tmp}/whoathere-runtime-module-bundle.XXXXXX")
 combined_tmp=$(mktemp "${TMPDIR:-/tmp}/whoathere-runtime-qualification-initramfs.XXXXXX")
 extract_root=$(mktemp -d "${TMPDIR:-/tmp}/whoathere-runtime-qualification-overlay.XXXXXX")
+rust_source_list=$(mktemp "${TMPDIR:-/tmp}/whoathere-runtime-qualification-rust-source.XXXXXX")
 cleanup() {
-    rm -f "$canonical_manifest" "$canonical_module_bundle" "$combined_tmp"
+    rm -f "$canonical_manifest" "$canonical_module_bundle" "$combined_tmp" \
+        "$rust_source_list"
     rm -rf "$extract_root"
 }
 trap cleanup EXIT HUP INT TERM
@@ -72,7 +74,7 @@ if ! cmp -s "$canonical_manifest" "$manifest"; then
     echo "qualification image manifest must be canonical sorted compact JSON" >&2
     exit 65
 fi
-expected_keys='["architecture","base_signed_initramfs_sha256","base_signed_manifest_sha256","builder_source_sha256","candidate_package_runner_sha256","candidate_runtime_manifest_sha256","candidate_runtime_rootfs_byte_length","candidate_runtime_rootfs_sha256","canonical_newc_source_sha256","cargo_lock_sha256","cargo_zigbuild_version","external_network","guest_signer_sha256","image_state","kernel_image_sha256","kernel_release","package_execution","process_sensor_probe_sha256","runtime_qualification_agent_sha256","runtime_qualification_agent_source_sha256","runtime_qualification_init_sha256","runtime_qualification_init_source_sha256","runtime_qualification_initramfs_sha256","runtime_qualification_module_bundle_sha256","runtime_qualification_operation","runtime_qualification_overlay_cpio_gzip_sha256","runtime_qualification_overlay_cpio_sha256","rustc_version","schema_version","sync_back_policy","verifier_source_sha256","zig_version"]'
+expected_keys='["architecture","base_signed_initramfs_sha256","base_signed_manifest_sha256","builder_source_sha256","candidate_package_runner_sha256","candidate_runtime_manifest_sha256","candidate_runtime_rootfs_byte_length","candidate_runtime_rootfs_sha256","canonical_newc_source_sha256","cargo_lock_sha256","cargo_zigbuild_version","external_network","guest_signer_sha256","image_state","kernel_image_sha256","kernel_release","package_execution","process_sensor_probe_sha256","runtime_qualification_agent_sha256","runtime_qualification_agent_source_sha256","runtime_qualification_init_sha256","runtime_qualification_init_source_sha256","runtime_qualification_initramfs_sha256","runtime_qualification_module_bundle_sha256","runtime_qualification_operation","runtime_qualification_overlay_cpio_gzip_sha256","runtime_qualification_overlay_cpio_sha256","rust_source_tree_sha256","rustc_version","schema_version","sync_back_policy","verifier_source_sha256","zig_version"]'
 if [ "$(jq -c 'keys' "$manifest")" != "$expected_keys" ]; then
     echo "qualification image manifest key set mismatch" >&2
     exit 65
@@ -121,6 +123,19 @@ require_hash verifier_source_sha256 "$script_dir/verify-runtime-qualification-im
 require_hash canonical_newc_source_sha256 \
     "$source_dir/tools/canonical_runtime_qualification_newc.c"
 require_hash cargo_lock_sha256 "$whoathere_root/Cargo.lock"
+{
+    printf '%s\n' "$whoathere_root/Cargo.toml"
+    find "$whoathere_root/crates" -type f \( -name '*.rs' -o -name Cargo.toml \) -print
+} | LC_ALL=C sort > "$rust_source_list"
+rust_source_tree_sha256="sha256:$({
+    while IFS= read -r source_path; do
+        relative_path=${source_path#"$whoathere_root/"}
+        source_length=$(stat -f '%z' "$source_path")
+        printf '%s\0%s\0' "$relative_path" "$source_length"
+        /bin/cat "$source_path"
+    done < "$rust_source_list"
+} | shasum -a 256 | awk '{print $1}')"
+require_value rust_source_tree_sha256 "$rust_source_tree_sha256"
 require_hash candidate_runtime_rootfs_sha256 "$runtime_rootfs"
 require_value candidate_runtime_rootfs_byte_length "$(stat -f '%z' "$runtime_rootfs")"
 require_hash candidate_runtime_manifest_sha256 "$runtime_manifest"

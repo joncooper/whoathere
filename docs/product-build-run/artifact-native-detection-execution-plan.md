@@ -83,6 +83,17 @@ the Swift helper passes 195. The image has not booted, so the runtime remains un
 package authority exists. See the
 [runtime-qualification guest-candidate checkpoint](artifact-native-linux-vz-runtime-qualification-guest-candidate-checkpoint-2026-07-13.md).
 
+The fail-closed macOS launcher now owns one measured clone, one VZ VM, one no-forwarding raw-frame
+socket, one bounded vsock exchange, and post-stop clone destruction. It independently revalidates
+the Rust-built request, verifies the guest receipt, requires zero frames and stable image identity,
+and signs a distinct host lifecycle receipt that Rust independently reconstructs and verifies. An
+unproven VM stop now preserves rather than unlinks the clone. A wrong-key local preflight reached
+request-context verification, failed before any VZ object existed, and left zero run directories.
+After the complete Rust source closure was added to image provenance, two final builds were
+byte-identical and independently verified. No VM has booted, so the next gate is one inert physical
+run on the approved cloud Mac; package execution remains unavailable. See the
+[runtime-qualification host-launcher checkpoint](artifact-native-linux-vz-runtime-qualification-host-launcher-checkpoint-2026-07-13.md).
+
 The first protected-sensor bootstrap now also observes a cgroup-filtered inert fork/exec/exit chain
 whose child runs as UID/GID 65534 and cannot read or write the root-only sensor. This remains
 unsigned bootstrap evidence rather than a conformance receipt. See the
@@ -1700,6 +1711,7 @@ Repository evidence:
 - [Linux VZ package authority-request checkpoint](artifact-native-linux-vz-package-authority-request-checkpoint-2026-07-13.md)
 - [Linux VZ package-runtime clone preflight checkpoint](artifact-native-linux-vz-package-runtime-clone-preflight-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification guest-candidate checkpoint](artifact-native-linux-vz-runtime-qualification-guest-candidate-checkpoint-2026-07-13.md)
+- [Linux VZ runtime-qualification host-launcher checkpoint](artifact-native-linux-vz-runtime-qualification-host-launcher-checkpoint-2026-07-13.md)
 - [macOS local release readiness](macos-local-release-readiness.md)
 - [macOS local beta pressure checkpoint](macos-local-beta-pressure-checkpoint.md)
 - [latest source-fixture corpus report](src-fixture-corpus-latest.md)

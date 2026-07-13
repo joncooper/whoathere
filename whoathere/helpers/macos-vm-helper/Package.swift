@@ -28,6 +28,10 @@ let package = Package(
         .executable(
             name: "whoathere-linux-vz-package-runtime-identity-verify",
             targets: ["WhoaThereLinuxVzPackageRuntimeIdentityVerify"]
+        ),
+        .executable(
+            name: "whoathere-linux-vz-runtime-qualification",
+            targets: ["WhoaThereLinuxVzRuntimeQualification"]
         )
     ],
     targets: [
@@ -53,6 +57,10 @@ let package = Package(
         ),
         .executableTarget(
             name: "WhoaThereLinuxVzPackageRuntimeIdentityVerify",
+            dependencies: ["WhoaThereMacosVmHelperCore"]
+        ),
+        .executableTarget(
+            name: "WhoaThereLinuxVzRuntimeQualification",
             dependencies: ["WhoaThereMacosVmHelperCore"]
         ),
         .testTarget(

@@ -56,20 +56,21 @@ architecture/static-linkage, module hashes, and closed policy checks.
 
 Final candidate identities:
 
-- qualification manifest: `sha256:da60adb0cec6d64788ba5fddb29e23e42b6b879d637ce3b16dc3cc82a99fa797`;
-- qualification initramfs: `sha256:6321dd0ce330c0b9286c8d3b3639d0c0c0b0b655694419deb81f6cd22daa7f0f`;
-- deterministic overlay cpio: `sha256:18eb0f298e594d59f62934b8cda86b8254063fb35f66ed33dce6c8e09c3f28ef`;
-- compressed overlay: `sha256:c9ffbe75c6c44c832e448418b0b7bea9382e488164ce16acf127b58008007f51`;
-- static ARM64 Linux guest agent: `sha256:8f55cc1eb35cb5b271699e658f7f78e919eef7602e6b9f71c501ef122c1fb20c`;
+- qualification manifest: `sha256:1a633affee36d9bf3cc57c8895d7c2c8c3f5932259f53cac258d412aa5cc147e`;
+- complete Rust source closure: `sha256:d6012b0117eb3082078d6c0ea12e5340347e5ad2a5f819b8068bc65829a62bbb`;
+- qualification initramfs: `sha256:4393945d789691ff41667b2f24d92bcbffaf1a0ed2edd3e8c72e34fcf2ba995b`;
+- deterministic overlay cpio: `sha256:60330e14cd04c2eba30f997c5d775cfa49fd40ad8ff8990e072d590366f7cdcb`;
+- compressed overlay: `sha256:7cf7cfe7cbdef6317da74544ca2e4a43fdb00319992d22cfd15c71f2581704f9`;
+- static ARM64 Linux guest agent: `sha256:3288dcd93432c424807b75f05c16754435686dcc8486fb2b669c2324ca29b366`;
 - guest init: `sha256:8de1fd6b691caca7aa44a738522659c52652dad031e7e7714b69e872e09e4431`;
 - runtime module manifest: `sha256:3239591ce70a23e813fc513b12a3c6b7641d86359fbca50d344c7a333d08d8d4`;
 - candidate rootfs: `sha256:0114f1508ca2214787af2befc64641801f26904d7d6771cbb8cd9a746d7029ae`;
 - candidate runtime manifest: `sha256:bcfa7106cd4a604af531b7c3320625a4434009a692bbde01c953ef61e2fb23a5`;
 - candidate package runner: `sha256:96c9ab2127e11029c1b23259afcbd7dfab984ab3ae4528555f0a8b34dc48d658`.
 
-The full Rust crate passed 180 tests across its library, binaries, and integration suites, with
+The full Rust crate passed 181 tests across its library, binaries, and integration suites, with
 formatting clean and Clippy warnings denied. The static ARM64 Linux guest cross-build succeeded
-through the pinned Zig toolchain. The full Swift helper suite passed 195 tests. Shell syntax and
+through the pinned Zig toolchain. The full Swift helper suite passed 197 tests. Shell syntax and
 the canonical newc builder's warning-free C compilation also passed.
 
 ## Claim boundary

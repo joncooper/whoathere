@@ -157,6 +157,7 @@ public final class DisposableLinuxVzPackageRuntimeClone {
     private var rootDescriptor: Int32
     private var runDescriptor: Int32
     private var cleaned = false
+    private var preserveOnDeinit = false
 
     fileprivate init(
         base: LockedLinuxVzPackageRuntimeBase,
@@ -182,7 +183,11 @@ public final class DisposableLinuxVzPackageRuntimeClone {
     }
 
     deinit {
-        try? cleanup()
+        if preserveOnDeinit {
+            closeDescriptors()
+        } else {
+            try? cleanup()
+        }
     }
 
     public func verifyReadyForAttachment() throws {
@@ -246,6 +251,22 @@ public final class DisposableLinuxVzPackageRuntimeClone {
         }
         cleaned = true
         guard !closeFailed else { throw ArtifactRunLifecycleError.cleanupFailed }
+    }
+
+    public func preserveUntilVerifiedVMStop() {
+        guard !cleaned else { return }
+        preserveOnDeinit = true
+    }
+
+    private func closeDescriptors() {
+        if runDescriptor >= 0 {
+            _ = close(runDescriptor)
+            runDescriptor = -1
+        }
+        if rootDescriptor >= 0 {
+            _ = close(rootDescriptor)
+            rootDescriptor = -1
+        }
     }
 }
 
