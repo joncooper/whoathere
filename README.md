@@ -1,284 +1,279 @@
-# WhoaThere
+<p align="center">
+  <img src="docs/assets/whoathere-hero.svg" alt="WhoaThere — inspect, isolate, observe, admit" width="100%" />
+</p>
 
-WhoaThere is a command-line tool that helps Python and Node developers install packages with less
-risk.
+<p align="center">
+  <strong>Run the risky part somewhere your credentials aren't.</strong><br />
+  A research-driven package supply-chain security prototype for Python and Node developers.
+</p>
 
-Modern package managers do more than download files. An `npm install`, `pip install`, or `uv sync`
-can run package code during install, build, import, or first use. That is useful for legitimate
-packages, but it is also how compromised packages steal tokens, read SSH keys, fetch second-stage
-payloads, or behave differently on CI and developer laptops.
+<p align="center">
+  <img alt="Rust 2021" src="https://img.shields.io/badge/Rust-2021-101820?style=flat-square&logo=rust&logoColor=white" />
+  <img alt="Apple Silicon macOS beta" src="https://img.shields.io/badge/macOS-Apple%20Silicon%20beta-101820?style=flat-square&logo=apple&logoColor=white" />
+  <img alt="npm and PyPI" src="https://img.shields.io/badge/ecosystems-npm%20%2B%20PyPI-1b6b68?style=flat-square" />
+  <img alt="Fail closed by design" src="https://img.shields.io/badge/posture-fail%20closed-c58b28?style=flat-square" />
+  <img alt="More than 500 in-tree tests" src="https://img.shields.io/badge/tests-500%2B-7257a8?style=flat-square" />
+</p>
 
-WhoaThere's current macOS beta takes a conservative approach: run supported package workflows away
-from your host machine, watch what happens, and copy results back only when the evidence is clean
-enough.
+<p align="center">
+  <a href="#the-idea">The idea</a> ·
+  <a href="#how-it-works">How it works</a> ·
+  <a href="#what-i-built">What I built</a> ·
+  <a href="#research-notes">Research</a> ·
+  <a href="#quick-tour">Quick tour</a>
+</p>
 
-## Current Status
+## The idea
 
-The active target is an Apple Silicon macOS local beta.
+An `npm install`, `pip install`, or `uv sync` is not just a download. It can execute lifecycle
+scripts, build backends, native code, startup hooks, and imports with the same credentials and
+filesystem access as the developer who invoked it.
 
-What that means:
+I built **WhoaThere** to explore a specific question:
 
-- CLI-only. No GUI and no installer package are required.
-- Built for local Python and Node development.
-- Uses a separate macOS VM as the main safety boundary.
-- Supports scanner and package-risk checks as extra evidence.
-- Blocks or asks for manual review on package shapes that are too risky for this beta.
-- Does not depend on AWS, a company package registry, or a cloud service.
+> What would it take to treat dependency installation as untrusted code execution instead of an
+> ordinary package download?
 
-This is useful security tooling, not a promise that arbitrary packages are safe.
+WhoaThere combines ecosystem-aware source policy, static scanners, behavioral detonation inside a
+separate macOS VM, fake credentials and canaries, evidence-bound decisions, and deny-by-default
+copy-back. The current deliverable is a CLI-first Apple Silicon macOS beta; the repository also
+contains a deeper prototype of a Vault-backed package admission and registry architecture.
 
-## Why This Exists
+### The security bet
 
-Package supply-chain attacks often work because a developer or CI runner asks a trusted tool to
-install something that has become untrusted:
+| Package-security problem | WhoaThere's response |
+| --- | --- |
+| Install code inherits developer and CI secrets | Execute supported workflows in a separate VM populated with fake canaries |
+| A scanner can miss novel or environment-gated behavior | Combine static findings with process, filesystem, DNS, socket, and credential-touch telemetry |
+| A clean observation can belong to the wrong artifact or run | Bind evidence to digest, package identity, request, policy, runner session, and execution context |
+| Copying an entire environment recreates the blast radius | Sync back only narrow, project-local, allowlisted outputs after a clean verdict |
+| Security tools become unusable when they hide uncertainty | Return reason-coded JSON receipts and make incomplete evidence a review or deny outcome |
 
-- a maintainer account is compromised
-- a package name is typo-squatted
-- an internal package name is confused with a public package
-- a new version adds a malicious install script
-- a Python build backend or `.pth` file runs code unexpectedly
-- a binary wheel or native extension hides behavior scanners cannot easily inspect
-- a package keeps the same public API but adds credential theft in normal-looking code
+## How it works
 
-Traditional scanners help, but they are not enough by themselves. WhoaThere combines several
-signals and keeps risky execution away from your host.
+The local beta moves package execution across a real trust boundary while keeping the developer's
+secrets on the host.
 
-## How It Works
+```mermaid
+flowchart LR
+    Request["npm / pip / uv workflow"] --> Intake["WhoaThere intake"]
+    Intake --> Gates["Static gates<br/>identity · source · scanners"]
 
-At a high level:
+    subgraph Guest["Disposable macOS VM boundary"]
+        Detonate["Run as an unprivileged user<br/>with fake credentials"]
+        Telemetry["Observe processes · files<br/>DNS · sockets · canaries"]
+        Detonate --> Telemetry
+    end
 
-1. You point WhoaThere at a project or run a protected package workflow.
-2. WhoaThere mirrors only the needed project files into a separate macOS VM.
-3. Package-manager work runs inside that VM, not directly on your host.
-4. The VM contains fake credentials and canaries instead of your real secrets.
-5. WhoaThere records package behavior, scanner results, package type, version age, diffs, and local
-   package history.
-6. It decides whether the result is safe enough to copy back.
-7. Copy-back is deny-by-default and limited to narrow project outputs.
+    Gates --> Detonate
+    Telemetry --> Evidence["Context-bound<br/>evidence receipt"]
+    Evidence --> Verdict{"Policy verdict"}
+    Verdict -->|"clean + allowlisted"| Sync["Narrow project<br/>sync-back"]
+    Verdict -->|"ambiguous"| Review["Manual review"]
+    Verdict -->|"hostile or incomplete"| Deny["Deny"]
 
-For example, pure package outputs with clean evidence may be eligible for copy-back. Native
-extensions, binary wheels, direct URLs, VCS dependencies, editable installs, suspicious diffs, new
-install scripts, startup hooks, or network/credential behavior stay blocked or require manual
-review.
+    Secrets["Real host secrets"] -. "never copied into the guest" .- Guest
+```
 
-## What It Helps With
+Static checks run first because some package shapes should never reach execution. The VM then
+captures behavioral evidence with fake secrets, denies public fallback by default, terminates the
+job process group, and returns a receipt. Scanner or AI output may add evidence, but neither is
+allowed to authorize copy-back on its own.
 
-WhoaThere can improve local development safety for:
+### Admission is a state machine, not a score
 
-- npm lifecycle scripts such as `postinstall`, `prepare`, and package `bin` behavior
-- agent-assisted "clone this repo and run setup" workflows that hide DNS TXT second-stage payloads,
-  fetched shell stagers, or reverse-shell capability in install scripts
-- Python build hooks, import-time behavior, and `.pth` startup hooks
-- delayed behavior such as `CI=true` activation
-- macOS-specific payloads
-- packages that touch fake credentials during common API use
-- DNS/HTTPS exfiltration attempts visible from the VM
-- surprise upgrades when a last-known-good local package version exists
-- unpinned dependency specs that would otherwise float to a new version
-- known vulnerable packages when external scanners are available
+The broader architecture models package admission as explicit state transitions. A package is not
+servable merely because it accumulated a high score; mandatory evidence must be complete and
+coherent for the exact artifact and context.
 
-## What It Does Not Do
+```mermaid
+stateDiagram-v2
+    [*] --> Quarantine: fetch inert bytes
+    Quarantine --> EvidencePending: bind SHA-256 + source metadata
+    EvidencePending --> Promoted: mandatory profile complete
+    EvidencePending --> ManualReview: ambiguous / high-risk shape
+    EvidencePending --> Denied: malicious, stale, missing, or mismatched evidence
+    ManualReview --> Promoted: explicit reviewed allow
+    ManualReview --> Denied: reject
+    Promoted --> Served: exact digest lookup
+    Denied --> [*]
 
-WhoaThere does not:
+    note right of EvidencePending
+      Static + dynamic signals
+      must agree on identity,
+      policy, runner, and context.
+    end note
+```
 
-- prove arbitrary packages are safe
-- protect your app after you choose to run package code normally
-- make native extensions or binary wheels safe to auto-copy back
-- safely auto-approve direct URL, VCS, editable, unknown, or suspicious packages
-- replace code review for subtle malicious behavior hidden behind normal APIs
-- provide enterprise package registry enforcement in the current local beta
-- use scanner findings as the only reason to allow package output onto the host
+## What I built
 
-If WhoaThere cannot get enough evidence, the beta should fail closed rather than guess.
+This project crosses product research, systems programming, security engineering, test design, and
+release operations rather than stopping at a proof-of-concept scanner.
 
-## Install From Private GitHub
+| Area | Selected work |
+| --- | --- |
+| **macOS isolation** | A Swift `Virtualization.framework` helper, VM lifecycle commands, guest readiness protocol, C guest agent, unprivileged execution, bounded project mirroring, cleanup, and allowlisted sync-back |
+| **Behavioral detection** | Canary credentials, process and filesystem telemetry, DNS/socket observation, CI-delayed activation checks, install/build/import probes, and sanitized evidence receipts |
+| **Package intelligence** | npm and PyPI identity discovery, dependency-confusion rules, direct/VCS/editable source handling, lifecycle and PEP 517 detection, binary/native risk classes, version age, and last-known-good memory |
+| **Evidence integrity** | SHA-256 artifact binding, canonical cache identities, freshness and execution-context checks, challenge/response provider proofs, single-use replay protection, and fail-closed result validation |
+| **Vault prototype** | Quarantine-to-promotion admission, npm/PyPI registry facades, immutable content-addressed cache, tenant-aware records, local HTTP simulation, audit-safe admin contracts, and an AWS deployment skeleton |
+| **Adversarial validation** | A real-world attack harness covering canary exfiltration, DNS TXT stagers, fetched shell execution, reverse-shell capability, poisoned upgrades, native payloads, and tampered or missing telemetry |
+| **Release engineering** | Signed and notarized Apple Silicon archives, checksum verification, fresh-user installation, runtime qualification, scanner bootstrapping, and local beta pressure suites |
 
-For now, this project should stay private. A clean Apple Silicon Mac needs an authenticated GitHub
-CLI session before it can download the release archive.
+The implementation is organized as a **19-crate Rust workspace** with more than **50,000 lines of
+Rust** and **500 in-tree tests**, plus the Swift VM helper, C guest agent, shell/Python validation
+harnesses, infrastructure, and research documentation.
+
+### Code architecture
+
+```mermaid
+flowchart TB
+    subgraph UX["Endpoint and developer experience"]
+        CLI["whoathere-cli<br/>commands · receipts · exit codes"]
+        Policy["policy + source + detector<br/>identity · routing · static signals"]
+        Launch["launch + runner + audit<br/>context · execution · cleanup"]
+        CLI --> Policy --> Launch
+    end
+
+    subgraph Isolation["Local execution boundary"]
+        VM["whoathere-macos-vm"]
+        Helper["Swift VM helper"]
+        Guest["C guest agent"]
+        Evidence["evidence + job-log + detonation"]
+        VM --> Helper --> Guest --> Evidence
+    end
+
+    subgraph Vault["Admission and registry prototype"]
+        API["vault-api + vault-dev"]
+        Admission["admission + cache"]
+        Registry["registry facade"]
+        API --> Admission --> Registry
+    end
+
+    Launch --> VM
+    Evidence --> Admission
+    Core["core + hash<br/>shared invariants"] --> UX
+    Core --> Isolation
+    Core --> Vault
+```
+
+## Research notes
+
+WhoaThere started with threat modeling and interface contracts before implementation. The research
+trail is kept in the repository so design claims are reviewable and limitations stay visible.
+
+| Question | Research artifact | Key conclusion |
+| --- | --- | --- |
+| What are we protecting, and from whom? | [Product scope](docs/outputs/GOAL-01/product-scope.md) and [threat model](docs/outputs/GOAL-01/threat-model.md) | Install/build/import risk, dependency confusion, maintainer takeover, exfiltration, and insecure outage fallback need distinct controls |
+| Where must the trust boundaries sit? | [System context](docs/outputs/GOAL-02/system-context.md) and [detonation runtime ADR](docs/outputs/GOAL-06/ADR-009-detonation-runtime.md) | On macOS, telemetry is a backstop; the VM is the primary execution boundary |
+| What evidence is safe and sufficient to retain? | [Evidence model](docs/outputs/GOAL-06/evidence-model.md) and [admission pipeline](docs/outputs/GOAL-06/admission-pipeline.md) | Record redacted behavior and identity bindings, not secrets, source dumps, or network payloads |
+| How might malicious packages evade a naive sandbox? | [Detonation matrix](docs/outputs/GOAL-06/detonation-matrix.md) and [malicious fixture plan](docs/outputs/GOAL-01/malicious-fixtures.md) | Vary platform, CI state, timing, package type, network path, and activation phase |
+| How do we avoid overclaiming readiness? | [Quality hardening summary](docs/outputs/GOAL-10/three-pass-summary.md) and [current-state report](docs/product-build-run/whoathere-current-state-report.html) | Separate implemented, validated, beta, simulated, and future-production capabilities |
+
+Several design principles emerged from that work:
+
+1. **Scanners can veto; they cannot authorize.** Absence of a finding is not evidence of safety.
+2. **Identity precedes behavior.** Evidence is useful only when bound to the artifact, source,
+   request, policy, runner, and environment that produced it.
+3. **Uncertainty is a result.** Missing telemetry and unsupported package shapes fail closed instead
+   of being converted into optimistic scores.
+4. **The output boundary matters as much as the execution boundary.** A safe VM run can still become
+   unsafe if arbitrary guest files are copied back.
+5. **Operational behavior is part of security.** Outages, stale proofs, replay, cleanup failure,
+   release signing, and audit redaction are modeled explicitly.
+
+## Quick tour
+
+The non-VM portions build anywhere Rust does. Dynamic detonation and sync-back require Apple Silicon
+macOS, Xcode tooling, and a provisioned WhoaThere VM.
 
 ```sh
-gh auth login -h github.com
-gh repo clone joncooper/whoathere
+git clone https://github.com/joncooper/whoathere.git
 cd whoathere
-scripts/whoathere-install-from-github.sh --private --repo joncooper/whoathere --prefix "$HOME/.whoathere"
-export PATH="$HOME/.whoathere/bin:$PATH"
-whoathere doctor --json
+
+# Explore the CLI and its fail-closed red-team assertions.
+cargo run --manifest-path whoathere/Cargo.toml -p whoathere-cli -- --help
+cargo run --manifest-path whoathere/Cargo.toml -p whoathere-cli -- vm red-team-gate
+
+# Inspect a deliberately malicious npm fixture without executing it.
+cargo run --manifest-path whoathere/Cargo.toml -p whoathere-cli -- \
+  scan manifest npm-package-json whoathere/tests/fixtures/npm/postinstall-exfil/package.json
+
+# Run the workspace test suite.
+cargo test --manifest-path whoathere/Cargo.toml
 ```
 
-To install a specific beta release:
+For the complete local beta workflow—VM initialization, scanner setup, package-risk assessment,
+detonation, receipts, and sync policy—see the
+[macOS local beta CLI guide](docs/product-build-run/macos-local-beta-cli-guide.md).
 
-```sh
-scripts/whoathere-install-from-github.sh --private \
-  --repo joncooper/whoathere \
-  --tag macos-local-beta-a212742 \
-  --prefix "$HOME/.whoathere"
-```
-
-The installer downloads the private GitHub Release archive through `gh release download`, verifies
-the SHA-256 checksum, extracts it, and runs the packaged user-level installer. It does not use
-`sudo`.
-
-Distribution details are in
-`docs/product-build-run/github-distribution.md`.
-
-## First Commands
-
-Set a state directory for the local beta:
+<details>
+<summary><strong>Example: assess an untrusted repository</strong></summary>
 
 ```sh
 export WHOATHERE_STATE="$HOME/.whoathere/macos-vm-validation"
-```
 
-Check readiness:
-
-```sh
-whoathere doctor --state-dir "$WHOATHERE_STATE" --json
-```
-
-Initialize the VM from a local restore image:
-
-```sh
-whoathere vm init --state-dir "$WHOATHERE_STATE" \
-  --restore-image /absolute/path/to/macos-restore.ipsw \
-  --execute
-```
-
-Or let the helper fetch Apple's current restore image:
-
-```sh
-whoathere vm init --state-dir "$WHOATHERE_STATE" \
-  --fetch-latest-restore-image \
-  --execute
-```
-
-Start the VM:
-
-```sh
-whoathere vm start --state-dir "$WHOATHERE_STATE" --execute
-```
-
-Run scanners for a project:
-
-```sh
-whoathere scanners run --workspace /absolute/path/to/project \
+whoathere scanners run \
+  --workspace /absolute/path/to/project \
   --ecosystem auto \
   --state-dir "$WHOATHERE_STATE" \
-  --execute \
-  --json > scanner-receipt.json
-```
+  --execute --json > scanner-receipt.json
 
-Assess package risk:
-
-```sh
-whoathere package-risk assess --workspace /absolute/path/to/project \
+whoathere intake assess \
+  --workspace /absolute/path/to/project \
   --ecosystem auto \
   --state-dir "$WHOATHERE_STATE" \
   --scanner-receipt scanner-receipt.json \
-  --json > package-risk.json
-```
-
-For an untrusted agent-generated or newly cloned repo, use the intake wrapper before running setup
-commands on the host:
-
-```sh
-whoathere intake assess --workspace /absolute/path/to/project \
-  --ecosystem auto \
-  --state-dir "$WHOATHERE_STATE" \
-  --scanner-receipt scanner-receipt.json \
-  --execute \
-  --json \
-  npm -- install
-```
-
-`intake assess` runs package-risk assessment with local AI review requested by default, detonates the
-requested install workflow in the VM with fake canaries, disables sync-back, and only returns clean
-when both package-risk and dynamic VM evidence are clean. A clean VM result must attest that package
-code ran as the unprivileged `nobody` user, runtime network telemetry was active, no DNS/socket event
-was observed, and the job process group was terminated. Missing or legacy evidence fails closed. Use
-`--no-ai-review` for deterministic local-only testing when a local model is unavailable.
-
-Preview mode is intentionally fail-closed:
-
-```sh
-whoathere intake assess --workspace /absolute/path/to/project \
-  --ecosystem auto \
-  --state-dir "$WHOATHERE_STATE" \
-  --json \
-  npm -- install
-```
-
-That assessment treats lifecycle scripts, credential/environment reads, DNS TXT payload stagers,
-fetched shell execution, reverse-shell capability, process spawning, native/binary payloads,
-direct/VCS sources, delayed CI activation, missing scanner evidence, and missing VM execution as
-manual-review or deny signals. It does not execute package code on the host.
-
-Run a local project workflow in the VM without copy-back:
-
-```sh
-whoathere vm detonate --workspace /absolute/path/to/project \
-  --state-dir "$WHOATHERE_STATE" \
   --execute --json \
   npm -- install
 ```
 
-The detailed CLI guide is in
-`docs/product-build-run/macos-local-beta-cli-guide.md`.
+`intake assess` combines package-risk analysis with VM detonation and keeps sync-back disabled. A
+preview without `--execute` intentionally returns manual review because no dynamic evidence exists.
 
-## Testing A Clean Mac
+</details>
 
-For a fresh Mac or clean user account, follow:
+## Repository map
 
-```text
-docs/product-build-run/macos-local-beta-fresh-user-test-plan.md
-```
+| Path | Purpose |
+| --- | --- |
+| [`whoathere/crates`](whoathere/crates) | Rust crates for policy, detection, evidence, isolation, admission, cache, registry, Vault, and CLI behavior |
+| [`whoathere/helpers/macos-vm-helper`](whoathere/helpers/macos-vm-helper) | Swift VM host helper, guest agent, provisioning, and validation tests |
+| [`whoathere/tests/fixtures`](whoathere/tests/fixtures) | Inert npm/PyPI and dependency-identity fixtures |
+| [`scripts`](scripts) | Smoke tests, attack harnesses, packaging, notarization, qualification, and distribution |
+| [`docs/outputs`](docs/outputs) | Threat models, ADRs, contracts, evidence models, and goal-pack research outputs |
+| [`docs/product-build-run`](docs/product-build-run) | Checkpoints, beta guides, test plans, security explainers, and current-state reports |
+| [`whoathere/infra/aws`](whoathere/infra/aws) | AWS-first deployment skeleton for the future Vault service |
 
-That plan covers install, `doctor`, VM setup, scanner readiness, mock malicious fixtures, and real
-project trials.
+## Validation
 
-## Repository Layout
-
-```text
-whoathere/     Rust workspace for the CLI, policy logic, scanners, VM workflow, and tests
-scripts/       Packaging, scanner, release, and smoke-test scripts
-docs/          Architecture notes, build plans, checkpoints, and user-facing runbooks
-dist/          Local release artifacts, ignored by git
-.whoathere/    Local runtime state and scanner cache, ignored by git
-```
-
-The main code lives in `whoathere/`.
-
-## Development Checks
-
-From the repo root:
+Core checks from the repository root:
 
 ```sh
 cargo test --manifest-path whoathere/Cargo.toml
 cargo clippy --manifest-path whoathere/Cargo.toml --all-targets -- -D warnings
 cargo fmt --manifest-path whoathere/Cargo.toml --all -- --check
-cargo run --manifest-path whoathere/Cargo.toml -p whoathere-cli -- vm red-team-gate
-```
-
-Useful smoke checks:
-
-```sh
-scripts/whoathere-scanner-integration-smoke.sh
-scripts/whoathere-package-risk-smoke.sh
 scripts/whoathere-real-world-attack-harness.sh
 scripts/whoathere-local-beta-pressure-suite.sh
 ```
 
-Some checks require Apple Silicon macOS, Xcode tooling, a provisioned WhoaThere VM, or local scanner
-tools.
+Some smoke tests require Docker, external scanners, a provisioned VM, or Apple signing credentials.
+The [acceptance-test matrix](docs/acceptance-test-matrix.md) maps the broader threat model to
+compatibility, adversarial, and operational checks.
 
-## Security Posture
+## Current status and limits
 
-WhoaThere is intentionally conservative.
+> **Current release target:** private, CLI-only Apple Silicon macOS beta. No GUI, hosted service, or
+> enterprise control plane is required for the local workflow.
 
-The current local beta is designed to make common Python and Node package workflows safer for a
-developer machine. It is not a complete answer to package supply-chain risk. The product should earn
-trust by showing its work: clear verdicts, reason codes, redacted evidence, no silent public
-fallback, no broad break-glass path, and no claims that scanners or AI review can prove a package
-safe by themselves.
+WhoaThere is intentionally conservative security tooling, not a promise that arbitrary packages
+are safe. The beta does not protect an application after admitted code runs normally. Native
+extensions, binary wheels, direct URLs, VCS dependencies, editable installs, suspicious diffs, and
+incomplete evidence remain manual-review or deny cases. Dynamic behavior that activates only in an
+unmodeled production context can still evade observation.
 
-The broader vision includes an enterprise package proxy and cache, but the current release target is
-the local macOS CLI.
+The production Vault serving plane, durable storage, upstream fetch workers, enterprise identity,
+and verified cross-platform containment providers remain prototype or planned work. Those
+boundaries are called out throughout the research instead of being presented as finished.
+
+If WhoaThere cannot show why a package result should cross the boundary, it does not cross it.

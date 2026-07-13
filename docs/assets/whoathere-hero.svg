@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="420" viewBox="0 0 1400 420" role="img" aria-labelledby="title desc">
+  <title id="title">WhoaThere</title>
+  <desc id="desc">Package supply-chain security: inspect, isolate, observe, and admit.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#07131f"/>
+      <stop offset="0.55" stop-color="#102839"/>
+      <stop offset="1" stop-color="#17223c"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5eead4"/>
+      <stop offset="1" stop-color="#7dd3fc"/>
+    </linearGradient>
+    <linearGradient id="warm" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#f8d477"/>
+      <stop offset="1" stop-color="#f59e7a"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#5eead4" stop-opacity="0.2"/>
+      <stop offset="1" stop-color="#5eead4" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M 32 0 L 0 0 0 32" fill="none" stroke="#9bd8d1" stroke-width="1" stroke-opacity="0.07"/>
+    </pattern>
+  </defs>
+
+  <rect width="1400" height="420" rx="28" fill="url(#background)"/>
+  <rect width="1400" height="420" rx="28" fill="url(#grid)"/>
+  <ellipse cx="1135" cy="210" rx="350" ry="310" fill="url(#glow)"/>
+  <path d="M0 345 C230 280 380 390 630 322 C825 268 1030 248 1400 325 L1400 420 L0 420 Z" fill="#07131f" opacity="0.48"/>
+
+  <g transform="translate(88 80)">
+    <rect x="0" y="0" width="58" height="5" rx="2.5" fill="url(#warm)"/>
+    <text x="0" y="72" fill="#f7fbfc" font-family="Helvetica, Arial, sans-serif" font-size="64" font-weight="700" letter-spacing="3">WHOA</text>
+    <text x="0" y="138" fill="url(#accent)" font-family="Helvetica, Arial, sans-serif" font-size="64" font-weight="700" letter-spacing="3">THERE</text>
+    <text x="3" y="187" fill="#c7d9df" font-family="Helvetica, Arial, sans-serif" font-size="22" font-weight="500">Package installs are executable code.</text>
+    <text x="3" y="225" fill="#8faab5" font-family="Helvetica, Arial, sans-serif" font-size="17" letter-spacing="1.5">INSPECT  ·  ISOLATE  ·  OBSERVE  ·  ADMIT</text>
+  </g>
+
+  <g transform="translate(735 62)">
+    <path d="M84 93 L171 43 L258 93 L258 193 L171 243 L84 193 Z" fill="#0d202d" stroke="#5eead4" stroke-width="2"/>
+    <path d="M171 43 L171 143 M84 93 L171 143 L258 93 M171 143 L171 243" fill="none" stroke="#5eead4" stroke-width="2" stroke-opacity="0.65"/>
+    <path d="M124 70 L171 97 L218 70 L171 43 Z" fill="#5eead4" fill-opacity="0.12"/>
+    <circle cx="171" cy="143" r="43" fill="#102f3a" stroke="#7dd3fc" stroke-width="2"/>
+    <path d="M171 111 C185 122 200 124 200 124 V151 C200 172 186 187 171 193 C156 187 142 172 142 151 V124 C142 124 157 122 171 111 Z" fill="url(#accent)"/>
+    <path d="M156 151 L167 162 L187 139" fill="none" stroke="#0a1b27" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <g transform="translate(0 277)">
+      <rect x="0" y="0" width="112" height="42" rx="21" fill="#f8d477" fill-opacity="0.13" stroke="#f8d477" stroke-opacity="0.7"/>
+      <text x="56" y="27" text-anchor="middle" fill="#f8e2a5" font-family="Helvetica, Arial, sans-serif" font-size="15" font-weight="600">PACKAGE</text>
+      <path d="M120 21 H147" stroke="#718e99" stroke-width="2"/>
+      <path d="M141 15 L149 21 L141 27" fill="none" stroke="#718e99" stroke-width="2"/>
+
+      <rect x="158" y="0" width="112" height="42" rx="21" fill="#5eead4" fill-opacity="0.12" stroke="#5eead4" stroke-opacity="0.75"/>
+      <text x="214" y="27" text-anchor="middle" fill="#a7f3e8" font-family="Helvetica, Arial, sans-serif" font-size="15" font-weight="600">EVIDENCE</text>
+      <path d="M278 21 H305" stroke="#718e99" stroke-width="2"/>
+      <path d="M299 15 L307 21 L299 27" fill="none" stroke="#718e99" stroke-width="2"/>
+
+      <rect x="316" y="0" width="112" height="42" rx="21" fill="#7dd3fc" fill-opacity="0.12" stroke="#7dd3fc" stroke-opacity="0.75"/>
+      <text x="372" y="27" text-anchor="middle" fill="#bae6fd" font-family="Helvetica, Arial, sans-serif" font-size="15" font-weight="600">VERDICT</text>
+    </g>
+  </g>
+
+  <g opacity="0.75">
+    <circle cx="1284" cy="76" r="4" fill="#f8d477"/>
+    <circle cx="1310" cy="103" r="2" fill="#5eead4"/>
+    <circle cx="1229" cy="346" r="3" fill="#7dd3fc"/>
+    <circle cx="680" cy="54" r="2.5" fill="#5eead4"/>
+  </g>
+</svg>
