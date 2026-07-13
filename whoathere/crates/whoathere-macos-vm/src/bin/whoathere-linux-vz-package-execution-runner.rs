@@ -13,6 +13,7 @@ use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use whoathere_artifact::Sha256Digest;
 #[cfg(target_os = "linux")]
 use whoathere_macos_vm::{
+    derive_macos_linux_vz_package_execution_program_v1,
     structurally_decode_macos_linux_vz_package_execution_request_v1,
     MAX_MACOS_LINUX_VZ_PACKAGE_EXECUTION_REQUEST_BYTES_V1,
 };
@@ -46,6 +47,8 @@ enum RunnerError {
     RequestInvalid,
     #[cfg(target_os = "linux")]
     ArtifactInvalid,
+    #[cfg(target_os = "linux")]
+    ProgramInvalid,
     Output,
 }
 
@@ -65,6 +68,8 @@ impl RunnerError {
             Self::RequestInvalid => "package_execution_runner_request_invalid",
             #[cfg(target_os = "linux")]
             Self::ArtifactInvalid => "package_execution_runner_artifact_invalid",
+            #[cfg(target_os = "linux")]
+            Self::ProgramInvalid => "package_execution_runner_program_invalid",
             Self::Output => "package_execution_runner_output_failed",
         }
     }
@@ -77,7 +82,7 @@ impl RunnerError {
             #[cfg(target_os = "linux")]
             Self::PrivilegeBoundary | Self::ParentBoundary | Self::DescriptorBoundary => 77,
             #[cfg(target_os = "linux")]
-            Self::RequestInvalid | Self::ArtifactInvalid => 65,
+            Self::RequestInvalid | Self::ArtifactInvalid | Self::ProgramInvalid => 65,
             Self::Output => 74,
         }
     }
@@ -121,15 +126,20 @@ fn validate_protected_request() -> Result<(), RunnerError> {
         return Err(RunnerError::ArtifactInvalid);
     }
     request_bytes.zeroize();
+    let program = derive_macos_linux_vz_package_execution_program_v1(&request)
+        .map_err(|_| RunnerError::ProgramInvalid)?;
 
     let report = serde_json_canonicalizer::to_vec(&serde_json::json!({
         "artifact_rehashed": true,
+        "closed_execution_program_derived": true,
         "execution_authority": false,
+        "execution_program_sha256": program.program_sha256(),
         "execution_request_sha256": request.request_sha256(),
         "operation": request.operation().operation_name(),
         "package_execution": false,
         "request_structurally_validated": true,
         "schema_version": "whoathere.linux_vz_package_execution_runner_validation.v1",
+        "stage_count": program.stages().len().to_string(),
         "status": "closed_request_and_artifact_validated_no_execution",
         "sync_back": false,
     }))

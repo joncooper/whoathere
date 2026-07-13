@@ -171,6 +171,18 @@ accepting a caller path. It still executes nothing and does not change the 7/11 
 See the
 [wheel install-basename checkpoint](artifact-native-wheel-install-basename-checkpoint-2026-07-13.md).
 
+Every structurally valid runner request now also derives one canonical false-authority execution
+program before the runner can report successful ingress. The program has no executable, argv,
+working-directory, or caller path fields. It fixes the input materialization, fresh tmpfs workspace,
+no-public-route policy, UID/GID, limits, and exact ordered semantic stages. Wheel probes cannot
+occur before fresh-environment exact-wheel installation. Sdist inspect/install/import cannot occur
+before safe extraction, exact build-closure installation, build, and single-derived-wheel
+validation. npm admits only the exact local tarball and the two typed CI environments; package
+manifest install hooks remain the intentionally exercised trigger surface. This is an auditable
+program contract, not a process launcher: the measured executable/argv mapping, root materializer,
+cgroup sensor, and physical inert qualification remain open. See the
+[closed execution-program checkpoint](artifact-native-linux-vz-closed-execution-program-checkpoint-2026-07-13.md).
+
 The first protected-sensor bootstrap now also observes a cgroup-filtered inert fork/exec/exit chain
 whose child runs as UID/GID 65534 and cannot read or write the root-only sensor. This remains
 unsigned bootstrap evidence rather than a conformance receipt. See the

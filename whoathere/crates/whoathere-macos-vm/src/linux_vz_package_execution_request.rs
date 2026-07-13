@@ -48,6 +48,25 @@ pub struct MacosLinuxVzSdistBuildRecipeV1 {
 }
 
 impl MacosLinuxVzSdistBuildRecipeV1 {
+    #[cfg(test)]
+    pub(crate) fn new_for_execution_program_test_v1(
+        build_template_sha256: Sha256Digest,
+        artifact_format: ArtifactFormat,
+        build_mode: SdistBuildModeV1,
+        build_backend: Option<String>,
+        backend_paths: Vec<String>,
+        build_requires_sha256: Sha256Digest,
+    ) -> Self {
+        Self {
+            build_template_sha256,
+            artifact_format,
+            build_mode,
+            build_backend,
+            backend_paths,
+            build_requires_sha256,
+        }
+    }
+
     pub fn build_template_sha256(&self) -> &Sha256Digest {
         &self.build_template_sha256
     }
@@ -1496,6 +1515,24 @@ mod tests {
         assert_eq!(decoded.operation(), request.operation());
         assert!(!decoded.package_execution_authority_permitted());
         assert!(!decoded.sync_back_permitted());
+        let program = crate::derive_macos_linux_vz_package_execution_program_v1(&decoded)
+            .expect("closed execution program");
+        assert_eq!(program.execution_request_sha256(), request.request_sha256());
+        assert_eq!(program.artifact_sha256(), request.artifact_sha256());
+        assert_eq!(program.stages().len(), 1);
+        assert_eq!(
+            program.stages()[0].stage_name(),
+            "npm_install_exact_local_tarball"
+        );
+        assert!(!program.package_execution_authority_permitted());
+        assert!(!program.sync_back_permitted());
+        let program_text = std::str::from_utf8(program.canonical_json_v1()).expect("program UTF-8");
+        for forbidden in ["\"argv\"", "\"shell\"", "\"executable_path\""] {
+            assert!(
+                !program_text.contains(forbidden),
+                "unexpected process interface: {forbidden}"
+            );
+        }
 
         let mut noncanonical = b" ".to_vec();
         noncanonical.extend_from_slice(request.canonical_json_v1());
