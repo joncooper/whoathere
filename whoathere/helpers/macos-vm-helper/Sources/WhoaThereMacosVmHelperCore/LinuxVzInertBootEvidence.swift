@@ -234,6 +234,12 @@ public let linuxVzInertFileSensorMarkersV1 = [
     "WHOATHERE_SENSOR file_system_diff=observed",
 ]
 
+public let linuxVzInertRawFrameAttachmentSensorMarkersV1 = [
+    "WHOATHERE_SENSOR raw_frame_attachment=observed",
+    "WHOATHERE_SENSOR raw_frame_payload=whoathere_raw_v1_16_bytes",
+    "WHOATHERE_SENSOR raw_frame_target=documentation_sinkhole_192_0_2_1_40553",
+]
+
 public func linuxVzInertSerialContainsExactMarker(_ serialData: Data, marker: String) -> Bool {
     linuxVzInertSerialLines(serialData).contains(marker)
 }

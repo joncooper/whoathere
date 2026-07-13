@@ -73,6 +73,25 @@ private func networkGuestValue() -> [String: Any] {
     #expect(evidence.sourcePort == 49152)
 }
 
+@Test func networkGuestEvidenceBindsRawFrameAttachmentTrigger() throws {
+    var value = networkGuestValue()
+    value["fixture_case"] = "raw_frame_attachment"
+    value["network_action"] = "raw_frame_emit"
+    value["network_protocol"] = "udp"
+    value["network_socket_state"] = "unconnected_bound"
+    value["network_target_port"] = "40553"
+    var events = try #require(value["events"] as? [[String: Any]])
+    events[2]["kind"] = "sendto"
+    value["events"] = events
+    let evidence = try decodeLinuxVzNetworkEvidenceJSONV1(canonicalJSONData(value))
+    #expect(evidence.fixtureCase == "raw_frame_attachment")
+
+    value["network_target_port"] = "443"
+    #expect(throws: LinuxVzNetworkEvidencePayloadError.invalidSchema) {
+        try decodeLinuxVzNetworkEvidenceJSONV1(canonicalJSONData(value))
+    }
+}
+
 @Test func networkGuestEvidenceBindsEstablishedLoopbackSinkholeTuple() throws {
     var value = networkGuestValue()
     value["fixture_case"] = "loopback_connect"
@@ -220,6 +239,20 @@ private func networkGuestValue() -> [String: Any] {
         storageDeviceCount: 0
     )
     #expect(evidence.fixtureCase == "udp_send")
+    #expect(evidence.sourcePort == 49152)
+}
+
+@Test func networkHostEvidenceBindsRawFrameAttachment() throws {
+    let evidence = try makeLinuxVzRawFrameAttachmentHostEvidencePayload(
+        sourcePort: 49152,
+        rawFrameCount: 1,
+        matchedFrameCount: 1,
+        unexpectedFrameCount: 0,
+        packetSensorHealthy: true,
+        packetSensorTerminal: "drained_would_block",
+        storageDeviceCount: 0
+    )
+    #expect(evidence.fixtureCase == "raw_frame_attachment")
     #expect(evidence.sourcePort == 49152)
 }
 
@@ -483,6 +516,28 @@ private func exactIPv4SinkholeUDP() -> Data {
     return Data(frame)
 }
 
+private func exactRawFrameAttachmentUDP() -> Data {
+    let payload = [UInt8]("WHOATHERE_RAW_V1".utf8)
+    let udpLength = 8 + payload.count
+    let totalLength = 20 + udpLength
+    var frame: [UInt8] = [
+        0x02,0x57,0x48,0x4f,0x41,0xfe, 0x02,0x57,0x48,0x4f,0x41,0x31, 0x08,0x00,
+        0x45,0x00,UInt8(totalLength >> 8),UInt8(totalLength & 0xff),0x12,0x34,0x40,0x00,
+        0x40,0x11,0x00,0x00, 192,0,2,2, 192,0,2,1,
+        0xc0,0x00,0x9e,0x69,UInt8(udpLength >> 8),UInt8(udpLength & 0xff),0,0
+    ]
+    frame.append(contentsOf: payload)
+    let ipChecksum = internetChecksum(Array(frame[14..<34]))
+    frame[24] = UInt8(ipChecksum >> 8)
+    frame[25] = UInt8(ipChecksum & 0xff)
+    var pseudo = Array(frame[26..<34]) + [0,17,UInt8(udpLength >> 8),UInt8(udpLength & 0xff)]
+    pseudo.append(contentsOf: frame[34..<frame.count])
+    let udpChecksum = internetChecksum(pseudo)
+    frame[40] = UInt8(udpChecksum >> 8)
+    frame[41] = UInt8(udpChecksum & 0xff)
+    return Data(frame)
+}
+
 private func exactHostFrameOverflowUDP(sequence: UInt32) -> Data {
     let words: [UInt32] = [0x57544846, sequence, ~sequence, 512]
     let payload = words.flatMap { word in
@@ -668,6 +723,17 @@ private func exactIPv6MLDv2Report() -> Data {
     zeroChecksum[40] = 0
     zeroChecksum[41] = 0
     #expect(!linuxVzIsExactIPv4SinkholeUDPFrame(zeroChecksum, sourcePort: 49152))
+}
+
+@Test func rawFrameAttachmentParserRequiresExactDistinctFrame() {
+    let frame = exactRawFrameAttachmentUDP()
+    #expect(linuxVzIsExactRawFrameAttachmentFrame(frame, sourcePort: 49152))
+    #expect(!linuxVzIsExactRawFrameAttachmentFrame(frame, sourcePort: 49153))
+    #expect(!linuxVzIsExactIPv4SinkholeUDPFrame(frame, sourcePort: 49152))
+
+    var changedPayload = frame
+    changedPayload[changedPayload.count - 1] ^= 1
+    #expect(!linuxVzIsExactRawFrameAttachmentFrame(changedPayload, sourcePort: 49152))
 }
 
 @Test func hostFrameOverflowParserRequiresExactSequenceTupleAndChecksums() {

@@ -76,6 +76,8 @@ public func decodeLinuxVzNetworkEvidenceJSONV1(
         fixtureCase = "ipv6_connect"
     case ("udp_send", "ipv4", "192.0.2.2", "192.0.2.1"):
         fixtureCase = "udp_send"
+    case ("raw_frame_attachment", "ipv4", "192.0.2.2", "192.0.2.1"):
+        fixtureCase = "raw_frame_attachment"
     case ("loopback_connect", "ipv4", "127.0.0.1", "127.0.0.1"):
         fixtureCase = "loopback_connect"
     case ("private_address_connect", "ipv4", "10.0.0.2", "10.0.0.1"):
@@ -95,19 +97,22 @@ public func decodeLinuxVzNetworkEvidenceJSONV1(
     default:
         throw LinuxVzNetworkEvidencePayloadError.invalidSchema
     }
-    let expectedAction = fixtureCase == "encrypted_dns_connect" ? "encrypted_dns_connect" :
+    let expectedAction = fixtureCase == "raw_frame_attachment" ? "raw_frame_emit" :
+        (fixtureCase == "encrypted_dns_connect" ? "encrypted_dns_connect" :
         (fixtureCase == "dns_malformed" ? "dns_malformed" :
             (fixtureCase == "dns_plaintext" ? "dns_query" :
-                (fixtureCase == "udp_send" ? "udp_send" : "tcp_connect")))
+                (fixtureCase == "udp_send" ? "udp_send" : "tcp_connect"))))
     let dnsActivity = fixtureCase == "dns_plaintext" || fixtureCase == "dns_malformed"
-    let udpActivity = fixtureCase == "udp_send" || dnsActivity
+    let udpActivity = fixtureCase == "raw_frame_attachment" ||
+        fixtureCase == "udp_send" || dnsActivity
     let expectedProtocol = udpActivity ? "udp" : "tcp"
     let expectedSocketState = udpActivity ? "unconnected_bound" :
         (fixtureCase == "loopback_connect" ? "established" : "syn_sent")
-    let expectedTargetPort: UInt64 = fixtureCase == "encrypted_dns_connect" ? 853 :
+    let expectedTargetPort: UInt64 = fixtureCase == "raw_frame_attachment" ? 40_553 :
+        (fixtureCase == "encrypted_dns_connect" ? 853 :
         (dnsActivity ? 53 :
         (fixtureCase == "loopback_connect" ? 40_552 : 443)
-        )
+        ))
     guard Set(value.keys) == expectedKeys,
           value["schema_version"] as? String == linuxVzNetworkEvidencePayloadSchemaV1,
           value["network_action"] as? String == expectedAction,

@@ -24,6 +24,9 @@ static const char *dynamic_library_path = "/whoathere/dynamic-fixture-library.so
 #define NETWORK6_REPORT_MAGIC 0x57544e36U
 #define UDP_REPORT_MAGIC 0x57545534U
 #define UDP_PAYLOAD "WHOATHERE_UDP_V1"
+#define RAW_FRAME_REPORT_MAGIC 0x57545246U
+#define RAW_FRAME_PAYLOAD "WHOATHERE_RAW_V1"
+#define RAW_FRAME_TARGET_PORT 40553
 #define LOOPBACK_REPORT_MAGIC 0x57544c34U
 #define LOOPBACK_TARGET_PORT 40552
 #define PRIVATE_REPORT_MAGIC 0x57545034U
@@ -608,6 +611,69 @@ static int udp_send(void) {
     return result;
 }
 
+static int raw_frame_attachment(void) {
+    int descriptor = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, IPPROTO_UDP);
+    if (descriptor < 0) return 168;
+    struct sockaddr_in source = {
+        .sin_family = AF_INET,
+        .sin_port = 0,
+    };
+    struct sockaddr_in target = {
+        .sin_family = AF_INET,
+        .sin_port = htons(RAW_FRAME_TARGET_PORT),
+    };
+    if (inet_pton(AF_INET, "192.0.2.2", &source.sin_addr) != 1 ||
+        inet_pton(AF_INET, "192.0.2.1", &target.sin_addr) != 1 ||
+        bind(descriptor, (const struct sockaddr *)&source, sizeof(source)) != 0) {
+        close(descriptor);
+        return 169;
+    }
+    if (sendto(
+            descriptor,
+            RAW_FRAME_PAYLOAD,
+            sizeof(RAW_FRAME_PAYLOAD) - 1,
+            0,
+            (const struct sockaddr *)&target,
+            sizeof(target)
+        ) != (ssize_t)(sizeof(RAW_FRAME_PAYLOAD) - 1)) {
+        close(descriptor);
+        return 170;
+    }
+    socklen_t source_length = sizeof(source);
+    struct stat metadata;
+    if (getsockname(descriptor, (struct sockaddr *)&source, &source_length) != 0 ||
+        source_length != sizeof(source) || source.sin_family != AF_INET ||
+        source.sin_port == 0 || fstat(descriptor, &metadata) != 0) {
+        close(descriptor);
+        return 171;
+    }
+    const struct udp_report report = {
+        .magic = RAW_FRAME_REPORT_MAGIC,
+        .process_pid = getpid(),
+        .socket_inode = metadata.st_ino,
+        .source_address = source.sin_addr.s_addr,
+        .target_address = target.sin_addr.s_addr,
+        .source_port = ntohs(source.sin_port),
+        .target_port = ntohs(target.sin_port),
+        .payload_length = sizeof(RAW_FRAME_PAYLOAD) - 1,
+    };
+    ssize_t written = write(REPARENT_REPORT_FD, &report, sizeof(report));
+    int saved_errno = errno;
+    if (close(REPARENT_REPORT_FD) != 0 && written == (ssize_t)sizeof(report)) {
+        close(descriptor);
+        return 172;
+    }
+    errno = saved_errno;
+    if (written != (ssize_t)sizeof(report)) {
+        close(descriptor);
+        return 173;
+    }
+    const struct timespec pause = {.tv_sec = 0, .tv_nsec = 200000000};
+    int result = nanosleep(&pause, NULL) == 0 ? 0 : 174;
+    if (close(descriptor) != 0 && result == 0) result = 175;
+    return result;
+}
+
 static int host_frame_overflow(void) {
     int descriptor = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, IPPROTO_UDP);
     if (descriptor < 0) return 161;
@@ -975,6 +1041,9 @@ int main(int argument_count, char **arguments) {
     if (strcmp(arguments[1], "ipv4_connect") == 0) return ipv4_connect();
     if (strcmp(arguments[1], "ipv6_connect") == 0) return ipv6_connect();
     if (strcmp(arguments[1], "udp_send") == 0) return udp_send();
+    if (strcmp(arguments[1], "raw_frame_attachment") == 0) {
+        return raw_frame_attachment();
+    }
     if (strcmp(arguments[1], "loopback_connect") == 0) return loopback_connect();
     if (strcmp(arguments[1], "private_address_connect") == 0) return private_address_connect();
     if (strcmp(arguments[1], "link_local_connect") == 0) return link_local_connect();

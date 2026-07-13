@@ -155,6 +155,7 @@ mod linux {
                 | LinuxVzTelemetryConformanceCaseV1::CgroupV2
                 | LinuxVzTelemetryConformanceCaseV1::FanotifyPermission
                 | LinuxVzTelemetryConformanceCaseV1::BpfProgramTypes
+                | LinuxVzTelemetryConformanceCaseV1::RawFrameAttachment
         ) || run_spec.expected_terminal()
             != expected_terminal_for_case_v1(run_spec.fixture_case())
             || run_spec.package_execution_authority_permitted()
@@ -215,6 +216,7 @@ mod linux {
             LinuxVzTelemetryConformanceCaseV1::CgroupV2 => "cgroup_v2",
             LinuxVzTelemetryConformanceCaseV1::FanotifyPermission => "fanotify_permission",
             LinuxVzTelemetryConformanceCaseV1::BpfProgramTypes => "bpf_program_types",
+            LinuxVzTelemetryConformanceCaseV1::RawFrameAttachment => "raw_frame_attachment",
             _ => return Err("guest_signer_run_spec_not_supported_inert_case".into()),
         };
         let sensor_output = match run_spec.fixture_case() {
@@ -364,6 +366,7 @@ mod linux {
             LinuxVzTelemetryConformanceCaseV1::Ipv4Connect
             | LinuxVzTelemetryConformanceCaseV1::Ipv6Connect
             | LinuxVzTelemetryConformanceCaseV1::UdpSend
+            | LinuxVzTelemetryConformanceCaseV1::RawFrameAttachment
             | LinuxVzTelemetryConformanceCaseV1::LoopbackConnect
             | LinuxVzTelemetryConformanceCaseV1::PrivateAddressConnect
             | LinuxVzTelemetryConformanceCaseV1::LinkLocalConnect

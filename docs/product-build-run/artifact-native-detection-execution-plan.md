@@ -4,15 +4,16 @@ Date: 2026-07-09
 
 Status: canonical execution plan for the next product milestone
 
-Current execution checkpoint (2026-07-13): thirty-seven of the 38 authenticated Linux VZ inert
-conformance cases now pass physically on one exact measured backend identity. The newest
-`bpf_program_types` case proves live load, attachment, and execution of both a cgroup-filtered
-`BPF_PROG_TYPE_RAW_TRACEPOINT` program and an `SO_ATTACH_BPF` socket filter, including distinct
-kernel-assigned program IDs, one exact actor/cgroup observation, the filter's exact 8-to-4-byte
-result, healthy sensors, zero drops, complete teardown, and no execution authority. This is still
-telemetry qualification, not package detection, and the backend remains `candidate_unqualified`.
-See the
-[BPF program-types checkpoint](artifact-native-linux-vz-bpf-program-types-checkpoint-2026-07-13.md).
+Current execution checkpoint (2026-07-13): all 38 authenticated Linux VZ inert conformance cases
+pass physically on one exact measured backend identity. The final `raw_frame_attachment` case
+proves that the macOS `VZFileHandleNetworkDeviceAttachment` receives one exact checksum-valid
+Ethernet/IPv4/UDP marker from the unprivileged, cgroup-bound guest fixture while forwarding zero
+external frames. The full matrix was regenerated and rerun on the final identity, independently
+verified in Rust, aggregated with unique challenges, run specs, and clone bindings, and decoded by
+Swift as `complete_inert_conformance_matrix_verified`. The qualified record still issues no
+execution authority and permits no sync-back. This closes the telemetry-backend gate; it is not
+package detection and does not improve the July malicious-package score by itself. See the
+[raw-frame and qualification checkpoint](artifact-native-linux-vz-raw-frame-qualification-checkpoint-2026-07-13.md).
 
 The first protected-sensor bootstrap now also observes a cgroup-filtered inert fork/exec/exit chain
 whose child runs as UID/GID 65534 and cannot read or write the root-only sensor. This remains
@@ -336,6 +337,15 @@ resource teardown. All thirty-seven implemented cases ran physically on the resu
 all 111 request inputs were generated from that identity and every complete case passed independent
 Rust verification. Thirty-seven of 38 cases now share one backend binding; 1 remains. See the
 [BPF program-types checkpoint](artifact-native-linux-vz-bpf-program-types-checkpoint-2026-07-13.md).
+
+The final `raw_frame_attachment` platform case now binds the protected guest `sendto` observation
+to one exact host-received Ethernet/IPv4/UDP frame on the no-forwarding attachment. All 38 cases
+were regenerated and rerun on the resulting exact backend, every signed guest/host evidence set
+passed independent Rust verification, and the aggregate qualifier enforced distinct case,
+challenge, run-spec, and clone bindings. Swift independently validated the canonical qualified
+record. The telemetry backend is now eligible only for typed package-scenario authority requests;
+it has issued no execution authority and cannot sync back. See the
+[raw-frame and qualification checkpoint](artifact-native-linux-vz-raw-frame-qualification-checkpoint-2026-07-13.md).
 
 Primary target: malicious npm and PyPI package detection with static analysis, AI-assisted code
 review, and behaviorally instrumented detonation in disposable virtual machines
@@ -1618,6 +1628,7 @@ Repository evidence:
 - [Linux VZ cgroup-v2 checkpoint](artifact-native-linux-vz-cgroup-v2-checkpoint-2026-07-12.md)
 - [Linux VZ fanotify-permission checkpoint](artifact-native-linux-vz-fanotify-permission-checkpoint-2026-07-12.md)
 - [Linux VZ BPF program-types checkpoint](artifact-native-linux-vz-bpf-program-types-checkpoint-2026-07-13.md)
+- [Linux VZ raw-frame and qualification checkpoint](artifact-native-linux-vz-raw-frame-qualification-checkpoint-2026-07-13.md)
 - [macOS local release readiness](macos-local-release-readiness.md)
 - [macOS local beta pressure checkpoint](macos-local-beta-pressure-checkpoint.md)
 - [latest source-fixture corpus report](src-fixture-corpus-latest.md)

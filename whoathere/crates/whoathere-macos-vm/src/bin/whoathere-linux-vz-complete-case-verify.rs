@@ -1,6 +1,8 @@
+use serde::Deserialize;
 use std::fs::{self, OpenOptions};
-use std::io::Read;
-use std::os::unix::fs::OpenOptionsExt;
+use std::io::{Read, Write};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::path::Path;
 use whoathere_artifact::Sha256Digest;
 use whoathere_detonation::ArtifactProtectedTelemetryRequirementsV1;
 use whoathere_macos_vm::{
@@ -19,10 +21,12 @@ use whoathere_macos_vm::{
     decode_linux_vz_teardown_evidence_from_serial_v1,
     decode_unqualified_macos_linux_vz_telemetry_backend_identity_v1,
     encode_linux_vz_guest_signer_request_v1, encode_linux_vz_guest_signer_response_v1,
+    qualify_macos_linux_vz_telemetry_backend_v1,
     verify_macos_linux_vz_telemetry_conformance_case_v1,
     verify_macos_linux_vz_telemetry_guest_receipt_v1,
     verify_macos_linux_vz_telemetry_host_receipt_v1, LinuxVzTelemetryConformanceCaseV1,
-    LinuxVzTelemetryConformanceObservedTerminalV1, MAX_LINUX_VZ_HOST_EVIDENCE_PAYLOAD_BYTES_V1,
+    LinuxVzTelemetryConformanceObservedTerminalV1, VerifiedLinuxVzTelemetryConformanceCaseV1,
+    ALL_LINUX_VZ_TELEMETRY_CONFORMANCE_CASES_V1, MAX_LINUX_VZ_HOST_EVIDENCE_PAYLOAD_BYTES_V1,
     MAX_MACOS_LINUX_VZ_TELEMETRY_BACKEND_IDENTITY_BYTES_V1,
     MAX_MACOS_LINUX_VZ_TELEMETRY_CONFORMANCE_EVIDENCE_BYTES_V1,
     MAX_MACOS_LINUX_VZ_TELEMETRY_CONFORMANCE_RUN_SPEC_BYTES_V1,
@@ -37,6 +41,25 @@ fn main() {
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let arguments = std::env::args().collect::<Vec<_>>();
+    if arguments.len() == 4
+        && arguments[1] == "--qualify"
+        && arguments[2..].iter().all(|value| value.starts_with('/'))
+    {
+        return qualify_matrix(&arguments[2], &arguments[3]);
+    }
+    let verification = verify_case(&arguments)?;
+    println!("{}", verification.summary_json);
+    Ok(())
+}
+
+struct CompleteCaseVerificationV1 {
+    verified_case: VerifiedLinuxVzTelemetryConformanceCaseV1,
+    summary_json: String,
+}
+
+fn verify_case(
+    arguments: &[String],
+) -> Result<CompleteCaseVerificationV1, Box<dyn std::error::Error>> {
     if arguments.len() != 10 || arguments[1..].iter().any(|value| !value.starts_with('/')) {
         return Err("usage: complete-case-verify RUN_SPEC CHALLENGE BACKEND GUEST_PUBLIC_KEY HOST_PUBLIC_KEY SERIAL GUEST_RECEIPT HOST_EVIDENCE HOST_RECEIPT".into());
     }
@@ -86,6 +109,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         LinuxVzTelemetryConformanceCaseV1::CgroupV2 => "cgroup_v2",
         LinuxVzTelemetryConformanceCaseV1::FanotifyPermission => "fanotify_permission",
         LinuxVzTelemetryConformanceCaseV1::BpfProgramTypes => "bpf_program_types",
+        LinuxVzTelemetryConformanceCaseV1::RawFrameAttachment => "raw_frame_attachment",
         LinuxVzTelemetryConformanceCaseV1::ForkExecExit => "fork_exec_exit",
         LinuxVzTelemetryConformanceCaseV1::Reparenting => "reparenting",
         LinuxVzTelemetryConformanceCaseV1::DoubleForkDaemonization => "double_fork_daemonization",
@@ -123,7 +147,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         LinuxVzTelemetryConformanceCaseV1::AllProtectedAssetsDenied => {
             "all_protected_assets_denied"
         }
-        _ => return Err("complete-case verifier does not implement this inert case".into()),
     };
     let backend = decode_unqualified_macos_linux_vz_telemetry_backend_identity_v1(
         &backend_bytes,
@@ -224,6 +247,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             LinuxVzTelemetryConformanceCaseV1::Ipv4Connect
             | LinuxVzTelemetryConformanceCaseV1::Ipv6Connect
             | LinuxVzTelemetryConformanceCaseV1::UdpSend
+            | LinuxVzTelemetryConformanceCaseV1::RawFrameAttachment
             | LinuxVzTelemetryConformanceCaseV1::LoopbackConnect
             | LinuxVzTelemetryConformanceCaseV1::PrivateAddressConnect
             | LinuxVzTelemetryConformanceCaseV1::LinkLocalConnect
@@ -344,6 +368,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         LinuxVzTelemetryConformanceCaseV1::Ipv4Connect
             | LinuxVzTelemetryConformanceCaseV1::Ipv6Connect
             | LinuxVzTelemetryConformanceCaseV1::UdpSend
+            | LinuxVzTelemetryConformanceCaseV1::RawFrameAttachment
             | LinuxVzTelemetryConformanceCaseV1::PrivateAddressConnect
             | LinuxVzTelemetryConformanceCaseV1::LinkLocalConnect
             | LinuxVzTelemetryConformanceCaseV1::MetadataAddressConnect
@@ -512,8 +537,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     {
         return Err("complete case unexpectedly grants execution authority".into());
     }
-    if host_only {
-        println!(
+    let summary_json = if host_only {
+        format!(
             "{{\"backend_identity_sha256\":\"{}\",\"challenge_sha256\":\"{}\",\"complete_conformance_case_verified\":true,\"execution_authority\":false,\"fixture_case\":\"{}\",\"guest_receipt_present\":false,\"host_evidence_payload_sha256\":\"{}\",\"host_receipt_sha256\":\"{}\",\"package_execution\":false,\"run_spec_sha256\":\"{}\",\"schema_version\":\"whoathere.linux_vz_complete_case_verification.v1\",\"sync_back\":false}}",
             backend.identity_sha256_v1()?,
             challenge.challenge_sha256(),
@@ -521,7 +546,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             host_evidence_payload_sha256,
             Sha256Digest::from_bytes(&host_receipt),
             run_spec.run_spec_sha256(),
-        );
+        )
     } else {
         let (guest_evidence_payload_sha256, _, _) = guest_observation
             .as_ref()
@@ -529,7 +554,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let guest_receipt = guest_receipt
             .as_deref()
             .ok_or("guest receipt unexpectedly absent")?;
-        println!(
+        format!(
             "{{\"backend_identity_sha256\":\"{}\",\"challenge_sha256\":\"{}\",\"complete_conformance_case_verified\":true,\"execution_authority\":false,\"fixture_case\":\"{}\",\"guest_evidence_payload_sha256\":\"{}\",\"guest_receipt_sha256\":\"{}\",\"host_evidence_payload_sha256\":\"{}\",\"host_receipt_sha256\":\"{}\",\"package_execution\":false,\"run_spec_sha256\":\"{}\",\"schema_version\":\"whoathere.linux_vz_complete_case_verification.v1\",\"sync_back\":false}}",
             backend.identity_sha256_v1()?,
             challenge.challenge_sha256(),
@@ -539,7 +564,133 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             host_evidence_payload_sha256,
             Sha256Digest::from_bytes(&host_receipt),
             run_spec.run_spec_sha256(),
+        )
+    };
+    Ok(CompleteCaseVerificationV1 {
+        verified_case,
+        summary_json,
+    })
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct QualificationManifestV1 {
+    schema_version: String,
+    backend_identity: String,
+    guest_public_key: String,
+    host_public_key: String,
+    cases: Vec<QualificationCaseInputsV1>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct QualificationCaseInputsV1 {
+    run_spec: String,
+    challenge: String,
+    serial: String,
+    guest_receipt: String,
+    host_evidence: String,
+    host_receipt: String,
+}
+
+fn qualify_matrix(
+    manifest_path: &str,
+    output_path: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let manifest_bytes = read_bounded(manifest_path, 1024 * 1024)?;
+    let manifest: QualificationManifestV1 = serde_json::from_slice(&manifest_bytes)?;
+    let canonical_manifest = serde_json_canonicalizer::to_vec(&serde_json::from_slice::<
+        serde_json::Value,
+    >(&manifest_bytes)?)?;
+    let mut canonical_manifest_with_newline = canonical_manifest.clone();
+    canonical_manifest_with_newline.push(b'\n');
+    if manifest_bytes != canonical_manifest && manifest_bytes != canonical_manifest_with_newline {
+        return Err("qualification manifest must be canonical JSON".into());
+    }
+    if manifest.schema_version != "whoathere.linux_vz_qualification_inputs.v1"
+        || manifest.cases.len() != ALL_LINUX_VZ_TELEMETRY_CONFORMANCE_CASES_V1.len()
+        || !manifest.backend_identity.starts_with('/')
+        || !manifest.guest_public_key.starts_with('/')
+        || !manifest.host_public_key.starts_with('/')
+        || manifest.cases.iter().any(|case| {
+            [
+                &case.run_spec,
+                &case.challenge,
+                &case.serial,
+                &case.guest_receipt,
+                &case.host_evidence,
+                &case.host_receipt,
+            ]
+            .into_iter()
+            .any(|path| !path.starts_with('/'))
+        })
+    {
+        return Err("qualification manifest is not an exact 38-case absolute-path contract".into());
+    }
+    let requirements = ArtifactProtectedTelemetryRequirementsV1::linux_vz_bulk_v1();
+    let backend_bytes = read_bounded(
+        &manifest.backend_identity,
+        MAX_MACOS_LINUX_VZ_TELEMETRY_BACKEND_IDENTITY_BYTES_V1 as u64,
+    )?;
+    let backend = decode_unqualified_macos_linux_vz_telemetry_backend_identity_v1(
+        &backend_bytes,
+        &requirements,
+    )?;
+    let mut verified_cases = Vec::with_capacity(manifest.cases.len());
+    for case in manifest.cases {
+        let arguments = vec![
+            "whoathere-linux-vz-complete-case-verify".to_string(),
+            case.run_spec,
+            case.challenge,
+            manifest.backend_identity.clone(),
+            manifest.guest_public_key.clone(),
+            manifest.host_public_key.clone(),
+            case.serial,
+            case.guest_receipt,
+            case.host_evidence,
+            case.host_receipt,
+        ];
+        verified_cases.push(verify_case(&arguments)?.verified_case);
+    }
+    let qualified = qualify_macos_linux_vz_telemetry_backend_v1(&backend, verified_cases)?;
+    if qualified.package_execution_authority_permitted() || qualified.sync_back_permitted() {
+        return Err(
+            "qualified backend unexpectedly grants execution or sync-back authority".into(),
         );
+    }
+    write_new_private_file(output_path, qualified.canonical_json_v1())?;
+    println!(
+        "{{\"backend_identity_sha256\":\"{}\",\"conformance_case_count\":\"{}\",\"conformance_evidence_set_sha256\":\"{}\",\"execution_authority\":false,\"package_execution\":false,\"qualified_backend_sha256\":\"{}\",\"schema_version\":\"whoathere.linux_vz_telemetry_qualification_build_result.v1\",\"status\":\"qualified\",\"sync_back\":false}}",
+        qualified.backend_identity_sha256(),
+        ALL_LINUX_VZ_TELEMETRY_CONFORMANCE_CASES_V1.len(),
+        qualified.conformance_evidence_set_sha256(),
+        qualified.qualified_backend_sha256(),
+    );
+    Ok(())
+}
+
+fn write_new_private_file(path: &str, value: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+    let path = Path::new(path);
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)?;
+    file.write_all(value)?;
+    file.sync_all()?;
+    let metadata = file.metadata()?;
+    let path_metadata = fs::symlink_metadata(path)?;
+    if !metadata.file_type().is_file()
+        || !path_metadata.file_type().is_file()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.nlink() != 1
+        || metadata.mode() & 0o777 != 0o600
+        || metadata.len() != value.len() as u64
+        || metadata.dev() != path_metadata.dev()
+        || metadata.ino() != path_metadata.ino()
+    {
+        return Err("qualified backend output verification failed".into());
     }
     Ok(())
 }

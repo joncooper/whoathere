@@ -619,6 +619,7 @@ private struct LinuxVzSignedConformanceHarness {
             networkFixtureCase = nil
             hostFrameTriggerCount = nil
         case "ipv4_connect", "ipv6_connect", "udp_send", "loopback_connect",
+             "raw_frame_attachment",
              "private_address_connect", "link_local_connect", "metadata_address_connect",
              "public_address_connect", "dns_plaintext", "dns_malformed",
              "encrypted_dns_connect":
@@ -835,6 +836,12 @@ private struct LinuxVzSignedConformanceHarness {
                 + missingEscapedSessionMarkers
                 + missingReparentedChildMarkers
                 + missingBackgroundListenerMarkers
+        } else if runSpec.fixtureCase == "raw_frame_attachment" {
+            let missingCapabilities = linuxVzInertMissingCapabilityMarkers(serialData)
+            let missingRawFrameMarkers = linuxVzInertRawFrameAttachmentSensorMarkersV1.filter {
+                !linuxVzInertSerialContainsExactMarker(serialData, marker: $0)
+            }
+            missingBaseMarkers = missingCapabilities + missingRawFrameMarkers
         } else if ["kernel_config_and_btf", "cgroup_v2", "bpf_program_types"]
             .contains(runSpec.fixtureCase) {
             missingBaseMarkers = linuxVzInertMissingCapabilityMarkers(serialData)
@@ -1028,6 +1035,16 @@ private struct LinuxVzSignedConformanceHarness {
                 )
             } else if networkFixtureCase == "udp_send" {
                 hostEvidence = try makeLinuxVzUDPSendHostEvidencePayload(
+                    sourcePort: sourcePort,
+                    rawFrameCount: UInt64(packetSensor.frameCount),
+                    matchedFrameCount: UInt64(packetSensor.matchedFrameCount),
+                    unexpectedFrameCount: UInt64(packetSensor.unexpectedFrameCount),
+                    packetSensorHealthy: packetSensor.healthy,
+                    packetSensorTerminal: packetSensor.terminal,
+                    storageDeviceCount: UInt64(configuration.storageDevices.count)
+                )
+            } else if networkFixtureCase == "raw_frame_attachment" {
+                hostEvidence = try makeLinuxVzRawFrameAttachmentHostEvidencePayload(
                     sourcePort: sourcePort,
                     rawFrameCount: UInt64(packetSensor.frameCount),
                     matchedFrameCount: UInt64(packetSensor.matchedFrameCount),
@@ -1959,6 +1976,11 @@ private struct LinuxVzSignedConformanceHarness {
                 exactMatch = linuxVzIsExactIPv6SinkholeSYNFrame(frame, sourcePort: sourcePort)
             } else if networkFixtureCase == "udp_send", let sourcePort = networkSourcePort {
                 exactMatch = linuxVzIsExactIPv4SinkholeUDPFrame(frame, sourcePort: sourcePort)
+            } else if networkFixtureCase == "raw_frame_attachment",
+                      let sourcePort = networkSourcePort {
+                exactMatch = linuxVzIsExactRawFrameAttachmentFrame(
+                    frame, sourcePort: sourcePort
+                )
             } else if networkFixtureCase == "private_address_connect",
                       let sourcePort = networkSourcePort {
                 exactMatch = linuxVzIsExactIPv4PrivateSinkholeSYNFrame(

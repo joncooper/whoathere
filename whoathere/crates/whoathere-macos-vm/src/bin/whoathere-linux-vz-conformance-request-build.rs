@@ -33,6 +33,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "cgroup_v2" => LinuxVzTelemetryConformanceCaseV1::CgroupV2,
         "fanotify_permission" => LinuxVzTelemetryConformanceCaseV1::FanotifyPermission,
         "bpf_program_types" => LinuxVzTelemetryConformanceCaseV1::BpfProgramTypes,
+        "raw_frame_attachment" => LinuxVzTelemetryConformanceCaseV1::RawFrameAttachment,
         "fork_exec_exit" => LinuxVzTelemetryConformanceCaseV1::ForkExecExit,
         "reparenting" => LinuxVzTelemetryConformanceCaseV1::Reparenting,
         "double_fork_daemonization" => LinuxVzTelemetryConformanceCaseV1::DoubleForkDaemonization,

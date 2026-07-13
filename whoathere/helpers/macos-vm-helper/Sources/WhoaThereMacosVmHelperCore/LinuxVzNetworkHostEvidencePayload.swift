@@ -86,6 +86,31 @@ public func makeLinuxVzUDPSendHostEvidencePayload(
     )
 }
 
+public func makeLinuxVzRawFrameAttachmentHostEvidencePayload(
+    sourcePort: UInt16,
+    rawFrameCount: UInt64,
+    matchedFrameCount: UInt64,
+    unexpectedFrameCount: UInt64,
+    packetSensorHealthy: Bool,
+    packetSensorTerminal: String,
+    storageDeviceCount: UInt64
+) throws -> LinuxVzNetworkHostEvidencePayload {
+    try makeLinuxVzConnectHostEvidencePayload(
+        fixtureCase: "raw_frame_attachment",
+        frameKind: "ipv4_udp_raw_frame_attachment",
+        sourceAddress: "192.0.2.2",
+        targetAddress: "192.0.2.1",
+        bootstrapFrameCount: 0,
+        sourcePort: sourcePort,
+        rawFrameCount: rawFrameCount,
+        matchedFrameCount: matchedFrameCount,
+        unexpectedFrameCount: unexpectedFrameCount,
+        packetSensorHealthy: packetSensorHealthy,
+        packetSensorTerminal: packetSensorTerminal,
+        storageDeviceCount: storageDeviceCount
+    )
+}
+
 public func makeLinuxVzPrivateAddressConnectHostEvidencePayload(
     sourcePort: UInt16,
     rawFrameCount: UInt64,
@@ -313,8 +338,9 @@ private func makeLinuxVzConnectHostEvidencePayload(
         "sync_back": false,
         "target_address": targetAddress,
         "target_mac": "02:57:48:4f:41:fe",
-        "target_port": fixtureCase == "encrypted_dns_connect" ? "853" :
-            (fixtureCase == "dns_plaintext" || fixtureCase == "dns_malformed" ? "53" : "443"),
+        "target_port": fixtureCase == "raw_frame_attachment" ? "40553" :
+            (fixtureCase == "encrypted_dns_connect" ? "853" :
+            (fixtureCase == "dns_plaintext" || fixtureCase == "dns_malformed" ? "53" : "443")),
         "transport_checksum_valid": true,
         "unexpected_frame_count": String(unexpectedFrameCount),
         "vm_started": true,
@@ -348,6 +374,8 @@ public func decodeLinuxVzNetworkHostEvidencePayload(
         fixtureCase = "ipv6_connect"
     case ("udp_send", "ipv4_udp_datagram", "192.0.2.2", "192.0.2.1"):
         fixtureCase = "udp_send"
+    case ("raw_frame_attachment", "ipv4_udp_raw_frame_attachment", "192.0.2.2", "192.0.2.1"):
+        fixtureCase = "raw_frame_attachment"
     case ("private_address_connect", "ipv4_tcp_syn_private", "10.0.0.2", "10.0.0.1"):
         fixtureCase = "private_address_connect"
     case ("link_local_connect", "ipv4_tcp_syn_link_local", "169.254.100.2", "169.254.100.1"):
@@ -380,8 +408,9 @@ public func decodeLinuxVzNetworkHostEvidencePayload(
     value["target_mac"] as? String == "02:57:48:4f:41:fe",
     let sourcePort = networkHostDecimal(value["source_port"]),
     sourcePort > 0, sourcePort <= UInt64(UInt16.max),
-    networkHostDecimal(value["target_port"]) == (fixtureCase == "encrypted_dns_connect" ? 853 :
-        (fixtureCase == "dns_plaintext" || fixtureCase == "dns_malformed" ? 53 : 443)),
+    networkHostDecimal(value["target_port"]) == (fixtureCase == "raw_frame_attachment" ? 40_553 :
+        (fixtureCase == "encrypted_dns_connect" ? 853 :
+        (fixtureCase == "dns_plaintext" || fixtureCase == "dns_malformed" ? 53 : 443))),
     networkHostDecimal(value["event_sequence_start"]) == 1,
     networkHostDecimal(value["event_sequence_end"]) == 7,
     networkHostDecimal(value["event_count"]) == 7,

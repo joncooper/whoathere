@@ -5,6 +5,12 @@ import WhoaThereMacosVmHelperCore
 private struct LinuxVzIdentityVerify {
     static func main() {
         do {
+            if CommandLine.arguments.count == 3,
+               CommandLine.arguments[1] == "--qualification",
+               CommandLine.arguments[2].hasPrefix("/") {
+                try verifyQualificationRecord(path: CommandLine.arguments[2])
+                return
+            }
             guard CommandLine.arguments.count == 3,
                   CommandLine.arguments[1].hasPrefix("/") else {
                 throw LinuxVzTelemetryBackendIdentityError.invalidIdentity
@@ -42,5 +48,35 @@ private struct LinuxVzIdentityVerify {
             fputs("whoathere Linux VZ identity verification failed: \(error)\n", stderr)
             exit(70)
         }
+    }
+
+    private static func verifyQualificationRecord(path: String) throws {
+        let url = URL(fileURLWithPath: path)
+        let values = try url.resourceValues(forKeys: [
+            .isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey
+        ])
+        guard values.isRegularFile == true, values.isSymbolicLink != true,
+              let size = values.fileSize, size > 0,
+              size <= maximumLinuxVzTelemetryConformanceEvidenceBytesV1 else {
+            throw LinuxVzTelemetryQualificationRecordError.invalidSchema
+        }
+        let data = try Data(contentsOf: url, options: [.mappedIfSafe])
+        let record = try decodeLinuxVzTelemetryQualificationRecord(data)
+        let result: [String: Any] = [
+            "backend_identity_sha256": record.backendIdentitySHA256,
+            "conformance_case_count": String(record.caseCount),
+            "conformance_evidence_set_sha256": record.conformanceEvidenceSetSHA256,
+            "execution_authority": record.packageExecutionAuthorityPermitted,
+            "package_execution": false,
+            "qualified_backend_sha256": record.recordSHA256,
+            "schema_version": "whoathere.linux_vz_telemetry_qualification_verification.v1",
+            "status": "verified",
+            "sync_back": record.syncBackPermitted
+        ]
+        let output = try JSONSerialization.data(
+            withJSONObject: result,
+            options: [.sortedKeys, .withoutEscapingSlashes]
+        )
+        print(String(decoding: output, as: UTF8.self))
     }
 }

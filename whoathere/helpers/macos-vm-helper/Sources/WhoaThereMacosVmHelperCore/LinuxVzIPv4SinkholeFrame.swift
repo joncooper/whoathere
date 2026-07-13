@@ -136,6 +136,20 @@ public func linuxVzIsExactIPv4SinkholeUDPFrame(
     )
 }
 
+public func linuxVzIsExactRawFrameAttachmentFrame(
+    _ frame: Data,
+    sourcePort: UInt16
+) -> Bool {
+    linuxVzIsExactIPv4UDPFrame(
+        frame,
+        sourcePort: sourcePort,
+        targetPort: 40_553,
+        sourceAddress: [192, 0, 2, 2],
+        targetAddress: [192, 0, 2, 1],
+        payload: [UInt8]("WHOATHERE_RAW_V1".utf8)
+    )
+}
+
 public func linuxVzHostFrameOverflowSequence(
     _ frame: Data,
     sourcePort: UInt16

@@ -167,6 +167,13 @@ pub fn decode_linux_vz_network_host_evidence_payload_v1(
         {
             LinuxVzTelemetryConformanceCaseV1::UdpSend
         }
+        "raw_frame_attachment"
+            if wire.frame_kind == "ipv4_udp_raw_frame_attachment"
+                && wire.source_address == "192.0.2.2"
+                && wire.target_address == "192.0.2.1" =>
+        {
+            LinuxVzTelemetryConformanceCaseV1::RawFrameAttachment
+        }
         "private_address_connect"
             if wire.frame_kind == "ipv4_tcp_syn_private"
                 && wire.source_address == "10.0.0.2"
@@ -224,7 +231,9 @@ pub fn decode_linux_vz_network_host_evidence_payload_v1(
         || source_port == 0
         || source_port > u16::MAX as u64
         || decimal_u64_v1(&wire.target_port)?
-            != if fixture_case == LinuxVzTelemetryConformanceCaseV1::EncryptedDnsConnect {
+            != if fixture_case == LinuxVzTelemetryConformanceCaseV1::RawFrameAttachment {
+                40_553
+            } else if fixture_case == LinuxVzTelemetryConformanceCaseV1::EncryptedDnsConnect {
                 853
             } else if matches!(
                 fixture_case,
@@ -412,6 +421,20 @@ mod tests {
         assert_eq!(
             evidence.fixture_case(),
             LinuxVzTelemetryConformanceCaseV1::UdpSend
+        );
+    }
+
+    #[test]
+    fn exact_raw_frame_attachment_derives_distinct_case() {
+        let mut value: serde_json::Value = serde_json::from_slice(&payload()).unwrap();
+        value["fixture_case"] = serde_json::json!("raw_frame_attachment");
+        value["frame_kind"] = serde_json::json!("ipv4_udp_raw_frame_attachment");
+        value["target_port"] = serde_json::json!("40553");
+        let encoded = serde_json_canonicalizer::to_vec(&value).unwrap();
+        let evidence = decode_linux_vz_network_host_evidence_payload_v1(&encoded).unwrap();
+        assert_eq!(
+            evidence.fixture_case(),
+            LinuxVzTelemetryConformanceCaseV1::RawFrameAttachment
         );
     }
 

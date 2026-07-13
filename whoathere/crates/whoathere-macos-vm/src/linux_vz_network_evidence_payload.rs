@@ -189,6 +189,13 @@ pub fn decode_linux_vz_network_evidence_payload_v1(
         {
             LinuxVzTelemetryConformanceCaseV1::UdpSend
         }
+        "raw_frame_attachment"
+            if wire.network_family == "ipv4"
+                && wire.network_source == "192.0.2.2"
+                && wire.network_target == "192.0.2.1" =>
+        {
+            LinuxVzTelemetryConformanceCaseV1::RawFrameAttachment
+        }
         "loopback_connect"
             if wire.network_family == "ipv4"
                 && wire.network_source == "127.0.0.1"
@@ -248,7 +255,9 @@ pub fn decode_linux_vz_network_evidence_payload_v1(
         _ => return Err(LinuxVzNetworkEvidencePayloadErrorV1::InvalidSchema),
     };
     let (expected_action, expected_protocol, expected_socket_state, expected_event_kind) =
-        if fixture_case == LinuxVzTelemetryConformanceCaseV1::UdpSend {
+        if fixture_case == LinuxVzTelemetryConformanceCaseV1::RawFrameAttachment {
+            ("raw_frame_emit", "udp", "unconnected_bound", "sendto")
+        } else if fixture_case == LinuxVzTelemetryConformanceCaseV1::UdpSend {
             ("udp_send", "udp", "unconnected_bound", "sendto")
         } else if fixture_case == LinuxVzTelemetryConformanceCaseV1::DnsPlaintext {
             ("dns_query", "udp", "unconnected_bound", "sendto")
@@ -262,6 +271,7 @@ pub fn decode_linux_vz_network_evidence_payload_v1(
             ("tcp_connect", "tcp", "syn_sent", "connect")
         };
     let expected_target_port = match fixture_case {
+        LinuxVzTelemetryConformanceCaseV1::RawFrameAttachment => 40_553,
         LinuxVzTelemetryConformanceCaseV1::LoopbackConnect => 40_552,
         LinuxVzTelemetryConformanceCaseV1::DnsPlaintext => 53,
         LinuxVzTelemetryConformanceCaseV1::DnsMalformed => 53,
@@ -436,6 +446,30 @@ mod tests {
         assert_eq!(
             evidence.fixture_case(),
             LinuxVzTelemetryConformanceCaseV1::UdpSend
+        );
+    }
+
+    #[test]
+    fn raw_frame_payload_binds_distinct_attachment_trigger() {
+        let mut value: serde_json::Value = serde_json::from_slice(&payload()).unwrap();
+        value["fixture_case"] = serde_json::json!("raw_frame_attachment");
+        value["network_action"] = serde_json::json!("raw_frame_emit");
+        value["network_protocol"] = serde_json::json!("udp");
+        value["network_socket_state"] = serde_json::json!("unconnected_bound");
+        value["network_target_port"] = serde_json::json!("40553");
+        value["events"][2]["kind"] = serde_json::json!("sendto");
+        let encoded = serde_json_canonicalizer::to_vec(&value).unwrap();
+        let evidence = decode_linux_vz_network_evidence_payload_v1(&encoded).unwrap();
+        assert_eq!(
+            evidence.fixture_case(),
+            LinuxVzTelemetryConformanceCaseV1::RawFrameAttachment
+        );
+
+        value["network_target_port"] = serde_json::json!("443");
+        let rebound = serde_json_canonicalizer::to_vec(&value).unwrap();
+        assert_eq!(
+            decode_linux_vz_network_evidence_payload_v1(&rebound),
+            Err(LinuxVzNetworkEvidencePayloadErrorV1::InvalidSchema)
         );
     }
 
