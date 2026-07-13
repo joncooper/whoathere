@@ -70,7 +70,7 @@ impl MacosLinuxVzCandidatePackageRuntimeV1 {
         Ok(value)
     }
 
-    fn validate(&self) -> Result<(), MacosLinuxVzPackageAuthorityRequestErrorV1> {
+    pub(crate) fn validate(&self) -> Result<(), MacosLinuxVzPackageAuthorityRequestErrorV1> {
         let empty = Sha256Digest::from_bytes(&[]);
         if self.rootfs_byte_length == 0
             || self.rootfs_byte_length > MAX_MACOS_LINUX_VZ_CANDIDATE_RUNTIME_ROOTFS_BYTES_V1

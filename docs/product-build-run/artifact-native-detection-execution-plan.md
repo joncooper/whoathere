@@ -41,6 +41,18 @@ candidate passed two unique clone-and-destroy cycles and the full 192-test Swift
 booted with the rootfs, so this is not runtime qualification and execution remains unavailable. See
 the [package-runtime clone preflight checkpoint](artifact-native-linux-vz-package-runtime-clone-preflight-checkpoint-2026-07-13.md).
 
+A separate canonical runtime-qualification request now binds the qualified telemetry backend,
+exact candidate rootfs/manifest/runner, exact qualification overlay components, fresh challenge,
+unique clone, UID/GID, fixed protected-sensor case, and the only accepted non-executing report. Its
+closed policy requires one writable clone, the host raw-frame sinkhole with no external route, no
+directory shares or public resolver, and destruction after VM stop. Rust rebuild-verification and
+an independent Swift decoder share an exact golden digest and reject noncanonical, rebound,
+open-ended, or authority-elevated requests. The request is deliberately not a grant: package
+execution and sync-back remain unavailable. The current candidate runner does not yet accept the
+sensor-required closed `fork_exec_exit` alias, so its bytes must be rebuilt and re-preflighted before
+the inert physical qualification can start. See the
+[runtime-qualification request checkpoint](artifact-native-linux-vz-runtime-qualification-request-checkpoint-2026-07-13.md).
+
 The first protected-sensor bootstrap now also observes a cgroup-filtered inert fork/exec/exit chain
 whose child runs as UID/GID 65534 and cannot read or write the root-only sensor. This remains
 unsigned bootstrap evidence rather than a conformance receipt. See the

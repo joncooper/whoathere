@@ -15,20 +15,24 @@ use whoathere_detonation::{
 use whoathere_evidence::v2::{canonical_cas_object_key_for_artifact, ArtifactEvidenceSubjectV2};
 use whoathere_macos_vm::{
     build_macos_linux_vz_package_authority_request_v1,
+    build_macos_linux_vz_package_runtime_qualification_request_v1,
     compile_macos_linux_vz_telemetry_conformance_run_spec_v1,
-    decode_and_verify_macos_linux_vz_package_authority_request_v1, expected_terminal_for_case_v1,
-    qualify_macos_linux_vz_telemetry_backend_v1, sign_macos_linux_vz_telemetry_guest_receipt_v1,
-    sign_macos_linux_vz_telemetry_host_receipt_v1,
+    decode_and_verify_macos_linux_vz_package_authority_request_v1,
+    decode_and_verify_macos_linux_vz_package_runtime_qualification_request_v1,
+    expected_terminal_for_case_v1, qualify_macos_linux_vz_telemetry_backend_v1,
+    sign_macos_linux_vz_telemetry_guest_receipt_v1, sign_macos_linux_vz_telemetry_host_receipt_v1,
     verify_macos_linux_vz_telemetry_conformance_case_v1,
     verify_macos_linux_vz_telemetry_guest_receipt_v1,
     verify_macos_linux_vz_telemetry_host_receipt_v1, LinuxVzTelemetryConformanceCaseV1,
     LinuxVzTelemetryConformanceExpectedTerminalV1, LinuxVzTelemetryConformanceObservedTerminalV1,
     LinuxVzTelemetryGuestObservationClaimsV1, LinuxVzTelemetryHostObservationClaimsV1,
     MacosLinuxVzCandidatePackageRuntimeV1, MacosLinuxVzPackageArtifactKindV1,
-    MacosLinuxVzPackageAuthorityRequestErrorV1, MacosLinuxVzTelemetryConformanceChallengeV1,
-    MacosLinuxVzTelemetryEvidenceErrorV1, MacosLinuxVzTelemetryQualificationErrorV1,
-    UnqualifiedMacosLinuxVzTelemetryBackendIdentityV1, VerifiedLinuxVzTelemetryConformanceCaseV1,
-    ALL_LINUX_VZ_TELEMETRY_CONFORMANCE_CASES_V1,
+    MacosLinuxVzPackageAuthorityRequestErrorV1, MacosLinuxVzPackageRuntimeQualificationImageV1,
+    MacosLinuxVzPackageRuntimeQualificationRequestErrorV1,
+    MacosLinuxVzTelemetryConformanceChallengeV1, MacosLinuxVzTelemetryEvidenceErrorV1,
+    MacosLinuxVzTelemetryQualificationErrorV1, UnqualifiedMacosLinuxVzTelemetryBackendIdentityV1,
+    VerifiedLinuxVzTelemetryConformanceCaseV1, ALL_LINUX_VZ_TELEMETRY_CONFORMANCE_CASES_V1,
+    MACOS_LINUX_VZ_PACKAGE_RUNTIME_PROBE_REPORT_V1,
 };
 
 const GUEST_SEED: [u8; 32] = [0x61; 32];
@@ -515,6 +519,162 @@ fn qualified_backend_binds_an_exact_linux_npm_request_without_issuing_authority(
             clone_binding,
         ),
         Err(MacosLinuxVzPackageAuthorityRequestErrorV1::BindingMismatch)
+    );
+}
+
+#[test]
+fn runtime_qualification_binds_one_fixed_probe_without_issuing_execution_authority() {
+    let requirements = ArtifactProtectedTelemetryRequirementsV1::linux_vz_bulk_v1();
+    let backend = build_backend(&requirements, b"inert kernel image");
+    let qualified = qualify_macos_linux_vz_telemetry_backend_v1(
+        &backend,
+        complete_matrix(&requirements, &backend),
+    )
+    .expect("qualified backend");
+    let candidate_runtime = MacosLinuxVzCandidatePackageRuntimeV1::from_exact_bytes(
+        b"inert qualification candidate rootfs bytes",
+        br#"{"schema_version":"whoathere.inert_candidate_runtime_manifest.v1"}"#,
+        b"inert qualification package runner bytes",
+    )
+    .expect("candidate runtime");
+    let qualification_image = MacosLinuxVzPackageRuntimeQualificationImageV1::from_exact_bytes(
+        b"inert runtime qualification initramfs bytes",
+        b"inert runtime qualification guest agent bytes",
+        b"inert runtime qualification guest init bytes",
+        b"inert runtime qualification module bundle bytes",
+    )
+    .expect("qualification image");
+    let challenge = [0x92; 32];
+    let clone_binding = digest(b"unique qualification rootfs clone");
+    let request = build_macos_linux_vz_package_runtime_qualification_request_v1(
+        &qualified,
+        &backend,
+        &candidate_runtime,
+        &qualification_image,
+        challenge,
+        clone_binding.clone(),
+    )
+    .expect("bound runtime qualification request");
+
+    assert!(request.fixed_nonexecuting_probe_permitted());
+    assert!(!request.package_execution_authority_permitted());
+    assert!(!request.sync_back_permitted());
+    assert_eq!(
+        request.qualified_telemetry_backend_sha256(),
+        qualified.qualified_backend_sha256()
+    );
+    assert_eq!(
+        request.runtime_qualification_initramfs_sha256(),
+        qualification_image.initramfs_sha256()
+    );
+    assert_eq!(
+        request.candidate_runtime_rootfs_sha256(),
+        candidate_runtime.rootfs_sha256()
+    );
+    assert_eq!(
+        request.expected_probe_report_sha256(),
+        &Sha256Digest::from_bytes(MACOS_LINUX_VZ_PACKAGE_RUNTIME_PROBE_REPORT_V1)
+    );
+    let text = std::str::from_utf8(request.canonical_json_v1()).expect("request UTF-8");
+    assert!(text.contains("\"operation\":\"fixed_nonexecuting_probe\""));
+    assert_eq!(
+        request.request_sha256().as_str(),
+        "sha256:08cf56cbf44a30bd906efa2fcb72383fe2145a709ffe505cb376f4ddf83d1e0d"
+    );
+    assert!(text.contains("\"protected_sensor_case\":\"fork_exec_exit\""));
+    assert!(text.contains("\"package_runner_argument\":\"fork_exec_exit\""));
+    assert!(text.contains("\"nonexecuting_probe_permitted\":true"));
+    assert!(text.contains("\"execution_authority_issued\":false"));
+    assert!(text.contains("\"package_execution_permitted\":false"));
+    assert!(text.contains("\"sync_back_policy\":\"structurally_absent\""));
+    assert!(!text.contains("capability"));
+    assert!(!text.contains("allow"));
+
+    let verified = decode_and_verify_macos_linux_vz_package_runtime_qualification_request_v1(
+        request.canonical_json_v1(),
+        &qualified,
+        &backend,
+        &candidate_runtime,
+        &qualification_image,
+        challenge,
+        clone_binding.clone(),
+    )
+    .expect("independently verified qualification request");
+    assert_eq!(verified.request_sha256(), request.request_sha256());
+
+    assert_eq!(
+        build_macos_linux_vz_package_runtime_qualification_request_v1(
+            &qualified,
+            &backend,
+            &candidate_runtime,
+            &qualification_image,
+            [0_u8; 32],
+            clone_binding.clone(),
+        ),
+        Err(MacosLinuxVzPackageRuntimeQualificationRequestErrorV1::ChallengeInvalid)
+    );
+    assert_eq!(
+        build_macos_linux_vz_package_runtime_qualification_request_v1(
+            &qualified,
+            &backend,
+            &candidate_runtime,
+            &qualification_image,
+            challenge,
+            candidate_runtime.rootfs_sha256().clone(),
+        ),
+        Err(MacosLinuxVzPackageRuntimeQualificationRequestErrorV1::CloneBindingInvalid)
+    );
+
+    let mut noncanonical = b" ".to_vec();
+    noncanonical.extend_from_slice(request.canonical_json_v1());
+    assert_eq!(
+        decode_and_verify_macos_linux_vz_package_runtime_qualification_request_v1(
+            &noncanonical,
+            &qualified,
+            &backend,
+            &candidate_runtime,
+            &qualification_image,
+            challenge,
+            clone_binding.clone(),
+        ),
+        Err(MacosLinuxVzPackageRuntimeQualificationRequestErrorV1::NonCanonical)
+    );
+
+    let rebound_runtime = MacosLinuxVzCandidatePackageRuntimeV1::from_exact_bytes(
+        b"different inert qualification candidate rootfs bytes",
+        br#"{"schema_version":"whoathere.inert_candidate_runtime_manifest.v1"}"#,
+        b"inert qualification package runner bytes",
+    )
+    .expect("rebound candidate runtime");
+    assert_eq!(
+        decode_and_verify_macos_linux_vz_package_runtime_qualification_request_v1(
+            request.canonical_json_v1(),
+            &qualified,
+            &backend,
+            &rebound_runtime,
+            &qualification_image,
+            challenge,
+            clone_binding.clone(),
+        ),
+        Err(MacosLinuxVzPackageRuntimeQualificationRequestErrorV1::BindingMismatch)
+    );
+
+    let mut elevated: serde_json::Value =
+        serde_json::from_slice(request.canonical_json_v1()).expect("request value");
+    elevated["execution_authority_issued"] = serde_json::json!(true);
+    elevated["package_execution_permitted"] = serde_json::json!(true);
+    let elevated = serde_json_canonicalizer::to_vec(&elevated).expect("elevated request");
+    assert_eq!(
+        decode_and_verify_macos_linux_vz_package_runtime_qualification_request_v1(
+            &elevated,
+            &qualified,
+            &backend,
+            &candidate_runtime,
+            &qualification_image,
+            challenge,
+            clone_binding,
+        ),
+        Err(MacosLinuxVzPackageRuntimeQualificationRequestErrorV1::BindingMismatch)
     );
 }
 
