@@ -242,6 +242,20 @@ runtime, and inert cloud-Mac qualification remain open. No package has executed 
 malicious-package detection score is unchanged. See the
 [workspace and derived-wheel checkpoint](artifact-native-linux-vz-workspace-derived-wheel-checkpoint-2026-07-13.md).
 
+The protected execution path now has a root-sequencer implementation and a sensor-mandatory
+supervisor boundary. The supervisor's direct sensorless entry point is gone: its sealed observer
+must arm before fork, correlate the exact cgroup and blocked leader before release, return complete
+healthy process/file/network evidence bound to a fresh challenge, and tear down successfully. The
+root sequencer consumes the one-attempt authority, executes exact internal and process actions in
+order, stops after a failed process prerequisite, rehashes retained inputs, validates derived-wheel
+and console targets, and proves workspace cleanup. Its canonical transcript deliberately remains
+unsigned and verdict-ineligible. No production protected-observer implementation exists yet, so
+the sequencer cannot currently release a package process. Detailed sensor payload schemas, the
+root sensor service/channel, guest and host signing, a rebuilt qualified runtime, and inert
+cloud-Mac qualification remain open. No package or malware ran and the 7/11 malicious-package
+detection score is unchanged. See the
+[protected sequencer checkpoint](artifact-native-linux-vz-protected-sequencer-checkpoint-2026-07-13.md).
+
 The first protected-sensor bootstrap now also observes a cgroup-filtered inert fork/exec/exit chain
 whose child runs as UID/GID 65534 and cannot read or write the root-only sensor. This remains
 unsigned bootstrap evidence rather than a conformance receipt. See the
@@ -1861,6 +1875,7 @@ Repository evidence:
 - [Linux VZ root materialization checkpoint](artifact-native-linux-vz-root-materialization-checkpoint-2026-07-13.md)
 - [Linux VZ protected process-supervisor checkpoint](artifact-native-linux-vz-protected-process-supervisor-checkpoint-2026-07-13.md)
 - [Linux VZ workspace and derived-wheel checkpoint](artifact-native-linux-vz-workspace-derived-wheel-checkpoint-2026-07-13.md)
+- [Linux VZ protected sequencer checkpoint](artifact-native-linux-vz-protected-sequencer-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification guest-candidate checkpoint](artifact-native-linux-vz-runtime-qualification-guest-candidate-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification host-launcher checkpoint](artifact-native-linux-vz-runtime-qualification-host-launcher-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification physical checkpoint](artifact-native-linux-vz-runtime-qualification-physical-checkpoint-2026-07-13.md)

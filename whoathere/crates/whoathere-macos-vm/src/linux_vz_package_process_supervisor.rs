@@ -1,11 +1,21 @@
+#[cfg(any(target_os = "linux", test))]
+use crate::LinuxVzPackageProcessLaunchContractV1;
+#[cfg(target_os = "linux")]
 use crate::{
-    LinuxVzPackageProcessLaunchContractV1, LinuxVzPackageProcessMeasurementObservationV1,
+    decode_linux_vz_package_process_sensor_correlation_v1,
+    validate_linux_vz_package_protected_sensor_payloads_v1,
+    LinuxVzPackageExpectedProcessSensorCorrelationV1, MeasuredLinuxVzPackageProcessV1,
+};
+use crate::{
+    LinuxVzPackageProcessMeasurementObservationV1, LinuxVzPackageProcessSensorCorrelationV1,
     MacosLinuxVzPackageExecutionActionV1, MacosLinuxVzPackageExecutionProcessPlanV1,
-    MeasuredLinuxVzPackageProcessV1, StructurallyValidatedMacosLinuxVzPackageExecutionRequestV1,
+    StructurallyValidatedMacosLinuxVzPackageExecutionRequestV1,
 };
 use serde::Serialize;
 use std::collections::BTreeSet;
 use std::fmt;
+#[cfg(target_os = "linux")]
+use std::os::fd::RawFd;
 use whoathere_artifact::Sha256Digest;
 
 pub const LINUX_VZ_PACKAGE_PROCESS_SUPERVISOR_EVIDENCE_SCHEMA_V1: &str =
@@ -25,6 +35,9 @@ pub enum LinuxVzPackageProcessSupervisorErrorV1 {
     PipeFailed,
     ForkFailed,
     CgroupMembershipFailed,
+    ProtectedSensorUnavailable,
+    ProtectedSensorCorrelationFailed,
+    ProtectedSensorTeardownFailed,
     ChildSetupFailed,
     WaitFailed,
     OutputFailed,
@@ -53,6 +66,15 @@ impl LinuxVzPackageProcessSupervisorErrorV1 {
             Self::ForkFailed => "linux_vz_package_process_supervisor_fork_failed",
             Self::CgroupMembershipFailed => {
                 "linux_vz_package_process_supervisor_cgroup_membership_failed"
+            }
+            Self::ProtectedSensorUnavailable => {
+                "linux_vz_package_process_supervisor_sensor_unavailable"
+            }
+            Self::ProtectedSensorCorrelationFailed => {
+                "linux_vz_package_process_supervisor_sensor_correlation_failed"
+            }
+            Self::ProtectedSensorTeardownFailed => {
+                "linux_vz_package_process_supervisor_sensor_teardown_failed"
             }
             Self::ChildSetupFailed => "linux_vz_package_process_supervisor_child_setup_failed",
             Self::WaitFailed => "linux_vz_package_process_supervisor_wait_failed",
@@ -126,6 +148,7 @@ struct PackageProcessSupervisorEvidenceWireV1<'a> {
     stage_name: &'a str,
     preexec_measurement_sha256: &'a Sha256Digest,
     postrun_measurement_sha256: &'a Sha256Digest,
+    protected_sensor_correlation_sha256: &'a Sha256Digest,
     cgroup_name: &'a str,
     cgroup_version: &'static str,
     leader_pid: String,
@@ -168,6 +191,7 @@ pub struct LinuxVzPackageProcessSupervisorEvidenceV1 {
     stage_name: String,
     preexec_measurement: LinuxVzPackageProcessMeasurementObservationV1,
     postrun_measurement: LinuxVzPackageProcessMeasurementObservationV1,
+    protected_sensor_correlation_sha256: Sha256Digest,
     cgroup_name: String,
     leader_pid: u32,
     terminal: LinuxVzPackageProcessTerminalV1,
@@ -249,6 +273,10 @@ impl LinuxVzPackageProcessSupervisorEvidenceV1 {
         &self.postrun_measurement
     }
 
+    pub fn protected_sensor_correlation_sha256(&self) -> &Sha256Digest {
+        &self.protected_sensor_correlation_sha256
+    }
+
     pub fn cgroup_name(&self) -> &str {
         &self.cgroup_name
     }
@@ -324,6 +352,103 @@ impl LinuxVzPackageProcessSupervisorEvidenceV1 {
     pub const fn sync_back_permitted(&self) -> bool {
         false
     }
+}
+
+pub struct LinuxVzPackageObservedProcessEvidenceV1 {
+    supervisor: LinuxVzPackageProcessSupervisorEvidenceV1,
+    protected_sensor: LinuxVzPackageProcessSensorCorrelationV1,
+    process_sensor_evidence: Vec<u8>,
+    file_sensor_evidence: Vec<u8>,
+    network_sensor_evidence: Vec<u8>,
+}
+
+impl fmt::Debug for LinuxVzPackageObservedProcessEvidenceV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LinuxVzPackageObservedProcessEvidenceV1")
+            .field("supervisor", &self.supervisor)
+            .field("protected_sensor", &self.protected_sensor)
+            .finish()
+    }
+}
+
+impl LinuxVzPackageObservedProcessEvidenceV1 {
+    pub fn supervisor(&self) -> &LinuxVzPackageProcessSupervisorEvidenceV1 {
+        &self.supervisor
+    }
+
+    pub fn protected_sensor(&self) -> &LinuxVzPackageProcessSensorCorrelationV1 {
+        &self.protected_sensor
+    }
+
+    pub fn process_sensor_evidence(&self) -> &[u8] {
+        &self.process_sensor_evidence
+    }
+
+    pub fn file_sensor_evidence(&self) -> &[u8] {
+        &self.file_sensor_evidence
+    }
+
+    pub fn network_sensor_evidence(&self) -> &[u8] {
+        &self.network_sensor_evidence
+    }
+
+    pub const fn coverage_complete(&self) -> bool {
+        true
+    }
+
+    pub const fn sync_back_permitted(&self) -> bool {
+        false
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub struct LinuxVzPackageProtectedSensorOutputV1 {
+    pub(crate) correlation: Vec<u8>,
+    pub(crate) process_evidence: Vec<u8>,
+    pub(crate) file_evidence: Vec<u8>,
+    pub(crate) network_evidence: Vec<u8>,
+}
+
+/// Crate-sealed process observation boundary.
+///
+/// A production implementation must own a root-protected sensor channel and make abort idempotent.
+/// The process is never released from its blocked child setup until `leader_attached_v1` succeeds.
+#[cfg(target_os = "linux")]
+pub trait LinuxVzPackageProtectedProcessObserverV1:
+    protected_process_observer_seal::Sealed
+{
+    fn sensor_session_challenge_sha256_v1(&self) -> &Sha256Digest;
+
+    fn arm_v1(
+        &mut self,
+        contract: &LinuxVzPackageProcessLaunchContractV1,
+        cgroup_name: &str,
+        cgroup_directory_fd: RawFd,
+    ) -> Result<(), LinuxVzPackageProcessSupervisorErrorV1>;
+
+    fn leader_attached_v1(
+        &mut self,
+        contract: &LinuxVzPackageProcessLaunchContractV1,
+        cgroup_name: &str,
+        leader_pid: u32,
+    ) -> Result<(), LinuxVzPackageProcessSupervisorErrorV1>;
+
+    fn finish_v1(
+        &mut self,
+        contract: &LinuxVzPackageProcessLaunchContractV1,
+        cgroup_name: &str,
+        leader_pid: u32,
+        process_started_monotonic_nanoseconds: u64,
+        process_ended_monotonic_nanoseconds: u64,
+    ) -> Result<LinuxVzPackageProtectedSensorOutputV1, LinuxVzPackageProcessSupervisorErrorV1>;
+
+    fn abort_v1(&mut self) -> Result<(), LinuxVzPackageProcessSupervisorErrorV1>;
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) mod protected_process_observer_seal {
+    pub trait Sealed {}
 }
 
 pub struct LinuxVzPackageScenarioClockV1 {
@@ -512,18 +637,9 @@ pub fn supervise_linux_vz_package_process_v1(
     measured: &mut MeasuredLinuxVzPackageProcessV1,
     scenario_clock: &LinuxVzPackageScenarioClockV1,
     authority: &mut LinuxVzPackageExecutionAttemptAuthorityV1,
-) -> Result<LinuxVzPackageProcessSupervisorEvidenceV1, LinuxVzPackageProcessSupervisorErrorV1> {
-    linux::supervise_v1(contract, measured, scenario_clock, authority)
-}
-
-#[cfg(not(target_os = "linux"))]
-pub fn supervise_linux_vz_package_process_v1(
-    _contract: &LinuxVzPackageProcessLaunchContractV1,
-    _measured: &mut MeasuredLinuxVzPackageProcessV1,
-    _scenario_clock: &LinuxVzPackageScenarioClockV1,
-    _authority: &mut LinuxVzPackageExecutionAttemptAuthorityV1,
-) -> Result<LinuxVzPackageProcessSupervisorEvidenceV1, LinuxVzPackageProcessSupervisorErrorV1> {
-    Err(LinuxVzPackageProcessSupervisorErrorV1::UnsupportedPlatform)
+    observer: &mut dyn LinuxVzPackageProtectedProcessObserverV1,
+) -> Result<LinuxVzPackageObservedProcessEvidenceV1, LinuxVzPackageProcessSupervisorErrorV1> {
+    linux::supervise_v1(contract, measured, scenario_clock, authority, observer)
 }
 
 #[cfg(target_os = "linux")]
@@ -573,7 +689,8 @@ mod linux {
         measured: &mut MeasuredLinuxVzPackageProcessV1,
         scenario_clock: &LinuxVzPackageScenarioClockV1,
         authority: &mut LinuxVzPackageExecutionAttemptAuthorityV1,
-    ) -> Result<LinuxVzPackageProcessSupervisorEvidenceV1, LinuxVzPackageProcessSupervisorErrorV1>
+        observer: &mut dyn LinuxVzPackageProtectedProcessObserverV1,
+    ) -> Result<LinuxVzPackageObservedProcessEvidenceV1, LinuxVzPackageProcessSupervisorErrorV1>
     {
         authority.burn_process_action_v1(contract)?;
         require_supervisor_boundary_v1()?;
@@ -594,214 +711,296 @@ mod linux {
         let preexec_measurement_sha256 = canonical_measurement_sha256_v1(&preexec_measurement)?;
         let prepared = PreparedChildInputsV1::new(contract)?;
         let mut cgroup = ProcessCgroupV1::create(contract)?;
-        let mut pipes = ProcessPipesV1::create()?;
-
-        let started = monotonic_nanoseconds_v1()?;
-        if started >= scenario_clock.deadline_monotonic_nanoseconds {
-            return Err(LinuxVzPackageProcessSupervisorErrorV1::InvalidDeadline);
+        let sensor_session_challenge_sha256 = observer.sensor_session_challenge_sha256_v1().clone();
+        if sensor_session_challenge_sha256 == Sha256Digest::from_bytes(&[]) {
+            return Err(LinuxVzPackageProcessSupervisorErrorV1::ProtectedSensorUnavailable);
         }
-        let parent_pid = unsafe { libc::getpid() };
-        let child = unsafe { libc::fork() };
-        if child < 0 {
-            return Err(LinuxVzPackageProcessSupervisorErrorV1::ForkFailed);
-        }
-        if child == 0 {
-            child_exec_v1(contract, measured, &prepared, &mut pipes, parent_pid);
-        }
-        let leader_pid =
-            u32::try_from(child).map_err(|_| LinuxVzPackageProcessSupervisorErrorV1::ForkFailed)?;
-        pipes.parent_after_fork_v1()?;
+        observer.arm_v1(contract, &cgroup.name, cgroup.directory.as_raw_fd())?;
 
-        let membership_result = cgroup.add_pid_v1(leader_pid);
-        if membership_result.is_err() || pipes.release_child_v1().is_err() {
-            let _ = cgroup.kill_all_v1();
-            let _ = reap_until_no_children_v1(
-                monotonic_nanoseconds_v1()?
-                    .saturating_add(contract.limits().teardown_deadline_milliseconds() * 1_000_000),
-                Some(child),
-                None,
-            );
-            return Err(LinuxVzPackageProcessSupervisorErrorV1::CgroupMembershipFailed);
-        }
+        let result = (|| {
+            let mut pipes = ProcessPipesV1::create()?;
 
-        let mut stdout = BoundedOutputV1::new(contract.limits().stdout_capture_bytes())?;
-        let mut stderr = BoundedOutputV1::new(contract.limits().stderr_capture_bytes())?;
-        let mut leader_status = None;
-        let mut reaped_process_count = 0_u32;
-        let mut deadline_reached = false;
-        let mut background_descendants_observed = false;
-        let mut term_signal_count = 0_u32;
-        let mut cgroup_kill_used = false;
-
-        loop {
-            pipes.drain_outputs_v1(&mut stdout, &mut stderr)?;
-            let reaped = reap_available_v1(Some(child), &mut leader_status)?;
-            reaped_process_count = reaped_process_count
-                .checked_add(reaped)
-                .ok_or(LinuxVzPackageProcessSupervisorErrorV1::LimitExceeded)?;
-            let populated = cgroup.populated_v1()?;
-            let current = monotonic_nanoseconds_v1()?;
-            if leader_status.is_some() {
-                if !populated {
-                    break;
-                }
-                background_descendants_observed = true;
-                term_signal_count = term_signal_count
-                    .checked_add(cgroup.signal_all_v1(libc::SIGTERM)?)
-                    .ok_or(LinuxVzPackageProcessSupervisorErrorV1::LimitExceeded)?;
-                break;
+            let started = monotonic_nanoseconds_v1()?;
+            if started >= scenario_clock.deadline_monotonic_nanoseconds {
+                return Err(LinuxVzPackageProcessSupervisorErrorV1::InvalidDeadline);
             }
-            if current >= scenario_clock.deadline_monotonic_nanoseconds {
-                deadline_reached = true;
-                term_signal_count = term_signal_count
-                    .checked_add(cgroup.signal_all_v1(libc::SIGTERM)?)
-                    .ok_or(LinuxVzPackageProcessSupervisorErrorV1::LimitExceeded)?;
-                break;
+            let parent_pid = unsafe { libc::getpid() };
+            let child = unsafe { libc::fork() };
+            if child < 0 {
+                return Err(LinuxVzPackageProcessSupervisorErrorV1::ForkFailed);
             }
-            pipes.poll_v1(25)?;
-        }
+            if child == 0 {
+                child_exec_v1(contract, measured, &prepared, &mut pipes, parent_pid);
+            }
+            let leader_pid = u32::try_from(child)
+                .map_err(|_| LinuxVzPackageProcessSupervisorErrorV1::ForkFailed)?;
+            pipes.parent_after_fork_v1()?;
 
-        if cgroup.populated_v1()? {
-            let term_deadline = monotonic_nanoseconds_v1()?.saturating_add(
-                contract
-                    .limits()
-                    .term_grace_milliseconds()
-                    .saturating_mul(1_000_000),
-            );
-            while monotonic_nanoseconds_v1()? < term_deadline {
+            if cgroup.add_pid_v1(leader_pid).is_err() {
+                let _ = cgroup.kill_all_v1();
+                let _ = reap_until_no_children_v1(
+                    monotonic_nanoseconds_v1()?.saturating_add(
+                        contract.limits().teardown_deadline_milliseconds() * 1_000_000,
+                    ),
+                    Some(child),
+                    None,
+                );
+                return Err(LinuxVzPackageProcessSupervisorErrorV1::CgroupMembershipFailed);
+            }
+            if observer
+                .leader_attached_v1(contract, &cgroup.name, leader_pid)
+                .is_err()
+            {
+                let _ = cgroup.kill_all_v1();
+                let _ = reap_until_no_children_v1(
+                    monotonic_nanoseconds_v1()?.saturating_add(
+                        contract.limits().teardown_deadline_milliseconds() * 1_000_000,
+                    ),
+                    Some(child),
+                    None,
+                );
+                return Err(
+                    LinuxVzPackageProcessSupervisorErrorV1::ProtectedSensorCorrelationFailed,
+                );
+            }
+            if pipes.release_child_v1().is_err() {
+                let _ = cgroup.kill_all_v1();
+                let _ = reap_until_no_children_v1(
+                    monotonic_nanoseconds_v1()?.saturating_add(
+                        contract.limits().teardown_deadline_milliseconds() * 1_000_000,
+                    ),
+                    Some(child),
+                    None,
+                );
+                return Err(LinuxVzPackageProcessSupervisorErrorV1::CgroupMembershipFailed);
+            }
+
+            let mut stdout = BoundedOutputV1::new(contract.limits().stdout_capture_bytes())?;
+            let mut stderr = BoundedOutputV1::new(contract.limits().stderr_capture_bytes())?;
+            let mut leader_status = None;
+            let mut reaped_process_count = 0_u32;
+            let mut deadline_reached = false;
+            let mut background_descendants_observed = false;
+            let mut term_signal_count = 0_u32;
+            let mut cgroup_kill_used = false;
+
+            loop {
                 pipes.drain_outputs_v1(&mut stdout, &mut stderr)?;
                 let reaped = reap_available_v1(Some(child), &mut leader_status)?;
                 reaped_process_count = reaped_process_count
                     .checked_add(reaped)
                     .ok_or(LinuxVzPackageProcessSupervisorErrorV1::LimitExceeded)?;
-                if !cgroup.populated_v1()? {
+                let populated = cgroup.populated_v1()?;
+                let current = monotonic_nanoseconds_v1()?;
+                if leader_status.is_some() {
+                    if !populated {
+                        break;
+                    }
+                    background_descendants_observed = true;
+                    term_signal_count = term_signal_count
+                        .checked_add(cgroup.signal_all_v1(libc::SIGTERM)?)
+                        .ok_or(LinuxVzPackageProcessSupervisorErrorV1::LimitExceeded)?;
                     break;
                 }
+                if current >= scenario_clock.deadline_monotonic_nanoseconds {
+                    deadline_reached = true;
+                    term_signal_count = term_signal_count
+                        .checked_add(cgroup.signal_all_v1(libc::SIGTERM)?)
+                        .ok_or(LinuxVzPackageProcessSupervisorErrorV1::LimitExceeded)?;
+                    break;
+                }
+                pipes.poll_v1(25)?;
+            }
+
+            if cgroup.populated_v1()? {
+                let term_deadline = monotonic_nanoseconds_v1()?.saturating_add(
+                    contract
+                        .limits()
+                        .term_grace_milliseconds()
+                        .saturating_mul(1_000_000),
+                );
+                while monotonic_nanoseconds_v1()? < term_deadline {
+                    pipes.drain_outputs_v1(&mut stdout, &mut stderr)?;
+                    let reaped = reap_available_v1(Some(child), &mut leader_status)?;
+                    reaped_process_count = reaped_process_count
+                        .checked_add(reaped)
+                        .ok_or(LinuxVzPackageProcessSupervisorErrorV1::LimitExceeded)?;
+                    if !cgroup.populated_v1()? {
+                        break;
+                    }
+                    pipes.poll_v1(10)?;
+                }
+            }
+            if cgroup.populated_v1()? {
+                cgroup.kill_all_v1()?;
+                cgroup_kill_used = true;
+            }
+
+            let teardown_deadline = monotonic_nanoseconds_v1()?.saturating_add(
+                contract
+                    .limits()
+                    .teardown_deadline_milliseconds()
+                    .saturating_mul(1_000_000),
+            );
+            let (additional_reaped, observed_leader_status) =
+                reap_until_no_children_v1(teardown_deadline, Some(child), leader_status)?;
+            reaped_process_count = reaped_process_count
+                .checked_add(additional_reaped)
+                .ok_or(LinuxVzPackageProcessSupervisorErrorV1::LimitExceeded)?;
+            leader_status = observed_leader_status;
+            while cgroup.populated_v1()? && monotonic_nanoseconds_v1()? < teardown_deadline {
+                pipes.drain_outputs_v1(&mut stdout, &mut stderr)?;
+                let reaped = reap_available_v1(Some(child), &mut leader_status)?;
+                reaped_process_count = reaped_process_count
+                    .checked_add(reaped)
+                    .ok_or(LinuxVzPackageProcessSupervisorErrorV1::LimitExceeded)?;
                 pipes.poll_v1(10)?;
             }
-        }
-        if cgroup.populated_v1()? {
-            cgroup.kill_all_v1()?;
-            cgroup_kill_used = true;
-        }
+            if cgroup.populated_v1()? {
+                return Err(LinuxVzPackageProcessSupervisorErrorV1::TeardownFailed);
+            }
+            pipes.drain_to_eof_v1(&mut stdout, &mut stderr, teardown_deadline)?;
+            let child_setup_clean = pipes.child_setup_clean_v1()?;
+            if !child_setup_clean {
+                return Err(LinuxVzPackageProcessSupervisorErrorV1::ChildSetupFailed);
+            }
+            let leader_status =
+                leader_status.ok_or(LinuxVzPackageProcessSupervisorErrorV1::WaitFailed)?;
+            let (terminal, exit_status, termination_signal) = decode_wait_status_v1(leader_status)?;
+            let ended = monotonic_nanoseconds_v1()?;
+            let cgroup_name = cgroup.name.clone();
+            let protected_sensor_result = observer
+                .finish_v1(contract, &cgroup_name, leader_pid, started, ended)
+                .and_then(|output| {
+                    let correlation = decode_linux_vz_package_process_sensor_correlation_v1(
+                        &output.correlation,
+                        LinuxVzPackageExpectedProcessSensorCorrelationV1 {
+                            sensor_session_challenge_sha256: &sensor_session_challenge_sha256,
+                            contract,
+                            cgroup_name: &cgroup_name,
+                            leader_pid,
+                            process_started_monotonic_nanoseconds: started,
+                            process_ended_monotonic_nanoseconds: ended,
+                        },
+                    )
+                    .map_err(|_| {
+                        LinuxVzPackageProcessSupervisorErrorV1::ProtectedSensorCorrelationFailed
+                    })?;
+                    validate_linux_vz_package_protected_sensor_payloads_v1(
+                        &correlation,
+                        &output.process_evidence,
+                        &output.file_evidence,
+                        &output.network_evidence,
+                    )
+                    .map_err(|_| {
+                        LinuxVzPackageProcessSupervisorErrorV1::ProtectedSensorCorrelationFailed
+                    })?;
+                    Ok((correlation, output))
+                });
+            cgroup.remove_v1()?;
+            let (protected_sensor, protected_sensor_output) = protected_sensor_result?;
+            let postrun_measurement = measured
+                .verify_postrun()
+                .map_err(|_| LinuxVzPackageProcessSupervisorErrorV1::PostrunMeasurementFailed)?;
+            let postrun_measurement_sha256 = canonical_measurement_sha256_v1(&postrun_measurement)?;
+            let (stdout_observation, stdout_bytes) = stdout.finish_v1();
+            let (stderr_observation, stderr_bytes) = stderr.finish_v1();
 
-        let teardown_deadline = monotonic_nanoseconds_v1()?.saturating_add(
-            contract
-                .limits()
-                .teardown_deadline_milliseconds()
-                .saturating_mul(1_000_000),
-        );
-        let (additional_reaped, observed_leader_status) =
-            reap_until_no_children_v1(teardown_deadline, Some(child), leader_status)?;
-        reaped_process_count = reaped_process_count
-            .checked_add(additional_reaped)
-            .ok_or(LinuxVzPackageProcessSupervisorErrorV1::LimitExceeded)?;
-        leader_status = observed_leader_status;
-        while cgroup.populated_v1()? && monotonic_nanoseconds_v1()? < teardown_deadline {
-            pipes.drain_outputs_v1(&mut stdout, &mut stderr)?;
-            let reaped = reap_available_v1(Some(child), &mut leader_status)?;
-            reaped_process_count = reaped_process_count
-                .checked_add(reaped)
-                .ok_or(LinuxVzPackageProcessSupervisorErrorV1::LimitExceeded)?;
-            pipes.poll_v1(10)?;
+            let wire = PackageProcessSupervisorEvidenceWireV1 {
+                schema_version: LINUX_VZ_PACKAGE_PROCESS_SUPERVISOR_EVIDENCE_SCHEMA_V1,
+                execution_grant_sha256: authority.execution_grant_sha256(),
+                attempt_binding_sha256: authority.attempt_binding_sha256(),
+                launch_contract_sha256: contract.launch_contract_sha256(),
+                process_plan_sha256: contract.process_plan_sha256(),
+                action_index: contract.action_index().to_string(),
+                stage_name: contract.stage_name(),
+                preexec_measurement_sha256: &preexec_measurement_sha256,
+                postrun_measurement_sha256: &postrun_measurement_sha256,
+                protected_sensor_correlation_sha256: protected_sensor.correlation_sha256(),
+                cgroup_name: &cgroup_name,
+                cgroup_version: "v2",
+                leader_pid: leader_pid.to_string(),
+                package_uid: PACKAGE_UID_V1.to_string(),
+                package_gid: PACKAGE_GID_V1.to_string(),
+                no_supplementary_groups: true,
+                no_new_privileges: true,
+                subreaper_enabled: true,
+                terminal,
+                exit_status: exit_status.map(|value| value.to_string()),
+                termination_signal: termination_signal.map(|value| value.to_string()),
+                started_monotonic_nanoseconds: started.to_string(),
+                ended_monotonic_nanoseconds: ended.to_string(),
+                deadline_monotonic_nanoseconds: scenario_clock
+                    .deadline_monotonic_nanoseconds
+                    .to_string(),
+                deadline_reached,
+                term_signal_count: term_signal_count.to_string(),
+                cgroup_kill_used,
+                background_descendants_observed,
+                reaped_process_count: reaped_process_count.to_string(),
+                stdout: &stdout_observation,
+                stderr: &stderr_observation,
+                child_setup_channel_clean: true,
+                cgroup_empty_after_reap: true,
+                cgroup_removed: true,
+                descendant_teardown_complete: true,
+                public_network_route_present: false,
+                sync_back: false,
+            };
+            let canonical_json = serde_json_canonicalizer::to_vec(&wire)
+                .map_err(|_| LinuxVzPackageProcessSupervisorErrorV1::Serialization)?;
+            if canonical_json.is_empty()
+                || canonical_json.len() > MAX_LINUX_VZ_PACKAGE_PROCESS_SUPERVISOR_EVIDENCE_BYTES_V1
+            {
+                return Err(LinuxVzPackageProcessSupervisorErrorV1::LimitExceeded);
+            }
+            let supervisor = LinuxVzPackageProcessSupervisorEvidenceV1 {
+                evidence_sha256: Sha256Digest::from_bytes(&canonical_json),
+                canonical_json,
+                execution_grant_sha256: authority.execution_grant_sha256().clone(),
+                attempt_binding_sha256: authority.attempt_binding_sha256().clone(),
+                launch_contract_sha256: contract.launch_contract_sha256().clone(),
+                process_plan_sha256: contract.process_plan_sha256().clone(),
+                action_index: contract.action_index(),
+                stage_name: contract.stage_name().to_string(),
+                preexec_measurement,
+                postrun_measurement,
+                protected_sensor_correlation_sha256: protected_sensor.correlation_sha256().clone(),
+                cgroup_name,
+                leader_pid,
+                terminal,
+                exit_status,
+                termination_signal,
+                started_monotonic_nanoseconds: started,
+                ended_monotonic_nanoseconds: ended,
+                deadline_monotonic_nanoseconds: scenario_clock.deadline_monotonic_nanoseconds,
+                deadline_reached,
+                term_signal_count,
+                cgroup_kill_used,
+                background_descendants_observed,
+                reaped_process_count,
+                stdout_observation,
+                stderr_observation,
+                stdout: stdout_bytes,
+                stderr: stderr_bytes,
+            };
+            Ok(LinuxVzPackageObservedProcessEvidenceV1 {
+                supervisor,
+                protected_sensor,
+                process_sensor_evidence: protected_sensor_output.process_evidence,
+                file_sensor_evidence: protected_sensor_output.file_evidence,
+                network_sensor_evidence: protected_sensor_output.network_evidence,
+            })
+        })();
+        match result {
+            Ok(evidence) => Ok(evidence),
+            Err(error) => match observer.abort_v1() {
+                Ok(()) => Err(error),
+                Err(_) => {
+                    Err(LinuxVzPackageProcessSupervisorErrorV1::ProtectedSensorTeardownFailed)
+                }
+            },
         }
-        if cgroup.populated_v1()? {
-            return Err(LinuxVzPackageProcessSupervisorErrorV1::TeardownFailed);
-        }
-        pipes.drain_to_eof_v1(&mut stdout, &mut stderr, teardown_deadline)?;
-        let child_setup_clean = pipes.child_setup_clean_v1()?;
-        cgroup.remove_v1()?;
-        if !child_setup_clean {
-            return Err(LinuxVzPackageProcessSupervisorErrorV1::ChildSetupFailed);
-        }
-        let leader_status =
-            leader_status.ok_or(LinuxVzPackageProcessSupervisorErrorV1::WaitFailed)?;
-        let (terminal, exit_status, termination_signal) = decode_wait_status_v1(leader_status)?;
-        let ended = monotonic_nanoseconds_v1()?;
-        let postrun_measurement = measured
-            .verify_postrun()
-            .map_err(|_| LinuxVzPackageProcessSupervisorErrorV1::PostrunMeasurementFailed)?;
-        let postrun_measurement_sha256 = canonical_measurement_sha256_v1(&postrun_measurement)?;
-        let (stdout_observation, stdout_bytes) = stdout.finish_v1();
-        let (stderr_observation, stderr_bytes) = stderr.finish_v1();
-        let cgroup_name = cgroup.name.clone();
-
-        let wire = PackageProcessSupervisorEvidenceWireV1 {
-            schema_version: LINUX_VZ_PACKAGE_PROCESS_SUPERVISOR_EVIDENCE_SCHEMA_V1,
-            execution_grant_sha256: authority.execution_grant_sha256(),
-            attempt_binding_sha256: authority.attempt_binding_sha256(),
-            launch_contract_sha256: contract.launch_contract_sha256(),
-            process_plan_sha256: contract.process_plan_sha256(),
-            action_index: contract.action_index().to_string(),
-            stage_name: contract.stage_name(),
-            preexec_measurement_sha256: &preexec_measurement_sha256,
-            postrun_measurement_sha256: &postrun_measurement_sha256,
-            cgroup_name: &cgroup_name,
-            cgroup_version: "v2",
-            leader_pid: leader_pid.to_string(),
-            package_uid: PACKAGE_UID_V1.to_string(),
-            package_gid: PACKAGE_GID_V1.to_string(),
-            no_supplementary_groups: true,
-            no_new_privileges: true,
-            subreaper_enabled: true,
-            terminal,
-            exit_status: exit_status.map(|value| value.to_string()),
-            termination_signal: termination_signal.map(|value| value.to_string()),
-            started_monotonic_nanoseconds: started.to_string(),
-            ended_monotonic_nanoseconds: ended.to_string(),
-            deadline_monotonic_nanoseconds: scenario_clock
-                .deadline_monotonic_nanoseconds
-                .to_string(),
-            deadline_reached,
-            term_signal_count: term_signal_count.to_string(),
-            cgroup_kill_used,
-            background_descendants_observed,
-            reaped_process_count: reaped_process_count.to_string(),
-            stdout: &stdout_observation,
-            stderr: &stderr_observation,
-            child_setup_channel_clean: true,
-            cgroup_empty_after_reap: true,
-            cgroup_removed: true,
-            descendant_teardown_complete: true,
-            public_network_route_present: false,
-            sync_back: false,
-        };
-        let canonical_json = serde_json_canonicalizer::to_vec(&wire)
-            .map_err(|_| LinuxVzPackageProcessSupervisorErrorV1::Serialization)?;
-        if canonical_json.is_empty()
-            || canonical_json.len() > MAX_LINUX_VZ_PACKAGE_PROCESS_SUPERVISOR_EVIDENCE_BYTES_V1
-        {
-            return Err(LinuxVzPackageProcessSupervisorErrorV1::LimitExceeded);
-        }
-        Ok(LinuxVzPackageProcessSupervisorEvidenceV1 {
-            evidence_sha256: Sha256Digest::from_bytes(&canonical_json),
-            canonical_json,
-            execution_grant_sha256: authority.execution_grant_sha256().clone(),
-            attempt_binding_sha256: authority.attempt_binding_sha256().clone(),
-            launch_contract_sha256: contract.launch_contract_sha256().clone(),
-            process_plan_sha256: contract.process_plan_sha256().clone(),
-            action_index: contract.action_index(),
-            stage_name: contract.stage_name().to_string(),
-            preexec_measurement,
-            postrun_measurement,
-            cgroup_name,
-            leader_pid,
-            terminal,
-            exit_status,
-            termination_signal,
-            started_monotonic_nanoseconds: started,
-            ended_monotonic_nanoseconds: ended,
-            deadline_monotonic_nanoseconds: scenario_clock.deadline_monotonic_nanoseconds,
-            deadline_reached,
-            term_signal_count,
-            cgroup_kill_used,
-            background_descendants_observed,
-            reaped_process_count,
-            stdout_observation,
-            stderr_observation,
-            stdout: stdout_bytes,
-            stderr: stderr_bytes,
-        })
     }
 
     fn require_supervisor_boundary_v1() -> Result<(), LinuxVzPackageProcessSupervisorErrorV1> {
@@ -1680,6 +1879,9 @@ mod tests {
             LinuxVzPackageProcessSupervisorErrorV1::PipeFailed,
             LinuxVzPackageProcessSupervisorErrorV1::ForkFailed,
             LinuxVzPackageProcessSupervisorErrorV1::CgroupMembershipFailed,
+            LinuxVzPackageProcessSupervisorErrorV1::ProtectedSensorUnavailable,
+            LinuxVzPackageProcessSupervisorErrorV1::ProtectedSensorCorrelationFailed,
+            LinuxVzPackageProcessSupervisorErrorV1::ProtectedSensorTeardownFailed,
             LinuxVzPackageProcessSupervisorErrorV1::ChildSetupFailed,
             LinuxVzPackageProcessSupervisorErrorV1::WaitFailed,
             LinuxVzPackageProcessSupervisorErrorV1::OutputFailed,
