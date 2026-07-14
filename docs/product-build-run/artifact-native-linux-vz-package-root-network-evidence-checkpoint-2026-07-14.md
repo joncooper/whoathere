@@ -2,9 +2,9 @@
 
 Date: 2026-07-14
 
-Status: canonical protected `connect`/`sendto` source payload physically qualified; broader guest
-network intent, transmitted-frame correlation, DNS, HTTP(S), protected transport, and composite
-authentication remain open
+Status: canonical protected `connect`/`sendto` source payload and continuous bounded host-frame
+collector lifecycle physically qualified; broader guest network intent, transmitted-frame
+correlation, DNS, HTTP(S), protected transport, and composite authentication remain open
 
 ## Result
 
@@ -118,6 +118,52 @@ Canonical payloads from the accepted run were:
 Two independently constructed overlay CPIOs and deterministic gzip outputs were byte-identical.
 The verifier passed strict code-signature validation and carried only the macOS virtualization
 entitlement.
+
+## Continuous host-frame collector follow-up
+
+Commit `5d0db42e4a1f23075421608a9d6e69cc1cd1c377` replaces the package qualification
+harness's post-stop-only socket drain with a shared bounded collector. The collector starts before
+VM launch, drains the datagram socket continuously, retains at most a configured number of frames,
+and counts ingress, retention loss, and truncation separately. After the VM stops, the host requests
+collector shutdown; the worker performs a final drain through `EAGAIN` before returning. Socket
+errors and truncation make the sensor unhealthy. Any nonzero dropped or truncated count makes the
+package qualification fail even when the socket itself remained healthy.
+
+The same component now drives the existing 512-frame overflow conformance case, preserving that
+case's explicit 64 retained/448 dropped accounting while removing its private collector copy. Four
+new tests cover a clean final drain, bounded retention overflow, Darwin `recvmsg` truncation flags,
+invalid configuration, and single-use lifecycle. The complete Swift suite passed 204 tests.
+
+The cloud Mac rebuilt the strict verifier from the pushed commit. Its first launch was rejected by
+macOS before VM creation because the fresh binary had not yet been signed with the virtualization
+entitlement. After ad-hoc signing with the repository's minimal entitlement, strict code-signature
+verification passed and the same diskless inert fixture ran successfully. The result schema was
+bumped to `whoathere.linux_vz_package_sensor_bpf_inert_boot_result.v2` and reported:
+
+- `raw_frame_count: 0`;
+- `raw_frame_retained_count: 0`;
+- `raw_frame_dropped_count: 0`;
+- `raw_frame_truncated_count: 0`;
+- `packet_sensor_healthy: true`; and
+- `packet_sensor_terminal: "drained_after_stop"`.
+
+The VM stopped, image hashes remained stable, canonical process/file/network evidence passed the
+strict decoder, and package execution, malware execution, external routing, and sync-back all
+remained false. This result physically qualifies continuous collection and final-drain behavior for
+a non-transmitting fixture. Because both protected guest calls failed before transmission and the
+host observed zero frames, it does not qualify transmitted-frame matching or allow
+`host_frame_correlation_complete` to become true.
+
+Follow-up identities were:
+
+| Component | Bytes | SHA-256 |
+| --- | ---: | --- |
+| Source commit | — | `5d0db42e4a1f23075421608a9d6e69cc1cd1c377` |
+| Signed continuous-collector verifier | 2,911,856 | `a5a8bb0f77df42dc3df95c8b6004977c333ebb905d287d15915c7b10d6b3d0ca` |
+| Accepted sanitized serial transcript | 6,514 | `5167b56beba29b5c2684854d7d2569b8b647685eab02ddb28a7b08c144790862` |
+| Shared host raw-frame collector source | — | `01c7f72966bb72148a12b3726ded2e044a378cce82d03b9d2e4aebe8edf91670` |
+| Package qualification verifier source | — | `7846ea0c63db5140c93a3b9ce8d8dd2cf337d683944a805922914107b08d6c1a` |
+| Signed conformance verifier source | — | `dec638c6395b16884482e7a1c51b40d9e876ad8fde4dec17906b779976dcf5ae` |
 
 Tracked source identities were:
 

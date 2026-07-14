@@ -12,7 +12,12 @@ serialized. A fresh diskless schema-v12 qualification produced two exact events 
 18-event, 10-observation process stream with zero loss. Both calls terminated before transmission
 (`ENETUNREACH` and `EADDRNOTAVAIL`), the independent host raw-frame sink saw zero frames, and the
 strict Mac verifier accepted canonical process, network, and file digests with a stopped VM. No
-package or malware ran. The schema is deliberately honest: `connect`/`sendto` coverage is complete,
+package or malware ran. The host raw-frame reader is now a shared bounded collector that starts
+before the VM, drains continuously, accounts for retention overflow and truncated datagrams, and
+performs a final drain after VM stop. A second physical run reported zero ingress, retained,
+dropped, and truncated frames with a healthy `drained_after_stop` terminal; this qualifies the
+collector lifecycle for the non-transmitting fixture, not host/guest frame correlation. The schema
+is deliberately honest: `connect`/`sendto` coverage is complete,
 but broad guest intent is false and explicitly names additional guest syscalls, host-frame
 correlation, DNS, and HTTP observation as gaps. The root service creates all three canonical
 payloads but still fails closed because broad and host-side network coverage are unavailable.
@@ -1815,9 +1820,11 @@ Current AN-504 subgate (2026-07-14): the cgroup-filtered BPF/process stream phys
 normalizes closed IPv4 `connect` and IPv6 `sendto` intents with explicit loss accounting, and now
 encodes them in a separate canonical payload bound to the canonical process-evidence digest. The
 payload states that broad guest intent is incomplete because additional guest network interfaces
-remain unobserved. Remaining AN-504 work is closing that guest syscall/hook gap, host/guest raw-frame
-correlation for transmitted cases, DNS intent, protected transport, and composite authentication.
-This partial result does not satisfy the Phase 5 exit gate.
+remain unobserved. The host raw-frame sink now drains continuously with bounded retention and
+explicit overflow/truncation health, and that lifecycle passed a physical non-transmitting run.
+Remaining AN-504 work is closing the guest syscall/hook gap, matching controlled transmitted frames
+to protected guest intent, DNS intent, protected transport, and composite authentication. This
+partial result does not satisfy the Phase 5 exit gate.
 
 Exit gate:
 
