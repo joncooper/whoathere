@@ -392,7 +392,7 @@ struct BpfMapInfoPrefixV1 {
 }
 
 #[cfg(target_os = "linux")]
-struct LinuxVzPackageBpfRingBufferV1 {
+pub(crate) struct LinuxVzPackageBpfRingBufferV1 {
     map: OwnedFd,
     consumer_mapping: *mut libc::c_void,
     consumer_mapping_length: usize,
@@ -431,7 +431,7 @@ impl Drop for LinuxVzPackageBpfRingBufferV1 {
 
 #[cfg(target_os = "linux")]
 impl LinuxVzPackageBpfRingBufferV1 {
-    fn from_map_v1(
+    pub(crate) fn from_map_v1(
         map: OwnedFd,
         expected_capacity: usize,
     ) -> Result<Self, LinuxVzPackageSensorEventStreamErrorV1> {
@@ -504,7 +504,7 @@ impl LinuxVzPackageBpfRingBufferV1 {
         })
     }
 
-    fn drain_available_v1(
+    pub(crate) fn drain_available_v1(
         &mut self,
         expected_cgroup_id: u64,
         maximum_records: usize,
@@ -582,15 +582,15 @@ impl LinuxVzPackageBpfRingBufferV1 {
         Ok(events)
     }
 
-    const fn last_source_sequence(&self) -> u64 {
+    pub(crate) const fn last_source_sequence(&self) -> u64 {
         self.last_source_sequence
     }
 
-    const fn discarded_record_count(&self) -> u64 {
+    pub(crate) const fn discarded_record_count(&self) -> u64 {
         self.discarded_record_count
     }
 
-    fn map_descriptor(&self) -> &OwnedFd {
+    pub(crate) fn map_descriptor(&self) -> &OwnedFd {
         &self.map
     }
 }

@@ -308,6 +308,16 @@ cross-compiled; this is not behavior observation or a detection improvement. No 
 cloud host, or malware ran and the 7/11 score is unchanged. See the
 [package sensor event-stream checkpoint](artifact-native-linux-vz-package-sensor-event-stream-checkpoint-2026-07-13.md).
 
+The first generated BPF producer slice now strictly parses and hashes the pinned guest's lifecycle
+tracepoint layouts, creates protected cgroup-configuration, ring-buffer, and atomic drop-counter
+maps, and generates fully initialized fixed-record programs filtered to the exact package cgroup.
+Each program is attached through perf events on every strictly parsed online guest CPU. Native and
+Linux/aarch64 warnings-denied builds pass, but the producer has not yet been accepted by a physical
+guest kernel or connected to the service driver. This is therefore an implemented producer
+candidate, not observed behavior or a detection improvement. No package or malware ran and the
+7/11 score is unchanged. See the
+[package sensor BPF producer checkpoint](artifact-native-linux-vz-package-sensor-bpf-producer-checkpoint-2026-07-14.md).
+
 The first protected-sensor bootstrap now also observes a cgroup-filtered inert fork/exec/exit chain
 whose child runs as UID/GID 65534 and cannot read or write the root-only sensor. This remains
 unsigned bootstrap evidence rather than a conformance receipt. See the
@@ -801,6 +811,11 @@ These are architectural gaps, not four missing signatures.
 - Controlled Cloudflare Sandbox and AWS Lambda MicroVM evaluation after local correctness.
 - Restricted-lab real-malware regression, benign controls, and held-out evaluation.
 - A single user-facing artifact/intake workflow and machine-readable evidence.
+
+For this project, **all real-malware execution is restricted to the approved cloud Mac and must
+occur inside a fresh disposable Linux VZ guest**. Real malware must never execute on an operator's
+local Mac, in a local development workspace, or in Docker. Access to the cloud Mac does not itself
+authorize a campaign; every real-malware run still requires the separate reviewed lab gate below.
 
 ### 4.2 Explicitly out of scope for this milestone
 
@@ -1326,6 +1341,8 @@ Commit only inert semantic fixtures that exercise the same package structures an
 ### 13.2 Restricted known-malware regression
 
 - Raw samples remain outside git in the approved custody store.
+- Execute real malware only on the approved cloud Mac, inside a fresh disposable Linux VZ guest;
+  never execute it on an operator's local Mac, in this workspace, or in Docker.
 - Git stores only sanitized sample ids, exact hashes where policy allows, trigger labels, expected
   behavior classes, and sealed evidence references.
 - Real-malware execution requires the separate reviewed lab gate; creating this plan or its goal does
@@ -1930,6 +1947,7 @@ Repository evidence:
 - [Linux VZ protected sequencer checkpoint](artifact-native-linux-vz-protected-sequencer-checkpoint-2026-07-13.md)
 - [Linux VZ package sensor-service driver checkpoint](artifact-native-linux-vz-package-sensor-service-driver-checkpoint-2026-07-13.md)
 - [Linux VZ package sensor event-stream checkpoint](artifact-native-linux-vz-package-sensor-event-stream-checkpoint-2026-07-13.md)
+- [Linux VZ package sensor BPF producer checkpoint](artifact-native-linux-vz-package-sensor-bpf-producer-checkpoint-2026-07-14.md)
 - [Linux VZ runtime-qualification guest-candidate checkpoint](artifact-native-linux-vz-runtime-qualification-guest-candidate-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification host-launcher checkpoint](artifact-native-linux-vz-runtime-qualification-host-launcher-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification physical checkpoint](artifact-native-linux-vz-runtime-qualification-physical-checkpoint-2026-07-13.md)
