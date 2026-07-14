@@ -4,21 +4,21 @@ Date: 2026-07-09
 
 Status: canonical execution plan for the next product milestone
 
-Current execution checkpoint (2026-07-14): the protected guest BPF source now captures exact
-`connect` and `sendto` socket-address intent for closed IPv4/IPv6 shapes while leaving pointer
-arguments redacted. It normalizes family, port, and address for the cgroup-correlated in-memory
-stream; a failed user-memory read, unknown family, or wrong length discards the reserved ring record
-and increments protected loss instead of emitting partial evidence. A fresh diskless schema-v11
-qualification produced one IPv4 connect intent and one IPv6 send intent in a contiguous 18-event,
-10-observation process stream with zero loss. Both syscalls terminated before transmission
+Current execution checkpoint (2026-07-14): the protected guest source now emits a separate strict,
+canonical, process-evidence-bound root network payload for the exact `connect`/`sendto` slice. Each
+event binds its family, destination class, port, redacted destination token, process/cgroup,
+entry/exit sequence and time, CPU, and syscall result; raw addresses and pointer arguments are not
+serialized. A fresh diskless schema-v12 qualification produced two exact events in a contiguous
+18-event, 10-observation process stream with zero loss. Both calls terminated before transmission
 (`ENETUNREACH` and `EADDRNOTAVAIL`), the independent host raw-frame sink saw zero frames, and the
-strict Mac verifier accepted the complete process/file result with a stopped VM. No package or
-malware ran. This is the network-intent source subgate, not the complete network collector: exact
-targets are not yet encoded in a canonical root network payload, host/guest frame correlation and
-DNS/HTTP(S) observation remain open, and the root service still reports network evidence
-unavailable. Protected payload transport, composite authentication, runtime scenarios, benign
-scoring, and malicious regression also remain open; the July score remains 7/11. See the
-[protected network-intent source checkpoint](artifact-native-linux-vz-package-network-intent-source-checkpoint-2026-07-14.md).
+strict Mac verifier accepted canonical process, network, and file digests with a stopped VM. No
+package or malware ran. The schema is deliberately honest: `connect`/`sendto` coverage is complete,
+but broad guest intent is false and explicitly names additional guest syscalls, host-frame
+correlation, DNS, and HTTP observation as gaps. The root service creates all three canonical
+payloads but still fails closed because broad and host-side network coverage are unavailable.
+Protected transport, composite authentication, runtime scenarios, benign scoring, and malicious
+regression remain open; the July score remains 7/11. See the
+[canonical root network-evidence checkpoint](artifact-native-linux-vz-package-root-network-evidence-checkpoint-2026-07-14.md).
 
 The preceding checkpoint made the concrete root service compose process and file
 collectors for one action. The file collector continuously drains cgroup-correlated fanotify
@@ -1812,10 +1812,12 @@ Work packages:
   forge a clean envelope, disable the sensor without detection, or reuse stale evidence.
 
 Current AN-504 subgate (2026-07-14): the cgroup-filtered BPF/process stream physically captures and
-normalizes closed IPv4 `connect` and IPv6 `sendto` intents with explicit loss accounting. Remaining
-AN-504 work is a canonical root network payload, host/guest raw-frame correlation for transmitted
-cases, DNS intent, protected transport, and composite authentication. This partial result does not
-satisfy the Phase 5 exit gate.
+normalizes closed IPv4 `connect` and IPv6 `sendto` intents with explicit loss accounting, and now
+encodes them in a separate canonical payload bound to the canonical process-evidence digest. The
+payload states that broad guest intent is incomplete because additional guest network interfaces
+remain unobserved. Remaining AN-504 work is closing that guest syscall/hook gap, host/guest raw-frame
+correlation for transmitted cases, DNS intent, protected transport, and composite authentication.
+This partial result does not satisfy the Phase 5 exit gate.
 
 Exit gate:
 
@@ -2174,6 +2176,7 @@ Repository evidence:
 - [Linux VZ package canonical root process-evidence checkpoint](artifact-native-linux-vz-package-root-process-evidence-checkpoint-2026-07-14.md)
 - [Linux VZ package canonical root file-evidence checkpoint](artifact-native-linux-vz-package-root-file-evidence-checkpoint-2026-07-14.md)
 - [Linux VZ package protected network-intent source checkpoint](artifact-native-linux-vz-package-network-intent-source-checkpoint-2026-07-14.md)
+- [Linux VZ package canonical root network-evidence checkpoint](artifact-native-linux-vz-package-root-network-evidence-checkpoint-2026-07-14.md)
 - [Linux VZ runtime-qualification guest-candidate checkpoint](artifact-native-linux-vz-runtime-qualification-guest-candidate-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification host-launcher checkpoint](artifact-native-linux-vz-runtime-qualification-host-launcher-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification physical checkpoint](artifact-native-linux-vz-runtime-qualification-physical-checkpoint-2026-07-13.md)
