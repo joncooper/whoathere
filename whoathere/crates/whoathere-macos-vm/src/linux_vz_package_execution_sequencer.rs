@@ -144,6 +144,7 @@ struct ProcessSummaryWireV1<'a> {
     stage_name: &'a str,
     supervisor_evidence_sha256: &'a Sha256Digest,
     protected_sensor_correlation_sha256: &'a Sha256Digest,
+    protected_sensor_payload_set_sha256: &'a Sha256Digest,
     sensor_session_challenge_sha256: &'a Sha256Digest,
     terminal: LinuxVzPackageProcessTerminalV1,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -800,6 +801,9 @@ fn build_transcript_wire_v1<'a>(
                 stage_name: value.supervisor().stage_name(),
                 supervisor_evidence_sha256: value.supervisor().evidence_sha256(),
                 protected_sensor_correlation_sha256: value.protected_sensor().correlation_sha256(),
+                protected_sensor_payload_set_sha256: value
+                    .protected_sensor_payloads()
+                    .payload_set_sha256(),
                 sensor_session_challenge_sha256: value
                     .protected_sensor()
                     .sensor_session_challenge_sha256(),

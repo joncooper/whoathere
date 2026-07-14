@@ -256,6 +256,19 @@ cloud-Mac qualification remain open. No package or malware ran and the 7/11 mali
 detection score is unchanged. See the
 [protected sequencer checkpoint](artifact-native-linux-vz-protected-sequencer-checkpoint-2026-07-13.md).
 
+The package-scenario sensor boundary now rejects opaque digest-matching blobs. Process, file, and
+network payloads each use a closed canonical schema with the same fresh challenge, plan, launch,
+action, cgroup, leader, and package-credential binding. The three streams share one gap-free global
+sequence and strict monotonic timing. A valid process stream must contain the exact leader
+fork/exec/exit lifecycle; a valid file stream must contain one post-exit filesystem diff before
+sensor teardown; and the network stream preserves typed DNS (including TXT), connection, send,
+HTTP, listener, destination-class, and controlled outcome facts without raw names, addresses, or
+hosts in sanitized evidence. The supervisor now semantically decodes this payload set after digest
+correlation and before returning evidence. No production observer or protected sensor channel
+exists yet, and the resulting sequence transcript remains unsigned and verdict-ineligible. No
+package or malware ran and the 7/11 malicious-package detection score is unchanged. See the
+[package sensor-payload checkpoint](artifact-native-linux-vz-package-sensor-payload-checkpoint-2026-07-13.md).
+
 The first protected-sensor bootstrap now also observes a cgroup-filtered inert fork/exec/exit chain
 whose child runs as UID/GID 65534 and cannot read or write the root-only sensor. This remains
 unsigned bootstrap evidence rather than a conformance receipt. See the

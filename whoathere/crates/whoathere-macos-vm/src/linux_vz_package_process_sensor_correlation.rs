@@ -138,10 +138,15 @@ pub struct LinuxVzPackageProcessSensorCorrelationV1 {
     cgroup_name: String,
     cgroup_id: u64,
     leader_pid: u32,
+    sensor_started_monotonic_nanoseconds: u64,
+    process_started_monotonic_nanoseconds: u64,
+    process_ended_monotonic_nanoseconds: u64,
+    sensor_ended_monotonic_nanoseconds: u64,
     event_count: u64,
     process_event_count: u64,
     file_event_count: u64,
     network_event_count: u64,
+    heartbeat_count: u64,
     process_evidence_sha256: Sha256Digest,
     file_evidence_sha256: Sha256Digest,
     network_evidence_sha256: Sha256Digest,
@@ -200,6 +205,22 @@ impl LinuxVzPackageProcessSensorCorrelationV1 {
         self.leader_pid
     }
 
+    pub const fn sensor_started_monotonic_nanoseconds(&self) -> u64 {
+        self.sensor_started_monotonic_nanoseconds
+    }
+
+    pub const fn process_started_monotonic_nanoseconds(&self) -> u64 {
+        self.process_started_monotonic_nanoseconds
+    }
+
+    pub const fn process_ended_monotonic_nanoseconds(&self) -> u64 {
+        self.process_ended_monotonic_nanoseconds
+    }
+
+    pub const fn sensor_ended_monotonic_nanoseconds(&self) -> u64 {
+        self.sensor_ended_monotonic_nanoseconds
+    }
+
     pub const fn event_count(&self) -> u64 {
         self.event_count
     }
@@ -214,6 +235,10 @@ impl LinuxVzPackageProcessSensorCorrelationV1 {
 
     pub const fn network_event_count(&self) -> u64 {
         self.network_event_count
+    }
+
+    pub const fn heartbeat_count(&self) -> u64 {
+        self.heartbeat_count
     }
 
     pub fn process_evidence_sha256(&self) -> &Sha256Digest {
@@ -320,7 +345,8 @@ pub(crate) fn decode_linux_vz_package_process_sensor_correlation_v1(
         .and_then(|value| value.checked_add(network_event_count))
         .ok_or(LinuxVzPackageProcessSensorCorrelationErrorV1::InvalidCounts)?;
     let empty_digest = Sha256Digest::from_bytes(&[]);
-    if process_event_count < 2
+    if process_event_count < 3
+        || file_event_count < 1
         || event_count != summed_event_count
         || event_sequence_start != 1
         || event_sequence_end != event_count
@@ -348,10 +374,15 @@ pub(crate) fn decode_linux_vz_package_process_sensor_correlation_v1(
         cgroup_name: wire.cgroup_name,
         cgroup_id,
         leader_pid,
+        sensor_started_monotonic_nanoseconds: sensor_started,
+        process_started_monotonic_nanoseconds: process_started,
+        process_ended_monotonic_nanoseconds: process_ended,
+        sensor_ended_monotonic_nanoseconds: sensor_ended,
         event_count,
         process_event_count,
         file_event_count,
         network_event_count,
+        heartbeat_count,
         process_evidence_sha256: wire.process_evidence_sha256,
         file_evidence_sha256: wire.file_evidence_sha256,
         network_evidence_sha256: wire.network_evidence_sha256,
@@ -438,11 +469,11 @@ mod tests {
             "cgroup_present_during_sensor_finalize": true,
             "descendant_teardown_complete": true,
             "dropped_event_count": "0",
-            "event_count": "2",
-            "event_sequence_end": "2",
+            "event_count": "4",
+            "event_sequence_end": "4",
             "event_sequence_start": "1",
             "evidence_truncated": false,
-            "file_event_count": "0",
+            "file_event_count": "1",
             "file_evidence_sha256": Sha256Digest::from_bytes(b"empty file evidence payload"),
             "file_sensor_healthy": true,
             "heartbeat_count": "2",
@@ -455,7 +486,7 @@ mod tests {
             "package_gid": "65534",
             "package_uid": "65534",
             "process_ended_monotonic_nanoseconds": "300",
-            "process_event_count": "2",
+            "process_event_count": "3",
             "process_evidence_sha256": Sha256Digest::from_bytes(b"exec and exit evidence payload"),
             "process_plan_sha256": contract.process_plan_sha256(),
             "process_sensor_healthy": true,
@@ -497,7 +528,8 @@ mod tests {
         .expect("correlation");
         assert_eq!(observed.leader_pid(), 42);
         assert_eq!(observed.cgroup_id(), 9001);
-        assert_eq!(observed.process_event_count(), 2);
+        assert_eq!(observed.process_event_count(), 3);
+        assert_eq!(observed.file_event_count(), 1);
         assert!(observed.coverage_complete());
         assert!(!observed.sync_back_permitted());
         assert_eq!(
@@ -561,7 +593,7 @@ mod tests {
         );
         let mut value: serde_json::Value =
             serde_json::from_slice(&payload_v1(&contract, &challenge)).expect("JSON");
-        value["file_event_count"] = serde_json::json!("1");
+        value["file_event_count"] = serde_json::json!("2");
         let changed = serde_json_canonicalizer::to_vec(&value).expect("changed");
         assert_eq!(
             decode_linux_vz_package_process_sensor_correlation_v1(

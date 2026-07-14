@@ -3,12 +3,14 @@ use crate::LinuxVzPackageProcessLaunchContractV1;
 #[cfg(target_os = "linux")]
 use crate::{
     decode_linux_vz_package_process_sensor_correlation_v1,
+    decode_linux_vz_package_protected_sensor_payload_set_v1,
     validate_linux_vz_package_protected_sensor_payloads_v1,
     LinuxVzPackageExpectedProcessSensorCorrelationV1, MeasuredLinuxVzPackageProcessV1,
 };
 use crate::{
     LinuxVzPackageProcessMeasurementObservationV1, LinuxVzPackageProcessSensorCorrelationV1,
-    MacosLinuxVzPackageExecutionActionV1, MacosLinuxVzPackageExecutionProcessPlanV1,
+    LinuxVzPackageProtectedSensorPayloadSetV1, MacosLinuxVzPackageExecutionActionV1,
+    MacosLinuxVzPackageExecutionProcessPlanV1,
     StructurallyValidatedMacosLinuxVzPackageExecutionRequestV1,
 };
 use serde::Serialize;
@@ -149,6 +151,7 @@ struct PackageProcessSupervisorEvidenceWireV1<'a> {
     preexec_measurement_sha256: &'a Sha256Digest,
     postrun_measurement_sha256: &'a Sha256Digest,
     protected_sensor_correlation_sha256: &'a Sha256Digest,
+    protected_sensor_payload_set_sha256: &'a Sha256Digest,
     cgroup_name: &'a str,
     cgroup_version: &'static str,
     leader_pid: String,
@@ -192,6 +195,7 @@ pub struct LinuxVzPackageProcessSupervisorEvidenceV1 {
     preexec_measurement: LinuxVzPackageProcessMeasurementObservationV1,
     postrun_measurement: LinuxVzPackageProcessMeasurementObservationV1,
     protected_sensor_correlation_sha256: Sha256Digest,
+    protected_sensor_payload_set_sha256: Sha256Digest,
     cgroup_name: String,
     leader_pid: u32,
     terminal: LinuxVzPackageProcessTerminalV1,
@@ -277,6 +281,10 @@ impl LinuxVzPackageProcessSupervisorEvidenceV1 {
         &self.protected_sensor_correlation_sha256
     }
 
+    pub fn protected_sensor_payload_set_sha256(&self) -> &Sha256Digest {
+        &self.protected_sensor_payload_set_sha256
+    }
+
     pub fn cgroup_name(&self) -> &str {
         &self.cgroup_name
     }
@@ -357,9 +365,7 @@ impl LinuxVzPackageProcessSupervisorEvidenceV1 {
 pub struct LinuxVzPackageObservedProcessEvidenceV1 {
     supervisor: LinuxVzPackageProcessSupervisorEvidenceV1,
     protected_sensor: LinuxVzPackageProcessSensorCorrelationV1,
-    process_sensor_evidence: Vec<u8>,
-    file_sensor_evidence: Vec<u8>,
-    network_sensor_evidence: Vec<u8>,
+    protected_sensor_payloads: LinuxVzPackageProtectedSensorPayloadSetV1,
 }
 
 impl fmt::Debug for LinuxVzPackageObservedProcessEvidenceV1 {
@@ -382,15 +388,19 @@ impl LinuxVzPackageObservedProcessEvidenceV1 {
     }
 
     pub fn process_sensor_evidence(&self) -> &[u8] {
-        &self.process_sensor_evidence
+        self.protected_sensor_payloads.process().canonical_json_v1()
     }
 
     pub fn file_sensor_evidence(&self) -> &[u8] {
-        &self.file_sensor_evidence
+        self.protected_sensor_payloads.file().canonical_json_v1()
     }
 
     pub fn network_sensor_evidence(&self) -> &[u8] {
-        &self.network_sensor_evidence
+        self.protected_sensor_payloads.network().canonical_json_v1()
+    }
+
+    pub fn protected_sensor_payloads(&self) -> &LinuxVzPackageProtectedSensorPayloadSetV1 {
+        &self.protected_sensor_payloads
     }
 
     pub const fn coverage_complete(&self) -> bool {
@@ -895,10 +905,19 @@ mod linux {
                     .map_err(|_| {
                         LinuxVzPackageProcessSupervisorErrorV1::ProtectedSensorCorrelationFailed
                     })?;
-                    Ok((correlation, output))
+                    let payloads = decode_linux_vz_package_protected_sensor_payload_set_v1(
+                        &correlation,
+                        &output.process_evidence,
+                        &output.file_evidence,
+                        &output.network_evidence,
+                    )
+                    .map_err(|_| {
+                        LinuxVzPackageProcessSupervisorErrorV1::ProtectedSensorCorrelationFailed
+                    })?;
+                    Ok((correlation, payloads))
                 });
             cgroup.remove_v1()?;
-            let (protected_sensor, protected_sensor_output) = protected_sensor_result?;
+            let (protected_sensor, protected_sensor_payloads) = protected_sensor_result?;
             let postrun_measurement = measured
                 .verify_postrun()
                 .map_err(|_| LinuxVzPackageProcessSupervisorErrorV1::PostrunMeasurementFailed)?;
@@ -917,6 +936,7 @@ mod linux {
                 preexec_measurement_sha256: &preexec_measurement_sha256,
                 postrun_measurement_sha256: &postrun_measurement_sha256,
                 protected_sensor_correlation_sha256: protected_sensor.correlation_sha256(),
+                protected_sensor_payload_set_sha256: protected_sensor_payloads.payload_set_sha256(),
                 cgroup_name: &cgroup_name,
                 cgroup_version: "v2",
                 leader_pid: leader_pid.to_string(),
@@ -966,6 +986,9 @@ mod linux {
                 preexec_measurement,
                 postrun_measurement,
                 protected_sensor_correlation_sha256: protected_sensor.correlation_sha256().clone(),
+                protected_sensor_payload_set_sha256: protected_sensor_payloads
+                    .payload_set_sha256()
+                    .clone(),
                 cgroup_name,
                 leader_pid,
                 terminal,
@@ -987,9 +1010,7 @@ mod linux {
             Ok(LinuxVzPackageObservedProcessEvidenceV1 {
                 supervisor,
                 protected_sensor,
-                process_sensor_evidence: protected_sensor_output.process_evidence,
-                file_sensor_evidence: protected_sensor_output.file_evidence,
-                network_sensor_evidence: protected_sensor_output.network_evidence,
+                protected_sensor_payloads,
             })
         })();
         match result {
