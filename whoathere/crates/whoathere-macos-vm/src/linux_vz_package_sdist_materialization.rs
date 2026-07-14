@@ -1,3 +1,7 @@
+// Darwin exposes several stat mode constants narrower than `u32`, while Linux exposes them as
+// `u32`; the explicit conversions keep this descriptor code identical on both targets.
+#![allow(clippy::useless_conversion)]
+
 use crate::{
     LinuxVzPackageMaterializationPolicyV1, MacosLinuxVzPackageExecutionActionV1,
     MacosLinuxVzPackageExecutionProcessPlanV1, MacosLinuxVzPackageInternalActionV1,

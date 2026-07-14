@@ -6,7 +6,7 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 use std::fmt;
 use whoathere_artifact::{ArtifactFormat, Sha256Digest};
-use whoathere_detonation::{NpmEnvironmentProfileV1, SdistBuildModeV1};
+use whoathere_detonation::{ArtifactScenarioLimitsV1, NpmEnvironmentProfileV1, SdistBuildModeV1};
 
 pub const MACOS_LINUX_VZ_PACKAGE_EXECUTION_PROCESS_PLAN_SCHEMA_V1: &str =
     "whoathere.macos_linux_vz_package_execution_process_plan.v1";
@@ -133,6 +133,14 @@ impl MacosLinuxVzPackageFixedProcessV1 {
     pub fn measured_inputs(&self) -> &[MacosLinuxVzPackageMeasuredProcessInputV1] {
         &self.measured_inputs
     }
+
+    pub const fn environment_policy(&self) -> MacosLinuxVzPackageProcessEnvironmentPolicyV1 {
+        self.environment_policy
+    }
+
+    pub const fn stdio_policy(&self) -> MacosLinuxVzPackageProcessStdioPolicyV1 {
+        self.stdio_policy
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -182,6 +190,7 @@ struct PackageExecutionProcessPlanWireV1<'a> {
     artifact_byte_length: String,
     operation: &'a str,
     actions: &'a [MacosLinuxVzPackageExecutionActionV1],
+    limits: &'a ArtifactScenarioLimitsV1,
     caller_process_input_present: bool,
     environment_policy: MacosLinuxVzPackageProcessEnvironmentPolicyV1,
     stdio_policy: MacosLinuxVzPackageProcessStdioPolicyV1,
@@ -196,9 +205,11 @@ pub struct MacosLinuxVzPackageExecutionProcessPlanV1 {
     canonical_json: Vec<u8>,
     process_plan_sha256: Sha256Digest,
     execution_program_sha256: Sha256Digest,
+    execution_request_sha256: Sha256Digest,
     artifact_sha256: Sha256Digest,
     artifact_byte_length: u64,
     actions: Vec<MacosLinuxVzPackageExecutionActionV1>,
+    limits: ArtifactScenarioLimitsV1,
 }
 
 impl fmt::Debug for MacosLinuxVzPackageExecutionProcessPlanV1 {
@@ -225,6 +236,10 @@ impl MacosLinuxVzPackageExecutionProcessPlanV1 {
         &self.execution_program_sha256
     }
 
+    pub fn execution_request_sha256(&self) -> &Sha256Digest {
+        &self.execution_request_sha256
+    }
+
     pub fn artifact_sha256(&self) -> &Sha256Digest {
         &self.artifact_sha256
     }
@@ -235,6 +250,10 @@ impl MacosLinuxVzPackageExecutionProcessPlanV1 {
 
     pub fn actions(&self) -> &[MacosLinuxVzPackageExecutionActionV1] {
         &self.actions
+    }
+
+    pub fn limits(&self) -> &ArtifactScenarioLimitsV1 {
+        &self.limits
     }
 
     pub const fn package_execution_authority_permitted(&self) -> bool {
@@ -305,6 +324,7 @@ pub fn derive_macos_linux_vz_package_execution_process_plan_v1(
         artifact_byte_length: program.artifact_byte_length().to_string(),
         operation: program.operation_name(),
         actions: &actions,
+        limits: program.limits(),
         caller_process_input_present: false,
         environment_policy: MacosLinuxVzPackageProcessEnvironmentPolicyV1::ClearThenExactMap,
         stdio_policy: MacosLinuxVzPackageProcessStdioPolicyV1::NullStdinBoundedCapturedOutput,
@@ -324,9 +344,11 @@ pub fn derive_macos_linux_vz_package_execution_process_plan_v1(
         process_plan_sha256: Sha256Digest::from_bytes(&canonical_json),
         canonical_json,
         execution_program_sha256: program.program_sha256().clone(),
+        execution_request_sha256: program.execution_request_sha256().clone(),
         artifact_sha256: program.artifact_sha256().clone(),
         artifact_byte_length: program.artifact_byte_length(),
         actions,
+        limits: program.limits().clone(),
     })
 }
 

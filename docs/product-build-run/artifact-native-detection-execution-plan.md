@@ -212,6 +212,22 @@ runtime image, and physical inert qualification remain open. The 7/11 malicious-
 score is unchanged. See the
 [root materialization checkpoint](artifact-native-linux-vz-root-materialization-checkpoint-2026-07-13.md).
 
+The fixed process actions now also derive canonical launch contracts that bind exact argv,
+clear-then-exact environments, measured executable/input identities, whole-scenario limits, cgroup
+limits, rlimits, bounded output, package credentials, and descendant teardown without granting
+launch authority. A separate one-attempt authority binds the already consumed execution grant and
+burns each process action before any launch work. The Linux/aarch64 implementation uses no-symlink
+`openat2`, root-seals package-generated executable copies after digest validation, retains and
+remeasures exact file descriptors, releases a blocked child only after verified cgroup-v2
+membership, drops to UID/GID 65534 with no supplementary groups and no-new-privileges, executes the
+retained FD, and requires TERM/KILL/reap/empty/remove teardown with complete-stream hashes and
+bounded captures. Native and Linux/aarch64 warnings-denied builds pass, but the code is not yet
+wired to the protected agent or physically exercised. Derived-wheel/console validators, protected
+sensor correlation, signed evidence, a rebuilt qualified runtime, and inert cloud-Mac qualification
+remain open. No package has executed and the 7/11 malicious-package detection score is unchanged.
+See the
+[protected process-supervisor checkpoint](artifact-native-linux-vz-protected-process-supervisor-checkpoint-2026-07-13.md).
+
 The first protected-sensor bootstrap now also observes a cgroup-filtered inert fork/exec/exit chain
 whose child runs as UID/GID 65534 and cannot read or write the root-only sensor. This remains
 unsigned bootstrap evidence rather than a conformance receipt. See the
@@ -1829,6 +1845,7 @@ Repository evidence:
 - [Linux VZ package authority-request checkpoint](artifact-native-linux-vz-package-authority-request-checkpoint-2026-07-13.md)
 - [Linux VZ package-runtime clone preflight checkpoint](artifact-native-linux-vz-package-runtime-clone-preflight-checkpoint-2026-07-13.md)
 - [Linux VZ root materialization checkpoint](artifact-native-linux-vz-root-materialization-checkpoint-2026-07-13.md)
+- [Linux VZ protected process-supervisor checkpoint](artifact-native-linux-vz-protected-process-supervisor-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification guest-candidate checkpoint](artifact-native-linux-vz-runtime-qualification-guest-candidate-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification host-launcher checkpoint](artifact-native-linux-vz-runtime-qualification-host-launcher-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification physical checkpoint](artifact-native-linux-vz-runtime-qualification-physical-checkpoint-2026-07-13.md)

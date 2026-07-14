@@ -370,7 +370,7 @@ mod linux {
         if reader.read(&mut trailing)? != 0 {
             return Err("runtime_qualification_stream_trailing_bytes".into());
         }
-        Ok(digest_from_output(&hasher.finalize())?)
+        digest_from_output(&hasher.finalize())
     }
 
     fn digest_from_output(bytes: &[u8]) -> Result<Sha256Digest, Box<dyn std::error::Error>> {
