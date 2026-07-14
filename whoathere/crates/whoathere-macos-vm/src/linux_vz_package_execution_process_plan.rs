@@ -147,7 +147,10 @@ pub enum MacosLinuxVzPackageInternalActionV1 {
         expected_archive_root: String,
         destination: String,
     },
-    ValidateExactBuildClosure,
+    ValidateExactBuildClosure {
+        build_requires_sha256: Sha256Digest,
+        build_closure: whoathere_detonation::SdistBuildClosureV1,
+    },
     ValidateSingleDerivedWheel,
     InspectDerivedWheelMetadata,
     ValidateDerivedConsoleEntryPoint {
@@ -176,6 +179,7 @@ struct PackageExecutionProcessPlanWireV1<'a> {
     execution_program_sha256: &'a Sha256Digest,
     execution_request_sha256: &'a Sha256Digest,
     artifact_sha256: &'a Sha256Digest,
+    artifact_byte_length: String,
     operation: &'a str,
     actions: &'a [MacosLinuxVzPackageExecutionActionV1],
     caller_process_input_present: bool,
@@ -192,6 +196,8 @@ pub struct MacosLinuxVzPackageExecutionProcessPlanV1 {
     canonical_json: Vec<u8>,
     process_plan_sha256: Sha256Digest,
     execution_program_sha256: Sha256Digest,
+    artifact_sha256: Sha256Digest,
+    artifact_byte_length: u64,
     actions: Vec<MacosLinuxVzPackageExecutionActionV1>,
 }
 
@@ -217,6 +223,14 @@ impl MacosLinuxVzPackageExecutionProcessPlanV1 {
 
     pub fn execution_program_sha256(&self) -> &Sha256Digest {
         &self.execution_program_sha256
+    }
+
+    pub fn artifact_sha256(&self) -> &Sha256Digest {
+        &self.artifact_sha256
+    }
+
+    pub const fn artifact_byte_length(&self) -> u64 {
+        self.artifact_byte_length
     }
 
     pub fn actions(&self) -> &[MacosLinuxVzPackageExecutionActionV1] {
@@ -288,6 +302,7 @@ pub fn derive_macos_linux_vz_package_execution_process_plan_v1(
         execution_program_sha256: program.program_sha256(),
         execution_request_sha256: program.execution_request_sha256(),
         artifact_sha256: program.artifact_sha256(),
+        artifact_byte_length: program.artifact_byte_length().to_string(),
         operation: program.operation_name(),
         actions: &actions,
         caller_process_input_present: false,
@@ -309,6 +324,8 @@ pub fn derive_macos_linux_vz_package_execution_process_plan_v1(
         process_plan_sha256: Sha256Digest::from_bytes(&canonical_json),
         canonical_json,
         execution_program_sha256: program.program_sha256().clone(),
+        artifact_sha256: program.artifact_sha256().clone(),
+        artifact_byte_length: program.artifact_byte_length(),
         actions,
     })
 }
@@ -423,8 +440,16 @@ fn actions_for_stage_v1(
             )?)]
         }
         MacosLinuxVzPackageExecutionStageV1::PythonInstallExactSdistBuildClosure {
-            build_closure, ..
+            build_requires_sha256,
+            build_closure,
+            ..
         } => {
+            if build_closure.validate().is_err()
+                || build_requires_sha256 != build_closure.declaration_set_sha256()
+                || build_closure.artifacts().is_empty()
+            {
+                return Err(MacosLinuxVzPackageExecutionProcessPlanErrorV1::InvalidStage);
+            }
             let mut wheel_arguments = Vec::with_capacity(build_closure.artifacts().len());
             for artifact in build_closure.artifacts() {
                 wheel_arguments.push(literal(format!(
@@ -434,7 +459,10 @@ fn actions_for_stage_v1(
             }
             vec![
                 MacosLinuxVzPackageExecutionActionV1::Internal {
-                    action: MacosLinuxVzPackageInternalActionV1::ValidateExactBuildClosure,
+                    action: MacosLinuxVzPackageInternalActionV1::ValidateExactBuildClosure {
+                        build_requires_sha256: build_requires_sha256.clone(),
+                        build_closure: build_closure.clone(),
+                    },
                 },
                 process_action(pip_install_process(
                     runtime,
@@ -1126,7 +1154,7 @@ mod tests {
                 MacosLinuxVzPackageExecutionStageV1::PythonCreateFreshSdistBuildVirtualEnvironment,
                 MacosLinuxVzPackageExecutionStageV1::PythonInstallExactSdistBuildClosure {
                     build_requires_sha256: build_closure.declaration_set_sha256().clone(),
-                    build_closure,
+                    build_closure: build_closure.clone(),
                     resolver_policy:
                         MacosLinuxVzPackageDependencyPolicyV1::NoIndexFixedClosureOnly,
                 },
@@ -1161,8 +1189,12 @@ mod tests {
         assert!(matches!(
             &plan.actions()[3],
             MacosLinuxVzPackageExecutionActionV1::Internal {
-                action: MacosLinuxVzPackageInternalActionV1::ValidateExactBuildClosure
-            }
+                action: MacosLinuxVzPackageInternalActionV1::ValidateExactBuildClosure {
+                    build_requires_sha256,
+                    build_closure: observed_closure,
+                }
+            } if build_requires_sha256 == build_closure.declaration_set_sha256()
+                && observed_closure == &build_closure
         ));
         assert!(literal_arguments(process_at(&plan, 4))
             .contains(&"/run/whoathere/closure/setuptools-75.0.0-py3-none-any.whl"));
@@ -1178,6 +1210,27 @@ mod tests {
             process_at(&plan, 9).stage_name(),
             "python_import_derived_wheel_root_probe"
         );
+
+        let mismatched = test_macos_linux_vz_package_execution_program_v1(
+            python_runtime(),
+            "sdist_build_exact",
+            vec![
+                MacosLinuxVzPackageExecutionStageV1::PythonSafelyExtractExactSdist {
+                    input_basename: "package.tar.gz".to_string(),
+                    artifact_format: ArtifactFormat::SdistTarGzip,
+                    expected_archive_root: "fixture-pkg-1.0.0".to_string(),
+                },
+                MacosLinuxVzPackageExecutionStageV1::PythonInstallExactSdistBuildClosure {
+                    build_requires_sha256: digest("wrong build requirements"),
+                    build_closure,
+                    resolver_policy: MacosLinuxVzPackageDependencyPolicyV1::NoIndexFixedClosureOnly,
+                },
+            ],
+        );
+        assert!(matches!(
+            derive_macos_linux_vz_package_execution_process_plan_v1(&mismatched),
+            Err(MacosLinuxVzPackageExecutionProcessPlanErrorV1::InvalidStage)
+        ));
     }
 
     #[test]

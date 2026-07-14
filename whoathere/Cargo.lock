@@ -488,6 +488,7 @@ dependencies = [
  "flate2",
  "serde",
  "serde_json",
+ "serde_json_canonicalizer",
  "tar",
  "thiserror",
  "toml",

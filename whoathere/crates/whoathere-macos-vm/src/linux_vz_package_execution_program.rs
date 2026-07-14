@@ -149,6 +149,7 @@ struct PackageExecutionProgramWireV1<'a> {
     execution_request_sha256: &'a Sha256Digest,
     artifact_kind: MacosLinuxVzPackageArtifactKindV1,
     artifact_sha256: &'a Sha256Digest,
+    artifact_byte_length: String,
     scenario_template_sha256: &'a Sha256Digest,
     attempt_binding_sha256: &'a Sha256Digest,
     clone_binding_sha256: &'a Sha256Digest,
@@ -173,6 +174,7 @@ pub struct MacosLinuxVzPackageExecutionProgramV1 {
     program_sha256: Sha256Digest,
     execution_request_sha256: Sha256Digest,
     artifact_sha256: Sha256Digest,
+    artifact_byte_length: u64,
     runtime_executables: MacosLinuxVzPackageRuntimeExecutablesV1,
     operation: &'static str,
     stages: Vec<MacosLinuxVzPackageExecutionStageV1>,
@@ -210,6 +212,10 @@ impl MacosLinuxVzPackageExecutionProgramV1 {
         &self.artifact_sha256
     }
 
+    pub const fn artifact_byte_length(&self) -> u64 {
+        self.artifact_byte_length
+    }
+
     pub fn runtime_executables(&self) -> &MacosLinuxVzPackageRuntimeExecutablesV1 {
         &self.runtime_executables
     }
@@ -241,12 +247,28 @@ pub(crate) fn test_macos_linux_vz_package_execution_program_v1(
     operation: &'static str,
     stages: Vec<MacosLinuxVzPackageExecutionStageV1>,
 ) -> MacosLinuxVzPackageExecutionProgramV1 {
+    test_macos_linux_vz_package_execution_program_for_artifact_v1(
+        runtime_executables,
+        operation,
+        stages,
+        b"inert test-only artifact",
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn test_macos_linux_vz_package_execution_program_for_artifact_v1(
+    runtime_executables: MacosLinuxVzPackageRuntimeExecutablesV1,
+    operation: &'static str,
+    stages: Vec<MacosLinuxVzPackageExecutionStageV1>,
+    artifact_bytes: &[u8],
+) -> MacosLinuxVzPackageExecutionProgramV1 {
     let canonical_json = b"inert test-only execution program".to_vec();
     MacosLinuxVzPackageExecutionProgramV1 {
         program_sha256: Sha256Digest::from_bytes(&canonical_json),
         canonical_json,
         execution_request_sha256: Sha256Digest::from_bytes(b"inert test-only request"),
-        artifact_sha256: Sha256Digest::from_bytes(b"inert test-only artifact"),
+        artifact_sha256: Sha256Digest::from_bytes(artifact_bytes),
+        artifact_byte_length: artifact_bytes.len() as u64,
         runtime_executables,
         operation,
         stages,
@@ -294,6 +316,7 @@ pub fn derive_macos_linux_vz_package_execution_program_v1(
         execution_request_sha256: request.request_sha256(),
         artifact_kind: request.artifact_kind(),
         artifact_sha256: request.artifact_sha256(),
+        artifact_byte_length: request.artifact_byte_length().to_string(),
         scenario_template_sha256: request.scenario_template_sha256(),
         attempt_binding_sha256: request.attempt_binding_sha256(),
         clone_binding_sha256: request.clone_binding_sha256(),
@@ -325,6 +348,7 @@ pub fn derive_macos_linux_vz_package_execution_program_v1(
         canonical_json,
         execution_request_sha256: request.request_sha256().clone(),
         artifact_sha256: request.artifact_sha256().clone(),
+        artifact_byte_length: request.artifact_byte_length(),
         runtime_executables: request.runtime_executables().clone(),
         operation: request.operation().operation_name(),
         stages,

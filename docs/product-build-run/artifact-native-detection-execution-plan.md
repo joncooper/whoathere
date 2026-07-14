@@ -197,6 +197,21 @@ runtime image, and physical inert qualification remain open. The 7/11 malicious-
 score is unchanged. See the
 [fixed process-plan checkpoint](artifact-native-linux-vz-fixed-process-plan-checkpoint-2026-07-13.md).
 
+The filesystem-input construction primitives are now implemented without granting launch
+authority. The canonical plan binds exact artifact length as well as digest and carries the full
+validated sdist build closure rather than filenames alone. A root-supervised descriptor-relative
+materializer stages the exact package file and closure wheels as immutable root-owned inputs with
+post-write, prelaunch, and post-run rehashes. A non-writing sdist preparation pass reuses the strict
+archive readers, requires the compiler-bound one-package root, and emits a canonical member
+manifest; the physical materializer constructs that normalized tree without following links,
+requires the complete tree to match exactly, and transfers it to UID/GID 65534 only after full
+verification. Local inert tests and the complete repository-wide Rust suite pass. These primitives
+are not yet wired to a root launcher, no package has executed, and the prior release-runner hash is
+not reused after the process-plan wire change. Cgroup launch/teardown, signed evidence, a rebuilt
+runtime image, and physical inert qualification remain open. The 7/11 malicious-package detection
+score is unchanged. See the
+[root materialization checkpoint](artifact-native-linux-vz-root-materialization-checkpoint-2026-07-13.md).
+
 The first protected-sensor bootstrap now also observes a cgroup-filtered inert fork/exec/exit chain
 whose child runs as UID/GID 65534 and cannot read or write the root-only sensor. This remains
 unsigned bootstrap evidence rather than a conformance receipt. See the
@@ -1813,6 +1828,7 @@ Repository evidence:
 - [Linux VZ raw-frame and qualification checkpoint](artifact-native-linux-vz-raw-frame-qualification-checkpoint-2026-07-13.md)
 - [Linux VZ package authority-request checkpoint](artifact-native-linux-vz-package-authority-request-checkpoint-2026-07-13.md)
 - [Linux VZ package-runtime clone preflight checkpoint](artifact-native-linux-vz-package-runtime-clone-preflight-checkpoint-2026-07-13.md)
+- [Linux VZ root materialization checkpoint](artifact-native-linux-vz-root-materialization-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification guest-candidate checkpoint](artifact-native-linux-vz-runtime-qualification-guest-candidate-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification host-launcher checkpoint](artifact-native-linux-vz-runtime-qualification-host-launcher-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification physical checkpoint](artifact-native-linux-vz-runtime-qualification-physical-checkpoint-2026-07-13.md)

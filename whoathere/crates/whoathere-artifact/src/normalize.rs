@@ -45,7 +45,7 @@ impl Default for NormalizationLimits {
 }
 
 impl NormalizationLimits {
-    fn archive_limits(self) -> ArchiveLimits {
+    pub(crate) fn archive_limits(self) -> ArchiveLimits {
         ArchiveLimits {
             max_members: self.max_members,
             max_member_bytes: self.max_member_bytes,
@@ -524,7 +524,7 @@ struct LogicalMember<'a> {
     bytes: &'a [u8],
 }
 
-fn one_package_root(members: &[RawMember]) -> Result<String, NormalizationError> {
+pub(crate) fn one_package_root(members: &[RawMember]) -> Result<String, NormalizationError> {
     let roots = members
         .iter()
         .filter_map(|member| member.archive_path.split('/').next())
