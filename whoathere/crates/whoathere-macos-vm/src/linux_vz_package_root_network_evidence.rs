@@ -481,11 +481,14 @@ pub(crate) fn encode_linux_vz_package_root_network_evidence_v1(
 ) -> Result<LinuxVzPackageRootNetworkEvidenceV1, LinuxVzPackageRootNetworkEvidenceErrorV1> {
     expected.validate_v1()?;
     let stream = collection.stream_v1();
+    let leader_exit_monotonic_nanoseconds = collection.leader_exit_monotonic_nanoseconds_v1();
     if collection.leader_pid_v1() != expected.leader_pid
         || collection.leader_supervisor_wait_status_v1()
             != expected.completion.supervisor_wait_status()
-        || collection.leader_exit_monotonic_nanoseconds_v1()
-            != expected.completion.process_ended_monotonic_nanoseconds()
+        || leader_exit_monotonic_nanoseconds
+            <= expected.completion.process_started_monotonic_nanoseconds()
+        || leader_exit_monotonic_nanoseconds
+            > expected.completion.process_ended_monotonic_nanoseconds()
         || stream.expected_cgroup_id_v1() != expected.cgroup_id
         || !collection.coverage_complete_v1()
         || !stream.coverage_complete_v1()
@@ -955,6 +958,60 @@ fn parse_i64_v1(value: &str) -> Result<i64, LinuxVzPackageRootNetworkEvidenceErr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::linux_vz_package_sensor_event_stream::{
+        decode_linux_vz_package_kernel_event_v1, LinuxVzPackageKernelEventKindV1,
+        LINUX_VZ_PACKAGE_KERNEL_EVENT_BYTES_V1,
+    };
+    use crate::linux_vz_package_sensor_process_stream::LinuxVzPackageProcessEventCorrelatorV1;
+
+    const TEST_CGROUP_ID_V1: u64 = 77;
+    const TEST_ROOT_RUNNER_PID_V1: u32 = 50;
+    const TEST_LEADER_PID_V1: u32 = 51;
+
+    fn kernel_event_v1(
+        kind: LinuxVzPackageKernelEventKindV1,
+        sequence: u64,
+        timestamp: u64,
+        syscall: Option<LinuxVzPackageSelectedSyscallV1>,
+        arguments: [u64; 6],
+        result: Option<i64>,
+        network_detail: Option<&[u8]>,
+    ) -> crate::linux_vz_package_sensor_event_stream::LinuxVzPackageKernelEventV1 {
+        let mut bytes = [0_u8; LINUX_VZ_PACKAGE_KERNEL_EVENT_BYTES_V1];
+        bytes[0..4].copy_from_slice(b"WTKE");
+        bytes[4..6].copy_from_slice(&2_u16.to_le_bytes());
+        bytes[6..8].copy_from_slice(&(kind as u16).to_le_bytes());
+        if result.is_some() {
+            bytes[8..12].copy_from_slice(&(1_u32 << 1).to_le_bytes());
+        }
+        bytes[12..16].copy_from_slice(
+            &u32::try_from(LINUX_VZ_PACKAGE_KERNEL_EVENT_BYTES_V1)
+                .expect("event bytes")
+                .to_le_bytes(),
+        );
+        bytes[16..24].copy_from_slice(&TEST_CGROUP_ID_V1.to_le_bytes());
+        bytes[24..32].copy_from_slice(&timestamp.to_le_bytes());
+        bytes[32..36].copy_from_slice(&TEST_LEADER_PID_V1.to_le_bytes());
+        bytes[36..40].copy_from_slice(&TEST_LEADER_PID_V1.to_le_bytes());
+        bytes[44..48].copy_from_slice(&TEST_LEADER_PID_V1.to_le_bytes());
+        bytes[48..52].copy_from_slice(&(syscall.map_or(0, |value| value as u32)).to_le_bytes());
+        bytes[56..64].copy_from_slice(&result.unwrap_or_default().to_le_bytes());
+        for (index, argument) in arguments.iter().enumerate() {
+            bytes[64 + index * 8..72 + index * 8].copy_from_slice(&argument.to_le_bytes());
+        }
+        if let Some(detail) = network_detail {
+            bytes[52..54].copy_from_slice(&2_u16.to_le_bytes());
+            bytes[54..56].copy_from_slice(
+                &u16::try_from(detail.len())
+                    .expect("network detail length")
+                    .to_le_bytes(),
+            );
+            bytes[112..112 + detail.len()].copy_from_slice(detail);
+        }
+        bytes[184..188].copy_from_slice(&1_u32.to_le_bytes());
+        decode_linux_vz_package_kernel_event_v1(&bytes, TEST_CGROUP_ID_V1, sequence)
+            .expect("kernel event")
+    }
 
     fn completion_v1() -> LinuxVzPackageProcessCompletionV1 {
         LinuxVzPackageProcessCompletionV1::from_parts_v1(
@@ -976,12 +1033,69 @@ mod tests {
             Sha256Digest::from_bytes(b"process-evidence"),
             2,
             "whoathere-package-action-2".to_string(),
-            77,
-            50,
-            51,
+            TEST_CGROUP_ID_V1,
+            TEST_ROOT_RUNNER_PID_V1,
+            TEST_LEADER_PID_V1,
             &completion_v1(),
         )
         .expect("expected")
+    }
+
+    fn collection_v1() -> LinuxVzPackageRootProcessCollectionV1 {
+        let completion = completion_v1();
+        let mut correlator = LinuxVzPackageProcessEventCorrelatorV1::new_v1(TEST_CGROUP_ID_V1, 8)
+            .expect("correlator");
+        correlator
+            .ingest_v1(kernel_event_v1(
+                LinuxVzPackageKernelEventKindV1::Exec,
+                1,
+                200,
+                None,
+                [0; 6],
+                None,
+                None,
+            ))
+            .expect("exec");
+        correlator
+            .ingest_v1(kernel_event_v1(
+                LinuxVzPackageKernelEventKindV1::SyscallEnter,
+                2,
+                300,
+                Some(LinuxVzPackageSelectedSyscallV1::Connect),
+                [7, 0, 16, 0, 0, 0],
+                None,
+                Some(&[2, 0, 1, 187, 192, 0, 2, 9, 0, 0, 0, 0, 0, 0, 0, 0]),
+            ))
+            .expect("connect enter");
+        correlator
+            .ingest_v1(kernel_event_v1(
+                LinuxVzPackageKernelEventKindV1::SyscallExit,
+                3,
+                400,
+                Some(LinuxVzPackageSelectedSyscallV1::Connect),
+                [0; 6],
+                Some(-101),
+                None,
+            ))
+            .expect("connect exit");
+        correlator
+            .ingest_v1(kernel_event_v1(
+                LinuxVzPackageKernelEventKindV1::Exit,
+                4,
+                900,
+                None,
+                [0; 6],
+                Some(0),
+                None,
+            ))
+            .expect("exit");
+        let stream = correlator.finish_v1(0, 0, 4).expect("stream");
+        LinuxVzPackageRootProcessCollectionV1::from_test_stream_v1(
+            stream,
+            TEST_LEADER_PID_V1,
+            &completion,
+        )
+        .expect("collection")
     }
 
     fn exact_wire_v1() -> RootNetworkEvidenceWireV1 {
@@ -1059,6 +1173,44 @@ mod tests {
         let text = String::from_utf8(bytes).expect("utf8");
         assert!(!text.contains("192.0.2.9"));
         assert!(!text.contains("2001:db8"));
+    }
+
+    #[test]
+    fn encoder_accepts_kernel_exit_before_supervisor_completion_but_not_after_it() {
+        let expected = expected_v1();
+        let collection = collection_v1();
+        let evidence = encode_linux_vz_package_root_network_evidence_v1(&expected, &collection)
+            .expect("encode physical completion shape");
+        assert_eq!(evidence.events().len(), 1);
+        assert_eq!(evidence.events()[0].enter_source_sequence(), 2);
+        assert_eq!(evidence.events()[0].exit_source_sequence(), 3);
+
+        let ended_before_kernel_exit = LinuxVzPackageProcessCompletionV1::from_parts_v1(
+            100,
+            800,
+            0,
+            LinuxVzPackageProcessTerminalV1::Exited,
+            Some(0),
+            None,
+        )
+        .expect("mismatched completion");
+        let mismatched = LinuxVzPackageExpectedRootNetworkEvidenceV1::from_action_v1(
+            Sha256Digest::from_bytes(b"network-challenge"),
+            Sha256Digest::from_bytes(b"launch"),
+            Sha256Digest::from_bytes(b"plan"),
+            Sha256Digest::from_bytes(b"process-evidence"),
+            2,
+            "whoathere-package-action-2".to_string(),
+            TEST_CGROUP_ID_V1,
+            TEST_ROOT_RUNNER_PID_V1,
+            TEST_LEADER_PID_V1,
+            &ended_before_kernel_exit,
+        )
+        .expect("expected mismatch");
+        assert_eq!(
+            encode_linux_vz_package_root_network_evidence_v1(&mismatched, &collection),
+            Err(LinuxVzPackageRootNetworkEvidenceErrorV1::BindingMismatch)
+        );
     }
 
     #[test]
