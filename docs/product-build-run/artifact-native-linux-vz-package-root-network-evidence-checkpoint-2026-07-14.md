@@ -2,9 +2,10 @@
 
 Date: 2026-07-14
 
-Status: canonical protected `connect`/`sendto` source payload and continuous bounded host-frame
-collector lifecycle physically qualified; broader guest network intent, transmitted-frame
-correlation, DNS, HTTP(S), protected transport, and composite authentication remain open
+Status: canonical protected `connect`/`sendto` source payload, continuous bounded host-frame
+collector lifecycle, and one selected transmitted UDP guest/host correlation physically qualified;
+broader guest network intent and frame coverage, DNS, HTTP(S), protected transport, and composite
+authentication remain open
 
 ## Result
 
@@ -165,6 +166,81 @@ Follow-up identities were:
 | Package qualification verifier source | — | `7846ea0c63db5140c93a3b9ce8d8dd2cf337d683944a805922914107b08d6c1a` |
 | Signed conformance verifier source | — | `dec638c6395b16884482e7a1c51b40d9e876ad8fde4dec17906b779976dcf5ae` |
 
+## Selected transmitted UDP correlation follow-up
+
+Commit `ca8bf2e1fb77538805af128e4de00df38db1b1dd` closes the selected-frame subgate
+without upgrading the broader network claim. A fresh diskless Linux VZ guest loaded the measured
+`virtio_net` module, resolved the single guest interface by the exact host-configured MAC rather
+than an `eth0` assumption, disabled IPv6 on that interface, assigned only `192.0.2.2/24`, and
+installed one permanent neighbor for the documentation sinkhole. There was no default route or
+frame-forwarding path.
+
+The unprivileged inert fixture first made the already protected TCP connection attempt to
+`198.51.100.9:443`; it returned `-ENETUNREACH` before transmission. It then made one successful
+16-byte UDP `sendto` carrying the fixed inert marker to the documentation sinkhole at
+`192.0.2.1:40553`. The protected guest stream bound the exact `sendto` entry/exit at source
+sequences `16/17`, normalized the destination to a challenge-bound token, and did not serialize the
+raw address or marker in canonical evidence. The host collector independently retained exactly one
+Ethernet/IPv4/UDP frame and the strict parser checked its MACs, tuple, lengths, IP and UDP checksums,
+payload, guest source-port binding, and absence of any additional frame.
+
+The physical verifier exited `0` with `status: "ok"`. The accepted result reported:
+
+- 18 contiguous protected process events and 10 correlated observations;
+- two canonical network events and one selected transmitted host frame;
+- one retained frame, zero dropped frames, zero truncated frames, a healthy collector, and the
+  terminal `drained_after_stop`;
+- `host_udp_sendto_selected_correlation_complete: true`;
+- `host_udp_sendto_broad_frame_coverage_complete: false`;
+- canonical process, network, and file evidence with zero BPF or fanotify loss;
+- stable image bytes and a stopped VM; and
+- no root disk, directory share, external route, package execution, malware execution, or
+  sync-back.
+
+The guest root-network payload deliberately remains
+`host_frame_correlation_complete: false`: it is emitted before host evidence is composed and its
+field denotes broad correlation, not this one selected UDP case. The separate canonical host
+evidence proves only the exact selected `sendto` correlation. This prevents a successful narrow
+fixture from being misreported as complete guest-network or host-frame coverage.
+
+Physical qualification exposed three fail-closed integration defects before the accepted run: the
+package init did not load `virtio_net`, the probe assumed the interface name `eth0`, and the
+Linux-only challenge constructor disagreed with the challenge already bound by the independent
+Swift and Rust verifiers. Each failed run stopped the VM and left package execution, malware
+execution, external routing, and sync-back false. The tracked init now requires `virtio_net`; the
+probe uses bounded exact-MAC interface discovery and stage/errno diagnostics; and the conformance
+challenge is one explicit canonical digest shared by guest and host.
+
+Two independently constructed final CPIOs, deterministic gzip overlays, and combined initramfses
+were byte-identical. The final initramfs was also byte-identical to the exact image that passed the
+physical run.
+
+| Component | Bytes | SHA-256 |
+| --- | ---: | --- |
+| Source commit | — | `ca8bf2e1fb77538805af128e4de00df38db1b1dd` |
+| Pinned Linux kernel | 36,110,336 | `8b216f74e7f89def4604adf69e2345437363aff4819101bb1551c9e83cd35cdd` |
+| Network-capable base initramfs | 10,148,959 | `fc1aad923040d23bea79f62bef4a8e2481162e89a5c42245903df1a85134a527` |
+| Tracked guest init | 2,367 | `2c5337b33d0763cb516de55a00026a27e8833c7ab91775017d2fbf42a4a5bb0d` |
+| Static package sensor probe | 1,604,048 | `ffc2733e561c892facab1e91e90be113ea76f10e85ac87ae43861f9726d3f3f8` |
+| Static inert fixture | 381,664 | `2b1e82f167eee140ed2902615eee34ad3bf4f3311c43184a1c83bc40d39e4f02` |
+| Tracked canonical newc builder | 34,336 | `9d4c1457eace09c6dd2d063154ad36a8230342eec052a5a0494d25f0230a2971` |
+| Canonical overlay CPIO | 1,989,120 | `5f489b877a55e4e384d10ae6e49882e4360a0f6b5499d4aac6fcc7af812ed79b` |
+| Deterministic gzip overlay | 967,884 | `e78a9337895aa4dac96db199f013d6f60982d3bce86d8a49704198d574dc1ec9` |
+| Combined qualification initramfs | 11,116,843 | `c45e839cbbbffba5501940c3a70809c1303e73410fccf9caef751a5ecec53f37` |
+| Strict entitled Mac verifier | 3,029,920 | `4906f80aba7b55d6f88f7a071e1a372bbf472724fa18d063fcff587ab2b6373c` |
+| Accepted sanitized serial transcript | 6,825 | `25e056fecb4d01832708de586be2dcda23896e692d7625d1a39c0f10a2e79309` |
+
+Accepted canonical evidence identities were:
+
+| Evidence | Bytes | SHA-256 |
+| --- | ---: | --- |
+| Strict outer schema-v13 evidence | 5,937 | `eddd15df8cd508d6e91efdb7f8be270317084520b8e7e0234a47ee76fd4b5cc6` |
+| Root process evidence | 6,303 | `3afb318a2dbbdf2ff729c7e8aa82ea46cd41adde6467e55da3dbe1f7bfe73aab` |
+| Root network evidence | 2,459 | `3029ad245f335dc775cd1b0e9836d1791fa019212eba18e37fa2c1eb3a96c3b3` |
+| Root file evidence | 6,373 | `00f09bce79094e2ee7a77a2b49e67334b5394800b3a264e24132785fecf6f55f` |
+| Selected host UDP correlation evidence | — | `b23cb70375bbf082c23a3adef923a162b3092325f81cb9cb3e99407d284c22ad` |
+| Selected host frame | 58 | `850c13ee5bb314528fea65c768b9130bb984b44b7b141841dd558b20afe95db5` |
+
 Tracked source identities were:
 
 | Source | SHA-256 |
@@ -188,19 +264,23 @@ Tracked source identities were:
 - Strict code-signature and virtualization-entitlement verification: passed.
 - Exact inert physical qualification with zero-loss process/file continuity and injected-fault
   behavior: passed.
+- Final transmitted-frame follow-up: Rust library 214 passed; Swift helper 213 passed; Linux
+  aarch64-musl Clippy with warnings denied, Rust formatting, shell syntax, deterministic dual build,
+  and exact selected UDP physical correlation passed.
 
 ## What remains
 
 This checkpoint does not change the July malware score of 7/11. It does not establish broad
-supply-chain detection, low false-positive friction, complete guest-network intent, host/guest
-frame correlation, DNS or HTTP(S) observation, composite authenticated evidence, or package-runtime
-readiness.
+supply-chain detection, low false-positive friction, complete guest-network intent, broad
+host/guest frame correlation, DNS or HTTP(S) observation, composite authenticated evidence, or
+package-runtime readiness.
 
 The next network work is:
 
 1. cover and qualify guest outbound interfaces beyond `connect`/`sendto`, or move to a stronger
    protected hook that closes that gap;
-2. run controlled transmitted-frame fixtures and bind exact host frames to guest process intent;
+2. extend the qualified selected UDP frame binding into explicit broad host-frame coverage without
+   upgrading the claim while any guest network interface remains unobserved;
 3. add DNS and HTTP(S) sinkhole observations with explicit encrypted-traffic limits;
 4. authenticate the process/file/network composition and make any missing source fail closed; and
 5. only then enable inert npm/wheel/sdist scenarios, benign scoring, and separately approved

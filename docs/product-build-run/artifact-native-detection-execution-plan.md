@@ -4,25 +4,23 @@ Date: 2026-07-09
 
 Status: canonical execution plan for the next product milestone
 
-Current execution checkpoint (2026-07-14): the protected guest source now emits a separate strict,
-canonical, process-evidence-bound root network payload for the exact `connect`/`sendto` slice. Each
-event binds its family, destination class, port, redacted destination token, process/cgroup,
-entry/exit sequence and time, CPU, and syscall result; raw addresses and pointer arguments are not
-serialized. A fresh diskless schema-v12 qualification produced two exact events in a contiguous
-18-event, 10-observation process stream with zero loss. Both calls terminated before transmission
-(`ENETUNREACH` and `EADDRNOTAVAIL`), the independent host raw-frame sink saw zero frames, and the
-strict Mac verifier accepted canonical process, network, and file digests with a stopped VM. No
-package or malware ran. The host raw-frame reader is now a shared bounded collector that starts
-before the VM, drains continuously, accounts for retention overflow and truncated datagrams, and
-performs a final drain after VM stop. A second physical run reported zero ingress, retained,
-dropped, and truncated frames with a healthy `drained_after_stop` terminal; this qualifies the
-collector lifecycle for the non-transmitting fixture, not host/guest frame correlation. The schema
-is deliberately honest: `connect`/`sendto` coverage is complete,
-but broad guest intent is false and explicitly names additional guest syscalls, host-frame
-correlation, DNS, and HTTP observation as gaps. The root service creates all three canonical
-payloads but still fails closed because broad and host-side network coverage are unavailable.
-Protected transport, composite authentication, runtime scenarios, benign scoring, and malicious
-regression remain open; the July score remains 7/11. See the
+Current execution checkpoint (2026-07-14): one selected transmitted UDP guest/host correlation now
+passes physically on the cloud Mac. The protected guest source emits a strict canonical
+process-evidence-bound network payload for the exact `connect`/`sendto` slice, and the continuously
+draining bounded host collector independently retained exactly one checksum-valid inert
+Ethernet/IPv4/UDP frame. The host evidence binds that frame to the guest's challenge-bound
+destination token, source sequence, syscall result, and ephemeral source port. The accepted
+schema-v13 run had 18 contiguous process events, 10 correlated observations, two network events,
+one retained frame, zero drops or truncation, canonical process/file/network payloads, stable image
+bytes, and a stopped VM. It had no root disk, share, external route, package execution, malware
+execution, or sync-back. Two independently built final initramfses were byte-identical to the exact
+image that passed. Qualification also closed a missing `virtio_net` load, replaced the `eth0`
+assumption with bounded exact-MAC discovery, and made the guest challenge match the canonical
+identity already enforced by the independent Swift and Rust verifiers. The claim remains narrow:
+the guest payload still reports broad guest intent and host-frame correlation false, while separate
+host evidence reports selected correlation true and broad frame coverage false. DNS, HTTP(S),
+protected transport, composite authentication, runtime scenarios, benign scoring, and malicious
+regression remain open; no package or malware ran, and the July score remains 7/11. See the
 [canonical root network-evidence checkpoint](artifact-native-linux-vz-package-root-network-evidence-checkpoint-2026-07-14.md).
 
 The preceding checkpoint made the concrete root service compose process and file
@@ -1817,14 +1815,18 @@ Work packages:
   forge a clean envelope, disable the sensor without detection, or reuse stale evidence.
 
 Current AN-504 subgate (2026-07-14): the cgroup-filtered BPF/process stream physically captures and
-normalizes closed IPv4 `connect` and IPv6 `sendto` intents with explicit loss accounting, and now
-encodes them in a separate canonical payload bound to the canonical process-evidence digest. The
-payload states that broad guest intent is incomplete because additional guest network interfaces
-remain unobserved. The host raw-frame sink now drains continuously with bounded retention and
-explicit overflow/truncation health, and that lifecycle passed a physical non-transmitting run.
-Remaining AN-504 work is closing the guest syscall/hook gap, matching controlled transmitted frames
-to protected guest intent, DNS intent, protected transport, and composite authentication. This
-partial result does not satisfy the Phase 5 exit gate.
+normalizes closed IPv4 `connect` and `sendto` intents with explicit loss accounting and encodes them
+in a separate canonical payload bound to canonical process evidence. The host raw-frame sink drains
+continuously with bounded retention and explicit overflow/truncation health. One controlled
+16-byte UDP transmission now passes the exact physical guest/host binding: the guest event, redacted
+destination token, source sequence/result, ephemeral source port, one checksum-valid retained
+frame, and stopped VM all agree with zero loss. The separate host evidence marks selected
+correlation complete while broad frame coverage remains false; the guest payload likewise keeps
+broad guest intent and host-frame correlation false because additional guest network interfaces
+remain unobserved and host evidence is composed later. Remaining AN-504 work is closing that
+syscall/hook gap and qualifying DNS intent. AN-505 protected HTTP(S) observation and AN-506
+authenticated composite evidence also remain open. This partial result does not satisfy the Phase 5
+exit gate.
 
 Exit gate:
 
