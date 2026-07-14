@@ -8,6 +8,7 @@ use std::mem::zeroed;
 use std::os::fd::{AsRawFd, OwnedFd};
 #[cfg(target_os = "linux")]
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use zeroize::Zeroize;
 
 const KERNEL_EVENT_MAGIC_V1: &[u8; 4] = b"WTKE";
 const KERNEL_EVENT_VERSION_V1: u16 = 1;
@@ -155,6 +156,60 @@ pub(crate) struct LinuxVzPackageKernelEventV1 {
     cpu: u32,
 }
 
+impl Drop for LinuxVzPackageKernelEventV1 {
+    fn drop(&mut self) {
+        self.arguments.zeroize();
+        self.data.zeroize();
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LinuxVzPackageNetworkAddressFamilyV1 {
+    Ipv4,
+    Ipv6,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct LinuxVzPackageNetworkTargetV1 {
+    family: LinuxVzPackageNetworkAddressFamilyV1,
+    port: u16,
+    address: [u8; 16],
+}
+
+impl fmt::Debug for LinuxVzPackageNetworkTargetV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LinuxVzPackageNetworkTargetV1")
+            .field("family", &self.family)
+            .field("port", &self.port)
+            .field("address", &"<redacted>")
+            .finish()
+    }
+}
+
+impl Drop for LinuxVzPackageNetworkTargetV1 {
+    fn drop(&mut self) {
+        self.address.zeroize();
+    }
+}
+
+impl LinuxVzPackageNetworkTargetV1 {
+    pub(crate) const fn family_v1(&self) -> LinuxVzPackageNetworkAddressFamilyV1 {
+        self.family
+    }
+
+    pub(crate) const fn port_v1(&self) -> u16 {
+        self.port
+    }
+
+    pub(crate) fn address_v1(&self) -> &[u8] {
+        match self.family {
+            LinuxVzPackageNetworkAddressFamilyV1::Ipv4 => &self.address[..4],
+            LinuxVzPackageNetworkAddressFamilyV1::Ipv6 => &self.address,
+        }
+    }
+}
+
 impl fmt::Debug for LinuxVzPackageKernelEventV1 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -247,6 +302,44 @@ impl LinuxVzPackageKernelEventV1 {
 
     pub(crate) const fn data_truncated(&self) -> bool {
         self.flags & KERNEL_EVENT_FLAG_DATA_TRUNCATED_V1 != 0
+    }
+
+    pub(crate) fn network_target_v1(
+        &self,
+    ) -> Result<Option<LinuxVzPackageNetworkTargetV1>, LinuxVzPackageSensorEventStreamErrorV1> {
+        if self.data.is_empty() {
+            return Ok(None);
+        }
+        let syscall = self.selected_syscall_v1()?;
+        if self.kind != LinuxVzPackageKernelEventKindV1::SyscallEnter
+            || !matches!(
+                syscall,
+                LinuxVzPackageSelectedSyscallV1::Connect | LinuxVzPackageSelectedSyscallV1::Sendto
+            )
+            || self.data_truncated()
+        {
+            return Err(LinuxVzPackageSensorEventStreamErrorV1::InvalidPayload);
+        }
+        let (family, address_offset, address_length) = match self.address_family {
+            2 if self.data.len() == 16 => (LinuxVzPackageNetworkAddressFamilyV1::Ipv4, 4, 4),
+            10 if self.data.len() == 28 => (LinuxVzPackageNetworkAddressFamilyV1::Ipv6, 8, 16),
+            _ => return Err(LinuxVzPackageSensorEventStreamErrorV1::InvalidPayload),
+        };
+        if u16::from_le_bytes([self.data[0], self.data[1]]) != self.address_family {
+            return Err(LinuxVzPackageSensorEventStreamErrorV1::InvalidPayload);
+        }
+        let port = u16::from_be_bytes([self.data[2], self.data[3]]);
+        if port == 0 {
+            return Err(LinuxVzPackageSensorEventStreamErrorV1::InvalidPayload);
+        }
+        let mut address = [0_u8; 16];
+        address[..address_length]
+            .copy_from_slice(&self.data[address_offset..address_offset + address_length]);
+        Ok(Some(LinuxVzPackageNetworkTargetV1 {
+            family,
+            port,
+            address,
+        }))
     }
 
     pub(crate) const fn source_sequence(&self) -> u64 {
@@ -363,13 +456,19 @@ pub(crate) fn decode_linux_vz_package_kernel_event_v1(
                 || syscall_number == 0
                 || result_present
                 || result != 0
-                || address_family != 0
-                || data_length != 0
             {
                 return Err(LinuxVzPackageSensorEventStreamErrorV1::InvalidPayload);
             }
             let syscall = LinuxVzPackageSelectedSyscallV1::from_u32_v1(syscall_number)?;
-            if !valid_selected_syscall_arguments_v1(syscall, &arguments) {
+            if !valid_selected_syscall_arguments_v1(syscall, &arguments)
+                || !valid_selected_syscall_detail_v1(
+                    syscall,
+                    &arguments,
+                    address_family,
+                    &bytes[112..112 + data_length],
+                    flags & KERNEL_EVENT_FLAG_DATA_TRUNCATED_V1 != 0,
+                )
+            {
                 return Err(LinuxVzPackageSensorEventStreamErrorV1::InvalidPayload);
             }
         }
@@ -433,6 +532,40 @@ fn valid_selected_syscall_arguments_v1(
         .iter()
         .enumerate()
         .all(|(index, argument)| *argument == 0 || retained.contains(&index))
+}
+
+fn valid_selected_syscall_detail_v1(
+    syscall: LinuxVzPackageSelectedSyscallV1,
+    arguments: &[u64; KERNEL_EVENT_ARGUMENT_COUNT_V1],
+    address_family: u16,
+    data: &[u8],
+    data_truncated: bool,
+) -> bool {
+    if data.is_empty() {
+        return address_family == 0 && !data_truncated;
+    }
+    if data_truncated
+        || !matches!(
+            syscall,
+            LinuxVzPackageSelectedSyscallV1::Connect | LinuxVzPackageSelectedSyscallV1::Sendto
+        )
+        || data.len()
+            != match address_family {
+                2 => 16,
+                10 => 28,
+                _ => return false,
+            }
+        || u16::from_le_bytes([data[0], data[1]]) != address_family
+        || u16::from_be_bytes([data[2], data[3]]) == 0
+    {
+        return false;
+    }
+    let declared_length = match syscall {
+        LinuxVzPackageSelectedSyscallV1::Connect => arguments[2],
+        LinuxVzPackageSelectedSyscallV1::Sendto => arguments[5],
+        _ => return false,
+    };
+    declared_length == data.len() as u64
 }
 
 fn read_u16_v1(bytes: &[u8], offset: usize) -> Result<u16, LinuxVzPackageSensorEventStreamErrorV1> {
@@ -837,6 +970,100 @@ mod tests {
             let debug = format!("{event:?}");
             assert!(debug.contains("<redacted>"));
             assert!(!debug.contains("[7, 0, 16"));
+        }
+    }
+
+    #[test]
+    fn network_syscall_detail_is_normalized_without_retaining_pointer_arguments() {
+        let mut ipv4 = event_bytes_v1(LinuxVzPackageKernelEventKindV1::SyscallEnter);
+        ipv4[52..54].copy_from_slice(&2_u16.to_le_bytes());
+        ipv4[54..56].copy_from_slice(&16_u16.to_le_bytes());
+        ipv4[112..114].copy_from_slice(&2_u16.to_le_bytes());
+        ipv4[114..116].copy_from_slice(&443_u16.to_be_bytes());
+        ipv4[116..120].copy_from_slice(&[192, 0, 2, 9]);
+        let ipv4_event =
+            decode_linux_vz_package_kernel_event_v1(&ipv4, 41, 1).expect("IPv4 connect detail");
+        let ipv4_target = ipv4_event
+            .network_target_v1()
+            .expect("valid IPv4 detail")
+            .expect("IPv4 target");
+        assert_eq!(
+            ipv4_target.family_v1(),
+            LinuxVzPackageNetworkAddressFamilyV1::Ipv4
+        );
+        assert_eq!(ipv4_target.port_v1(), 443);
+        assert_eq!(ipv4_target.address_v1(), &[192, 0, 2, 9]);
+        assert_eq!(ipv4_event.arguments()[1], 0);
+        assert!(!format!("{ipv4_event:?}").contains("192"));
+        assert!(!format!("{ipv4_target:?}").contains("192"));
+
+        let mut ipv6 = event_bytes_v1(LinuxVzPackageKernelEventKindV1::SyscallEnter);
+        ipv6[48..52]
+            .copy_from_slice(&(LinuxVzPackageSelectedSyscallV1::Sendto as u32).to_le_bytes());
+        ipv6[64..112].fill(0);
+        ipv6[64..72].copy_from_slice(&8_u64.to_le_bytes());
+        ipv6[80..88].copy_from_slice(&4_u64.to_le_bytes());
+        ipv6[88..96].copy_from_slice(&0_u64.to_le_bytes());
+        ipv6[104..112].copy_from_slice(&28_u64.to_le_bytes());
+        ipv6[52..54].copy_from_slice(&10_u16.to_le_bytes());
+        ipv6[54..56].copy_from_slice(&28_u16.to_le_bytes());
+        ipv6[112..114].copy_from_slice(&10_u16.to_le_bytes());
+        ipv6[114..116].copy_from_slice(&53_u16.to_be_bytes());
+        ipv6[120..136]
+            .copy_from_slice(&[0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9]);
+        let ipv6_event =
+            decode_linux_vz_package_kernel_event_v1(&ipv6, 41, 2).expect("IPv6 sendto detail");
+        let ipv6_target = ipv6_event
+            .network_target_v1()
+            .expect("valid IPv6 detail")
+            .expect("IPv6 target");
+        assert_eq!(
+            ipv6_target.family_v1(),
+            LinuxVzPackageNetworkAddressFamilyV1::Ipv6
+        );
+        assert_eq!(ipv6_target.port_v1(), 53);
+        assert_eq!(ipv6_target.address_v1().len(), 16);
+        assert_eq!(ipv6_event.arguments()[4], 0);
+    }
+
+    #[test]
+    fn network_syscall_detail_rejects_family_length_port_and_kind_rebinding() {
+        let mut exact = event_bytes_v1(LinuxVzPackageKernelEventKindV1::SyscallEnter);
+        exact[52..54].copy_from_slice(&2_u16.to_le_bytes());
+        exact[54..56].copy_from_slice(&16_u16.to_le_bytes());
+        exact[112..114].copy_from_slice(&2_u16.to_le_bytes());
+        exact[114..116].copy_from_slice(&443_u16.to_be_bytes());
+        exact[116..120].copy_from_slice(&[192, 0, 2, 9]);
+
+        for mutated in [
+            {
+                let mut value = exact.clone();
+                value[52..54].copy_from_slice(&10_u16.to_le_bytes());
+                value
+            },
+            {
+                let mut value = exact.clone();
+                value[80..88].copy_from_slice(&28_u64.to_le_bytes());
+                value
+            },
+            {
+                let mut value = exact.clone();
+                value[114..116].fill(0);
+                value
+            },
+            {
+                let mut value = exact.clone();
+                value[48..52]
+                    .copy_from_slice(&(LinuxVzPackageSelectedSyscallV1::Mmap as u32).to_le_bytes());
+                value[64..112].fill(0);
+                value[72..80].copy_from_slice(&16_u64.to_le_bytes());
+                value
+            },
+        ] {
+            assert_eq!(
+                decode_linux_vz_package_kernel_event_v1(&mutated, 41, 1),
+                Err(LinuxVzPackageSensorEventStreamErrorV1::InvalidPayload)
+            );
         }
     }
 

@@ -76,9 +76,11 @@ const BPF_FUNC_KTIME_GET_NS_V1: i32 = 5;
 const BPF_FUNC_GET_SMP_PROCESSOR_ID_V1: i32 = 8;
 const BPF_FUNC_GET_CURRENT_PID_TGID_V1: i32 = 14;
 const BPF_FUNC_GET_CURRENT_CGROUP_ID_V1: i32 = 80;
+const BPF_FUNC_PROBE_READ_USER_V1: i32 = 112;
 const BPF_FUNC_PROBE_READ_KERNEL_V1: i32 = 113;
 const BPF_FUNC_RINGBUF_RESERVE_V1: i32 = 131;
 const BPF_FUNC_RINGBUF_SUBMIT_V1: i32 = 132;
+const BPF_FUNC_RINGBUF_DISCARD_V1: i32 = 133;
 
 const KERNEL_EVENT_MAGIC_LE_V1: i32 = 0x454b_5457;
 const KERNEL_EVENT_VERSION_V1: u32 = 1;
@@ -820,6 +822,7 @@ fn build_selected_syscall_program_v1(
     program.store_register_v1(BPF_W_V1, BPF_REG_7_V1, BPF_REG_1_V1, 36);
     program.store_register_v1(BPF_W_V1, BPF_REG_7_V1, BPF_REG_9_V1, 48);
 
+    let mut network_capture_failures = Vec::new();
     if let Some(arguments_offset) = syscall_arguments_offset {
         let mut completed_argument_shapes = Vec::new();
         let syscalls = LinuxVzPackageSelectedSyscallV1::ALL_V1;
@@ -863,6 +866,8 @@ fn build_selected_syscall_program_v1(
         for jump in completed_argument_shapes {
             program.patch_forward_jump_v1(jump, arguments_complete)?;
         }
+        network_capture_failures =
+            append_network_sockaddr_capture_v1(&mut program, arguments_offset)?;
     }
     if let Some(result_offset) = syscall_result_offset {
         program.load_register_v1(BPF_DW_V1, BPF_REG_1_V1, BPF_REG_6_V1, result_offset);
@@ -875,6 +880,17 @@ fn build_selected_syscall_program_v1(
     program.call_v1(BPF_FUNC_RINGBUF_SUBMIT_V1);
     program.mov64_immediate_v1(BPF_REG_0_V1, 0);
     program.exit_v1();
+
+    let network_capture_failure = if network_capture_failures.is_empty() {
+        None
+    } else {
+        let failure = program.instructions.len();
+        program.mov64_register_v1(BPF_REG_1_V1, BPF_REG_7_V1);
+        program.mov64_immediate_v1(BPF_REG_2_V1, 0);
+        program.call_v1(BPF_FUNC_RINGBUF_DISCARD_V1);
+        let dropped = program.jump_always_placeholder_v1();
+        Some((failure, dropped))
+    };
 
     let drop_counter = program.instructions.len();
     program.store_immediate_v1(BPF_W_V1, BPF_REG_10_V1, -4, 0);
@@ -898,8 +914,94 @@ fn build_selected_syscall_program_v1(
     program.patch_forward_jump_v1(missing_configuration, final_exit)?;
     program.patch_forward_jump_v1(wrong_cgroup, final_exit)?;
     program.patch_forward_jump_v1(reservation_failed, drop_counter)?;
+    if let Some((network_capture_failure, network_capture_dropped)) = network_capture_failure {
+        for failure in network_capture_failures {
+            program.patch_forward_jump_v1(failure, network_capture_failure)?;
+        }
+        program.patch_forward_jump_v1(network_capture_dropped, drop_counter)?;
+    }
     program.patch_forward_jump_v1(missing_drop_counter, final_exit)?;
     Ok(program.instructions)
+}
+
+fn append_network_sockaddr_capture_v1(
+    program: &mut BpfProgramBuilderV1,
+    arguments_offset: i16,
+) -> Result<Vec<usize>, LinuxVzPackageSensorBpfErrorV1> {
+    let argument_offset = |index: usize| {
+        arguments_offset
+            .checked_add(
+                i16::try_from(index * size_of::<u64>())
+                    .map_err(|_| LinuxVzPackageSensorBpfErrorV1::InvalidLayout)?,
+            )
+            .ok_or(LinuxVzPackageSensorBpfErrorV1::InvalidLayout)
+    };
+    let connect_mismatch = program.jump_immediate_placeholder_v1(
+        BPF_JNE_V1,
+        BPF_REG_9_V1,
+        LinuxVzPackageSelectedSyscallV1::Connect as i32,
+    );
+    program.load_register_v1(BPF_DW_V1, BPF_REG_1_V1, BPF_REG_6_V1, argument_offset(1)?);
+    program.store_register_v1(BPF_DW_V1, BPF_REG_10_V1, BPF_REG_1_V1, -16);
+    program.load_register_v1(BPF_DW_V1, BPF_REG_1_V1, BPF_REG_6_V1, argument_offset(2)?);
+    program.store_register_v1(BPF_DW_V1, BPF_REG_10_V1, BPF_REG_1_V1, -24);
+    let connect_ready = program.jump_always_placeholder_v1();
+
+    let sendto_check = program.instructions.len();
+    program.patch_forward_jump_v1(connect_mismatch, sendto_check)?;
+    let sendto_mismatch = program.jump_immediate_placeholder_v1(
+        BPF_JNE_V1,
+        BPF_REG_9_V1,
+        LinuxVzPackageSelectedSyscallV1::Sendto as i32,
+    );
+    program.load_register_v1(BPF_DW_V1, BPF_REG_1_V1, BPF_REG_6_V1, argument_offset(4)?);
+    program.store_register_v1(BPF_DW_V1, BPF_REG_10_V1, BPF_REG_1_V1, -16);
+    program.load_register_v1(BPF_DW_V1, BPF_REG_1_V1, BPF_REG_6_V1, argument_offset(5)?);
+    program.store_register_v1(BPF_DW_V1, BPF_REG_10_V1, BPF_REG_1_V1, -24);
+
+    let capture = program.instructions.len();
+    program.patch_forward_jump_v1(connect_ready, capture)?;
+    program.mov64_register_v1(BPF_REG_1_V1, BPF_REG_7_V1);
+    program.add64_immediate_v1(BPF_REG_1_V1, 112);
+    program.mov64_immediate_v1(BPF_REG_2_V1, 2);
+    program.load_register_v1(BPF_DW_V1, BPF_REG_3_V1, BPF_REG_10_V1, -16);
+    program.call_v1(BPF_FUNC_PROBE_READ_USER_V1);
+    let mut failures = vec![program.jump_immediate_placeholder_v1(BPF_JNE_V1, BPF_REG_0_V1, 0)];
+    program.load_register_v1(BPF_H_V1, BPF_REG_1_V1, BPF_REG_7_V1, 112);
+    program.store_register_v1(BPF_H_V1, BPF_REG_7_V1, BPF_REG_1_V1, 52);
+    let ipv4 = program.jump_immediate_placeholder_v1(BPF_JEQ_V1, BPF_REG_1_V1, 2);
+    let ipv6 = program.jump_immediate_placeholder_v1(BPF_JEQ_V1, BPF_REG_1_V1, 10);
+    failures.push(program.jump_always_placeholder_v1());
+
+    let ipv4_capture = program.instructions.len();
+    program.patch_forward_jump_v1(ipv4, ipv4_capture)?;
+    program.load_register_v1(BPF_DW_V1, BPF_REG_1_V1, BPF_REG_10_V1, -24);
+    failures.push(program.jump_immediate_placeholder_v1(BPF_JNE_V1, BPF_REG_1_V1, 16));
+    program.mov64_register_v1(BPF_REG_1_V1, BPF_REG_7_V1);
+    program.add64_immediate_v1(BPF_REG_1_V1, 112);
+    program.mov64_immediate_v1(BPF_REG_2_V1, 16);
+    program.load_register_v1(BPF_DW_V1, BPF_REG_3_V1, BPF_REG_10_V1, -16);
+    program.call_v1(BPF_FUNC_PROBE_READ_USER_V1);
+    failures.push(program.jump_immediate_placeholder_v1(BPF_JNE_V1, BPF_REG_0_V1, 0));
+    program.store_immediate_v1(BPF_H_V1, BPF_REG_7_V1, 54, 16);
+    let ipv4_complete = program.jump_always_placeholder_v1();
+
+    let ipv6_capture = program.instructions.len();
+    program.patch_forward_jump_v1(ipv6, ipv6_capture)?;
+    program.load_register_v1(BPF_DW_V1, BPF_REG_1_V1, BPF_REG_10_V1, -24);
+    failures.push(program.jump_immediate_placeholder_v1(BPF_JNE_V1, BPF_REG_1_V1, 28));
+    program.mov64_register_v1(BPF_REG_1_V1, BPF_REG_7_V1);
+    program.add64_immediate_v1(BPF_REG_1_V1, 112);
+    program.mov64_immediate_v1(BPF_REG_2_V1, 28);
+    program.load_register_v1(BPF_DW_V1, BPF_REG_3_V1, BPF_REG_10_V1, -16);
+    program.call_v1(BPF_FUNC_PROBE_READ_USER_V1);
+    failures.push(program.jump_immediate_placeholder_v1(BPF_JNE_V1, BPF_REG_0_V1, 0));
+    program.store_immediate_v1(BPF_H_V1, BPF_REG_7_V1, 54, 28);
+
+    let complete = program.instructions.len();
+    program.patch_forward_jump_v1(ipv4_complete, complete)?;
+    program.patch_forward_jump_v1(sendto_mismatch, complete)?;
+    Ok(failures)
 }
 
 fn selected_syscall_argument_indices_v1(
@@ -1783,7 +1885,7 @@ mod tests {
         ] {
             let instructions = build_selected_syscall_program_v1(&layout_v1(kind), 11, 12, 13)
                 .expect("selected syscall program");
-            assert!(instructions.len() < 256);
+            assert!(instructions.len() < 320);
             assert_eq!(
                 instructions
                     .iter()
@@ -1805,6 +1907,36 @@ mod tests {
                         && instruction.immediate == syscall as i32
                 }));
             }
+            let user_reads = instructions
+                .iter()
+                .filter(|instruction| {
+                    instruction.code == BPF_JMP_V1 | BPF_CALL_V1
+                        && instruction.immediate == BPF_FUNC_PROBE_READ_USER_V1
+                })
+                .count();
+            assert_eq!(
+                user_reads,
+                if kind == LinuxVzPackageTracepointKindV1::RawSyscallsSysEnter {
+                    3
+                } else {
+                    0
+                }
+            );
+            let ring_buffer_discards = instructions
+                .iter()
+                .filter(|instruction| {
+                    instruction.code == BPF_JMP_V1 | BPF_CALL_V1
+                        && instruction.immediate == BPF_FUNC_RINGBUF_DISCARD_V1
+                })
+                .count();
+            assert_eq!(
+                ring_buffer_discards,
+                if kind == LinuxVzPackageTracepointKindV1::RawSyscallsSysEnter {
+                    1
+                } else {
+                    0
+                }
+            );
             for (index, instruction) in instructions.iter().enumerate() {
                 let operation = instruction.code & 0xf0;
                 if instruction.code & 0x07 == BPF_JMP_V1

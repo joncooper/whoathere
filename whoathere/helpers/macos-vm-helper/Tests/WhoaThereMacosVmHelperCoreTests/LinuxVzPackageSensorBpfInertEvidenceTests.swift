@@ -10,7 +10,7 @@ private let taskExitCodeByteOffset: UInt64 = 1_964
 
 @Test func packageSensorBpfInertEvidenceBindsExactLifecycleAndLossState() throws {
     let serial = packageSensorBpfInertSerial(value: packageSensorBpfInertValue())
-    let evidence = try decodeLinuxVzPackageSensorBpfInertEvidenceV10(
+    let evidence = try decodeLinuxVzPackageSensorBpfInertEvidenceV11(
         serial,
         expectedFixtureSHA256: fixtureSHA256,
         expectedRuntimeBTFSHA256: runtimeBTFSHA256,
@@ -30,9 +30,10 @@ private let taskExitCodeByteOffset: UInt64 = 1_964
     #expect(evidence.collectorMode == "root_bpf_ring_correlator")
     #expect(evidence.activeDrainPollCount == 38)
     #expect(evidence.activeNonemptyDrainCount == 1)
-    #expect(evidence.sourceEventCountBeforeFinish == 13)
+    #expect(evidence.sourceEventCountBeforeFinish == 17)
     #expect(evidence.finishDrainEventCount == 1)
     #expect(evidence.maximumDrainBatchRecordCount == 13)
+    #expect(evidence.networkIntentCount == 2)
     #expect(evidence.faultCgroupID == 22)
     #expect(evidence.faultFixturePID == 388)
     #expect(evidence.faultSignalLatencyMicroseconds == 1_250)
@@ -52,9 +53,9 @@ private let taskExitCodeByteOffset: UInt64 = 1_964
     #expect(evidence.preReleaseEventCount == 0)
     #expect(evidence.processCollectorCoverageComplete)
     #expect(evidence.rootProcessEvidenceByteLength == 4_096)
-    #expect(evidence.rootProcessEvidenceObservationCount == 8)
+    #expect(evidence.rootProcessEvidenceObservationCount == 10)
     #expect(evidence.rootProcessEvidenceSHA256.hasPrefix("sha256:"))
-    #expect(evidence.rootProcessEvidenceSourceEventCount == 14)
+    #expect(evidence.rootProcessEvidenceSourceEventCount == 18)
     #expect(evidence.rootFileEvidenceByteLength == 3_072)
     #expect(evidence.rootFileEvidenceChangeCount == 1)
     #expect(evidence.rootFileEvidenceSourceEventCount == 7)
@@ -69,7 +70,7 @@ private let taskExitCodeByteOffset: UInt64 = 1_964
     var value = packageSensorBpfInertValue()
     value["dropped_event_count"] = "1"
     #expect(throws: LinuxVzPackageSensorBpfInertEvidenceError.invalidSchema) {
-        try decodeLinuxVzPackageSensorBpfInertEvidenceV10(
+        try decodeLinuxVzPackageSensorBpfInertEvidenceV11(
             packageSensorBpfInertSerial(value: value),
             expectedFixtureSHA256: fixtureSHA256,
             expectedRuntimeBTFSHA256: runtimeBTFSHA256,
@@ -80,7 +81,7 @@ private let taskExitCodeByteOffset: UInt64 = 1_964
     value = packageSensorBpfInertValue()
     value["package_execution"] = true
     #expect(throws: LinuxVzPackageSensorBpfInertEvidenceError.invalidSchema) {
-        try decodeLinuxVzPackageSensorBpfInertEvidenceV10(
+        try decodeLinuxVzPackageSensorBpfInertEvidenceV11(
             packageSensorBpfInertSerial(value: value),
             expectedFixtureSHA256: fixtureSHA256,
             expectedRuntimeBTFSHA256: runtimeBTFSHA256,
@@ -91,7 +92,7 @@ private let taskExitCodeByteOffset: UInt64 = 1_964
     value = packageSensorBpfInertValue()
     value["collector_mode"] = "standalone_probe"
     #expect(throws: LinuxVzPackageSensorBpfInertEvidenceError.invalidSchema) {
-        try decodeLinuxVzPackageSensorBpfInertEvidenceV10(
+        try decodeLinuxVzPackageSensorBpfInertEvidenceV11(
             packageSensorBpfInertSerial(value: value),
             expectedFixtureSHA256: fixtureSHA256,
             expectedRuntimeBTFSHA256: runtimeBTFSHA256,
@@ -102,7 +103,7 @@ private let taskExitCodeByteOffset: UInt64 = 1_964
     value = packageSensorBpfInertValue()
     value["collector_drain_mode"] = "finish_only"
     #expect(throws: LinuxVzPackageSensorBpfInertEvidenceError.invalidSchema) {
-        try decodeLinuxVzPackageSensorBpfInertEvidenceV10(
+        try decodeLinuxVzPackageSensorBpfInertEvidenceV11(
             packageSensorBpfInertSerial(value: value),
             expectedFixtureSHA256: fixtureSHA256,
             expectedRuntimeBTFSHA256: runtimeBTFSHA256,
@@ -113,7 +114,7 @@ private let taskExitCodeByteOffset: UInt64 = 1_964
     value = packageSensorBpfInertValue()
     value["active_nonempty_drain_count"] = "0"
     #expect(throws: LinuxVzPackageSensorBpfInertEvidenceError.invalidSchema) {
-        try decodeLinuxVzPackageSensorBpfInertEvidenceV10(
+        try decodeLinuxVzPackageSensorBpfInertEvidenceV11(
             packageSensorBpfInertSerial(value: value),
             expectedFixtureSHA256: fixtureSHA256,
             expectedRuntimeBTFSHA256: runtimeBTFSHA256,
@@ -125,7 +126,7 @@ private let taskExitCodeByteOffset: UInt64 = 1_964
     value["source_event_count_before_finish"] = "12"
     value["finish_drain_event_count"] = "2"
     #expect(throws: LinuxVzPackageSensorBpfInertEvidenceError.invalidSchema) {
-        try decodeLinuxVzPackageSensorBpfInertEvidenceV10(
+        try decodeLinuxVzPackageSensorBpfInertEvidenceV11(
             packageSensorBpfInertSerial(value: value),
             expectedFixtureSHA256: fixtureSHA256,
             expectedRuntimeBTFSHA256: runtimeBTFSHA256,
@@ -136,7 +137,7 @@ private let taskExitCodeByteOffset: UInt64 = 1_964
     value = packageSensorBpfInertValue()
     value["fault_signal_observed"] = false
     #expect(throws: LinuxVzPackageSensorBpfInertEvidenceError.invalidSchema) {
-        try decodeLinuxVzPackageSensorBpfInertEvidenceV10(
+        try decodeLinuxVzPackageSensorBpfInertEvidenceV11(
             packageSensorBpfInertSerial(value: value),
             expectedFixtureSHA256: fixtureSHA256,
             expectedRuntimeBTFSHA256: runtimeBTFSHA256,
@@ -147,7 +148,7 @@ private let taskExitCodeByteOffset: UInt64 = 1_964
     value = packageSensorBpfInertValue()
     value["fault_signal_latency_microseconds"] = "2000001"
     #expect(throws: LinuxVzPackageSensorBpfInertEvidenceError.invalidSchema) {
-        try decodeLinuxVzPackageSensorBpfInertEvidenceV10(
+        try decodeLinuxVzPackageSensorBpfInertEvidenceV11(
             packageSensorBpfInertSerial(value: value),
             expectedFixtureSHA256: fixtureSHA256,
             expectedRuntimeBTFSHA256: runtimeBTFSHA256,
@@ -158,7 +159,7 @@ private let taskExitCodeByteOffset: UInt64 = 1_964
     value = packageSensorBpfInertValue()
     value["process_collector_coverage_complete"] = false
     #expect(throws: LinuxVzPackageSensorBpfInertEvidenceError.invalidSchema) {
-        try decodeLinuxVzPackageSensorBpfInertEvidenceV10(
+        try decodeLinuxVzPackageSensorBpfInertEvidenceV11(
             packageSensorBpfInertSerial(value: value),
             expectedFixtureSHA256: fixtureSHA256,
             expectedRuntimeBTFSHA256: runtimeBTFSHA256,
@@ -169,7 +170,7 @@ private let taskExitCodeByteOffset: UInt64 = 1_964
     value = packageSensorBpfInertValue()
     value["file_fanotify_overflow_count"] = "1"
     #expect(throws: LinuxVzPackageSensorBpfInertEvidenceError.invalidSchema) {
-        try decodeLinuxVzPackageSensorBpfInertEvidenceV10(
+        try decodeLinuxVzPackageSensorBpfInertEvidenceV11(
             packageSensorBpfInertSerial(value: value),
             expectedFixtureSHA256: fixtureSHA256,
             expectedRuntimeBTFSHA256: runtimeBTFSHA256,
@@ -180,7 +181,7 @@ private let taskExitCodeByteOffset: UInt64 = 1_964
     value = packageSensorBpfInertValue()
     value["file_fanotify_unobserved_mounts"] = []
     #expect(throws: LinuxVzPackageSensorBpfInertEvidenceError.invalidSchema) {
-        try decodeLinuxVzPackageSensorBpfInertEvidenceV10(
+        try decodeLinuxVzPackageSensorBpfInertEvidenceV11(
             packageSensorBpfInertSerial(value: value),
             expectedFixtureSHA256: fixtureSHA256,
             expectedRuntimeBTFSHA256: runtimeBTFSHA256,
@@ -191,7 +192,7 @@ private let taskExitCodeByteOffset: UInt64 = 1_964
     value = packageSensorBpfInertValue()
     value["root_file_evidence_raw_paths_captured"] = true
     #expect(throws: LinuxVzPackageSensorBpfInertEvidenceError.invalidSchema) {
-        try decodeLinuxVzPackageSensorBpfInertEvidenceV10(
+        try decodeLinuxVzPackageSensorBpfInertEvidenceV11(
             packageSensorBpfInertSerial(value: value),
             expectedFixtureSHA256: fixtureSHA256,
             expectedRuntimeBTFSHA256: runtimeBTFSHA256,
@@ -202,7 +203,7 @@ private let taskExitCodeByteOffset: UInt64 = 1_964
     value = packageSensorBpfInertValue()
     value["root_process_evidence_coverage_complete"] = false
     #expect(throws: LinuxVzPackageSensorBpfInertEvidenceError.invalidSchema) {
-        try decodeLinuxVzPackageSensorBpfInertEvidenceV10(
+        try decodeLinuxVzPackageSensorBpfInertEvidenceV11(
             packageSensorBpfInertSerial(value: value),
             expectedFixtureSHA256: fixtureSHA256,
             expectedRuntimeBTFSHA256: runtimeBTFSHA256,
@@ -213,7 +214,7 @@ private let taskExitCodeByteOffset: UInt64 = 1_964
     value = packageSensorBpfInertValue()
     value["root_process_evidence_raw_arguments_captured"] = true
     #expect(throws: LinuxVzPackageSensorBpfInertEvidenceError.invalidSchema) {
-        try decodeLinuxVzPackageSensorBpfInertEvidenceV10(
+        try decodeLinuxVzPackageSensorBpfInertEvidenceV11(
             packageSensorBpfInertSerial(value: value),
             expectedFixtureSHA256: fixtureSHA256,
             expectedRuntimeBTFSHA256: runtimeBTFSHA256,
@@ -224,7 +225,7 @@ private let taskExitCodeByteOffset: UInt64 = 1_964
     value = packageSensorBpfInertValue()
     value["root_process_evidence_observation_count"] = "7"
     #expect(throws: LinuxVzPackageSensorBpfInertEvidenceError.invalidSchema) {
-        try decodeLinuxVzPackageSensorBpfInertEvidenceV10(
+        try decodeLinuxVzPackageSensorBpfInertEvidenceV11(
             packageSensorBpfInertSerial(value: value),
             expectedFixtureSHA256: fixtureSHA256,
             expectedRuntimeBTFSHA256: runtimeBTFSHA256,
@@ -235,7 +236,7 @@ private let taskExitCodeByteOffset: UInt64 = 1_964
     value = packageSensorBpfInertValue()
     value["attachment_cpu"] = "1"
     #expect(throws: LinuxVzPackageSensorBpfInertEvidenceError.invalidSchema) {
-        try decodeLinuxVzPackageSensorBpfInertEvidenceV10(
+        try decodeLinuxVzPackageSensorBpfInertEvidenceV11(
             packageSensorBpfInertSerial(value: value),
             expectedFixtureSHA256: fixtureSHA256,
             expectedRuntimeBTFSHA256: runtimeBTFSHA256,
@@ -246,7 +247,7 @@ private let taskExitCodeByteOffset: UInt64 = 1_964
     value = packageSensorBpfInertValue()
     value["observed_event_cpus"] = ["0"]
     #expect(throws: LinuxVzPackageSensorBpfInertEvidenceError.invalidSchema) {
-        try decodeLinuxVzPackageSensorBpfInertEvidenceV10(
+        try decodeLinuxVzPackageSensorBpfInertEvidenceV11(
             packageSensorBpfInertSerial(value: value),
             expectedFixtureSHA256: fixtureSHA256,
             expectedRuntimeBTFSHA256: runtimeBTFSHA256,
@@ -257,7 +258,7 @@ private let taskExitCodeByteOffset: UInt64 = 1_964
     value = packageSensorBpfInertValue()
     value["kernel_exit_wait_status"] = "9"
     #expect(throws: LinuxVzPackageSensorBpfInertEvidenceError.invalidSchema) {
-        try decodeLinuxVzPackageSensorBpfInertEvidenceV10(
+        try decodeLinuxVzPackageSensorBpfInertEvidenceV11(
             packageSensorBpfInertSerial(value: value),
             expectedFixtureSHA256: fixtureSHA256,
             expectedRuntimeBTFSHA256: runtimeBTFSHA256,
@@ -269,7 +270,7 @@ private let taskExitCodeByteOffset: UInt64 = 1_964
     value["runtime_btf_sha256"] =
         "sha256:3333333333333333333333333333333333333333333333333333333333333333"
     #expect(throws: LinuxVzPackageSensorBpfInertEvidenceError.invalidSchema) {
-        try decodeLinuxVzPackageSensorBpfInertEvidenceV10(
+        try decodeLinuxVzPackageSensorBpfInertEvidenceV11(
             packageSensorBpfInertSerial(value: value),
             expectedFixtureSHA256: fixtureSHA256,
             expectedRuntimeBTFSHA256: runtimeBTFSHA256,
@@ -280,7 +281,7 @@ private let taskExitCodeByteOffset: UInt64 = 1_964
     value = packageSensorBpfInertValue()
     value["task_exit_code_byte_offset"] = "1965"
     #expect(throws: LinuxVzPackageSensorBpfInertEvidenceError.invalidSchema) {
-        try decodeLinuxVzPackageSensorBpfInertEvidenceV10(
+        try decodeLinuxVzPackageSensorBpfInertEvidenceV11(
             packageSensorBpfInertSerial(value: value),
             expectedFixtureSHA256: fixtureSHA256,
             expectedRuntimeBTFSHA256: runtimeBTFSHA256,
@@ -291,7 +292,7 @@ private let taskExitCodeByteOffset: UInt64 = 1_964
     let line = Data(linuxVzPackageSensorBpfInertEvidenceSerialPrefixV1.utf8)
         + (try canonicalJSONData(packageSensorBpfInertValue())) + Data("\n".utf8)
     #expect(throws: LinuxVzPackageSensorBpfInertEvidenceError.duplicate) {
-        try decodeLinuxVzPackageSensorBpfInertEvidenceV10(
+        try decodeLinuxVzPackageSensorBpfInertEvidenceV11(
             line + line,
             expectedFixtureSHA256: fixtureSHA256,
             expectedRuntimeBTFSHA256: runtimeBTFSHA256,
@@ -303,10 +304,10 @@ private let taskExitCodeByteOffset: UInt64 = 1_964
 @Test func packageSensorBpfInertEvidenceRejectsNoncanonicalAndFailureTranscripts() throws {
     let noncanonical = Data(
         (linuxVzPackageSensorBpfInertEvidenceSerialPrefixV1
-            + "{\"schema_version\":\"whoathere.linux_vz_package_sensor_bpf_inert_probe.v10\",\"attachment_cpu\":\"0\"}\n").utf8
+            + "{\"schema_version\":\"whoathere.linux_vz_package_sensor_bpf_inert_probe.v11\",\"attachment_cpu\":\"0\"}\n").utf8
     )
     #expect(throws: LinuxVzPackageSensorBpfInertEvidenceError.nonCanonical) {
-        try decodeLinuxVzPackageSensorBpfInertEvidenceV10(
+        try decodeLinuxVzPackageSensorBpfInertEvidenceV11(
             noncanonical,
             expectedFixtureSHA256: fixtureSHA256,
             expectedRuntimeBTFSHA256: runtimeBTFSHA256,
@@ -342,14 +343,15 @@ private func packageSensorBpfInertValue() -> [String: Any] {
         "collector_mode": "root_bpf_ring_correlator",
         "discarded_record_count": "0",
         "dropped_event_count": "0",
-        "event_count": "14",
+        "event_count": "18",
         "event_kinds": [
             "setgroups_enter", "setgroups_exit", "setgid_enter", "setgid_exit",
             "setuid_enter", "setuid_exit", "exec",
             "mmap_enter", "mmap_exit", "mmap_enter", "mmap_exit",
-            "mmap_enter", "mmap_exit", "exit",
+            "mmap_enter", "mmap_exit", "connect_enter", "connect_exit",
+            "sendto_enter", "sendto_exit", "exit",
         ],
-        "event_sequence_end": "14",
+        "event_sequence_end": "18",
         "event_sequence_start": "1",
         "exit_attachment": "raw_tracepoint:sched_process_exit",
         "exit_status_source": "runtime_btf:task_struct.exit_code",
@@ -388,6 +390,16 @@ private func packageSensorBpfInertValue() -> [String: Any] {
         "leader_exec_count": "1",
         "malware_execution": false,
         "maximum_drain_batch_record_count": "13",
+        "network_connect_destination_class": "documentation",
+        "network_connect_family": "ipv4",
+        "network_connect_port": "443",
+        "network_connect_result": "-101",
+        "network_intent_count": "2",
+        "network_raw_addresses_captured": false,
+        "network_sendto_destination_class": "documentation",
+        "network_sendto_family": "ipv6",
+        "network_sendto_port": "53",
+        "network_sendto_result": "-101",
         "observed_event_cpus": ["1"],
         "online_cpus": ["0", "1"],
         "package_execution": false,
@@ -398,14 +410,14 @@ private func packageSensorBpfInertValue() -> [String: Any] {
         "root_process_evidence_byte_length": "4096",
         "root_process_evidence_canonical": true,
         "root_process_evidence_coverage_complete": true,
-        "root_process_evidence_observation_count": "8",
+        "root_process_evidence_observation_count": "10",
         "root_process_evidence_raw_arguments_captured": false,
         "root_process_evidence_raw_exec_paths_captured": false,
         "root_process_evidence_schema":
             "whoathere.linux_vz_package_root_process_evidence.v1",
         "root_process_evidence_sha256":
             "sha256:4444444444444444444444444444444444444444444444444444444444444444",
-        "root_process_evidence_source_event_count": "14",
+        "root_process_evidence_source_event_count": "18",
         "root_file_evidence_baseline_snapshot_sha256":
             "sha256:6666666666666666666666666666666666666666666666666666666666666666",
         "root_file_evidence_byte_length": "3072",
@@ -424,8 +436,8 @@ private func packageSensorBpfInertValue() -> [String: Any] {
         "root_file_evidence_workspace_diff_sha256":
             "sha256:8888888888888888888888888888888888888888888888888888888888888888",
         "runtime_btf_sha256": runtimeBTFSHA256,
-        "schema_version": linuxVzPackageSensorBpfInertEvidenceSchemaV10,
-        "source_event_count_before_finish": "13",
+        "schema_version": linuxVzPackageSensorBpfInertEvidenceSchemaV11,
+        "source_event_count_before_finish": "17",
         "sync_back": false,
         "task_exit_code_byte_offset": String(taskExitCodeByteOffset),
         "tracepoint_format_sha256": [

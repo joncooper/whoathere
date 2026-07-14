@@ -240,7 +240,7 @@ private struct LinuxVzConformanceHarness {
         if let expectedFixtureSHA256 = options.expectedPackageSensorFixtureSHA256,
            let expectedRuntimeBTFSHA256 = options.expectedRuntimeBTFSHA256,
            let expectedTaskExitCodeByteOffset = options.expectedTaskExitCodeByteOffset {
-            let evidence = try? decodeLinuxVzPackageSensorBpfInertEvidenceV10(
+            let evidence = try? decodeLinuxVzPackageSensorBpfInertEvidenceV11(
                 serialData,
                 expectedFixtureSHA256: expectedFixtureSHA256,
                 expectedRuntimeBTFSHA256: expectedRuntimeBTFSHA256,
@@ -297,6 +297,7 @@ private struct LinuxVzConformanceHarness {
                     evidence?.fileFanotifyUnobservedMounts ?? [],
                 "root_file_global_mount_coverage_complete":
                     evidence?.fileGlobalMountCoverageComplete ?? false,
+                "network_intent_count": String(evidence?.networkIntentCount ?? 0),
                 "cgroup_id": String(evidence?.cgroupID ?? 0),
                 "fixture_pid": String(evidence?.fixturePID ?? 0),
                 "tracepoint_format_sha256": evidence?.tracepointFormatSHA256 ?? [:],

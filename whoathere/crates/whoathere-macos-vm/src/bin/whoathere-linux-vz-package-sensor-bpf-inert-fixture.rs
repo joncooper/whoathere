@@ -1,6 +1,7 @@
 #[cfg(target_os = "linux")]
 fn main() {
     use std::ffi::OsStr;
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
     let mut arguments = std::env::args_os();
     let program = arguments.next();
@@ -8,12 +9,13 @@ fn main() {
     if program.is_none() || arguments.next().is_some() {
         std::process::exit(75);
     }
-    let (continuous_drain, exercise_file_sensor) = match fixture_case.as_deref() {
-        Some(value) if value == OsStr::new("normal_exit") => (false, false),
-        Some(value) if value == OsStr::new("continuous_drain") => (true, true),
-        Some(value) if value == OsStr::new("fault_signal") => (true, false),
-        _ => std::process::exit(75),
-    };
+    let (continuous_drain, exercise_file_sensor, exercise_network_sensor) =
+        match fixture_case.as_deref() {
+            Some(value) if value == OsStr::new("normal_exit") => (false, false, false),
+            Some(value) if value == OsStr::new("continuous_drain") => (true, true, true),
+            Some(value) if value == OsStr::new("fault_signal") => (true, false, false),
+            _ => std::process::exit(75),
+        };
     if unsafe { libc::getuid() } != 65_534
         || unsafe { libc::geteuid() } != 65_534
         || unsafe { libc::getgid() } != 65_534
@@ -72,6 +74,66 @@ fn main() {
             if !matches!(std::fs::read(after), Ok(bytes) if bytes == b"after\n") {
                 eprintln!("WHOATHERE_FILE_FIXTURE_DETAIL stage=read_after errno=0");
                 std::process::exit(80);
+            }
+        }
+        if exercise_network_sensor {
+            let tcp =
+                unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) };
+            if tcp < 0 {
+                std::process::exit(82);
+            }
+            let tcp = unsafe { OwnedFd::from_raw_fd(tcp) };
+            let ipv4_target = libc::sockaddr_in {
+                sin_family: libc::AF_INET as libc::sa_family_t,
+                sin_port: 443_u16.to_be(),
+                sin_addr: libc::in_addr {
+                    s_addr: u32::from_ne_bytes([192, 0, 2, 9]),
+                },
+                sin_zero: [0; 8],
+            };
+            let connect_result = unsafe {
+                libc::connect(
+                    tcp.as_raw_fd(),
+                    (&ipv4_target as *const libc::sockaddr_in).cast(),
+                    std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+                )
+            };
+            if connect_result != -1
+                || std::io::Error::last_os_error().raw_os_error() != Some(libc::ENETUNREACH)
+            {
+                std::process::exit(83);
+            }
+
+            let udp =
+                unsafe { libc::socket(libc::AF_INET6, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) };
+            if udp < 0 {
+                std::process::exit(84);
+            }
+            let udp = unsafe { OwnedFd::from_raw_fd(udp) };
+            let ipv6_target = libc::sockaddr_in6 {
+                sin6_family: libc::AF_INET6 as libc::sa_family_t,
+                sin6_port: 53_u16.to_be(),
+                sin6_flowinfo: 0,
+                sin6_addr: libc::in6_addr {
+                    s6_addr: [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9],
+                },
+                sin6_scope_id: 0,
+            };
+            let marker = [0x57_u8];
+            let send_result = unsafe {
+                libc::sendto(
+                    udp.as_raw_fd(),
+                    marker.as_ptr().cast(),
+                    marker.len(),
+                    0,
+                    (&ipv6_target as *const libc::sockaddr_in6).cast(),
+                    std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t,
+                )
+            };
+            if send_result != -1
+                || std::io::Error::last_os_error().raw_os_error() != Some(libc::ENETUNREACH)
+            {
+                std::process::exit(85);
             }
         }
         let duration = libc::timespec {

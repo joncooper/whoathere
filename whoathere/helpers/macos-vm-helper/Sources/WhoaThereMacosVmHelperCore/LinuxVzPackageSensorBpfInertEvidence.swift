@@ -1,7 +1,7 @@
 import Foundation
 
-public let linuxVzPackageSensorBpfInertEvidenceSchemaV10 =
-    "whoathere.linux_vz_package_sensor_bpf_inert_probe.v10"
+public let linuxVzPackageSensorBpfInertEvidenceSchemaV11 =
+    "whoathere.linux_vz_package_sensor_bpf_inert_probe.v11"
 public let linuxVzPackageSensorBpfInertEvidenceSerialPrefixV1 =
     "WHOATHERE_PACKAGE_SENSOR_BPF_INERT_EVIDENCE "
 
@@ -29,7 +29,7 @@ public enum LinuxVzPackageSensorBpfInertEvidenceError: Error, Equatable {
     case invalidSchema
 }
 
-public struct LinuxVzPackageSensorBpfInertEvidenceV10: Equatable, Sendable {
+public struct LinuxVzPackageSensorBpfInertEvidenceV11: Equatable, Sendable {
     public let canonicalJSON: Data
     public let payloadSHA256: String
     public let evidenceByteLength: UInt64
@@ -50,6 +50,7 @@ public struct LinuxVzPackageSensorBpfInertEvidenceV10: Equatable, Sendable {
     public let sourceEventCountBeforeFinish: UInt64
     public let finishDrainEventCount: UInt64
     public let maximumDrainBatchRecordCount: UInt64
+    public let networkIntentCount: UInt64
     public let faultCgroupID: UInt64
     public let faultFixturePID: UInt64
     public let faultSignalLatencyMicroseconds: UInt64
@@ -80,12 +81,12 @@ public struct LinuxVzPackageSensorBpfInertEvidenceV10: Equatable, Sendable {
     public let tracepointFormatSHA256: [String: String]
 }
 
-public func decodeLinuxVzPackageSensorBpfInertEvidenceV10(
+public func decodeLinuxVzPackageSensorBpfInertEvidenceV11(
     _ serialData: Data,
     expectedFixtureSHA256: String,
     expectedRuntimeBTFSHA256: String,
     expectedTaskExitCodeByteOffset: UInt64
-) throws -> LinuxVzPackageSensorBpfInertEvidenceV10 {
+) throws -> LinuxVzPackageSensorBpfInertEvidenceV11 {
     guard packageSensorBpfInertDigest(expectedFixtureSHA256),
           packageSensorBpfInertDigest(expectedRuntimeBTFSHA256),
           expectedTaskExitCodeByteOffset > 0,
@@ -136,7 +137,11 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV10(
         "finish_drain_event_count", "fixture_cpu", "fixture_exit_status", "fixture_pid",
         "fixture_sha256",
         "kernel_exit_wait_status", "leader_exec_count", "malware_execution",
-        "maximum_drain_batch_record_count", "observed_event_cpus", "online_cpus",
+        "maximum_drain_batch_record_count", "network_connect_destination_class",
+        "network_connect_family", "network_connect_port", "network_connect_result",
+        "network_intent_count", "network_raw_addresses_captured",
+        "network_sendto_destination_class", "network_sendto_family", "network_sendto_port",
+        "network_sendto_result", "observed_event_cpus", "online_cpus",
         "package_execution", "package_gid", "package_uid", "pre_release_event_count",
         "process_collector_coverage_complete", "root_process_evidence_byte_length",
         "root_process_evidence_canonical", "root_process_evidence_coverage_complete",
@@ -157,7 +162,7 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV10(
         "task_exit_code_byte_offset", "tracepoint_format_sha256", "waitpid_wait_status",
     ])
     guard Set(value.keys) == expectedKeys,
-          value["schema_version"] as? String == linuxVzPackageSensorBpfInertEvidenceSchemaV10,
+          value["schema_version"] as? String == linuxVzPackageSensorBpfInertEvidenceSchemaV11,
           let activeDrainPollCount = packageSensorBpfInertDecimal(
               value["active_drain_poll_count"]
           ),
@@ -174,15 +179,16 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV10(
           value["collector_mode"] as? String == "root_bpf_ring_correlator",
           packageSensorBpfInertDecimal(value["discarded_record_count"]) == 0,
           packageSensorBpfInertDecimal(value["dropped_event_count"]) == 0,
-          packageSensorBpfInertDecimal(value["event_count"]) == 14,
+          packageSensorBpfInertDecimal(value["event_count"]) == 18,
           value["event_kinds"] as? [String] == [
               "setgroups_enter", "setgroups_exit", "setgid_enter", "setgid_exit",
               "setuid_enter", "setuid_exit", "exec",
               "mmap_enter", "mmap_exit", "mmap_enter", "mmap_exit",
-              "mmap_enter", "mmap_exit", "exit",
+              "mmap_enter", "mmap_exit", "connect_enter", "connect_exit",
+              "sendto_enter", "sendto_exit", "exit",
           ],
           packageSensorBpfInertDecimal(value["event_sequence_start"]) == 1,
-          packageSensorBpfInertDecimal(value["event_sequence_end"]) == 14,
+          packageSensorBpfInertDecimal(value["event_sequence_end"]) == 18,
           value["exit_attachment"] as? String == "raw_tracepoint:sched_process_exit",
           value["exit_status_source"] as? String == "runtime_btf:task_struct.exit_code",
           let faultCgroupID = packageSensorBpfInertDecimal(value["fault_cgroup_id"]),
@@ -262,7 +268,18 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV10(
           let maximumDrainBatchRecordCount = packageSensorBpfInertDecimal(
               value["maximum_drain_batch_record_count"]
           ),
-          maximumDrainBatchRecordCount >= 1, maximumDrainBatchRecordCount <= 14,
+          maximumDrainBatchRecordCount >= 1, maximumDrainBatchRecordCount <= 18,
+          value["network_connect_destination_class"] as? String == "documentation",
+          value["network_connect_family"] as? String == "ipv4",
+          packageSensorBpfInertDecimal(value["network_connect_port"]) == 443,
+          value["network_connect_result"] as? String == "-101",
+          let networkIntentCount = packageSensorBpfInertDecimal(value["network_intent_count"]),
+          networkIntentCount == 2,
+          value["network_raw_addresses_captured"] as? Bool == false,
+          value["network_sendto_destination_class"] as? String == "documentation",
+          value["network_sendto_family"] as? String == "ipv6",
+          packageSensorBpfInertDecimal(value["network_sendto_port"]) == 53,
+          value["network_sendto_result"] as? String == "-101",
           let observedEventCPUs = packageSensorBpfInertDecimalArray(
               value["observed_event_cpus"]
           ),
@@ -282,7 +299,7 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV10(
           let rootProcessEvidenceObservationCount = packageSensorBpfInertDecimal(
               value["root_process_evidence_observation_count"]
           ),
-          rootProcessEvidenceObservationCount == 8,
+          rootProcessEvidenceObservationCount == 10,
           value["root_process_evidence_raw_arguments_captured"] as? Bool == false,
           value["root_process_evidence_raw_exec_paths_captured"] as? Bool == false,
           value["root_process_evidence_schema"] as? String ==
@@ -294,7 +311,7 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV10(
           let rootProcessEvidenceSourceEventCount = packageSensorBpfInertDecimal(
               value["root_process_evidence_source_event_count"]
           ),
-          rootProcessEvidenceSourceEventCount == 14,
+          rootProcessEvidenceSourceEventCount == 18,
           let rootFileEvidenceByteLength = packageSensorBpfInertDecimal(
               value["root_file_evidence_byte_length"]
           ),
@@ -330,8 +347,8 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV10(
           let sourceEventCountBeforeFinish = packageSensorBpfInertDecimal(
               value["source_event_count_before_finish"]
           ),
-          sourceEventCountBeforeFinish >= 13, sourceEventCountBeforeFinish <= 14,
-          sourceEventCountBeforeFinish + finishDrainEventCount == 14,
+          sourceEventCountBeforeFinish >= 17, sourceEventCountBeforeFinish <= 18,
+          sourceEventCountBeforeFinish + finishDrainEventCount == 18,
           value["sync_back"] as? Bool == false,
           let taskExitCodeByteOffset = packageSensorBpfInertDecimal(
               value["task_exit_code_byte_offset"]
@@ -348,7 +365,7 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV10(
           waitpidWaitStatus == kernelExitWaitStatus else {
         throw LinuxVzPackageSensorBpfInertEvidenceError.invalidSchema
     }
-    return LinuxVzPackageSensorBpfInertEvidenceV10(
+    return LinuxVzPackageSensorBpfInertEvidenceV11(
         canonicalJSON: payload,
         payloadSHA256: sha256(payload),
         evidenceByteLength: UInt64(payload.count),
@@ -369,6 +386,7 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV10(
         sourceEventCountBeforeFinish: sourceEventCountBeforeFinish,
         finishDrainEventCount: finishDrainEventCount,
         maximumDrainBatchRecordCount: maximumDrainBatchRecordCount,
+        networkIntentCount: networkIntentCount,
         faultCgroupID: faultCgroupID,
         faultFixturePID: faultFixturePID,
         faultSignalLatencyMicroseconds: faultSignalLatencyMicroseconds,

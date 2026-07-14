@@ -4,7 +4,8 @@ use std::fmt;
 use crate::linux_vz_package_sensor_control::kill_cgroup_from_descriptor_v1;
 #[cfg(target_os = "linux")]
 use crate::linux_vz_package_sensor_event_stream::{
-    LinuxVzPackageKernelEventKindV1, LinuxVzPackageSelectedSyscallV1,
+    LinuxVzPackageKernelEventKindV1, LinuxVzPackageNetworkAddressFamilyV1,
+    LinuxVzPackageSelectedSyscallV1,
 };
 #[cfg(target_os = "linux")]
 use crate::linux_vz_package_sensor_file_collector::{
@@ -179,6 +180,16 @@ struct InertProbeEvidenceWireV1 {
     leader_exec_count: String,
     malware_execution: bool,
     maximum_drain_batch_record_count: String,
+    network_connect_destination_class: &'static str,
+    network_connect_family: &'static str,
+    network_connect_port: String,
+    network_connect_result: String,
+    network_intent_count: String,
+    network_raw_addresses_captured: bool,
+    network_sendto_destination_class: &'static str,
+    network_sendto_family: &'static str,
+    network_sendto_port: String,
+    network_sendto_result: String,
     observed_event_cpus: Vec<String>,
     online_cpus: Vec<String>,
     package_execution: bool,
@@ -636,8 +647,8 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
             .flatten()
     });
     if correlated.expected_cgroup_id_v1() != cgroup.id
-        || correlated.source_event_count_v1() != 14
-        || correlated.observations_v1().len() != 8
+        || correlated.source_event_count_v1() != 18
+        || correlated.observations_v1().len() != 10
         || correlated_exit_wait_status != Some(waitpid_wait_status)
         || !correlated.coverage_complete_v1()
         || collection.leader_pid_v1() != child as u32
@@ -650,13 +661,13 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
         || collection.active_drain_poll_count_v1() == 0
         || collection.active_nonempty_drain_count_v1() == 0
         || collection.active_nonempty_drain_count_v1() > collection.active_drain_poll_count_v1()
-        || !(13..=14).contains(&collection.source_event_count_before_finish_v1())
+        || !(17..=18).contains(&collection.source_event_count_before_finish_v1())
         || collection.finish_drain_event_count_v1() > 1
         || collection
             .source_event_count_before_finish_v1()
             .checked_add(collection.finish_drain_event_count_v1())
-            != Some(14)
-        || !(1..=14).contains(&collection.maximum_drain_batch_record_count_v1())
+            != Some(18)
+        || !(1..=18).contains(&collection.maximum_drain_batch_record_count_v1())
         || !collection.coverage_complete_v1()
         || !matches_exact_correlated_stream_v1(
             correlated.observations_v1(),
@@ -742,8 +753,8 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
                 eprintln!("WHOATHERE_PACKAGE_SENSOR_BPF_INERT_EVIDENCE_DETAIL {error}");
                 LinuxVzPackageSensorBpfInertProbeErrorV1::Evidence
             })?;
-    if root_process_evidence.source_event_count() != 14
-        || root_process_evidence.observations().len() != 8
+    if root_process_evidence.source_event_count() != 18
+        || root_process_evidence.observations().len() != 10
         || !root_process_evidence.coverage_complete()
         || root_process_evidence.raw_arguments_captured()
         || root_process_evidence.raw_exec_paths_captured()
@@ -814,6 +825,10 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
             "mmap_exit",
             "mmap_enter",
             "mmap_exit",
+            "connect_enter",
+            "connect_exit",
+            "sendto_enter",
+            "sendto_exit",
             "exit",
         ],
         event_sequence_end: correlated.source_event_count_v1().to_string(),
@@ -871,6 +886,16 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
         maximum_drain_batch_record_count: collection
             .maximum_drain_batch_record_count_v1()
             .to_string(),
+        network_connect_destination_class: "documentation",
+        network_connect_family: "ipv4",
+        network_connect_port: "443".to_string(),
+        network_connect_result: (-libc::ENETUNREACH).to_string(),
+        network_intent_count: "2".to_string(),
+        network_raw_addresses_captured: false,
+        network_sendto_destination_class: "documentation",
+        network_sendto_family: "ipv6",
+        network_sendto_port: "53".to_string(),
+        network_sendto_result: (-libc::ENETUNREACH).to_string(),
         observed_event_cpus: vec![fixture_cpu.to_string()],
         online_cpus: collection
             .online_cpus_v1()
@@ -924,7 +949,7 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
             .as_str()
             .to_string(),
         runtime_btf_sha256: collection.runtime_btf_sha256_v1().as_str().to_string(),
-        schema_version: "whoathere.linux_vz_package_sensor_bpf_inert_probe.v10",
+        schema_version: "whoathere.linux_vz_package_sensor_bpf_inert_probe.v11",
         source_event_count_before_finish: collection
             .source_event_count_before_finish_v1()
             .to_string(),
@@ -960,7 +985,7 @@ fn matches_exact_correlated_stream_v1(
         cgroup_id,
         fixture_cpu,
     };
-    observations.len() == 8
+    observations.len() == 10
         && matches_correlated_syscall_v1(
             &observations[0],
             LinuxVzPackageSelectedSyscallV1::Setgroups,
@@ -995,13 +1020,85 @@ fn matches_exact_correlated_stream_v1(
         && matches_correlated_mmap_v1(&observations[4], 8, 9, context)
         && matches_correlated_mmap_v1(&observations[5], 10, 11, context)
         && matches_correlated_mmap_v1(&observations[6], 12, 13, context)
-        && matches_correlated_lifecycle_v1(
+        && matches_correlated_network_v1(
             &observations[7],
-            LinuxVzPackageKernelEventKindV1::Exit,
+            LinuxVzPackageSelectedSyscallV1::Connect,
             14,
+            15,
+            LinuxVzPackageNetworkAddressFamilyV1::Ipv4,
+            443,
+            &[192, 0, 2, 9],
+            context,
+        )
+        && matches_correlated_network_v1(
+            &observations[8],
+            LinuxVzPackageSelectedSyscallV1::Sendto,
+            16,
+            17,
+            LinuxVzPackageNetworkAddressFamilyV1::Ipv6,
+            53,
+            &[0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9],
+            context,
+        )
+        && matches_correlated_lifecycle_v1(
+            &observations[9],
+            LinuxVzPackageKernelEventKindV1::Exit,
+            18,
             context,
             Some(wait_status),
         )
+}
+
+#[cfg(target_os = "linux")]
+#[allow(clippy::too_many_arguments)]
+fn matches_correlated_network_v1(
+    observation: &LinuxVzPackageCorrelatedProcessObservationV1,
+    syscall: LinuxVzPackageSelectedSyscallV1,
+    enter_sequence: u64,
+    exit_sequence: u64,
+    family: LinuxVzPackageNetworkAddressFamilyV1,
+    port: u16,
+    address: &[u8],
+    context: InertCorrelatedContextV1,
+) -> bool {
+    let LinuxVzPackageCorrelatedProcessObservationV1::Syscall(event) = observation else {
+        return false;
+    };
+    let Some(target) = event.network_target_v1() else {
+        return false;
+    };
+    let arguments = event.arguments_v1();
+    let argument_shape = match syscall {
+        LinuxVzPackageSelectedSyscallV1::Connect => {
+            arguments[0] > 2
+                && arguments[1] == 0
+                && arguments[2] == 16
+                && arguments[3..].iter().all(|argument| *argument == 0)
+        }
+        LinuxVzPackageSelectedSyscallV1::Sendto => {
+            arguments[0] > 2
+                && arguments[1] == 0
+                && arguments[2] == 1
+                && arguments[3] == 0
+                && arguments[4] == 0
+                && arguments[5] == 28
+        }
+        _ => false,
+    };
+    event.syscall_v1() == syscall
+        && event.enter_source_sequence_v1() == enter_sequence
+        && event.exit_source_sequence_v1() == exit_sequence
+        && event.enter_timestamp_nanoseconds_v1() < event.exit_timestamp_nanoseconds_v1()
+        && event.cgroup_id_v1() == context.cgroup_id
+        && event.pid_v1() == context.leader_pid
+        && event.tgid_v1() == context.leader_pid
+        && argument_shape
+        && event.result_v1() == i64::from(-libc::ENETUNREACH)
+        && event.enter_cpu_v1() == context.fixture_cpu
+        && event.exit_cpu_v1() == context.fixture_cpu
+        && target.family_v1() == family
+        && target.port_v1() == port
+        && target.address_v1() == address
 }
 
 #[cfg(target_os = "linux")]
@@ -1027,6 +1124,7 @@ fn matches_correlated_syscall_v1(
         && event.arguments_v1()[1..]
             .iter()
             .all(|argument| *argument == 0)
+        && event.network_target_v1().is_none()
         && event.result_v1() == 0
         && event.enter_cpu_v1() == context.fixture_cpu
         && event.exit_cpu_v1() == context.fixture_cpu
@@ -1051,6 +1149,7 @@ fn matches_correlated_mmap_v1(
         && event.tgid_v1() == context.leader_pid
         && event.arguments_v1()[0] == 0
         && event.arguments_v1()[1] > 0
+        && event.network_target_v1().is_none()
         && event.result_v1() > 0
         && event.enter_cpu_v1() == context.fixture_cpu
         && event.exit_cpu_v1() == context.fixture_cpu

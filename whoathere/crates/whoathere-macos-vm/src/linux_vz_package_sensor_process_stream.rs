@@ -1,7 +1,8 @@
 #![allow(dead_code)]
 
 use crate::linux_vz_package_sensor_event_stream::{
-    LinuxVzPackageKernelEventKindV1, LinuxVzPackageKernelEventV1, LinuxVzPackageSelectedSyscallV1,
+    LinuxVzPackageKernelEventKindV1, LinuxVzPackageKernelEventV1, LinuxVzPackageNetworkTargetV1,
+    LinuxVzPackageSelectedSyscallV1,
 };
 use std::collections::BTreeMap;
 use std::fmt;
@@ -114,6 +115,7 @@ pub(crate) struct LinuxVzPackageCorrelatedSyscallV1 {
     pid: u32,
     tgid: u32,
     arguments: [u64; 6],
+    network_target: Option<LinuxVzPackageNetworkTargetV1>,
     result: i64,
     enter_cpu: u32,
     exit_cpu: u32,
@@ -138,6 +140,10 @@ impl fmt::Debug for LinuxVzPackageCorrelatedSyscallV1 {
             .field("pid", &self.pid)
             .field("tgid", &self.tgid)
             .field("arguments", &"<redacted>")
+            .field(
+                "network_target",
+                &self.network_target.as_ref().map(|_| "<redacted>"),
+            )
             .field("result", &self.result)
             .field("enter_cpu", &self.enter_cpu)
             .field("exit_cpu", &self.exit_cpu)
@@ -182,6 +188,10 @@ impl LinuxVzPackageCorrelatedSyscallV1 {
         &self.arguments
     }
 
+    pub(crate) fn network_target_v1(&self) -> Option<&LinuxVzPackageNetworkTargetV1> {
+        self.network_target.as_ref()
+    }
+
     pub(crate) const fn result_v1(&self) -> i64 {
         self.result
     }
@@ -219,6 +229,7 @@ struct PendingSyscallV1 {
     pid: u32,
     tgid: u32,
     arguments: [u64; 6],
+    network_target: Option<LinuxVzPackageNetworkTargetV1>,
     enter_cpu: u32,
 }
 
@@ -236,6 +247,10 @@ impl fmt::Debug for PendingSyscallV1 {
             .field("pid", &self.pid)
             .field("tgid", &self.tgid)
             .field("arguments", &"<redacted>")
+            .field(
+                "network_target",
+                &self.network_target.as_ref().map(|_| "<redacted>"),
+            )
             .field("enter_cpu", &self.enter_cpu)
             .finish()
     }
@@ -323,7 +338,10 @@ impl LinuxVzPackageProcessEventCorrelatorV1 {
         if observed_source_events > self.maximum_source_events {
             return Err(LinuxVzPackageProcessStreamErrorV1::LimitExceeded);
         }
-        if !event.data().is_empty() || event.data_truncated() {
+        let network_target = event
+            .network_target_v1()
+            .map_err(|_| LinuxVzPackageProcessStreamErrorV1::UnconsumedDetail)?;
+        if (!event.data().is_empty() || event.data_truncated()) && network_target.is_none() {
             return Err(LinuxVzPackageProcessStreamErrorV1::UnconsumedDetail);
         }
 
@@ -346,6 +364,7 @@ impl LinuxVzPackageProcessEventCorrelatorV1 {
                         pid: event.pid(),
                         tgid: event.tgid(),
                         arguments: *event.arguments(),
+                        network_target,
                         enter_cpu: event.cpu(),
                     },
                 );
@@ -386,6 +405,7 @@ impl LinuxVzPackageProcessEventCorrelatorV1 {
                             pid: event.pid(),
                             tgid: event.tgid(),
                             arguments: pending.arguments,
+                            network_target: pending.network_target,
                             result,
                             enter_cpu: pending.enter_cpu,
                             exit_cpu: event.cpu(),
@@ -556,6 +576,16 @@ mod tests {
         }
         if let Some(data) = spec.data {
             assert!(data.len() <= 64);
+            if matches!(
+                spec.syscall,
+                Some(
+                    LinuxVzPackageSelectedSyscallV1::Connect
+                        | LinuxVzPackageSelectedSyscallV1::Sendto
+                )
+            ) && data.len() >= 2
+            {
+                bytes[52..54].copy_from_slice(&data[..2]);
+            }
             bytes[54..56].copy_from_slice(&(data.len() as u16).to_le_bytes());
             bytes[112..112 + data.len()].copy_from_slice(data);
         }
@@ -621,16 +651,18 @@ mod tests {
             )))
             .expect("setuid enter");
         assert!(!format!("{correlator:?}").contains("65534"));
+        let mut connect_enter = syscall_spec_v1(
+            LinuxVzPackageKernelEventKindV1::SyscallEnter,
+            2,
+            200,
+            (42, 41),
+            LinuxVzPackageSelectedSyscallV1::Connect,
+            [7, 0, 16, 0, 0, 0],
+            None,
+        );
+        connect_enter.data = Some(&[2, 0, 1, 187, 192, 0, 2, 9, 0, 0, 0, 0, 0, 0, 0, 0]);
         correlator
-            .ingest_v1(event_v1(syscall_spec_v1(
-                LinuxVzPackageKernelEventKindV1::SyscallEnter,
-                2,
-                200,
-                (42, 41),
-                LinuxVzPackageSelectedSyscallV1::Connect,
-                [7, 0, 16, 0, 0, 0],
-                None,
-            )))
+            .ingest_v1(event_v1(connect_enter))
             .expect("connect enter");
         correlator
             .ingest_v1(event_v1(syscall_spec_v1(
@@ -713,6 +745,10 @@ mod tests {
         assert_eq!(connect.pid_v1(), 42);
         assert_eq!(connect.enter_cpu_v1(), 0);
         assert_eq!(connect.exit_cpu_v1(), 1);
+        let target = connect.network_target_v1().expect("network target");
+        assert_eq!(target.port_v1(), 443);
+        assert_eq!(target.address_v1(), &[192, 0, 2, 9]);
+        assert!(!format!("{connect:?}").contains("192"));
         let LinuxVzPackageCorrelatedProcessObservationV1::Lifecycle(exit) =
             &stream.observations_v1()[3]
         else {
