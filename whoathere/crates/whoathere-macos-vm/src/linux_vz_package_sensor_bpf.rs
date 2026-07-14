@@ -1,5 +1,10 @@
 #![allow(dead_code)]
 
+use crate::linux_vz_package_sensor_btf::LinuxVzPackageSensorBtfErrorV1;
+#[cfg(target_os = "linux")]
+use crate::linux_vz_package_sensor_btf::{
+    read_linux_vz_package_task_exit_code_layout_v1, LinuxVzPackageTaskExitCodeLayoutV1,
+};
 #[cfg(target_os = "linux")]
 use crate::linux_vz_package_sensor_event_stream::{
     LinuxVzPackageBpfRingBufferV1, LinuxVzPackageKernelEventV1,
@@ -15,6 +20,8 @@ use crate::linux_vz_package_sensor_tracepoint::{
     LinuxVzPackageTracepointLayoutV1,
 };
 use std::collections::BTreeSet;
+#[cfg(target_os = "linux")]
+use std::ffi::CString;
 use std::fmt;
 #[cfg(target_os = "linux")]
 use std::fs::File;
@@ -69,11 +76,14 @@ const BPF_FUNC_KTIME_GET_NS_V1: i32 = 5;
 const BPF_FUNC_GET_SMP_PROCESSOR_ID_V1: i32 = 8;
 const BPF_FUNC_GET_CURRENT_PID_TGID_V1: i32 = 14;
 const BPF_FUNC_GET_CURRENT_CGROUP_ID_V1: i32 = 80;
+const BPF_FUNC_PROBE_READ_KERNEL_V1: i32 = 113;
 const BPF_FUNC_RINGBUF_RESERVE_V1: i32 = 131;
 const BPF_FUNC_RINGBUF_SUBMIT_V1: i32 = 132;
 
 const KERNEL_EVENT_MAGIC_LE_V1: i32 = 0x454b_5457;
 const KERNEL_EVENT_VERSION_V1: u32 = 1;
+const KERNEL_EVENT_VERSION_V2: u32 = 2;
+const KERNEL_EVENT_FLAG_RESULT_PRESENT_V1: i32 = 1 << 1;
 
 #[cfg(target_os = "linux")]
 const BPF_MAP_CREATE_V1: libc::c_long = 0;
@@ -90,6 +100,8 @@ const BPF_MAP_TYPE_RINGBUF_V1: u32 = 27;
 #[cfg(target_os = "linux")]
 const BPF_PROG_TYPE_TRACEPOINT_V1: u32 = 5;
 #[cfg(target_os = "linux")]
+const BPF_PROG_TYPE_RAW_TRACEPOINT_V1: u32 = 17;
+#[cfg(target_os = "linux")]
 const BPF_F_RDONLY_PROG_V1: u32 = 1 << 7;
 #[cfg(target_os = "linux")]
 const BPF_ANY_V1: u64 = 0;
@@ -101,6 +113,8 @@ const PERF_FLAG_FD_CLOEXEC_V1: libc::c_ulong = 1 << 3;
 const PERF_EVENT_IOC_ENABLE_V1: libc::c_int = 0x2400;
 #[cfg(target_os = "linux")]
 const PERF_EVENT_IOC_SET_BPF_V1: libc::c_int = 0x4004_2408;
+#[cfg(target_os = "linux")]
+const BPF_RAW_TRACEPOINT_OPEN_V1: libc::c_long = 17;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LinuxVzPackageSensorBpfErrorV1 {
@@ -128,6 +142,7 @@ pub(crate) enum LinuxVzPackageSensorBpfErrorV1 {
     PerfEventEnableInvalid,
     Descriptor,
     DropCounter,
+    Btf(LinuxVzPackageSensorBtfErrorV1),
     Tracepoint(LinuxVzPackageTracepointErrorV1),
     EventStream(LinuxVzPackageSensorEventStreamErrorV1),
 }
@@ -169,6 +184,7 @@ impl LinuxVzPackageSensorBpfErrorV1 {
             Self::PerfEventEnableInvalid => "linux_vz_package_sensor_bpf_perf_event_enable_invalid",
             Self::Descriptor => "linux_vz_package_sensor_bpf_descriptor_invalid",
             Self::DropCounter => "linux_vz_package_sensor_bpf_drop_counter_failed",
+            Self::Btf(error) => error.reason_code(),
             Self::Tracepoint(error) => error.reason_code(),
             Self::EventStream(error) => error.reason_code(),
         }
@@ -186,6 +202,12 @@ impl std::error::Error for LinuxVzPackageSensorBpfErrorV1 {}
 impl From<LinuxVzPackageTracepointErrorV1> for LinuxVzPackageSensorBpfErrorV1 {
     fn from(value: LinuxVzPackageTracepointErrorV1) -> Self {
         Self::Tracepoint(value)
+    }
+}
+
+impl From<LinuxVzPackageSensorBtfErrorV1> for LinuxVzPackageSensorBpfErrorV1 {
+    fn from(value: LinuxVzPackageSensorBtfErrorV1) -> Self {
+        Self::Btf(value)
     }
 }
 
@@ -398,7 +420,9 @@ fn build_lifecycle_program_v1(
     let kind = match layout.kind_v1() {
         LinuxVzPackageTracepointKindV1::SchedProcessFork => 1_u32,
         LinuxVzPackageTracepointKindV1::SchedProcessExec => 2_u32,
-        LinuxVzPackageTracepointKindV1::SchedProcessExit => 3_u32,
+        LinuxVzPackageTracepointKindV1::SchedProcessExit => {
+            return Err(LinuxVzPackageSensorBpfErrorV1::InvalidLayout);
+        }
         LinuxVzPackageTracepointKindV1::RawSyscallsSysEnter
         | LinuxVzPackageTracepointKindV1::RawSyscallsSysExit => {
             return Err(LinuxVzPackageSensorBpfErrorV1::InvalidLayout);
@@ -406,8 +430,8 @@ fn build_lifecycle_program_v1(
     };
     let subject = match layout.kind_v1() {
         LinuxVzPackageTracepointKindV1::SchedProcessFork => layout.child_pid_v1(),
-        LinuxVzPackageTracepointKindV1::SchedProcessExec
-        | LinuxVzPackageTracepointKindV1::SchedProcessExit => layout.pid_v1(),
+        LinuxVzPackageTracepointKindV1::SchedProcessExec => layout.pid_v1(),
+        LinuxVzPackageTracepointKindV1::SchedProcessExit => None,
         LinuxVzPackageTracepointKindV1::RawSyscallsSysEnter
         | LinuxVzPackageTracepointKindV1::RawSyscallsSysExit => None,
     }
@@ -465,7 +489,7 @@ fn build_lifecycle_program_v1(
         );
     }
     program.store_immediate_v1(BPF_W_V1, BPF_REG_7_V1, 0, KERNEL_EVENT_MAGIC_LE_V1);
-    let version_and_kind = (kind << 16) | KERNEL_EVENT_VERSION_V1;
+    let version_and_kind = (kind << 16) | KERNEL_EVENT_VERSION_V2;
     program.store_immediate_v1(
         BPF_W_V1,
         BPF_REG_7_V1,
@@ -523,6 +547,129 @@ fn build_lifecycle_program_v1(
 
     program.patch_forward_jump_v1(missing_configuration, final_exit)?;
     program.patch_forward_jump_v1(wrong_cgroup, final_exit)?;
+    program.patch_forward_jump_v1(reservation_failed, drop_counter)?;
+    program.patch_forward_jump_v1(missing_drop_counter, final_exit)?;
+    Ok(program.instructions)
+}
+
+fn build_raw_exit_program_v1(
+    task_exit_code_byte_offset: u32,
+    configuration_map: i32,
+    ring_buffer_map: i32,
+    drop_counter_map: i32,
+) -> Result<Vec<BpfInstructionV1>, LinuxVzPackageSensorBpfErrorV1> {
+    if task_exit_code_byte_offset == 0
+        || task_exit_code_byte_offset > i32::MAX as u32
+        || configuration_map < 0
+        || ring_buffer_map < 0
+        || drop_counter_map < 0
+    {
+        return Err(LinuxVzPackageSensorBpfErrorV1::InvalidLayout);
+    }
+    let exit_code_offset = i32::try_from(task_exit_code_byte_offset)
+        .map_err(|_| LinuxVzPackageSensorBpfErrorV1::InvalidLayout)?;
+    let mut program = BpfProgramBuilderV1::default();
+    program.mov64_register_v1(BPF_REG_6_V1, BPF_REG_1_V1);
+    program.call_v1(BPF_FUNC_GET_CURRENT_CGROUP_ID_V1);
+    program.mov64_register_v1(BPF_REG_8_V1, BPF_REG_0_V1);
+    program.store_immediate_v1(BPF_W_V1, BPF_REG_10_V1, -4, 0);
+    program.load_map_descriptor_v1(BPF_REG_1_V1, configuration_map);
+    program.mov64_register_v1(BPF_REG_2_V1, BPF_REG_10_V1);
+    program.add64_immediate_v1(BPF_REG_2_V1, -4);
+    program.call_v1(BPF_FUNC_MAP_LOOKUP_ELEM_V1);
+    let missing_configuration = program.jump_immediate_placeholder_v1(BPF_JEQ_V1, BPF_REG_0_V1, 0);
+    program.load_register_v1(BPF_DW_V1, BPF_REG_1_V1, BPF_REG_0_V1, 0);
+    let wrong_cgroup = program.jump_register_placeholder_v1(BPF_JNE_V1, BPF_REG_8_V1, BPF_REG_1_V1);
+
+    program.load_register_v1(BPF_DW_V1, BPF_REG_9_V1, BPF_REG_6_V1, 0);
+    program.store_immediate_v1(BPF_DW_V1, BPF_REG_10_V1, -16, 0);
+    program.mov64_register_v1(BPF_REG_3_V1, BPF_REG_9_V1);
+    program.add64_immediate_v1(BPF_REG_3_V1, exit_code_offset);
+    program.mov64_register_v1(BPF_REG_1_V1, BPF_REG_10_V1);
+    program.add64_immediate_v1(BPF_REG_1_V1, -16);
+    program.mov64_immediate_v1(BPF_REG_2_V1, 4);
+    program.call_v1(BPF_FUNC_PROBE_READ_KERNEL_V1);
+    let exit_code_read_failed = program.jump_immediate_placeholder_v1(BPF_JNE_V1, BPF_REG_0_V1, 0);
+    program.load_register_v1(BPF_W_V1, BPF_REG_9_V1, BPF_REG_10_V1, -16);
+
+    program.load_map_descriptor_v1(BPF_REG_1_V1, ring_buffer_map);
+    program.mov64_immediate_v1(
+        BPF_REG_2_V1,
+        i32::try_from(LINUX_VZ_PACKAGE_KERNEL_EVENT_BYTES_V1)
+            .map_err(|_| LinuxVzPackageSensorBpfErrorV1::InvalidLayout)?,
+    );
+    program.mov64_immediate_v1(BPF_REG_3_V1, 0);
+    program.call_v1(BPF_FUNC_RINGBUF_RESERVE_V1);
+    let reservation_failed = program.jump_immediate_placeholder_v1(BPF_JEQ_V1, BPF_REG_0_V1, 0);
+    program.mov64_register_v1(BPF_REG_7_V1, BPF_REG_0_V1);
+    for offset in (0..LINUX_VZ_PACKAGE_KERNEL_EVENT_BYTES_V1).step_by(size_of::<u64>()) {
+        program.store_immediate_v1(
+            BPF_DW_V1,
+            BPF_REG_7_V1,
+            i16::try_from(offset).map_err(|_| LinuxVzPackageSensorBpfErrorV1::InvalidLayout)?,
+            0,
+        );
+    }
+    program.store_immediate_v1(BPF_W_V1, BPF_REG_7_V1, 0, KERNEL_EVENT_MAGIC_LE_V1);
+    program.store_immediate_v1(
+        BPF_W_V1,
+        BPF_REG_7_V1,
+        4,
+        i32::try_from((3_u32 << 16) | KERNEL_EVENT_VERSION_V2)
+            .map_err(|_| LinuxVzPackageSensorBpfErrorV1::InvalidLayout)?,
+    );
+    program.store_immediate_v1(
+        BPF_W_V1,
+        BPF_REG_7_V1,
+        8,
+        KERNEL_EVENT_FLAG_RESULT_PRESENT_V1,
+    );
+    program.store_immediate_v1(
+        BPF_W_V1,
+        BPF_REG_7_V1,
+        12,
+        i32::try_from(LINUX_VZ_PACKAGE_KERNEL_EVENT_BYTES_V1)
+            .map_err(|_| LinuxVzPackageSensorBpfErrorV1::InvalidLayout)?,
+    );
+    program.store_register_v1(BPF_DW_V1, BPF_REG_7_V1, BPF_REG_8_V1, 16);
+    program.call_v1(BPF_FUNC_KTIME_GET_NS_V1);
+    program.store_register_v1(BPF_DW_V1, BPF_REG_7_V1, BPF_REG_0_V1, 24);
+    program.call_v1(BPF_FUNC_GET_CURRENT_PID_TGID_V1);
+    program.store_register_v1(BPF_W_V1, BPF_REG_7_V1, BPF_REG_0_V1, 32);
+    program.store_register_v1(BPF_W_V1, BPF_REG_7_V1, BPF_REG_0_V1, 44);
+    program.mov64_register_v1(BPF_REG_1_V1, BPF_REG_0_V1);
+    program.rsh64_immediate_v1(BPF_REG_1_V1, 32);
+    program.store_register_v1(BPF_W_V1, BPF_REG_7_V1, BPF_REG_1_V1, 36);
+    program.store_register_v1(BPF_DW_V1, BPF_REG_7_V1, BPF_REG_9_V1, 56);
+    program.call_v1(BPF_FUNC_GET_SMP_PROCESSOR_ID_V1);
+    program.store_register_v1(BPF_W_V1, BPF_REG_7_V1, BPF_REG_0_V1, 184);
+    program.mov64_register_v1(BPF_REG_1_V1, BPF_REG_7_V1);
+    program.mov64_immediate_v1(BPF_REG_2_V1, 0);
+    program.call_v1(BPF_FUNC_RINGBUF_SUBMIT_V1);
+    program.mov64_immediate_v1(BPF_REG_0_V1, 0);
+    program.exit_v1();
+
+    let drop_counter = program.instructions.len();
+    program.store_immediate_v1(BPF_W_V1, BPF_REG_10_V1, -4, 0);
+    program.load_map_descriptor_v1(BPF_REG_1_V1, drop_counter_map);
+    program.mov64_register_v1(BPF_REG_2_V1, BPF_REG_10_V1);
+    program.add64_immediate_v1(BPF_REG_2_V1, -4);
+    program.call_v1(BPF_FUNC_MAP_LOOKUP_ELEM_V1);
+    let missing_drop_counter = program.jump_immediate_placeholder_v1(BPF_JEQ_V1, BPF_REG_0_V1, 0);
+    program.mov64_immediate_v1(BPF_REG_1_V1, 1);
+    program.instruction_v1(
+        BPF_STX_V1 | BPF_XADD_V1 | BPF_DW_V1,
+        BPF_REG_0_V1,
+        BPF_REG_1_V1,
+        0,
+        0,
+    );
+    let final_exit = program.instructions.len();
+    program.mov64_immediate_v1(BPF_REG_0_V1, 0);
+    program.exit_v1();
+    program.patch_forward_jump_v1(missing_configuration, final_exit)?;
+    program.patch_forward_jump_v1(wrong_cgroup, final_exit)?;
+    program.patch_forward_jump_v1(exit_code_read_failed, drop_counter)?;
     program.patch_forward_jump_v1(reservation_failed, drop_counter)?;
     program.patch_forward_jump_v1(missing_drop_counter, final_exit)?;
     Ok(program.instructions)
@@ -639,7 +786,7 @@ fn build_selected_syscall_program_v1(
         );
     }
     program.store_immediate_v1(BPF_W_V1, BPF_REG_7_V1, 0, KERNEL_EVENT_MAGIC_LE_V1);
-    let version_and_kind = (kind << 16) | KERNEL_EVENT_VERSION_V1;
+    let version_and_kind = (kind << 16) | KERNEL_EVENT_VERSION_V2;
     program.store_immediate_v1(
         BPF_W_V1,
         BPF_REG_7_V1,
@@ -648,7 +795,12 @@ fn build_selected_syscall_program_v1(
             .map_err(|_| LinuxVzPackageSensorBpfErrorV1::InvalidLayout)?,
     );
     if result_present {
-        program.store_immediate_v1(BPF_W_V1, BPF_REG_7_V1, 8, 1 << 1);
+        program.store_immediate_v1(
+            BPF_W_V1,
+            BPF_REG_7_V1,
+            8,
+            KERNEL_EVENT_FLAG_RESULT_PRESENT_V1,
+        );
     }
     program.store_immediate_v1(
         BPF_W_V1,
@@ -882,6 +1034,13 @@ struct BpfProgramLoadAttributeV1 {
 }
 
 #[repr(C)]
+struct BpfRawTracepointOpenAttributeV1 {
+    name: u64,
+    program_descriptor: u32,
+    padding: u32,
+}
+
+#[repr(C)]
 #[derive(Default)]
 struct PerfEventAttributeV1 {
     event_type: u32,
@@ -917,6 +1076,7 @@ pub(crate) struct LinuxVzPackageSensorBpfProducerV1 {
     configuration: OwnedFd,
     ring_buffer: LinuxVzPackageBpfRingBufferV1,
     layouts: [LinuxVzPackageTracepointLayoutV1; 5],
+    task_exit_code_layout: LinuxVzPackageTaskExitCodeLayoutV1,
     online_cpus: Vec<u32>,
     attachment_cpu: u32,
     expected_cgroup_id: u64,
@@ -933,6 +1093,7 @@ impl fmt::Debug for LinuxVzPackageSensorBpfProducerV1 {
             .field("configuration", &"<root-only-bpf-map>")
             .field("ring_buffer", &self.ring_buffer)
             .field("layouts", &self.layouts)
+            .field("task_exit_code_layout", &self.task_exit_code_layout)
             .field("online_cpus", &self.online_cpus)
             .field("attachment_cpu", &self.attachment_cpu)
             .field("expected_cgroup_id", &self.expected_cgroup_id)
@@ -981,6 +1142,7 @@ impl LinuxVzPackageSensorBpfProducerV1 {
                 LinuxVzPackageTracepointKindV1::RawSyscallsSysExit,
             )?,
         ];
+        let task_exit_code_layout = read_linux_vz_package_task_exit_code_layout_v1()?;
         let configuration = create_map_v1(
             BPF_MAP_TYPE_ARRAY_V1,
             size_of::<u32>(),
@@ -1009,15 +1171,32 @@ impl LinuxVzPackageSensorBpfProducerV1 {
         let mut programs = Vec::with_capacity(layouts.len());
         let mut links = Vec::with_capacity(layouts.len());
         for layout in &layouts {
+            if layout.kind_v1() == LinuxVzPackageTracepointKindV1::SchedProcessExit {
+                let instructions = build_raw_exit_program_v1(
+                    task_exit_code_layout.byte_offset_v1(),
+                    configuration.as_raw_fd(),
+                    ring_map.as_raw_fd(),
+                    drop_counter.as_raw_fd(),
+                )?;
+                let program = load_raw_tracepoint_program_v1(&instructions, "wt_pkg_exit")?;
+                links.push(attach_raw_tracepoint_program_v1(
+                    "sched_process_exit",
+                    program.as_raw_fd(),
+                )?);
+                programs.push(program);
+                continue;
+            }
             let instructions = match layout.kind_v1() {
                 LinuxVzPackageTracepointKindV1::SchedProcessFork
-                | LinuxVzPackageTracepointKindV1::SchedProcessExec
-                | LinuxVzPackageTracepointKindV1::SchedProcessExit => build_lifecycle_program_v1(
+                | LinuxVzPackageTracepointKindV1::SchedProcessExec => build_lifecycle_program_v1(
                     layout,
                     configuration.as_raw_fd(),
                     ring_map.as_raw_fd(),
                     drop_counter.as_raw_fd(),
                 )?,
+                LinuxVzPackageTracepointKindV1::SchedProcessExit => {
+                    return Err(LinuxVzPackageSensorBpfErrorV1::InvalidLayout);
+                }
                 LinuxVzPackageTracepointKindV1::RawSyscallsSysEnter
                 | LinuxVzPackageTracepointKindV1::RawSyscallsSysExit => {
                     build_selected_syscall_program_v1(
@@ -1054,6 +1233,7 @@ impl LinuxVzPackageSensorBpfProducerV1 {
             configuration,
             ring_buffer,
             layouts,
+            task_exit_code_layout,
             online_cpus,
             attachment_cpu,
             expected_cgroup_id,
@@ -1083,6 +1263,14 @@ impl LinuxVzPackageSensorBpfProducerV1 {
 
     pub(crate) fn layouts_v1(&self) -> &[LinuxVzPackageTracepointLayoutV1; 5] {
         &self.layouts
+    }
+
+    pub(crate) fn runtime_btf_sha256_v1(&self) -> &whoathere_artifact::Sha256Digest {
+        self.task_exit_code_layout.btf_sha256_v1()
+    }
+
+    pub(crate) const fn task_exit_code_byte_offset_v1(&self) -> u32 {
+        self.task_exit_code_layout.byte_offset_v1()
     }
 
     pub(crate) fn online_cpus_v1(&self) -> &[u32] {
@@ -1226,6 +1414,74 @@ fn load_tracepoint_program_v1(
 }
 
 #[cfg(target_os = "linux")]
+fn load_raw_tracepoint_program_v1(
+    instructions: &[BpfInstructionV1],
+    name: &str,
+) -> Result<OwnedFd, LinuxVzPackageSensorBpfErrorV1> {
+    load_program_of_type_v1(instructions, name, BPF_PROG_TYPE_RAW_TRACEPOINT_V1)
+}
+
+#[cfg(target_os = "linux")]
+fn load_program_of_type_v1(
+    instructions: &[BpfInstructionV1],
+    name: &str,
+    program_type: u32,
+) -> Result<OwnedFd, LinuxVzPackageSensorBpfErrorV1> {
+    if instructions.is_empty() {
+        return Err(LinuxVzPackageSensorBpfErrorV1::InvalidLayout);
+    }
+    static LICENSE: &[u8] = b"GPL\0";
+    let mut attributes = unsafe { std::mem::zeroed::<BpfProgramLoadAttributeV1>() };
+    attributes.program_type = program_type;
+    attributes.instruction_count = u32::try_from(instructions.len())
+        .map_err(|_| LinuxVzPackageSensorBpfErrorV1::InvalidLayout)?;
+    attributes.instructions = instructions.as_ptr() as u64;
+    attributes.license = LICENSE.as_ptr() as u64;
+    copy_object_name_v1(name, &mut attributes.program_name)?;
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_bpf,
+            BPF_PROG_LOAD_V1,
+            &attributes,
+            size_of::<BpfProgramLoadAttributeV1>(),
+        )
+    };
+    if result < 0 {
+        return Err(match std::io::Error::last_os_error().raw_os_error() {
+            Some(code) => LinuxVzPackageSensorBpfErrorV1::ProgramLoadOs(code),
+            None => LinuxVzPackageSensorBpfErrorV1::ProgramLoad,
+        });
+    }
+    owned_descriptor_v1(result, LinuxVzPackageSensorBpfErrorV1::ProgramLoad)
+}
+
+#[cfg(target_os = "linux")]
+fn attach_raw_tracepoint_program_v1(
+    name: &str,
+    program: RawFd,
+) -> Result<OwnedFd, LinuxVzPackageSensorBpfErrorV1> {
+    if program < 0 {
+        return Err(LinuxVzPackageSensorBpfErrorV1::Descriptor);
+    }
+    let name = CString::new(name).map_err(|_| LinuxVzPackageSensorBpfErrorV1::Attach)?;
+    let attributes = BpfRawTracepointOpenAttributeV1 {
+        name: name.as_ptr() as u64,
+        program_descriptor: u32::try_from(program)
+            .map_err(|_| LinuxVzPackageSensorBpfErrorV1::Descriptor)?,
+        padding: 0,
+    };
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_bpf,
+            BPF_RAW_TRACEPOINT_OPEN_V1,
+            &attributes,
+            size_of::<BpfRawTracepointOpenAttributeV1>(),
+        )
+    };
+    owned_descriptor_v1(result, LinuxVzPackageSensorBpfErrorV1::Attach)
+}
+
+#[cfg(target_os = "linux")]
 fn attach_tracepoint_program_v1(
     tracepoint_id: u32,
     cpu: u32,
@@ -1366,7 +1622,6 @@ mod tests {
         for kind in [
             LinuxVzPackageTracepointKindV1::SchedProcessFork,
             LinuxVzPackageTracepointKindV1::SchedProcessExec,
-            LinuxVzPackageTracepointKindV1::SchedProcessExit,
         ] {
             let instructions =
                 build_lifecycle_program_v1(&layout_v1(kind), 11, 12, 13).expect("program");
@@ -1412,6 +1667,55 @@ mod tests {
                 BPF_JMP_V1 | BPF_EXIT_V1
             );
         }
+        assert_eq!(
+            build_lifecycle_program_v1(
+                &layout_v1(LinuxVzPackageTracepointKindV1::SchedProcessExit),
+                11,
+                12,
+                13,
+            ),
+            Err(LinuxVzPackageSensorBpfErrorV1::InvalidLayout)
+        );
+    }
+
+    #[test]
+    fn raw_exit_program_reads_btf_bound_wait_status_and_fully_initializes_record() {
+        let instructions = build_raw_exit_program_v1(40, 11, 12, 13).expect("raw exit program");
+        assert!(instructions.len() < 128);
+        assert_eq!(
+            instructions
+                .iter()
+                .filter(|instruction| {
+                    instruction.code == BPF_ST_V1 | BPF_MEM_V1 | BPF_DW_V1
+                        && instruction.destination_v1() == BPF_REG_7_V1
+                        && instruction.immediate == 0
+                        && instruction.offset >= 0
+                        && usize::try_from(instruction.offset)
+                            .is_ok_and(|offset| offset % 8 == 0 && offset < 192)
+                })
+                .count(),
+            24
+        );
+        assert!(instructions.iter().any(|instruction| {
+            instruction.code == BPF_JMP_V1 | BPF_CALL_V1
+                && instruction.immediate == BPF_FUNC_PROBE_READ_KERNEL_V1
+        }));
+        assert!(instructions.iter().any(|instruction| {
+            instruction.code == BPF_ST_V1 | BPF_MEM_V1 | BPF_W_V1
+                && instruction.destination_v1() == BPF_REG_7_V1
+                && instruction.offset == 8
+                && instruction.immediate == KERNEL_EVENT_FLAG_RESULT_PRESENT_V1
+        }));
+        assert!(instructions.iter().any(|instruction| {
+            instruction.code == BPF_STX_V1 | BPF_MEM_V1 | BPF_DW_V1
+                && instruction.destination_v1() == BPF_REG_7_V1
+                && instruction.source_v1() == BPF_REG_9_V1
+                && instruction.offset == 56
+        }));
+        assert_eq!(
+            build_raw_exit_program_v1(0, 11, 12, 13),
+            Err(LinuxVzPackageSensorBpfErrorV1::InvalidLayout)
+        );
     }
 
     #[test]
@@ -1443,6 +1747,7 @@ mod tests {
             std::mem::offset_of!(BpfProgramLoadAttributeV1, signature),
             152
         );
+        assert_eq!(size_of::<BpfRawTracepointOpenAttributeV1>(), 16);
         assert_eq!(size_of::<PerfEventAttributeV1>(), 136);
         assert_eq!(std::mem::offset_of!(PerfEventAttributeV1, flags), 40);
         assert_eq!(std::mem::offset_of!(PerfEventAttributeV1, config3), 128);

@@ -4,17 +4,22 @@ Date: 2026-07-09
 
 Status: canonical execution plan for the next product milestone
 
-Current execution checkpoint (2026-07-14): the protected service now independently verifies that
-the blocked package leader's kernel-reported parent is the root runner identified by peer
-credentials, then binds that narrowly typed supervisor-origin observation through leader-control
-v2, process-correlation v3, and typed process evidence. The exact expected executable digest,
-canonical argv digest, and argv count are derived from the measured closed launch contract and cross
-arm-control v2, collector context, correlation, and the typed leader exec without carrying raw argv
-or a raw path. These are expected-identity bindings, not independent runtime measurements. No
-package or malware ran, and the July detection score remains 7/11. A concrete root collector,
-independent BPF-exit consistency, fanotify/file, filesystem-diff, network correlation,
+Current execution checkpoint (2026-07-14): the package BPF producer now reads the raw Linux wait
+status independently from the kernel through a `sched_process_exit` raw tracepoint and the exact
+runtime-BTF-resolved `task_struct.exit_code` member. Kernel event ABI v2, the fail-closed decoder,
+and process correlation retain that value. A strict inert cloud-Mac qualification bound the pinned
+BTF digest, exact byte offset `1964`, raw-tracepoint source, kernel status `0`, independent `waitpid`
+status `0`, the existing contiguous 14-event stream, zero loss, zero host frames, and a stopped VM.
+No package or malware ran, and the July detection score remains 7/11. A concrete root collector,
+supervisor/kernel terminal reconciliation, fanotify/file, filesystem-diff, network correlation,
 signed-envelope, full runtime, inert package scenario, benign, and malicious gates remain open. See
-the [launch-binding checkpoint](artifact-native-linux-vz-package-sensor-launch-binding-checkpoint-2026-07-14.md).
+the [kernel-exit checkpoint](artifact-native-linux-vz-package-sensor-kernel-exit-binding-checkpoint-2026-07-14.md).
+
+The preceding launch-binding gate independently verified that the blocked package leader's
+kernel-reported parent was the root runner identified by peer credentials, then carried that
+supervisor-origin observation and the redacted expected launch identity through protected control,
+correlation, and typed evidence. See the
+[launch-binding checkpoint](artifact-native-linux-vz-package-sensor-launch-binding-checkpoint-2026-07-14.md).
 
 The preceding terminal-binding gate carried the root supervisor's exact reaped-leader result
 through finish-v2, collector, correlation, and typed leader-exit evidence as exactly one exited or
@@ -389,6 +394,15 @@ count; typed exec evidence must match them exactly. This is binding and enrichme
 contract, not independent runtime measurement, and the production collector remains open. No
 package or malware ran and the 7/11 score is unchanged. See the
 [launch-binding checkpoint](artifact-native-linux-vz-package-sensor-launch-binding-checkpoint-2026-07-14.md).
+
+The kernel-exit follow-up now supplies the independent source that terminal-binding lacked. A
+strict runtime-BTF parser resolves the pinned signed 32-bit `task_struct.exit_code` member, and a
+separate raw-tracepoint BPF program reads it for the exact package cgroup. Kernel event ABI v2 and
+the correlator retain the raw wait status. The strict inert cloud-Mac gate required that status to
+equal `waitpid` and independently pinned the BTF digest and byte offset `1964`; all prior sequence,
+loss, topology, and VM-stop invariants also passed. Production collector integration and live
+supervisor/kernel reconciliation remain open, so the 7/11 score is unchanged. See the
+[kernel-exit checkpoint](artifact-native-linux-vz-package-sensor-kernel-exit-binding-checkpoint-2026-07-14.md).
 
 The first protected-sensor bootstrap now also observes a cgroup-filtered inert fork/exec/exit chain
 whose child runs as UID/GID 65534 and cannot read or write the root-only sensor. This remains
@@ -2025,6 +2039,7 @@ Repository evidence:
 - [Linux VZ package sensor process-correlator checkpoint](artifact-native-linux-vz-package-sensor-process-correlator-checkpoint-2026-07-14.md)
 - [Linux VZ package sensor terminal-binding checkpoint](artifact-native-linux-vz-package-sensor-terminal-binding-checkpoint-2026-07-14.md)
 - [Linux VZ package sensor launch-binding checkpoint](artifact-native-linux-vz-package-sensor-launch-binding-checkpoint-2026-07-14.md)
+- [Linux VZ package sensor kernel-exit checkpoint](artifact-native-linux-vz-package-sensor-kernel-exit-binding-checkpoint-2026-07-14.md)
 - [Linux VZ runtime-qualification guest-candidate checkpoint](artifact-native-linux-vz-runtime-qualification-guest-candidate-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification host-launcher checkpoint](artifact-native-linux-vz-runtime-qualification-host-launcher-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification physical checkpoint](artifact-native-linux-vz-runtime-qualification-physical-checkpoint-2026-07-13.md)

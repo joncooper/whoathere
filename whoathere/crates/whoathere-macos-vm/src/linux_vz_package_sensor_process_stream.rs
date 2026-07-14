@@ -57,6 +57,7 @@ pub(crate) struct LinuxVzPackageCorrelatedLifecycleEventV1 {
     tgid: u32,
     parent_pid: u32,
     subject_pid: u32,
+    kernel_wait_status: Option<u16>,
     cpu: u32,
 }
 
@@ -91,6 +92,10 @@ impl LinuxVzPackageCorrelatedLifecycleEventV1 {
 
     pub(crate) const fn subject_pid_v1(&self) -> u32 {
         self.subject_pid
+    }
+
+    pub(crate) const fn kernel_wait_status_v1(&self) -> Option<u16> {
+        self.kernel_wait_status
     }
 
     pub(crate) const fn cpu_v1(&self) -> u32 {
@@ -406,6 +411,7 @@ impl LinuxVzPackageProcessEventCorrelatorV1 {
                             tgid: event.tgid(),
                             parent_pid: event.parent_pid(),
                             subject_pid: event.subject_pid(),
+                            kernel_wait_status: event.kernel_wait_status_v1(),
                             cpu: event.cpu(),
                         },
                     ));
@@ -516,7 +522,7 @@ mod tests {
     fn event_in_cgroup_v1(spec: EventSpecV1, cgroup_id: u64) -> LinuxVzPackageKernelEventV1 {
         let mut bytes = [0_u8; LINUX_VZ_PACKAGE_KERNEL_EVENT_BYTES_V1];
         bytes[0..4].copy_from_slice(b"WTKE");
-        bytes[4..6].copy_from_slice(&1_u16.to_le_bytes());
+        bytes[4..6].copy_from_slice(&2_u16.to_le_bytes());
         bytes[6..8].copy_from_slice(&(spec.kind as u16).to_le_bytes());
         if spec.result.is_some() {
             bytes[8..12].copy_from_slice(&(1_u32 << 1).to_le_bytes());
@@ -594,7 +600,7 @@ mod tests {
             tgid: pid,
             syscall: None,
             arguments: [0; 6],
-            result: None,
+            result: (kind == LinuxVzPackageKernelEventKindV1::Exit).then_some(0),
             data: None,
         }
     }
@@ -707,6 +713,13 @@ mod tests {
         assert_eq!(connect.pid_v1(), 42);
         assert_eq!(connect.enter_cpu_v1(), 0);
         assert_eq!(connect.exit_cpu_v1(), 1);
+        let LinuxVzPackageCorrelatedProcessObservationV1::Lifecycle(exit) =
+            &stream.observations_v1()[3]
+        else {
+            panic!("exit lifecycle");
+        };
+        assert_eq!(exit.kind_v1(), LinuxVzPackageKernelEventKindV1::Exit);
+        assert_eq!(exit.kernel_wait_status_v1(), Some(0));
     }
 
     #[test]

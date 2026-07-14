@@ -39,6 +39,7 @@ mod linux_vz_package_runtime_qualification_transport;
 mod linux_vz_package_sdist_materialization;
 mod linux_vz_package_sensor_bpf;
 mod linux_vz_package_sensor_bpf_inert_probe;
+mod linux_vz_package_sensor_btf;
 mod linux_vz_package_sensor_control;
 mod linux_vz_package_sensor_event_stream;
 mod linux_vz_package_sensor_process_stream;

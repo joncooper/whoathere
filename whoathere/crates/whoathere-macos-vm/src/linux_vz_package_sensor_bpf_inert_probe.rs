@@ -7,7 +7,9 @@ use crate::linux_vz_package_sensor_event_stream::{
     LinuxVzPackageKernelEventKindV1, LinuxVzPackageSelectedSyscallV1,
 };
 #[cfg(target_os = "linux")]
-use crate::linux_vz_package_sensor_process_stream::LinuxVzPackageProcessEventCorrelatorV1;
+use crate::linux_vz_package_sensor_process_stream::{
+    LinuxVzPackageCorrelatedProcessObservationV1, LinuxVzPackageProcessEventCorrelatorV1,
+};
 #[cfg(target_os = "linux")]
 use serde::Serialize;
 #[cfg(target_os = "linux")]
@@ -117,17 +119,23 @@ struct InertProbeEvidenceWireV1 {
     event_kinds: Vec<&'static str>,
     event_sequence_end: String,
     event_sequence_start: String,
+    exit_attachment: &'static str,
+    exit_status_source: &'static str,
     fixture_exit_status: String,
     fixture_pid: String,
     fixture_sha256: String,
+    kernel_exit_wait_status: String,
     malware_execution: bool,
     online_cpus: Vec<String>,
     package_execution: bool,
     package_gid: String,
     package_uid: String,
+    runtime_btf_sha256: String,
     schema_version: &'static str,
     sync_back: bool,
+    task_exit_code_byte_offset: String,
     tracepoint_format_sha256: BTreeMap<&'static str, String>,
+    waitpid_wait_status: String,
 }
 
 #[cfg(target_os = "linux")]
@@ -337,6 +345,8 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
         );
         return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::ChildFailed);
     }
+    let kernel_wait_status =
+        u16::try_from(status).map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::ChildState)?;
 
     let deadline = Instant::now() + EVENT_DEADLINE_V1;
     let mut events = Vec::new();
@@ -389,6 +399,7 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
         || !matches_mmap_syscall_pair_v1(&events[9..11])
         || !matches_mmap_syscall_pair_v1(&events[11..13])
         || events[13].kind() != LinuxVzPackageKernelEventKindV1::Exit
+        || events[13].kernel_wait_status_v1() != Some(kernel_wait_status)
     {
         return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::EventMismatch);
     }
@@ -409,9 +420,18 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
     let correlated = correlator
         .finish_v1(dropped, discarded, producer.last_source_sequence_v1())
         .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::EventMismatch)?;
+    let correlated_exit_wait_status = correlated.observations_v1().last().and_then(|observation| {
+        let LinuxVzPackageCorrelatedProcessObservationV1::Lifecycle(event) = observation else {
+            return None;
+        };
+        (event.kind_v1() == LinuxVzPackageKernelEventKindV1::Exit)
+            .then(|| event.kernel_wait_status_v1())
+            .flatten()
+    });
     if correlated.expected_cgroup_id_v1() != cgroup.id
         || correlated.source_event_count_v1() != 14
         || correlated.observations_v1().len() != 8
+        || correlated_exit_wait_status != Some(kernel_wait_status)
         || !correlated.coverage_complete_v1()
     {
         return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::EventMismatch);
@@ -454,9 +474,14 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
         ],
         event_sequence_end: producer.last_source_sequence_v1().to_string(),
         event_sequence_start: "1".to_string(),
+        exit_attachment: "raw_tracepoint:sched_process_exit",
+        exit_status_source: "runtime_btf:task_struct.exit_code",
         fixture_exit_status: "0".to_string(),
         fixture_pid: child.to_string(),
         fixture_sha256: fixture_sha256.as_str().to_string(),
+        kernel_exit_wait_status: correlated_exit_wait_status
+            .ok_or(LinuxVzPackageSensorBpfInertProbeErrorV1::EventMismatch)?
+            .to_string(),
         malware_execution: false,
         online_cpus: producer
             .online_cpus_v1()
@@ -466,9 +491,12 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
         package_execution: false,
         package_gid: PACKAGE_GID_V1.to_string(),
         package_uid: PACKAGE_UID_V1.to_string(),
-        schema_version: "whoathere.linux_vz_package_sensor_bpf_inert_probe.v2",
+        runtime_btf_sha256: producer.runtime_btf_sha256_v1().as_str().to_string(),
+        schema_version: "whoathere.linux_vz_package_sensor_bpf_inert_probe.v3",
         sync_back: false,
+        task_exit_code_byte_offset: producer.task_exit_code_byte_offset_v1().to_string(),
         tracepoint_format_sha256: tracepoints,
+        waitpid_wait_status: kernel_wait_status.to_string(),
     };
     drop(producer);
     cgroup.remove_v1()?;

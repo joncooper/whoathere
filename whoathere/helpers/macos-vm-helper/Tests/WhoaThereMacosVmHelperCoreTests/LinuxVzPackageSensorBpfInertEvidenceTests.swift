@@ -4,16 +4,25 @@ import Testing
 
 private let fixtureSHA256 =
     "sha256:c660520c04d3221694022f5546facf84a338982783d4d81ded75a7ae5165c0e6"
+private let runtimeBTFSHA256 =
+    "sha256:d7f143446e11cfd67fa53392616afdbca6511a6af432e6bd56fb053aa4e7becb"
+private let taskExitCodeByteOffset: UInt64 = 1_964
 
 @Test func packageSensorBpfInertEvidenceBindsExactLifecycleAndLossState() throws {
     let serial = packageSensorBpfInertSerial(value: packageSensorBpfInertValue())
-    let evidence = try decodeLinuxVzPackageSensorBpfInertEvidenceV2(
+    let evidence = try decodeLinuxVzPackageSensorBpfInertEvidenceV3(
         serial,
-        expectedFixtureSHA256: fixtureSHA256
+        expectedFixtureSHA256: fixtureSHA256,
+        expectedRuntimeBTFSHA256: runtimeBTFSHA256,
+        expectedTaskExitCodeByteOffset: taskExitCodeByteOffset
     )
     #expect(evidence.cgroupID == 21)
     #expect(evidence.fixturePID == 387)
     #expect(evidence.fixtureSHA256 == fixtureSHA256)
+    #expect(evidence.runtimeBTFSHA256 == runtimeBTFSHA256)
+    #expect(evidence.taskExitCodeByteOffset == taskExitCodeByteOffset)
+    #expect(evidence.kernelExitWaitStatus == 0)
+    #expect(evidence.waitpidWaitStatus == 0)
     #expect(evidence.tracepointFormatSHA256.count == 5)
     #expect(evidence.payloadSHA256.hasPrefix("sha256:"))
     #expect(linuxVzPackageSensorBpfInertMissingMarkersV1(serial).isEmpty)
@@ -24,27 +33,67 @@ private let fixtureSHA256 =
     var value = packageSensorBpfInertValue()
     value["dropped_event_count"] = "1"
     #expect(throws: LinuxVzPackageSensorBpfInertEvidenceError.invalidSchema) {
-        try decodeLinuxVzPackageSensorBpfInertEvidenceV2(
+        try decodeLinuxVzPackageSensorBpfInertEvidenceV3(
             packageSensorBpfInertSerial(value: value),
-            expectedFixtureSHA256: fixtureSHA256
+            expectedFixtureSHA256: fixtureSHA256,
+            expectedRuntimeBTFSHA256: runtimeBTFSHA256,
+            expectedTaskExitCodeByteOffset: taskExitCodeByteOffset
         )
     }
 
     value = packageSensorBpfInertValue()
     value["package_execution"] = true
     #expect(throws: LinuxVzPackageSensorBpfInertEvidenceError.invalidSchema) {
-        try decodeLinuxVzPackageSensorBpfInertEvidenceV2(
+        try decodeLinuxVzPackageSensorBpfInertEvidenceV3(
             packageSensorBpfInertSerial(value: value),
-            expectedFixtureSHA256: fixtureSHA256
+            expectedFixtureSHA256: fixtureSHA256,
+            expectedRuntimeBTFSHA256: runtimeBTFSHA256,
+            expectedTaskExitCodeByteOffset: taskExitCodeByteOffset
+        )
+    }
+
+    value = packageSensorBpfInertValue()
+    value["kernel_exit_wait_status"] = "9"
+    #expect(throws: LinuxVzPackageSensorBpfInertEvidenceError.invalidSchema) {
+        try decodeLinuxVzPackageSensorBpfInertEvidenceV3(
+            packageSensorBpfInertSerial(value: value),
+            expectedFixtureSHA256: fixtureSHA256,
+            expectedRuntimeBTFSHA256: runtimeBTFSHA256,
+            expectedTaskExitCodeByteOffset: taskExitCodeByteOffset
+        )
+    }
+
+    value = packageSensorBpfInertValue()
+    value["runtime_btf_sha256"] =
+        "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+    #expect(throws: LinuxVzPackageSensorBpfInertEvidenceError.invalidSchema) {
+        try decodeLinuxVzPackageSensorBpfInertEvidenceV3(
+            packageSensorBpfInertSerial(value: value),
+            expectedFixtureSHA256: fixtureSHA256,
+            expectedRuntimeBTFSHA256: runtimeBTFSHA256,
+            expectedTaskExitCodeByteOffset: taskExitCodeByteOffset
+        )
+    }
+
+    value = packageSensorBpfInertValue()
+    value["task_exit_code_byte_offset"] = "1965"
+    #expect(throws: LinuxVzPackageSensorBpfInertEvidenceError.invalidSchema) {
+        try decodeLinuxVzPackageSensorBpfInertEvidenceV3(
+            packageSensorBpfInertSerial(value: value),
+            expectedFixtureSHA256: fixtureSHA256,
+            expectedRuntimeBTFSHA256: runtimeBTFSHA256,
+            expectedTaskExitCodeByteOffset: taskExitCodeByteOffset
         )
     }
 
     let line = Data(linuxVzPackageSensorBpfInertEvidenceSerialPrefixV1.utf8)
         + (try canonicalJSONData(packageSensorBpfInertValue())) + Data("\n".utf8)
     #expect(throws: LinuxVzPackageSensorBpfInertEvidenceError.duplicate) {
-        try decodeLinuxVzPackageSensorBpfInertEvidenceV2(
+        try decodeLinuxVzPackageSensorBpfInertEvidenceV3(
             line + line,
-            expectedFixtureSHA256: fixtureSHA256
+            expectedFixtureSHA256: fixtureSHA256,
+            expectedRuntimeBTFSHA256: runtimeBTFSHA256,
+            expectedTaskExitCodeByteOffset: taskExitCodeByteOffset
         )
     }
 }
@@ -52,12 +101,14 @@ private let fixtureSHA256 =
 @Test func packageSensorBpfInertEvidenceRejectsNoncanonicalAndFailureTranscripts() throws {
     let noncanonical = Data(
         (linuxVzPackageSensorBpfInertEvidenceSerialPrefixV1
-            + "{\"schema_version\":\"whoathere.linux_vz_package_sensor_bpf_inert_probe.v2\",\"attachment_cpu\":\"0\"}\n").utf8
+            + "{\"schema_version\":\"whoathere.linux_vz_package_sensor_bpf_inert_probe.v3\",\"attachment_cpu\":\"0\"}\n").utf8
     )
     #expect(throws: LinuxVzPackageSensorBpfInertEvidenceError.nonCanonical) {
-        try decodeLinuxVzPackageSensorBpfInertEvidenceV2(
+        try decodeLinuxVzPackageSensorBpfInertEvidenceV3(
             noncanonical,
-            expectedFixtureSHA256: fixtureSHA256
+            expectedFixtureSHA256: fixtureSHA256,
+            expectedRuntimeBTFSHA256: runtimeBTFSHA256,
+            expectedTaskExitCodeByteOffset: taskExitCodeByteOffset
         )
     }
 
@@ -94,16 +145,21 @@ private func packageSensorBpfInertValue() -> [String: Any] {
         ],
         "event_sequence_end": "14",
         "event_sequence_start": "1",
+        "exit_attachment": "raw_tracepoint:sched_process_exit",
+        "exit_status_source": "runtime_btf:task_struct.exit_code",
         "fixture_exit_status": "0",
         "fixture_pid": "387",
         "fixture_sha256": fixtureSHA256,
+        "kernel_exit_wait_status": "0",
         "malware_execution": false,
         "online_cpus": ["0", "1"],
         "package_execution": false,
         "package_gid": "65534",
         "package_uid": "65534",
-        "schema_version": linuxVzPackageSensorBpfInertEvidenceSchemaV2,
+        "runtime_btf_sha256": runtimeBTFSHA256,
+        "schema_version": linuxVzPackageSensorBpfInertEvidenceSchemaV3,
         "sync_back": false,
+        "task_exit_code_byte_offset": String(taskExitCodeByteOffset),
         "tracepoint_format_sha256": [
             "sched_process_exec":
                 "sha256:f8af16db8c47534beaff9b2f477b6d309df3512f9386e0bdc079b7a5618043ba",
@@ -116,5 +172,6 @@ private func packageSensorBpfInertValue() -> [String: Any] {
             "sys_exit":
                 "sha256:2222222222222222222222222222222222222222222222222222222222222222",
         ],
+        "waitpid_wait_status": "0",
     ]
 }

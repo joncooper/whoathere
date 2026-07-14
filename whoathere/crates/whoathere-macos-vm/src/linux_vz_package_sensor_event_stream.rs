@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 const KERNEL_EVENT_MAGIC_V1: &[u8; 4] = b"WTKE";
 const KERNEL_EVENT_VERSION_V1: u16 = 1;
+const KERNEL_EVENT_VERSION_V2: u16 = 2;
 const KERNEL_EVENT_DATA_BYTES_V1: usize = 64;
 const KERNEL_EVENT_ARGUMENT_COUNT_V1: usize = 6;
 const KERNEL_EVENT_FLAG_DATA_TRUNCATED_V1: u32 = 1 << 0;
@@ -229,6 +230,13 @@ impl LinuxVzPackageKernelEventV1 {
         }
     }
 
+    pub(crate) fn kernel_wait_status_v1(&self) -> Option<u16> {
+        if self.kind != LinuxVzPackageKernelEventKindV1::Exit {
+            return None;
+        }
+        self.result().and_then(|result| u16::try_from(result).ok())
+    }
+
     pub(crate) fn arguments(&self) -> &[u64; KERNEL_EVENT_ARGUMENT_COUNT_V1] {
         &self.arguments
     }
@@ -261,7 +269,7 @@ pub(crate) fn decode_linux_vz_package_kernel_event_v1(
     if &bytes[0..4] != KERNEL_EVENT_MAGIC_V1 {
         return Err(LinuxVzPackageSensorEventStreamErrorV1::InvalidMagic);
     }
-    if read_u16_v1(bytes, 4)? != KERNEL_EVENT_VERSION_V1 {
+    if read_u16_v1(bytes, 4)? != KERNEL_EVENT_VERSION_V2 {
         return Err(LinuxVzPackageSensorEventStreamErrorV1::InvalidVersion);
     }
     let kind = LinuxVzPackageKernelEventKindV1::from_u16_v1(read_u16_v1(bytes, 6)?)?;
@@ -324,7 +332,7 @@ pub(crate) fn decode_linux_vz_package_kernel_event_v1(
                 return Err(LinuxVzPackageSensorEventStreamErrorV1::InvalidPayload);
             }
         }
-        LinuxVzPackageKernelEventKindV1::Exec | LinuxVzPackageKernelEventKindV1::Exit => {
+        LinuxVzPackageKernelEventKindV1::Exec => {
             if parent_pid != 0
                 || subject_pid != pid
                 || syscall_number != 0
@@ -332,6 +340,19 @@ pub(crate) fn decode_linux_vz_package_kernel_event_v1(
                 || result_present
                 || result != 0
                 || arguments.iter().any(|argument| *argument != 0)
+            {
+                return Err(LinuxVzPackageSensorEventStreamErrorV1::InvalidPayload);
+            }
+        }
+        LinuxVzPackageKernelEventKindV1::Exit => {
+            if parent_pid != 0
+                || subject_pid != pid
+                || syscall_number != 0
+                || address_family != 0
+                || !result_present
+                || !valid_kernel_wait_status_v1(result)
+                || arguments.iter().any(|argument| *argument != 0)
+                || data_length != 0
             {
                 return Err(LinuxVzPackageSensorEventStreamErrorV1::InvalidPayload);
             }
@@ -386,6 +407,14 @@ pub(crate) fn decode_linux_vz_package_kernel_event_v1(
         source_sequence: stream_sequence,
         cpu,
     })
+}
+
+fn valid_kernel_wait_status_v1(result: i64) -> bool {
+    let Ok(status) = u16::try_from(result) else {
+        return false;
+    };
+    let signal = status & 0x7f;
+    signal == 0 || (signal <= 64 && status & 0xff00 == 0)
 }
 
 fn valid_selected_syscall_arguments_v1(
@@ -732,7 +761,7 @@ mod tests {
     fn event_bytes_v1(kind: LinuxVzPackageKernelEventKindV1) -> Vec<u8> {
         let mut bytes = vec![0_u8; LINUX_VZ_PACKAGE_KERNEL_EVENT_BYTES_V1];
         bytes[0..4].copy_from_slice(KERNEL_EVENT_MAGIC_V1);
-        bytes[4..6].copy_from_slice(&KERNEL_EVENT_VERSION_V1.to_le_bytes());
+        bytes[4..6].copy_from_slice(&KERNEL_EVENT_VERSION_V2.to_le_bytes());
         bytes[6..8].copy_from_slice(&(kind as u16).to_le_bytes());
         bytes[12..16].copy_from_slice(
             &u32::try_from(LINUX_VZ_PACKAGE_KERNEL_EVENT_BYTES_V1)
@@ -751,8 +780,13 @@ mod tests {
                 bytes[40..44].copy_from_slice(&700_u32.to_le_bytes());
                 bytes[44..48].copy_from_slice(&701_u32.to_le_bytes());
             }
-            LinuxVzPackageKernelEventKindV1::Exec | LinuxVzPackageKernelEventKindV1::Exit => {
+            LinuxVzPackageKernelEventKindV1::Exec => {
                 bytes[40..44].copy_from_slice(&0_u32.to_le_bytes());
+            }
+            LinuxVzPackageKernelEventKindV1::Exit => {
+                bytes[40..44].copy_from_slice(&0_u32.to_le_bytes());
+                bytes[8..12].copy_from_slice(&KERNEL_EVENT_FLAG_RESULT_PRESENT_V1.to_le_bytes());
+                bytes[56..64].copy_from_slice(&0_i64.to_le_bytes());
             }
             LinuxVzPackageKernelEventKindV1::SyscallEnter => {
                 bytes[40..44].copy_from_slice(&0_u32.to_le_bytes());
@@ -795,6 +829,11 @@ mod tests {
                     Ok(LinuxVzPackageSelectedSyscallV1::Connect)
                 );
             }
+            if kind == LinuxVzPackageKernelEventKindV1::Exit {
+                assert_eq!(event.kernel_wait_status_v1(), Some(0));
+            } else {
+                assert_eq!(event.kernel_wait_status_v1(), None);
+            }
             let debug = format!("{event:?}");
             assert!(debug.contains("<redacted>"));
             assert!(!debug.contains("[7, 0, 16"));
@@ -823,6 +862,12 @@ mod tests {
         assert_eq!(
             decode_linux_vz_package_kernel_event_v1(&exact, 42, 1),
             Err(LinuxVzPackageSensorEventStreamErrorV1::InvalidBinding)
+        );
+        let mut legacy_version = exact;
+        legacy_version[4..6].copy_from_slice(&KERNEL_EVENT_VERSION_V1.to_le_bytes());
+        assert_eq!(
+            decode_linux_vz_package_kernel_event_v1(&legacy_version, 41, 1),
+            Err(LinuxVzPackageSensorEventStreamErrorV1::InvalidVersion)
         );
     }
 
@@ -914,6 +959,34 @@ mod tests {
         raw_pointer[72..80].copy_from_slice(&0x7fff_1234_u64.to_le_bytes());
         assert_eq!(
             decode_linux_vz_package_kernel_event_v1(&raw_pointer, 41, 1),
+            Err(LinuxVzPackageSensorEventStreamErrorV1::InvalidPayload)
+        );
+    }
+
+    #[test]
+    fn exit_event_requires_one_valid_raw_kernel_wait_status() {
+        for status in [0_u16, 7_u16 << 8, 9_u16, 11_u16 | 0x80] {
+            let mut exact = event_bytes_v1(LinuxVzPackageKernelEventKindV1::Exit);
+            exact[56..64].copy_from_slice(&i64::from(status).to_le_bytes());
+            let event = decode_linux_vz_package_kernel_event_v1(&exact, 41, 1)
+                .expect("valid raw wait status");
+            assert_eq!(event.kernel_wait_status_v1(), Some(status));
+        }
+
+        let exact = event_bytes_v1(LinuxVzPackageKernelEventKindV1::Exit);
+        for invalid in [-1_i64, 65, 0x7f, 0xffff, 0x1_0000] {
+            let mut rebound = exact.clone();
+            rebound[56..64].copy_from_slice(&invalid.to_le_bytes());
+            assert_eq!(
+                decode_linux_vz_package_kernel_event_v1(&rebound, 41, 1),
+                Err(LinuxVzPackageSensorEventStreamErrorV1::InvalidPayload)
+            );
+        }
+
+        let mut missing = exact;
+        missing[8..12].fill(0);
+        assert_eq!(
+            decode_linux_vz_package_kernel_event_v1(&missing, 41, 1),
             Err(LinuxVzPackageSensorEventStreamErrorV1::InvalidPayload)
         );
     }
