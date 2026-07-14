@@ -249,11 +249,11 @@ healthy process/file/network evidence bound to a fresh challenge, and tear down 
 root sequencer consumes the one-attempt authority, executes exact internal and process actions in
 order, stops after a failed process prerequisite, rehashes retained inputs, validates derived-wheel
 and console targets, and proves workspace cleanup. Its canonical transcript deliberately remains
-unsigned and verdict-ineligible. No production protected-observer implementation exists yet, so
-the sequencer cannot currently release a package process. Detailed sensor payload schemas, the
-root sensor service/channel, guest and host signing, a rebuilt qualified runtime, and inert
-cloud-Mac qualification remain open. No package or malware ran and the 7/11 malicious-package
-detection score is unchanged. See the
+unsigned and verdict-ineligible. The concrete production observer now has no root sensor service
+to connect to, so the sequencer still cannot release a package process. The root service and
+collectors, guest and host signing, a rebuilt qualified runtime, and inert cloud-Mac qualification
+remain open. No package or malware ran and the 7/11 malicious-package detection score is
+unchanged. See the
 [protected sequencer checkpoint](artifact-native-linux-vz-protected-sequencer-checkpoint-2026-07-13.md).
 
 The package-scenario sensor boundary now rejects opaque digest-matching blobs. Process, file, and
@@ -264,10 +264,24 @@ fork/exec/exit lifecycle; a valid file stream must contain one post-exit filesys
 sensor teardown; and the network stream preserves typed DNS (including TXT), connection, send,
 HTTP, listener, destination-class, and controlled outcome facts without raw names, addresses, or
 hosts in sanitized evidence. The supervisor now semantically decodes this payload set after digest
-correlation and before returning evidence. No production observer or protected sensor channel
-exists yet, and the resulting sequence transcript remains unsigned and verdict-ineligible. No
+correlation and before returning evidence. The production root service and event collectors do
+not exist yet, and the resulting sequence transcript remains unsigned and verdict-ineligible. No
 package or malware ran and the 7/11 malicious-package detection score is unchanged. See the
 [package sensor-payload checkpoint](artifact-native-linux-vz-package-sensor-payload-checkpoint-2026-07-13.md).
+
+The first concrete crate-sealed observer now binds its construction to a fully qualified backend
+and opens a bounded root-only Unix stream session with root runner/peer credential checks, a fresh
+challenge, exact sensor-component identity, canonical ordered framing, deadlines, and no public
+route or sync-back. It independently verifies the held cgroup-v2 directory and transfers that exact
+descriptor with `SCM_RIGHTS`; the service must arm all three collectors and correlate the exact
+blocked leader before the supervisor can release it. Finish accepts correlation, process, file,
+and network evidence only in order and only with exact digest/length, heartbeat, zero-drop,
+cgroup, and teardown acknowledgments. Abort cannot emit evidence and must release sensor/cgroup
+state. Native tests and Linux/aarch64 warnings-denied cross-compilation pass. The receiving root
+sensor service and actual collectors are still absent, so this control client cannot connect or
+observe behavior; the transcript remains unsigned and verdict-ineligible. No package, VM, cloud
+host, or malware ran and the 7/11 score is unchanged. See the
+[package sensor-control checkpoint](artifact-native-linux-vz-package-sensor-control-checkpoint-2026-07-13.md).
 
 The first protected-sensor bootstrap now also observes a cgroup-filtered inert fork/exec/exit chain
 whose child runs as UID/GID 65534 and cannot read or write the root-only sensor. This remains

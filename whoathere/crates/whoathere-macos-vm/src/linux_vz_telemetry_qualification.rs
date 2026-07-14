@@ -51,6 +51,9 @@ pub struct QualifiedMacosLinuxVzTelemetryBackendV1 {
     backend_identity_sha256: Sha256Digest,
     telemetry_requirements_sha256: Sha256Digest,
     conformance_evidence_set_sha256: Sha256Digest,
+    guest_sensor_sha256: Sha256Digest,
+    guest_bpf_bundle_sha256: Sha256Digest,
+    guest_sensor_configuration_sha256: Sha256Digest,
 }
 
 impl fmt::Debug for QualifiedMacosLinuxVzTelemetryBackendV1 {
@@ -91,6 +94,18 @@ impl QualifiedMacosLinuxVzTelemetryBackendV1 {
 
     pub fn conformance_evidence_set_sha256(&self) -> &Sha256Digest {
         &self.conformance_evidence_set_sha256
+    }
+
+    pub fn guest_sensor_sha256(&self) -> &Sha256Digest {
+        &self.guest_sensor_sha256
+    }
+
+    pub fn guest_bpf_bundle_sha256(&self) -> &Sha256Digest {
+        &self.guest_bpf_bundle_sha256
+    }
+
+    pub fn guest_sensor_configuration_sha256(&self) -> &Sha256Digest {
+        &self.guest_sensor_configuration_sha256
     }
 
     pub const fn eligible_for_typed_package_execution_authority_request(&self) -> bool {
@@ -238,6 +253,9 @@ pub fn qualify_macos_linux_vz_telemetry_backend_v1(
         backend_identity_sha256: backend_sha256,
         telemetry_requirements_sha256: requirements_sha256,
         conformance_evidence_set_sha256: evidence_sha256,
+        guest_sensor_sha256: backend.guest_sensor_sha256().clone(),
+        guest_bpf_bundle_sha256: backend.guest_bpf_bundle_sha256().clone(),
+        guest_sensor_configuration_sha256: backend.guest_sensor_configuration_sha256().clone(),
     })
 }
 
@@ -352,5 +370,10 @@ pub fn decode_qualified_macos_linux_vz_telemetry_backend_v1(
         backend_identity_sha256: expected_backend_sha256,
         telemetry_requirements_sha256: expected_requirements_sha256,
         conformance_evidence_set_sha256: evidence_sha256,
+        guest_sensor_sha256: expected_backend.guest_sensor_sha256().clone(),
+        guest_bpf_bundle_sha256: expected_backend.guest_bpf_bundle_sha256().clone(),
+        guest_sensor_configuration_sha256: expected_backend
+            .guest_sensor_configuration_sha256()
+            .clone(),
     })
 }
