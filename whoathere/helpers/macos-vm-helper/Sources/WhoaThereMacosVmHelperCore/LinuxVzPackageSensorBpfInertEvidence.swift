@@ -279,7 +279,7 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV11(
           value["network_sendto_destination_class"] as? String == "documentation",
           value["network_sendto_family"] as? String == "ipv6",
           packageSensorBpfInertDecimal(value["network_sendto_port"]) == 53,
-          value["network_sendto_result"] as? String == "-101",
+          value["network_sendto_result"] as? String == "-99",
           let observedEventCPUs = packageSensorBpfInertDecimalArray(
               value["observed_event_cpus"]
           ),

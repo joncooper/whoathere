@@ -895,7 +895,7 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
         network_sendto_destination_class: "documentation",
         network_sendto_family: "ipv6",
         network_sendto_port: "53".to_string(),
-        network_sendto_result: (-libc::ENETUNREACH).to_string(),
+        network_sendto_result: (-libc::EADDRNOTAVAIL).to_string(),
         observed_event_cpus: vec![fixture_cpu.to_string()],
         online_cpus: collection
             .online_cpus_v1()
@@ -1028,6 +1028,7 @@ fn matches_exact_correlated_stream_v1(
             LinuxVzPackageNetworkAddressFamilyV1::Ipv4,
             443,
             &[192, 0, 2, 9],
+            i64::from(-libc::ENETUNREACH),
             context,
         )
         && matches_correlated_network_v1(
@@ -1038,6 +1039,7 @@ fn matches_exact_correlated_stream_v1(
             LinuxVzPackageNetworkAddressFamilyV1::Ipv6,
             53,
             &[0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9],
+            i64::from(-libc::EADDRNOTAVAIL),
             context,
         )
         && matches_correlated_lifecycle_v1(
@@ -1059,6 +1061,7 @@ fn matches_correlated_network_v1(
     family: LinuxVzPackageNetworkAddressFamilyV1,
     port: u16,
     address: &[u8],
+    result: i64,
     context: InertCorrelatedContextV1,
 ) -> bool {
     let LinuxVzPackageCorrelatedProcessObservationV1::Syscall(event) = observation else {
@@ -1093,7 +1096,7 @@ fn matches_correlated_network_v1(
         && event.pid_v1() == context.leader_pid
         && event.tgid_v1() == context.leader_pid
         && argument_shape
-        && event.result_v1() == i64::from(-libc::ENETUNREACH)
+        && event.result_v1() == result
         && event.enter_cpu_v1() == context.fixture_cpu
         && event.exit_cpu_v1() == context.fixture_cpu
         && target.family_v1() == family

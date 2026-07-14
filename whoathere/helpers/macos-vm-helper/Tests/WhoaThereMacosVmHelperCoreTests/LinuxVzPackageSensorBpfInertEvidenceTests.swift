@@ -399,7 +399,7 @@ private func packageSensorBpfInertValue() -> [String: Any] {
         "network_sendto_destination_class": "documentation",
         "network_sendto_family": "ipv6",
         "network_sendto_port": "53",
-        "network_sendto_result": "-101",
+        "network_sendto_result": "-99",
         "observed_event_cpus": ["1"],
         "online_cpus": ["0", "1"],
         "package_execution": false,

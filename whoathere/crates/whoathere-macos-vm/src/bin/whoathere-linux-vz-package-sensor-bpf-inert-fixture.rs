@@ -138,7 +138,7 @@ fn main() {
             let send_errno = (send_result == -1)
                 .then(|| std::io::Error::last_os_error().raw_os_error())
                 .flatten();
-            if send_result != -1 || send_errno != Some(libc::ENETUNREACH) {
+            if send_result != -1 || send_errno != Some(libc::EADDRNOTAVAIL) {
                 eprintln!(
                     "WHOATHERE_PACKAGE_SENSOR_BPF_INERT_NETWORK_FAILURE operation=sendto result={send_result} errno={}",
                     send_errno.unwrap_or(0)
