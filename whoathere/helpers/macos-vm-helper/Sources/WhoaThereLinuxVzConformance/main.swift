@@ -240,7 +240,7 @@ private struct LinuxVzConformanceHarness {
         if let expectedFixtureSHA256 = options.expectedPackageSensorFixtureSHA256,
            let expectedRuntimeBTFSHA256 = options.expectedRuntimeBTFSHA256,
            let expectedTaskExitCodeByteOffset = options.expectedTaskExitCodeByteOffset {
-            let evidence = try? decodeLinuxVzPackageSensorBpfInertEvidenceV7(
+            let evidence = try? decodeLinuxVzPackageSensorBpfInertEvidenceV8(
                 serialData,
                 expectedFixtureSHA256: expectedFixtureSHA256,
                 expectedRuntimeBTFSHA256: expectedRuntimeBTFSHA256,
@@ -270,6 +270,17 @@ private struct LinuxVzConformanceHarness {
                 "evidence_valid": evidence != nil,
                 "evidence_payload_sha256": evidence?.payloadSHA256 ?? "unavailable",
                 "evidence_byte_length": String(evidence?.evidenceByteLength ?? 0),
+                "root_process_evidence_sha256":
+                    evidence?.rootProcessEvidenceSHA256 ?? "unavailable",
+                "root_process_evidence_byte_length": String(
+                    evidence?.rootProcessEvidenceByteLength ?? 0
+                ),
+                "root_process_evidence_source_event_count": String(
+                    evidence?.rootProcessEvidenceSourceEventCount ?? 0
+                ),
+                "root_process_evidence_observation_count": String(
+                    evidence?.rootProcessEvidenceObservationCount ?? 0
+                ),
                 "cgroup_id": String(evidence?.cgroupID ?? 0),
                 "fixture_pid": String(evidence?.fixturePID ?? 0),
                 "tracepoint_format_sha256": evidence?.tracepointFormatSHA256 ?? [:],

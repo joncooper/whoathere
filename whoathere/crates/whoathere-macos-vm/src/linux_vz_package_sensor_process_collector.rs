@@ -189,6 +189,45 @@ impl LinuxVzPackageRootProcessCollectionV1 {
     pub(crate) const fn coverage_complete_v1(&self) -> bool {
         true
     }
+
+    #[cfg(test)]
+    pub(crate) fn from_test_stream_v1(
+        stream: LinuxVzPackageCorrelatedProcessStreamV1,
+        leader_pid: u32,
+        completion: &LinuxVzPackageProcessCompletionV1,
+    ) -> Result<Self, LinuxVzPackageRootProcessCollectorErrorV1> {
+        let terminal = validate_leader_terminal_v1(&stream, leader_pid, completion)?;
+        let tracepoint_format_sha256 = [
+            "sched_process_exec",
+            "sched_process_exit",
+            "sched_process_fork",
+            "sys_enter",
+            "sys_exit",
+        ]
+        .into_iter()
+        .map(|name| (name, Sha256Digest::from_bytes(name.as_bytes())))
+        .collect();
+        let source_event_count = stream.source_event_count_v1();
+        Ok(Self {
+            stream,
+            leader_pid,
+            leader_exec_count: terminal.exec_count,
+            leader_first_exec_monotonic_nanoseconds: terminal.first_exec_monotonic_nanoseconds,
+            leader_exit_monotonic_nanoseconds: terminal.exit_monotonic_nanoseconds,
+            leader_kernel_wait_status: terminal.kernel_wait_status,
+            leader_supervisor_wait_status: completion.supervisor_wait_status(),
+            runtime_btf_sha256: Sha256Digest::from_bytes(b"test runtime btf"),
+            task_exit_code_byte_offset: 96,
+            tracepoint_format_sha256,
+            online_cpus: vec![0, 1],
+            attachment_cpu: 1,
+            active_drain_poll_count: 1,
+            active_nonempty_drain_count: 1,
+            source_event_count_before_finish: source_event_count,
+            finish_drain_event_count: 0,
+            maximum_drain_batch_record_count: source_event_count,
+        })
+    }
 }
 
 #[cfg(target_os = "linux")]

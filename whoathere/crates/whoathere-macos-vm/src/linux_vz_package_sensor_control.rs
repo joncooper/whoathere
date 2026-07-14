@@ -6,9 +6,10 @@ use crate::linux_vz_package_sensor_process_collector::{
 };
 #[cfg(target_os = "linux")]
 use crate::{
-    protected_process_observer_seal, LinuxVzPackageProcessLaunchContractV1,
+    encode_linux_vz_package_root_process_evidence_v1, protected_process_observer_seal,
+    LinuxVzPackageExpectedRootProcessEvidenceV1, LinuxVzPackageProcessLaunchContractV1,
     LinuxVzPackageProcessSupervisorErrorV1, LinuxVzPackageProtectedProcessObserverV1,
-    LinuxVzPackageProtectedSensorOutputV1,
+    LinuxVzPackageProtectedSensorOutputV1, LinuxVzPackageRootProcessEvidenceV1,
     MAX_LINUX_VZ_PACKAGE_PROCESS_SENSOR_CORRELATION_BYTES_V1,
     MAX_LINUX_VZ_PACKAGE_PROTECTED_SENSOR_PAYLOAD_BYTES_V1,
 };
@@ -960,6 +961,7 @@ struct LinuxVzPackageRootProcessServiceCollectorV1 {
     state: RootProcessServiceCollectorStateV1,
     process: Option<LinuxVzPackageRootProcessCollectorV1>,
     completed_process: Option<LinuxVzPackageRootProcessCollectionV1>,
+    completed_process_evidence: Option<LinuxVzPackageRootProcessEvidenceV1>,
 }
 
 #[cfg(target_os = "linux")]
@@ -972,6 +974,7 @@ impl LinuxVzPackageRootProcessServiceCollectorV1 {
             state: RootProcessServiceCollectorStateV1::Unvalidated,
             process: None,
             completed_process: None,
+            completed_process_evidence: None,
         }
     }
 }
@@ -1099,7 +1102,24 @@ impl LinuxVzPackageRootSensorServiceCollectorV1 for LinuxVzPackageRootProcessSer
             .finish_after_empty_cgroup_v1(leader_pid, completion)
             .map_err(|_| LinuxVzPackageSensorControlErrorV1::SensorFault)?;
         self.process.take();
+        let expected = LinuxVzPackageExpectedRootProcessEvidenceV1::from_action_v1(
+            context.sensor_session_challenge_sha256.clone(),
+            context.launch_contract_sha256.clone(),
+            context.process_plan_sha256.clone(),
+            context.action_index,
+            context.cgroup_name.clone(),
+            context.cgroup_id,
+            context.root_runner_pid,
+            leader_pid,
+            &context.launch_identity,
+            completion,
+        )
+        .map_err(|_| LinuxVzPackageSensorControlErrorV1::SensorFault)?;
+        let process_evidence =
+            encode_linux_vz_package_root_process_evidence_v1(&expected, &collection)
+                .map_err(|_| LinuxVzPackageSensorControlErrorV1::SensorFault)?;
         self.completed_process = Some(collection);
+        self.completed_process_evidence = Some(process_evidence);
         self.state = RootProcessServiceCollectorStateV1::Finished;
         // A process collection alone cannot be represented as complete protected sensor output.
         // The composite adapter must add typed process evidence, file/network evidence, and their

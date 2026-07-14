@@ -11,7 +11,11 @@ use crate::linux_vz_package_sensor_process_collector::LinuxVzPackageRootProcessC
 #[cfg(target_os = "linux")]
 use crate::linux_vz_package_sensor_process_stream::LinuxVzPackageCorrelatedProcessObservationV1;
 #[cfg(target_os = "linux")]
-use crate::{LinuxVzPackageProcessCompletionV1, LinuxVzPackageProcessTerminalV1};
+use crate::{
+    encode_linux_vz_package_root_process_evidence_v1, LinuxVzPackageExpectedRootProcessEvidenceV1,
+    LinuxVzPackageProcessCompletionV1, LinuxVzPackageProcessLaunchIdentityV1,
+    LinuxVzPackageProcessTerminalV1, LINUX_VZ_PACKAGE_ROOT_PROCESS_EVIDENCE_SCHEMA_V1,
+};
 #[cfg(target_os = "linux")]
 use serde::Serialize;
 #[cfg(target_os = "linux")]
@@ -66,6 +70,7 @@ pub enum LinuxVzPackageSensorBpfInertProbeErrorV1 {
     ChildFailed,
     EventStream,
     EventMismatch,
+    Evidence,
     LossObserved,
     Cleanup,
     Serialization,
@@ -87,6 +92,7 @@ impl LinuxVzPackageSensorBpfInertProbeErrorV1 {
             Self::ChildFailed => "linux_vz_package_sensor_bpf_probe_child_failed",
             Self::EventStream => "linux_vz_package_sensor_bpf_probe_event_stream_failed",
             Self::EventMismatch => "linux_vz_package_sensor_bpf_probe_event_mismatch",
+            Self::Evidence => "linux_vz_package_sensor_bpf_probe_evidence_invalid",
             Self::LossObserved => "linux_vz_package_sensor_bpf_probe_loss_observed",
             Self::Cleanup => "linux_vz_package_sensor_bpf_probe_cleanup_failed",
             Self::Serialization => "linux_vz_package_sensor_bpf_probe_serialization_failed",
@@ -157,6 +163,15 @@ struct InertProbeEvidenceWireV1 {
     package_uid: String,
     pre_release_event_count: String,
     process_collector_coverage_complete: bool,
+    root_process_evidence_byte_length: String,
+    root_process_evidence_canonical: bool,
+    root_process_evidence_coverage_complete: bool,
+    root_process_evidence_observation_count: String,
+    root_process_evidence_raw_arguments_captured: bool,
+    root_process_evidence_raw_exec_paths_captured: bool,
+    root_process_evidence_schema: &'static str,
+    root_process_evidence_sha256: String,
+    root_process_evidence_source_event_count: String,
     runtime_btf_sha256: String,
     schema_version: &'static str,
     source_event_count_before_finish: String,
@@ -204,7 +219,7 @@ impl ProbeCgroupV1 {
             )
         };
         let root = owned_descriptor_v1(root_descriptor)?;
-        let name = CString::new(format!("whoathere-package-sensor-inert-{process}"))
+        let name = CString::new(format!("whoathere-package-action-{process}"))
             .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::Cgroup)?;
         if unsafe { libc::mkdirat(root.as_raw_fd(), name.as_ptr(), 0o700) } != 0 {
             return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::Cgroup);
@@ -584,6 +599,51 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
     {
         return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::EventMismatch);
     }
+    let root_runner_pid = u32::try_from(unsafe { libc::getpid() })
+        .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::Identity)?;
+    let cgroup_name = cgroup
+        .name
+        .to_str()
+        .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::Evidence)?
+        .to_string();
+    let action_index = usize::try_from(root_runner_pid)
+        .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::Evidence)?;
+    let argv = vec!["process-fixture-child", "continuous_drain"];
+    let argv_bytes = serde_json_canonicalizer::to_vec(&argv)
+        .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::Serialization)?;
+    let launch_identity = LinuxVzPackageProcessLaunchIdentityV1::from_bound_digests_v1(
+        fixture_sha256.clone(),
+        Sha256Digest::from_bytes(&argv_bytes),
+        argv.len(),
+    )
+    .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::Evidence)?;
+    let root_process_expected = LinuxVzPackageExpectedRootProcessEvidenceV1::from_action_v1(
+        Sha256Digest::from_bytes(b"whoathere inert probe sensor session v1"),
+        Sha256Digest::from_bytes(b"whoathere inert probe launch contract v1"),
+        Sha256Digest::from_bytes(b"whoathere inert probe process plan v1"),
+        action_index,
+        cgroup_name,
+        cgroup.id,
+        root_runner_pid,
+        child as u32,
+        &launch_identity,
+        &completion,
+    )
+    .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::Evidence)?;
+    let root_process_evidence =
+        encode_linux_vz_package_root_process_evidence_v1(&root_process_expected, &collection)
+            .map_err(|error| {
+                eprintln!("WHOATHERE_PACKAGE_SENSOR_BPF_INERT_EVIDENCE_DETAIL {error}");
+                LinuxVzPackageSensorBpfInertProbeErrorV1::Evidence
+            })?;
+    if root_process_evidence.source_event_count() != 14
+        || root_process_evidence.observations().len() != 8
+        || !root_process_evidence.coverage_complete()
+        || root_process_evidence.raw_arguments_captured()
+        || root_process_evidence.raw_exec_paths_captured()
+    {
+        return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::Evidence);
+    }
     let mut tracepoints = BTreeMap::new();
     for (name, digest) in collection.tracepoint_format_sha256_v1() {
         tracepoints.insert(*name, digest.as_str().to_string());
@@ -654,8 +714,27 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
         package_uid: PACKAGE_UID_V1.to_string(),
         pre_release_event_count: "0".to_string(),
         process_collector_coverage_complete: collection.coverage_complete_v1(),
+        root_process_evidence_byte_length: root_process_evidence
+            .canonical_json_v1()
+            .len()
+            .to_string(),
+        root_process_evidence_canonical: true,
+        root_process_evidence_coverage_complete: root_process_evidence.coverage_complete(),
+        root_process_evidence_observation_count: root_process_evidence
+            .observations()
+            .len()
+            .to_string(),
+        root_process_evidence_raw_arguments_captured: root_process_evidence
+            .raw_arguments_captured(),
+        root_process_evidence_raw_exec_paths_captured: root_process_evidence
+            .raw_exec_paths_captured(),
+        root_process_evidence_schema: LINUX_VZ_PACKAGE_ROOT_PROCESS_EVIDENCE_SCHEMA_V1,
+        root_process_evidence_sha256: root_process_evidence.payload_sha256().as_str().to_string(),
+        root_process_evidence_source_event_count: root_process_evidence
+            .source_event_count()
+            .to_string(),
         runtime_btf_sha256: collection.runtime_btf_sha256_v1().as_str().to_string(),
-        schema_version: "whoathere.linux_vz_package_sensor_bpf_inert_probe.v7",
+        schema_version: "whoathere.linux_vz_package_sensor_bpf_inert_probe.v8",
         source_event_count_before_finish: collection
             .source_event_count_before_finish_v1()
             .to_string(),

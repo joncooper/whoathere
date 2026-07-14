@@ -1,7 +1,7 @@
 import Foundation
 
-public let linuxVzPackageSensorBpfInertEvidenceSchemaV7 =
-    "whoathere.linux_vz_package_sensor_bpf_inert_probe.v7"
+public let linuxVzPackageSensorBpfInertEvidenceSchemaV8 =
+    "whoathere.linux_vz_package_sensor_bpf_inert_probe.v8"
 public let linuxVzPackageSensorBpfInertEvidenceSerialPrefixV1 =
     "WHOATHERE_PACKAGE_SENSOR_BPF_INERT_EVIDENCE "
 
@@ -29,7 +29,7 @@ public enum LinuxVzPackageSensorBpfInertEvidenceError: Error, Equatable {
     case invalidSchema
 }
 
-public struct LinuxVzPackageSensorBpfInertEvidenceV7: Equatable, Sendable {
+public struct LinuxVzPackageSensorBpfInertEvidenceV8: Equatable, Sendable {
     public let canonicalJSON: Data
     public let payloadSHA256: String
     public let evidenceByteLength: UInt64
@@ -57,15 +57,19 @@ public struct LinuxVzPackageSensorBpfInertEvidenceV7: Equatable, Sendable {
     public let leaderExecCount: UInt64
     public let preReleaseEventCount: UInt64
     public let processCollectorCoverageComplete: Bool
+    public let rootProcessEvidenceByteLength: UInt64
+    public let rootProcessEvidenceObservationCount: UInt64
+    public let rootProcessEvidenceSHA256: String
+    public let rootProcessEvidenceSourceEventCount: UInt64
     public let tracepointFormatSHA256: [String: String]
 }
 
-public func decodeLinuxVzPackageSensorBpfInertEvidenceV7(
+public func decodeLinuxVzPackageSensorBpfInertEvidenceV8(
     _ serialData: Data,
     expectedFixtureSHA256: String,
     expectedRuntimeBTFSHA256: String,
     expectedTaskExitCodeByteOffset: UInt64
-) throws -> LinuxVzPackageSensorBpfInertEvidenceV7 {
+) throws -> LinuxVzPackageSensorBpfInertEvidenceV8 {
     guard packageSensorBpfInertDigest(expectedFixtureSHA256),
           packageSensorBpfInertDigest(expectedRuntimeBTFSHA256),
           expectedTaskExitCodeByteOffset > 0,
@@ -110,12 +114,18 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV7(
         "kernel_exit_wait_status", "leader_exec_count", "malware_execution",
         "maximum_drain_batch_record_count", "observed_event_cpus", "online_cpus",
         "package_execution", "package_gid", "package_uid", "pre_release_event_count",
-        "process_collector_coverage_complete", "runtime_btf_sha256", "schema_version",
+        "process_collector_coverage_complete", "root_process_evidence_byte_length",
+        "root_process_evidence_canonical", "root_process_evidence_coverage_complete",
+        "root_process_evidence_observation_count",
+        "root_process_evidence_raw_arguments_captured",
+        "root_process_evidence_raw_exec_paths_captured", "root_process_evidence_schema",
+        "root_process_evidence_sha256", "root_process_evidence_source_event_count",
+        "runtime_btf_sha256", "schema_version",
         "source_event_count_before_finish", "sync_back",
         "task_exit_code_byte_offset", "tracepoint_format_sha256", "waitpid_wait_status",
     ])
     guard Set(value.keys) == expectedKeys,
-          value["schema_version"] as? String == linuxVzPackageSensorBpfInertEvidenceSchemaV7,
+          value["schema_version"] as? String == linuxVzPackageSensorBpfInertEvidenceSchemaV8,
           let activeDrainPollCount = packageSensorBpfInertDecimal(
               value["active_drain_poll_count"]
           ),
@@ -190,6 +200,28 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV7(
           packageSensorBpfInertDecimal(value["package_uid"]) == 65534,
           packageSensorBpfInertDecimal(value["pre_release_event_count"]) == 0,
           value["process_collector_coverage_complete"] as? Bool == true,
+          let rootProcessEvidenceByteLength = packageSensorBpfInertDecimal(
+              value["root_process_evidence_byte_length"]
+          ),
+          rootProcessEvidenceByteLength >= 1, rootProcessEvidenceByteLength <= 256 * 1024,
+          value["root_process_evidence_canonical"] as? Bool == true,
+          value["root_process_evidence_coverage_complete"] as? Bool == true,
+          let rootProcessEvidenceObservationCount = packageSensorBpfInertDecimal(
+              value["root_process_evidence_observation_count"]
+          ),
+          rootProcessEvidenceObservationCount == 8,
+          value["root_process_evidence_raw_arguments_captured"] as? Bool == false,
+          value["root_process_evidence_raw_exec_paths_captured"] as? Bool == false,
+          value["root_process_evidence_schema"] as? String ==
+              "whoathere.linux_vz_package_root_process_evidence.v1",
+          let rootProcessEvidenceSHA256 = value["root_process_evidence_sha256"] as? String,
+          packageSensorBpfInertDigest(rootProcessEvidenceSHA256),
+          rootProcessEvidenceSHA256 != expectedFixtureSHA256,
+          rootProcessEvidenceSHA256 != expectedRuntimeBTFSHA256,
+          let rootProcessEvidenceSourceEventCount = packageSensorBpfInertDecimal(
+              value["root_process_evidence_source_event_count"]
+          ),
+          rootProcessEvidenceSourceEventCount == 14,
           value["runtime_btf_sha256"] as? String == expectedRuntimeBTFSHA256,
           let sourceEventCountBeforeFinish = packageSensorBpfInertDecimal(
               value["source_event_count_before_finish"]
@@ -212,7 +244,7 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV7(
           waitpidWaitStatus == kernelExitWaitStatus else {
         throw LinuxVzPackageSensorBpfInertEvidenceError.invalidSchema
     }
-    return LinuxVzPackageSensorBpfInertEvidenceV7(
+    return LinuxVzPackageSensorBpfInertEvidenceV8(
         canonicalJSON: payload,
         payloadSHA256: sha256(payload),
         evidenceByteLength: UInt64(payload.count),
@@ -240,6 +272,10 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV7(
         leaderExecCount: 1,
         preReleaseEventCount: 0,
         processCollectorCoverageComplete: true,
+        rootProcessEvidenceByteLength: rootProcessEvidenceByteLength,
+        rootProcessEvidenceObservationCount: rootProcessEvidenceObservationCount,
+        rootProcessEvidenceSHA256: rootProcessEvidenceSHA256,
+        rootProcessEvidenceSourceEventCount: rootProcessEvidenceSourceEventCount,
         tracepointFormatSHA256: tracepoints
     )
 }

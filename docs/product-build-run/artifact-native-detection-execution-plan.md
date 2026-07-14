@@ -4,18 +4,24 @@ Date: 2026-07-09
 
 Status: canonical execution plan for the next product milestone
 
-Current execution checkpoint (2026-07-14): the continuous process collector now exposes a
-nonblocking first-fault descriptor, the protected service polls it alongside the authenticated
-control channel, and the root-runner supervisor checks channel health before release and throughout
-execution. On fault, the service uses the validated transferred cgroup descriptor to invoke
-`cgroup.kill`, abort sensors, and close the channel; local cgroup ownership remains an independent
-second cleanup path. A fresh-guest schema-v7 inert qualification deliberately exceeded an
-eight-event collector limit, observed the fault marker in 1.271 ms, killed the second fixture with
-`SIGKILL`, and retained the normal 14-event zero-loss proof. No package or malware ran. The concrete
-adapter remains process-only and truthfully reports file/network unavailable, so the service still
-refuses package release. Typed process evidence, file/network collectors, composite authentication,
-runtime scenarios, benign scoring, and malicious regression remain open; the July score remains
-7/11. See the
+Current execution checkpoint (2026-07-14): the concrete root collector now turns its complete
+kernel-correlated stream into one canonical, independently decodable process-observation payload.
+The payload binds the exact session, action, cgroup, expected launch identity, supervisor terminal,
+runtime BTF and tracepoint identities, CPU topology, continuous-drain/loss accounting, and every
+ordered lifecycle or paired selected-syscall observation. Global source-sequence validation supports
+interleaved thread pairs without accepting gaps or duplicates; raw syscall arguments and exec paths
+remain structurally absent. The process-only service retains this typed payload after finish but
+still reports file/network unavailable and cannot acknowledge arm or release a package. A fresh
+diskless schema-v8 inert qualification physically encoded and self-decoded 14 source records as
+eight observations, then the Mac verifier accepted the bound payload digest and counts with zero
+host frames and a stopped VM. No package or malware ran. File/network collectors, protected payload
+transport and composite authentication, runtime scenarios, benign scoring, and malicious regression
+remain open; the July score remains 7/11. See the
+[canonical root process-evidence checkpoint](artifact-native-linux-vz-package-root-process-evidence-checkpoint-2026-07-14.md).
+
+The preceding checkpoint added asynchronous fault propagation from the continuously draining
+process collector through descriptor-relative cgroup termination and the root-runner observer. See
+the
 [fault-propagation checkpoint](artifact-native-linux-vz-package-root-process-fault-propagation-checkpoint-2026-07-14.md).
 
 The preceding checkpoint moved the BPF ring to a dedicated continuous-drain worker and physically
@@ -432,6 +438,19 @@ case remained zero-loss. The adapter reports file/network unavailable, so packag
 refused until those collectors and composite evidence exist. Runtime, benign, and malicious gates
 also remain open; the 7/11 score is unchanged. See the
 [fault-propagation checkpoint](artifact-native-linux-vz-package-root-process-fault-propagation-checkpoint-2026-07-14.md).
+
+That exact collection now has a separate canonical process-observation schema and strict decoder.
+It binds the protected action/session and expected launch identity to the runtime BTF/tracepoint
+identity, CPU topology, exact kernel/supervisor terminal, continuous-drain accounting, and the full
+global source sequence. Selected syscall arguments are represented only by a domain-separated hash;
+the non-pointer credential target is separately normalized, while raw arguments and exec paths are
+forbidden. Overlapping syscall pairs from interleaved threads retain one complete global sequence.
+The process-only adapter creates and retains the payload after a successful finish but still cannot
+return complete sensor output or release a package without file and network collectors. A schema-v8
+fresh-guest inert run physically produced a 5,456-byte canonical payload covering 14 source events
+as eight observations; the strict Mac verifier accepted its digest with zero host frames and a
+stopped VM. No package or malware ran, and the 7/11 score is unchanged. See the
+[canonical root process-evidence checkpoint](artifact-native-linux-vz-package-root-process-evidence-checkpoint-2026-07-14.md).
 
 The producer now also implements a closed arm64 allowlist for `setgroups`, `setgid`, `setuid`,
 `connect`, `sendto`, and `mmap`, with BPF-side cgroup filtering, pointer redaction, paired
