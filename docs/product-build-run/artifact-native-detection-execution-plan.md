@@ -4,7 +4,23 @@ Date: 2026-07-09
 
 Status: canonical execution plan for the next product milestone
 
-Current execution checkpoint (2026-07-14): the concrete root service now composes process and file
+Current execution checkpoint (2026-07-14): the protected guest BPF source now captures exact
+`connect` and `sendto` socket-address intent for closed IPv4/IPv6 shapes while leaving pointer
+arguments redacted. It normalizes family, port, and address for the cgroup-correlated in-memory
+stream; a failed user-memory read, unknown family, or wrong length discards the reserved ring record
+and increments protected loss instead of emitting partial evidence. A fresh diskless schema-v11
+qualification produced one IPv4 connect intent and one IPv6 send intent in a contiguous 18-event,
+10-observation process stream with zero loss. Both syscalls terminated before transmission
+(`ENETUNREACH` and `EADDRNOTAVAIL`), the independent host raw-frame sink saw zero frames, and the
+strict Mac verifier accepted the complete process/file result with a stopped VM. No package or
+malware ran. This is the network-intent source subgate, not the complete network collector: exact
+targets are not yet encoded in a canonical root network payload, host/guest frame correlation and
+DNS/HTTP(S) observation remain open, and the root service still reports network evidence
+unavailable. Protected payload transport, composite authentication, runtime scenarios, benign
+scoring, and malicious regression also remain open; the July score remains 7/11. See the
+[protected network-intent source checkpoint](artifact-native-linux-vz-package-network-intent-source-checkpoint-2026-07-14.md).
+
+The preceding checkpoint made the concrete root service compose process and file
 collectors for one action. The file collector continuously drains cgroup-correlated fanotify
 permission/close-write events, denies protected-sensor access, computes a bounded descriptor-relative
 workspace diff after cgroup teardown, and emits one canonical independently decodable redacted
@@ -14,9 +30,7 @@ physical capability diagnostic proved that procfs rejects the required marks, so
 schema-v10 qualification produced 12 file events, 11 permission responses, one exact rename diff,
 zero loss, a canonical file payload, the existing canonical process payload, zero host frames, and
 a stopped VM; the strict Mac verifier accepted the entire result. No package or malware ran.
-Network collection remains unavailable, so arm/release still fail closed. Protected payload
-transport, composite authentication, runtime scenarios, benign scoring, and malicious regression
-also remain open; the July score remains 7/11. See the
+Network collection remained unavailable, so arm/release still failed closed. See the
 [canonical root file-evidence checkpoint](artifact-native-linux-vz-package-root-file-evidence-checkpoint-2026-07-14.md).
 
 The preceding checkpoint turned the complete kernel-correlated process stream into one canonical,
@@ -1797,6 +1811,12 @@ Work packages:
 - **AN-507 Guest-compromise tests:** prove package-user code cannot write sensor binaries/config,
   forge a clean envelope, disable the sensor without detection, or reuse stale evidence.
 
+Current AN-504 subgate (2026-07-14): the cgroup-filtered BPF/process stream physically captures and
+normalizes closed IPv4 `connect` and IPv6 `sendto` intents with explicit loss accounting. Remaining
+AN-504 work is a canonical root network payload, host/guest raw-frame correlation for transmitted
+cases, DNS intent, protected transport, and composite authentication. This partial result does not
+satisfy the Phase 5 exit gate.
+
 Exit gate:
 
 - Telemetry conformance fixtures produce expected process, file, DNS, connection, and timeout events.
@@ -2151,6 +2171,9 @@ Repository evidence:
 - [Linux VZ package root process-collector checkpoint](artifact-native-linux-vz-package-root-process-collector-checkpoint-2026-07-14.md)
 - [Linux VZ package root process continuous-drain checkpoint](artifact-native-linux-vz-package-root-process-continuous-drain-checkpoint-2026-07-14.md)
 - [Linux VZ package root process fault-propagation checkpoint](artifact-native-linux-vz-package-root-process-fault-propagation-checkpoint-2026-07-14.md)
+- [Linux VZ package canonical root process-evidence checkpoint](artifact-native-linux-vz-package-root-process-evidence-checkpoint-2026-07-14.md)
+- [Linux VZ package canonical root file-evidence checkpoint](artifact-native-linux-vz-package-root-file-evidence-checkpoint-2026-07-14.md)
+- [Linux VZ package protected network-intent source checkpoint](artifact-native-linux-vz-package-network-intent-source-checkpoint-2026-07-14.md)
 - [Linux VZ runtime-qualification guest-candidate checkpoint](artifact-native-linux-vz-runtime-qualification-guest-candidate-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification host-launcher checkpoint](artifact-native-linux-vz-runtime-qualification-host-launcher-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification physical checkpoint](artifact-native-linux-vz-runtime-qualification-physical-checkpoint-2026-07-13.md)
