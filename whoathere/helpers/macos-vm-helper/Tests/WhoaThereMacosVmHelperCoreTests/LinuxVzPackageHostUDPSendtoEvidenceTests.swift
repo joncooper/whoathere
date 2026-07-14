@@ -24,6 +24,10 @@ private let packageHostUDPSendtoToken =
         expected: expected
     )))
     #expect(evidence.destinationTokenSHA256 == packageHostUDPSendtoToken)
+    #expect(evidence.frameSHA256 ==
+        "sha256:68a91108eb3257418ef82965c5c5ba6d2b5aa8aaded43647c25aad1be43caf1e")
+    #expect(evidence.payloadSHA256 ==
+        "sha256:9ce0d72ff3ceaf553b65168fe59983dc4093c392fa61ec1db3f916055640b818")
     #expect(evidence.sourcePort == 49_152)
     #expect(evidence.destinationPort == 40_553)
     #expect(evidence.payloadByteCount == 16)
