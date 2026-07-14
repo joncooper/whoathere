@@ -45,6 +45,13 @@ else
     failed=1
 fi
 
+if "$busybox" modprobe virtio_net; then
+    echo "WHOATHERE_CAPABILITY virtio_net=loaded"
+else
+    echo "WHOATHERE_CAPABILITY virtio_net=failed"
+    failed=1
+fi
+
 if [ "$failed" -eq 0 ] && /whoathere/package-sensor-bpf-inert-probe; then
     echo "WHOATHERE_PACKAGE_SENSOR_BPF_INERT_OK"
     echo "WHOATHERE_CAPABILITY inert_fixture_execution=true"
