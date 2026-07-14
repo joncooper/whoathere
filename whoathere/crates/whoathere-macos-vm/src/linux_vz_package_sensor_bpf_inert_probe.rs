@@ -1,15 +1,15 @@
 use std::fmt;
 
 #[cfg(target_os = "linux")]
-use crate::linux_vz_package_sensor_bpf::LinuxVzPackageSensorBpfProducerV1;
-#[cfg(target_os = "linux")]
 use crate::linux_vz_package_sensor_event_stream::{
     LinuxVzPackageKernelEventKindV1, LinuxVzPackageSelectedSyscallV1,
 };
 #[cfg(target_os = "linux")]
-use crate::linux_vz_package_sensor_process_stream::{
-    LinuxVzPackageCorrelatedProcessObservationV1, LinuxVzPackageProcessEventCorrelatorV1,
-};
+use crate::linux_vz_package_sensor_process_collector::LinuxVzPackageRootProcessCollectorV1;
+#[cfg(target_os = "linux")]
+use crate::linux_vz_package_sensor_process_stream::LinuxVzPackageCorrelatedProcessObservationV1;
+#[cfg(target_os = "linux")]
+use crate::{LinuxVzPackageProcessCompletionV1, LinuxVzPackageProcessTerminalV1};
 #[cfg(target_os = "linux")]
 use serde::Serialize;
 #[cfg(target_os = "linux")]
@@ -45,9 +45,6 @@ const MAX_FIXTURE_BYTES_V1: usize = 16 * 1024 * 1024;
 const RING_BUFFER_BYTES_V1: usize = 64 * 1024;
 #[cfg(target_os = "linux")]
 const CHILD_DEADLINE_V1: Duration = Duration::from_secs(5);
-#[cfg(target_os = "linux")]
-const EVENT_DEADLINE_V1: Duration = Duration::from_secs(2);
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinuxVzPackageSensorBpfInertProbeErrorV1 {
     UnsupportedPlatform,
@@ -55,6 +52,7 @@ pub enum LinuxVzPackageSensorBpfInertProbeErrorV1 {
     Fixture,
     Cgroup,
     Producer,
+    Collector,
     Fork,
     CpuAffinity,
     ChildState,
@@ -75,6 +73,7 @@ impl LinuxVzPackageSensorBpfInertProbeErrorV1 {
             Self::Fixture => "linux_vz_package_sensor_bpf_probe_fixture_invalid",
             Self::Cgroup => "linux_vz_package_sensor_bpf_probe_cgroup_failed",
             Self::Producer => "linux_vz_package_sensor_bpf_probe_producer_failed",
+            Self::Collector => "linux_vz_package_sensor_bpf_probe_collector_failed",
             Self::Fork => "linux_vz_package_sensor_bpf_probe_fork_failed",
             Self::CpuAffinity => "linux_vz_package_sensor_bpf_probe_cpu_affinity_failed",
             Self::ChildState => "linux_vz_package_sensor_bpf_probe_child_state_invalid",
@@ -115,6 +114,7 @@ struct InertProbeEvidenceWireV1 {
     attachment_cpu: String,
     attachment_scope: &'static str,
     cgroup_id: String,
+    collector_mode: &'static str,
     discarded_record_count: String,
     dropped_event_count: String,
     event_count: String,
@@ -128,12 +128,15 @@ struct InertProbeEvidenceWireV1 {
     fixture_pid: String,
     fixture_sha256: String,
     kernel_exit_wait_status: String,
+    leader_exec_count: String,
     malware_execution: bool,
     observed_event_cpus: Vec<String>,
     online_cpus: Vec<String>,
     package_execution: bool,
     package_gid: String,
     package_uid: String,
+    pre_release_event_count: String,
+    process_collector_coverage_complete: bool,
     runtime_btf_sha256: String,
     schema_version: &'static str,
     sync_back: bool,
@@ -278,11 +281,24 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
         unsafe { OwnedFd::from_raw_fd(3) }
     };
     let mut cgroup = ProbeCgroupV1::create_v1()?;
-    let mut producer = LinuxVzPackageSensorBpfProducerV1::start_v1(cgroup.id, RING_BUFFER_BYTES_V1)
-        .map_err(|error| {
-            eprintln!("WHOATHERE_PACKAGE_SENSOR_BPF_INERT_PRODUCER_DETAIL {error} {error:?}");
-            LinuxVzPackageSensorBpfInertProbeErrorV1::Producer
-        })?;
+    let mut collector =
+        LinuxVzPackageRootProcessCollectorV1::arm_v1(cgroup.id, RING_BUFFER_BYTES_V1, 64).map_err(
+            |error| {
+                eprintln!("WHOATHERE_PACKAGE_SENSOR_BPF_INERT_COLLECTOR_DETAIL {error}");
+                LinuxVzPackageSensorBpfInertProbeErrorV1::Collector
+            },
+        )?;
+    let fixture_cpu = *collector
+        .online_cpus_v1()
+        .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::Collector)?
+        .last()
+        .ok_or(LinuxVzPackageSensorBpfInertProbeErrorV1::CpuAffinity)?;
+    let attachment_cpu = collector
+        .attachment_cpu_v1()
+        .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::Collector)?;
+    if fixture_cpu == attachment_cpu {
+        return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::CpuAffinity);
+    }
     let fixture_path = CString::new("process-fixture-child")
         .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::Fixture)?;
     let fixture_case = CString::new("normal_exit")
@@ -328,18 +344,19 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
     };
     require_stopped_child_v1(child)?;
     cgroup.add_process_v1(child)?;
-    let fixture_cpu = *producer
-        .online_cpus_v1()
-        .last()
-        .ok_or(LinuxVzPackageSensorBpfInertProbeErrorV1::CpuAffinity)?;
-    if fixture_cpu == producer.attachment_cpu_v1() {
-        return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::CpuAffinity);
-    }
     pin_process_to_cpu_v1(child, fixture_cpu)?;
+    collector
+        .leader_attached_before_release_v1(child as u32)
+        .map_err(|error| {
+            eprintln!("WHOATHERE_PACKAGE_SENSOR_BPF_INERT_COLLECTOR_DETAIL {error}");
+            LinuxVzPackageSensorBpfInertProbeErrorV1::Collector
+        })?;
+    let process_started_monotonic_nanoseconds = monotonic_nanoseconds_v1()?;
     if unsafe { libc::kill(child, libc::SIGCONT) } != 0 {
         return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::ChildState);
     }
     let status = wait_for_child_v1(child)?;
+    let process_ended_monotonic_nanoseconds = monotonic_nanoseconds_v1()?;
     child_guard.reaped = true;
     if !libc::WIFEXITED(status) || libc::WEXITSTATUS(status) != 0 {
         let exit_code = if libc::WIFEXITED(status) {
@@ -357,82 +374,24 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
         );
         return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::ChildFailed);
     }
-    let kernel_wait_status =
+    let waitpid_wait_status =
         u16::try_from(status).map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::ChildState)?;
-
-    let deadline = Instant::now() + EVENT_DEADLINE_V1;
-    let mut events = Vec::new();
-    loop {
-        let available = producer
-            .drain_available_v1(64)
-            .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::EventStream)?;
-        events.extend(available);
-        if events.len() >= 14 || Instant::now() >= deadline {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    events.extend(
-        producer
-            .drain_available_v1(64)
-            .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::EventStream)?,
-    );
-    if events.len() != 14
-        || events.iter().any(|event| {
-            event.pid() != child as u32
-                || event.tgid() != child as u32
-                || event.parent_pid() != 0
-                || event.subject_pid() != child as u32
-                || event.cgroup_id() != cgroup.id
-                || event.cpu() != fixture_cpu
-        })
-        || events
-            .windows(2)
-            .any(|pair| pair[0].timestamp_nanoseconds() >= pair[1].timestamp_nanoseconds())
-        || events.iter().enumerate().any(|(index, event)| {
-            event.source_sequence() != u64::try_from(index + 1).unwrap_or(u64::MAX)
-        })
-        || !matches_selected_syscall_pair_v1(
-            &events[0..2],
-            LinuxVzPackageSelectedSyscallV1::Setgroups,
-            0,
-        )
-        || !matches_selected_syscall_pair_v1(
-            &events[2..4],
-            LinuxVzPackageSelectedSyscallV1::Setgid,
-            u64::from(PACKAGE_GID_V1),
-        )
-        || !matches_selected_syscall_pair_v1(
-            &events[4..6],
-            LinuxVzPackageSelectedSyscallV1::Setuid,
-            u64::from(PACKAGE_UID_V1),
-        )
-        || events[6].kind() != LinuxVzPackageKernelEventKindV1::Exec
-        || !matches_mmap_syscall_pair_v1(&events[7..9])
-        || !matches_mmap_syscall_pair_v1(&events[9..11])
-        || !matches_mmap_syscall_pair_v1(&events[11..13])
-        || events[13].kind() != LinuxVzPackageKernelEventKindV1::Exit
-        || events[13].kernel_wait_status_v1() != Some(kernel_wait_status)
-    {
-        return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::EventMismatch);
-    }
-    let dropped = producer
-        .dropped_event_count_v1()
-        .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::EventStream)?;
-    let discarded = producer.discarded_record_count_v1();
-    if dropped != 0 || discarded != 0 {
-        return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::LossObserved);
-    }
-    let mut correlator = LinuxVzPackageProcessEventCorrelatorV1::new_v1(cgroup.id, 64)
-        .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::EventMismatch)?;
-    for event in events.iter().cloned() {
-        correlator
-            .ingest_v1(event)
-            .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::EventMismatch)?;
-    }
-    let correlated = correlator
-        .finish_v1(dropped, discarded, producer.last_source_sequence_v1())
-        .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::EventMismatch)?;
+    let completion = LinuxVzPackageProcessCompletionV1::from_parts_v1(
+        process_started_monotonic_nanoseconds,
+        process_ended_monotonic_nanoseconds,
+        waitpid_wait_status,
+        LinuxVzPackageProcessTerminalV1::Exited,
+        Some(0),
+        None,
+    )
+    .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::ChildState)?;
+    let collection = collector
+        .finish_after_empty_cgroup_v1(child as u32, &completion)
+        .map_err(|error| {
+            eprintln!("WHOATHERE_PACKAGE_SENSOR_BPF_INERT_COLLECTOR_DETAIL {error}");
+            LinuxVzPackageSensorBpfInertProbeErrorV1::Collector
+        })?;
+    let correlated = collection.stream_v1();
     let correlated_exit_wait_status = correlated.observations_v1().last().and_then(|observation| {
         let LinuxVzPackageCorrelatedProcessObservationV1::Lifecycle(event) = observation else {
             return None;
@@ -444,31 +403,37 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
     if correlated.expected_cgroup_id_v1() != cgroup.id
         || correlated.source_event_count_v1() != 14
         || correlated.observations_v1().len() != 8
-        || correlated_exit_wait_status != Some(kernel_wait_status)
+        || correlated_exit_wait_status != Some(waitpid_wait_status)
         || !correlated.coverage_complete_v1()
+        || collection.leader_pid_v1() != child as u32
+        || collection.leader_exec_count_v1() != 1
+        || collection.leader_kernel_wait_status_v1() != waitpid_wait_status
+        || collection.leader_supervisor_wait_status_v1() != waitpid_wait_status
+        || collection.dropped_event_count_v1() != 0
+        || collection.discarded_record_count_v1() != 0
+        || !collection.coverage_complete_v1()
+        || !matches_exact_correlated_stream_v1(
+            correlated.observations_v1(),
+            child as u32,
+            cgroup.id,
+            fixture_cpu,
+            waitpid_wait_status,
+        )
     {
         return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::EventMismatch);
     }
     let mut tracepoints = BTreeMap::new();
-    for layout in producer.layouts_v1() {
-        tracepoints.insert(
-            match layout.kind_v1() {
-                crate::linux_vz_package_sensor_tracepoint::LinuxVzPackageTracepointKindV1::SchedProcessFork => "sched_process_fork",
-                crate::linux_vz_package_sensor_tracepoint::LinuxVzPackageTracepointKindV1::SchedProcessExec => "sched_process_exec",
-                crate::linux_vz_package_sensor_tracepoint::LinuxVzPackageTracepointKindV1::SchedProcessExit => "sched_process_exit",
-                crate::linux_vz_package_sensor_tracepoint::LinuxVzPackageTracepointKindV1::RawSyscallsSysEnter => "sys_enter",
-                crate::linux_vz_package_sensor_tracepoint::LinuxVzPackageTracepointKindV1::RawSyscallsSysExit => "sys_exit",
-            },
-            layout.format_sha256_v1().as_str().to_string(),
-        );
+    for (name, digest) in collection.tracepoint_format_sha256_v1() {
+        tracepoints.insert(*name, digest.as_str().to_string());
     }
     let evidence = InertProbeEvidenceWireV1 {
-        attachment_cpu: producer.attachment_cpu_v1().to_string(),
+        attachment_cpu: collection.attachment_cpu_v1().to_string(),
         attachment_scope: "tracepoint_wide",
         cgroup_id: cgroup.id.to_string(),
-        discarded_record_count: discarded.to_string(),
-        dropped_event_count: dropped.to_string(),
-        event_count: events.len().to_string(),
+        collector_mode: "root_bpf_ring_correlator",
+        discarded_record_count: collection.discarded_record_count_v1().to_string(),
+        dropped_event_count: collection.dropped_event_count_v1().to_string(),
+        event_count: correlated.source_event_count_v1().to_string(),
         event_kinds: vec![
             "setgroups_enter",
             "setgroups_exit",
@@ -485,7 +450,7 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
             "mmap_exit",
             "exit",
         ],
-        event_sequence_end: producer.last_source_sequence_v1().to_string(),
+        event_sequence_end: correlated.source_event_count_v1().to_string(),
         event_sequence_start: "1".to_string(),
         exit_attachment: "raw_tracepoint:sched_process_exit",
         exit_status_source: "runtime_btf:task_struct.exit_code",
@@ -496,9 +461,10 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
         kernel_exit_wait_status: correlated_exit_wait_status
             .ok_or(LinuxVzPackageSensorBpfInertProbeErrorV1::EventMismatch)?
             .to_string(),
+        leader_exec_count: collection.leader_exec_count_v1().to_string(),
         malware_execution: false,
         observed_event_cpus: vec![fixture_cpu.to_string()],
-        online_cpus: producer
+        online_cpus: collection
             .online_cpus_v1()
             .iter()
             .map(u32::to_string)
@@ -506,53 +472,157 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
         package_execution: false,
         package_gid: PACKAGE_GID_V1.to_string(),
         package_uid: PACKAGE_UID_V1.to_string(),
-        runtime_btf_sha256: producer.runtime_btf_sha256_v1().as_str().to_string(),
-        schema_version: "whoathere.linux_vz_package_sensor_bpf_inert_probe.v4",
+        pre_release_event_count: "0".to_string(),
+        process_collector_coverage_complete: collection.coverage_complete_v1(),
+        runtime_btf_sha256: collection.runtime_btf_sha256_v1().as_str().to_string(),
+        schema_version: "whoathere.linux_vz_package_sensor_bpf_inert_probe.v5",
         sync_back: false,
-        task_exit_code_byte_offset: producer.task_exit_code_byte_offset_v1().to_string(),
+        task_exit_code_byte_offset: collection.task_exit_code_byte_offset_v1().to_string(),
         tracepoint_format_sha256: tracepoints,
-        waitpid_wait_status: kernel_wait_status.to_string(),
+        waitpid_wait_status: waitpid_wait_status.to_string(),
     };
-    drop(producer);
     cgroup.remove_v1()?;
     serde_json::to_string(&evidence)
         .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::Serialization)
 }
 
 #[cfg(target_os = "linux")]
-fn matches_selected_syscall_pair_v1(
-    events: &[crate::linux_vz_package_sensor_event_stream::LinuxVzPackageKernelEventV1],
-    syscall: LinuxVzPackageSelectedSyscallV1,
-    first_argument: u64,
-) -> bool {
-    events.len() == 2
-        && events[0].kind() == LinuxVzPackageKernelEventKindV1::SyscallEnter
-        && events[1].kind() == LinuxVzPackageKernelEventKindV1::SyscallExit
-        && events[0].selected_syscall_v1() == Ok(syscall)
-        && events[1].selected_syscall_v1() == Ok(syscall)
-        && events[0].arguments()[0] == first_argument
-        && events[0].arguments()[1..]
-            .iter()
-            .all(|argument| *argument == 0)
-        && events[0].result().is_none()
-        && events[1].result() == Some(0)
-        && events[1].arguments().iter().all(|argument| *argument == 0)
+#[derive(Clone, Copy)]
+struct InertCorrelatedContextV1 {
+    leader_pid: u32,
+    cgroup_id: u64,
+    fixture_cpu: u32,
 }
 
 #[cfg(target_os = "linux")]
-fn matches_mmap_syscall_pair_v1(
-    events: &[crate::linux_vz_package_sensor_event_stream::LinuxVzPackageKernelEventV1],
+fn matches_exact_correlated_stream_v1(
+    observations: &[LinuxVzPackageCorrelatedProcessObservationV1],
+    leader_pid: u32,
+    cgroup_id: u64,
+    fixture_cpu: u32,
+    wait_status: u16,
 ) -> bool {
-    events.len() == 2
-        && events[0].kind() == LinuxVzPackageKernelEventKindV1::SyscallEnter
-        && events[1].kind() == LinuxVzPackageKernelEventKindV1::SyscallExit
-        && events[0].selected_syscall_v1() == Ok(LinuxVzPackageSelectedSyscallV1::Mmap)
-        && events[1].selected_syscall_v1() == Ok(LinuxVzPackageSelectedSyscallV1::Mmap)
-        && events[0].arguments()[0] == 0
-        && events[0].arguments()[1] > 0
-        && events[0].result().is_none()
-        && events[1].result().is_some_and(|result| result > 0)
-        && events[1].arguments().iter().all(|argument| *argument == 0)
+    let context = InertCorrelatedContextV1 {
+        leader_pid,
+        cgroup_id,
+        fixture_cpu,
+    };
+    observations.len() == 8
+        && matches_correlated_syscall_v1(
+            &observations[0],
+            LinuxVzPackageSelectedSyscallV1::Setgroups,
+            1,
+            2,
+            0,
+            context,
+        )
+        && matches_correlated_syscall_v1(
+            &observations[1],
+            LinuxVzPackageSelectedSyscallV1::Setgid,
+            3,
+            4,
+            u64::from(PACKAGE_GID_V1),
+            context,
+        )
+        && matches_correlated_syscall_v1(
+            &observations[2],
+            LinuxVzPackageSelectedSyscallV1::Setuid,
+            5,
+            6,
+            u64::from(PACKAGE_UID_V1),
+            context,
+        )
+        && matches_correlated_lifecycle_v1(
+            &observations[3],
+            LinuxVzPackageKernelEventKindV1::Exec,
+            7,
+            context,
+            None,
+        )
+        && matches_correlated_mmap_v1(&observations[4], 8, 9, context)
+        && matches_correlated_mmap_v1(&observations[5], 10, 11, context)
+        && matches_correlated_mmap_v1(&observations[6], 12, 13, context)
+        && matches_correlated_lifecycle_v1(
+            &observations[7],
+            LinuxVzPackageKernelEventKindV1::Exit,
+            14,
+            context,
+            Some(wait_status),
+        )
+}
+
+#[cfg(target_os = "linux")]
+fn matches_correlated_syscall_v1(
+    observation: &LinuxVzPackageCorrelatedProcessObservationV1,
+    syscall: LinuxVzPackageSelectedSyscallV1,
+    enter_sequence: u64,
+    exit_sequence: u64,
+    first_argument: u64,
+    context: InertCorrelatedContextV1,
+) -> bool {
+    let LinuxVzPackageCorrelatedProcessObservationV1::Syscall(event) = observation else {
+        return false;
+    };
+    event.syscall_v1() == syscall
+        && event.enter_source_sequence_v1() == enter_sequence
+        && event.exit_source_sequence_v1() == exit_sequence
+        && event.enter_timestamp_nanoseconds_v1() < event.exit_timestamp_nanoseconds_v1()
+        && event.cgroup_id_v1() == context.cgroup_id
+        && event.pid_v1() == context.leader_pid
+        && event.tgid_v1() == context.leader_pid
+        && event.arguments_v1()[0] == first_argument
+        && event.arguments_v1()[1..]
+            .iter()
+            .all(|argument| *argument == 0)
+        && event.result_v1() == 0
+        && event.enter_cpu_v1() == context.fixture_cpu
+        && event.exit_cpu_v1() == context.fixture_cpu
+}
+
+#[cfg(target_os = "linux")]
+fn matches_correlated_mmap_v1(
+    observation: &LinuxVzPackageCorrelatedProcessObservationV1,
+    enter_sequence: u64,
+    exit_sequence: u64,
+    context: InertCorrelatedContextV1,
+) -> bool {
+    let LinuxVzPackageCorrelatedProcessObservationV1::Syscall(event) = observation else {
+        return false;
+    };
+    event.syscall_v1() == LinuxVzPackageSelectedSyscallV1::Mmap
+        && event.enter_source_sequence_v1() == enter_sequence
+        && event.exit_source_sequence_v1() == exit_sequence
+        && event.enter_timestamp_nanoseconds_v1() < event.exit_timestamp_nanoseconds_v1()
+        && event.cgroup_id_v1() == context.cgroup_id
+        && event.pid_v1() == context.leader_pid
+        && event.tgid_v1() == context.leader_pid
+        && event.arguments_v1()[0] == 0
+        && event.arguments_v1()[1] > 0
+        && event.result_v1() > 0
+        && event.enter_cpu_v1() == context.fixture_cpu
+        && event.exit_cpu_v1() == context.fixture_cpu
+}
+
+#[cfg(target_os = "linux")]
+fn matches_correlated_lifecycle_v1(
+    observation: &LinuxVzPackageCorrelatedProcessObservationV1,
+    kind: LinuxVzPackageKernelEventKindV1,
+    sequence: u64,
+    context: InertCorrelatedContextV1,
+    wait_status: Option<u16>,
+) -> bool {
+    let LinuxVzPackageCorrelatedProcessObservationV1::Lifecycle(event) = observation else {
+        return false;
+    };
+    event.kind_v1() == kind
+        && event.source_sequence_v1() == sequence
+        && event.cgroup_id_v1() == context.cgroup_id
+        && event.pid_v1() == context.leader_pid
+        && event.tgid_v1() == context.leader_pid
+        && event.parent_pid_v1() == 0
+        && event.subject_pid_v1() == context.leader_pid
+        && event.kernel_wait_status_v1() == wait_status
+        && event.cpu_v1() == context.fixture_cpu
 }
 
 #[cfg(target_os = "linux")]
@@ -671,6 +741,21 @@ fn require_stopped_child_v1(
 }
 
 #[cfg(target_os = "linux")]
+fn monotonic_nanoseconds_v1() -> Result<u64, LinuxVzPackageSensorBpfInertProbeErrorV1> {
+    let mut value: libc::timespec = unsafe { zeroed() };
+    if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut value) } != 0
+        || value.tv_sec < 0
+        || value.tv_nsec < 0
+    {
+        return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::ChildState);
+    }
+    (value.tv_sec as u64)
+        .checked_mul(1_000_000_000)
+        .and_then(|seconds| seconds.checked_add(value.tv_nsec as u64))
+        .ok_or(LinuxVzPackageSensorBpfInertProbeErrorV1::ChildState)
+}
+
+#[cfg(target_os = "linux")]
 fn pin_process_to_cpu_v1(
     process: libc::pid_t,
     cpu: u32,
@@ -781,6 +866,7 @@ mod tests {
             LinuxVzPackageSensorBpfInertProbeErrorV1::Fixture,
             LinuxVzPackageSensorBpfInertProbeErrorV1::Cgroup,
             LinuxVzPackageSensorBpfInertProbeErrorV1::Producer,
+            LinuxVzPackageSensorBpfInertProbeErrorV1::Collector,
             LinuxVzPackageSensorBpfInertProbeErrorV1::Fork,
             LinuxVzPackageSensorBpfInertProbeErrorV1::CpuAffinity,
             LinuxVzPackageSensorBpfInertProbeErrorV1::ChildState,

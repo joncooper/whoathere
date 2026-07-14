@@ -1,7 +1,7 @@
 import Foundation
 
-public let linuxVzPackageSensorBpfInertEvidenceSchemaV4 =
-    "whoathere.linux_vz_package_sensor_bpf_inert_probe.v4"
+public let linuxVzPackageSensorBpfInertEvidenceSchemaV5 =
+    "whoathere.linux_vz_package_sensor_bpf_inert_probe.v5"
 public let linuxVzPackageSensorBpfInertEvidenceSerialPrefixV1 =
     "WHOATHERE_PACKAGE_SENSOR_BPF_INERT_EVIDENCE "
 
@@ -29,7 +29,7 @@ public enum LinuxVzPackageSensorBpfInertEvidenceError: Error, Equatable {
     case invalidSchema
 }
 
-public struct LinuxVzPackageSensorBpfInertEvidenceV4: Equatable, Sendable {
+public struct LinuxVzPackageSensorBpfInertEvidenceV5: Equatable, Sendable {
     public let canonicalJSON: Data
     public let payloadSHA256: String
     public let evidenceByteLength: UInt64
@@ -43,15 +43,19 @@ public struct LinuxVzPackageSensorBpfInertEvidenceV4: Equatable, Sendable {
     public let attachmentCPU: UInt64
     public let fixtureCPU: UInt64
     public let observedEventCPUs: [UInt64]
+    public let collectorMode: String
+    public let leaderExecCount: UInt64
+    public let preReleaseEventCount: UInt64
+    public let processCollectorCoverageComplete: Bool
     public let tracepointFormatSHA256: [String: String]
 }
 
-public func decodeLinuxVzPackageSensorBpfInertEvidenceV4(
+public func decodeLinuxVzPackageSensorBpfInertEvidenceV5(
     _ serialData: Data,
     expectedFixtureSHA256: String,
     expectedRuntimeBTFSHA256: String,
     expectedTaskExitCodeByteOffset: UInt64
-) throws -> LinuxVzPackageSensorBpfInertEvidenceV4 {
+) throws -> LinuxVzPackageSensorBpfInertEvidenceV5 {
     guard packageSensorBpfInertDigest(expectedFixtureSHA256),
           packageSensorBpfInertDigest(expectedRuntimeBTFSHA256),
           expectedTaskExitCodeByteOffset > 0,
@@ -83,20 +87,22 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV4(
         throw LinuxVzPackageSensorBpfInertEvidenceError.nonCanonical
     }
     let expectedKeys = Set([
-        "attachment_cpu", "attachment_scope", "cgroup_id", "discarded_record_count",
-        "dropped_event_count", "event_count", "event_kinds", "event_sequence_end",
-        "event_sequence_start", "exit_attachment", "exit_status_source",
+        "attachment_cpu", "attachment_scope", "cgroup_id", "collector_mode",
+        "discarded_record_count", "dropped_event_count", "event_count", "event_kinds",
+        "event_sequence_end", "event_sequence_start", "exit_attachment", "exit_status_source",
         "fixture_cpu", "fixture_exit_status", "fixture_pid", "fixture_sha256",
-        "kernel_exit_wait_status", "malware_execution", "observed_event_cpus", "online_cpus",
-        "package_execution", "package_gid", "package_uid", "runtime_btf_sha256",
-        "schema_version", "sync_back", "task_exit_code_byte_offset",
-        "tracepoint_format_sha256", "waitpid_wait_status",
+        "kernel_exit_wait_status", "leader_exec_count", "malware_execution",
+        "observed_event_cpus", "online_cpus", "package_execution", "package_gid",
+        "package_uid", "pre_release_event_count", "process_collector_coverage_complete",
+        "runtime_btf_sha256", "schema_version", "sync_back",
+        "task_exit_code_byte_offset", "tracepoint_format_sha256", "waitpid_wait_status",
     ])
     guard Set(value.keys) == expectedKeys,
-          value["schema_version"] as? String == linuxVzPackageSensorBpfInertEvidenceSchemaV4,
+          value["schema_version"] as? String == linuxVzPackageSensorBpfInertEvidenceSchemaV5,
           let attachmentCPU = packageSensorBpfInertDecimal(value["attachment_cpu"]),
           attachmentCPU == 0,
           value["attachment_scope"] as? String == "tracepoint_wide",
+          value["collector_mode"] as? String == "root_bpf_ring_correlator",
           packageSensorBpfInertDecimal(value["discarded_record_count"]) == 0,
           packageSensorBpfInertDecimal(value["dropped_event_count"]) == 0,
           packageSensorBpfInertDecimal(value["event_count"]) == 14,
@@ -122,6 +128,7 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV4(
               value["kernel_exit_wait_status"]
           ),
           kernelExitWaitStatus == 0,
+          packageSensorBpfInertDecimal(value["leader_exec_count"]) == 1,
           value["malware_execution"] as? Bool == false,
           let observedEventCPUs = packageSensorBpfInertDecimalArray(
               value["observed_event_cpus"]
@@ -131,6 +138,8 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV4(
           value["package_execution"] as? Bool == false,
           packageSensorBpfInertDecimal(value["package_gid"]) == 65534,
           packageSensorBpfInertDecimal(value["package_uid"]) == 65534,
+          packageSensorBpfInertDecimal(value["pre_release_event_count"]) == 0,
+          value["process_collector_coverage_complete"] as? Bool == true,
           value["runtime_btf_sha256"] as? String == expectedRuntimeBTFSHA256,
           value["sync_back"] as? Bool == false,
           let taskExitCodeByteOffset = packageSensorBpfInertDecimal(
@@ -148,7 +157,7 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV4(
           waitpidWaitStatus == kernelExitWaitStatus else {
         throw LinuxVzPackageSensorBpfInertEvidenceError.invalidSchema
     }
-    return LinuxVzPackageSensorBpfInertEvidenceV4(
+    return LinuxVzPackageSensorBpfInertEvidenceV5(
         canonicalJSON: payload,
         payloadSHA256: sha256(payload),
         evidenceByteLength: UInt64(payload.count),
@@ -162,6 +171,10 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV4(
         attachmentCPU: attachmentCPU,
         fixtureCPU: fixtureCPU,
         observedEventCPUs: observedEventCPUs,
+        collectorMode: "root_bpf_ring_correlator",
+        leaderExecCount: 1,
+        preReleaseEventCount: 0,
+        processCollectorCoverageComplete: true,
         tracepointFormatSHA256: tracepoints
     )
 }

@@ -4,14 +4,22 @@ Date: 2026-07-09
 
 Status: canonical execution plan for the next product milestone
 
-Current execution checkpoint (2026-07-14): the package BPF producer's tracepoint-wide attachment
-has now been physically proved across CPUs on the pinned two-vCPU backend. The single perf-event
-attachment was anchored on CPU 0, the purpose-built inert child was constrained to CPU 1, and all
-14 expected credential, exec, loader-`mmap`, and exit records reported CPU 1 with zero producer
-drops or decoder discards. The strict schema-v4 Mac verifier also required the existing BTF-bound
-kernel/supervisor terminal agreement, zero host frames, stable images, and a stopped VM. No package
-or malware ran. This closes the cross-CPU coverage uncertainty but does not instantiate the
-production root collector or improve the July 7/11 score. See the
+Current execution checkpoint (2026-07-14): the first concrete process-only root collector now owns
+the root BPF producer, ring consumer, and fail-closed correlator from arm through finish. Its final
+inert physical qualification required a quiet pre-release stream, converted the exact 14-record
+credential/exec/loader-`mmap`/exit source stream into eight ordered observations, and reconciled the
+BTF-derived kernel wait status with the supervisor's exact raw `waitpid` status. The fixture ran on
+CPU 1 while the tracepoint-wide attachment was anchored on CPU 0; loss and host raw frames were
+zero, the VM stopped, and package execution, malware execution, and sync-back remained false. The
+strict schema-v5 Mac verifier binds the collector mode and complete process coverage. No package or
+malware ran. The collector is not yet wired into the protected root service and needs continuous
+ring draining for arbitrary workloads; file, network, envelope, runtime, benign, and malicious
+gates remain open, so the July score remains 7/11. See the
+[root process-collector checkpoint](artifact-native-linux-vz-package-root-process-collector-checkpoint-2026-07-14.md).
+
+The preceding checkpoint physically proved the producer's tracepoint-wide attachment across CPUs
+on the pinned two-vCPU backend. The single perf-event attachment was anchored on CPU 0, the inert
+child was constrained to CPU 1, and all 14 records reported CPU 1 with zero loss. See the
 [cross-CPU coverage checkpoint](artifact-native-linux-vz-package-sensor-cross-cpu-coverage-checkpoint-2026-07-14.md).
 
 The preceding terminal-reconciliation checkpoint made that collector contract strict. The root
@@ -385,6 +393,15 @@ records reported CPU 1 with zero loss. This confirms the tracepoint-wide attachm
 pinned two-vCPU backend without duplicating the same BPF registration per CPU. It is still an inert
 qualification rather than production root-service integration or package detection. See the
 [cross-CPU coverage checkpoint](artifact-native-linux-vz-package-sensor-cross-cpu-coverage-checkpoint-2026-07-14.md).
+
+The first concrete process-only root collector now owns that exact BPF producer, its ring consumer,
+and the strict process correlator from arm through finish. A schema-v5 inert physical gate required
+pre-release quiet, the exact 14-to-eight correlated stream, complete zero-loss coverage, and exact
+BTF-derived kernel/supervisor terminal agreement while preserving the cross-CPU proof. The
+collector is still internal and not adapted into the protected root sensor service, and it must be
+changed to drain continuously for arbitrary package workloads. File, network, composite-envelope,
+runtime, benign, and malicious gates remain open, so the 7/11 score is unchanged. See the
+[root process-collector checkpoint](artifact-native-linux-vz-package-root-process-collector-checkpoint-2026-07-14.md).
 
 The producer now also implements a closed arm64 allowlist for `setgroups`, `setgid`, `setuid`,
 `connect`, `sendto`, and `mmap`, with BPF-side cgroup filtering, pointer redaction, paired
@@ -2077,6 +2094,7 @@ Repository evidence:
 - [Linux VZ package sensor kernel-exit checkpoint](artifact-native-linux-vz-package-sensor-kernel-exit-binding-checkpoint-2026-07-14.md)
 - [Linux VZ package sensor terminal-reconciliation checkpoint](artifact-native-linux-vz-package-sensor-terminal-reconciliation-checkpoint-2026-07-14.md)
 - [Linux VZ package sensor cross-CPU coverage checkpoint](artifact-native-linux-vz-package-sensor-cross-cpu-coverage-checkpoint-2026-07-14.md)
+- [Linux VZ package root process-collector checkpoint](artifact-native-linux-vz-package-root-process-collector-checkpoint-2026-07-14.md)
 - [Linux VZ runtime-qualification guest-candidate checkpoint](artifact-native-linux-vz-runtime-qualification-guest-candidate-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification host-launcher checkpoint](artifact-native-linux-vz-runtime-qualification-host-launcher-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification physical checkpoint](artifact-native-linux-vz-runtime-qualification-physical-checkpoint-2026-07-13.md)
