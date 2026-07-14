@@ -13,11 +13,13 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt;
 #[cfg(target_os = "linux")]
+use std::fs::File;
+#[cfg(target_os = "linux")]
 use std::io::{Read, Write};
 #[cfg(target_os = "linux")]
 use std::mem::{size_of, zeroed, MaybeUninit};
 #[cfg(target_os = "linux")]
-use std::os::fd::{AsRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 #[cfg(target_os = "linux")]
 use std::os::unix::net::UnixStream;
 #[cfg(target_os = "linux")]
@@ -246,6 +248,23 @@ impl LinuxVzPackageRootSensorIdentityV1 {
 
     pub fn sensor_configuration_sha256(&self) -> &Sha256Digest {
         &self.sensor_configuration_sha256
+    }
+
+    #[cfg(target_os = "linux")]
+    fn from_measured_guest_components_v1(
+        qualified_telemetry_backend_sha256: Sha256Digest,
+        guest_evidence_signer_sha256: Sha256Digest,
+        protected_sensor_bundle_sha256: Sha256Digest,
+        sensor_configuration_sha256: Sha256Digest,
+    ) -> Result<Self, LinuxVzPackageSensorControlErrorV1> {
+        let value = Self {
+            qualified_telemetry_backend_sha256,
+            guest_evidence_signer_sha256,
+            protected_sensor_bundle_sha256,
+            sensor_configuration_sha256,
+        };
+        value.validate_v1()?;
+        Ok(value)
     }
 }
 
@@ -654,6 +673,738 @@ struct ActiveSensorBindingV1 {
     cgroup_name: String,
     cgroup_id: u64,
     leader_pid: Option<u32>,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RootSensorServiceStateV1 {
+    AwaitingOpen,
+    SessionOpen,
+    Armed,
+    LeaderCorrelated,
+    Finished,
+    Aborted,
+}
+
+#[cfg(target_os = "linux")]
+impl RootSensorServiceStateV1 {
+    const fn as_observer_state_v1(self) -> Option<&'static str> {
+        match self {
+            Self::AwaitingOpen => None,
+            Self::SessionOpen => Some("session_open"),
+            Self::Armed => Some("armed"),
+            Self::LeaderCorrelated => Some("leader_correlated"),
+            Self::Finished => Some("finished"),
+            Self::Aborted => Some("aborted"),
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
+struct RootSensorServiceActionContextV1 {
+    launch_contract_sha256: Sha256Digest,
+    process_plan_sha256: Sha256Digest,
+    action_index: usize,
+    cgroup_name: String,
+    cgroup_id: u64,
+    leader_pid: Option<u32>,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+struct RootSensorServiceActiveActionV1 {
+    context: RootSensorServiceActionContextV1,
+    cgroup_directory: OwnedFd,
+}
+
+#[cfg(target_os = "linux")]
+struct RootSensorServiceCommonRequestV1<'a> {
+    session: &'a SensorSessionBindingWireV1,
+    schema_version: &'a str,
+    expected_schema_version: &'a str,
+    operation: &'a str,
+    expected_operation: &'a str,
+    public_network_route_present: bool,
+    sync_back: bool,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+struct RootSensorServiceArmStatusV1 {
+    bpf_drop_count: u64,
+    file_sensor_armed: bool,
+    heartbeat_started: bool,
+    network_sensor_armed: bool,
+    process_sensor_armed: bool,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+struct RootSensorServiceLeaderStatusV1 {
+    bpf_drop_count: u64,
+    file_sensor_active: bool,
+    heartbeat_count: u64,
+    network_sensor_active: bool,
+    process_sensor_active: bool,
+}
+
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+struct RootSensorServiceFinishStatusV1 {
+    output: LinuxVzPackageProtectedSensorOutputV1,
+    descendant_teardown_complete: bool,
+    dropped_event_count: u64,
+    file_sensor_healthy: bool,
+    heartbeat_count: u64,
+    network_sensor_healthy: bool,
+    process_sensor_healthy: bool,
+    sensor_teardown_complete: bool,
+}
+
+/// Internal boundary between the protected control service and a real event collector.
+///
+/// This deliberately remains crate-private until the package collector can provide arbitrary
+/// event streaming, loss accounting, fanotify enforcement, and signed evidence. A fixture or
+/// no-op implementation must never be exposed as a production package sensor.
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+trait LinuxVzPackageRootSensorServiceCollectorV1 {
+    fn validate_ready_v1(
+        &mut self,
+        identity: &LinuxVzPackageRootSensorIdentityV1,
+    ) -> Result<(), LinuxVzPackageSensorControlErrorV1>;
+
+    fn arm_v1(
+        &mut self,
+        context: &RootSensorServiceActionContextV1,
+        cgroup_directory: RawFd,
+    ) -> Result<RootSensorServiceArmStatusV1, LinuxVzPackageSensorControlErrorV1>;
+
+    fn leader_attached_v1(
+        &mut self,
+        context: &RootSensorServiceActionContextV1,
+        cgroup_directory: RawFd,
+    ) -> Result<RootSensorServiceLeaderStatusV1, LinuxVzPackageSensorControlErrorV1>;
+
+    fn finish_v1(
+        &mut self,
+        context: &RootSensorServiceActionContextV1,
+        cgroup_directory: RawFd,
+        process_started_monotonic_nanoseconds: u64,
+        process_ended_monotonic_nanoseconds: u64,
+    ) -> Result<RootSensorServiceFinishStatusV1, LinuxVzPackageSensorControlErrorV1>;
+
+    fn abort_v1(
+        &mut self,
+        context: Option<&RootSensorServiceActionContextV1>,
+        cgroup_directory: Option<RawFd>,
+    ) -> Result<(), LinuxVzPackageSensorControlErrorV1>;
+}
+
+#[cfg(target_os = "linux")]
+struct RootSensorServiceSessionV1<'a> {
+    stream: UnixStream,
+    identity: LinuxVzPackageRootSensorIdentityV1,
+    session: Option<SensorSessionBindingWireV1>,
+    next_control_sequence: u64,
+    state: RootSensorServiceStateV1,
+    active: Option<RootSensorServiceActiveActionV1>,
+    collector: &'a mut dyn LinuxVzPackageRootSensorServiceCollectorV1,
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for RootSensorServiceSessionV1<'_> {
+    fn drop(&mut self) {
+        if !matches!(
+            self.state,
+            RootSensorServiceStateV1::Finished | RootSensorServiceStateV1::Aborted
+        ) {
+            let _ = self.collector.abort_v1(
+                self.active.as_ref().map(|active| &active.context),
+                self.active
+                    .as_ref()
+                    .map(|active| active.cgroup_directory.as_raw_fd()),
+            );
+            self.active.take();
+        }
+        let _ = self.stream.shutdown(std::net::Shutdown::Both);
+    }
+}
+
+/// Drives one protected root-sensor control session.
+///
+/// This entry point is intentionally crate-private while the production streaming collector is
+/// unfinished. Every exit before a successful finish or abort invokes collector teardown and
+/// releases the received cgroup descriptor.
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+fn serve_linux_vz_package_root_sensor_control_session_v1(
+    control_fd: OwnedFd,
+    qualified_telemetry_backend_sha256: Sha256Digest,
+    guest_evidence_signer_sha256: Sha256Digest,
+    protected_sensor_bundle_sha256: Sha256Digest,
+    sensor_configuration_sha256: Sha256Digest,
+    collector: &mut dyn LinuxVzPackageRootSensorServiceCollectorV1,
+) -> Result<(), LinuxVzPackageSensorControlErrorV1> {
+    let identity = LinuxVzPackageRootSensorIdentityV1::from_measured_guest_components_v1(
+        qualified_telemetry_backend_sha256,
+        guest_evidence_signer_sha256,
+        protected_sensor_bundle_sha256,
+        sensor_configuration_sha256,
+    )?;
+    let stream = UnixStream::from(control_fd);
+    validate_root_sensor_stream_v1(&stream)?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(CONTROL_TIMEOUT_SECONDS_V1)))
+        .and_then(|()| {
+            stream.set_write_timeout(Some(Duration::from_secs(CONTROL_TIMEOUT_SECONDS_V1)))
+        })
+        .map_err(|_| LinuxVzPackageSensorControlErrorV1::Io)?;
+    if let Err(error) = collector.validate_ready_v1(&identity) {
+        let _ = collector.abort_v1(None, None);
+        return Err(error);
+    }
+    RootSensorServiceSessionV1 {
+        stream,
+        identity,
+        session: None,
+        next_control_sequence: 1,
+        state: RootSensorServiceStateV1::AwaitingOpen,
+        active: None,
+        collector,
+    }
+    .run_v1()
+}
+
+#[cfg(target_os = "linux")]
+impl RootSensorServiceSessionV1<'_> {
+    fn run_v1(&mut self) -> Result<(), LinuxVzPackageSensorControlErrorV1> {
+        self.open_session_v1()?;
+        let (frame, descriptor) = self.receive_request_v1()?;
+        match frame.kind() {
+            LinuxVzPackageSensorControlFrameKindV1::Abort => {
+                self.abort_from_frame_v1(frame, descriptor)?;
+                return Ok(());
+            }
+            LinuxVzPackageSensorControlFrameKindV1::Arm => {
+                self.arm_from_frame_v1(frame, descriptor)?;
+            }
+            _ => return Err(LinuxVzPackageSensorControlErrorV1::InvalidState),
+        }
+
+        let (frame, descriptor) = self.receive_request_v1()?;
+        match frame.kind() {
+            LinuxVzPackageSensorControlFrameKindV1::Abort => {
+                self.abort_from_frame_v1(frame, descriptor)?;
+                return Ok(());
+            }
+            LinuxVzPackageSensorControlFrameKindV1::LeaderAttached => {
+                self.leader_from_frame_v1(frame, descriptor)?;
+            }
+            _ => return Err(LinuxVzPackageSensorControlErrorV1::InvalidState),
+        }
+
+        let (frame, descriptor) = self.receive_request_v1()?;
+        match frame.kind() {
+            LinuxVzPackageSensorControlFrameKindV1::Abort => {
+                self.abort_from_frame_v1(frame, descriptor)?;
+            }
+            LinuxVzPackageSensorControlFrameKindV1::Finish => {
+                self.finish_from_frame_v1(frame, descriptor)?;
+            }
+            _ => return Err(LinuxVzPackageSensorControlErrorV1::InvalidState),
+        }
+        Ok(())
+    }
+
+    fn open_session_v1(&mut self) -> Result<(), LinuxVzPackageSensorControlErrorV1> {
+        if self.state != RootSensorServiceStateV1::AwaitingOpen {
+            return Err(LinuxVzPackageSensorControlErrorV1::InvalidState);
+        }
+        let (frame, descriptor) = self.receive_request_v1()?;
+        if frame.kind() != LinuxVzPackageSensorControlFrameKindV1::OpenSession
+            || descriptor.is_some()
+        {
+            return Err(LinuxVzPackageSensorControlErrorV1::InvalidState);
+        }
+        let request: SensorOpenRequestWireV1 = decode_canonical_payload_v1(frame.payload())?;
+        require_control_sequence_v1(&request.control_sequence, frame.sequence())?;
+        if request.operation != "open_session"
+            || request.public_network_route_present
+            || request.root_runner_gid != "0"
+            || request.root_runner_uid != "0"
+            || request.schema_version != LINUX_VZ_PACKAGE_SENSOR_CONTROL_OPEN_SCHEMA_V1
+            || request.sync_back
+        {
+            return Err(LinuxVzPackageSensorControlErrorV1::InvalidPayload);
+        }
+        validate_service_session_binding_v1(&self.identity, &request.session)?;
+        self.session = Some(request.session.clone());
+        let ack_sequence = self.next_control_sequence;
+        let ack = SensorOpenAckWireV1 {
+            control_sequence: ack_sequence.to_string(),
+            operation: "open_session_ack".to_string(),
+            previous_session_present: false,
+            public_network_route_present: false,
+            schema_version: LINUX_VZ_PACKAGE_SENSOR_CONTROL_OPEN_ACK_SCHEMA_V1.to_string(),
+            sensor_assets_measured: true,
+            sensor_ready: true,
+            service_gid: "0".to_string(),
+            service_pid: unsafe { libc::getpid() }.to_string(),
+            service_uid: "0".to_string(),
+            session: request.session,
+            signing_material_protected: true,
+            sync_back: false,
+        };
+        self.send_json_v1(LinuxVzPackageSensorControlFrameKindV1::OpenSessionAck, &ack)?;
+        self.state = RootSensorServiceStateV1::SessionOpen;
+        Ok(())
+    }
+
+    fn arm_from_frame_v1(
+        &mut self,
+        frame: LinuxVzPackageSensorControlFrameV1,
+        descriptor: Option<OwnedFd>,
+    ) -> Result<(), LinuxVzPackageSensorControlErrorV1> {
+        if self.state != RootSensorServiceStateV1::SessionOpen {
+            return Err(LinuxVzPackageSensorControlErrorV1::InvalidState);
+        }
+        let descriptor = descriptor.ok_or(LinuxVzPackageSensorControlErrorV1::InvalidDescriptor)?;
+        let request: SensorArmRequestWireV1 = decode_canonical_payload_v1(frame.payload())?;
+        require_control_sequence_v1(&request.control_sequence, frame.sequence())?;
+        self.validate_common_action_request_v1(RootSensorServiceCommonRequestV1 {
+            session: &request.session,
+            schema_version: &request.schema_version,
+            expected_schema_version: LINUX_VZ_PACKAGE_SENSOR_CONTROL_ARM_SCHEMA_V1,
+            operation: &request.operation,
+            expected_operation: "arm",
+            public_network_route_present: request.public_network_route_present,
+            sync_back: request.sync_back,
+        })?;
+        if !request.cgroup_directory_fd_transferred {
+            return Err(LinuxVzPackageSensorControlErrorV1::InvalidPayload);
+        }
+        let action_index = usize::try_from(decimal_u64_v1(&request.action_index)?)
+            .map_err(|_| LinuxVzPackageSensorControlErrorV1::InvalidPayload)?;
+        if request.cgroup_name != format!("whoathere-package-action-{action_index}") {
+            return Err(LinuxVzPackageSensorControlErrorV1::InvalidPayload);
+        }
+        validate_action_digests_v1(
+            &request.launch_contract_sha256,
+            &request.process_plan_sha256,
+        )?;
+        let cgroup_id = validate_cgroup_directory_descriptor_v1(descriptor.as_raw_fd())?;
+        validate_cgroup_directory_name_v1(descriptor.as_raw_fd(), &request.cgroup_name)?;
+        require_exact_cgroup_processes_v1(descriptor.as_raw_fd(), &[])?;
+        let context = RootSensorServiceActionContextV1 {
+            launch_contract_sha256: request.launch_contract_sha256,
+            process_plan_sha256: request.process_plan_sha256,
+            action_index,
+            cgroup_name: request.cgroup_name,
+            cgroup_id,
+            leader_pid: None,
+        };
+        self.active = Some(RootSensorServiceActiveActionV1 {
+            context: context.clone(),
+            cgroup_directory: descriptor,
+        });
+        let active = self
+            .active
+            .as_ref()
+            .ok_or(LinuxVzPackageSensorControlErrorV1::InvalidState)?;
+        let status = self
+            .collector
+            .arm_v1(&context, active.cgroup_directory.as_raw_fd())?;
+        if status.bpf_drop_count != 0
+            || !status.file_sensor_armed
+            || !status.heartbeat_started
+            || !status.network_sensor_armed
+            || !status.process_sensor_armed
+        {
+            return Err(LinuxVzPackageSensorControlErrorV1::InvalidPayload);
+        }
+        let ack_sequence = self.next_control_sequence;
+        let ack = SensorArmAckWireV1 {
+            action_index: context.action_index.to_string(),
+            bpf_drop_count: status.bpf_drop_count.to_string(),
+            cgroup_directory_fd_received: true,
+            cgroup_id: context.cgroup_id.to_string(),
+            cgroup_name: context.cgroup_name,
+            cgroup_v2_verified: true,
+            control_sequence: ack_sequence.to_string(),
+            file_sensor_armed: status.file_sensor_armed,
+            heartbeat_started: status.heartbeat_started,
+            launch_contract_sha256: context.launch_contract_sha256,
+            network_sensor_armed: status.network_sensor_armed,
+            operation: "arm_ack".to_string(),
+            process_plan_sha256: context.process_plan_sha256,
+            process_sensor_armed: status.process_sensor_armed,
+            public_network_route_present: false,
+            schema_version: LINUX_VZ_PACKAGE_SENSOR_CONTROL_ARM_ACK_SCHEMA_V1.to_string(),
+            session: self.session_v1()?.clone(),
+            sync_back: false,
+        };
+        self.send_json_v1(LinuxVzPackageSensorControlFrameKindV1::ArmAck, &ack)?;
+        self.state = RootSensorServiceStateV1::Armed;
+        Ok(())
+    }
+
+    fn leader_from_frame_v1(
+        &mut self,
+        frame: LinuxVzPackageSensorControlFrameV1,
+        descriptor: Option<OwnedFd>,
+    ) -> Result<(), LinuxVzPackageSensorControlErrorV1> {
+        if self.state != RootSensorServiceStateV1::Armed || descriptor.is_some() {
+            return Err(LinuxVzPackageSensorControlErrorV1::InvalidState);
+        }
+        let request: SensorLeaderRequestWireV1 = decode_canonical_payload_v1(frame.payload())?;
+        require_control_sequence_v1(&request.control_sequence, frame.sequence())?;
+        self.validate_common_action_request_v1(RootSensorServiceCommonRequestV1 {
+            session: &request.session,
+            schema_version: &request.schema_version,
+            expected_schema_version: LINUX_VZ_PACKAGE_SENSOR_CONTROL_LEADER_SCHEMA_V1,
+            operation: &request.operation,
+            expected_operation: "leader_attached",
+            public_network_route_present: request.public_network_route_present,
+            sync_back: request.sync_back,
+        })?;
+        let leader_pid = u32::try_from(decimal_u64_v1(&request.leader_pid)?)
+            .map_err(|_| LinuxVzPackageSensorControlErrorV1::InvalidPayload)?;
+        if leader_pid <= 1 {
+            return Err(LinuxVzPackageSensorControlErrorV1::InvalidPayload);
+        }
+        let active = self
+            .active
+            .as_ref()
+            .ok_or(LinuxVzPackageSensorControlErrorV1::InvalidState)?;
+        require_action_binding_v1(
+            &active.context,
+            &request.action_index,
+            &request.cgroup_id,
+            &request.cgroup_name,
+            &request.launch_contract_sha256,
+            &request.process_plan_sha256,
+        )?;
+        require_exact_cgroup_processes_v1(active.cgroup_directory.as_raw_fd(), &[leader_pid])?;
+        require_proc_cgroup_membership_v1(leader_pid, &active.context.cgroup_name)?;
+        let mut context = active.context.clone();
+        context.leader_pid = Some(leader_pid);
+        if let Some(active) = self.active.as_mut() {
+            active.context.leader_pid = Some(leader_pid);
+        }
+        let active = self
+            .active
+            .as_ref()
+            .ok_or(LinuxVzPackageSensorControlErrorV1::InvalidState)?;
+        let status = self
+            .collector
+            .leader_attached_v1(&context, active.cgroup_directory.as_raw_fd())?;
+        if status.bpf_drop_count != 0
+            || status.heartbeat_count < 1
+            || !status.file_sensor_active
+            || !status.network_sensor_active
+            || !status.process_sensor_active
+        {
+            return Err(LinuxVzPackageSensorControlErrorV1::InvalidPayload);
+        }
+        let ack_sequence = self.next_control_sequence;
+        let ack = SensorLeaderAckWireV1 {
+            action_index: context.action_index.to_string(),
+            bpf_drop_count: status.bpf_drop_count.to_string(),
+            cgroup_id: context.cgroup_id.to_string(),
+            cgroup_name: context.cgroup_name,
+            control_sequence: ack_sequence.to_string(),
+            file_sensor_active: status.file_sensor_active,
+            heartbeat_count: status.heartbeat_count.to_string(),
+            launch_contract_sha256: context.launch_contract_sha256,
+            leader_blocked_before_release: true,
+            leader_pid: leader_pid.to_string(),
+            network_sensor_active: status.network_sensor_active,
+            operation: "leader_attached_ack".to_string(),
+            process_plan_sha256: context.process_plan_sha256,
+            process_sensor_active: status.process_sensor_active,
+            proc_cgroup_membership_verified: true,
+            public_network_route_present: false,
+            schema_version: LINUX_VZ_PACKAGE_SENSOR_CONTROL_LEADER_ACK_SCHEMA_V1.to_string(),
+            session: self.session_v1()?.clone(),
+            sync_back: false,
+        };
+        self.send_json_v1(
+            LinuxVzPackageSensorControlFrameKindV1::LeaderAttachedAck,
+            &ack,
+        )?;
+        self.state = RootSensorServiceStateV1::LeaderCorrelated;
+        Ok(())
+    }
+
+    fn finish_from_frame_v1(
+        &mut self,
+        frame: LinuxVzPackageSensorControlFrameV1,
+        descriptor: Option<OwnedFd>,
+    ) -> Result<(), LinuxVzPackageSensorControlErrorV1> {
+        if self.state != RootSensorServiceStateV1::LeaderCorrelated || descriptor.is_some() {
+            return Err(LinuxVzPackageSensorControlErrorV1::InvalidState);
+        }
+        let request: SensorFinishRequestWireV1 = decode_canonical_payload_v1(frame.payload())?;
+        require_control_sequence_v1(&request.control_sequence, frame.sequence())?;
+        self.validate_common_action_request_v1(RootSensorServiceCommonRequestV1 {
+            session: &request.session,
+            schema_version: &request.schema_version,
+            expected_schema_version: LINUX_VZ_PACKAGE_SENSOR_CONTROL_FINISH_SCHEMA_V1,
+            operation: &request.operation,
+            expected_operation: "finish",
+            public_network_route_present: request.public_network_route_present,
+            sync_back: request.sync_back,
+        })?;
+        let leader_pid = u32::try_from(decimal_u64_v1(&request.leader_pid)?)
+            .map_err(|_| LinuxVzPackageSensorControlErrorV1::InvalidPayload)?;
+        let started = decimal_u64_v1(&request.process_started_monotonic_nanoseconds)?;
+        let ended = decimal_u64_v1(&request.process_ended_monotonic_nanoseconds)?;
+        if leader_pid <= 1 || started == 0 || ended <= started {
+            return Err(LinuxVzPackageSensorControlErrorV1::InvalidPayload);
+        }
+        let active = self
+            .active
+            .as_ref()
+            .ok_or(LinuxVzPackageSensorControlErrorV1::InvalidState)?;
+        require_action_binding_v1(
+            &active.context,
+            &request.action_index,
+            &request.cgroup_id,
+            &request.cgroup_name,
+            &request.launch_contract_sha256,
+            &request.process_plan_sha256,
+        )?;
+        if active.context.leader_pid != Some(leader_pid) {
+            return Err(LinuxVzPackageSensorControlErrorV1::InvalidPayload);
+        }
+        require_exact_cgroup_processes_v1(active.cgroup_directory.as_raw_fd(), &[])?;
+        let context = active.context.clone();
+        let status = self.collector.finish_v1(
+            &context,
+            active.cgroup_directory.as_raw_fd(),
+            started,
+            ended,
+        )?;
+        require_exact_cgroup_processes_v1(active.cgroup_directory.as_raw_fd(), &[])?;
+        validate_service_finish_status_v1(&status)?;
+        let RootSensorServiceFinishStatusV1 {
+            output,
+            descendant_teardown_complete,
+            dropped_event_count,
+            file_sensor_healthy,
+            heartbeat_count,
+            network_sensor_healthy,
+            process_sensor_healthy,
+            sensor_teardown_complete,
+        } = status;
+        let correlation_sha256 = Sha256Digest::from_bytes(&output.correlation);
+        let process_evidence_sha256 = Sha256Digest::from_bytes(&output.process_evidence);
+        let file_evidence_sha256 = Sha256Digest::from_bytes(&output.file_evidence);
+        let network_evidence_sha256 = Sha256Digest::from_bytes(&output.network_evidence);
+        let correlation_byte_length = output.correlation.len();
+        let process_evidence_byte_length = output.process_evidence.len();
+        let file_evidence_byte_length = output.file_evidence.len();
+        let network_evidence_byte_length = output.network_evidence.len();
+        self.active.take();
+        self.send_payload_v1(
+            LinuxVzPackageSensorControlFrameKindV1::CorrelationEvidence,
+            &output.correlation,
+            MAX_LINUX_VZ_PACKAGE_PROCESS_SENSOR_CORRELATION_BYTES_V1,
+        )?;
+        self.send_payload_v1(
+            LinuxVzPackageSensorControlFrameKindV1::ProcessEvidence,
+            &output.process_evidence,
+            MAX_LINUX_VZ_PACKAGE_PROTECTED_SENSOR_PAYLOAD_BYTES_V1,
+        )?;
+        self.send_payload_v1(
+            LinuxVzPackageSensorControlFrameKindV1::FileEvidence,
+            &output.file_evidence,
+            MAX_LINUX_VZ_PACKAGE_PROTECTED_SENSOR_PAYLOAD_BYTES_V1,
+        )?;
+        self.send_payload_v1(
+            LinuxVzPackageSensorControlFrameKindV1::NetworkEvidence,
+            &output.network_evidence,
+            MAX_LINUX_VZ_PACKAGE_PROTECTED_SENSOR_PAYLOAD_BYTES_V1,
+        )?;
+        let ack_sequence = self.next_control_sequence;
+        let ack = SensorFinishAckWireV1 {
+            action_index: context.action_index.to_string(),
+            cgroup_empty_after_reap: true,
+            cgroup_fd_released: true,
+            cgroup_id: context.cgroup_id.to_string(),
+            cgroup_name: context.cgroup_name,
+            cgroup_present_during_sensor_finalize: true,
+            control_sequence: ack_sequence.to_string(),
+            correlation_byte_length: correlation_byte_length.to_string(),
+            correlation_sha256,
+            descendant_teardown_complete,
+            dropped_event_count: dropped_event_count.to_string(),
+            file_evidence_byte_length: file_evidence_byte_length.to_string(),
+            file_evidence_sha256,
+            file_sensor_healthy,
+            heartbeat_count: heartbeat_count.to_string(),
+            launch_contract_sha256: context.launch_contract_sha256,
+            leader_pid: leader_pid.to_string(),
+            network_evidence_byte_length: network_evidence_byte_length.to_string(),
+            network_evidence_sha256,
+            network_sensor_healthy,
+            operation: "finish_ack".to_string(),
+            process_evidence_byte_length: process_evidence_byte_length.to_string(),
+            process_evidence_sha256,
+            process_plan_sha256: context.process_plan_sha256,
+            process_sensor_healthy,
+            public_network_route_present: false,
+            schema_version: LINUX_VZ_PACKAGE_SENSOR_CONTROL_FINISH_ACK_SCHEMA_V1.to_string(),
+            sensor_teardown_complete,
+            session: self.session_v1()?.clone(),
+            sync_back: false,
+        };
+        self.send_json_v1(LinuxVzPackageSensorControlFrameKindV1::FinishAck, &ack)?;
+        self.state = RootSensorServiceStateV1::Finished;
+        Ok(())
+    }
+
+    fn abort_from_frame_v1(
+        &mut self,
+        frame: LinuxVzPackageSensorControlFrameV1,
+        descriptor: Option<OwnedFd>,
+    ) -> Result<(), LinuxVzPackageSensorControlErrorV1> {
+        if descriptor.is_some()
+            || !matches!(
+                self.state,
+                RootSensorServiceStateV1::SessionOpen
+                    | RootSensorServiceStateV1::Armed
+                    | RootSensorServiceStateV1::LeaderCorrelated
+            )
+        {
+            return Err(LinuxVzPackageSensorControlErrorV1::InvalidState);
+        }
+        let request: SensorAbortRequestWireV1 = decode_canonical_payload_v1(frame.payload())?;
+        require_control_sequence_v1(&request.control_sequence, frame.sequence())?;
+        self.validate_common_action_request_v1(RootSensorServiceCommonRequestV1 {
+            session: &request.session,
+            schema_version: &request.schema_version,
+            expected_schema_version: LINUX_VZ_PACKAGE_SENSOR_CONTROL_ABORT_SCHEMA_V1,
+            operation: &request.operation,
+            expected_operation: "abort",
+            public_network_route_present: request.public_network_route_present,
+            sync_back: request.sync_back,
+        })?;
+        let expected_prior_state = self
+            .state
+            .as_observer_state_v1()
+            .ok_or(LinuxVzPackageSensorControlErrorV1::InvalidState)?;
+        if request.prior_state != expected_prior_state {
+            return Err(LinuxVzPackageSensorControlErrorV1::InvalidPayload);
+        }
+        validate_abort_action_binding_v1(self.active.as_ref(), &request)?;
+        self.collector.abort_v1(
+            self.active.as_ref().map(|active| &active.context),
+            self.active
+                .as_ref()
+                .map(|active| active.cgroup_directory.as_raw_fd()),
+        )?;
+        self.active.take();
+        let ack_sequence = self.next_control_sequence;
+        let ack = SensorAbortAckWireV1 {
+            abort_evidence_emitted: false,
+            cgroup_fd_released: true,
+            control_sequence: ack_sequence.to_string(),
+            operation: "abort_ack".to_string(),
+            public_network_route_present: false,
+            schema_version: LINUX_VZ_PACKAGE_SENSOR_CONTROL_ABORT_ACK_SCHEMA_V1.to_string(),
+            sensor_teardown_complete: true,
+            session: self.session_v1()?.clone(),
+            session_aborted: true,
+            sync_back: false,
+        };
+        self.send_json_v1(LinuxVzPackageSensorControlFrameKindV1::AbortAck, &ack)?;
+        self.state = RootSensorServiceStateV1::Aborted;
+        Ok(())
+    }
+
+    fn validate_common_action_request_v1(
+        &self,
+        request: RootSensorServiceCommonRequestV1<'_>,
+    ) -> Result<(), LinuxVzPackageSensorControlErrorV1> {
+        if request.session != self.session_v1()?
+            || request.schema_version != request.expected_schema_version
+            || request.operation != request.expected_operation
+            || request.public_network_route_present
+            || request.sync_back
+        {
+            return Err(LinuxVzPackageSensorControlErrorV1::InvalidPayload);
+        }
+        Ok(())
+    }
+
+    fn session_v1(
+        &self,
+    ) -> Result<&SensorSessionBindingWireV1, LinuxVzPackageSensorControlErrorV1> {
+        self.session
+            .as_ref()
+            .ok_or(LinuxVzPackageSensorControlErrorV1::InvalidState)
+    }
+
+    fn receive_request_v1(
+        &mut self,
+    ) -> Result<
+        (LinuxVzPackageSensorControlFrameV1, Option<OwnedFd>),
+        LinuxVzPackageSensorControlErrorV1,
+    > {
+        let (frame, descriptor) = receive_control_frame_with_descriptor_v1(
+            &mut self.stream,
+            MAX_LINUX_VZ_PACKAGE_SENSOR_CONTROL_MESSAGE_BYTES_V1,
+        )?;
+        if frame.sequence() != self.next_control_sequence {
+            return Err(LinuxVzPackageSensorControlErrorV1::InvalidSequence);
+        }
+        self.next_control_sequence = self
+            .next_control_sequence
+            .checked_add(1)
+            .ok_or(LinuxVzPackageSensorControlErrorV1::LimitExceeded)?;
+        Ok((frame, descriptor))
+    }
+
+    fn send_json_v1<T: Serialize>(
+        &mut self,
+        kind: LinuxVzPackageSensorControlFrameKindV1,
+        value: &T,
+    ) -> Result<(), LinuxVzPackageSensorControlErrorV1> {
+        let payload = canonical_bytes_v1(value)?;
+        self.send_payload_v1(
+            kind,
+            &payload,
+            MAX_LINUX_VZ_PACKAGE_SENSOR_CONTROL_MESSAGE_BYTES_V1,
+        )
+    }
+
+    fn send_payload_v1(
+        &mut self,
+        kind: LinuxVzPackageSensorControlFrameKindV1,
+        payload: &[u8],
+        maximum_payload_bytes: usize,
+    ) -> Result<(), LinuxVzPackageSensorControlErrorV1> {
+        let frame = encode_linux_vz_package_sensor_control_frame_v1(
+            kind,
+            self.next_control_sequence,
+            payload,
+            maximum_payload_bytes,
+        )?;
+        self.stream
+            .write_all(&frame)
+            .map_err(|_| LinuxVzPackageSensorControlErrorV1::Io)?;
+        self.next_control_sequence = self
+            .next_control_sequence
+            .checked_add(1)
+            .ok_or(LinuxVzPackageSensorControlErrorV1::LimitExceeded)?;
+        Ok(())
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -1262,6 +2013,400 @@ impl LinuxVzPackageProtectedProcessObserverV1 for LinuxVzPackageRootSensorObserv
 }
 
 #[cfg(target_os = "linux")]
+fn require_control_sequence_v1(
+    encoded: &str,
+    expected: u64,
+) -> Result<(), LinuxVzPackageSensorControlErrorV1> {
+    if decimal_u64_v1(encoded)? != expected {
+        return Err(LinuxVzPackageSensorControlErrorV1::InvalidSequence);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn validate_service_session_binding_v1(
+    identity: &LinuxVzPackageRootSensorIdentityV1,
+    session: &SensorSessionBindingWireV1,
+) -> Result<(), LinuxVzPackageSensorControlErrorV1> {
+    let challenge = &session.sensor_session_challenge_sha256;
+    let empty = Sha256Digest::from_bytes(&[]);
+    if *challenge == empty
+        || challenge == identity.qualified_telemetry_backend_sha256()
+        || challenge == identity.guest_evidence_signer_sha256()
+        || challenge == identity.protected_sensor_bundle_sha256()
+        || challenge == identity.sensor_configuration_sha256()
+        || *session != session_binding_v1(identity, challenge)
+    {
+        return Err(LinuxVzPackageSensorControlErrorV1::InvalidIdentity);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn validate_action_digests_v1(
+    launch_contract_sha256: &Sha256Digest,
+    process_plan_sha256: &Sha256Digest,
+) -> Result<(), LinuxVzPackageSensorControlErrorV1> {
+    let empty = Sha256Digest::from_bytes(&[]);
+    if *launch_contract_sha256 == empty
+        || *process_plan_sha256 == empty
+        || launch_contract_sha256 == process_plan_sha256
+    {
+        return Err(LinuxVzPackageSensorControlErrorV1::InvalidPayload);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn require_action_binding_v1(
+    context: &RootSensorServiceActionContextV1,
+    action_index: &str,
+    cgroup_id: &str,
+    cgroup_name: &str,
+    launch_contract_sha256: &Sha256Digest,
+    process_plan_sha256: &Sha256Digest,
+) -> Result<(), LinuxVzPackageSensorControlErrorV1> {
+    if action_index != context.action_index.to_string()
+        || cgroup_id != context.cgroup_id.to_string()
+        || cgroup_name != context.cgroup_name
+        || launch_contract_sha256 != &context.launch_contract_sha256
+        || process_plan_sha256 != &context.process_plan_sha256
+    {
+        return Err(LinuxVzPackageSensorControlErrorV1::InvalidPayload);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn validate_abort_action_binding_v1(
+    active: Option<&RootSensorServiceActiveActionV1>,
+    request: &SensorAbortRequestWireV1,
+) -> Result<(), LinuxVzPackageSensorControlErrorV1> {
+    let context = active.map(|active| &active.context);
+    let expected_action_index = context.map(|context| context.action_index.to_string());
+    let expected_cgroup_id = context.map(|context| context.cgroup_id.to_string());
+    let expected_cgroup_name = context.map(|context| context.cgroup_name.clone());
+    let expected_launch_contract = context.map(|context| context.launch_contract_sha256.clone());
+    let expected_leader_pid = context
+        .and_then(|context| context.leader_pid)
+        .map(|leader_pid| leader_pid.to_string());
+    let expected_process_plan = context.map(|context| context.process_plan_sha256.clone());
+    if request.action_index != expected_action_index
+        || request.cgroup_id != expected_cgroup_id
+        || request.cgroup_name != expected_cgroup_name
+        || request.launch_contract_sha256 != expected_launch_contract
+        || request.leader_pid != expected_leader_pid
+        || request.process_plan_sha256 != expected_process_plan
+    {
+        return Err(LinuxVzPackageSensorControlErrorV1::InvalidPayload);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn validate_service_finish_status_v1(
+    status: &RootSensorServiceFinishStatusV1,
+) -> Result<(), LinuxVzPackageSensorControlErrorV1> {
+    if !status.descendant_teardown_complete
+        || status.dropped_event_count != 0
+        || !status.file_sensor_healthy
+        || status.heartbeat_count < 2
+        || !status.network_sensor_healthy
+        || !status.process_sensor_healthy
+        || !status.sensor_teardown_complete
+    {
+        return Err(LinuxVzPackageSensorControlErrorV1::InvalidPayload);
+    }
+    require_service_evidence_payload_v1(
+        &status.output.correlation,
+        MAX_LINUX_VZ_PACKAGE_PROCESS_SENSOR_CORRELATION_BYTES_V1,
+    )?;
+    for payload in [
+        &status.output.process_evidence,
+        &status.output.file_evidence,
+        &status.output.network_evidence,
+    ] {
+        require_service_evidence_payload_v1(
+            payload,
+            MAX_LINUX_VZ_PACKAGE_PROTECTED_SENSOR_PAYLOAD_BYTES_V1,
+        )?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn require_service_evidence_payload_v1(
+    payload: &[u8],
+    maximum_payload_bytes: usize,
+) -> Result<(), LinuxVzPackageSensorControlErrorV1> {
+    if payload.is_empty()
+        || payload.len() > maximum_payload_bytes
+        || payload.len() > MAX_LINUX_VZ_PACKAGE_SENSOR_CONTROL_EVIDENCE_BYTES_V1
+    {
+        return Err(LinuxVzPackageSensorControlErrorV1::LimitExceeded);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn validate_cgroup_directory_name_v1(
+    descriptor: RawFd,
+    expected_name: &str,
+) -> Result<(), LinuxVzPackageSensorControlErrorV1> {
+    if expected_name.is_empty()
+        || std::fs::read_link(format!("/proc/self/fd/{descriptor}"))
+            .ok()
+            .and_then(|path| path.file_name().map(|name| name.to_owned()))
+            .and_then(|name| name.into_string().ok())
+            .as_deref()
+            != Some(expected_name)
+    {
+        return Err(LinuxVzPackageSensorControlErrorV1::InvalidDescriptor);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn read_cgroup_processes_v1(
+    descriptor: RawFd,
+) -> Result<Vec<u32>, LinuxVzPackageSensorControlErrorV1> {
+    let process_file = unsafe {
+        libc::openat(
+            descriptor,
+            c"cgroup.procs".as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
+    if process_file < 0 {
+        return Err(LinuxVzPackageSensorControlErrorV1::InvalidDescriptor);
+    }
+    let mut file = unsafe { File::from_raw_fd(process_file) };
+    let mut bytes = Vec::new();
+    Read::by_ref(&mut file)
+        .take(64 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| LinuxVzPackageSensorControlErrorV1::Io)?;
+    if bytes.len() > 64 * 1024 {
+        return Err(LinuxVzPackageSensorControlErrorV1::LimitExceeded);
+    }
+    let value = std::str::from_utf8(&bytes)
+        .map_err(|_| LinuxVzPackageSensorControlErrorV1::InvalidPayload)?;
+    let mut processes = Vec::new();
+    for line in value.lines() {
+        let process = u32::try_from(decimal_u64_v1(line)?)
+            .map_err(|_| LinuxVzPackageSensorControlErrorV1::InvalidPayload)?;
+        if process <= 1 || processes.contains(&process) {
+            return Err(LinuxVzPackageSensorControlErrorV1::InvalidPayload);
+        }
+        processes.push(process);
+    }
+    processes.sort_unstable();
+    Ok(processes)
+}
+
+#[cfg(target_os = "linux")]
+fn require_exact_cgroup_processes_v1(
+    descriptor: RawFd,
+    expected: &[u32],
+) -> Result<(), LinuxVzPackageSensorControlErrorV1> {
+    let mut expected = expected.to_vec();
+    expected.sort_unstable();
+    if read_cgroup_processes_v1(descriptor)? != expected {
+        return Err(LinuxVzPackageSensorControlErrorV1::InvalidState);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn require_proc_cgroup_membership_v1(
+    leader_pid: u32,
+    expected_cgroup_name: &str,
+) -> Result<(), LinuxVzPackageSensorControlErrorV1> {
+    let cgroup = read_virtual_file_bounded_v1(&format!("/proc/{leader_pid}/cgroup"), 64 * 1024)?;
+    let cgroup = std::str::from_utf8(&cgroup)
+        .map_err(|_| LinuxVzPackageSensorControlErrorV1::InvalidPayload)?;
+    let unified_memberships = cgroup
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.splitn(3, ':');
+            match (fields.next(), fields.next(), fields.next()) {
+                (Some("0"), Some(""), Some(path)) => Some(path),
+                _ => None,
+            }
+        })
+        .collect::<Vec<_>>();
+    if unified_memberships.len() != 1
+        || unified_memberships[0]
+            .rsplit('/')
+            .next()
+            .filter(|name| !name.is_empty())
+            != Some(expected_cgroup_name)
+    {
+        return Err(LinuxVzPackageSensorControlErrorV1::InvalidState);
+    }
+
+    let status = read_virtual_file_bounded_v1(&format!("/proc/{leader_pid}/status"), 64 * 1024)?;
+    let status = std::str::from_utf8(&status)
+        .map_err(|_| LinuxVzPackageSensorControlErrorV1::InvalidPayload)?;
+    let root_uids = status
+        .lines()
+        .find(|line| line.starts_with("Uid:"))
+        .map(|line| line.split_ascii_whitespace().skip(1).collect::<Vec<_>>())
+        == Some(vec!["0", "0", "0", "0"]);
+    let root_gids = status
+        .lines()
+        .find(|line| line.starts_with("Gid:"))
+        .map(|line| line.split_ascii_whitespace().skip(1).collect::<Vec<_>>())
+        == Some(vec!["0", "0", "0", "0"]);
+    if !root_uids || !root_gids {
+        return Err(LinuxVzPackageSensorControlErrorV1::InvalidState);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn read_virtual_file_bounded_v1(
+    path: &str,
+    maximum_bytes: usize,
+) -> Result<Vec<u8>, LinuxVzPackageSensorControlErrorV1> {
+    if maximum_bytes == 0 {
+        return Err(LinuxVzPackageSensorControlErrorV1::LimitExceeded);
+    }
+    let mut file = File::open(path).map_err(|_| LinuxVzPackageSensorControlErrorV1::Io)?;
+    let mut bytes = Vec::new();
+    Read::by_ref(&mut file)
+        .take(maximum_bytes as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| LinuxVzPackageSensorControlErrorV1::Io)?;
+    if bytes.len() > maximum_bytes {
+        return Err(LinuxVzPackageSensorControlErrorV1::LimitExceeded);
+    }
+    Ok(bytes)
+}
+
+#[cfg(target_os = "linux")]
+fn receive_control_frame_with_descriptor_v1(
+    stream: &mut UnixStream,
+    maximum_payload_bytes: usize,
+) -> Result<(LinuxVzPackageSensorControlFrameV1, Option<OwnedFd>), LinuxVzPackageSensorControlErrorV1>
+{
+    let mut header = [0_u8; LINUX_VZ_PACKAGE_SENSOR_CONTROL_HEADER_BYTES_V1];
+    let mut io_vector = libc::iovec {
+        iov_base: header.as_mut_ptr().cast(),
+        iov_len: header.len(),
+    };
+    let mut control = [0 as libc::c_long; 8];
+    let (received, message) = loop {
+        control.fill(0);
+        let mut message = unsafe { zeroed::<libc::msghdr>() };
+        message.msg_iov = &mut io_vector;
+        message.msg_iovlen = 1;
+        message.msg_control = control.as_mut_ptr().cast();
+        message.msg_controllen = size_of::<[libc::c_long; 8]>()
+            .try_into()
+            .map_err(|_| LinuxVzPackageSensorControlErrorV1::LimitExceeded)?;
+        let received =
+            unsafe { libc::recvmsg(stream.as_raw_fd(), &mut message, libc::MSG_CMSG_CLOEXEC) };
+        if received >= 0 {
+            break (received as usize, message);
+        }
+        if std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+            return Err(LinuxVzPackageSensorControlErrorV1::Io);
+        }
+    };
+    if received == 0 || received > header.len() {
+        return Err(LinuxVzPackageSensorControlErrorV1::Io);
+    }
+    let (received_descriptors, unknown_control_message) =
+        collect_received_descriptors_v1(&message)?;
+    let invalid_control = message.msg_flags & (libc::MSG_CTRUNC | libc::MSG_TRUNC) != 0
+        || unknown_control_message
+        || received_descriptors.len() > 1;
+    if invalid_control {
+        close_raw_descriptors_v1(&received_descriptors);
+        return Err(LinuxVzPackageSensorControlErrorV1::InvalidDescriptor);
+    }
+    let descriptor = if let Some(descriptor) = received_descriptors.first().copied() {
+        let flags = unsafe { libc::fcntl(descriptor, libc::F_GETFD) };
+        if flags < 0 || flags & libc::FD_CLOEXEC == 0 {
+            close_raw_descriptors_v1(&received_descriptors);
+            return Err(LinuxVzPackageSensorControlErrorV1::InvalidDescriptor);
+        }
+        Some(unsafe { OwnedFd::from_raw_fd(descriptor) })
+    } else {
+        None
+    };
+    stream
+        .read_exact(&mut header[received..])
+        .map_err(|_| LinuxVzPackageSensorControlErrorV1::Io)?;
+    let payload_length = validate_control_header_v1(&header, maximum_payload_bytes)?;
+    let total_length = LINUX_VZ_PACKAGE_SENSOR_CONTROL_HEADER_BYTES_V1
+        .checked_add(payload_length)
+        .ok_or(LinuxVzPackageSensorControlErrorV1::LimitExceeded)?;
+    let mut frame = Vec::with_capacity(total_length);
+    frame.extend_from_slice(&header);
+    frame.resize(total_length, 0);
+    stream
+        .read_exact(&mut frame[LINUX_VZ_PACKAGE_SENSOR_CONTROL_HEADER_BYTES_V1..])
+        .map_err(|_| LinuxVzPackageSensorControlErrorV1::Io)?;
+    let frame = decode_linux_vz_package_sensor_control_frame_v1(&frame, maximum_payload_bytes)?;
+    Ok((frame, descriptor))
+}
+
+#[cfg(target_os = "linux")]
+fn collect_received_descriptors_v1(
+    message: &libc::msghdr,
+) -> Result<(Vec<RawFd>, bool), LinuxVzPackageSensorControlErrorV1> {
+    let mut descriptors = Vec::new();
+    let mut unknown_control_message = false;
+    let mut header = unsafe { libc::CMSG_FIRSTHDR(message) };
+    while !header.is_null() {
+        let control_header = unsafe { &*header };
+        let minimum_length = unsafe { libc::CMSG_LEN(0) } as usize;
+        let control_length = usize::try_from(control_header.cmsg_len)
+            .map_err(|_| LinuxVzPackageSensorControlErrorV1::LimitExceeded)?;
+        if control_length < minimum_length {
+            close_raw_descriptors_v1(&descriptors);
+            return Err(LinuxVzPackageSensorControlErrorV1::InvalidDescriptor);
+        }
+        if control_header.cmsg_level == libc::SOL_SOCKET
+            && control_header.cmsg_type == libc::SCM_RIGHTS
+        {
+            let payload_length = control_length - minimum_length;
+            if payload_length == 0 || !payload_length.is_multiple_of(size_of::<RawFd>()) {
+                close_raw_descriptors_v1(&descriptors);
+                return Err(LinuxVzPackageSensorControlErrorV1::InvalidDescriptor);
+            }
+            let count = payload_length / size_of::<RawFd>();
+            for index in 0..count {
+                let descriptor = unsafe {
+                    std::ptr::read_unaligned(libc::CMSG_DATA(header).cast::<RawFd>().add(index))
+                };
+                if descriptor < 0 || descriptors.contains(&descriptor) {
+                    close_raw_descriptors_v1(&descriptors);
+                    if descriptor >= 0 && !descriptors.contains(&descriptor) {
+                        let _ = unsafe { libc::close(descriptor) };
+                    }
+                    return Err(LinuxVzPackageSensorControlErrorV1::InvalidDescriptor);
+                }
+                descriptors.push(descriptor);
+            }
+        } else {
+            unknown_control_message = true;
+        }
+        header = unsafe { libc::CMSG_NXTHDR(message, header) };
+    }
+    Ok((descriptors, unknown_control_message))
+}
+
+#[cfg(target_os = "linux")]
+fn close_raw_descriptors_v1(descriptors: &[RawFd]) {
+    for descriptor in descriptors {
+        let _ = unsafe { libc::close(*descriptor) };
+    }
+}
+
+#[cfg(target_os = "linux")]
 fn validate_root_sensor_stream_v1(
     stream: &UnixStream,
 ) -> Result<u32, LinuxVzPackageSensorControlErrorV1> {
@@ -1667,5 +2812,32 @@ mod tests {
             invalid_reuse.validate_v1(),
             Err(LinuxVzPackageSensorControlErrorV1::InvalidIdentity)
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn descriptor_receiver_preserves_frame_and_sets_close_on_exec() {
+        let (mut sender, mut receiver) = UnixStream::pair().expect("socket pair");
+        let source = File::open("/dev/null").expect("source descriptor");
+        let payload = br#"{"alpha":"one","beta":"two"}"#;
+        let encoded = encode_linux_vz_package_sensor_control_frame_v1(
+            LinuxVzPackageSensorControlFrameKindV1::Arm,
+            3,
+            payload,
+            1024,
+        )
+        .expect("frame");
+        send_frame_with_descriptor_v1(&mut sender, &encoded, source.as_raw_fd())
+            .expect("send frame with descriptor");
+        let (decoded, received) =
+            receive_control_frame_with_descriptor_v1(&mut receiver, 1024).expect("receive");
+        let received = received.expect("received descriptor");
+        assert_eq!(decoded.kind(), LinuxVzPackageSensorControlFrameKindV1::Arm);
+        assert_eq!(decoded.sequence(), 3);
+        assert_eq!(decoded.payload(), payload);
+        assert_ne!(received.as_raw_fd(), source.as_raw_fd());
+        let flags = unsafe { libc::fcntl(received.as_raw_fd(), libc::F_GETFD) };
+        assert!(flags >= 0);
+        assert_ne!(flags & libc::FD_CLOEXEC, 0);
     }
 }

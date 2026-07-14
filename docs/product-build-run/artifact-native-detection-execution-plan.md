@@ -283,6 +283,19 @@ observe behavior; the transcript remains unsigned and verdict-ineligible. No pac
 host, or malware ran and the 7/11 score is unchanged. See the
 [package sensor-control checkpoint](artifact-native-linux-vz-package-sensor-control-checkpoint-2026-07-13.md).
 
+The receiving side of that protocol now has a strict crate-internal single-session service driver.
+It receives `SCM_RIGHTS` with close-on-exec, retains and revalidates the exact cgroup-v2 descriptor,
+requires an empty cgroup before arm, proves the one blocked root leader through both `cgroup.procs`
+and `/proc/<pid>`, and allows only the closed open/arm/leader/finish-or-abort sequence. EOF, timeout,
+malformed input, collector errors, or partial responses automatically invoke idempotent collector
+abort and release the held cgroup descriptor. Finish requires the cgroup to remain empty across
+finalization, zero drops, healthy sensors, heartbeats, and complete teardown before emitting the
+four bounded evidence frames. The service driver remains internal because no arbitrary-package
+BPF/fanotify collector or signed evidence producer exists; it cannot yet connect the sequencer to
+legitimate evidence or improve detection. Native tests and Linux/aarch64 warnings-denied builds
+pass. No package, VM, cloud host, or malware ran and the 7/11 score is unchanged. See the
+[package sensor-service driver checkpoint](artifact-native-linux-vz-package-sensor-service-driver-checkpoint-2026-07-13.md).
+
 The first protected-sensor bootstrap now also observes a cgroup-filtered inert fork/exec/exit chain
 whose child runs as UID/GID 65534 and cannot read or write the root-only sensor. This remains
 unsigned bootstrap evidence rather than a conformance receipt. See the
@@ -1903,6 +1916,7 @@ Repository evidence:
 - [Linux VZ protected process-supervisor checkpoint](artifact-native-linux-vz-protected-process-supervisor-checkpoint-2026-07-13.md)
 - [Linux VZ workspace and derived-wheel checkpoint](artifact-native-linux-vz-workspace-derived-wheel-checkpoint-2026-07-13.md)
 - [Linux VZ protected sequencer checkpoint](artifact-native-linux-vz-protected-sequencer-checkpoint-2026-07-13.md)
+- [Linux VZ package sensor-service driver checkpoint](artifact-native-linux-vz-package-sensor-service-driver-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification guest-candidate checkpoint](artifact-native-linux-vz-runtime-qualification-guest-candidate-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification host-launcher checkpoint](artifact-native-linux-vz-runtime-qualification-host-launcher-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification physical checkpoint](artifact-native-linux-vz-runtime-qualification-physical-checkpoint-2026-07-13.md)
