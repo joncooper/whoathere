@@ -1344,6 +1344,27 @@ mod tests {
     }
 
     #[test]
+    fn host_ipv4_frame_parser_token_golden_matches_swift() {
+        let challenge = Sha256Digest::parse(
+            "sha256:0a6d2053eb627f5f1ed55c993237d3bd832dc1b72f4084c40c9a224e83d6c965",
+        )
+        .expect("challenge");
+        let token = network_target_token_v1(
+            &challenge,
+            LinuxVzPackageRootNetworkEventKindV1::Sendto,
+            LinuxVzPackageRootNetworkAddressFamilyV1::Ipv4,
+            40_553,
+            16,
+            &[192, 0, 2, 1],
+        )
+        .expect("token");
+        assert_eq!(
+            token.as_str(),
+            "sha256:3ef258ec5ef33c871db55bb52239931372585c08ad3fbafda224bc498ad0ed7b"
+        );
+    }
+
+    #[test]
     fn destination_classification_covers_every_serialized_class() {
         use LinuxVzPackageRootNetworkAddressFamilyV1::{Ipv4, Ipv6};
         use LinuxVzPackageRootNetworkDestinationClassV1::{
