@@ -50,8 +50,47 @@ pub(crate) enum LinuxVzPackageTracepointErrorV1 {
     DuplicateField,
     OverlappingField,
     MissingField,
-    IncompatibleField,
+    IncompatibleField(LinuxVzPackageTracepointFieldKindV1),
     Io,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LinuxVzPackageTracepointFieldKindV1 {
+    CommonType,
+    CommonFlags,
+    CommonPreemptCount,
+    CommonPid,
+    ParentPid,
+    ChildPid,
+    Filename,
+    Pid,
+    OldPid,
+    SyscallId,
+    SyscallArguments,
+    SyscallResult,
+    RecordOffset,
+}
+
+impl LinuxVzPackageTracepointFieldKindV1 {
+    const fn reason_code_v1(self) -> &'static str {
+        match self {
+            Self::CommonType => "linux_vz_package_tracepoint_common_type_incompatible",
+            Self::CommonFlags => "linux_vz_package_tracepoint_common_flags_incompatible",
+            Self::CommonPreemptCount => {
+                "linux_vz_package_tracepoint_common_preempt_count_incompatible"
+            }
+            Self::CommonPid => "linux_vz_package_tracepoint_common_pid_incompatible",
+            Self::ParentPid => "linux_vz_package_tracepoint_parent_pid_incompatible",
+            Self::ChildPid => "linux_vz_package_tracepoint_child_pid_incompatible",
+            Self::Filename => "linux_vz_package_tracepoint_filename_incompatible",
+            Self::Pid => "linux_vz_package_tracepoint_pid_incompatible",
+            Self::OldPid => "linux_vz_package_tracepoint_old_pid_incompatible",
+            Self::SyscallId => "linux_vz_package_tracepoint_syscall_id_incompatible",
+            Self::SyscallArguments => "linux_vz_package_tracepoint_syscall_arguments_incompatible",
+            Self::SyscallResult => "linux_vz_package_tracepoint_syscall_result_incompatible",
+            Self::RecordOffset => "linux_vz_package_tracepoint_record_offset_incompatible",
+        }
+    }
 }
 
 impl LinuxVzPackageTracepointErrorV1 {
@@ -66,7 +105,7 @@ impl LinuxVzPackageTracepointErrorV1 {
             Self::DuplicateField => "linux_vz_package_tracepoint_field_duplicate",
             Self::OverlappingField => "linux_vz_package_tracepoint_field_overlap",
             Self::MissingField => "linux_vz_package_tracepoint_field_missing",
-            Self::IncompatibleField => "linux_vz_package_tracepoint_field_incompatible",
+            Self::IncompatibleField(field) => field.reason_code_v1(),
             Self::Io => "linux_vz_package_tracepoint_format_io_failed",
         }
     }
@@ -276,24 +315,94 @@ pub(crate) fn decode_linux_vz_package_tracepoint_layout_v1(
     };
     match kind {
         LinuxVzPackageTracepointKindV1::SchedProcessFork => {
-            layout.parent_pid = Some(require_field_v1(&fields, "parent_pid", 4, true, false)?);
-            layout.child_pid = Some(require_field_v1(&fields, "child_pid", 4, true, false)?);
+            layout.parent_pid = Some(require_field_v1(
+                &fields,
+                "parent_pid",
+                4,
+                Some(true),
+                false,
+                LinuxVzPackageTracepointFieldKindV1::ParentPid,
+            )?);
+            layout.child_pid = Some(require_field_v1(
+                &fields,
+                "child_pid",
+                4,
+                Some(true),
+                false,
+                LinuxVzPackageTracepointFieldKindV1::ChildPid,
+            )?);
         }
         LinuxVzPackageTracepointKindV1::SchedProcessExec => {
-            layout.filename = Some(require_field_v1(&fields, "filename", 4, true, true)?);
-            layout.pid = Some(require_field_v1(&fields, "pid", 4, true, false)?);
-            layout.old_pid = Some(require_field_v1(&fields, "old_pid", 4, true, false)?);
+            layout.filename = Some(require_field_v1(
+                &fields,
+                "filename",
+                4,
+                None,
+                true,
+                LinuxVzPackageTracepointFieldKindV1::Filename,
+            )?);
+            layout.pid = Some(require_field_v1(
+                &fields,
+                "pid",
+                4,
+                Some(true),
+                false,
+                LinuxVzPackageTracepointFieldKindV1::Pid,
+            )?);
+            layout.old_pid = Some(require_field_v1(
+                &fields,
+                "old_pid",
+                4,
+                Some(true),
+                false,
+                LinuxVzPackageTracepointFieldKindV1::OldPid,
+            )?);
         }
         LinuxVzPackageTracepointKindV1::SchedProcessExit => {
-            layout.pid = Some(require_field_v1(&fields, "pid", 4, true, false)?);
+            layout.pid = Some(require_field_v1(
+                &fields,
+                "pid",
+                4,
+                Some(true),
+                false,
+                LinuxVzPackageTracepointFieldKindV1::Pid,
+            )?);
         }
         LinuxVzPackageTracepointKindV1::RawSyscallsSysEnter => {
-            layout.syscall_id = Some(require_field_v1(&fields, "id", 8, true, false)?);
-            layout.syscall_arguments = Some(require_field_v1(&fields, "args", 48, false, false)?);
+            layout.syscall_id = Some(require_field_v1(
+                &fields,
+                "id",
+                8,
+                Some(true),
+                false,
+                LinuxVzPackageTracepointFieldKindV1::SyscallId,
+            )?);
+            layout.syscall_arguments = Some(require_field_v1(
+                &fields,
+                "args",
+                48,
+                Some(false),
+                false,
+                LinuxVzPackageTracepointFieldKindV1::SyscallArguments,
+            )?);
         }
         LinuxVzPackageTracepointKindV1::RawSyscallsSysExit => {
-            layout.syscall_id = Some(require_field_v1(&fields, "id", 8, true, false)?);
-            layout.syscall_result = Some(require_field_v1(&fields, "ret", 8, true, false)?);
+            layout.syscall_id = Some(require_field_v1(
+                &fields,
+                "id",
+                8,
+                Some(true),
+                false,
+                LinuxVzPackageTracepointFieldKindV1::SyscallId,
+            )?);
+            layout.syscall_result = Some(require_field_v1(
+                &fields,
+                "ret",
+                8,
+                Some(true),
+                false,
+                LinuxVzPackageTracepointFieldKindV1::SyscallResult,
+            )?);
         }
     }
     for location in [
@@ -310,7 +419,9 @@ pub(crate) fn decode_linux_vz_package_tracepoint_layout_v1(
     .flatten()
     {
         if location.offset < 8 {
-            return Err(LinuxVzPackageTracepointErrorV1::IncompatibleField);
+            return Err(LinuxVzPackageTracepointErrorV1::IncompatibleField(
+                LinuxVzPackageTracepointFieldKindV1::RecordOffset,
+            ));
         }
     }
     Ok(layout)
@@ -405,11 +516,35 @@ fn validate_field_ranges_v1(
 fn require_common_fields_v1(
     fields: &[LinuxVzPackageTracepointFieldV1],
 ) -> Result<(), LinuxVzPackageTracepointErrorV1> {
-    for (name, offset, size, signed) in [
-        ("common_type", 0, 2, false),
-        ("common_flags", 2, 1, false),
-        ("common_preempt_count", 3, 1, false),
-        ("common_pid", 4, 4, true),
+    for (name, offset, size, signed, kind) in [
+        (
+            "common_type",
+            0,
+            2,
+            false,
+            LinuxVzPackageTracepointFieldKindV1::CommonType,
+        ),
+        (
+            "common_flags",
+            2,
+            1,
+            false,
+            LinuxVzPackageTracepointFieldKindV1::CommonFlags,
+        ),
+        (
+            "common_preempt_count",
+            3,
+            1,
+            false,
+            LinuxVzPackageTracepointFieldKindV1::CommonPreemptCount,
+        ),
+        (
+            "common_pid",
+            4,
+            4,
+            true,
+            LinuxVzPackageTracepointFieldKindV1::CommonPid,
+        ),
     ] {
         let field = fields
             .iter()
@@ -420,7 +555,7 @@ fn require_common_fields_v1(
             || field.signed != signed
             || field.data_location
         {
-            return Err(LinuxVzPackageTracepointErrorV1::IncompatibleField);
+            return Err(LinuxVzPackageTracepointErrorV1::IncompatibleField(kind));
         }
     }
     Ok(())
@@ -430,15 +565,19 @@ fn require_field_v1(
     fields: &[LinuxVzPackageTracepointFieldV1],
     name: &str,
     size: usize,
-    signed: bool,
+    signed: Option<bool>,
     data_location: bool,
+    kind: LinuxVzPackageTracepointFieldKindV1,
 ) -> Result<LinuxVzPackageTracepointFieldLocationV1, LinuxVzPackageTracepointErrorV1> {
     let field = fields
         .iter()
         .find(|field| field.name == name)
         .ok_or(LinuxVzPackageTracepointErrorV1::MissingField)?;
-    if field.size != size || field.signed != signed || field.data_location != data_location {
-        return Err(LinuxVzPackageTracepointErrorV1::IncompatibleField);
+    if field.size != size
+        || signed.is_some_and(|signed| field.signed != signed)
+        || field.data_location != data_location
+    {
+        return Err(LinuxVzPackageTracepointErrorV1::IncompatibleField(kind));
     }
     Ok(LinuxVzPackageTracepointFieldLocationV1 {
         offset: field.offset,
@@ -550,6 +689,29 @@ mod tests {
     }
 
     #[test]
+    fn exec_data_location_accepts_kernel_signedness_variants_and_preserves_exact_hash() {
+        for signed in ["0", "1"] {
+            let bytes = format_v1(
+                "sched_process_exec",
+                &format!(
+                    "\tfield:__data_loc char[] filename; offset:8; size:4; signed:{signed};\n\
+\tfield:pid_t pid; offset:12; size:4; signed:1;\n\
+\tfield:pid_t old_pid; offset:16; size:4; signed:1;"
+                ),
+            );
+            let layout = decode_linux_vz_package_tracepoint_layout_v1(
+                LinuxVzPackageTracepointKindV1::SchedProcessExec,
+                &bytes,
+            )
+            .expect("exec layout");
+            let filename = layout.filename_v1().expect("filename");
+            assert_eq!(filename.signed_v1(), signed == "1");
+            assert!(filename.data_location_v1());
+            assert_eq!(layout.format_sha256_v1(), &Sha256Digest::from_bytes(&bytes));
+        }
+    }
+
+    #[test]
     fn tracepoint_layout_rejects_wrong_name_missing_and_incompatible_fields() {
         let fields = "\tfield:long id; offset:8; size:8; signed:1;\n\
 \tfield:unsigned long args[6]; offset:16; size:48; signed:0;";
@@ -579,7 +741,9 @@ mod tests {
                 LinuxVzPackageTracepointKindV1::RawSyscallsSysEnter,
                 &incompatible,
             ),
-            Err(LinuxVzPackageTracepointErrorV1::IncompatibleField)
+            Err(LinuxVzPackageTracepointErrorV1::IncompatibleField(
+                LinuxVzPackageTracepointFieldKindV1::SyscallId,
+            ))
         );
     }
 

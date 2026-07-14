@@ -38,12 +38,17 @@ mod linux_vz_package_runtime_qualification_request;
 mod linux_vz_package_runtime_qualification_transport;
 mod linux_vz_package_sdist_materialization;
 mod linux_vz_package_sensor_bpf;
+mod linux_vz_package_sensor_bpf_inert_probe;
 mod linux_vz_package_sensor_control;
 mod linux_vz_package_sensor_event_stream;
 mod linux_vz_package_sensor_tracepoint;
 mod linux_vz_package_workspace;
 mod linux_vz_platform_evidence_payload;
 mod linux_vz_process_evidence_payload;
+
+pub use linux_vz_package_sensor_bpf_inert_probe::{
+    run_linux_vz_package_sensor_bpf_inert_probe_v1, LinuxVzPackageSensorBpfInertProbeErrorV1,
+};
 mod linux_vz_teardown_evidence_payload;
 mod linux_vz_telemetry_backend;
 mod linux_vz_telemetry_conformance;

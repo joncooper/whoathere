@@ -1,0 +1,57 @@
+#!/usr/bin/sh
+set -eu
+
+PATH=/usr/bin:/usr/sbin:/bin:/sbin
+export PATH
+busybox=/usr/bin/busybox
+"$busybox" chmod 0755 /
+"$busybox" mkdir -p /proc /sys /dev /run /sys/fs/bpf /sys/fs/cgroup /sys/kernel/tracing
+"$busybox" mount -t proc proc /proc
+"$busybox" mount -t sysfs sysfs /sys
+"$busybox" mount -t devtmpfs devtmpfs /dev || true
+"$busybox" mount -t tmpfs -o mode=0700 tmpfs /run
+
+failed=0
+echo "WHOATHERE_PACKAGE_SENSOR_BPF_INERT_BEGIN"
+echo "WHOATHERE_CAPABILITY kernel_release=$("$busybox" uname -r)"
+echo "WHOATHERE_CAPABILITY architecture=$("$busybox" uname -m)"
+
+if "$busybox" mount -t cgroup2 cgroup2 /sys/fs/cgroup; then
+    echo "WHOATHERE_CAPABILITY cgroup_v2=mounted"
+else
+    echo "WHOATHERE_CAPABILITY cgroup_v2=failed"
+    failed=1
+fi
+
+if "$busybox" mount -t bpf bpf /sys/fs/bpf; then
+    echo "WHOATHERE_CAPABILITY bpf_fs=mounted"
+else
+    echo "WHOATHERE_CAPABILITY bpf_fs=failed"
+    failed=1
+fi
+
+if "$busybox" mount -t tracefs tracefs /sys/kernel/tracing; then
+    echo "WHOATHERE_CAPABILITY tracefs=mounted"
+else
+    echo "WHOATHERE_CAPABILITY tracefs=failed"
+    failed=1
+fi
+
+if [ "$failed" -eq 0 ] && /whoathere/package-sensor-bpf-inert-probe; then
+    echo "WHOATHERE_PACKAGE_SENSOR_BPF_INERT_OK"
+    echo "WHOATHERE_CAPABILITY inert_fixture_execution=true"
+else
+    echo "WHOATHERE_PACKAGE_SENSOR_BPF_INERT_FAILED"
+    echo "WHOATHERE_CAPABILITY inert_fixture_execution=false"
+    failed=1
+fi
+
+echo "WHOATHERE_CAPABILITY external_route_configured=false"
+echo "WHOATHERE_CAPABILITY package_execution=false"
+echo "WHOATHERE_CAPABILITY malware_execution=false"
+echo "WHOATHERE_CAPABILITY sync_back=false"
+"$busybox" sync
+"$busybox" poweroff -f
+"$busybox" sleep 5
+echo "WHOATHERE_PACKAGE_SENSOR_BPF_INERT_POWER_OFF_FAILED"
+exit 1

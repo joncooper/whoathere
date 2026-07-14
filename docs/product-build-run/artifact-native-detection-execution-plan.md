@@ -4,8 +4,21 @@ Date: 2026-07-09
 
 Status: canonical execution plan for the next product milestone
 
-Current execution checkpoint (2026-07-13): all 38 authenticated Linux VZ inert conformance cases
-pass physically on one exact measured backend identity. The final `raw_frame_attachment` case
+Current execution checkpoint (2026-07-14): the final diagnostic-free package-sensor BPF lifecycle
+producer now passes a strict physical inert gate on the approved cloud Mac. The exact pinned guest
+accepted the producer, and the protected UID/GID 65534 fixture yielded one cgroup-filtered
+`exec`/`exit` sequence with zero reservation drops, zero discarded records, and zero host-observed
+raw frames. A new strict host decoder bound the exact kernel, initramfs, fixture, canonical guest
+payload, safety markers, stable image identity, absent disks/shares, and stopped VM before exiting
+0. No package or malware ran, no sync-back path existed, and the July detection score remains 7/11.
+This qualifies only the selected lifecycle-producer slice; syscall, fanotify/file, filesystem-diff,
+network correlation, signed-envelope, full runtime, inert package-scenario, benign, and malicious
+gates remain open. See the
+[package-sensor BPF inert qualification checkpoint](artifact-native-linux-vz-package-sensor-bpf-inert-qualification-checkpoint-2026-07-14.md).
+
+The previously qualified telemetry checkpoint (2026-07-13) established that all 38 authenticated
+Linux VZ inert conformance cases pass physically on one exact measured backend identity. The final
+`raw_frame_attachment` case
 proves that the macOS `VZFileHandleNetworkDeviceAttachment` receives one exact checksum-valid
 Ethernet/IPv4/UDP marker from the unprivileged, cgroup-bound guest fixture while forwarding zero
 external frames. The full matrix was regenerated and rerun on the final identity, independently
@@ -311,12 +324,16 @@ cloud host, or malware ran and the 7/11 score is unchanged. See the
 The first generated BPF producer slice now strictly parses and hashes the pinned guest's lifecycle
 tracepoint layouts, creates protected cgroup-configuration, ring-buffer, and atomic drop-counter
 maps, and generates fully initialized fixed-record programs filtered to the exact package cgroup.
-Each program is attached through perf events on every strictly parsed online guest CPU. Native and
-Linux/aarch64 warnings-denied builds pass, but the producer has not yet been accepted by a physical
-guest kernel or connected to the service driver. This is therefore an implemented producer
-candidate, not observed behavior or a detection improvement. No package or malware ran and the
-7/11 score is unchanged. See the
+Each program is attached once through the kernel's tracepoint-wide perf/BPF path while the producer
+independently records the strictly parsed online CPU set. Native and Linux/aarch64 warnings-denied
+builds pass. The exact final diagnostic-free producer now also passes a strict physical inert gate
+on the pinned guest kernel with one exact cgroup-filtered `exec`/`exit` sequence, zero BPF drops,
+zero discarded records, zero raw frames, stable image bytes, no disks or shares, and a stopped VM.
+It remains disconnected from the production root service and is not package behavior or a
+detection-score improvement. No package or malware ran and the 7/11 score is unchanged. See the
 [package sensor BPF producer checkpoint](artifact-native-linux-vz-package-sensor-bpf-producer-checkpoint-2026-07-14.md).
+The physical follow-up is recorded in the
+[package-sensor BPF inert qualification checkpoint](artifact-native-linux-vz-package-sensor-bpf-inert-qualification-checkpoint-2026-07-14.md).
 
 The first protected-sensor bootstrap now also observes a cgroup-filtered inert fork/exec/exit chain
 whose child runs as UID/GID 65534 and cannot read or write the root-only sensor. This remains
@@ -1948,6 +1965,7 @@ Repository evidence:
 - [Linux VZ package sensor-service driver checkpoint](artifact-native-linux-vz-package-sensor-service-driver-checkpoint-2026-07-13.md)
 - [Linux VZ package sensor event-stream checkpoint](artifact-native-linux-vz-package-sensor-event-stream-checkpoint-2026-07-13.md)
 - [Linux VZ package sensor BPF producer checkpoint](artifact-native-linux-vz-package-sensor-bpf-producer-checkpoint-2026-07-14.md)
+- [Linux VZ package sensor BPF inert qualification checkpoint](artifact-native-linux-vz-package-sensor-bpf-inert-qualification-checkpoint-2026-07-14.md)
 - [Linux VZ runtime-qualification guest-candidate checkpoint](artifact-native-linux-vz-runtime-qualification-guest-candidate-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification host-launcher checkpoint](artifact-native-linux-vz-runtime-qualification-host-launcher-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification physical checkpoint](artifact-native-linux-vz-runtime-qualification-physical-checkpoint-2026-07-13.md)

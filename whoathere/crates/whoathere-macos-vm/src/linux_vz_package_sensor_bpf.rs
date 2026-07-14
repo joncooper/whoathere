@@ -109,7 +109,21 @@ pub(crate) enum LinuxVzPackageSensorBpfErrorV1 {
     MapCreate,
     MapUpdate,
     ProgramLoad,
+    ProgramLoadOs(i32),
     Attach,
+    PerfEventOpen,
+    PerfEventOpenOs(i32),
+    PerfEventOpenPermissionDenied,
+    PerfEventOpenInvalid,
+    PerfEventOpenUnsupported,
+    PerfEventSetBpf,
+    PerfEventSetBpfOs(i32),
+    PerfEventSetBpfPermissionDenied,
+    PerfEventSetBpfInvalid,
+    PerfEventSetBpfDuplicate,
+    PerfEventEnable,
+    PerfEventEnableOs(i32),
+    PerfEventEnableInvalid,
     Descriptor,
     DropCounter,
     Tracepoint(LinuxVzPackageTracepointErrorV1),
@@ -126,7 +140,31 @@ impl LinuxVzPackageSensorBpfErrorV1 {
             Self::MapCreate => "linux_vz_package_sensor_bpf_map_create_failed",
             Self::MapUpdate => "linux_vz_package_sensor_bpf_map_update_failed",
             Self::ProgramLoad => "linux_vz_package_sensor_bpf_program_load_failed",
+            Self::ProgramLoadOs(_) => "linux_vz_package_sensor_bpf_program_load_failed",
             Self::Attach => "linux_vz_package_sensor_bpf_attach_failed",
+            Self::PerfEventOpen => "linux_vz_package_sensor_bpf_perf_event_open_failed",
+            Self::PerfEventOpenOs(_) => "linux_vz_package_sensor_bpf_perf_event_open_failed",
+            Self::PerfEventOpenPermissionDenied => {
+                "linux_vz_package_sensor_bpf_perf_event_open_permission_denied"
+            }
+            Self::PerfEventOpenInvalid => "linux_vz_package_sensor_bpf_perf_event_open_invalid",
+            Self::PerfEventOpenUnsupported => {
+                "linux_vz_package_sensor_bpf_perf_event_open_unsupported"
+            }
+            Self::PerfEventSetBpf => "linux_vz_package_sensor_bpf_perf_event_set_bpf_failed",
+            Self::PerfEventSetBpfOs(_) => "linux_vz_package_sensor_bpf_perf_event_set_bpf_failed",
+            Self::PerfEventSetBpfPermissionDenied => {
+                "linux_vz_package_sensor_bpf_perf_event_set_bpf_permission_denied"
+            }
+            Self::PerfEventSetBpfInvalid => {
+                "linux_vz_package_sensor_bpf_perf_event_set_bpf_invalid"
+            }
+            Self::PerfEventSetBpfDuplicate => {
+                "linux_vz_package_sensor_bpf_perf_event_set_bpf_duplicate"
+            }
+            Self::PerfEventEnable => "linux_vz_package_sensor_bpf_perf_event_enable_failed",
+            Self::PerfEventEnableOs(_) => "linux_vz_package_sensor_bpf_perf_event_enable_failed",
+            Self::PerfEventEnableInvalid => "linux_vz_package_sensor_bpf_perf_event_enable_invalid",
             Self::Descriptor => "linux_vz_package_sensor_bpf_descriptor_invalid",
             Self::DropCounter => "linux_vz_package_sensor_bpf_drop_counter_failed",
             Self::Tracepoint(error) => error.reason_code(),
@@ -594,6 +632,10 @@ struct BpfProgramLoadAttributeV1 {
     core_relocation_record_size: u32,
     log_true_size: u32,
     program_token_descriptor: i32,
+    descriptor_array_count: u32,
+    signature: u64,
+    signature_size: u32,
+    keyring_id: i32,
 }
 
 #[repr(C)]
@@ -633,6 +675,7 @@ pub(crate) struct LinuxVzPackageSensorBpfProducerV1 {
     ring_buffer: LinuxVzPackageBpfRingBufferV1,
     layouts: [LinuxVzPackageTracepointLayoutV1; 3],
     online_cpus: Vec<u32>,
+    attachment_cpu: u32,
     expected_cgroup_id: u64,
 }
 
@@ -648,6 +691,7 @@ impl fmt::Debug for LinuxVzPackageSensorBpfProducerV1 {
             .field("ring_buffer", &self.ring_buffer)
             .field("layouts", &self.layouts)
             .field("online_cpus", &self.online_cpus)
+            .field("attachment_cpu", &self.attachment_cpu)
             .field("expected_cgroup_id", &self.expected_cgroup_id)
             .finish()
     }
@@ -674,6 +718,9 @@ impl LinuxVzPackageSensorBpfProducerV1 {
             return Err(LinuxVzPackageSensorBpfErrorV1::InvalidConfiguration);
         }
         let online_cpus = read_online_cpus_v1()?;
+        let attachment_cpu = *online_cpus
+            .first()
+            .ok_or(LinuxVzPackageSensorBpfErrorV1::OnlineCpu)?;
         let layouts = [
             read_linux_vz_package_tracepoint_layout_v1(
                 LinuxVzPackageTracepointKindV1::SchedProcessFork,
@@ -711,7 +758,7 @@ impl LinuxVzPackageSensorBpfProducerV1 {
             "wt_pkg_ring",
         )?;
         let mut programs = Vec::with_capacity(layouts.len());
-        let mut links = Vec::with_capacity(layouts.len() * online_cpus.len());
+        let mut links = Vec::with_capacity(layouts.len());
         for layout in &layouts {
             let instructions = build_lifecycle_program_v1(
                 layout,
@@ -731,13 +778,11 @@ impl LinuxVzPackageSensorBpfProducerV1 {
                     }
                 },
             )?;
-            for cpu in &online_cpus {
-                links.push(attach_tracepoint_program_v1(
-                    layout.tracepoint_id_v1(),
-                    *cpu,
-                    program.as_raw_fd(),
-                )?);
-            }
+            links.push(attach_tracepoint_program_v1(
+                layout.tracepoint_id_v1(),
+                attachment_cpu,
+                program.as_raw_fd(),
+            )?);
             programs.push(program);
         }
         let ring_buffer =
@@ -750,6 +795,7 @@ impl LinuxVzPackageSensorBpfProducerV1 {
             ring_buffer,
             layouts,
             online_cpus,
+            attachment_cpu,
             expected_cgroup_id,
         })
     }
@@ -782,6 +828,10 @@ impl LinuxVzPackageSensorBpfProducerV1 {
     pub(crate) fn online_cpus_v1(&self) -> &[u32] {
         &self.online_cpus
     }
+
+    pub(crate) const fn attachment_cpu_v1(&self) -> u32 {
+        self.attachment_cpu
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -805,17 +855,16 @@ fn create_map_v1(
     map_flags: u32,
     name: &str,
 ) -> Result<OwnedFd, LinuxVzPackageSensorBpfErrorV1> {
-    let mut attributes = BpfMapCreateAttributeV1 {
-        map_type,
-        key_size: u32::try_from(key_size)
-            .map_err(|_| LinuxVzPackageSensorBpfErrorV1::InvalidConfiguration)?,
-        value_size: u32::try_from(value_size)
-            .map_err(|_| LinuxVzPackageSensorBpfErrorV1::InvalidConfiguration)?,
-        maximum_entries: u32::try_from(maximum_entries)
-            .map_err(|_| LinuxVzPackageSensorBpfErrorV1::InvalidConfiguration)?,
-        map_flags,
-        ..BpfMapCreateAttributeV1::default()
-    };
+    // Every byte passed to the kernel must be deterministic, including C ABI padding.
+    let mut attributes = unsafe { std::mem::zeroed::<BpfMapCreateAttributeV1>() };
+    attributes.map_type = map_type;
+    attributes.key_size = u32::try_from(key_size)
+        .map_err(|_| LinuxVzPackageSensorBpfErrorV1::InvalidConfiguration)?;
+    attributes.value_size = u32::try_from(value_size)
+        .map_err(|_| LinuxVzPackageSensorBpfErrorV1::InvalidConfiguration)?;
+    attributes.maximum_entries = u32::try_from(maximum_entries)
+        .map_err(|_| LinuxVzPackageSensorBpfErrorV1::InvalidConfiguration)?;
+    attributes.map_flags = map_flags;
     copy_object_name_v1(name, &mut attributes.map_name)?;
     let result = unsafe {
         libc::syscall(
@@ -891,19 +940,13 @@ fn load_tracepoint_program_v1(
         return Err(LinuxVzPackageSensorBpfErrorV1::InvalidLayout);
     }
     static LICENSE: &[u8] = b"GPL\0";
-    let mut verifier_log = vec![0_u8; 64 * 1024];
-    let mut attributes = BpfProgramLoadAttributeV1 {
-        program_type: BPF_PROG_TYPE_TRACEPOINT_V1,
-        instruction_count: u32::try_from(instructions.len())
-            .map_err(|_| LinuxVzPackageSensorBpfErrorV1::InvalidLayout)?,
-        instructions: instructions.as_ptr() as u64,
-        license: LICENSE.as_ptr() as u64,
-        log_level: 1,
-        log_size: u32::try_from(verifier_log.len())
-            .map_err(|_| LinuxVzPackageSensorBpfErrorV1::InvalidLayout)?,
-        log_buffer: verifier_log.as_mut_ptr() as u64,
-        ..BpfProgramLoadAttributeV1::default()
-    };
+    // Every byte passed to the kernel must be deterministic, including C ABI padding.
+    let mut attributes = unsafe { std::mem::zeroed::<BpfProgramLoadAttributeV1>() };
+    attributes.program_type = BPF_PROG_TYPE_TRACEPOINT_V1;
+    attributes.instruction_count = u32::try_from(instructions.len())
+        .map_err(|_| LinuxVzPackageSensorBpfErrorV1::InvalidLayout)?;
+    attributes.instructions = instructions.as_ptr() as u64;
+    attributes.license = LICENSE.as_ptr() as u64;
     copy_object_name_v1(name, &mut attributes.program_name)?;
     let result = unsafe {
         libc::syscall(
@@ -913,6 +956,12 @@ fn load_tracepoint_program_v1(
             size_of::<BpfProgramLoadAttributeV1>(),
         )
     };
+    if result < 0 {
+        return Err(match std::io::Error::last_os_error().raw_os_error() {
+            Some(code) => LinuxVzPackageSensorBpfErrorV1::ProgramLoadOs(code),
+            None => LinuxVzPackageSensorBpfErrorV1::ProgramLoad,
+        });
+    }
     owned_descriptor_v1(result, LinuxVzPackageSensorBpfErrorV1::ProgramLoad)
 }
 
@@ -922,16 +971,15 @@ fn attach_tracepoint_program_v1(
     cpu: u32,
     program: RawFd,
 ) -> Result<OwnedFd, LinuxVzPackageSensorBpfErrorV1> {
-    let attributes = PerfEventAttributeV1 {
-        event_type: PERF_TYPE_TRACEPOINT_V1,
-        size: u32::try_from(size_of::<PerfEventAttributeV1>())
-            .map_err(|_| LinuxVzPackageSensorBpfErrorV1::Attach)?,
-        config: u64::from(tracepoint_id),
-        sample_period: 1,
-        flags: 1,
-        wakeup_events: 1,
-        ..PerfEventAttributeV1::default()
-    };
+    // Every byte passed to the kernel must be deterministic, including C ABI padding.
+    let mut attributes = unsafe { std::mem::zeroed::<PerfEventAttributeV1>() };
+    attributes.event_type = PERF_TYPE_TRACEPOINT_V1;
+    attributes.size = u32::try_from(size_of::<PerfEventAttributeV1>())
+        .map_err(|_| LinuxVzPackageSensorBpfErrorV1::Attach)?;
+    attributes.config = u64::from(tracepoint_id);
+    attributes.sample_period = 1;
+    attributes.flags = 1;
+    attributes.wakeup_events = 1;
     let result = unsafe {
         libc::syscall(
             libc::SYS_perf_event_open,
@@ -942,11 +990,37 @@ fn attach_tracepoint_program_v1(
             PERF_FLAG_FD_CLOEXEC_V1,
         )
     };
-    let link = owned_descriptor_v1(result, LinuxVzPackageSensorBpfErrorV1::Attach)?;
-    if unsafe { libc::ioctl(link.as_raw_fd(), PERF_EVENT_IOC_SET_BPF_V1, program) } != 0
-        || unsafe { libc::ioctl(link.as_raw_fd(), PERF_EVENT_IOC_ENABLE_V1, 0) } != 0
-    {
-        return Err(LinuxVzPackageSensorBpfErrorV1::Attach);
+    if result < 0 {
+        return Err(match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::EACCES) | Some(libc::EPERM) => {
+                LinuxVzPackageSensorBpfErrorV1::PerfEventOpenPermissionDenied
+            }
+            Some(libc::EINVAL) => LinuxVzPackageSensorBpfErrorV1::PerfEventOpenInvalid,
+            Some(libc::ENOENT) | Some(libc::ENOSYS) | Some(libc::EOPNOTSUPP) => {
+                LinuxVzPackageSensorBpfErrorV1::PerfEventOpenUnsupported
+            }
+            Some(code) => LinuxVzPackageSensorBpfErrorV1::PerfEventOpenOs(code),
+            None => LinuxVzPackageSensorBpfErrorV1::PerfEventOpen,
+        });
+    }
+    let link = owned_descriptor_v1(result, LinuxVzPackageSensorBpfErrorV1::PerfEventOpen)?;
+    if unsafe { libc::ioctl(link.as_raw_fd(), PERF_EVENT_IOC_SET_BPF_V1, program) } != 0 {
+        return Err(match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::EACCES) | Some(libc::EPERM) => {
+                LinuxVzPackageSensorBpfErrorV1::PerfEventSetBpfPermissionDenied
+            }
+            Some(libc::EINVAL) => LinuxVzPackageSensorBpfErrorV1::PerfEventSetBpfInvalid,
+            Some(libc::EEXIST) => LinuxVzPackageSensorBpfErrorV1::PerfEventSetBpfDuplicate,
+            Some(code) => LinuxVzPackageSensorBpfErrorV1::PerfEventSetBpfOs(code),
+            None => LinuxVzPackageSensorBpfErrorV1::PerfEventSetBpf,
+        });
+    }
+    if unsafe { libc::ioctl(link.as_raw_fd(), PERF_EVENT_IOC_ENABLE_V1, 0) } != 0 {
+        return Err(match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::EINVAL) => LinuxVzPackageSensorBpfErrorV1::PerfEventEnableInvalid,
+            Some(code) => LinuxVzPackageSensorBpfErrorV1::PerfEventEnableOs(code),
+            None => LinuxVzPackageSensorBpfErrorV1::PerfEventEnable,
+        });
     }
     Ok(link)
 }
@@ -1082,7 +1156,7 @@ mod tests {
         assert_eq!(size_of::<BpfMapElementAttributeV1>(), 32);
         assert_eq!(std::mem::offset_of!(BpfMapElementAttributeV1, key), 8);
         assert_eq!(std::mem::offset_of!(BpfMapElementAttributeV1, value), 16);
-        assert_eq!(size_of::<BpfProgramLoadAttributeV1>(), 152);
+        assert_eq!(size_of::<BpfProgramLoadAttributeV1>(), 168);
         assert_eq!(
             std::mem::offset_of!(BpfProgramLoadAttributeV1, instructions),
             8
@@ -1094,6 +1168,14 @@ mod tests {
         assert_eq!(
             std::mem::offset_of!(BpfProgramLoadAttributeV1, descriptor_array),
             120
+        );
+        assert_eq!(
+            std::mem::offset_of!(BpfProgramLoadAttributeV1, descriptor_array_count),
+            148
+        );
+        assert_eq!(
+            std::mem::offset_of!(BpfProgramLoadAttributeV1, signature),
+            152
         );
         assert_eq!(size_of::<PerfEventAttributeV1>(), 136);
         assert_eq!(std::mem::offset_of!(PerfEventAttributeV1, flags), 40);

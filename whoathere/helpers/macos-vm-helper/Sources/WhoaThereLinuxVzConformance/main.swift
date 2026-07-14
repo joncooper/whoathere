@@ -30,6 +30,7 @@ private struct Options {
     let initramfs: URL
     let expectedKernelSHA256: String
     let expectedInitramfsSHA256: String
+    let expectedPackageSensorFixtureSHA256: String?
     let serialLog: URL
     let timeoutSeconds: Int
 
@@ -38,6 +39,7 @@ private struct Options {
         var initramfs: URL?
         var expectedKernelSHA256: String?
         var expectedInitramfsSHA256: String?
+        var expectedPackageSensorFixtureSHA256: String?
         var serialLog: URL?
         var timeoutSeconds = 30
         var seenOptions = Set<String>()
@@ -52,6 +54,8 @@ private struct Options {
             case "--initramfs": initramfs = URL(fileURLWithPath: value)
             case "--expected-kernel-sha256": expectedKernelSHA256 = value
             case "--expected-initramfs-sha256": expectedInitramfsSHA256 = value
+            case "--expected-package-sensor-fixture-sha256":
+                expectedPackageSensorFixtureSHA256 = value
             case "--serial-log": serialLog = URL(fileURLWithPath: value)
             case "--timeout-seconds":
                 guard let parsed = Int(value), parsed >= 5, parsed <= 120 else {
@@ -66,7 +70,8 @@ private struct Options {
               let expectedInitramfsSHA256, let serialLog,
               kernel.path.hasPrefix("/"), initramfs.path.hasPrefix("/"),
               serialLog.path.hasPrefix("/"),
-              validSHA256(expectedKernelSHA256), validSHA256(expectedInitramfsSHA256) else {
+              validSHA256(expectedKernelSHA256), validSHA256(expectedInitramfsSHA256),
+              expectedPackageSensorFixtureSHA256.map(validSHA256) ?? true else {
             throw HarnessError.usage
         }
         return Self(
@@ -74,6 +79,7 @@ private struct Options {
             initramfs: initramfs,
             expectedKernelSHA256: expectedKernelSHA256,
             expectedInitramfsSHA256: expectedInitramfsSHA256,
+            expectedPackageSensorFixtureSHA256: expectedPackageSensorFixtureSHA256,
             serialLog: serialLog,
             timeoutSeconds: timeoutSeconds
         )
@@ -98,7 +104,7 @@ private struct LinuxVzConformanceHarness {
             exit(exitCode)
         } catch HarnessError.usage {
             fputs(
-                "usage: whoathere-linux-vz-conformance --kernel PATH --initramfs PATH --expected-kernel-sha256 SHA256 --expected-initramfs-sha256 SHA256 --serial-log PATH [--timeout-seconds 30]\n",
+                "usage: whoathere-linux-vz-conformance --kernel PATH --initramfs PATH --expected-kernel-sha256 SHA256 --expected-initramfs-sha256 SHA256 --serial-log PATH [--expected-package-sensor-fixture-sha256 SHA256] [--timeout-seconds 30]\n",
                 stderr
             )
             exit(64)
@@ -211,6 +217,49 @@ private struct LinuxVzConformanceHarness {
         let finalInitramfsSHA256 = try fileSHA256(options.initramfs)
         let imageIdentityStable = finalKernelSHA256 == kernelSHA256
             && finalInitramfsSHA256 == initramfsSHA256
+        if let expectedFixtureSHA256 = options.expectedPackageSensorFixtureSHA256 {
+            let evidence = try? decodeLinuxVzPackageSensorBpfInertEvidenceV1(
+                serialData,
+                expectedFixtureSHA256: expectedFixtureSHA256
+            )
+            let missingMarkers = linuxVzPackageSensorBpfInertMissingMarkersV1(serialData)
+            let failurePresent = linuxVzPackageSensorBpfInertFailurePresentV1(serialData)
+            let success = stopped && evidence != nil && missingMarkers.isEmpty
+                && !failurePresent && rawFrameCount == 0 && imageIdentityStable
+            emitJSON([
+                "schema_version":
+                    "whoathere.linux_vz_package_sensor_bpf_inert_boot_result.v1",
+                "status": success ? "ok" : "error",
+                "operation": "linux_vz_package_sensor_bpf_inert_qualification",
+                "kernel_sha256": kernelSHA256,
+                "initramfs_sha256": initramfsSHA256,
+                "fixture_sha256": expectedFixtureSHA256,
+                "kernel_command_line": linuxVzInertKernelCommandLineV1,
+                "network_topology": "host_raw_frame_sinkhole_no_external_route",
+                "virtualization_supported": VZVirtualMachine.isSupported,
+                "image_identity_stable": imageIdentityStable,
+                "vm_stopped": stopped,
+                "evidence_valid": evidence != nil,
+                "evidence_payload_sha256": evidence?.payloadSHA256 ?? "unavailable",
+                "evidence_byte_length": String(evidence?.evidenceByteLength ?? 0),
+                "cgroup_id": String(evidence?.cgroupID ?? 0),
+                "fixture_pid": String(evidence?.fixturePID ?? 0),
+                "tracepoint_format_sha256": evidence?.tracepointFormatSHA256 ?? [:],
+                "required_marker_count": linuxVzPackageSensorBpfInertRequiredMarkersV1.count,
+                "missing_required_markers": missingMarkers,
+                "failure_marker_present": failurePresent,
+                "raw_frame_count": rawFrameCount,
+                "external_route": false,
+                "root_disk_present": false,
+                "storage_device_count": "0",
+                "directory_share_count": "0",
+                "package_execution": false,
+                "malware_execution": false,
+                "sync_back": false,
+                "exit_code": success ? 0 : 70,
+            ])
+            return success ? 0 : 70
+        }
         let processSensorMarkerPresent = linuxVzInertSerialContainsExactMarker(
             serialData,
             marker: "WHOATHERE_SENSOR_PROCESS_PROBE_OK"
