@@ -4,18 +4,22 @@ Date: 2026-07-09
 
 Status: canonical execution plan for the next product milestone
 
-Current execution checkpoint (2026-07-14): the final diagnostic-free package-sensor BPF producer
-now passes a strict physical inert gate for a closed selected-syscall slice on the approved cloud
-Mac. The exact pinned guest yielded 14 cgroup-filtered events: successful `setgroups`, `setgid`, and
-`setuid` entry/exit pairs, `exec`, three runtime-linker `mmap` entry/exit pairs, and `exit`, with
-zero reservation drops, zero discarded records, and zero host-observed raw frames. Pointer-bearing
-arguments are zeroed in BPF and independently rejected if present. `connect` and `sendto` are in
-the closed unit-tested and Linux-cross-compiled arm64 allowlist but have not yet been exercised
-physically. No package or malware ran, no sync-back path existed, and the July detection score
-remains 7/11. This qualifies only selected-syscall production; protected-service integration,
-typed correlation, fanotify/file, filesystem-diff, network correlation, signed-envelope, full
-runtime, inert package-scenario, benign, and malicious gates remain open. See the
-[selected-syscall checkpoint](artifact-native-linux-vz-package-sensor-syscall-checkpoint-2026-07-14.md).
+Current execution checkpoint (2026-07-14): the selected-syscall stream now has a fail-closed
+per-thread correlator that pairs entry and exit by exact `(tgid, tid)`, supports interleaving,
+preserves both sequence/timestamp/CPU sides, permanently faults on malformed input, and refuses to
+finalize with a gap, mismatch, pending call, drop, discard, or producer-count disagreement. The
+final correlator-enabled static probe passed a strict physical inert gate on the approved cloud Mac:
+14 source events became eight ordered credential/lifecycle/`mmap` observations with zero loss and
+zero raw frames. No package or malware ran, no sync-back path existed, and the July detection score
+remains 7/11. Protected-service integration, launch/terminal enrichment, typed evidence conversion,
+fanotify/file, filesystem-diff, network correlation, signed-envelope, full runtime, inert package
+scenario, benign, and malicious gates remain open. See the
+[process-correlator checkpoint](artifact-native-linux-vz-package-sensor-process-correlator-checkpoint-2026-07-14.md).
+
+The preceding selected-syscall gate established the exact closed arm64 allowlist, BPF-side cgroup
+filter, pointer redaction, paired record production, and physical credential/`mmap` source stream.
+`connect` and `sendto` remain unit-tested and Linux-cross-compiled but physically unqualified. See
+the [selected-syscall checkpoint](artifact-native-linux-vz-package-sensor-syscall-checkpoint-2026-07-14.md).
 
 The preceding lifecycle-only gate captured one exact cgroup-filtered `exec`/`exit` sequence from
 the same inert fixture and established the strict image, topology, safety-marker, zero-loss, and
@@ -349,6 +353,15 @@ contiguous 14-event sequence with zero loss. The network syscalls remain physica
 and the producer is still disconnected from the protected root service and verdict pipeline, so
 the 7/11 detection score is unchanged. See the
 [selected-syscall checkpoint](artifact-native-linux-vz-package-sensor-syscall-checkpoint-2026-07-14.md).
+
+The raw process stream now also passes through a bounded fail-closed per-thread correlator. It
+supports interleaved syscalls from different TIDs, binds both sides of each pair, preserves source
+ordering, redacts arguments from debug, faults permanently after any malformed record, and refuses
+completion on any pending pair or loss/count disagreement. The exact correlator-enabled probe
+physically reproduced the 14-event inert stream as eight correlated observations with zero loss.
+This still is not typed process evidence or protected root-service integration, and the 7/11 score
+is unchanged. See the
+[process-correlator checkpoint](artifact-native-linux-vz-package-sensor-process-correlator-checkpoint-2026-07-14.md).
 
 The first protected-sensor bootstrap now also observes a cgroup-filtered inert fork/exec/exit chain
 whose child runs as UID/GID 65534 and cannot read or write the root-only sensor. This remains
@@ -1982,6 +1995,7 @@ Repository evidence:
 - [Linux VZ package sensor BPF producer checkpoint](artifact-native-linux-vz-package-sensor-bpf-producer-checkpoint-2026-07-14.md)
 - [Linux VZ package sensor BPF inert qualification checkpoint](artifact-native-linux-vz-package-sensor-bpf-inert-qualification-checkpoint-2026-07-14.md)
 - [Linux VZ package sensor selected-syscall checkpoint](artifact-native-linux-vz-package-sensor-syscall-checkpoint-2026-07-14.md)
+- [Linux VZ package sensor process-correlator checkpoint](artifact-native-linux-vz-package-sensor-process-correlator-checkpoint-2026-07-14.md)
 - [Linux VZ runtime-qualification guest-candidate checkpoint](artifact-native-linux-vz-runtime-qualification-guest-candidate-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification host-launcher checkpoint](artifact-native-linux-vz-runtime-qualification-host-launcher-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification physical checkpoint](artifact-native-linux-vz-runtime-qualification-physical-checkpoint-2026-07-13.md)

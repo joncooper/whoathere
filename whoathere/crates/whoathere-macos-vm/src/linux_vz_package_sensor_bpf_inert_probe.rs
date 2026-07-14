@@ -7,6 +7,8 @@ use crate::linux_vz_package_sensor_event_stream::{
     LinuxVzPackageKernelEventKindV1, LinuxVzPackageSelectedSyscallV1,
 };
 #[cfg(target_os = "linux")]
+use crate::linux_vz_package_sensor_process_stream::LinuxVzPackageProcessEventCorrelatorV1;
+#[cfg(target_os = "linux")]
 use serde::Serialize;
 #[cfg(target_os = "linux")]
 use std::collections::BTreeMap;
@@ -396,6 +398,23 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
     let discarded = producer.discarded_record_count_v1();
     if dropped != 0 || discarded != 0 {
         return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::LossObserved);
+    }
+    let mut correlator = LinuxVzPackageProcessEventCorrelatorV1::new_v1(cgroup.id, 64)
+        .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::EventMismatch)?;
+    for event in events.iter().cloned() {
+        correlator
+            .ingest_v1(event)
+            .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::EventMismatch)?;
+    }
+    let correlated = correlator
+        .finish_v1(dropped, discarded, producer.last_source_sequence_v1())
+        .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::EventMismatch)?;
+    if correlated.expected_cgroup_id_v1() != cgroup.id
+        || correlated.source_event_count_v1() != 14
+        || correlated.observations_v1().len() != 8
+        || !correlated.coverage_complete_v1()
+    {
+        return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::EventMismatch);
     }
     let mut tracepoints = BTreeMap::new();
     for layout in producer.layouts_v1() {
