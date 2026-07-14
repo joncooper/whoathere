@@ -19,10 +19,14 @@ use crate::linux_vz_package_sensor_process_stream::LinuxVzPackageCorrelatedProce
 #[cfg(target_os = "linux")]
 use crate::{
     encode_linux_vz_package_root_file_evidence_v1,
+    encode_linux_vz_package_root_network_evidence_v1,
     encode_linux_vz_package_root_process_evidence_v1, LinuxVzPackageExpectedRootFileEvidenceV1,
-    LinuxVzPackageExpectedRootProcessEvidenceV1, LinuxVzPackageProcessCompletionV1,
-    LinuxVzPackageProcessLaunchIdentityV1, LinuxVzPackageProcessTerminalV1,
-    LINUX_VZ_PACKAGE_ROOT_FILE_EVIDENCE_SCHEMA_V1,
+    LinuxVzPackageExpectedRootNetworkEvidenceV1, LinuxVzPackageExpectedRootProcessEvidenceV1,
+    LinuxVzPackageProcessCompletionV1, LinuxVzPackageProcessLaunchIdentityV1,
+    LinuxVzPackageProcessTerminalV1, LinuxVzPackageRootNetworkAddressFamilyV1,
+    LinuxVzPackageRootNetworkDestinationClassV1, LinuxVzPackageRootNetworkEventKindV1,
+    LinuxVzPackageRootNetworkEvidenceV1, LINUX_VZ_PACKAGE_ROOT_FILE_EVIDENCE_SCHEMA_V1,
+    LINUX_VZ_PACKAGE_ROOT_NETWORK_EVIDENCE_SCHEMA_V1,
     LINUX_VZ_PACKAGE_ROOT_PROCESS_EVIDENCE_SCHEMA_V1,
 };
 #[cfg(target_os = "linux")]
@@ -218,6 +222,20 @@ struct InertProbeEvidenceWireV1 {
     root_file_evidence_sha256: String,
     root_file_evidence_source_event_count: String,
     root_file_evidence_workspace_diff_sha256: String,
+    root_network_evidence_byte_length: String,
+    root_network_evidence_canonical: bool,
+    root_network_evidence_composite_coverage_complete: bool,
+    root_network_evidence_connect_sendto_coverage_complete: bool,
+    root_network_evidence_dns_coverage_complete: bool,
+    root_network_evidence_event_count: String,
+    root_network_evidence_guest_intent_coverage_complete: bool,
+    root_network_evidence_host_frame_correlation_complete: bool,
+    root_network_evidence_http_observation_complete: bool,
+    root_network_evidence_process_sha256: String,
+    root_network_evidence_raw_addresses_serialized: bool,
+    root_network_evidence_schema: &'static str,
+    root_network_evidence_sha256: String,
+    root_network_evidence_unobserved_capabilities: Vec<&'static str>,
     runtime_btf_sha256: String,
     schema_version: &'static str,
     source_event_count_before_finish: String,
@@ -761,6 +779,49 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
     {
         return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::Evidence);
     }
+    let root_network_expected = LinuxVzPackageExpectedRootNetworkEvidenceV1::from_action_v1(
+        sensor_session_challenge_sha256.clone(),
+        launch_contract_sha256.clone(),
+        process_plan_sha256.clone(),
+        root_process_evidence.payload_sha256().clone(),
+        action_index,
+        cgroup
+            .name
+            .to_str()
+            .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::Evidence)?
+            .to_string(),
+        cgroup.id,
+        root_runner_pid,
+        child as u32,
+        &completion,
+    )
+    .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::Evidence)?;
+    let root_network_evidence =
+        encode_linux_vz_package_root_network_evidence_v1(&root_network_expected, &collection)
+            .map_err(|error| {
+                eprintln!("WHOATHERE_PACKAGE_SENSOR_NETWORK_INERT_EVIDENCE_DETAIL {error}");
+                LinuxVzPackageSensorBpfInertProbeErrorV1::Evidence
+            })?;
+    if root_network_evidence.events().len() != 2
+        || !root_network_evidence.connect_sendto_intent_coverage_complete()
+        || root_network_evidence.guest_intent_coverage_complete()
+        || root_network_evidence.host_frame_correlation_complete()
+        || root_network_evidence.dns_intent_coverage_complete()
+        || root_network_evidence.http_observation_complete()
+        || root_network_evidence.composite_network_coverage_complete()
+        || root_network_evidence.raw_addresses_serialized()
+        || root_network_evidence.process_evidence_sha256() != root_process_evidence.payload_sha256()
+        || root_network_evidence.unobserved_capabilities()
+            != [
+                "dns_intent",
+                "guest_intent_syscalls_beyond_connect_sendto",
+                "host_frame_correlation",
+                "http_observation",
+            ]
+        || !matches_exact_root_network_evidence_v1(&root_network_evidence)
+    {
+        return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::Evidence);
+    }
     let root_file_expected = LinuxVzPackageExpectedRootFileEvidenceV1::from_action_v1(
         sensor_session_challenge_sha256,
         launch_contract_sha256,
@@ -948,8 +1009,40 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
             .workspace_diff_sha256()
             .as_str()
             .to_string(),
+        root_network_evidence_byte_length: root_network_evidence
+            .canonical_json_v1()
+            .len()
+            .to_string(),
+        root_network_evidence_canonical: true,
+        root_network_evidence_composite_coverage_complete: root_network_evidence
+            .composite_network_coverage_complete(),
+        root_network_evidence_connect_sendto_coverage_complete: root_network_evidence
+            .connect_sendto_intent_coverage_complete(),
+        root_network_evidence_dns_coverage_complete: root_network_evidence
+            .dns_intent_coverage_complete(),
+        root_network_evidence_event_count: root_network_evidence.events().len().to_string(),
+        root_network_evidence_guest_intent_coverage_complete: root_network_evidence
+            .guest_intent_coverage_complete(),
+        root_network_evidence_host_frame_correlation_complete: root_network_evidence
+            .host_frame_correlation_complete(),
+        root_network_evidence_http_observation_complete: root_network_evidence
+            .http_observation_complete(),
+        root_network_evidence_process_sha256: root_network_evidence
+            .process_evidence_sha256()
+            .as_str()
+            .to_string(),
+        root_network_evidence_raw_addresses_serialized: root_network_evidence
+            .raw_addresses_serialized(),
+        root_network_evidence_schema: LINUX_VZ_PACKAGE_ROOT_NETWORK_EVIDENCE_SCHEMA_V1,
+        root_network_evidence_sha256: root_network_evidence.payload_sha256().as_str().to_string(),
+        root_network_evidence_unobserved_capabilities: vec![
+            "dns_intent",
+            "guest_intent_syscalls_beyond_connect_sendto",
+            "host_frame_correlation",
+            "http_observation",
+        ],
         runtime_btf_sha256: collection.runtime_btf_sha256_v1().as_str().to_string(),
-        schema_version: "whoathere.linux_vz_package_sensor_bpf_inert_probe.v11",
+        schema_version: "whoathere.linux_vz_package_sensor_bpf_inert_probe.v12",
         source_event_count_before_finish: collection
             .source_event_count_before_finish_v1()
             .to_string(),
@@ -1049,6 +1142,30 @@ fn matches_exact_correlated_stream_v1(
             context,
             Some(wait_status),
         )
+}
+
+#[cfg(target_os = "linux")]
+fn matches_exact_root_network_evidence_v1(evidence: &LinuxVzPackageRootNetworkEvidenceV1) -> bool {
+    let [connect, sendto] = evidence.events() else {
+        return false;
+    };
+    evidence.process_source_event_count() == 18
+        && evidence.process_observation_count() == 10
+        && connect.kind() == LinuxVzPackageRootNetworkEventKindV1::Connect
+        && connect.address_family() == LinuxVzPackageRootNetworkAddressFamilyV1::Ipv4
+        && connect.destination_class() == LinuxVzPackageRootNetworkDestinationClassV1::Documentation
+        && connect.destination_port() == 443
+        && connect.enter_source_sequence() == 14
+        && connect.exit_source_sequence() == 15
+        && connect.syscall_result() == i64::from(-libc::ENETUNREACH)
+        && sendto.kind() == LinuxVzPackageRootNetworkEventKindV1::Sendto
+        && sendto.address_family() == LinuxVzPackageRootNetworkAddressFamilyV1::Ipv6
+        && sendto.destination_class() == LinuxVzPackageRootNetworkDestinationClassV1::Documentation
+        && sendto.destination_port() == 53
+        && sendto.enter_source_sequence() == 16
+        && sendto.exit_source_sequence() == 17
+        && sendto.syscall_result() == i64::from(-libc::EADDRNOTAVAIL)
+        && connect.destination_token_sha256() != sendto.destination_token_sha256()
 }
 
 #[cfg(target_os = "linux")]

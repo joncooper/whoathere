@@ -7,11 +7,13 @@ use crate::linux_vz_package_sensor_process_collector::LinuxVzPackageRootProcessC
 #[cfg(target_os = "linux")]
 use crate::{
     encode_linux_vz_package_root_file_evidence_v1,
+    encode_linux_vz_package_root_network_evidence_v1,
     encode_linux_vz_package_root_process_evidence_v1, protected_process_observer_seal,
-    LinuxVzPackageExpectedRootFileEvidenceV1, LinuxVzPackageExpectedRootProcessEvidenceV1,
-    LinuxVzPackageProcessLaunchContractV1, LinuxVzPackageProcessSupervisorErrorV1,
-    LinuxVzPackageProtectedProcessObserverV1, LinuxVzPackageProtectedSensorOutputV1,
-    LinuxVzPackageRootFileEvidenceV1, LinuxVzPackageRootProcessEvidenceV1,
+    LinuxVzPackageExpectedRootFileEvidenceV1, LinuxVzPackageExpectedRootNetworkEvidenceV1,
+    LinuxVzPackageExpectedRootProcessEvidenceV1, LinuxVzPackageProcessLaunchContractV1,
+    LinuxVzPackageProcessSupervisorErrorV1, LinuxVzPackageProtectedProcessObserverV1,
+    LinuxVzPackageProtectedSensorOutputV1, LinuxVzPackageRootFileEvidenceV1,
+    LinuxVzPackageRootNetworkEvidenceV1, LinuxVzPackageRootProcessEvidenceV1,
     MAX_LINUX_VZ_PACKAGE_PROCESS_SENSOR_CORRELATION_BYTES_V1,
     MAX_LINUX_VZ_PACKAGE_PROTECTED_SENSOR_PAYLOAD_BYTES_V1,
 };
@@ -952,11 +954,11 @@ fn valid_fault_signal_fds_v1(descriptors: &[RawFd], control_fd: RawFd) -> bool {
             .all(|(index, descriptor)| !descriptors[..index].contains(descriptor))
 }
 
-/// Concrete process and file components for the protected root sensor service.
+/// Concrete process, file, and connect/sendto components for the protected root sensor service.
 ///
-/// This adapter deliberately reports the network sensor unavailable. The enclosing service
-/// therefore refuses its arm acknowledgement and cannot release a package until an equally
-/// concrete protected network component is composed with it.
+/// This adapter deliberately reports broad guest-network and host-network coverage unavailable.
+/// The enclosing service therefore refuses its arm acknowledgement and cannot release a package
+/// until the remaining protected network sources are composed with it.
 #[cfg(target_os = "linux")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RootProcessServiceCollectorStateV1 {
@@ -977,6 +979,7 @@ struct LinuxVzPackageRootProcessServiceCollectorV1 {
     file: Option<LinuxVzPackageRootFileCollectorV1>,
     completed_process_evidence: Option<LinuxVzPackageRootProcessEvidenceV1>,
     completed_file_evidence: Option<LinuxVzPackageRootFileEvidenceV1>,
+    completed_network_evidence: Option<LinuxVzPackageRootNetworkEvidenceV1>,
 }
 
 #[cfg(target_os = "linux")]
@@ -991,6 +994,7 @@ impl LinuxVzPackageRootProcessServiceCollectorV1 {
             file: None,
             completed_process_evidence: None,
             completed_file_evidence: None,
+            completed_network_evidence: None,
         }
     }
 }
@@ -1180,6 +1184,22 @@ impl LinuxVzPackageRootSensorServiceCollectorV1 for LinuxVzPackageRootProcessSer
         let process_evidence =
             encode_linux_vz_package_root_process_evidence_v1(&expected, &collection)
                 .map_err(|_| LinuxVzPackageSensorControlErrorV1::SensorFault)?;
+        let network_expected = LinuxVzPackageExpectedRootNetworkEvidenceV1::from_action_v1(
+            context.sensor_session_challenge_sha256.clone(),
+            context.launch_contract_sha256.clone(),
+            context.process_plan_sha256.clone(),
+            process_evidence.payload_sha256().clone(),
+            context.action_index,
+            context.cgroup_name.clone(),
+            context.cgroup_id,
+            context.root_runner_pid,
+            leader_pid,
+            completion,
+        )
+        .map_err(|_| LinuxVzPackageSensorControlErrorV1::SensorFault)?;
+        let network_evidence =
+            encode_linux_vz_package_root_network_evidence_v1(&network_expected, &collection)
+                .map_err(|_| LinuxVzPackageSensorControlErrorV1::SensorFault)?;
         let file_expected = LinuxVzPackageExpectedRootFileEvidenceV1::from_action_v1(
             context.sensor_session_challenge_sha256.clone(),
             context.launch_contract_sha256.clone(),
@@ -1197,10 +1217,11 @@ impl LinuxVzPackageRootSensorServiceCollectorV1 for LinuxVzPackageRootProcessSer
                 .map_err(|_| LinuxVzPackageSensorControlErrorV1::SensorFault)?;
         self.completed_process_evidence = Some(process_evidence);
         self.completed_file_evidence = Some(file_evidence);
+        self.completed_network_evidence = Some(network_evidence);
         self.state = RootProcessServiceCollectorStateV1::Finished;
-        // Process and file evidence alone cannot be represented as complete protected sensor
-        // output. The composite adapter must add typed network evidence and global correlation
-        // before this service can return a finish status.
+        // The canonical guest intent payload explicitly records that host-frame, DNS, and HTTP
+        // coverage are unavailable. The composite adapter must add and correlate those protected
+        // sources before this service can return a finish status.
         Err(LinuxVzPackageSensorControlErrorV1::InvalidState)
     }
 

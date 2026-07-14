@@ -1,7 +1,7 @@
 import Foundation
 
-public let linuxVzPackageSensorBpfInertEvidenceSchemaV11 =
-    "whoathere.linux_vz_package_sensor_bpf_inert_probe.v11"
+public let linuxVzPackageSensorBpfInertEvidenceSchemaV12 =
+    "whoathere.linux_vz_package_sensor_bpf_inert_probe.v12"
 public let linuxVzPackageSensorBpfInertEvidenceSerialPrefixV1 =
     "WHOATHERE_PACKAGE_SENSOR_BPF_INERT_EVIDENCE "
 
@@ -29,7 +29,7 @@ public enum LinuxVzPackageSensorBpfInertEvidenceError: Error, Equatable {
     case invalidSchema
 }
 
-public struct LinuxVzPackageSensorBpfInertEvidenceV11: Equatable, Sendable {
+public struct LinuxVzPackageSensorBpfInertEvidenceV12: Equatable, Sendable {
     public let canonicalJSON: Data
     public let payloadSHA256: String
     public let evidenceByteLength: UInt64
@@ -71,6 +71,10 @@ public struct LinuxVzPackageSensorBpfInertEvidenceV11: Equatable, Sendable {
     public let rootProcessEvidenceObservationCount: UInt64
     public let rootProcessEvidenceSHA256: String
     public let rootProcessEvidenceSourceEventCount: UInt64
+    public let rootNetworkEvidenceByteLength: UInt64
+    public let rootNetworkEvidenceEventCount: UInt64
+    public let rootNetworkEvidenceSHA256: String
+    public let rootNetworkEvidenceUnobservedCapabilities: [String]
     public let rootFileEvidenceByteLength: UInt64
     public let rootFileEvidenceChangeCount: UInt64
     public let rootFileEvidenceSHA256: String
@@ -81,12 +85,12 @@ public struct LinuxVzPackageSensorBpfInertEvidenceV11: Equatable, Sendable {
     public let tracepointFormatSHA256: [String: String]
 }
 
-public func decodeLinuxVzPackageSensorBpfInertEvidenceV11(
+public func decodeLinuxVzPackageSensorBpfInertEvidenceV12(
     _ serialData: Data,
     expectedFixtureSHA256: String,
     expectedRuntimeBTFSHA256: String,
     expectedTaskExitCodeByteOffset: UInt64
-) throws -> LinuxVzPackageSensorBpfInertEvidenceV11 {
+) throws -> LinuxVzPackageSensorBpfInertEvidenceV12 {
     guard packageSensorBpfInertDigest(expectedFixtureSHA256),
           packageSensorBpfInertDigest(expectedRuntimeBTFSHA256),
           expectedTaskExitCodeByteOffset > 0,
@@ -149,6 +153,16 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV11(
         "root_process_evidence_raw_arguments_captured",
         "root_process_evidence_raw_exec_paths_captured", "root_process_evidence_schema",
         "root_process_evidence_sha256", "root_process_evidence_source_event_count",
+        "root_network_evidence_byte_length", "root_network_evidence_canonical",
+        "root_network_evidence_composite_coverage_complete",
+        "root_network_evidence_connect_sendto_coverage_complete",
+        "root_network_evidence_dns_coverage_complete", "root_network_evidence_event_count",
+        "root_network_evidence_guest_intent_coverage_complete",
+        "root_network_evidence_host_frame_correlation_complete",
+        "root_network_evidence_http_observation_complete",
+        "root_network_evidence_process_sha256",
+        "root_network_evidence_raw_addresses_serialized", "root_network_evidence_schema",
+        "root_network_evidence_sha256", "root_network_evidence_unobserved_capabilities",
         "root_file_evidence_baseline_snapshot_sha256", "root_file_evidence_byte_length",
         "root_file_evidence_canonical", "root_file_evidence_change_count",
         "root_file_evidence_declared_scope_complete",
@@ -162,7 +176,7 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV11(
         "task_exit_code_byte_offset", "tracepoint_format_sha256", "waitpid_wait_status",
     ])
     guard Set(value.keys) == expectedKeys,
-          value["schema_version"] as? String == linuxVzPackageSensorBpfInertEvidenceSchemaV11,
+          value["schema_version"] as? String == linuxVzPackageSensorBpfInertEvidenceSchemaV12,
           let activeDrainPollCount = packageSensorBpfInertDecimal(
               value["active_drain_poll_count"]
           ),
@@ -312,6 +326,37 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV11(
               value["root_process_evidence_source_event_count"]
           ),
           rootProcessEvidenceSourceEventCount == 18,
+          let rootNetworkEvidenceByteLength = packageSensorBpfInertDecimal(
+              value["root_network_evidence_byte_length"]
+          ),
+          rootNetworkEvidenceByteLength >= 1,
+          rootNetworkEvidenceByteLength <= 256 * 1024,
+          value["root_network_evidence_canonical"] as? Bool == true,
+          value["root_network_evidence_composite_coverage_complete"] as? Bool == false,
+          value["root_network_evidence_connect_sendto_coverage_complete"] as? Bool == true,
+          value["root_network_evidence_dns_coverage_complete"] as? Bool == false,
+          let rootNetworkEvidenceEventCount = packageSensorBpfInertDecimal(
+              value["root_network_evidence_event_count"]
+          ),
+          rootNetworkEvidenceEventCount == 2,
+          value["root_network_evidence_guest_intent_coverage_complete"] as? Bool == false,
+          value["root_network_evidence_host_frame_correlation_complete"] as? Bool == false,
+          value["root_network_evidence_http_observation_complete"] as? Bool == false,
+          value["root_network_evidence_process_sha256"] as? String == rootProcessEvidenceSHA256,
+          value["root_network_evidence_raw_addresses_serialized"] as? Bool == false,
+          value["root_network_evidence_schema"] as? String ==
+              "whoathere.linux_vz_package_root_network_evidence.v1",
+          let rootNetworkEvidenceSHA256 = value["root_network_evidence_sha256"] as? String,
+          packageSensorBpfInertDigest(rootNetworkEvidenceSHA256),
+          rootNetworkEvidenceSHA256 != rootProcessEvidenceSHA256,
+          rootNetworkEvidenceSHA256 != expectedFixtureSHA256,
+          rootNetworkEvidenceSHA256 != expectedRuntimeBTFSHA256,
+          let rootNetworkEvidenceUnobservedCapabilities =
+              value["root_network_evidence_unobserved_capabilities"] as? [String],
+          rootNetworkEvidenceUnobservedCapabilities == [
+              "dns_intent", "guest_intent_syscalls_beyond_connect_sendto",
+              "host_frame_correlation", "http_observation",
+          ],
           let rootFileEvidenceByteLength = packageSensorBpfInertDecimal(
               value["root_file_evidence_byte_length"]
           ),
@@ -338,7 +383,8 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV11(
               .allSatisfy(packageSensorBpfInertDigest),
           Set([rootFileEvidenceSHA256, rootFileEvidenceBaselineSnapshotSHA256,
                rootFileEvidenceFinalSnapshotSHA256, rootFileEvidenceWorkspaceDiffSHA256,
-               rootProcessEvidenceSHA256, expectedFixtureSHA256, expectedRuntimeBTFSHA256]).count == 7,
+               rootProcessEvidenceSHA256, rootNetworkEvidenceSHA256,
+               expectedFixtureSHA256, expectedRuntimeBTFSHA256]).count == 8,
           let rootFileEvidenceSourceEventCount = packageSensorBpfInertDecimal(
               value["root_file_evidence_source_event_count"]
           ),
@@ -365,7 +411,7 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV11(
           waitpidWaitStatus == kernelExitWaitStatus else {
         throw LinuxVzPackageSensorBpfInertEvidenceError.invalidSchema
     }
-    return LinuxVzPackageSensorBpfInertEvidenceV11(
+    return LinuxVzPackageSensorBpfInertEvidenceV12(
         canonicalJSON: payload,
         payloadSHA256: sha256(payload),
         evidenceByteLength: UInt64(payload.count),
@@ -407,6 +453,10 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV11(
         rootProcessEvidenceObservationCount: rootProcessEvidenceObservationCount,
         rootProcessEvidenceSHA256: rootProcessEvidenceSHA256,
         rootProcessEvidenceSourceEventCount: rootProcessEvidenceSourceEventCount,
+        rootNetworkEvidenceByteLength: rootNetworkEvidenceByteLength,
+        rootNetworkEvidenceEventCount: rootNetworkEvidenceEventCount,
+        rootNetworkEvidenceSHA256: rootNetworkEvidenceSHA256,
+        rootNetworkEvidenceUnobservedCapabilities: rootNetworkEvidenceUnobservedCapabilities,
         rootFileEvidenceByteLength: rootFileEvidenceByteLength,
         rootFileEvidenceChangeCount: rootFileEvidenceChangeCount,
         rootFileEvidenceSHA256: rootFileEvidenceSHA256,
