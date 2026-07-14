@@ -23,6 +23,18 @@ protected transport, composite authentication, runtime scenarios, benign scoring
 regression remain open; no package or malware ran, and the July score remains 7/11. See the
 [canonical root network-evidence checkpoint](artifact-native-linux-vz-package-root-network-evidence-checkpoint-2026-07-14.md).
 
+The first package-specific authenticated root-evidence protocol now exists in Rust. Its
+domain-separated Ed25519 receipt binds the exact artifact, typed scenario, one-use execution grant,
+runtime qualification, sensor identities, fresh action/session bindings, terminal state, validity
+window, and exact canonical process/file/network payload digests and lengths. Verification
+independently rebuilds every expected claim before signature validation and rejects rebinding,
+mutation, wrong keys, noncanonical bytes, premature or expired evidence, and false coverage
+upgrades. The receipt honestly remains incomplete: it records the current file and network gaps,
+requires later host composition, contains no VM-destruction claim, cannot authorize a verdict, and
+cannot permit sync-back. It is a tested protocol boundary, not yet wired into the physical root
+service or independently implemented in Swift, so AN-506 remains open. See the
+[package root-evidence receipt checkpoint](artifact-native-linux-vz-package-root-evidence-receipt-checkpoint-2026-07-14.md).
+
 The preceding checkpoint made the concrete root service compose process and file
 collectors for one action. The file collector continuously drains cgroup-correlated fanotify
 permission/close-write events, denies protected-sensor access, computes a bounded descriptor-relative
@@ -1825,8 +1837,12 @@ correlation complete while broad frame coverage remains false; the guest payload
 broad guest intent and host-frame correlation false because additional guest network interfaces
 remain unobserved and host evidence is composed later. Remaining AN-504 work is closing that
 syscall/hook gap and qualifying DNS intent. AN-505 protected HTTP(S) observation and AN-506
-authenticated composite evidence also remain open. This partial result does not satisfy the Phase 5
-exit gate.
+authenticated composite evidence also remain open. AN-506 now has a strict package-specific guest
+receipt protocol that binds exact authority, scenario, grant, runtime, sensor, action, terminal,
+process, file, and network claims under a short-lived Ed25519 signature. It deliberately reports
+the current evidence as incomplete and grants no verdict or sync-back authority. Root-service
+integration, an independent verifier, host-frame and lifecycle composition, destruction proof, and
+the final control-plane envelope remain. These partial results do not satisfy the Phase 5 exit gate.
 
 Exit gate:
 
@@ -2186,6 +2202,7 @@ Repository evidence:
 - [Linux VZ package canonical root file-evidence checkpoint](artifact-native-linux-vz-package-root-file-evidence-checkpoint-2026-07-14.md)
 - [Linux VZ package protected network-intent source checkpoint](artifact-native-linux-vz-package-network-intent-source-checkpoint-2026-07-14.md)
 - [Linux VZ package canonical root network-evidence checkpoint](artifact-native-linux-vz-package-root-network-evidence-checkpoint-2026-07-14.md)
+- [Linux VZ package root-evidence receipt checkpoint](artifact-native-linux-vz-package-root-evidence-receipt-checkpoint-2026-07-14.md)
 - [Linux VZ runtime-qualification guest-candidate checkpoint](artifact-native-linux-vz-runtime-qualification-guest-candidate-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification host-launcher checkpoint](artifact-native-linux-vz-runtime-qualification-host-launcher-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification physical checkpoint](artifact-native-linux-vz-runtime-qualification-physical-checkpoint-2026-07-13.md)
