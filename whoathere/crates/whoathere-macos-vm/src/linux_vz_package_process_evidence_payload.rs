@@ -1038,13 +1038,27 @@ fn decode_process_payload_v1(
             return Err(LinuxVzPackageSensorPayloadErrorV1::InvalidEvent);
         }
         if subject_pid == correlation.leader_pid() {
+            if parent_pid != correlation.leader_parent_pid() {
+                return Err(LinuxVzPackageSensorPayloadErrorV1::InvalidEvent);
+            }
             match kind {
                 LinuxVzPackageProcessEventKindV1::Fork => {
+                    if actor_pid != correlation.leader_parent_pid() {
+                        return Err(LinuxVzPackageSensorPayloadErrorV1::InvalidEvent);
+                    }
                     if leader_fork_sequence.replace(sequence).is_some() {
                         return Err(LinuxVzPackageSensorPayloadErrorV1::InvalidEvent);
                     }
                 }
                 LinuxVzPackageProcessEventKindV1::Exec => {
+                    if event.executable_sha256.as_ref()
+                        != Some(correlation.leader_executable_sha256())
+                        || event.argv_sha256.as_ref() != Some(correlation.leader_argv_sha256())
+                        || argv_item_count
+                            != u64::try_from(correlation.leader_argv_item_count()).ok()
+                    {
+                        return Err(LinuxVzPackageSensorPayloadErrorV1::InvalidEvent);
+                    }
                     if leader_exec_sequence.replace(sequence).is_some() {
                         return Err(LinuxVzPackageSensorPayloadErrorV1::InvalidEvent);
                     }
@@ -1542,10 +1556,11 @@ mod tests {
         derive_macos_linux_vz_package_execution_process_plan_v1,
         linux_vz_package_execution_program::test_macos_linux_vz_package_execution_program_v1,
         LinuxVzPackageExpectedProcessSensorCorrelationV1, LinuxVzPackageProcessCompletionV1,
-        LinuxVzPackageProcessTerminalV1, MacosLinuxVzNpmLifecyclePolicyV1,
-        MacosLinuxVzPackageDependencyPolicyV1, MacosLinuxVzPackageExecutionStageV1,
-        MacosLinuxVzPackageRuntimeExecutablesV1, ValidatedLinuxVzPackageDynamicProcessBindingsV1,
-        LINUX_VZ_PACKAGE_PROCESS_SENSOR_CORRELATION_SCHEMA_V2,
+        LinuxVzPackageProcessLaunchIdentityV1, LinuxVzPackageProcessTerminalV1,
+        MacosLinuxVzNpmLifecyclePolicyV1, MacosLinuxVzPackageDependencyPolicyV1,
+        MacosLinuxVzPackageExecutionStageV1, MacosLinuxVzPackageRuntimeExecutablesV1,
+        ValidatedLinuxVzPackageDynamicProcessBindingsV1,
+        LINUX_VZ_PACKAGE_PROCESS_SENSOR_CORRELATION_SCHEMA_V3,
     };
     use serde_json::{json, Value};
     use whoathere_detonation::NpmEnvironmentProfileV1;
@@ -1612,28 +1627,30 @@ mod tests {
         challenge: &Sha256Digest,
         exit_sequence: u64,
     ) -> Value {
+        let launch_identity =
+            LinuxVzPackageProcessLaunchIdentityV1::from_contract_v1(contract).expect("identity");
         json!({
             "binding": binding_v1(contract, challenge),
             "coverage": coverage_v1(3),
             "descendant_teardown_complete": true,
             "events": [
                 {
-                    "actor_pid": "100",
+                    "actor_pid": "40",
                     "cgroup_id": "9001",
                     "kind": "fork",
-                    "parent_pid": "100",
+                    "parent_pid": "40",
                     "sequence": "1",
                     "subject_pid": "42",
                     "timestamp_monotonic_nanoseconds": "210",
                 },
                 {
                     "actor_pid": "42",
-                    "argv_item_count": "3",
-                    "argv_sha256": Sha256Digest::from_bytes(b"bounded argv projection"),
+                    "argv_item_count": launch_identity.argv_item_count().to_string(),
+                    "argv_sha256": launch_identity.argv_sha256(),
                     "cgroup_id": "9001",
-                    "executable_sha256": Sha256Digest::from_bytes(b"measured executable"),
+                    "executable_sha256": launch_identity.executable_sha256(),
                     "kind": "exec",
-                    "parent_pid": "100",
+                    "parent_pid": "40",
                     "sequence": "2",
                     "subject_pid": "42",
                     "timestamp_monotonic_nanoseconds": "220",
@@ -1643,7 +1660,7 @@ mod tests {
                     "cgroup_id": "9001",
                     "exit_status": "0",
                     "kind": "exit",
-                    "parent_pid": "100",
+                    "parent_pid": "40",
                     "sequence": exit_sequence.to_string(),
                     "subject_pid": "42",
                     "timestamp_monotonic_nanoseconds": "280",
@@ -1722,7 +1739,9 @@ mod tests {
         network_event_count: u64,
         event_count: u64,
     ) -> LinuxVzPackageProcessSensorCorrelationV1 {
-        let correlation = canonical_v1(&json!({
+        let launch_identity =
+            LinuxVzPackageProcessLaunchIdentityV1::from_contract_v1(contract).expect("identity");
+        let mut correlation_value = json!({
             "action_index": contract.action_index().to_string(),
             "cgroup_empty_after_reap": true,
             "cgroup_id": "9001",
@@ -1755,13 +1774,19 @@ mod tests {
             "process_sensor_healthy": true,
             "process_started_monotonic_nanoseconds": "200",
             "public_network_route_present": false,
-            "schema_version": LINUX_VZ_PACKAGE_PROCESS_SENSOR_CORRELATION_SCHEMA_V2,
+            "schema_version": LINUX_VZ_PACKAGE_PROCESS_SENSOR_CORRELATION_SCHEMA_V3,
             "sensor_ended_monotonic_nanoseconds": "400",
             "sensor_session_challenge_sha256": challenge,
             "sensor_started_monotonic_nanoseconds": "100",
             "sensor_teardown_complete": true,
             "sync_back": false,
-        }));
+        });
+        correlation_value["leader_argv_item_count"] =
+            json!(launch_identity.argv_item_count().to_string());
+        correlation_value["leader_argv_sha256"] = json!(launch_identity.argv_sha256());
+        correlation_value["leader_executable_sha256"] = json!(launch_identity.executable_sha256());
+        correlation_value["leader_parent_pid"] = json!("40");
+        let correlation = canonical_v1(&correlation_value);
         decode_linux_vz_package_process_sensor_correlation_v1(
             &correlation,
             LinuxVzPackageExpectedProcessSensorCorrelationV1 {
@@ -1769,6 +1794,8 @@ mod tests {
                 contract,
                 cgroup_name: "whoathere-package-action-1",
                 leader_pid: 42,
+                leader_parent_pid: 40,
+                launch_identity,
                 completion: LinuxVzPackageProcessCompletionV1::from_parts_v1(
                     200,
                     300,
@@ -1840,6 +1867,22 @@ mod tests {
         rebound_exit["events"][2]["exit_status"] = json!("1");
         assert_eq!(
             decode_process_payload_v1(&correlation, &canonical_v1(&rebound_exit)),
+            Err(LinuxVzPackageSensorPayloadErrorV1::InvalidEvent)
+        );
+
+        let mut rebound_parent = exact_process.clone();
+        rebound_parent["events"][0]["actor_pid"] = json!("39");
+        rebound_parent["events"][0]["parent_pid"] = json!("39");
+        assert_eq!(
+            decode_process_payload_v1(&correlation, &canonical_v1(&rebound_parent)),
+            Err(LinuxVzPackageSensorPayloadErrorV1::InvalidEvent)
+        );
+
+        let mut rebound_exec = exact_process.clone();
+        rebound_exec["events"][1]["executable_sha256"] =
+            json!(Sha256Digest::from_bytes(b"rebound executable"));
+        assert_eq!(
+            decode_process_payload_v1(&correlation, &canonical_v1(&rebound_exec)),
             Err(LinuxVzPackageSensorPayloadErrorV1::InvalidEvent)
         );
 

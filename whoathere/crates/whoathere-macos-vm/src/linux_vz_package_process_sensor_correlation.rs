@@ -1,6 +1,9 @@
 use crate::LinuxVzPackageProcessTerminalV1;
 #[cfg(any(target_os = "linux", test))]
-use crate::{LinuxVzPackageProcessCompletionV1, LinuxVzPackageProcessLaunchContractV1};
+use crate::{
+    LinuxVzPackageProcessCompletionV1, LinuxVzPackageProcessLaunchContractV1,
+    LinuxVzPackageProcessLaunchIdentityV1,
+};
 #[cfg(any(target_os = "linux", test))]
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -10,6 +13,8 @@ pub const LINUX_VZ_PACKAGE_PROCESS_SENSOR_CORRELATION_SCHEMA_V1: &str =
     "whoathere.linux_vz_package_process_sensor_correlation.v1";
 pub const LINUX_VZ_PACKAGE_PROCESS_SENSOR_CORRELATION_SCHEMA_V2: &str =
     "whoathere.linux_vz_package_process_sensor_correlation.v2";
+pub const LINUX_VZ_PACKAGE_PROCESS_SENSOR_CORRELATION_SCHEMA_V3: &str =
+    "whoathere.linux_vz_package_process_sensor_correlation.v3";
 pub const MAX_LINUX_VZ_PACKAGE_PROCESS_SENSOR_CORRELATION_BYTES_V1: usize = 64 * 1024;
 pub const MAX_LINUX_VZ_PACKAGE_PROTECTED_SENSOR_PAYLOAD_BYTES_V1: usize = 4 * 1024 * 1024;
 
@@ -80,7 +85,7 @@ impl std::error::Error for LinuxVzPackageProcessSensorCorrelationErrorV1 {}
 #[cfg(any(target_os = "linux", test))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct PackageProcessSensorCorrelationWireV2 {
+struct PackageProcessSensorCorrelationWireV3 {
     schema_version: String,
     sensor_session_challenge_sha256: Sha256Digest,
     process_plan_sha256: Sha256Digest,
@@ -89,6 +94,10 @@ struct PackageProcessSensorCorrelationWireV2 {
     cgroup_name: String,
     cgroup_id: String,
     leader_pid: String,
+    leader_parent_pid: String,
+    leader_executable_sha256: Sha256Digest,
+    leader_argv_sha256: Sha256Digest,
+    leader_argv_item_count: String,
     leader_terminal: LinuxVzPackageProcessTerminalV1,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     leader_exit_status: Option<String>,
@@ -125,12 +134,14 @@ struct PackageProcessSensorCorrelationWireV2 {
 }
 
 #[cfg(any(target_os = "linux", test))]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct LinuxVzPackageExpectedProcessSensorCorrelationV1<'a> {
     pub(crate) sensor_session_challenge_sha256: &'a Sha256Digest,
     pub(crate) contract: &'a LinuxVzPackageProcessLaunchContractV1,
     pub(crate) cgroup_name: &'a str,
     pub(crate) leader_pid: u32,
+    pub(crate) leader_parent_pid: u32,
+    pub(crate) launch_identity: LinuxVzPackageProcessLaunchIdentityV1,
     pub(crate) completion: LinuxVzPackageProcessCompletionV1,
 }
 
@@ -145,6 +156,10 @@ pub struct LinuxVzPackageProcessSensorCorrelationV1 {
     cgroup_name: String,
     cgroup_id: u64,
     leader_pid: u32,
+    leader_parent_pid: u32,
+    leader_executable_sha256: Sha256Digest,
+    leader_argv_sha256: Sha256Digest,
+    leader_argv_item_count: usize,
     leader_terminal: LinuxVzPackageProcessTerminalV1,
     leader_exit_status: Option<u8>,
     leader_termination_signal: Option<u8>,
@@ -173,6 +188,8 @@ impl fmt::Debug for LinuxVzPackageProcessSensorCorrelationV1 {
             .field("cgroup_name", &self.cgroup_name)
             .field("cgroup_id", &self.cgroup_id)
             .field("leader_pid", &self.leader_pid)
+            .field("leader_parent_pid", &self.leader_parent_pid)
+            .field("leader_argv_item_count", &self.leader_argv_item_count)
             .field("event_count", &self.event_count)
             .finish()
     }
@@ -213,6 +230,22 @@ impl LinuxVzPackageProcessSensorCorrelationV1 {
 
     pub const fn leader_pid(&self) -> u32 {
         self.leader_pid
+    }
+
+    pub const fn leader_parent_pid(&self) -> u32 {
+        self.leader_parent_pid
+    }
+
+    pub fn leader_executable_sha256(&self) -> &Sha256Digest {
+        &self.leader_executable_sha256
+    }
+
+    pub fn leader_argv_sha256(&self) -> &Sha256Digest {
+        &self.leader_argv_sha256
+    }
+
+    pub const fn leader_argv_item_count(&self) -> usize {
+        self.leader_argv_item_count
     }
 
     pub const fn leader_terminal(&self) -> LinuxVzPackageProcessTerminalV1 {
@@ -297,7 +330,7 @@ pub(crate) fn decode_linux_vz_package_process_sensor_correlation_v1(
         return Err(LinuxVzPackageProcessSensorCorrelationErrorV1::LimitExceeded);
     }
     let mut deserializer = serde_json::Deserializer::from_slice(bytes);
-    let wire = PackageProcessSensorCorrelationWireV2::deserialize(&mut deserializer)
+    let wire = PackageProcessSensorCorrelationWireV3::deserialize(&mut deserializer)
         .map_err(|_| LinuxVzPackageProcessSensorCorrelationErrorV1::InvalidJson)?;
     deserializer
         .end()
@@ -311,6 +344,8 @@ pub(crate) fn decode_linux_vz_package_process_sensor_correlation_v1(
     let action_index = decimal_usize_v1(&wire.action_index)?;
     let cgroup_id = decimal_u64_v1(&wire.cgroup_id)?;
     let leader_pid = decimal_u32_v1(&wire.leader_pid)?;
+    let leader_parent_pid = decimal_u32_v1(&wire.leader_parent_pid)?;
+    let leader_argv_item_count = decimal_usize_v1(&wire.leader_argv_item_count)?;
     let leader_exit_status = optional_u8_v1(wire.leader_exit_status.as_deref(), true)?;
     let leader_termination_signal =
         optional_u8_v1(wire.leader_termination_signal.as_deref(), false)?;
@@ -332,7 +367,7 @@ pub(crate) fn decode_linux_vz_package_process_sensor_correlation_v1(
         "whoathere-package-action-{}",
         expected.contract.action_index()
     );
-    if wire.schema_version != LINUX_VZ_PACKAGE_PROCESS_SENSOR_CORRELATION_SCHEMA_V2
+    if wire.schema_version != LINUX_VZ_PACKAGE_PROCESS_SENSOR_CORRELATION_SCHEMA_V3
         || &wire.sensor_session_challenge_sha256 != expected.sensor_session_challenge_sha256
         || &wire.process_plan_sha256 != expected.contract.process_plan_sha256()
         || &wire.launch_contract_sha256 != expected.contract.launch_contract_sha256()
@@ -340,6 +375,10 @@ pub(crate) fn decode_linux_vz_package_process_sensor_correlation_v1(
         || wire.cgroup_name != expected.cgroup_name
         || wire.cgroup_name != expected_cgroup_name
         || leader_pid != expected.leader_pid
+        || leader_parent_pid != expected.leader_parent_pid
+        || wire.leader_executable_sha256 != *expected.launch_identity.executable_sha256()
+        || wire.leader_argv_sha256 != *expected.launch_identity.argv_sha256()
+        || leader_argv_item_count != expected.launch_identity.argv_item_count()
         || process_started != expected.completion.process_started_monotonic_nanoseconds()
         || process_ended != expected.completion.process_ended_monotonic_nanoseconds()
         || wire.leader_terminal != expected.completion.terminal()
@@ -349,6 +388,8 @@ pub(crate) fn decode_linux_vz_package_process_sensor_correlation_v1(
         || package_gid != 65_534
         || cgroup_id == 0
         || leader_pid <= 1
+        || leader_parent_pid <= 1
+        || leader_parent_pid == leader_pid
     {
         return Err(LinuxVzPackageProcessSensorCorrelationErrorV1::BindingMismatch);
     }
@@ -402,6 +443,10 @@ pub(crate) fn decode_linux_vz_package_process_sensor_correlation_v1(
         cgroup_name: wire.cgroup_name,
         cgroup_id,
         leader_pid,
+        leader_parent_pid,
+        leader_executable_sha256: wire.leader_executable_sha256,
+        leader_argv_sha256: wire.leader_argv_sha256,
+        leader_argv_item_count,
         leader_terminal: wire.leader_terminal,
         leader_exit_status,
         leader_termination_signal,
@@ -510,7 +555,9 @@ mod tests {
         contract: &LinuxVzPackageProcessLaunchContractV1,
         challenge: &Sha256Digest,
     ) -> Vec<u8> {
-        serde_json_canonicalizer::to_vec(&serde_json::json!({
+        let launch_identity =
+            LinuxVzPackageProcessLaunchIdentityV1::from_contract_v1(contract).expect("identity");
+        let mut value = serde_json::json!({
             "action_index": contract.action_index().to_string(),
             "cgroup_empty_after_reap": true,
             "cgroup_id": "9001",
@@ -543,14 +590,19 @@ mod tests {
             "process_sensor_healthy": true,
             "process_started_monotonic_nanoseconds": "200",
             "public_network_route_present": false,
-            "schema_version": LINUX_VZ_PACKAGE_PROCESS_SENSOR_CORRELATION_SCHEMA_V2,
+            "schema_version": LINUX_VZ_PACKAGE_PROCESS_SENSOR_CORRELATION_SCHEMA_V3,
             "sensor_ended_monotonic_nanoseconds": "400",
             "sensor_session_challenge_sha256": challenge,
             "sensor_started_monotonic_nanoseconds": "100",
             "sensor_teardown_complete": true,
             "sync_back": false
-        }))
-        .expect("payload")
+        });
+        value["leader_argv_item_count"] =
+            serde_json::json!(launch_identity.argv_item_count().to_string());
+        value["leader_argv_sha256"] = serde_json::json!(launch_identity.argv_sha256());
+        value["leader_executable_sha256"] = serde_json::json!(launch_identity.executable_sha256());
+        value["leader_parent_pid"] = serde_json::json!("40");
+        serde_json_canonicalizer::to_vec(&value).expect("payload")
     }
 
     fn expected_v1<'a>(
@@ -562,6 +614,9 @@ mod tests {
             contract,
             cgroup_name: "whoathere-package-action-1",
             leader_pid: 42,
+            leader_parent_pid: 40,
+            launch_identity: LinuxVzPackageProcessLaunchIdentityV1::from_contract_v1(contract)
+                .expect("identity"),
             completion: LinuxVzPackageProcessCompletionV1::from_parts_v1(
                 200,
                 300,
@@ -584,6 +639,18 @@ mod tests {
         )
         .expect("correlation");
         assert_eq!(observed.leader_pid(), 42);
+        assert_eq!(observed.leader_parent_pid(), 40);
+        let launch_identity =
+            LinuxVzPackageProcessLaunchIdentityV1::from_contract_v1(&contract).expect("identity");
+        assert_eq!(
+            observed.leader_executable_sha256(),
+            launch_identity.executable_sha256()
+        );
+        assert_eq!(observed.leader_argv_sha256(), launch_identity.argv_sha256());
+        assert_eq!(
+            observed.leader_argv_item_count(),
+            launch_identity.argv_item_count()
+        );
         assert_eq!(
             observed.leader_terminal(),
             LinuxVzPackageProcessTerminalV1::Exited
@@ -621,6 +688,9 @@ mod tests {
                 contract: &contract,
                 cgroup_name: "whoathere-package-action-1",
                 leader_pid: 42,
+                leader_parent_pid: 40,
+                launch_identity: LinuxVzPackageProcessLaunchIdentityV1::from_contract_v1(&contract)
+                    .expect("identity"),
                 completion: LinuxVzPackageProcessCompletionV1::from_parts_v1(
                     200,
                     300,
@@ -663,6 +733,21 @@ mod tests {
             (
                 "leader_exit_status",
                 serde_json::json!("1"),
+                LinuxVzPackageProcessSensorCorrelationErrorV1::BindingMismatch,
+            ),
+            (
+                "leader_parent_pid",
+                serde_json::json!("39"),
+                LinuxVzPackageProcessSensorCorrelationErrorV1::BindingMismatch,
+            ),
+            (
+                "leader_argv_item_count",
+                serde_json::json!("1"),
+                LinuxVzPackageProcessSensorCorrelationErrorV1::BindingMismatch,
+            ),
+            (
+                "leader_executable_sha256",
+                serde_json::json!(Sha256Digest::from_bytes(b"rebound executable")),
                 LinuxVzPackageProcessSensorCorrelationErrorV1::BindingMismatch,
             ),
             (

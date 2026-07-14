@@ -262,6 +262,60 @@ pub struct LinuxVzPackageProcessLaunchContractV1 {
     limits: LinuxVzPackageProcessLaunchLimitsV1,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinuxVzPackageProcessLaunchIdentityV1 {
+    executable_sha256: Sha256Digest,
+    argv_sha256: Sha256Digest,
+    argv_item_count: usize,
+}
+
+impl LinuxVzPackageProcessLaunchIdentityV1 {
+    #[cfg(any(target_os = "linux", test))]
+    pub(crate) fn from_contract_v1(
+        contract: &LinuxVzPackageProcessLaunchContractV1,
+    ) -> Result<Self, LinuxVzPackageProcessLaunchContractErrorV1> {
+        let argv = serde_json_canonicalizer::to_vec(&contract.argv())
+            .map_err(|_| LinuxVzPackageProcessLaunchContractErrorV1::Serialization)?;
+        Self::from_bound_digests_v1(
+            contract.expected_executable_sha256().clone(),
+            Sha256Digest::from_bytes(&argv),
+            contract.argv().len(),
+        )
+    }
+
+    pub(crate) fn from_bound_digests_v1(
+        executable_sha256: Sha256Digest,
+        argv_sha256: Sha256Digest,
+        argv_item_count: usize,
+    ) -> Result<Self, LinuxVzPackageProcessLaunchContractErrorV1> {
+        let empty = Sha256Digest::from_bytes(&[]);
+        if executable_sha256 == empty
+            || argv_sha256 == empty
+            || argv_item_count == 0
+            || argv_item_count > MAX_ARGUMENT_COUNT_V1
+        {
+            return Err(LinuxVzPackageProcessLaunchContractErrorV1::InvalidArgument);
+        }
+        Ok(Self {
+            executable_sha256,
+            argv_sha256,
+            argv_item_count,
+        })
+    }
+
+    pub fn executable_sha256(&self) -> &Sha256Digest {
+        &self.executable_sha256
+    }
+
+    pub fn argv_sha256(&self) -> &Sha256Digest {
+        &self.argv_sha256
+    }
+
+    pub const fn argv_item_count(&self) -> usize {
+        self.argv_item_count
+    }
+}
+
 impl fmt::Debug for LinuxVzPackageProcessLaunchContractV1 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -696,6 +750,20 @@ mod tests {
             contract.launch_contract_sha256(),
             &Sha256Digest::from_bytes(contract.canonical_json_v1())
         );
+        let identity =
+            LinuxVzPackageProcessLaunchIdentityV1::from_contract_v1(&contract).expect("identity");
+        let canonical_argv =
+            serde_json_canonicalizer::to_vec(&contract.argv()).expect("canonical argv");
+        assert_eq!(
+            identity.executable_sha256(),
+            contract.expected_executable_sha256()
+        );
+        assert_eq!(
+            identity.argv_sha256(),
+            &Sha256Digest::from_bytes(&canonical_argv)
+        );
+        assert_eq!(identity.argv_item_count(), contract.argv().len());
+        assert!(!format!("{identity:?}").contains("package.tgz"));
     }
 
     #[test]

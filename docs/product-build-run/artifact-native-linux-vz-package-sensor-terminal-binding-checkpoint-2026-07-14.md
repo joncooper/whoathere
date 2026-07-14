@@ -90,14 +90,19 @@ cgroup-filtered BPF lifecycle exit, while treating either missing source as inco
 The current BPF record does not retain the tracepoint `exit_code`; adding it would provide an
 additional independent consistency check.
 
-Two other process bindings remain open:
+Two other process bindings were open at this checkpoint:
 
 1. The initial blocked leader is forked before it is placed into the package cgroup, so the
    cgroup-filtered BPF program cannot observe that first fork. The service must create a narrowly
    typed supervisor-bound leader-start observation without calling it BPF evidence.
 2. The BPF exec event deliberately carries no raw argv or path. The protected service still needs
-   to bind the exact measured executable digest, argv digest, and argv count from the fixed launch
+   to bind the exact expected executable digest, argv digest, and argv count from the fixed launch
    contract without accepting package-controlled strings.
+
+The subsequent
+[launch-binding checkpoint](artifact-native-linux-vz-package-sensor-launch-binding-checkpoint-2026-07-14.md)
+closes those protocol and typed-evidence bindings. It does not instantiate the production
+collector or turn the contract-derived launch identity into an independent runtime measurement.
 
 The production root collector, file/fanotify and post-run diff stream, `connect`/`sendto` physical
 qualification and host-frame correlation, signed `EvidenceEnvelope`, complete runtime, inert

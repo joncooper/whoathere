@@ -5,7 +5,8 @@ use crate::{
     decode_linux_vz_package_process_sensor_correlation_v1,
     decode_linux_vz_package_protected_sensor_payload_set_v1,
     validate_linux_vz_package_protected_sensor_payloads_v1,
-    LinuxVzPackageExpectedProcessSensorCorrelationV1, MeasuredLinuxVzPackageProcessV1,
+    LinuxVzPackageExpectedProcessSensorCorrelationV1, LinuxVzPackageProcessLaunchIdentityV1,
+    MeasuredLinuxVzPackageProcessV1,
 };
 use crate::{
     LinuxVzPackageProcessMeasurementObservationV1, LinuxVzPackageProcessSensorCorrelationV1,
@@ -795,6 +796,11 @@ mod linux {
                 return Err(LinuxVzPackageProcessSupervisorErrorV1::InvalidDeadline);
             }
             let parent_pid = unsafe { libc::getpid() };
+            let leader_parent_pid = u32::try_from(parent_pid)
+                .map_err(|_| LinuxVzPackageProcessSupervisorErrorV1::ForkFailed)?;
+            if leader_parent_pid <= 1 {
+                return Err(LinuxVzPackageProcessSupervisorErrorV1::ForkFailed);
+            }
             let child = unsafe { libc::fork() };
             if child < 0 {
                 return Err(LinuxVzPackageProcessSupervisorErrorV1::ForkFailed);
@@ -945,6 +951,8 @@ mod linux {
                 exit_status,
                 termination_signal,
             )?;
+            let launch_identity = LinuxVzPackageProcessLaunchIdentityV1::from_contract_v1(contract)
+                .map_err(|_| LinuxVzPackageProcessSupervisorErrorV1::InvalidContract)?;
             let cgroup_name = cgroup.name.clone();
             let protected_sensor_result = observer
                 .finish_v1(contract, &cgroup_name, leader_pid, &completion)
@@ -956,6 +964,8 @@ mod linux {
                             contract,
                             cgroup_name: &cgroup_name,
                             leader_pid,
+                            leader_parent_pid,
+                            launch_identity,
                             completion,
                         },
                     )
