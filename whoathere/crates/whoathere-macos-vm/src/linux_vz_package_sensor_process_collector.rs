@@ -11,18 +11,27 @@ use crate::linux_vz_package_sensor_process_stream::{
 use crate::LinuxVzPackageProcessCompletionV1;
 use std::collections::BTreeMap;
 use std::fmt;
+#[cfg(target_os = "linux")]
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
+#[cfg(target_os = "linux")]
+use std::thread::JoinHandle;
+#[cfg(target_os = "linux")]
+use std::time::Duration;
 use whoathere_artifact::Sha256Digest;
 
 const MIN_ROOT_PROCESS_RING_BUFFER_BYTES_V1: usize = 64 * 1024;
 const MAX_ROOT_PROCESS_RING_BUFFER_BYTES_V1: usize = 16 * 1024 * 1024;
 const MAX_ROOT_PROCESS_SOURCE_EVENTS_V1: usize = 65_536;
 const DRAIN_BATCH_RECORDS_V1: usize = 4_096;
+#[cfg(target_os = "linux")]
+const CONTINUOUS_DRAIN_POLL_INTERVAL_V1: Duration = Duration::from_millis(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LinuxVzPackageRootProcessCollectorErrorV1 {
     UnsupportedPlatform,
     InvalidConfiguration,
     InvalidState,
+    Worker,
     Producer,
     ProcessStream,
     PreReleaseEvent,
@@ -40,6 +49,7 @@ impl LinuxVzPackageRootProcessCollectorErrorV1 {
                 "linux_vz_package_root_process_collector_configuration_invalid"
             }
             Self::InvalidState => "linux_vz_package_root_process_collector_state_invalid",
+            Self::Worker => "linux_vz_package_root_process_collector_worker_failed",
             Self::Producer => "linux_vz_package_root_process_collector_producer_failed",
             Self::ProcessStream => "linux_vz_package_root_process_collector_stream_invalid",
             Self::PreReleaseEvent => {
@@ -83,6 +93,11 @@ pub(crate) struct LinuxVzPackageRootProcessCollectionV1 {
     tracepoint_format_sha256: BTreeMap<&'static str, Sha256Digest>,
     online_cpus: Vec<u32>,
     attachment_cpu: u32,
+    active_drain_poll_count: u64,
+    active_nonempty_drain_count: u64,
+    source_event_count_before_finish: u64,
+    finish_drain_event_count: u64,
+    maximum_drain_batch_record_count: u64,
 }
 
 impl LinuxVzPackageRootProcessCollectionV1 {
@@ -134,6 +149,30 @@ impl LinuxVzPackageRootProcessCollectionV1 {
         self.attachment_cpu
     }
 
+    pub(crate) const fn active_drain_poll_count_v1(&self) -> u64 {
+        self.active_drain_poll_count
+    }
+
+    pub(crate) const fn active_nonempty_drain_count_v1(&self) -> u64 {
+        self.active_nonempty_drain_count
+    }
+
+    pub(crate) const fn source_event_count_before_finish_v1(&self) -> u64 {
+        self.source_event_count_before_finish
+    }
+
+    pub(crate) const fn finish_drain_event_count_v1(&self) -> u64 {
+        self.finish_drain_event_count
+    }
+
+    pub(crate) const fn maximum_drain_batch_record_count_v1(&self) -> u64 {
+        self.maximum_drain_batch_record_count
+    }
+
+    pub(crate) const fn continuous_drain_v1(&self) -> bool {
+        true
+    }
+
     pub(crate) const fn dropped_event_count_v1(&self) -> u64 {
         0
     }
@@ -158,12 +197,52 @@ enum LinuxVzPackageRootProcessCollectorStateV1 {
 }
 
 #[cfg(target_os = "linux")]
+#[derive(Debug)]
+struct LinuxVzPackageRootProcessWorkerReadyV1 {
+    online_cpus: Vec<u32>,
+    attachment_cpu: u32,
+}
+
+#[cfg(target_os = "linux")]
+enum LinuxVzPackageRootProcessWorkerCommandV1 {
+    LeaderAttached {
+        leader_pid: u32,
+        response: SyncSender<Result<(), LinuxVzPackageRootProcessCollectorErrorV1>>,
+    },
+    Finish {
+        leader_pid: u32,
+        completion: LinuxVzPackageProcessCompletionV1,
+        response: SyncSender<
+            Result<
+                LinuxVzPackageRootProcessCollectionV1,
+                LinuxVzPackageRootProcessCollectorErrorV1,
+            >,
+        >,
+    },
+    Abort,
+}
+
+#[cfg(target_os = "linux")]
+struct LinuxVzPackageRootProcessWorkerV1 {
+    producer: LinuxVzPackageSensorBpfProducerV1,
+    correlator: LinuxVzPackageProcessEventCorrelatorV1,
+    leader_pid: Option<u32>,
+    fault: Option<LinuxVzPackageRootProcessCollectorErrorV1>,
+    ingested_source_event_count: u64,
+    active_drain_poll_count: u64,
+    active_nonempty_drain_count: u64,
+    maximum_drain_batch_record_count: u64,
+}
+
+#[cfg(target_os = "linux")]
 pub(crate) struct LinuxVzPackageRootProcessCollectorV1 {
     state: LinuxVzPackageRootProcessCollectorStateV1,
     expected_cgroup_id: u64,
     leader_pid: Option<u32>,
-    producer: Option<LinuxVzPackageSensorBpfProducerV1>,
-    correlator: Option<LinuxVzPackageProcessEventCorrelatorV1>,
+    online_cpus: Vec<u32>,
+    attachment_cpu: u32,
+    command_sender: Option<SyncSender<LinuxVzPackageRootProcessWorkerCommandV1>>,
+    worker: Option<JoinHandle<()>>,
 }
 
 #[cfg(target_os = "linux")]
@@ -174,8 +253,9 @@ impl fmt::Debug for LinuxVzPackageRootProcessCollectorV1 {
             .field("state", &self.state)
             .field("expected_cgroup_id", &self.expected_cgroup_id)
             .field("leader_pid", &self.leader_pid)
-            .field("producer_present", &self.producer.is_some())
-            .field("correlator_present", &self.correlator.is_some())
+            .field("online_cpus", &self.online_cpus)
+            .field("attachment_cpu", &self.attachment_cpu)
+            .field("worker_present", &self.worker.is_some())
             .finish()
     }
 }
@@ -196,20 +276,39 @@ impl LinuxVzPackageRootProcessCollectorV1 {
         {
             return Err(LinuxVzPackageRootProcessCollectorErrorV1::InvalidConfiguration);
         }
-        let producer =
-            LinuxVzPackageSensorBpfProducerV1::start_v1(expected_cgroup_id, ring_buffer_capacity)
-                .map_err(|_| LinuxVzPackageRootProcessCollectorErrorV1::Producer)?;
-        let correlator = LinuxVzPackageProcessEventCorrelatorV1::new_v1(
-            expected_cgroup_id,
-            maximum_source_events,
-        )
-        .map_err(|_| LinuxVzPackageRootProcessCollectorErrorV1::ProcessStream)?;
+        let (command_sender, command_receiver) = mpsc::sync_channel(1);
+        let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
+        let worker = std::thread::Builder::new()
+            .name("whoathere-root-process-sensor-v1".to_string())
+            .spawn(move || {
+                run_linux_vz_package_root_process_worker_v1(
+                    expected_cgroup_id,
+                    ring_buffer_capacity,
+                    maximum_source_events,
+                    ready_sender,
+                    command_receiver,
+                );
+            })
+            .map_err(|_| LinuxVzPackageRootProcessCollectorErrorV1::Worker)?;
+        let ready = match ready_receiver.recv() {
+            Ok(Ok(ready)) => ready,
+            Ok(Err(error)) => {
+                let _ = worker.join();
+                return Err(error);
+            }
+            Err(_) => {
+                let _ = worker.join();
+                return Err(LinuxVzPackageRootProcessCollectorErrorV1::Worker);
+            }
+        };
         Ok(Self {
             state: LinuxVzPackageRootProcessCollectorStateV1::Armed,
             expected_cgroup_id,
             leader_pid: None,
-            producer: Some(producer),
-            correlator: Some(correlator),
+            online_cpus: ready.online_cpus,
+            attachment_cpu: ready.attachment_cpu,
+            command_sender: Some(command_sender),
+            worker: Some(worker),
         })
     }
 
@@ -223,8 +322,26 @@ impl LinuxVzPackageRootProcessCollectorV1 {
         {
             return self.fault_v1(LinuxVzPackageRootProcessCollectorErrorV1::InvalidState);
         }
-        if let Err(error) = self.require_prerelease_quiet_v1() {
-            return self.fault_v1(error);
+        let (response_sender, response_receiver) = mpsc::sync_channel(1);
+        let sender = match self.command_sender.as_ref() {
+            Some(sender) => sender.clone(),
+            None => return self.fault_v1(LinuxVzPackageRootProcessCollectorErrorV1::InvalidState),
+        };
+        if sender
+            .send(LinuxVzPackageRootProcessWorkerCommandV1::LeaderAttached {
+                leader_pid,
+                response: response_sender,
+            })
+            .is_err()
+        {
+            return self.fault_v1(LinuxVzPackageRootProcessCollectorErrorV1::Worker);
+        }
+        match response_receiver.recv() {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => return self.fault_v1(error),
+            Err(_) => {
+                return self.fault_v1(LinuxVzPackageRootProcessCollectorErrorV1::Worker);
+            }
         }
         self.leader_pid = Some(leader_pid);
         self.state = LinuxVzPackageRootProcessCollectorStateV1::LeaderAttached;
@@ -237,10 +354,7 @@ impl LinuxVzPackageRootProcessCollectorV1 {
         if self.state != LinuxVzPackageRootProcessCollectorStateV1::Armed {
             return Err(LinuxVzPackageRootProcessCollectorErrorV1::InvalidState);
         }
-        self.producer
-            .as_ref()
-            .map(LinuxVzPackageSensorBpfProducerV1::online_cpus_v1)
-            .ok_or(LinuxVzPackageRootProcessCollectorErrorV1::InvalidState)
+        Ok(&self.online_cpus)
     }
 
     pub(crate) fn attachment_cpu_v1(
@@ -249,33 +363,7 @@ impl LinuxVzPackageRootProcessCollectorV1 {
         if self.state != LinuxVzPackageRootProcessCollectorStateV1::Armed {
             return Err(LinuxVzPackageRootProcessCollectorErrorV1::InvalidState);
         }
-        self.producer
-            .as_ref()
-            .map(LinuxVzPackageSensorBpfProducerV1::attachment_cpu_v1)
-            .ok_or(LinuxVzPackageRootProcessCollectorErrorV1::InvalidState)
-    }
-
-    fn require_prerelease_quiet_v1(
-        &mut self,
-    ) -> Result<(), LinuxVzPackageRootProcessCollectorErrorV1> {
-        let producer = self
-            .producer
-            .as_mut()
-            .ok_or(LinuxVzPackageRootProcessCollectorErrorV1::InvalidState)?;
-        let events = producer
-            .drain_available_v1(DRAIN_BATCH_RECORDS_V1)
-            .map_err(|_| LinuxVzPackageRootProcessCollectorErrorV1::Producer)?;
-        let dropped = producer
-            .dropped_event_count_v1()
-            .map_err(|_| LinuxVzPackageRootProcessCollectorErrorV1::Producer)?;
-        if !events.is_empty()
-            || dropped != 0
-            || producer.discarded_record_count_v1() != 0
-            || producer.last_source_sequence_v1() != 0
-        {
-            return Err(LinuxVzPackageRootProcessCollectorErrorV1::PreReleaseEvent);
-        }
-        Ok(())
+        Ok(self.attachment_cpu)
     }
 
     /// Finalizes only after the protected caller has proved the cgroup empty and reaped the leader.
@@ -290,9 +378,36 @@ impl LinuxVzPackageRootProcessCollectorV1 {
         {
             return self.fault_v1(LinuxVzPackageRootProcessCollectorErrorV1::InvalidState);
         }
-        let result = self.finish_inner_v1(leader_pid, completion);
-        self.producer.take();
-        self.correlator.take();
+        let (response_sender, response_receiver) = mpsc::sync_channel(1);
+        let sender = match self.command_sender.as_ref() {
+            Some(sender) => sender.clone(),
+            None => return self.fault_v1(LinuxVzPackageRootProcessCollectorErrorV1::InvalidState),
+        };
+        if sender
+            .send(LinuxVzPackageRootProcessWorkerCommandV1::Finish {
+                leader_pid,
+                completion: *completion,
+                response: response_sender,
+            })
+            .is_err()
+        {
+            return self.fault_v1(LinuxVzPackageRootProcessCollectorErrorV1::Worker);
+        }
+        let result = response_receiver
+            .recv()
+            .unwrap_or(Err(LinuxVzPackageRootProcessCollectorErrorV1::Worker));
+        self.command_sender.take();
+        let joined = match self.worker.take() {
+            Some(worker) => worker
+                .join()
+                .map_err(|_| LinuxVzPackageRootProcessCollectorErrorV1::Worker),
+            None => Err(LinuxVzPackageRootProcessCollectorErrorV1::InvalidState),
+        };
+        let result = match (result, joined) {
+            (Ok(collection), Ok(())) => Ok(collection),
+            (Err(error), _) => Err(error),
+            (Ok(_), Err(error)) => Err(error),
+        };
         self.state = if result.is_ok() {
             LinuxVzPackageRootProcessCollectorStateV1::Finished
         } else {
@@ -301,41 +416,260 @@ impl LinuxVzPackageRootProcessCollectorV1 {
         result
     }
 
-    fn finish_inner_v1(
+    pub(crate) fn abort_v1(&mut self) {
+        self.shutdown_worker_v1();
+        self.leader_pid = None;
+        if self.state != LinuxVzPackageRootProcessCollectorStateV1::Finished {
+            self.state = LinuxVzPackageRootProcessCollectorStateV1::Aborted;
+        }
+    }
+
+    fn fault_v1<T>(
+        &mut self,
+        error: LinuxVzPackageRootProcessCollectorErrorV1,
+    ) -> Result<T, LinuxVzPackageRootProcessCollectorErrorV1> {
+        self.shutdown_worker_v1();
+        self.state = LinuxVzPackageRootProcessCollectorStateV1::Faulted;
+        Err(error)
+    }
+
+    fn shutdown_worker_v1(&mut self) {
+        if let Some(sender) = self.command_sender.take() {
+            let _ = sender.send(LinuxVzPackageRootProcessWorkerCommandV1::Abort);
+        }
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn run_linux_vz_package_root_process_worker_v1(
+    expected_cgroup_id: u64,
+    ring_buffer_capacity: usize,
+    maximum_source_events: usize,
+    ready_sender: SyncSender<
+        Result<LinuxVzPackageRootProcessWorkerReadyV1, LinuxVzPackageRootProcessCollectorErrorV1>,
+    >,
+    command_receiver: Receiver<LinuxVzPackageRootProcessWorkerCommandV1>,
+) {
+    let producer =
+        match LinuxVzPackageSensorBpfProducerV1::start_v1(expected_cgroup_id, ring_buffer_capacity)
+        {
+            Ok(producer) => producer,
+            Err(_) => {
+                let _ = ready_sender.send(Err(LinuxVzPackageRootProcessCollectorErrorV1::Producer));
+                return;
+            }
+        };
+    let correlator = match LinuxVzPackageProcessEventCorrelatorV1::new_v1(
+        expected_cgroup_id,
+        maximum_source_events,
+    ) {
+        Ok(correlator) => correlator,
+        Err(_) => {
+            let _ = ready_sender.send(Err(
+                LinuxVzPackageRootProcessCollectorErrorV1::ProcessStream,
+            ));
+            return;
+        }
+    };
+    let ready = LinuxVzPackageRootProcessWorkerReadyV1 {
+        online_cpus: producer.online_cpus_v1().to_vec(),
+        attachment_cpu: producer.attachment_cpu_v1(),
+    };
+    if ready_sender.send(Ok(ready)).is_err() {
+        return;
+    }
+    LinuxVzPackageRootProcessWorkerV1 {
+        producer,
+        correlator,
+        leader_pid: None,
+        fault: None,
+        ingested_source_event_count: 0,
+        active_drain_poll_count: 0,
+        active_nonempty_drain_count: 0,
+        maximum_drain_batch_record_count: 0,
+    }
+    .run_v1(command_receiver);
+}
+
+#[cfg(target_os = "linux")]
+impl LinuxVzPackageRootProcessWorkerV1 {
+    fn run_v1(mut self, command_receiver: Receiver<LinuxVzPackageRootProcessWorkerCommandV1>) {
+        loop {
+            match command_receiver.recv_timeout(CONTINUOUS_DRAIN_POLL_INTERVAL_V1) {
+                Ok(LinuxVzPackageRootProcessWorkerCommandV1::LeaderAttached {
+                    leader_pid,
+                    response,
+                }) => {
+                    let result = self.leader_attached_v1(leader_pid);
+                    let _ = response.send(result);
+                }
+                Ok(LinuxVzPackageRootProcessWorkerCommandV1::Finish {
+                    leader_pid,
+                    completion,
+                    response,
+                }) => {
+                    let result = self.finish_v1(leader_pid, &completion);
+                    let _ = response.send(result);
+                    return;
+                }
+                Ok(LinuxVzPackageRootProcessWorkerCommandV1::Abort)
+                | Err(RecvTimeoutError::Disconnected) => return,
+                Err(RecvTimeoutError::Timeout) => self.poll_v1(),
+            }
+        }
+    }
+
+    fn leader_attached_v1(
         &mut self,
         leader_pid: u32,
-        completion: &LinuxVzPackageProcessCompletionV1,
-    ) -> Result<LinuxVzPackageRootProcessCollectionV1, LinuxVzPackageRootProcessCollectorErrorV1>
-    {
-        let producer = self
+    ) -> Result<(), LinuxVzPackageRootProcessCollectorErrorV1> {
+        if self.leader_pid.is_some() || leader_pid <= 1 {
+            return Err(LinuxVzPackageRootProcessCollectorErrorV1::InvalidState);
+        }
+        if let Some(error) = self.fault {
+            return Err(error);
+        }
+        self.require_prerelease_quiet_v1()?;
+        self.leader_pid = Some(leader_pid);
+        Ok(())
+    }
+
+    fn poll_v1(&mut self) {
+        if self.leader_pid.is_none() {
+            if self.fault.is_none() {
+                if let Err(error) = self.require_prerelease_quiet_v1() {
+                    self.fault = Some(error);
+                }
+            } else {
+                self.drain_after_fault_v1();
+            }
+            return;
+        }
+        self.active_drain_poll_count = match self.active_drain_poll_count.checked_add(1) {
+            Some(value) => value,
+            None => {
+                self.fault = Some(LinuxVzPackageRootProcessCollectorErrorV1::Worker);
+                return;
+            }
+        };
+        if self.fault.is_none() {
+            match self.drain_correlated_until_empty_v1() {
+                Ok(drained) if drained > 0 => {
+                    self.active_nonempty_drain_count =
+                        match self.active_nonempty_drain_count.checked_add(1) {
+                            Some(value) => value,
+                            None => {
+                                self.fault =
+                                    Some(LinuxVzPackageRootProcessCollectorErrorV1::Worker);
+                                return;
+                            }
+                        };
+                }
+                Ok(_) => {}
+                Err(error) => self.fault = Some(error),
+            }
+        } else {
+            self.drain_after_fault_v1();
+        }
+    }
+
+    fn require_prerelease_quiet_v1(
+        &mut self,
+    ) -> Result<(), LinuxVzPackageRootProcessCollectorErrorV1> {
+        let events = self
             .producer
-            .as_mut()
-            .ok_or(LinuxVzPackageRootProcessCollectorErrorV1::InvalidState)?;
-        let correlator = self
-            .correlator
-            .as_mut()
-            .ok_or(LinuxVzPackageRootProcessCollectorErrorV1::InvalidState)?;
+            .drain_available_v1(DRAIN_BATCH_RECORDS_V1)
+            .map_err(|_| LinuxVzPackageRootProcessCollectorErrorV1::Producer)?;
+        let dropped = self
+            .producer
+            .dropped_event_count_v1()
+            .map_err(|_| LinuxVzPackageRootProcessCollectorErrorV1::Producer)?;
+        if !events.is_empty()
+            || dropped != 0
+            || self.producer.discarded_record_count_v1() != 0
+            || self.producer.last_source_sequence_v1() != 0
+        {
+            return Err(LinuxVzPackageRootProcessCollectorErrorV1::PreReleaseEvent);
+        }
+        Ok(())
+    }
+
+    fn drain_correlated_until_empty_v1(
+        &mut self,
+    ) -> Result<u64, LinuxVzPackageRootProcessCollectorErrorV1> {
+        let mut drained = 0_u64;
         loop {
-            let events = producer
+            let events = self
+                .producer
                 .drain_available_v1(DRAIN_BATCH_RECORDS_V1)
                 .map_err(|_| LinuxVzPackageRootProcessCollectorErrorV1::Producer)?;
+            let batch_count = u64::try_from(events.len())
+                .map_err(|_| LinuxVzPackageRootProcessCollectorErrorV1::Worker)?;
+            self.maximum_drain_batch_record_count =
+                self.maximum_drain_batch_record_count.max(batch_count);
             if events.is_empty() {
                 break;
             }
             for event in events {
-                correlator
+                self.correlator
                     .ingest_v1(event)
                     .map_err(|_| LinuxVzPackageRootProcessCollectorErrorV1::ProcessStream)?;
+                drained = drained
+                    .checked_add(1)
+                    .ok_or(LinuxVzPackageRootProcessCollectorErrorV1::Worker)?;
+                self.ingested_source_event_count = self
+                    .ingested_source_event_count
+                    .checked_add(1)
+                    .ok_or(LinuxVzPackageRootProcessCollectorErrorV1::Worker)?;
             }
         }
-        let dropped_event_count = producer
+        let dropped = self
+            .producer
             .dropped_event_count_v1()
             .map_err(|_| LinuxVzPackageRootProcessCollectorErrorV1::Producer)?;
-        let discarded_record_count = producer.discarded_record_count_v1();
-        let producer_last_source_sequence = producer.last_source_sequence_v1();
-        let runtime_btf_sha256 = producer.runtime_btf_sha256_v1().clone();
-        let task_exit_code_byte_offset = producer.task_exit_code_byte_offset_v1();
-        let tracepoint_format_sha256: BTreeMap<&'static str, Sha256Digest> = producer
+        if dropped != 0 || self.producer.discarded_record_count_v1() != 0 {
+            return Err(LinuxVzPackageRootProcessCollectorErrorV1::ProcessStream);
+        }
+        Ok(drained)
+    }
+
+    fn drain_after_fault_v1(&mut self) {
+        loop {
+            match self.producer.drain_available_v1(DRAIN_BATCH_RECORDS_V1) {
+                Ok(events) if events.is_empty() => return,
+                Ok(_) => {}
+                Err(_) => return,
+            }
+        }
+    }
+
+    fn finish_v1(
+        mut self,
+        leader_pid: u32,
+        completion: &LinuxVzPackageProcessCompletionV1,
+    ) -> Result<LinuxVzPackageRootProcessCollectionV1, LinuxVzPackageRootProcessCollectorErrorV1>
+    {
+        if self.leader_pid != Some(leader_pid) {
+            return Err(LinuxVzPackageRootProcessCollectorErrorV1::InvalidState);
+        }
+        if let Some(error) = self.fault {
+            return Err(error);
+        }
+        let source_event_count_before_finish = self.ingested_source_event_count;
+        let finish_drain_event_count = self.drain_correlated_until_empty_v1()?;
+        let dropped_event_count = self
+            .producer
+            .dropped_event_count_v1()
+            .map_err(|_| LinuxVzPackageRootProcessCollectorErrorV1::Producer)?;
+        let discarded_record_count = self.producer.discarded_record_count_v1();
+        let producer_last_source_sequence = self.producer.last_source_sequence_v1();
+        let runtime_btf_sha256 = self.producer.runtime_btf_sha256_v1().clone();
+        let task_exit_code_byte_offset = self.producer.task_exit_code_byte_offset_v1();
+        let tracepoint_format_sha256: BTreeMap<&'static str, Sha256Digest> = self
+            .producer
             .layouts_v1()
             .iter()
             .map(|layout| {
@@ -348,19 +682,24 @@ impl LinuxVzPackageRootProcessCollectorV1 {
         if tracepoint_format_sha256.len() != 5 {
             return Err(LinuxVzPackageRootProcessCollectorErrorV1::Producer);
         }
-        let online_cpus = producer.online_cpus_v1().to_vec();
-        let attachment_cpu = producer.attachment_cpu_v1();
-        let correlator = self
+        let online_cpus = self.producer.online_cpus_v1().to_vec();
+        let attachment_cpu = self.producer.attachment_cpu_v1();
+        let stream = self
             .correlator
-            .take()
-            .ok_or(LinuxVzPackageRootProcessCollectorErrorV1::InvalidState)?;
-        let stream = correlator
             .finish_v1(
                 dropped_event_count,
                 discarded_record_count,
                 producer_last_source_sequence,
             )
             .map_err(|_| LinuxVzPackageRootProcessCollectorErrorV1::ProcessStream)?;
+        if stream.source_event_count_v1() != self.ingested_source_event_count
+            || stream.source_event_count_v1()
+                != source_event_count_before_finish
+                    .checked_add(finish_drain_event_count)
+                    .ok_or(LinuxVzPackageRootProcessCollectorErrorV1::Worker)?
+        {
+            return Err(LinuxVzPackageRootProcessCollectorErrorV1::ProcessStream);
+        }
         let terminal = validate_leader_terminal_v1(&stream, leader_pid, completion)?;
         Ok(LinuxVzPackageRootProcessCollectionV1 {
             stream,
@@ -375,26 +714,12 @@ impl LinuxVzPackageRootProcessCollectorV1 {
             tracepoint_format_sha256,
             online_cpus,
             attachment_cpu,
+            active_drain_poll_count: self.active_drain_poll_count,
+            active_nonempty_drain_count: self.active_nonempty_drain_count,
+            source_event_count_before_finish,
+            finish_drain_event_count,
+            maximum_drain_batch_record_count: self.maximum_drain_batch_record_count,
         })
-    }
-
-    pub(crate) fn abort_v1(&mut self) {
-        self.producer.take();
-        self.correlator.take();
-        self.leader_pid = None;
-        if self.state != LinuxVzPackageRootProcessCollectorStateV1::Finished {
-            self.state = LinuxVzPackageRootProcessCollectorStateV1::Aborted;
-        }
-    }
-
-    fn fault_v1<T>(
-        &mut self,
-        error: LinuxVzPackageRootProcessCollectorErrorV1,
-    ) -> Result<T, LinuxVzPackageRootProcessCollectorErrorV1> {
-        self.producer.take();
-        self.correlator.take();
-        self.state = LinuxVzPackageRootProcessCollectorStateV1::Faulted;
-        Err(error)
     }
 }
 
@@ -621,6 +946,7 @@ mod tests {
             LinuxVzPackageRootProcessCollectorErrorV1::UnsupportedPlatform,
             LinuxVzPackageRootProcessCollectorErrorV1::InvalidConfiguration,
             LinuxVzPackageRootProcessCollectorErrorV1::InvalidState,
+            LinuxVzPackageRootProcessCollectorErrorV1::Worker,
             LinuxVzPackageRootProcessCollectorErrorV1::Producer,
             LinuxVzPackageRootProcessCollectorErrorV1::ProcessStream,
             LinuxVzPackageRootProcessCollectorErrorV1::PreReleaseEvent,

@@ -4,17 +4,21 @@ Date: 2026-07-09
 
 Status: canonical execution plan for the next product milestone
 
-Current execution checkpoint (2026-07-14): the first concrete process-only root collector now owns
-the root BPF producer, ring consumer, and fail-closed correlator from arm through finish. Its final
-inert physical qualification required a quiet pre-release stream, converted the exact 14-record
-credential/exec/loader-`mmap`/exit source stream into eight ordered observations, and reconciled the
-BTF-derived kernel wait status with the supervisor's exact raw `waitpid` status. The fixture ran on
-CPU 1 while the tracepoint-wide attachment was anchored on CPU 0; loss and host raw frames were
-zero, the VM stopped, and package execution, malware execution, and sync-back remained false. The
-strict schema-v5 Mac verifier binds the collector mode and complete process coverage. No package or
-malware ran. The collector is not yet wired into the protected root service and needs continuous
-ring draining for arbitrary workloads; file, network, envelope, runtime, benign, and malicious
-gates remain open, so the July score remains 7/11. See the
+Current execution checkpoint (2026-07-14): the root process collector now continuously drains its
+BPF ring through a dedicated root-owned worker instead of waiting for finish. A bounded 50 ms inert
+qualification produced 38 active polls; one nonempty poll consumed source records `1..13` while
+the leader was running, and finish consumed only exit record `14`. All 14 records still formed the
+exact eight observations with zero loss, cross-CPU delivery, and exact BTF-derived
+kernel/supervisor terminal agreement. The strict schema-v6 Mac verifier also required the
+continuous-worker mode, exact pre-finish/final accounting, zero host frames, stable images, and a
+stopped VM. No package or malware ran. Protected service integration, asynchronous fault
+termination, file/network collection, authenticated composite evidence, runtime package scenarios,
+benign scoring, and malicious regression remain open, so the July score remains 7/11. See the
+[continuous-drain checkpoint](artifact-native-linux-vz-package-root-process-continuous-drain-checkpoint-2026-07-14.md).
+
+The preceding checkpoint instantiated the process-only root collector and physically qualified its
+arm-to-finish ownership, strict correlation, and BTF terminal reconciliation, but it drained only
+at finish. See the
 [root process-collector checkpoint](artifact-native-linux-vz-package-root-process-collector-checkpoint-2026-07-14.md).
 
 The preceding checkpoint physically proved the producer's tracepoint-wide attachment across CPUs
@@ -402,6 +406,14 @@ collector is still internal and not adapted into the protected root sensor servi
 changed to drain continuously for arbitrary package workloads. File, network, composite-envelope,
 runtime, benign, and malicious gates remain open, so the 7/11 score is unchanged. See the
 [root process-collector checkpoint](artifact-native-linux-vz-package-root-process-collector-checkpoint-2026-07-14.md).
+
+That collector now creates the producer, mapped ring, and correlator inside a dedicated root-owned
+worker and drains every millisecond while the leader runs. The schema-v6 physical gate proved 13
+of 14 source records were consumed before finish and only the exit remained for finalization, with
+all previous loss, topology, BTF, terminal, and VM-stop invariants intact. The service adapter and
+asynchronous sensor-fault termination remain open, as do file, network, composite evidence,
+runtime, benign, and malicious gates; the 7/11 score is unchanged. See the
+[continuous-drain checkpoint](artifact-native-linux-vz-package-root-process-continuous-drain-checkpoint-2026-07-14.md).
 
 The producer now also implements a closed arm64 allowlist for `setgroups`, `setgid`, `setuid`,
 `connect`, `sendto`, and `mmap`, with BPF-side cgroup filtering, pointer redaction, paired
@@ -2095,6 +2107,7 @@ Repository evidence:
 - [Linux VZ package sensor terminal-reconciliation checkpoint](artifact-native-linux-vz-package-sensor-terminal-reconciliation-checkpoint-2026-07-14.md)
 - [Linux VZ package sensor cross-CPU coverage checkpoint](artifact-native-linux-vz-package-sensor-cross-cpu-coverage-checkpoint-2026-07-14.md)
 - [Linux VZ package root process-collector checkpoint](artifact-native-linux-vz-package-root-process-collector-checkpoint-2026-07-14.md)
+- [Linux VZ package root process continuous-drain checkpoint](artifact-native-linux-vz-package-root-process-continuous-drain-checkpoint-2026-07-14.md)
 - [Linux VZ runtime-qualification guest-candidate checkpoint](artifact-native-linux-vz-runtime-qualification-guest-candidate-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification host-launcher checkpoint](artifact-native-linux-vz-runtime-qualification-host-launcher-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification physical checkpoint](artifact-native-linux-vz-runtime-qualification-physical-checkpoint-2026-07-13.md)

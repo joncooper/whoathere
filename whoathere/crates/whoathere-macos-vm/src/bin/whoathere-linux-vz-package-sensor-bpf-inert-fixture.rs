@@ -5,12 +5,14 @@ fn main() {
     let mut arguments = std::env::args_os();
     let program = arguments.next();
     let fixture_case = arguments.next();
-    if program.is_none()
-        || fixture_case.as_deref() != Some(OsStr::new("normal_exit"))
-        || arguments.next().is_some()
-    {
+    if program.is_none() || arguments.next().is_some() {
         std::process::exit(75);
     }
+    let continuous_drain = match fixture_case.as_deref() {
+        Some(value) if value == OsStr::new("normal_exit") => false,
+        Some(value) if value == OsStr::new("continuous_drain") => true,
+        _ => std::process::exit(75),
+    };
     if unsafe { libc::getuid() } != 65_534
         || unsafe { libc::geteuid() } != 65_534
         || unsafe { libc::getgid() } != 65_534
@@ -33,6 +35,15 @@ fn main() {
         || core_limit.rlim_max != 0
     {
         std::process::exit(79);
+    }
+    if continuous_drain {
+        let duration = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 50_000_000,
+        };
+        if unsafe { libc::nanosleep(&duration, std::ptr::null_mut()) } != 0 {
+            std::process::exit(80);
+        }
     }
 }
 

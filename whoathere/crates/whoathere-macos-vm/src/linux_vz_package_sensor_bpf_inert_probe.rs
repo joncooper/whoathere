@@ -111,9 +111,12 @@ pub fn run_linux_vz_package_sensor_bpf_inert_probe_v1(
 #[cfg(target_os = "linux")]
 #[derive(Serialize)]
 struct InertProbeEvidenceWireV1 {
+    active_drain_poll_count: String,
+    active_nonempty_drain_count: String,
     attachment_cpu: String,
     attachment_scope: &'static str,
     cgroup_id: String,
+    collector_drain_mode: &'static str,
     collector_mode: &'static str,
     discarded_record_count: String,
     dropped_event_count: String,
@@ -123,6 +126,7 @@ struct InertProbeEvidenceWireV1 {
     event_sequence_start: String,
     exit_attachment: &'static str,
     exit_status_source: &'static str,
+    finish_drain_event_count: String,
     fixture_cpu: String,
     fixture_exit_status: String,
     fixture_pid: String,
@@ -130,6 +134,7 @@ struct InertProbeEvidenceWireV1 {
     kernel_exit_wait_status: String,
     leader_exec_count: String,
     malware_execution: bool,
+    maximum_drain_batch_record_count: String,
     observed_event_cpus: Vec<String>,
     online_cpus: Vec<String>,
     package_execution: bool,
@@ -139,6 +144,7 @@ struct InertProbeEvidenceWireV1 {
     process_collector_coverage_complete: bool,
     runtime_btf_sha256: String,
     schema_version: &'static str,
+    source_event_count_before_finish: String,
     sync_back: bool,
     task_exit_code_byte_offset: String,
     tracepoint_format_sha256: BTreeMap<&'static str, String>,
@@ -301,7 +307,7 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
     }
     let fixture_path = CString::new("process-fixture-child")
         .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::Fixture)?;
-    let fixture_case = CString::new("normal_exit")
+    let fixture_case = CString::new("continuous_drain")
         .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::Fixture)?;
     let environment = [
         CString::new("CI=true").map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::Fixture)?,
@@ -411,6 +417,17 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
         || collection.leader_supervisor_wait_status_v1() != waitpid_wait_status
         || collection.dropped_event_count_v1() != 0
         || collection.discarded_record_count_v1() != 0
+        || !collection.continuous_drain_v1()
+        || collection.active_drain_poll_count_v1() == 0
+        || collection.active_nonempty_drain_count_v1() == 0
+        || collection.active_nonempty_drain_count_v1() > collection.active_drain_poll_count_v1()
+        || !(13..=14).contains(&collection.source_event_count_before_finish_v1())
+        || collection.finish_drain_event_count_v1() > 1
+        || collection
+            .source_event_count_before_finish_v1()
+            .checked_add(collection.finish_drain_event_count_v1())
+            != Some(14)
+        || !(1..=14).contains(&collection.maximum_drain_batch_record_count_v1())
         || !collection.coverage_complete_v1()
         || !matches_exact_correlated_stream_v1(
             correlated.observations_v1(),
@@ -427,9 +444,12 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
         tracepoints.insert(*name, digest.as_str().to_string());
     }
     let evidence = InertProbeEvidenceWireV1 {
+        active_drain_poll_count: collection.active_drain_poll_count_v1().to_string(),
+        active_nonempty_drain_count: collection.active_nonempty_drain_count_v1().to_string(),
         attachment_cpu: collection.attachment_cpu_v1().to_string(),
         attachment_scope: "tracepoint_wide",
         cgroup_id: cgroup.id.to_string(),
+        collector_drain_mode: "continuous_worker",
         collector_mode: "root_bpf_ring_correlator",
         discarded_record_count: collection.discarded_record_count_v1().to_string(),
         dropped_event_count: collection.dropped_event_count_v1().to_string(),
@@ -454,6 +474,7 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
         event_sequence_start: "1".to_string(),
         exit_attachment: "raw_tracepoint:sched_process_exit",
         exit_status_source: "runtime_btf:task_struct.exit_code",
+        finish_drain_event_count: collection.finish_drain_event_count_v1().to_string(),
         fixture_cpu: fixture_cpu.to_string(),
         fixture_exit_status: "0".to_string(),
         fixture_pid: child.to_string(),
@@ -463,6 +484,9 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
             .to_string(),
         leader_exec_count: collection.leader_exec_count_v1().to_string(),
         malware_execution: false,
+        maximum_drain_batch_record_count: collection
+            .maximum_drain_batch_record_count_v1()
+            .to_string(),
         observed_event_cpus: vec![fixture_cpu.to_string()],
         online_cpus: collection
             .online_cpus_v1()
@@ -475,7 +499,10 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
         pre_release_event_count: "0".to_string(),
         process_collector_coverage_complete: collection.coverage_complete_v1(),
         runtime_btf_sha256: collection.runtime_btf_sha256_v1().as_str().to_string(),
-        schema_version: "whoathere.linux_vz_package_sensor_bpf_inert_probe.v5",
+        schema_version: "whoathere.linux_vz_package_sensor_bpf_inert_probe.v6",
+        source_event_count_before_finish: collection
+            .source_event_count_before_finish_v1()
+            .to_string(),
         sync_back: false,
         task_exit_code_byte_offset: collection.task_exit_code_byte_offset_v1().to_string(),
         tracepoint_format_sha256: tracepoints,
