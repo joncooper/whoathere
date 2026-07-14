@@ -98,9 +98,14 @@ fn main() {
                     std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
                 )
             };
-            if connect_result != -1
-                || std::io::Error::last_os_error().raw_os_error() != Some(libc::ENETUNREACH)
-            {
+            let connect_errno = (connect_result == -1)
+                .then(|| std::io::Error::last_os_error().raw_os_error())
+                .flatten();
+            if connect_result != -1 || connect_errno != Some(libc::ENETUNREACH) {
+                eprintln!(
+                    "WHOATHERE_PACKAGE_SENSOR_BPF_INERT_NETWORK_FAILURE operation=connect result={connect_result} errno={}",
+                    connect_errno.unwrap_or(0)
+                );
                 std::process::exit(83);
             }
 
@@ -130,9 +135,14 @@ fn main() {
                     std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t,
                 )
             };
-            if send_result != -1
-                || std::io::Error::last_os_error().raw_os_error() != Some(libc::ENETUNREACH)
-            {
+            let send_errno = (send_result == -1)
+                .then(|| std::io::Error::last_os_error().raw_os_error())
+                .flatten();
+            if send_result != -1 || send_errno != Some(libc::ENETUNREACH) {
+                eprintln!(
+                    "WHOATHERE_PACKAGE_SENSOR_BPF_INERT_NETWORK_FAILURE operation=sendto result={send_result} errno={}",
+                    send_errno.unwrap_or(0)
+                );
                 std::process::exit(85);
             }
         }
