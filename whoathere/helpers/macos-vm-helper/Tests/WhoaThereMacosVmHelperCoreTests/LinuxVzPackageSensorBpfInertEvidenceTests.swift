@@ -33,6 +33,9 @@ private let taskExitCodeByteOffset: UInt64 = 1_964
     #expect(evidence.sourceEventCountBeforeFinish == 17)
     #expect(evidence.finishDrainEventCount == 1)
     #expect(evidence.maximumDrainBatchRecordCount == 13)
+    #expect(evidence.egressEventCount == 1)
+    #expect(evidence.egressPacketPrefixSHA256 ==
+        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
     #expect(evidence.networkIntentCount == 2)
     #expect(evidence.networkSendtoDestinationTokenSHA256 ==
         "sha256:3ef258ec5ef33c871db55bb52239931372585c08ad3fbafda224bc498ad0ed7b")
@@ -398,6 +401,28 @@ private func packageSensorBpfInertValue() -> [String: Any] {
         "collector_mode": "root_bpf_ring_correlator",
         "discarded_record_count": "0",
         "dropped_event_count": "0",
+        "egress_coverage_complete": true,
+        "egress_discarded_record_count": "0",
+        "egress_dropped_event_count": "0",
+        "egress_event_count": "1",
+        "egress_maximum_drain_batch_record_count": "1",
+        "egress_observations": [[
+            "cpu": "1",
+            "decision": "allow",
+            "egress_interface_index": "2",
+            "gso_segment_count": "0",
+            "gso_segment_size": "0",
+            "ingress_interface_index": "0",
+            "packet_length": "44",
+            "packet_prefix_byte_length": "44",
+            "packet_prefix_sha256":
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "prefix_truncated": false,
+            "protocol": "ipv4",
+            "raw_skb_protocol": "8",
+            "source_sequence": "1",
+            "wire_length": "44",
+        ]],
         "event_count": "18",
         "event_kinds": [
             "setgroups_enter", "setgroups_exit", "setgid_enter", "setgid_exit",
@@ -514,7 +539,7 @@ private func packageSensorBpfInertValue() -> [String: Any] {
         "root_file_evidence_workspace_diff_sha256":
             "sha256:8888888888888888888888888888888888888888888888888888888888888888",
         "runtime_btf_sha256": runtimeBTFSHA256,
-        "schema_version": linuxVzPackageSensorBpfInertEvidenceSchemaV13,
+        "schema_version": linuxVzPackageSensorBpfInertEvidenceSchemaV14,
         "sensor_session_challenge_sha256":
             "sha256:0a6d2053eb627f5f1ed55c993237d3bd832dc1b72f4084c40c9a224e83d6c965",
         "source_event_count_before_finish": "17",

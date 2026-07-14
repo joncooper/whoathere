@@ -1032,6 +1032,7 @@ impl LinuxVzPackageRootSensorServiceCollectorV1 for LinuxVzPackageRootProcessSer
         require_exact_cgroup_processes_v1(cgroup_directory, &[])?;
         let mut process = LinuxVzPackageRootProcessCollectorV1::arm_v1(
             context.cgroup_id,
+            cgroup_directory,
             self.ring_buffer_capacity,
             self.maximum_source_events,
         )

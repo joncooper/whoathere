@@ -6,6 +6,13 @@ use crate::linux_vz_package_sensor_btf::{
     read_linux_vz_package_task_exit_code_layout_v1, LinuxVzPackageTaskExitCodeLayoutV1,
 };
 #[cfg(target_os = "linux")]
+use crate::linux_vz_package_sensor_egress_stream::{
+    LinuxVzPackageEgressBpfRingBufferV1, LinuxVzPackageEgressEventV1,
+};
+use crate::linux_vz_package_sensor_egress_stream::{
+    LinuxVzPackageEgressStreamErrorV1, LINUX_VZ_PACKAGE_EGRESS_EVENT_BYTES_V1,
+};
+#[cfg(target_os = "linux")]
 use crate::linux_vz_package_sensor_event_stream::{
     LinuxVzPackageBpfRingBufferV1, LinuxVzPackageKernelEventV1,
 };
@@ -56,6 +63,7 @@ const BPF_RSH_V1: u8 = 0x70;
 const BPF_MOV_V1: u8 = 0xb0;
 const BPF_JA_V1: u8 = 0x00;
 const BPF_JEQ_V1: u8 = 0x10;
+const BPF_JGT_V1: u8 = 0x20;
 const BPF_JNE_V1: u8 = 0x50;
 const BPF_CALL_V1: u8 = 0x80;
 const BPF_EXIT_V1: u8 = 0x90;
@@ -65,6 +73,8 @@ const BPF_REG_0_V1: u8 = 0;
 const BPF_REG_1_V1: u8 = 1;
 const BPF_REG_2_V1: u8 = 2;
 const BPF_REG_3_V1: u8 = 3;
+const BPF_REG_4_V1: u8 = 4;
+const BPF_REG_5_V1: u8 = 5;
 const BPF_REG_6_V1: u8 = 6;
 const BPF_REG_7_V1: u8 = 7;
 const BPF_REG_8_V1: u8 = 8;
@@ -75,6 +85,7 @@ const BPF_FUNC_MAP_LOOKUP_ELEM_V1: i32 = 1;
 const BPF_FUNC_KTIME_GET_NS_V1: i32 = 5;
 const BPF_FUNC_GET_SMP_PROCESSOR_ID_V1: i32 = 8;
 const BPF_FUNC_GET_CURRENT_PID_TGID_V1: i32 = 14;
+const BPF_FUNC_SKB_LOAD_BYTES_V1: i32 = 26;
 const BPF_FUNC_GET_CURRENT_CGROUP_ID_V1: i32 = 80;
 const BPF_FUNC_PROBE_READ_USER_V1: i32 = 112;
 const BPF_FUNC_PROBE_READ_KERNEL_V1: i32 = 113;
@@ -86,6 +97,22 @@ const KERNEL_EVENT_MAGIC_LE_V1: i32 = 0x454b_5457;
 const KERNEL_EVENT_VERSION_V1: u32 = 1;
 const KERNEL_EVENT_VERSION_V2: u32 = 2;
 const KERNEL_EVENT_FLAG_RESULT_PRESENT_V1: i32 = 1 << 1;
+const EGRESS_EVENT_MAGIC_LE_V1: i32 = 0x4745_5457;
+const EGRESS_EVENT_VERSION_AND_KIND_LE_V1: i32 = (1 << 16) | 1;
+const EGRESS_EVENT_FLAG_PREFIX_TRUNCATED_V1: i32 = 1 << 0;
+const EGRESS_EVENT_FLAG_ALLOW_V1: i32 = 1 << 1;
+const EGRESS_EVENT_FLAG_BLOCK_V1: i32 = 1 << 2;
+const EGRESS_EVENT_PREFIX_OFFSET_V1: i32 = 72;
+const EGRESS_EVENT_PREFIX_BYTES_V1: i32 = 160;
+const RAW_ETHERTYPE_IPV4_LITTLE_ENDIAN_V1: i32 = 0x0000_0008;
+const RAW_ETHERTYPE_IPV6_LITTLE_ENDIAN_V1: i32 = 0x0000_dd86;
+const SKB_LENGTH_OFFSET_V1: i16 = 0;
+const SKB_PROTOCOL_OFFSET_V1: i16 = 16;
+const SKB_INGRESS_INTERFACE_INDEX_OFFSET_V1: i16 = 36;
+const SKB_EGRESS_INTERFACE_INDEX_OFFSET_V1: i16 = 40;
+const SKB_WIRE_LENGTH_OFFSET_V1: i16 = 160;
+const SKB_GSO_SEGMENT_COUNT_OFFSET_V1: i16 = 164;
+const SKB_GSO_SEGMENT_SIZE_OFFSET_V1: i16 = 176;
 
 #[cfg(target_os = "linux")]
 const BPF_MAP_CREATE_V1: libc::c_long = 0;
@@ -96,13 +123,19 @@ const BPF_MAP_UPDATE_ELEM_V1: libc::c_long = 2;
 #[cfg(target_os = "linux")]
 const BPF_PROG_LOAD_V1: libc::c_long = 5;
 #[cfg(target_os = "linux")]
+const BPF_LINK_CREATE_V1: libc::c_long = 28;
+#[cfg(target_os = "linux")]
 const BPF_MAP_TYPE_ARRAY_V1: u32 = 2;
 #[cfg(target_os = "linux")]
 const BPF_MAP_TYPE_RINGBUF_V1: u32 = 27;
 #[cfg(target_os = "linux")]
 const BPF_PROG_TYPE_TRACEPOINT_V1: u32 = 5;
 #[cfg(target_os = "linux")]
+const BPF_PROG_TYPE_CGROUP_SKB_V1: u32 = 8;
+#[cfg(target_os = "linux")]
 const BPF_PROG_TYPE_RAW_TRACEPOINT_V1: u32 = 17;
+#[cfg(target_os = "linux")]
+const BPF_CGROUP_INET_EGRESS_V1: u32 = 1;
 #[cfg(target_os = "linux")]
 const BPF_F_RDONLY_PROG_V1: u32 = 1 << 7;
 #[cfg(target_os = "linux")]
@@ -147,6 +180,7 @@ pub(crate) enum LinuxVzPackageSensorBpfErrorV1 {
     Btf(LinuxVzPackageSensorBtfErrorV1),
     Tracepoint(LinuxVzPackageTracepointErrorV1),
     EventStream(LinuxVzPackageSensorEventStreamErrorV1),
+    EgressStream(LinuxVzPackageEgressStreamErrorV1),
 }
 
 impl LinuxVzPackageSensorBpfErrorV1 {
@@ -189,6 +223,7 @@ impl LinuxVzPackageSensorBpfErrorV1 {
             Self::Btf(error) => error.reason_code(),
             Self::Tracepoint(error) => error.reason_code(),
             Self::EventStream(error) => error.reason_code(),
+            Self::EgressStream(error) => error.reason_code(),
         }
     }
 }
@@ -216,6 +251,12 @@ impl From<LinuxVzPackageSensorBtfErrorV1> for LinuxVzPackageSensorBpfErrorV1 {
 impl From<LinuxVzPackageSensorEventStreamErrorV1> for LinuxVzPackageSensorBpfErrorV1 {
     fn from(value: LinuxVzPackageSensorEventStreamErrorV1) -> Self {
         Self::EventStream(value)
+    }
+}
+
+impl From<LinuxVzPackageEgressStreamErrorV1> for LinuxVzPackageSensorBpfErrorV1 {
+    fn from(value: LinuxVzPackageEgressStreamErrorV1) -> Self {
+        Self::EgressStream(value)
     }
 }
 
@@ -408,6 +449,176 @@ impl BpfProgramBuilderV1 {
     fn exit_v1(&mut self) {
         self.instruction_v1(BPF_JMP_V1 | BPF_EXIT_V1, 0, 0, 0, 0);
     }
+}
+
+fn build_cgroup_egress_program_v1(
+    configuration_map: i32,
+    ring_buffer_map: i32,
+    drop_counter_map: i32,
+) -> Result<Vec<BpfInstructionV1>, LinuxVzPackageSensorBpfErrorV1> {
+    if configuration_map < 0 || ring_buffer_map < 0 || drop_counter_map < 0 {
+        return Err(LinuxVzPackageSensorBpfErrorV1::Descriptor);
+    }
+    let mut program = BpfProgramBuilderV1::default();
+    program.mov64_register_v1(BPF_REG_6_V1, BPF_REG_1_V1);
+    program.call_v1(BPF_FUNC_GET_CURRENT_CGROUP_ID_V1);
+    program.mov64_register_v1(BPF_REG_8_V1, BPF_REG_0_V1);
+    program.store_register_v1(BPF_DW_V1, BPF_REG_10_V1, BPF_REG_8_V1, -16);
+    program.store_immediate_v1(BPF_W_V1, BPF_REG_10_V1, -4, 0);
+    program.load_map_descriptor_v1(BPF_REG_1_V1, configuration_map);
+    program.mov64_register_v1(BPF_REG_2_V1, BPF_REG_10_V1);
+    program.add64_immediate_v1(BPF_REG_2_V1, -4);
+    program.call_v1(BPF_FUNC_MAP_LOOKUP_ELEM_V1);
+    let missing_configuration = program.jump_immediate_placeholder_v1(BPF_JEQ_V1, BPF_REG_0_V1, 0);
+    program.load_register_v1(BPF_DW_V1, BPF_REG_1_V1, BPF_REG_0_V1, 0);
+    let wrong_cgroup = program.jump_register_placeholder_v1(BPF_JNE_V1, BPF_REG_8_V1, BPF_REG_1_V1);
+    program.load_register_v1(BPF_W_V1, BPF_REG_9_V1, BPF_REG_6_V1, SKB_LENGTH_OFFSET_V1);
+    let empty_packet = program.jump_immediate_placeholder_v1(BPF_JEQ_V1, BPF_REG_9_V1, 0);
+    program.load_register_v1(BPF_W_V1, BPF_REG_8_V1, BPF_REG_6_V1, SKB_PROTOCOL_OFFSET_V1);
+
+    program.load_map_descriptor_v1(BPF_REG_1_V1, ring_buffer_map);
+    program.mov64_immediate_v1(
+        BPF_REG_2_V1,
+        i32::try_from(LINUX_VZ_PACKAGE_EGRESS_EVENT_BYTES_V1)
+            .map_err(|_| LinuxVzPackageSensorBpfErrorV1::InvalidLayout)?,
+    );
+    program.mov64_immediate_v1(BPF_REG_3_V1, 0);
+    program.call_v1(BPF_FUNC_RINGBUF_RESERVE_V1);
+    let reservation_failed = program.jump_immediate_placeholder_v1(BPF_JEQ_V1, BPF_REG_0_V1, 0);
+    program.mov64_register_v1(BPF_REG_7_V1, BPF_REG_0_V1);
+    for offset in (0..LINUX_VZ_PACKAGE_EGRESS_EVENT_BYTES_V1).step_by(size_of::<u64>()) {
+        program.store_immediate_v1(
+            BPF_DW_V1,
+            BPF_REG_7_V1,
+            i16::try_from(offset).map_err(|_| LinuxVzPackageSensorBpfErrorV1::InvalidLayout)?,
+            0,
+        );
+    }
+    program.store_immediate_v1(BPF_W_V1, BPF_REG_7_V1, 0, EGRESS_EVENT_MAGIC_LE_V1);
+    program.store_immediate_v1(
+        BPF_W_V1,
+        BPF_REG_7_V1,
+        4,
+        EGRESS_EVENT_VERSION_AND_KIND_LE_V1,
+    );
+    program.store_immediate_v1(
+        BPF_W_V1,
+        BPF_REG_7_V1,
+        12,
+        i32::try_from(LINUX_VZ_PACKAGE_EGRESS_EVENT_BYTES_V1)
+            .map_err(|_| LinuxVzPackageSensorBpfErrorV1::InvalidLayout)?,
+    );
+    program.load_register_v1(BPF_DW_V1, BPF_REG_1_V1, BPF_REG_10_V1, -16);
+    program.store_register_v1(BPF_DW_V1, BPF_REG_7_V1, BPF_REG_1_V1, 16);
+    program.call_v1(BPF_FUNC_KTIME_GET_NS_V1);
+    program.store_register_v1(BPF_DW_V1, BPF_REG_7_V1, BPF_REG_0_V1, 24);
+    program.store_register_v1(BPF_W_V1, BPF_REG_7_V1, BPF_REG_9_V1, 32);
+    for (context_offset, record_offset) in [
+        (SKB_WIRE_LENGTH_OFFSET_V1, 36_i16),
+        (SKB_PROTOCOL_OFFSET_V1, 40_i16),
+        (SKB_INGRESS_INTERFACE_INDEX_OFFSET_V1, 44_i16),
+        (SKB_EGRESS_INTERFACE_INDEX_OFFSET_V1, 48_i16),
+        (SKB_GSO_SEGMENT_COUNT_OFFSET_V1, 52_i16),
+        (SKB_GSO_SEGMENT_SIZE_OFFSET_V1, 56_i16),
+    ] {
+        program.load_register_v1(BPF_W_V1, BPF_REG_1_V1, BPF_REG_6_V1, context_offset);
+        program.store_register_v1(BPF_W_V1, BPF_REG_7_V1, BPF_REG_1_V1, record_offset);
+    }
+    program.call_v1(BPF_FUNC_GET_SMP_PROCESSOR_ID_V1);
+    program.store_register_v1(BPF_W_V1, BPF_REG_7_V1, BPF_REG_0_V1, 64);
+
+    let ipv4 = program.jump_immediate_placeholder_v1(
+        BPF_JEQ_V1,
+        BPF_REG_8_V1,
+        RAW_ETHERTYPE_IPV4_LITTLE_ENDIAN_V1,
+    );
+    let ipv6 = program.jump_immediate_placeholder_v1(
+        BPF_JEQ_V1,
+        BPF_REG_8_V1,
+        RAW_ETHERTYPE_IPV6_LITTLE_ENDIAN_V1,
+    );
+    program.mov64_immediate_v1(BPF_REG_5_V1, EGRESS_EVENT_FLAG_BLOCK_V1);
+    let decision_ready = program.jump_always_placeholder_v1();
+    let allowed = program.instructions.len();
+    program.patch_forward_jump_v1(ipv4, allowed)?;
+    program.patch_forward_jump_v1(ipv6, allowed)?;
+    program.mov64_immediate_v1(BPF_REG_5_V1, EGRESS_EVENT_FLAG_ALLOW_V1);
+    let prefix_length = program.instructions.len();
+    program.patch_forward_jump_v1(decision_ready, prefix_length)?;
+    program.mov64_register_v1(BPF_REG_4_V1, BPF_REG_9_V1);
+    let truncated = program.jump_immediate_placeholder_v1(
+        BPF_JGT_V1,
+        BPF_REG_9_V1,
+        EGRESS_EVENT_PREFIX_BYTES_V1,
+    );
+    program.store_register_v1(BPF_W_V1, BPF_REG_7_V1, BPF_REG_5_V1, 8);
+    program.store_register_v1(BPF_W_V1, BPF_REG_7_V1, BPF_REG_4_V1, 60);
+    let capture = program.jump_always_placeholder_v1();
+    let truncated_prefix = program.instructions.len();
+    program.patch_forward_jump_v1(truncated, truncated_prefix)?;
+    program.add64_immediate_v1(BPF_REG_5_V1, EGRESS_EVENT_FLAG_PREFIX_TRUNCATED_V1);
+    program.mov64_immediate_v1(BPF_REG_4_V1, EGRESS_EVENT_PREFIX_BYTES_V1);
+    program.store_register_v1(BPF_W_V1, BPF_REG_7_V1, BPF_REG_5_V1, 8);
+    program.store_register_v1(BPF_W_V1, BPF_REG_7_V1, BPF_REG_4_V1, 60);
+    let capture_prefix = program.instructions.len();
+    program.patch_forward_jump_v1(capture, capture_prefix)?;
+    program.mov64_register_v1(BPF_REG_1_V1, BPF_REG_6_V1);
+    program.mov64_immediate_v1(BPF_REG_2_V1, 0);
+    program.mov64_register_v1(BPF_REG_3_V1, BPF_REG_7_V1);
+    program.add64_immediate_v1(BPF_REG_3_V1, EGRESS_EVENT_PREFIX_OFFSET_V1);
+    program.call_v1(BPF_FUNC_SKB_LOAD_BYTES_V1);
+    let capture_failed = program.jump_immediate_placeholder_v1(BPF_JNE_V1, BPF_REG_0_V1, 0);
+    program.mov64_register_v1(BPF_REG_1_V1, BPF_REG_7_V1);
+    program.mov64_immediate_v1(BPF_REG_2_V1, 0);
+    program.call_v1(BPF_FUNC_RINGBUF_SUBMIT_V1);
+    let allow_ipv4 = program.jump_immediate_placeholder_v1(
+        BPF_JEQ_V1,
+        BPF_REG_8_V1,
+        RAW_ETHERTYPE_IPV4_LITTLE_ENDIAN_V1,
+    );
+    let allow_ipv6 = program.jump_immediate_placeholder_v1(
+        BPF_JEQ_V1,
+        BPF_REG_8_V1,
+        RAW_ETHERTYPE_IPV6_LITTLE_ENDIAN_V1,
+    );
+    program.mov64_immediate_v1(BPF_REG_0_V1, 0);
+    program.exit_v1();
+    let allow_exit = program.instructions.len();
+    program.patch_forward_jump_v1(allow_ipv4, allow_exit)?;
+    program.patch_forward_jump_v1(allow_ipv6, allow_exit)?;
+    program.mov64_immediate_v1(BPF_REG_0_V1, 1);
+    program.exit_v1();
+
+    let discard = program.instructions.len();
+    program.mov64_register_v1(BPF_REG_1_V1, BPF_REG_7_V1);
+    program.mov64_immediate_v1(BPF_REG_2_V1, 0);
+    program.call_v1(BPF_FUNC_RINGBUF_DISCARD_V1);
+    let drop_counter = program.instructions.len();
+    program.store_immediate_v1(BPF_W_V1, BPF_REG_10_V1, -4, 0);
+    program.load_map_descriptor_v1(BPF_REG_1_V1, drop_counter_map);
+    program.mov64_register_v1(BPF_REG_2_V1, BPF_REG_10_V1);
+    program.add64_immediate_v1(BPF_REG_2_V1, -4);
+    program.call_v1(BPF_FUNC_MAP_LOOKUP_ELEM_V1);
+    let missing_drop_counter = program.jump_immediate_placeholder_v1(BPF_JEQ_V1, BPF_REG_0_V1, 0);
+    program.mov64_immediate_v1(BPF_REG_1_V1, 1);
+    program.instruction_v1(
+        BPF_STX_V1 | BPF_XADD_V1 | BPF_DW_V1,
+        BPF_REG_0_V1,
+        BPF_REG_1_V1,
+        0,
+        0,
+    );
+    let block_exit = program.instructions.len();
+    program.mov64_immediate_v1(BPF_REG_0_V1, 0);
+    program.exit_v1();
+
+    program.patch_forward_jump_v1(missing_configuration, drop_counter)?;
+    program.patch_forward_jump_v1(wrong_cgroup, drop_counter)?;
+    program.patch_forward_jump_v1(empty_packet, drop_counter)?;
+    program.patch_forward_jump_v1(reservation_failed, drop_counter)?;
+    program.patch_forward_jump_v1(capture_failed, discard)?;
+    program.patch_forward_jump_v1(missing_drop_counter, block_exit)?;
+    Ok(program.instructions)
 }
 
 fn build_lifecycle_program_v1(
@@ -1143,6 +1354,14 @@ struct BpfRawTracepointOpenAttributeV1 {
 }
 
 #[repr(C)]
+struct BpfLinkCreateAttributeV1 {
+    program_descriptor: u32,
+    target_descriptor: u32,
+    attach_type: u32,
+    flags: u32,
+}
+
+#[repr(C)]
 #[derive(Default)]
 struct PerfEventAttributeV1 {
     event_type: u32,
@@ -1168,6 +1387,135 @@ struct PerfEventAttributeV1 {
     reserved2: u32,
     signal_data: u64,
     config3: u64,
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) struct LinuxVzPackageEgressBpfProducerV1 {
+    link: OwnedFd,
+    program: OwnedFd,
+    target_cgroup: OwnedFd,
+    drop_counter: OwnedFd,
+    configuration: OwnedFd,
+    ring_buffer: LinuxVzPackageEgressBpfRingBufferV1,
+    expected_cgroup_id: u64,
+}
+
+#[cfg(target_os = "linux")]
+impl fmt::Debug for LinuxVzPackageEgressBpfProducerV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LinuxVzPackageEgressBpfProducerV1")
+            .field("link", &"<cgroup-bpf-link>")
+            .field("program", &"<cgroup-egress-bpf-program>")
+            .field("target_cgroup", &"<protected-cgroup>")
+            .field("drop_counter", &"<root-only-bpf-map>")
+            .field("configuration", &"<root-only-bpf-map>")
+            .field("ring_buffer", &self.ring_buffer)
+            .field("expected_cgroup_id", &self.expected_cgroup_id)
+            .finish()
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl LinuxVzPackageEgressBpfProducerV1 {
+    pub(crate) fn start_v1(
+        expected_cgroup_id: u64,
+        target_cgroup: RawFd,
+        ring_buffer_capacity: usize,
+    ) -> Result<Self, LinuxVzPackageSensorBpfErrorV1> {
+        if unsafe { libc::getuid() } != 0
+            || unsafe { libc::geteuid() } != 0
+            || unsafe { libc::getgid() } != 0
+            || unsafe { libc::getegid() } != 0
+        {
+            return Err(LinuxVzPackageSensorBpfErrorV1::Identity);
+        }
+        if expected_cgroup_id == 0
+            || target_cgroup < 0
+            || !(MIN_RING_BUFFER_BYTES_V1..=MAX_RING_BUFFER_BYTES_V1)
+                .contains(&ring_buffer_capacity)
+            || !ring_buffer_capacity.is_power_of_two()
+        {
+            return Err(LinuxVzPackageSensorBpfErrorV1::InvalidConfiguration);
+        }
+        let target_cgroup = duplicate_cgroup_descriptor_v1(target_cgroup)?;
+        let configuration = create_map_v1(
+            BPF_MAP_TYPE_ARRAY_V1,
+            size_of::<u32>(),
+            size_of::<u64>(),
+            1,
+            BPF_F_RDONLY_PROG_V1,
+            "wt_eg_cfg",
+        )?;
+        update_u64_map_value_v1(configuration.as_raw_fd(), expected_cgroup_id)?;
+        let drop_counter = create_map_v1(
+            BPF_MAP_TYPE_ARRAY_V1,
+            size_of::<u32>(),
+            size_of::<u64>(),
+            1,
+            0,
+            "wt_eg_drop",
+        )?;
+        let ring_map = create_map_v1(
+            BPF_MAP_TYPE_RINGBUF_V1,
+            0,
+            0,
+            ring_buffer_capacity,
+            0,
+            "wt_eg_ring",
+        )?;
+        let instructions = build_cgroup_egress_program_v1(
+            configuration.as_raw_fd(),
+            ring_map.as_raw_fd(),
+            drop_counter.as_raw_fd(),
+        )?;
+        let program = load_cgroup_egress_program_v1(&instructions, "wt_pkg_egress")?;
+        let link = attach_cgroup_egress_program_v1(target_cgroup.as_raw_fd(), program.as_raw_fd())?;
+        let ring_buffer =
+            LinuxVzPackageEgressBpfRingBufferV1::from_map_v1(ring_map, ring_buffer_capacity)?;
+        Ok(Self {
+            link,
+            program,
+            target_cgroup,
+            drop_counter,
+            configuration,
+            ring_buffer,
+            expected_cgroup_id,
+        })
+    }
+
+    pub(crate) fn drain_available_v1(
+        &mut self,
+        maximum_records: usize,
+    ) -> Result<Vec<LinuxVzPackageEgressEventV1>, LinuxVzPackageSensorBpfErrorV1> {
+        Ok(self
+            .ring_buffer
+            .drain_available_v1(self.expected_cgroup_id, maximum_records)?)
+    }
+
+    pub(crate) fn dropped_event_count_v1(&self) -> Result<u64, LinuxVzPackageSensorBpfErrorV1> {
+        lookup_u64_map_value_v1(self.drop_counter.as_raw_fd())
+    }
+
+    pub(crate) fn discarded_record_count_v1(&self) -> u64 {
+        self.ring_buffer.discarded_record_count_v1()
+    }
+
+    pub(crate) fn last_source_sequence_v1(&self) -> u64 {
+        self.ring_buffer.last_source_sequence_v1()
+    }
+
+    pub(crate) fn descriptors_are_cloexec_v1(&self) -> bool {
+        [
+            self.link.as_raw_fd(),
+            self.program.as_raw_fd(),
+            self.target_cgroup.as_raw_fd(),
+            self.drop_counter.as_raw_fd(),
+            self.configuration.as_raw_fd(),
+        ]
+        .into_iter()
+        .all(descriptor_is_cloexec_v1)
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -1524,6 +1872,40 @@ fn load_raw_tracepoint_program_v1(
 }
 
 #[cfg(target_os = "linux")]
+fn load_cgroup_egress_program_v1(
+    instructions: &[BpfInstructionV1],
+    name: &str,
+) -> Result<OwnedFd, LinuxVzPackageSensorBpfErrorV1> {
+    if instructions.is_empty() {
+        return Err(LinuxVzPackageSensorBpfErrorV1::InvalidLayout);
+    }
+    static LICENSE: &[u8] = b"GPL\0";
+    let mut attributes = unsafe { std::mem::zeroed::<BpfProgramLoadAttributeV1>() };
+    attributes.program_type = BPF_PROG_TYPE_CGROUP_SKB_V1;
+    attributes.instruction_count = u32::try_from(instructions.len())
+        .map_err(|_| LinuxVzPackageSensorBpfErrorV1::InvalidLayout)?;
+    attributes.instructions = instructions.as_ptr() as u64;
+    attributes.license = LICENSE.as_ptr() as u64;
+    attributes.expected_attach_type = BPF_CGROUP_INET_EGRESS_V1;
+    copy_object_name_v1(name, &mut attributes.program_name)?;
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_bpf,
+            BPF_PROG_LOAD_V1,
+            &attributes,
+            size_of::<BpfProgramLoadAttributeV1>(),
+        )
+    };
+    if result < 0 {
+        return Err(match std::io::Error::last_os_error().raw_os_error() {
+            Some(code) => LinuxVzPackageSensorBpfErrorV1::ProgramLoadOs(code),
+            None => LinuxVzPackageSensorBpfErrorV1::ProgramLoad,
+        });
+    }
+    owned_descriptor_v1(result, LinuxVzPackageSensorBpfErrorV1::ProgramLoad)
+}
+
+#[cfg(target_os = "linux")]
 fn load_program_of_type_v1(
     instructions: &[BpfInstructionV1],
     name: &str,
@@ -1581,6 +1963,56 @@ fn attach_raw_tracepoint_program_v1(
         )
     };
     owned_descriptor_v1(result, LinuxVzPackageSensorBpfErrorV1::Attach)
+}
+
+#[cfg(target_os = "linux")]
+fn attach_cgroup_egress_program_v1(
+    target_cgroup: RawFd,
+    program: RawFd,
+) -> Result<OwnedFd, LinuxVzPackageSensorBpfErrorV1> {
+    if target_cgroup < 0 || program < 0 {
+        return Err(LinuxVzPackageSensorBpfErrorV1::Descriptor);
+    }
+    let attributes = BpfLinkCreateAttributeV1 {
+        program_descriptor: u32::try_from(program)
+            .map_err(|_| LinuxVzPackageSensorBpfErrorV1::Descriptor)?,
+        target_descriptor: u32::try_from(target_cgroup)
+            .map_err(|_| LinuxVzPackageSensorBpfErrorV1::Descriptor)?,
+        attach_type: BPF_CGROUP_INET_EGRESS_V1,
+        flags: 0,
+    };
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_bpf,
+            BPF_LINK_CREATE_V1,
+            &attributes,
+            size_of::<BpfLinkCreateAttributeV1>(),
+        )
+    };
+    owned_descriptor_v1(result, LinuxVzPackageSensorBpfErrorV1::Attach)
+}
+
+#[cfg(target_os = "linux")]
+fn duplicate_cgroup_descriptor_v1(
+    descriptor: RawFd,
+) -> Result<OwnedFd, LinuxVzPackageSensorBpfErrorV1> {
+    const CGROUP2_SUPER_MAGIC_V1: u64 = 0x6367_7270;
+    if descriptor < 0 || !descriptor_is_cloexec_v1(descriptor) {
+        return Err(LinuxVzPackageSensorBpfErrorV1::Descriptor);
+    }
+    let mut filesystem = unsafe { std::mem::zeroed::<libc::statfs>() };
+    if unsafe { libc::fstatfs(descriptor, &mut filesystem) } != 0
+        || filesystem.f_type != CGROUP2_SUPER_MAGIC_V1
+    {
+        return Err(LinuxVzPackageSensorBpfErrorV1::InvalidConfiguration);
+    }
+    let duplicate = unsafe { libc::fcntl(descriptor, libc::F_DUPFD_CLOEXEC, 3) };
+    owned_descriptor_v1(duplicate.into(), LinuxVzPackageSensorBpfErrorV1::Descriptor)
+}
+
+#[cfg(target_os = "linux")]
+fn descriptor_is_cloexec_v1(descriptor: RawFd) -> bool {
+    descriptor >= 0 && unsafe { libc::fcntl(descriptor, libc::F_GETFD) } & libc::FD_CLOEXEC != 0
 }
 
 #[cfg(target_os = "linux")]
@@ -1821,6 +2253,75 @@ mod tests {
     }
 
     #[test]
+    fn cgroup_egress_program_is_bounded_loss_accounted_and_fail_closed() {
+        let instructions = build_cgroup_egress_program_v1(11, 12, 13).expect("egress program");
+        assert!(instructions.len() < 192);
+        assert_eq!(
+            instructions
+                .iter()
+                .filter(|instruction| {
+                    instruction.code == BPF_ST_V1 | BPF_MEM_V1 | BPF_DW_V1
+                        && instruction.destination_v1() == BPF_REG_7_V1
+                        && instruction.immediate == 0
+                        && instruction.offset >= 0
+                        && usize::try_from(instruction.offset)
+                            .is_ok_and(|offset| offset % 8 == 0 && offset < 256)
+                })
+                .count(),
+            32
+        );
+        for helper in [
+            BPF_FUNC_GET_CURRENT_CGROUP_ID_V1,
+            BPF_FUNC_RINGBUF_RESERVE_V1,
+            BPF_FUNC_SKB_LOAD_BYTES_V1,
+            BPF_FUNC_RINGBUF_SUBMIT_V1,
+            BPF_FUNC_RINGBUF_DISCARD_V1,
+        ] {
+            assert!(instructions.iter().any(|instruction| {
+                instruction.code == BPF_JMP_V1 | BPF_CALL_V1 && instruction.immediate == helper
+            }));
+        }
+        assert_eq!(
+            instructions
+                .iter()
+                .filter(|instruction| {
+                    instruction.code == BPF_LD_V1 | BPF_DW_V1 | BPF_IMM_V1
+                        && instruction.source_v1() == BPF_PSEUDO_MAP_FD_V1
+                })
+                .count(),
+            3
+        );
+        assert!(instructions.iter().any(|instruction| {
+            instruction.code == BPF_JMP_V1 | BPF_JGT_V1 | BPF_K_V1
+                && instruction.destination_v1() == BPF_REG_9_V1
+                && instruction.immediate == EGRESS_EVENT_PREFIX_BYTES_V1
+        }));
+        assert!(instructions
+            .iter()
+            .any(|instruction| { instruction.code == BPF_STX_V1 | BPF_XADD_V1 | BPF_DW_V1 }));
+        assert!(instructions.iter().any(|instruction| {
+            instruction.code == BPF_ALU64_V1 | BPF_MOV_V1 | BPF_K_V1
+                && instruction.destination_v1() == BPF_REG_0_V1
+                && instruction.immediate == 1
+        }));
+        for (index, instruction) in instructions.iter().enumerate() {
+            let operation = instruction.code & 0xf0;
+            if instruction.code & 0x07 == BPF_JMP_V1
+                && !matches!(operation, BPF_CALL_V1 | BPF_EXIT_V1)
+            {
+                let target =
+                    isize::try_from(index).expect("index") + 1 + isize::from(instruction.offset);
+                assert!(target > isize::try_from(index).expect("index"));
+                assert!(usize::try_from(target).is_ok_and(|target| target < instructions.len()));
+            }
+        }
+        assert_eq!(
+            build_cgroup_egress_program_v1(-1, 12, 13),
+            Err(LinuxVzPackageSensorBpfErrorV1::Descriptor)
+        );
+    }
+
+    #[test]
     fn linux_uapi_prefix_layouts_are_exact() {
         assert_eq!(size_of::<BpfMapCreateAttributeV1>(), 80);
         assert_eq!(std::mem::offset_of!(BpfMapCreateAttributeV1, map_name), 28);
@@ -1850,6 +2351,11 @@ mod tests {
             152
         );
         assert_eq!(size_of::<BpfRawTracepointOpenAttributeV1>(), 16);
+        assert_eq!(size_of::<BpfLinkCreateAttributeV1>(), 16);
+        assert_eq!(
+            std::mem::offset_of!(BpfLinkCreateAttributeV1, attach_type),
+            8
+        );
         assert_eq!(size_of::<PerfEventAttributeV1>(), 136);
         assert_eq!(std::mem::offset_of!(PerfEventAttributeV1, flags), 40);
         assert_eq!(std::mem::offset_of!(PerfEventAttributeV1, config3), 128);

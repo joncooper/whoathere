@@ -1,7 +1,9 @@
 import Foundation
 
+public let linuxVzPackageSensorBpfInertEvidenceSchemaV14 =
+    "whoathere.linux_vz_package_sensor_bpf_inert_probe.v14"
 public let linuxVzPackageSensorBpfInertEvidenceSchemaV13 =
-    "whoathere.linux_vz_package_sensor_bpf_inert_probe.v13"
+    linuxVzPackageSensorBpfInertEvidenceSchemaV14
 public let linuxVzPackageSensorBpfInertEvidenceSerialPrefixV1 =
     "WHOATHERE_PACKAGE_SENSOR_BPF_INERT_EVIDENCE "
 
@@ -50,6 +52,8 @@ public struct LinuxVzPackageSensorBpfInertEvidenceV13: Equatable, Sendable {
     public let sourceEventCountBeforeFinish: UInt64
     public let finishDrainEventCount: UInt64
     public let maximumDrainBatchRecordCount: UInt64
+    public let egressEventCount: UInt64
+    public let egressPacketPrefixSHA256: String
     public let networkIntentCount: UInt64
     public let networkSendtoDestinationTokenSHA256: String
     public let networkSendtoEnterSourceSequence: UInt64
@@ -129,7 +133,10 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV13(
         "active_drain_poll_count", "active_nonempty_drain_count",
         "attachment_cpu", "attachment_scope", "cgroup_id", "collector_drain_mode",
         "collector_mode",
-        "discarded_record_count", "dropped_event_count", "event_count", "event_kinds",
+        "discarded_record_count", "dropped_event_count", "egress_coverage_complete",
+        "egress_discarded_record_count", "egress_dropped_event_count", "egress_event_count",
+        "egress_maximum_drain_batch_record_count", "egress_observations",
+        "event_count", "event_kinds",
         "event_sequence_end", "event_sequence_start", "exit_attachment", "exit_status_source",
         "fault_cgroup_id", "fault_cgroup_kill_used", "fault_fixture_pid",
         "fault_fixture_termination_signal", "fault_maximum_source_events", "fault_signal_kind",
@@ -181,7 +188,7 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV13(
         "task_exit_code_byte_offset", "tracepoint_format_sha256", "waitpid_wait_status",
     ])
     guard Set(value.keys) == expectedKeys,
-          value["schema_version"] as? String == linuxVzPackageSensorBpfInertEvidenceSchemaV13,
+          value["schema_version"] as? String == linuxVzPackageSensorBpfInertEvidenceSchemaV14,
           let sensorSessionChallengeSHA256 =
               value["sensor_session_challenge_sha256"] as? String,
           sensorSessionChallengeSHA256 ==
@@ -202,6 +209,14 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV13(
           value["collector_mode"] as? String == "root_bpf_ring_correlator",
           packageSensorBpfInertDecimal(value["discarded_record_count"]) == 0,
           packageSensorBpfInertDecimal(value["dropped_event_count"]) == 0,
+          value["egress_coverage_complete"] as? Bool == true,
+          packageSensorBpfInertDecimal(value["egress_discarded_record_count"]) == 0,
+          packageSensorBpfInertDecimal(value["egress_dropped_event_count"]) == 0,
+          let egressEventCount = packageSensorBpfInertDecimal(value["egress_event_count"]),
+          egressEventCount == 1,
+          packageSensorBpfInertDecimal(
+              value["egress_maximum_drain_batch_record_count"]
+          ) == 1,
           packageSensorBpfInertDecimal(value["event_count"]) == 18,
           value["event_kinds"] as? [String] == [
               "setgroups_enter", "setgroups_exit", "setgid_enter", "setgid_exit",
@@ -276,6 +291,35 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV13(
           finishDrainEventCount <= 1,
           let fixtureCPU = packageSensorBpfInertDecimal(value["fixture_cpu"]),
           fixtureCPU == 1, fixtureCPU != attachmentCPU,
+          let egressObservations = value["egress_observations"] as? [[String: Any]],
+          egressObservations.count == 1,
+          let egressObservation = egressObservations.first,
+          Set(egressObservation.keys) == Set([
+              "cpu", "decision", "egress_interface_index", "gso_segment_count",
+              "gso_segment_size", "ingress_interface_index", "packet_length",
+              "packet_prefix_byte_length", "packet_prefix_sha256", "prefix_truncated",
+              "protocol", "raw_skb_protocol", "source_sequence", "wire_length",
+          ]),
+          packageSensorBpfInertDecimal(egressObservation["cpu"]) == fixtureCPU,
+          egressObservation["decision"] as? String == "allow",
+          let egressInterfaceIndex = packageSensorBpfInertDecimal(
+              egressObservation["egress_interface_index"]
+          ),
+          egressInterfaceIndex > 0,
+          packageSensorBpfInertDecimal(egressObservation["gso_segment_count"]) == 0,
+          packageSensorBpfInertDecimal(egressObservation["gso_segment_size"]) == 0,
+          packageSensorBpfInertDecimal(egressObservation["ingress_interface_index"]) == 0,
+          packageSensorBpfInertDecimal(egressObservation["packet_length"]) == 44,
+          packageSensorBpfInertDecimal(
+              egressObservation["packet_prefix_byte_length"]
+          ) == 44,
+          let egressPacketPrefixSHA256 = egressObservation["packet_prefix_sha256"] as? String,
+          packageSensorBpfInertDigest(egressPacketPrefixSHA256),
+          egressObservation["prefix_truncated"] as? Bool == false,
+          egressObservation["protocol"] as? String == "ipv4",
+          packageSensorBpfInertDecimal(egressObservation["raw_skb_protocol"]) == 8,
+          packageSensorBpfInertDecimal(egressObservation["source_sequence"]) == 1,
+          packageSensorBpfInertDecimal(egressObservation["wire_length"]) == 44,
           packageSensorBpfInertDecimal(value["fixture_exit_status"]) == 0,
           let cgroupID = packageSensorBpfInertDecimal(value["cgroup_id"]),
           cgroupID > 0,
@@ -404,8 +448,9 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV13(
           Set([rootFileEvidenceSHA256, rootFileEvidenceBaselineSnapshotSHA256,
                rootFileEvidenceFinalSnapshotSHA256, rootFileEvidenceWorkspaceDiffSHA256,
                rootProcessEvidenceSHA256, rootNetworkEvidenceSHA256,
-               networkSendtoDestinationTokenSHA256, sensorSessionChallengeSHA256,
-               expectedFixtureSHA256, expectedRuntimeBTFSHA256]).count == 10,
+               networkSendtoDestinationTokenSHA256, egressPacketPrefixSHA256,
+               sensorSessionChallengeSHA256,
+               expectedFixtureSHA256, expectedRuntimeBTFSHA256]).count == 11,
           let rootFileEvidenceSourceEventCount = packageSensorBpfInertDecimal(
               value["root_file_evidence_source_event_count"]
           ),
@@ -453,6 +498,8 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV13(
         sourceEventCountBeforeFinish: sourceEventCountBeforeFinish,
         finishDrainEventCount: finishDrainEventCount,
         maximumDrainBatchRecordCount: maximumDrainBatchRecordCount,
+        egressEventCount: egressEventCount,
+        egressPacketPrefixSHA256: egressPacketPrefixSHA256,
         networkIntentCount: networkIntentCount,
         networkSendtoDestinationTokenSHA256: networkSendtoDestinationTokenSHA256,
         networkSendtoEnterSourceSequence: networkSendtoEnterSourceSequence,

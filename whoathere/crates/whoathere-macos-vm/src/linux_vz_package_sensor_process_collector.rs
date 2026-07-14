@@ -1,7 +1,10 @@
 #![allow(dead_code)]
 
 #[cfg(target_os = "linux")]
-use crate::linux_vz_package_sensor_bpf::LinuxVzPackageSensorBpfProducerV1;
+use crate::linux_vz_package_sensor_bpf::{
+    LinuxVzPackageEgressBpfProducerV1, LinuxVzPackageSensorBpfProducerV1,
+};
+use crate::linux_vz_package_sensor_egress_stream::LinuxVzPackageEgressEventV1;
 use crate::linux_vz_package_sensor_event_stream::LinuxVzPackageKernelEventKindV1;
 #[cfg(any(target_os = "linux", test))]
 use crate::linux_vz_package_sensor_process_stream::LinuxVzPackageProcessEventCorrelatorV1;
@@ -103,6 +106,8 @@ pub(crate) struct LinuxVzPackageRootProcessCollectionV1 {
     source_event_count_before_finish: u64,
     finish_drain_event_count: u64,
     maximum_drain_batch_record_count: u64,
+    egress_events: Vec<LinuxVzPackageEgressEventV1>,
+    egress_maximum_drain_batch_record_count: u64,
 }
 
 impl LinuxVzPackageRootProcessCollectionV1 {
@@ -174,6 +179,26 @@ impl LinuxVzPackageRootProcessCollectionV1 {
         self.maximum_drain_batch_record_count
     }
 
+    pub(crate) fn egress_events_v1(&self) -> &[LinuxVzPackageEgressEventV1] {
+        &self.egress_events
+    }
+
+    pub(crate) const fn egress_maximum_drain_batch_record_count_v1(&self) -> u64 {
+        self.egress_maximum_drain_batch_record_count
+    }
+
+    pub(crate) const fn egress_dropped_event_count_v1(&self) -> u64 {
+        0
+    }
+
+    pub(crate) const fn egress_discarded_record_count_v1(&self) -> u64 {
+        0
+    }
+
+    pub(crate) const fn egress_coverage_complete_v1(&self) -> bool {
+        true
+    }
+
     pub(crate) const fn continuous_drain_v1(&self) -> bool {
         true
     }
@@ -226,6 +251,8 @@ impl LinuxVzPackageRootProcessCollectionV1 {
             source_event_count_before_finish: source_event_count,
             finish_drain_event_count: 0,
             maximum_drain_batch_record_count: source_event_count,
+            egress_events: Vec::new(),
+            egress_maximum_drain_batch_record_count: 0,
         })
     }
 }
@@ -269,6 +296,7 @@ enum LinuxVzPackageRootProcessWorkerCommandV1 {
 #[cfg(target_os = "linux")]
 struct LinuxVzPackageRootProcessWorkerV1 {
     producer: LinuxVzPackageSensorBpfProducerV1,
+    egress_producer: LinuxVzPackageEgressBpfProducerV1,
     correlator: LinuxVzPackageProcessEventCorrelatorV1,
     fault_signal_write: OwnedFd,
     leader_pid: Option<u32>,
@@ -277,6 +305,9 @@ struct LinuxVzPackageRootProcessWorkerV1 {
     active_drain_poll_count: u64,
     active_nonempty_drain_count: u64,
     maximum_drain_batch_record_count: u64,
+    maximum_source_events: usize,
+    egress_events: Vec<LinuxVzPackageEgressEventV1>,
+    egress_maximum_drain_batch_record_count: u64,
 }
 
 #[cfg(target_os = "linux")]
@@ -310,10 +341,12 @@ impl fmt::Debug for LinuxVzPackageRootProcessCollectorV1 {
 impl LinuxVzPackageRootProcessCollectorV1 {
     pub(crate) fn arm_v1(
         expected_cgroup_id: u64,
+        cgroup_directory: RawFd,
         ring_buffer_capacity: usize,
         maximum_source_events: usize,
     ) -> Result<Self, LinuxVzPackageRootProcessCollectorErrorV1> {
         if expected_cgroup_id == 0
+            || cgroup_directory < 0
             || !(MIN_ROOT_PROCESS_RING_BUFFER_BYTES_V1..=MAX_ROOT_PROCESS_RING_BUFFER_BYTES_V1)
                 .contains(&ring_buffer_capacity)
             || !ring_buffer_capacity.is_power_of_two()
@@ -330,6 +363,7 @@ impl LinuxVzPackageRootProcessCollectorV1 {
             .spawn(move || {
                 run_linux_vz_package_root_process_worker_v1(
                     expected_cgroup_id,
+                    cgroup_directory,
                     ring_buffer_capacity,
                     maximum_source_events,
                     fault_signal_write,
@@ -531,6 +565,7 @@ impl LinuxVzPackageRootProcessCollectorV1 {
 #[cfg(target_os = "linux")]
 fn run_linux_vz_package_root_process_worker_v1(
     expected_cgroup_id: u64,
+    cgroup_directory: RawFd,
     ring_buffer_capacity: usize,
     maximum_source_events: usize,
     fault_signal_write: OwnedFd,
@@ -548,6 +583,17 @@ fn run_linux_vz_package_root_process_worker_v1(
                 return;
             }
         };
+    let egress_producer = match LinuxVzPackageEgressBpfProducerV1::start_v1(
+        expected_cgroup_id,
+        cgroup_directory,
+        ring_buffer_capacity,
+    ) {
+        Ok(producer) => producer,
+        Err(_) => {
+            let _ = ready_sender.send(Err(LinuxVzPackageRootProcessCollectorErrorV1::Producer));
+            return;
+        }
+    };
     let correlator = match LinuxVzPackageProcessEventCorrelatorV1::new_v1(
         expected_cgroup_id,
         maximum_source_events,
@@ -569,6 +615,7 @@ fn run_linux_vz_package_root_process_worker_v1(
     }
     LinuxVzPackageRootProcessWorkerV1 {
         producer,
+        egress_producer,
         correlator,
         fault_signal_write,
         leader_pid: None,
@@ -577,6 +624,9 @@ fn run_linux_vz_package_root_process_worker_v1(
         active_drain_poll_count: 0,
         active_nonempty_drain_count: 0,
         maximum_drain_batch_record_count: 0,
+        maximum_source_events,
+        egress_events: Vec::new(),
+        egress_maximum_drain_batch_record_count: 0,
     }
     .run_v1(command_receiver);
 }
@@ -682,6 +732,21 @@ impl LinuxVzPackageRootProcessWorkerV1 {
         {
             return Err(LinuxVzPackageRootProcessCollectorErrorV1::PreReleaseEvent);
         }
+        let egress_events = self
+            .egress_producer
+            .drain_available_v1(DRAIN_BATCH_RECORDS_V1)
+            .map_err(|_| LinuxVzPackageRootProcessCollectorErrorV1::Producer)?;
+        let egress_dropped = self
+            .egress_producer
+            .dropped_event_count_v1()
+            .map_err(|_| LinuxVzPackageRootProcessCollectorErrorV1::Producer)?;
+        if !egress_events.is_empty()
+            || egress_dropped != 0
+            || self.egress_producer.discarded_record_count_v1() != 0
+            || self.egress_producer.last_source_sequence_v1() != 0
+        {
+            return Err(LinuxVzPackageRootProcessCollectorErrorV1::PreReleaseEvent);
+        }
         Ok(())
     }
 
@@ -721,12 +786,52 @@ impl LinuxVzPackageRootProcessWorkerV1 {
         if dropped != 0 || self.producer.discarded_record_count_v1() != 0 {
             return Err(LinuxVzPackageRootProcessCollectorErrorV1::ProcessStream);
         }
+        loop {
+            let events = self
+                .egress_producer
+                .drain_available_v1(DRAIN_BATCH_RECORDS_V1)
+                .map_err(|_| LinuxVzPackageRootProcessCollectorErrorV1::Producer)?;
+            let batch_count = u64::try_from(events.len())
+                .map_err(|_| LinuxVzPackageRootProcessCollectorErrorV1::Worker)?;
+            self.egress_maximum_drain_batch_record_count = self
+                .egress_maximum_drain_batch_record_count
+                .max(batch_count);
+            if events.is_empty() {
+                break;
+            }
+            if self
+                .egress_events
+                .len()
+                .checked_add(events.len())
+                .is_none_or(|count| count > self.maximum_source_events)
+            {
+                return Err(LinuxVzPackageRootProcessCollectorErrorV1::ProcessStream);
+            }
+            self.egress_events.extend(events);
+        }
+        let egress_dropped = self
+            .egress_producer
+            .dropped_event_count_v1()
+            .map_err(|_| LinuxVzPackageRootProcessCollectorErrorV1::Producer)?;
+        if egress_dropped != 0 || self.egress_producer.discarded_record_count_v1() != 0 {
+            return Err(LinuxVzPackageRootProcessCollectorErrorV1::ProcessStream);
+        }
         Ok(drained)
     }
 
     fn drain_after_fault_v1(&mut self) {
         loop {
             match self.producer.drain_available_v1(DRAIN_BATCH_RECORDS_V1) {
+                Ok(events) if events.is_empty() => break,
+                Ok(_) => {}
+                Err(_) => return,
+            }
+        }
+        loop {
+            match self
+                .egress_producer
+                .drain_available_v1(DRAIN_BATCH_RECORDS_V1)
+            {
                 Ok(events) if events.is_empty() => return,
                 Ok(_) => {}
                 Err(_) => return,
@@ -796,6 +901,21 @@ impl LinuxVzPackageRootProcessWorkerV1 {
         }
         let online_cpus = self.producer.online_cpus_v1().to_vec();
         let attachment_cpu = self.producer.attachment_cpu_v1();
+        let egress_dropped_event_count = self
+            .egress_producer
+            .dropped_event_count_v1()
+            .map_err(|_| LinuxVzPackageRootProcessCollectorErrorV1::Producer)?;
+        let egress_discarded_record_count = self.egress_producer.discarded_record_count_v1();
+        let egress_last_source_sequence = self.egress_producer.last_source_sequence_v1();
+        if egress_dropped_event_count != 0
+            || egress_discarded_record_count != 0
+            || usize::try_from(egress_last_source_sequence)
+                .ok()
+                .filter(|count| *count == self.egress_events.len())
+                .is_none()
+        {
+            return Err(LinuxVzPackageRootProcessCollectorErrorV1::ProcessStream);
+        }
         let stream = self
             .correlator
             .finish_v1(
@@ -831,6 +951,8 @@ impl LinuxVzPackageRootProcessWorkerV1 {
             source_event_count_before_finish,
             finish_drain_event_count,
             maximum_drain_batch_record_count: self.maximum_drain_batch_record_count,
+            egress_events: self.egress_events,
+            egress_maximum_drain_batch_record_count: self.egress_maximum_drain_batch_record_count,
         })
     }
 }
@@ -873,6 +995,7 @@ pub(crate) struct LinuxVzPackageRootProcessCollectorV1;
 impl LinuxVzPackageRootProcessCollectorV1 {
     pub(crate) fn arm_v1(
         _expected_cgroup_id: u64,
+        _cgroup_directory: i32,
         _ring_buffer_capacity: usize,
         _maximum_source_events: usize,
     ) -> Result<Self, LinuxVzPackageRootProcessCollectorErrorV1> {
@@ -1073,7 +1196,7 @@ mod tests {
     fn collector_is_platform_closed_and_errors_are_stable() {
         #[cfg(not(target_os = "linux"))]
         assert_eq!(
-            LinuxVzPackageRootProcessCollectorV1::arm_v1(CGROUP_ID_V1, 64 * 1024, 8)
+            LinuxVzPackageRootProcessCollectorV1::arm_v1(CGROUP_ID_V1, -1, 64 * 1024, 8)
                 .expect_err("macOS is closed"),
             LinuxVzPackageRootProcessCollectorErrorV1::UnsupportedPlatform
         );

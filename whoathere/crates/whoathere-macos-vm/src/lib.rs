@@ -46,6 +46,7 @@ mod linux_vz_package_sensor_bpf;
 mod linux_vz_package_sensor_bpf_inert_probe;
 mod linux_vz_package_sensor_btf;
 mod linux_vz_package_sensor_control;
+mod linux_vz_package_sensor_egress_stream;
 mod linux_vz_package_sensor_event_stream;
 mod linux_vz_package_sensor_file_collector;
 mod linux_vz_package_sensor_process_collector;

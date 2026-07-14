@@ -3,6 +3,10 @@ use std::fmt;
 #[cfg(target_os = "linux")]
 use crate::linux_vz_package_sensor_control::kill_cgroup_from_descriptor_v1;
 #[cfg(target_os = "linux")]
+use crate::linux_vz_package_sensor_egress_stream::{
+    LinuxVzPackageEgressDecisionV1, LinuxVzPackageEgressNetworkProtocolV1,
+};
+#[cfg(target_os = "linux")]
 use crate::linux_vz_package_sensor_event_stream::{
     LinuxVzPackageKernelEventKindV1, LinuxVzPackageNetworkAddressFamilyV1,
     LinuxVzPackageSelectedSyscallV1,
@@ -156,6 +160,12 @@ struct InertProbeEvidenceWireV1 {
     collector_mode: &'static str,
     discarded_record_count: String,
     dropped_event_count: String,
+    egress_coverage_complete: bool,
+    egress_discarded_record_count: String,
+    egress_dropped_event_count: String,
+    egress_event_count: String,
+    egress_maximum_drain_batch_record_count: String,
+    egress_observations: Vec<InertEgressObservationWireV1>,
     event_count: String,
     event_kinds: Vec<&'static str>,
     event_sequence_end: String,
@@ -257,6 +267,25 @@ struct InertProbeEvidenceWireV1 {
     task_exit_code_byte_offset: String,
     tracepoint_format_sha256: BTreeMap<&'static str, String>,
     waitpid_wait_status: String,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Serialize)]
+struct InertEgressObservationWireV1 {
+    cpu: String,
+    decision: &'static str,
+    egress_interface_index: String,
+    gso_segment_count: String,
+    gso_segment_size: String,
+    ingress_interface_index: String,
+    packet_length: String,
+    packet_prefix_byte_length: String,
+    packet_prefix_sha256: String,
+    prefix_truncated: bool,
+    protocol: &'static str,
+    raw_skb_protocol: String,
+    source_sequence: String,
+    wire_length: String,
 }
 
 #[cfg(target_os = "linux")]
@@ -392,6 +421,7 @@ fn qualify_fault_signal_v1(
     let mut cgroup = ProbeCgroupV1::create_v1()?;
     let mut collector = LinuxVzPackageRootProcessCollectorV1::arm_v1(
         cgroup.id,
+        cgroup.directory.as_raw_fd(),
         RING_BUFFER_BYTES_V1,
         FAULT_MAXIMUM_SOURCE_EVENTS_V1,
     )
@@ -778,13 +808,16 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
     let launch_contract_sha256 =
         Sha256Digest::from_bytes(b"whoathere inert probe launch contract v1");
     let process_plan_sha256 = Sha256Digest::from_bytes(b"whoathere inert probe process plan v1");
-    let mut collector =
-        LinuxVzPackageRootProcessCollectorV1::arm_v1(cgroup.id, RING_BUFFER_BYTES_V1, 64).map_err(
-            |error| {
-                eprintln!("WHOATHERE_PACKAGE_SENSOR_BPF_INERT_COLLECTOR_DETAIL {error}");
-                LinuxVzPackageSensorBpfInertProbeErrorV1::Collector
-            },
-        )?;
+    let mut collector = LinuxVzPackageRootProcessCollectorV1::arm_v1(
+        cgroup.id,
+        cgroup.directory.as_raw_fd(),
+        RING_BUFFER_BYTES_V1,
+        64,
+    )
+    .map_err(|error| {
+        eprintln!("WHOATHERE_PACKAGE_SENSOR_BPF_INERT_COLLECTOR_DETAIL {error}");
+        LinuxVzPackageSensorBpfInertProbeErrorV1::Collector
+    })?;
     let mut file_collector = LinuxVzPackageRootFileCollectorV1::arm_v1(
         cgroup.id,
         cgroup.directory.as_raw_fd(),
@@ -959,6 +992,61 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
     {
         return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::EventMismatch);
     }
+    let egress_event = collection
+        .egress_events_v1()
+        .first()
+        .filter(|_| collection.egress_events_v1().len() == 1)
+        .ok_or(LinuxVzPackageSensorBpfInertProbeErrorV1::EventMismatch)?;
+    if !collection.egress_coverage_complete_v1()
+        || collection.egress_dropped_event_count_v1() != 0
+        || collection.egress_discarded_record_count_v1() != 0
+        || collection.egress_maximum_drain_batch_record_count_v1() != 1
+        || egress_event.decision_v1() != LinuxVzPackageEgressDecisionV1::Allow
+        || egress_event.protocol_v1() != LinuxVzPackageEgressNetworkProtocolV1::Ipv4
+        || egress_event.cgroup_id_v1() != cgroup.id
+        || !(process_started_monotonic_nanoseconds..=process_ended_monotonic_nanoseconds)
+            .contains(&egress_event.timestamp_nanoseconds_v1())
+        || egress_event.packet_length_v1() != 44
+        || egress_event.wire_length_v1() != 44
+        || egress_event.raw_skb_protocol_v1() != 8
+        || egress_event.ingress_interface_index_v1() != 0
+        || egress_event.egress_interface_index_v1() == 0
+        || egress_event.gso_segment_count_v1() != 0
+        || egress_event.gso_segment_size_v1() != 0
+        || egress_event.packet_prefix_v1().len() != 44
+        || egress_event.prefix_truncated_v1()
+        || egress_event.source_sequence_v1() != 1
+        || egress_event.cpu_v1() != fixture_cpu
+    {
+        return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::EventMismatch);
+    }
+    let egress_observations = collection
+        .egress_events_v1()
+        .iter()
+        .map(|event| InertEgressObservationWireV1 {
+            cpu: event.cpu_v1().to_string(),
+            decision: match event.decision_v1() {
+                LinuxVzPackageEgressDecisionV1::Allow => "allow",
+                LinuxVzPackageEgressDecisionV1::Block => "block",
+            },
+            egress_interface_index: event.egress_interface_index_v1().to_string(),
+            gso_segment_count: event.gso_segment_count_v1().to_string(),
+            gso_segment_size: event.gso_segment_size_v1().to_string(),
+            ingress_interface_index: event.ingress_interface_index_v1().to_string(),
+            packet_length: event.packet_length_v1().to_string(),
+            packet_prefix_byte_length: event.packet_prefix_v1().len().to_string(),
+            packet_prefix_sha256: event.packet_prefix_sha256_v1().as_str().to_string(),
+            prefix_truncated: event.prefix_truncated_v1(),
+            protocol: match event.protocol_v1() {
+                LinuxVzPackageEgressNetworkProtocolV1::Ipv4 => "ipv4",
+                LinuxVzPackageEgressNetworkProtocolV1::Ipv6 => "ipv6",
+                LinuxVzPackageEgressNetworkProtocolV1::Unsupported => "unsupported",
+            },
+            raw_skb_protocol: event.raw_skb_protocol_v1().to_string(),
+            source_sequence: event.source_sequence_v1().to_string(),
+            wire_length: event.wire_length_v1().to_string(),
+        })
+        .collect::<Vec<_>>();
     let file_change = file_collection.changes_v1().first();
     let file_event_kinds = file_collection
         .events_v1()
@@ -1158,6 +1246,14 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
         collector_mode: "root_bpf_ring_correlator",
         discarded_record_count: collection.discarded_record_count_v1().to_string(),
         dropped_event_count: collection.dropped_event_count_v1().to_string(),
+        egress_coverage_complete: collection.egress_coverage_complete_v1(),
+        egress_discarded_record_count: collection.egress_discarded_record_count_v1().to_string(),
+        egress_dropped_event_count: collection.egress_dropped_event_count_v1().to_string(),
+        egress_event_count: collection.egress_events_v1().len().to_string(),
+        egress_maximum_drain_batch_record_count: collection
+            .egress_maximum_drain_batch_record_count_v1()
+            .to_string(),
+        egress_observations,
         event_count: correlated.source_event_count_v1().to_string(),
         event_kinds: vec![
             "setgroups_enter",
@@ -1336,7 +1432,7 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
             "http_observation",
         ],
         runtime_btf_sha256: collection.runtime_btf_sha256_v1().as_str().to_string(),
-        schema_version: "whoathere.linux_vz_package_sensor_bpf_inert_probe.v13",
+        schema_version: "whoathere.linux_vz_package_sensor_bpf_inert_probe.v14",
         sensor_session_challenge_sha256: sensor_session_challenge_sha256.as_str().to_string(),
         source_event_count_before_finish: collection
             .source_event_count_before_finish_v1()
