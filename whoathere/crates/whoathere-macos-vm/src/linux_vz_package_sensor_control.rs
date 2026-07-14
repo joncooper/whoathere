@@ -1,15 +1,17 @@
 #![cfg_attr(not(target_os = "linux"), allow(dead_code))]
 
 #[cfg(target_os = "linux")]
-use crate::linux_vz_package_sensor_process_collector::{
-    LinuxVzPackageRootProcessCollectionV1, LinuxVzPackageRootProcessCollectorV1,
-};
+use crate::linux_vz_package_sensor_file_collector::LinuxVzPackageRootFileCollectorV1;
+#[cfg(target_os = "linux")]
+use crate::linux_vz_package_sensor_process_collector::LinuxVzPackageRootProcessCollectorV1;
 #[cfg(target_os = "linux")]
 use crate::{
+    encode_linux_vz_package_root_file_evidence_v1,
     encode_linux_vz_package_root_process_evidence_v1, protected_process_observer_seal,
-    LinuxVzPackageExpectedRootProcessEvidenceV1, LinuxVzPackageProcessLaunchContractV1,
-    LinuxVzPackageProcessSupervisorErrorV1, LinuxVzPackageProtectedProcessObserverV1,
-    LinuxVzPackageProtectedSensorOutputV1, LinuxVzPackageRootProcessEvidenceV1,
+    LinuxVzPackageExpectedRootFileEvidenceV1, LinuxVzPackageExpectedRootProcessEvidenceV1,
+    LinuxVzPackageProcessLaunchContractV1, LinuxVzPackageProcessSupervisorErrorV1,
+    LinuxVzPackageProtectedProcessObserverV1, LinuxVzPackageProtectedSensorOutputV1,
+    LinuxVzPackageRootFileEvidenceV1, LinuxVzPackageRootProcessEvidenceV1,
     MAX_LINUX_VZ_PACKAGE_PROCESS_SENSOR_CORRELATION_BYTES_V1,
     MAX_LINUX_VZ_PACKAGE_PROTECTED_SENSOR_PAYLOAD_BYTES_V1,
 };
@@ -920,9 +922,9 @@ trait LinuxVzPackageRootSensorServiceCollectorV1 {
         cgroup_directory: RawFd,
     ) -> Result<RootSensorServiceLeaderStatusV1, LinuxVzPackageSensorControlErrorV1>;
 
-    /// Returns a nonblocking, close-on-exec descriptor that becomes readable or hung up when any
-    /// protected collector faults or exits unexpectedly while an action is active.
-    fn fault_signal_fd_v1(&self) -> Result<RawFd, LinuxVzPackageSensorControlErrorV1>;
+    /// Returns distinct nonblocking, close-on-exec descriptors that become readable or hung up
+    /// when their protected collectors fault or exit unexpectedly while an action is active.
+    fn fault_signal_fds_v1(&self) -> Result<Vec<RawFd>, LinuxVzPackageSensorControlErrorV1>;
 
     fn finish_v1(
         &mut self,
@@ -938,11 +940,23 @@ trait LinuxVzPackageRootSensorServiceCollectorV1 {
     ) -> Result<(), LinuxVzPackageSensorControlErrorV1>;
 }
 
-/// Concrete process component for the protected root sensor service.
+#[cfg(target_os = "linux")]
+fn valid_fault_signal_fds_v1(descriptors: &[RawFd], control_fd: RawFd) -> bool {
+    !descriptors.is_empty()
+        && descriptors
+            .iter()
+            .all(|descriptor| *descriptor >= 0 && *descriptor != control_fd)
+        && descriptors
+            .iter()
+            .enumerate()
+            .all(|(index, descriptor)| !descriptors[..index].contains(descriptor))
+}
+
+/// Concrete process and file components for the protected root sensor service.
 ///
-/// This adapter deliberately reports file and network sensors unavailable. The enclosing service
-/// therefore refuses its arm acknowledgement and cannot release a package until equally concrete
-/// protected file and network components are composed with it.
+/// This adapter deliberately reports the network sensor unavailable. The enclosing service
+/// therefore refuses its arm acknowledgement and cannot release a package until an equally
+/// concrete protected network component is composed with it.
 #[cfg(target_os = "linux")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RootProcessServiceCollectorStateV1 {
@@ -960,8 +974,9 @@ struct LinuxVzPackageRootProcessServiceCollectorV1 {
     maximum_source_events: usize,
     state: RootProcessServiceCollectorStateV1,
     process: Option<LinuxVzPackageRootProcessCollectorV1>,
-    completed_process: Option<LinuxVzPackageRootProcessCollectionV1>,
+    file: Option<LinuxVzPackageRootFileCollectorV1>,
     completed_process_evidence: Option<LinuxVzPackageRootProcessEvidenceV1>,
+    completed_file_evidence: Option<LinuxVzPackageRootFileEvidenceV1>,
 }
 
 #[cfg(target_os = "linux")]
@@ -973,8 +988,9 @@ impl LinuxVzPackageRootProcessServiceCollectorV1 {
             maximum_source_events,
             state: RootProcessServiceCollectorStateV1::Unvalidated,
             process: None,
-            completed_process: None,
+            file: None,
             completed_process_evidence: None,
+            completed_file_evidence: None,
         }
     }
 }
@@ -1010,7 +1026,7 @@ impl LinuxVzPackageRootSensorServiceCollectorV1 for LinuxVzPackageRootProcessSer
         }
         validate_cgroup_directory_name_v1(cgroup_directory, &context.cgroup_name)?;
         require_exact_cgroup_processes_v1(cgroup_directory, &[])?;
-        let process = LinuxVzPackageRootProcessCollectorV1::arm_v1(
+        let mut process = LinuxVzPackageRootProcessCollectorV1::arm_v1(
             context.cgroup_id,
             self.ring_buffer_capacity,
             self.maximum_source_events,
@@ -1019,11 +1035,28 @@ impl LinuxVzPackageRootSensorServiceCollectorV1 for LinuxVzPackageRootProcessSer
         process
             .require_healthy_v1()
             .map_err(|_| LinuxVzPackageSensorControlErrorV1::SensorFault)?;
+        let file = match LinuxVzPackageRootFileCollectorV1::arm_v1(
+            context.cgroup_id,
+            cgroup_directory,
+            context.sensor_session_challenge_sha256.clone(),
+            self.maximum_source_events,
+        ) {
+            Ok(file) => file,
+            Err(_) => {
+                process.abort_v1();
+                return Err(LinuxVzPackageSensorControlErrorV1::SensorFault);
+            }
+        };
+        if file.require_healthy_v1().is_err() {
+            process.abort_v1();
+            return Err(LinuxVzPackageSensorControlErrorV1::SensorFault);
+        }
         self.process = Some(process);
+        self.file = Some(file);
         self.state = RootProcessServiceCollectorStateV1::Armed;
         Ok(RootSensorServiceArmStatusV1 {
             bpf_drop_count: 0,
-            file_sensor_armed: false,
+            file_sensor_armed: true,
             heartbeat_started: true,
             network_sensor_armed: false,
             process_sensor_armed: true,
@@ -1045,6 +1078,14 @@ impl LinuxVzPackageRootSensorServiceCollectorV1 for LinuxVzPackageRootProcessSer
             return Err(LinuxVzPackageSensorControlErrorV1::InvalidState);
         }
         require_exact_cgroup_processes_v1(cgroup_directory, &[leader_pid])?;
+        let file = self
+            .file
+            .as_mut()
+            .ok_or(LinuxVzPackageSensorControlErrorV1::InvalidState)?;
+        file.leader_attached_before_release_v1(leader_pid)
+            .map_err(|_| LinuxVzPackageSensorControlErrorV1::SensorFault)?;
+        file.require_healthy_v1()
+            .map_err(|_| LinuxVzPackageSensorControlErrorV1::SensorFault)?;
         let process = self
             .process
             .as_mut()
@@ -1058,14 +1099,14 @@ impl LinuxVzPackageRootSensorServiceCollectorV1 for LinuxVzPackageRootProcessSer
         self.state = RootProcessServiceCollectorStateV1::LeaderAttached;
         Ok(RootSensorServiceLeaderStatusV1 {
             bpf_drop_count: 0,
-            file_sensor_active: false,
+            file_sensor_active: true,
             heartbeat_count: 1,
             network_sensor_active: false,
             process_sensor_active: true,
         })
     }
 
-    fn fault_signal_fd_v1(&self) -> Result<RawFd, LinuxVzPackageSensorControlErrorV1> {
+    fn fault_signal_fds_v1(&self) -> Result<Vec<RawFd>, LinuxVzPackageSensorControlErrorV1> {
         if !matches!(
             self.state,
             RootProcessServiceCollectorStateV1::Armed
@@ -1073,11 +1114,22 @@ impl LinuxVzPackageRootSensorServiceCollectorV1 for LinuxVzPackageRootProcessSer
         ) {
             return Err(LinuxVzPackageSensorControlErrorV1::InvalidState);
         }
-        self.process
+        let process = self
+            .process
             .as_ref()
             .ok_or(LinuxVzPackageSensorControlErrorV1::InvalidState)?
             .fault_signal_fd_v1()
-            .map_err(|_| LinuxVzPackageSensorControlErrorV1::SensorFault)
+            .map_err(|_| LinuxVzPackageSensorControlErrorV1::SensorFault)?;
+        let file = self
+            .file
+            .as_ref()
+            .ok_or(LinuxVzPackageSensorControlErrorV1::InvalidState)?
+            .fault_signal_fd_v1()
+            .map_err(|_| LinuxVzPackageSensorControlErrorV1::SensorFault)?;
+        if process == file {
+            return Err(LinuxVzPackageSensorControlErrorV1::InvalidDescriptor);
+        }
+        Ok(vec![process, file])
     }
 
     fn finish_v1(
@@ -1102,6 +1154,16 @@ impl LinuxVzPackageRootSensorServiceCollectorV1 for LinuxVzPackageRootProcessSer
             .finish_after_empty_cgroup_v1(leader_pid, completion)
             .map_err(|_| LinuxVzPackageSensorControlErrorV1::SensorFault)?;
         self.process.take();
+        let file_collection = self
+            .file
+            .as_mut()
+            .ok_or(LinuxVzPackageSensorControlErrorV1::InvalidState)?
+            .finish_after_empty_cgroup_v1(
+                leader_pid,
+                completion.process_ended_monotonic_nanoseconds(),
+            )
+            .map_err(|_| LinuxVzPackageSensorControlErrorV1::SensorFault)?;
+        self.file.take();
         let expected = LinuxVzPackageExpectedRootProcessEvidenceV1::from_action_v1(
             context.sensor_session_challenge_sha256.clone(),
             context.launch_contract_sha256.clone(),
@@ -1118,12 +1180,27 @@ impl LinuxVzPackageRootSensorServiceCollectorV1 for LinuxVzPackageRootProcessSer
         let process_evidence =
             encode_linux_vz_package_root_process_evidence_v1(&expected, &collection)
                 .map_err(|_| LinuxVzPackageSensorControlErrorV1::SensorFault)?;
-        self.completed_process = Some(collection);
+        let file_expected = LinuxVzPackageExpectedRootFileEvidenceV1::from_action_v1(
+            context.sensor_session_challenge_sha256.clone(),
+            context.launch_contract_sha256.clone(),
+            context.process_plan_sha256.clone(),
+            context.action_index,
+            context.cgroup_name.clone(),
+            context.cgroup_id,
+            context.root_runner_pid,
+            leader_pid,
+            completion,
+        )
+        .map_err(|_| LinuxVzPackageSensorControlErrorV1::SensorFault)?;
+        let file_evidence =
+            encode_linux_vz_package_root_file_evidence_v1(&file_expected, &file_collection)
+                .map_err(|_| LinuxVzPackageSensorControlErrorV1::SensorFault)?;
         self.completed_process_evidence = Some(process_evidence);
+        self.completed_file_evidence = Some(file_evidence);
         self.state = RootProcessServiceCollectorStateV1::Finished;
-        // A process collection alone cannot be represented as complete protected sensor output.
-        // The composite adapter must add typed process evidence, file/network evidence, and their
-        // correlation before this service can return a finish status.
+        // Process and file evidence alone cannot be represented as complete protected sensor
+        // output. The composite adapter must add typed network evidence and global correlation
+        // before this service can return a finish status.
         Err(LinuxVzPackageSensorControlErrorV1::InvalidState)
     }
 
@@ -1135,7 +1212,11 @@ impl LinuxVzPackageRootSensorServiceCollectorV1 for LinuxVzPackageRootProcessSer
         if let Some(process) = self.process.as_mut() {
             process.abort_v1();
         }
+        if let Some(file) = self.file.as_mut() {
+            file.abort_v1();
+        }
         self.process.take();
+        self.file.take();
         if self.state != RootProcessServiceCollectorStateV1::Finished {
             self.state = RootProcessServiceCollectorStateV1::Aborted;
         }
@@ -1376,10 +1457,9 @@ impl RootSensorServiceSessionV1<'_> {
         let status = self
             .collector
             .arm_v1(&context, active.cgroup_directory.as_raw_fd())?;
-        let fault_signal_fd = self.collector.fault_signal_fd_v1()?;
+        let fault_signal_fds = self.collector.fault_signal_fds_v1()?;
         if status.bpf_drop_count != 0
-            || fault_signal_fd < 0
-            || fault_signal_fd == self.stream.as_raw_fd()
+            || !valid_fault_signal_fds_v1(&fault_signal_fds, self.stream.as_raw_fd())
             || !status.file_sensor_armed
             || !status.heartbeat_started
             || !status.network_sensor_armed
@@ -1470,10 +1550,9 @@ impl RootSensorServiceSessionV1<'_> {
         let status = self
             .collector
             .leader_attached_v1(&context, active.cgroup_directory.as_raw_fd())?;
-        let fault_signal_fd = self.collector.fault_signal_fd_v1()?;
+        let fault_signal_fds = self.collector.fault_signal_fds_v1()?;
         if status.bpf_drop_count != 0
-            || fault_signal_fd < 0
-            || fault_signal_fd == self.stream.as_raw_fd()
+            || !valid_fault_signal_fds_v1(&fault_signal_fds, self.stream.as_raw_fd())
             || status.heartbeat_count < 1
             || !status.file_sensor_active
             || !status.network_sensor_active
@@ -1754,25 +1833,25 @@ impl RootSensorServiceSessionV1<'_> {
         if self.state != RootSensorServiceStateV1::LeaderCorrelated {
             return Err(LinuxVzPackageSensorControlErrorV1::InvalidState);
         }
-        let fault_signal_fd = self.collector.fault_signal_fd_v1()?;
-        if fault_signal_fd < 0 || fault_signal_fd == self.stream.as_raw_fd() {
+        let fault_signal_fds = self.collector.fault_signal_fds_v1()?;
+        if !valid_fault_signal_fds_v1(&fault_signal_fds, self.stream.as_raw_fd()) {
             return Err(LinuxVzPackageSensorControlErrorV1::InvalidDescriptor);
         }
-        let mut descriptors = [
-            libc::pollfd {
-                fd: self.stream.as_raw_fd(),
-                events: libc::POLLIN | libc::POLLHUP | libc::POLLERR,
-                revents: 0,
-            },
-            libc::pollfd {
-                fd: fault_signal_fd,
-                events: libc::POLLIN | libc::POLLHUP | libc::POLLERR,
-                revents: 0,
-            },
-        ];
+        let mut descriptors = Vec::with_capacity(fault_signal_fds.len().saturating_add(1));
+        descriptors.push(libc::pollfd {
+            fd: self.stream.as_raw_fd(),
+            events: libc::POLLIN | libc::POLLHUP | libc::POLLERR,
+            revents: 0,
+        });
+        descriptors.extend(fault_signal_fds.iter().map(|descriptor| libc::pollfd {
+            fd: *descriptor,
+            events: libc::POLLIN | libc::POLLHUP | libc::POLLERR,
+            revents: 0,
+        }));
         loop {
-            descriptors[0].revents = 0;
-            descriptors[1].revents = 0;
+            for descriptor in &mut descriptors {
+                descriptor.revents = 0;
+            }
             let result = unsafe {
                 libc::poll(
                     descriptors.as_mut_ptr(),
@@ -1790,7 +1869,10 @@ impl RootSensorServiceSessionV1<'_> {
                 }
                 return Err(LinuxVzPackageSensorControlErrorV1::Io);
             }
-            if descriptors[1].revents != 0 {
+            if descriptors[1..]
+                .iter()
+                .any(|descriptor| descriptor.revents != 0)
+            {
                 return self.handle_sensor_fault_v1();
             }
             if descriptors[0].revents & libc::POLLIN != 0 {

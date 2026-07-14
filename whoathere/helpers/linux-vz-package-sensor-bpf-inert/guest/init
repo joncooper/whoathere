@@ -10,6 +10,14 @@ busybox=/usr/bin/busybox
 "$busybox" mount -t sysfs sysfs /sys
 "$busybox" mount -t devtmpfs devtmpfs /dev || true
 "$busybox" mount -t tmpfs -o mode=0700 tmpfs /run
+"$busybox" chmod 0711 /run
+"$busybox" mkdir -p /run/whoathere
+"$busybox" mount -t tmpfs -o mode=0755 tmpfs /run/whoathere
+"$busybox" mkdir -p /run/whoathere/work
+"$busybox" sh -c 'printf "before\n" > /run/whoathere/work/file-sensor-fixture-before'
+"$busybox" chown 65534:65534 /run/whoathere/work /run/whoathere/work/file-sensor-fixture-before
+"$busybox" chmod 0755 /run/whoathere/work
+"$busybox" chmod 0644 /run/whoathere/work/file-sensor-fixture-before
 
 failed=0
 echo "WHOATHERE_PACKAGE_SENSOR_BPF_INERT_BEGIN"

@@ -240,7 +240,7 @@ private struct LinuxVzConformanceHarness {
         if let expectedFixtureSHA256 = options.expectedPackageSensorFixtureSHA256,
            let expectedRuntimeBTFSHA256 = options.expectedRuntimeBTFSHA256,
            let expectedTaskExitCodeByteOffset = options.expectedTaskExitCodeByteOffset {
-            let evidence = try? decodeLinuxVzPackageSensorBpfInertEvidenceV8(
+            let evidence = try? decodeLinuxVzPackageSensorBpfInertEvidenceV10(
                 serialData,
                 expectedFixtureSHA256: expectedFixtureSHA256,
                 expectedRuntimeBTFSHA256: expectedRuntimeBTFSHA256,
@@ -281,6 +281,22 @@ private struct LinuxVzConformanceHarness {
                 "root_process_evidence_observation_count": String(
                     evidence?.rootProcessEvidenceObservationCount ?? 0
                 ),
+                "root_file_evidence_sha256":
+                    evidence?.rootFileEvidenceSHA256 ?? "unavailable",
+                "root_file_evidence_byte_length": String(
+                    evidence?.rootFileEvidenceByteLength ?? 0
+                ),
+                "root_file_evidence_source_event_count": String(
+                    evidence?.rootFileEvidenceSourceEventCount ?? 0
+                ),
+                "root_file_evidence_change_count": String(
+                    evidence?.rootFileEvidenceChangeCount ?? 0
+                ),
+                "root_file_fanotify_mark_scope": evidence?.fileFanotifyMarkScope ?? [],
+                "root_file_fanotify_unobserved_mounts":
+                    evidence?.fileFanotifyUnobservedMounts ?? [],
+                "root_file_global_mount_coverage_complete":
+                    evidence?.fileGlobalMountCoverageComplete ?? false,
                 "cgroup_id": String(evidence?.cgroupID ?? 0),
                 "fixture_pid": String(evidence?.fixturePID ?? 0),
                 "tracepoint_format_sha256": evidence?.tracepointFormatSHA256 ?? [:],

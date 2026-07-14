@@ -7,14 +7,22 @@ use crate::linux_vz_package_sensor_event_stream::{
     LinuxVzPackageKernelEventKindV1, LinuxVzPackageSelectedSyscallV1,
 };
 #[cfg(target_os = "linux")]
+use crate::linux_vz_package_sensor_file_collector::{
+    LinuxVzPackageRootFileChangeKindV1, LinuxVzPackageRootFileCollectorV1,
+    LinuxVzPackageRootFileEventKindV1,
+};
+#[cfg(target_os = "linux")]
 use crate::linux_vz_package_sensor_process_collector::LinuxVzPackageRootProcessCollectorV1;
 #[cfg(target_os = "linux")]
 use crate::linux_vz_package_sensor_process_stream::LinuxVzPackageCorrelatedProcessObservationV1;
 #[cfg(target_os = "linux")]
 use crate::{
-    encode_linux_vz_package_root_process_evidence_v1, LinuxVzPackageExpectedRootProcessEvidenceV1,
-    LinuxVzPackageProcessCompletionV1, LinuxVzPackageProcessLaunchIdentityV1,
-    LinuxVzPackageProcessTerminalV1, LINUX_VZ_PACKAGE_ROOT_PROCESS_EVIDENCE_SCHEMA_V1,
+    encode_linux_vz_package_root_file_evidence_v1,
+    encode_linux_vz_package_root_process_evidence_v1, LinuxVzPackageExpectedRootFileEvidenceV1,
+    LinuxVzPackageExpectedRootProcessEvidenceV1, LinuxVzPackageProcessCompletionV1,
+    LinuxVzPackageProcessLaunchIdentityV1, LinuxVzPackageProcessTerminalV1,
+    LINUX_VZ_PACKAGE_ROOT_FILE_EVIDENCE_SCHEMA_V1,
+    LINUX_VZ_PACKAGE_ROOT_PROCESS_EVIDENCE_SCHEMA_V1,
 };
 #[cfg(target_os = "linux")]
 use serde::Serialize;
@@ -147,6 +155,21 @@ struct InertProbeEvidenceWireV1 {
     fault_signal_latency_microseconds: String,
     fault_signal_observed: bool,
     fault_trigger: &'static str,
+    file_active_drain_poll_count: String,
+    file_active_nonempty_drain_count: String,
+    file_collector_declared_scope_complete: bool,
+    file_collector_global_mount_coverage_complete: bool,
+    file_diff_change_count: String,
+    file_diff_completed_after_process_exit: bool,
+    file_fanotify_overflow_count: String,
+    file_fanotify_mark_scope: Vec<&'static str>,
+    file_fanotify_unobserved_mounts: Vec<&'static str>,
+    file_ignored_non_cgroup_event_count: String,
+    file_maximum_drain_batch_event_count: String,
+    file_permission_denied_count: String,
+    file_permission_response_count: String,
+    file_required_fanotify_mark_count: String,
+    file_source_event_count: String,
     finish_drain_event_count: String,
     fixture_cpu: String,
     fixture_exit_status: String,
@@ -172,6 +195,18 @@ struct InertProbeEvidenceWireV1 {
     root_process_evidence_schema: &'static str,
     root_process_evidence_sha256: String,
     root_process_evidence_source_event_count: String,
+    root_file_evidence_baseline_snapshot_sha256: String,
+    root_file_evidence_byte_length: String,
+    root_file_evidence_canonical: bool,
+    root_file_evidence_change_count: String,
+    root_file_evidence_declared_scope_complete: bool,
+    root_file_evidence_global_mount_coverage_complete: bool,
+    root_file_evidence_final_snapshot_sha256: String,
+    root_file_evidence_raw_paths_captured: bool,
+    root_file_evidence_schema: &'static str,
+    root_file_evidence_sha256: String,
+    root_file_evidence_source_event_count: String,
+    root_file_evidence_workspace_diff_sha256: String,
     runtime_btf_sha256: String,
     schema_version: &'static str,
     source_event_count_before_finish: String,
@@ -330,7 +365,7 @@ fn qualify_fault_signal_v1(
     }
     let fixture_path = CString::new("process-fixture-child")
         .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::Fixture)?;
-    let fixture_case = CString::new("continuous_drain")
+    let fixture_case = CString::new("fault_signal")
         .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::Fixture)?;
     let environment = [
         CString::new("CI=true").map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::Fixture)?,
@@ -447,6 +482,11 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
         unsafe { OwnedFd::from_raw_fd(3) }
     };
     let mut cgroup = ProbeCgroupV1::create_v1()?;
+    let sensor_session_challenge_sha256 =
+        Sha256Digest::from_bytes(b"whoathere inert probe sensor session v1");
+    let launch_contract_sha256 =
+        Sha256Digest::from_bytes(b"whoathere inert probe launch contract v1");
+    let process_plan_sha256 = Sha256Digest::from_bytes(b"whoathere inert probe process plan v1");
     let mut collector =
         LinuxVzPackageRootProcessCollectorV1::arm_v1(cgroup.id, RING_BUFFER_BYTES_V1, 64).map_err(
             |error| {
@@ -454,6 +494,20 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
                 LinuxVzPackageSensorBpfInertProbeErrorV1::Collector
             },
         )?;
+    let mut file_collector = LinuxVzPackageRootFileCollectorV1::arm_v1(
+        cgroup.id,
+        cgroup.directory.as_raw_fd(),
+        sensor_session_challenge_sha256.clone(),
+        4_096,
+    )
+    .map_err(|error| {
+        eprintln!("WHOATHERE_PACKAGE_SENSOR_FILE_INERT_COLLECTOR_DETAIL {error}");
+        LinuxVzPackageSensorBpfInertProbeErrorV1::Collector
+    })?;
+    file_collector.require_healthy_v1().map_err(|error| {
+        eprintln!("WHOATHERE_PACKAGE_SENSOR_FILE_INERT_COLLECTOR_DETAIL {error}");
+        LinuxVzPackageSensorBpfInertProbeErrorV1::Collector
+    })?;
     let fixture_cpu = *collector
         .online_cpus_v1()
         .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::Collector)?
@@ -511,6 +565,12 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
     require_stopped_child_v1(child)?;
     cgroup.add_process_v1(child)?;
     pin_process_to_cpu_v1(child, fixture_cpu)?;
+    file_collector
+        .leader_attached_before_release_v1(child as u32)
+        .map_err(|error| {
+            eprintln!("WHOATHERE_PACKAGE_SENSOR_FILE_INERT_COLLECTOR_DETAIL {error}");
+            LinuxVzPackageSensorBpfInertProbeErrorV1::Collector
+        })?;
     collector
         .leader_attached_before_release_v1(child as u32)
         .map_err(|error| {
@@ -525,6 +585,9 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
     let process_ended_monotonic_nanoseconds = monotonic_nanoseconds_v1()?;
     child_guard.reaped = true;
     if !libc::WIFEXITED(status) || libc::WEXITSTATUS(status) != 0 {
+        if let Err(error) = file_collector.require_healthy_v1() {
+            eprintln!("WHOATHERE_PACKAGE_SENSOR_FILE_INERT_COLLECTOR_DETAIL {error}");
+        }
         let exit_code = if libc::WIFEXITED(status) {
             libc::WEXITSTATUS(status)
         } else {
@@ -555,6 +618,12 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
         .finish_after_empty_cgroup_v1(child as u32, &completion)
         .map_err(|error| {
             eprintln!("WHOATHERE_PACKAGE_SENSOR_BPF_INERT_COLLECTOR_DETAIL {error}");
+            LinuxVzPackageSensorBpfInertProbeErrorV1::Collector
+        })?;
+    let file_collection = file_collector
+        .finish_after_empty_cgroup_v1(child as u32, process_ended_monotonic_nanoseconds)
+        .map_err(|error| {
+            eprintln!("WHOATHERE_PACKAGE_SENSOR_FILE_INERT_COLLECTOR_DETAIL {error}");
             LinuxVzPackageSensorBpfInertProbeErrorV1::Collector
         })?;
     let correlated = collection.stream_v1();
@@ -599,6 +668,43 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
     {
         return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::EventMismatch);
     }
+    let file_change = file_collection.changes_v1().first();
+    let file_event_kinds = file_collection
+        .events_v1()
+        .iter()
+        .map(|event| event.kind_v1())
+        .collect::<Vec<_>>();
+    if file_collection.cgroup_id_v1() != cgroup.id
+        || file_collection.leader_pid_v1() != child as u32
+        || file_collection.process_ended_monotonic_nanoseconds_v1()
+            != process_ended_monotonic_nanoseconds
+        || file_collection.diff_completed_monotonic_nanoseconds_v1()
+            <= process_ended_monotonic_nanoseconds
+        || file_collection.events_v1().len() < 5
+        || file_collection.changes_v1().len() != 1
+        || file_change.map(|change| change.kind_v1())
+            != Some(LinuxVzPackageRootFileChangeKindV1::Renamed)
+        || !file_change.is_some_and(|change| {
+            change.content_changed_v1()
+                && change.metadata_changed_v1()
+                && change.secondary_path_v1().is_some()
+        })
+        || !file_event_kinds.contains(&LinuxVzPackageRootFileEventKindV1::OpenExec)
+        || !file_event_kinds.contains(&LinuxVzPackageRootFileEventKindV1::Open)
+        || !file_event_kinds.contains(&LinuxVzPackageRootFileEventKindV1::Read)
+        || !file_event_kinds.contains(&LinuxVzPackageRootFileEventKindV1::Write)
+        || file_collection.active_drain_poll_count_v1() == 0
+        || file_collection.active_nonempty_drain_count_v1() == 0
+        || file_collection.active_nonempty_drain_count_v1()
+            > file_collection.active_drain_poll_count_v1()
+        || file_collection.maximum_drain_batch_event_count_v1() == 0
+        || file_collection.permission_response_count_v1() == 0
+        || file_collection.permission_denied_count_v1() != 0
+        || file_collection.fanotify_overflow_count_v1() != 0
+        || file_collection.required_mark_count_v1() != 5
+    {
+        return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::EventMismatch);
+    }
     let root_runner_pid = u32::try_from(unsafe { libc::getpid() })
         .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::Identity)?;
     let cgroup_name = cgroup
@@ -618,9 +724,9 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
     )
     .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::Evidence)?;
     let root_process_expected = LinuxVzPackageExpectedRootProcessEvidenceV1::from_action_v1(
-        Sha256Digest::from_bytes(b"whoathere inert probe sensor session v1"),
-        Sha256Digest::from_bytes(b"whoathere inert probe launch contract v1"),
-        Sha256Digest::from_bytes(b"whoathere inert probe process plan v1"),
+        sensor_session_challenge_sha256.clone(),
+        launch_contract_sha256.clone(),
+        process_plan_sha256.clone(),
         action_index,
         cgroup_name,
         cgroup.id,
@@ -641,6 +747,39 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
         || !root_process_evidence.coverage_complete()
         || root_process_evidence.raw_arguments_captured()
         || root_process_evidence.raw_exec_paths_captured()
+    {
+        return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::Evidence);
+    }
+    let root_file_expected = LinuxVzPackageExpectedRootFileEvidenceV1::from_action_v1(
+        sensor_session_challenge_sha256,
+        launch_contract_sha256,
+        process_plan_sha256,
+        action_index,
+        cgroup
+            .name
+            .to_str()
+            .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::Evidence)?
+            .to_string(),
+        cgroup.id,
+        root_runner_pid,
+        child as u32,
+        &completion,
+    )
+    .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::Evidence)?;
+    let root_file_evidence =
+        encode_linux_vz_package_root_file_evidence_v1(&root_file_expected, &file_collection)
+            .map_err(|error| {
+                eprintln!("WHOATHERE_PACKAGE_SENSOR_FILE_INERT_EVIDENCE_DETAIL {error}");
+                LinuxVzPackageSensorBpfInertProbeErrorV1::Evidence
+            })?;
+    if root_file_evidence.events().len() != file_collection.events_v1().len()
+        || root_file_evidence.changes().len() != 1
+        || !root_file_evidence.declared_scope_complete()
+        || root_file_evidence.global_mount_coverage_complete()
+        || root_file_evidence.raw_paths_captured()
+        || root_file_evidence.diff_completed_monotonic_nanoseconds()
+            <= process_ended_monotonic_nanoseconds
+        || root_file_evidence.permission_denied_count() != 0
     {
         return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::Evidence);
     }
@@ -690,6 +829,35 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
         fault_signal_latency_microseconds: fault.latency_microseconds.to_string(),
         fault_signal_observed: true,
         fault_trigger: "source_event_limit",
+        file_active_drain_poll_count: file_collection.active_drain_poll_count_v1().to_string(),
+        file_active_nonempty_drain_count: file_collection
+            .active_nonempty_drain_count_v1()
+            .to_string(),
+        file_collector_declared_scope_complete: true,
+        file_collector_global_mount_coverage_complete: false,
+        file_diff_change_count: file_collection.changes_v1().len().to_string(),
+        file_diff_completed_after_process_exit: file_collection
+            .diff_completed_monotonic_nanoseconds_v1()
+            > process_ended_monotonic_nanoseconds,
+        file_fanotify_overflow_count: file_collection.fanotify_overflow_count_v1().to_string(),
+        file_fanotify_mark_scope: vec![
+            "dev_mount",
+            "root_mount",
+            "run_mount",
+            "sys_mount",
+            "workspace_mount",
+        ],
+        file_fanotify_unobserved_mounts: vec!["proc_mount"],
+        file_ignored_non_cgroup_event_count: file_collection
+            .ignored_non_cgroup_event_count_v1()
+            .to_string(),
+        file_maximum_drain_batch_event_count: file_collection
+            .maximum_drain_batch_event_count_v1()
+            .to_string(),
+        file_permission_denied_count: file_collection.permission_denied_count_v1().to_string(),
+        file_permission_response_count: file_collection.permission_response_count_v1().to_string(),
+        file_required_fanotify_mark_count: file_collection.required_mark_count_v1().to_string(),
+        file_source_event_count: file_collection.events_v1().len().to_string(),
         finish_drain_event_count: collection.finish_drain_event_count_v1().to_string(),
         fixture_cpu: fixture_cpu.to_string(),
         fixture_exit_status: "0".to_string(),
@@ -733,8 +901,30 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
         root_process_evidence_source_event_count: root_process_evidence
             .source_event_count()
             .to_string(),
+        root_file_evidence_baseline_snapshot_sha256: root_file_evidence
+            .baseline_snapshot_sha256()
+            .as_str()
+            .to_string(),
+        root_file_evidence_byte_length: root_file_evidence.canonical_json_v1().len().to_string(),
+        root_file_evidence_canonical: true,
+        root_file_evidence_change_count: root_file_evidence.changes().len().to_string(),
+        root_file_evidence_declared_scope_complete: root_file_evidence.declared_scope_complete(),
+        root_file_evidence_global_mount_coverage_complete: root_file_evidence
+            .global_mount_coverage_complete(),
+        root_file_evidence_final_snapshot_sha256: root_file_evidence
+            .final_snapshot_sha256()
+            .as_str()
+            .to_string(),
+        root_file_evidence_raw_paths_captured: root_file_evidence.raw_paths_captured(),
+        root_file_evidence_schema: LINUX_VZ_PACKAGE_ROOT_FILE_EVIDENCE_SCHEMA_V1,
+        root_file_evidence_sha256: root_file_evidence.payload_sha256().as_str().to_string(),
+        root_file_evidence_source_event_count: root_file_evidence.events().len().to_string(),
+        root_file_evidence_workspace_diff_sha256: root_file_evidence
+            .workspace_diff_sha256()
+            .as_str()
+            .to_string(),
         runtime_btf_sha256: collection.runtime_btf_sha256_v1().as_str().to_string(),
-        schema_version: "whoathere.linux_vz_package_sensor_bpf_inert_probe.v8",
+        schema_version: "whoathere.linux_vz_package_sensor_bpf_inert_probe.v10",
         source_event_count_before_finish: collection
             .source_event_count_before_finish_v1()
             .to_string(),
@@ -743,7 +933,9 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
         tracepoint_format_sha256: tracepoints,
         waitpid_wait_status: waitpid_wait_status.to_string(),
     };
-    serde_json::to_string(&evidence)
+    let canonical = serde_json_canonicalizer::to_vec(&evidence)
+        .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::Serialization)?;
+    String::from_utf8(canonical)
         .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::Serialization)
 }
 

@@ -4,19 +4,24 @@ Date: 2026-07-09
 
 Status: canonical execution plan for the next product milestone
 
-Current execution checkpoint (2026-07-14): the concrete root collector now turns its complete
-kernel-correlated stream into one canonical, independently decodable process-observation payload.
-The payload binds the exact session, action, cgroup, expected launch identity, supervisor terminal,
-runtime BTF and tracepoint identities, CPU topology, continuous-drain/loss accounting, and every
-ordered lifecycle or paired selected-syscall observation. Global source-sequence validation supports
-interleaved thread pairs without accepting gaps or duplicates; raw syscall arguments and exec paths
-remain structurally absent. The process-only service retains this typed payload after finish but
-still reports file/network unavailable and cannot acknowledge arm or release a package. A fresh
-diskless schema-v8 inert qualification physically encoded and self-decoded 14 source records as
-eight observations, then the Mac verifier accepted the bound payload digest and counts with zero
-host frames and a stopped VM. No package or malware ran. File/network collectors, protected payload
-transport and composite authentication, runtime scenarios, benign scoring, and malicious regression
-remain open; the July score remains 7/11. See the
+Current execution checkpoint (2026-07-14): the concrete root service now composes process and file
+collectors for one action. The file collector continuously drains cgroup-correlated fanotify
+permission/close-write events, denies protected-sensor access, computes a bounded descriptor-relative
+workspace diff after cgroup teardown, and emits one canonical independently decodable redacted
+payload. Its declared five-mark scope covers the root, sys, dev, run, and workspace mounts; a
+physical capability diagnostic proved that procfs rejects the required marks, so the schema states
+`global_mount_coverage_complete: false` and records `proc_mount` as unobserved. A fresh diskless
+schema-v10 qualification produced 12 file events, 11 permission responses, one exact rename diff,
+zero loss, a canonical file payload, the existing canonical process payload, zero host frames, and
+a stopped VM; the strict Mac verifier accepted the entire result. No package or malware ran.
+Network collection remains unavailable, so arm/release still fail closed. Protected payload
+transport, composite authentication, runtime scenarios, benign scoring, and malicious regression
+also remain open; the July score remains 7/11. See the
+[canonical root file-evidence checkpoint](artifact-native-linux-vz-package-root-file-evidence-checkpoint-2026-07-14.md).
+
+The preceding checkpoint turned the complete kernel-correlated process stream into one canonical,
+independently decodable process-observation payload while the service was still process-only. See
+the
 [canonical root process-evidence checkpoint](artifact-native-linux-vz-package-root-process-evidence-checkpoint-2026-07-14.md).
 
 The preceding checkpoint added asynchronous fault propagation from the continuously draining

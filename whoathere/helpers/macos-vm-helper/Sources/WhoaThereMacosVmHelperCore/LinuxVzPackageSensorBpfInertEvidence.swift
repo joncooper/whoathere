@@ -1,7 +1,7 @@
 import Foundation
 
-public let linuxVzPackageSensorBpfInertEvidenceSchemaV8 =
-    "whoathere.linux_vz_package_sensor_bpf_inert_probe.v8"
+public let linuxVzPackageSensorBpfInertEvidenceSchemaV10 =
+    "whoathere.linux_vz_package_sensor_bpf_inert_probe.v10"
 public let linuxVzPackageSensorBpfInertEvidenceSerialPrefixV1 =
     "WHOATHERE_PACKAGE_SENSOR_BPF_INERT_EVIDENCE "
 
@@ -29,7 +29,7 @@ public enum LinuxVzPackageSensorBpfInertEvidenceError: Error, Equatable {
     case invalidSchema
 }
 
-public struct LinuxVzPackageSensorBpfInertEvidenceV8: Equatable, Sendable {
+public struct LinuxVzPackageSensorBpfInertEvidenceV10: Equatable, Sendable {
     public let canonicalJSON: Data
     public let payloadSHA256: String
     public let evidenceByteLength: UInt64
@@ -54,6 +54,15 @@ public struct LinuxVzPackageSensorBpfInertEvidenceV8: Equatable, Sendable {
     public let faultFixturePID: UInt64
     public let faultSignalLatencyMicroseconds: UInt64
     public let faultFixtureTerminationSignal: UInt64
+    public let fileActiveDrainPollCount: UInt64
+    public let fileActiveNonemptyDrainCount: UInt64
+    public let fileSourceEventCount: UInt64
+    public let fileDiffChangeCount: UInt64
+    public let filePermissionResponseCount: UInt64
+    public let fileIgnoredNonCgroupEventCount: UInt64
+    public let fileFanotifyMarkScope: [String]
+    public let fileFanotifyUnobservedMounts: [String]
+    public let fileGlobalMountCoverageComplete: Bool
     public let leaderExecCount: UInt64
     public let preReleaseEventCount: UInt64
     public let processCollectorCoverageComplete: Bool
@@ -61,15 +70,22 @@ public struct LinuxVzPackageSensorBpfInertEvidenceV8: Equatable, Sendable {
     public let rootProcessEvidenceObservationCount: UInt64
     public let rootProcessEvidenceSHA256: String
     public let rootProcessEvidenceSourceEventCount: UInt64
+    public let rootFileEvidenceByteLength: UInt64
+    public let rootFileEvidenceChangeCount: UInt64
+    public let rootFileEvidenceSHA256: String
+    public let rootFileEvidenceSourceEventCount: UInt64
+    public let rootFileEvidenceBaselineSnapshotSHA256: String
+    public let rootFileEvidenceFinalSnapshotSHA256: String
+    public let rootFileEvidenceWorkspaceDiffSHA256: String
     public let tracepointFormatSHA256: [String: String]
 }
 
-public func decodeLinuxVzPackageSensorBpfInertEvidenceV8(
+public func decodeLinuxVzPackageSensorBpfInertEvidenceV10(
     _ serialData: Data,
     expectedFixtureSHA256: String,
     expectedRuntimeBTFSHA256: String,
     expectedTaskExitCodeByteOffset: UInt64
-) throws -> LinuxVzPackageSensorBpfInertEvidenceV8 {
+) throws -> LinuxVzPackageSensorBpfInertEvidenceV10 {
     guard packageSensorBpfInertDigest(expectedFixtureSHA256),
           packageSensorBpfInertDigest(expectedRuntimeBTFSHA256),
           expectedTaskExitCodeByteOffset > 0,
@@ -109,6 +125,14 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV8(
         "fault_cgroup_id", "fault_cgroup_kill_used", "fault_fixture_pid",
         "fault_fixture_termination_signal", "fault_maximum_source_events", "fault_signal_kind",
         "fault_signal_latency_microseconds", "fault_signal_observed", "fault_trigger",
+        "file_active_drain_poll_count", "file_active_nonempty_drain_count",
+        "file_collector_declared_scope_complete",
+        "file_collector_global_mount_coverage_complete", "file_diff_change_count",
+        "file_diff_completed_after_process_exit", "file_fanotify_overflow_count",
+        "file_fanotify_mark_scope", "file_fanotify_unobserved_mounts",
+        "file_ignored_non_cgroup_event_count", "file_maximum_drain_batch_event_count",
+        "file_permission_denied_count", "file_permission_response_count",
+        "file_required_fanotify_mark_count", "file_source_event_count",
         "finish_drain_event_count", "fixture_cpu", "fixture_exit_status", "fixture_pid",
         "fixture_sha256",
         "kernel_exit_wait_status", "leader_exec_count", "malware_execution",
@@ -120,12 +144,20 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV8(
         "root_process_evidence_raw_arguments_captured",
         "root_process_evidence_raw_exec_paths_captured", "root_process_evidence_schema",
         "root_process_evidence_sha256", "root_process_evidence_source_event_count",
+        "root_file_evidence_baseline_snapshot_sha256", "root_file_evidence_byte_length",
+        "root_file_evidence_canonical", "root_file_evidence_change_count",
+        "root_file_evidence_declared_scope_complete",
+        "root_file_evidence_global_mount_coverage_complete",
+        "root_file_evidence_final_snapshot_sha256",
+        "root_file_evidence_raw_paths_captured", "root_file_evidence_schema",
+        "root_file_evidence_sha256", "root_file_evidence_source_event_count",
+        "root_file_evidence_workspace_diff_sha256",
         "runtime_btf_sha256", "schema_version",
         "source_event_count_before_finish", "sync_back",
         "task_exit_code_byte_offset", "tracepoint_format_sha256", "waitpid_wait_status",
     ])
     guard Set(value.keys) == expectedKeys,
-          value["schema_version"] as? String == linuxVzPackageSensorBpfInertEvidenceSchemaV8,
+          value["schema_version"] as? String == linuxVzPackageSensorBpfInertEvidenceSchemaV10,
           let activeDrainPollCount = packageSensorBpfInertDecimal(
               value["active_drain_poll_count"]
           ),
@@ -168,6 +200,47 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV8(
           faultSignalLatencyMicroseconds <= 2_000_000,
           value["fault_signal_observed"] as? Bool == true,
           value["fault_trigger"] as? String == "source_event_limit",
+          let fileActiveDrainPollCount = packageSensorBpfInertDecimal(
+              value["file_active_drain_poll_count"]
+          ),
+          fileActiveDrainPollCount >= 1, fileActiveDrainPollCount <= 10_000,
+          let fileActiveNonemptyDrainCount = packageSensorBpfInertDecimal(
+              value["file_active_nonempty_drain_count"]
+          ),
+          fileActiveNonemptyDrainCount >= 1,
+          fileActiveNonemptyDrainCount <= fileActiveDrainPollCount,
+          value["file_collector_declared_scope_complete"] as? Bool == true,
+          value["file_collector_global_mount_coverage_complete"] as? Bool == false,
+          packageSensorBpfInertDecimal(value["file_diff_change_count"]) == 1,
+          value["file_diff_completed_after_process_exit"] as? Bool == true,
+          packageSensorBpfInertDecimal(value["file_fanotify_overflow_count"]) == 0,
+          let fileFanotifyMarkScope = value["file_fanotify_mark_scope"] as? [String],
+          fileFanotifyMarkScope == [
+              "dev_mount", "root_mount", "run_mount", "sys_mount", "workspace_mount",
+          ],
+          let fileFanotifyUnobservedMounts =
+              value["file_fanotify_unobserved_mounts"] as? [String],
+          fileFanotifyUnobservedMounts == ["proc_mount"],
+          let fileIgnoredNonCgroupEventCount = packageSensorBpfInertDecimal(
+              value["file_ignored_non_cgroup_event_count"]
+          ),
+          fileIgnoredNonCgroupEventCount <= 1_000_000,
+          let fileMaximumDrainBatchEventCount = packageSensorBpfInertDecimal(
+              value["file_maximum_drain_batch_event_count"]
+          ),
+          fileMaximumDrainBatchEventCount >= 1,
+          fileMaximumDrainBatchEventCount <= 4_096,
+          packageSensorBpfInertDecimal(value["file_permission_denied_count"]) == 0,
+          let filePermissionResponseCount = packageSensorBpfInertDecimal(
+              value["file_permission_response_count"]
+          ),
+          filePermissionResponseCount >= 1,
+          packageSensorBpfInertDecimal(value["file_required_fanotify_mark_count"]) == 5,
+          let fileSourceEventCount = packageSensorBpfInertDecimal(
+              value["file_source_event_count"]
+          ),
+          fileSourceEventCount >= 5, fileSourceEventCount <= 4_096,
+          filePermissionResponseCount <= fileSourceEventCount,
           let finishDrainEventCount = packageSensorBpfInertDecimal(
               value["finish_drain_event_count"]
           ),
@@ -222,6 +295,37 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV8(
               value["root_process_evidence_source_event_count"]
           ),
           rootProcessEvidenceSourceEventCount == 14,
+          let rootFileEvidenceByteLength = packageSensorBpfInertDecimal(
+              value["root_file_evidence_byte_length"]
+          ),
+          rootFileEvidenceByteLength >= 1, rootFileEvidenceByteLength <= 256 * 1024,
+          value["root_file_evidence_canonical"] as? Bool == true,
+          let rootFileEvidenceChangeCount = packageSensorBpfInertDecimal(
+              value["root_file_evidence_change_count"]
+          ),
+          rootFileEvidenceChangeCount == 1,
+          value["root_file_evidence_declared_scope_complete"] as? Bool == true,
+          value["root_file_evidence_global_mount_coverage_complete"] as? Bool == false,
+          value["root_file_evidence_raw_paths_captured"] as? Bool == false,
+          value["root_file_evidence_schema"] as? String ==
+              "whoathere.linux_vz_package_root_file_evidence.v1",
+          let rootFileEvidenceSHA256 = value["root_file_evidence_sha256"] as? String,
+          let rootFileEvidenceBaselineSnapshotSHA256 =
+              value["root_file_evidence_baseline_snapshot_sha256"] as? String,
+          let rootFileEvidenceFinalSnapshotSHA256 =
+              value["root_file_evidence_final_snapshot_sha256"] as? String,
+          let rootFileEvidenceWorkspaceDiffSHA256 =
+              value["root_file_evidence_workspace_diff_sha256"] as? String,
+          [rootFileEvidenceSHA256, rootFileEvidenceBaselineSnapshotSHA256,
+           rootFileEvidenceFinalSnapshotSHA256, rootFileEvidenceWorkspaceDiffSHA256]
+              .allSatisfy(packageSensorBpfInertDigest),
+          Set([rootFileEvidenceSHA256, rootFileEvidenceBaselineSnapshotSHA256,
+               rootFileEvidenceFinalSnapshotSHA256, rootFileEvidenceWorkspaceDiffSHA256,
+               rootProcessEvidenceSHA256, expectedFixtureSHA256, expectedRuntimeBTFSHA256]).count == 7,
+          let rootFileEvidenceSourceEventCount = packageSensorBpfInertDecimal(
+              value["root_file_evidence_source_event_count"]
+          ),
+          rootFileEvidenceSourceEventCount == fileSourceEventCount,
           value["runtime_btf_sha256"] as? String == expectedRuntimeBTFSHA256,
           let sourceEventCountBeforeFinish = packageSensorBpfInertDecimal(
               value["source_event_count_before_finish"]
@@ -244,7 +348,7 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV8(
           waitpidWaitStatus == kernelExitWaitStatus else {
         throw LinuxVzPackageSensorBpfInertEvidenceError.invalidSchema
     }
-    return LinuxVzPackageSensorBpfInertEvidenceV8(
+    return LinuxVzPackageSensorBpfInertEvidenceV10(
         canonicalJSON: payload,
         payloadSHA256: sha256(payload),
         evidenceByteLength: UInt64(payload.count),
@@ -269,6 +373,15 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV8(
         faultFixturePID: faultFixturePID,
         faultSignalLatencyMicroseconds: faultSignalLatencyMicroseconds,
         faultFixtureTerminationSignal: 9,
+        fileActiveDrainPollCount: fileActiveDrainPollCount,
+        fileActiveNonemptyDrainCount: fileActiveNonemptyDrainCount,
+        fileSourceEventCount: fileSourceEventCount,
+        fileDiffChangeCount: rootFileEvidenceChangeCount,
+        filePermissionResponseCount: filePermissionResponseCount,
+        fileIgnoredNonCgroupEventCount: fileIgnoredNonCgroupEventCount,
+        fileFanotifyMarkScope: fileFanotifyMarkScope,
+        fileFanotifyUnobservedMounts: fileFanotifyUnobservedMounts,
+        fileGlobalMountCoverageComplete: false,
         leaderExecCount: 1,
         preReleaseEventCount: 0,
         processCollectorCoverageComplete: true,
@@ -276,6 +389,13 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV8(
         rootProcessEvidenceObservationCount: rootProcessEvidenceObservationCount,
         rootProcessEvidenceSHA256: rootProcessEvidenceSHA256,
         rootProcessEvidenceSourceEventCount: rootProcessEvidenceSourceEventCount,
+        rootFileEvidenceByteLength: rootFileEvidenceByteLength,
+        rootFileEvidenceChangeCount: rootFileEvidenceChangeCount,
+        rootFileEvidenceSHA256: rootFileEvidenceSHA256,
+        rootFileEvidenceSourceEventCount: rootFileEvidenceSourceEventCount,
+        rootFileEvidenceBaselineSnapshotSHA256: rootFileEvidenceBaselineSnapshotSHA256,
+        rootFileEvidenceFinalSnapshotSHA256: rootFileEvidenceFinalSnapshotSHA256,
+        rootFileEvidenceWorkspaceDiffSHA256: rootFileEvidenceWorkspaceDiffSHA256,
         tracepointFormatSHA256: tracepoints
     )
 }
