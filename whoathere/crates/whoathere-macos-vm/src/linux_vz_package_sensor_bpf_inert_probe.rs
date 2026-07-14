@@ -56,6 +56,7 @@ pub enum LinuxVzPackageSensorBpfInertProbeErrorV1 {
     Cgroup,
     Producer,
     Fork,
+    CpuAffinity,
     ChildState,
     ChildTimeout,
     ChildFailed,
@@ -75,6 +76,7 @@ impl LinuxVzPackageSensorBpfInertProbeErrorV1 {
             Self::Cgroup => "linux_vz_package_sensor_bpf_probe_cgroup_failed",
             Self::Producer => "linux_vz_package_sensor_bpf_probe_producer_failed",
             Self::Fork => "linux_vz_package_sensor_bpf_probe_fork_failed",
+            Self::CpuAffinity => "linux_vz_package_sensor_bpf_probe_cpu_affinity_failed",
             Self::ChildState => "linux_vz_package_sensor_bpf_probe_child_state_invalid",
             Self::ChildTimeout => "linux_vz_package_sensor_bpf_probe_child_timeout",
             Self::ChildFailed => "linux_vz_package_sensor_bpf_probe_child_failed",
@@ -121,11 +123,13 @@ struct InertProbeEvidenceWireV1 {
     event_sequence_start: String,
     exit_attachment: &'static str,
     exit_status_source: &'static str,
+    fixture_cpu: String,
     fixture_exit_status: String,
     fixture_pid: String,
     fixture_sha256: String,
     kernel_exit_wait_status: String,
     malware_execution: bool,
+    observed_event_cpus: Vec<String>,
     online_cpus: Vec<String>,
     package_execution: bool,
     package_gid: String,
@@ -324,6 +328,14 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
     };
     require_stopped_child_v1(child)?;
     cgroup.add_process_v1(child)?;
+    let fixture_cpu = *producer
+        .online_cpus_v1()
+        .last()
+        .ok_or(LinuxVzPackageSensorBpfInertProbeErrorV1::CpuAffinity)?;
+    if fixture_cpu == producer.attachment_cpu_v1() {
+        return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::CpuAffinity);
+    }
+    pin_process_to_cpu_v1(child, fixture_cpu)?;
     if unsafe { libc::kill(child, libc::SIGCONT) } != 0 {
         return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::ChildState);
     }
@@ -372,6 +384,7 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
                 || event.parent_pid() != 0
                 || event.subject_pid() != child as u32
                 || event.cgroup_id() != cgroup.id
+                || event.cpu() != fixture_cpu
         })
         || events
             .windows(2)
@@ -476,6 +489,7 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
         event_sequence_start: "1".to_string(),
         exit_attachment: "raw_tracepoint:sched_process_exit",
         exit_status_source: "runtime_btf:task_struct.exit_code",
+        fixture_cpu: fixture_cpu.to_string(),
         fixture_exit_status: "0".to_string(),
         fixture_pid: child.to_string(),
         fixture_sha256: fixture_sha256.as_str().to_string(),
@@ -483,6 +497,7 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
             .ok_or(LinuxVzPackageSensorBpfInertProbeErrorV1::EventMismatch)?
             .to_string(),
         malware_execution: false,
+        observed_event_cpus: vec![fixture_cpu.to_string()],
         online_cpus: producer
             .online_cpus_v1()
             .iter()
@@ -492,7 +507,7 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
         package_gid: PACKAGE_GID_V1.to_string(),
         package_uid: PACKAGE_UID_V1.to_string(),
         runtime_btf_sha256: producer.runtime_btf_sha256_v1().as_str().to_string(),
-        schema_version: "whoathere.linux_vz_package_sensor_bpf_inert_probe.v3",
+        schema_version: "whoathere.linux_vz_package_sensor_bpf_inert_probe.v4",
         sync_back: false,
         task_exit_code_byte_offset: producer.task_exit_code_byte_offset_v1().to_string(),
         tracepoint_format_sha256: tracepoints,
@@ -656,6 +671,27 @@ fn require_stopped_child_v1(
 }
 
 #[cfg(target_os = "linux")]
+fn pin_process_to_cpu_v1(
+    process: libc::pid_t,
+    cpu: u32,
+) -> Result<(), LinuxVzPackageSensorBpfInertProbeErrorV1> {
+    let cpu =
+        usize::try_from(cpu).map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::CpuAffinity)?;
+    if process <= 1 || cpu >= libc::CPU_SETSIZE as usize {
+        return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::CpuAffinity);
+    }
+    let mut affinity: libc::cpu_set_t = unsafe { zeroed() };
+    unsafe {
+        libc::CPU_ZERO(&mut affinity);
+        libc::CPU_SET(cpu, &mut affinity);
+    }
+    if unsafe { libc::sched_setaffinity(process, size_of::<libc::cpu_set_t>(), &affinity) } != 0 {
+        return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::CpuAffinity);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
 fn wait_for_child_v1(
     child: libc::pid_t,
 ) -> Result<libc::c_int, LinuxVzPackageSensorBpfInertProbeErrorV1> {
@@ -746,6 +782,7 @@ mod tests {
             LinuxVzPackageSensorBpfInertProbeErrorV1::Cgroup,
             LinuxVzPackageSensorBpfInertProbeErrorV1::Producer,
             LinuxVzPackageSensorBpfInertProbeErrorV1::Fork,
+            LinuxVzPackageSensorBpfInertProbeErrorV1::CpuAffinity,
             LinuxVzPackageSensorBpfInertProbeErrorV1::ChildState,
             LinuxVzPackageSensorBpfInertProbeErrorV1::ChildTimeout,
             LinuxVzPackageSensorBpfInertProbeErrorV1::ChildFailed,

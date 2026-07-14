@@ -4,9 +4,20 @@ Date: 2026-07-09
 
 Status: canonical execution plan for the next product milestone
 
-Current execution checkpoint (2026-07-14): the root supervisor now retains its exact raw Linux
-`waitpid` status, protected finish-v3 binds and echoes that value, and correlation-v4 requires a
-separate kernel status to equal it exactly. Raw/typed inconsistencies, missing source fields, and
+Current execution checkpoint (2026-07-14): the package BPF producer's tracepoint-wide attachment
+has now been physically proved across CPUs on the pinned two-vCPU backend. The single perf-event
+attachment was anchored on CPU 0, the purpose-built inert child was constrained to CPU 1, and all
+14 expected credential, exec, loader-`mmap`, and exit records reported CPU 1 with zero producer
+drops or decoder discards. The strict schema-v4 Mac verifier also required the existing BTF-bound
+kernel/supervisor terminal agreement, zero host frames, stable images, and a stopped VM. No package
+or malware ran. This closes the cross-CPU coverage uncertainty but does not instantiate the
+production root collector or improve the July 7/11 score. See the
+[cross-CPU coverage checkpoint](artifact-native-linux-vz-package-sensor-cross-cpu-coverage-checkpoint-2026-07-14.md).
+
+The preceding terminal-reconciliation checkpoint made that collector contract strict. The root
+supervisor now retains its exact raw Linux `waitpid` status, protected finish-v3 binds and echoes
+that value, and correlation-v4 requires a separate kernel status to equal it exactly. Raw/typed
+inconsistencies, missing source fields, and
 kernel/supervisor disagreement fail closed, including preservation of the signal core-dump bit.
 No VM, package, or malware ran for this code-and-protocol checkpoint. It closes the consumer
 contract but does not instantiate the production root collector that must source the kernel value
@@ -367,6 +378,13 @@ detection-score improvement. No package or malware ran and the 7/11 score is unc
 [package sensor BPF producer checkpoint](artifact-native-linux-vz-package-sensor-bpf-producer-checkpoint-2026-07-14.md).
 The physical follow-up is recorded in the
 [package-sensor BPF inert qualification checkpoint](artifact-native-linux-vz-package-sensor-bpf-inert-qualification-checkpoint-2026-07-14.md).
+
+The same exact producer has now also passed a cross-CPU delivery proof. Its single perf-event
+attachment was anchored on CPU 0, while the inert fixture was pinned to CPU 1; all 14 selected
+records reported CPU 1 with zero loss. This confirms the tracepoint-wide attachment model on the
+pinned two-vCPU backend without duplicating the same BPF registration per CPU. It is still an inert
+qualification rather than production root-service integration or package detection. See the
+[cross-CPU coverage checkpoint](artifact-native-linux-vz-package-sensor-cross-cpu-coverage-checkpoint-2026-07-14.md).
 
 The producer now also implements a closed arm64 allowlist for `setgroups`, `setgid`, `setuid`,
 `connect`, `sendto`, and `mmap`, with BPF-side cgroup filtering, pointer redaction, paired
@@ -2058,6 +2076,7 @@ Repository evidence:
 - [Linux VZ package sensor launch-binding checkpoint](artifact-native-linux-vz-package-sensor-launch-binding-checkpoint-2026-07-14.md)
 - [Linux VZ package sensor kernel-exit checkpoint](artifact-native-linux-vz-package-sensor-kernel-exit-binding-checkpoint-2026-07-14.md)
 - [Linux VZ package sensor terminal-reconciliation checkpoint](artifact-native-linux-vz-package-sensor-terminal-reconciliation-checkpoint-2026-07-14.md)
+- [Linux VZ package sensor cross-CPU coverage checkpoint](artifact-native-linux-vz-package-sensor-cross-cpu-coverage-checkpoint-2026-07-14.md)
 - [Linux VZ runtime-qualification guest-candidate checkpoint](artifact-native-linux-vz-runtime-qualification-guest-candidate-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification host-launcher checkpoint](artifact-native-linux-vz-runtime-qualification-host-launcher-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification physical checkpoint](artifact-native-linux-vz-runtime-qualification-physical-checkpoint-2026-07-13.md)

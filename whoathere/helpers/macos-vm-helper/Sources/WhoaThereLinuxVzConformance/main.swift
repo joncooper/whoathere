@@ -240,7 +240,7 @@ private struct LinuxVzConformanceHarness {
         if let expectedFixtureSHA256 = options.expectedPackageSensorFixtureSHA256,
            let expectedRuntimeBTFSHA256 = options.expectedRuntimeBTFSHA256,
            let expectedTaskExitCodeByteOffset = options.expectedTaskExitCodeByteOffset {
-            let evidence = try? decodeLinuxVzPackageSensorBpfInertEvidenceV3(
+            let evidence = try? decodeLinuxVzPackageSensorBpfInertEvidenceV4(
                 serialData,
                 expectedFixtureSHA256: expectedFixtureSHA256,
                 expectedRuntimeBTFSHA256: expectedRuntimeBTFSHA256,
