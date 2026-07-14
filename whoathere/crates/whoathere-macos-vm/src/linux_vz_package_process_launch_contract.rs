@@ -79,35 +79,34 @@ impl std::error::Error for LinuxVzPackageProcessLaunchContractErrorV1 {}
 /// Opaque bindings produced by later validators for package-generated paths.
 ///
 /// The empty value is sufficient for every process whose arguments and executable are already
-/// fixed in the process plan. There is deliberately no public constructor for derived wheel or
-/// console-entry-point bindings: path discovery alone must never manufacture execution authority.
+/// fixed in the process plan. There is deliberately no public constructor for a derived-wheel
+/// binding: path discovery alone must never manufacture execution authority.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ValidatedLinuxVzPackageDynamicProcessBindingsV1 {
     derived_wheel_path: Option<String>,
-    console_executable_path: Option<String>,
-    console_executable_sha256: Option<Sha256Digest>,
+    derived_wheel_sha256: Option<Sha256Digest>,
 }
 
 impl ValidatedLinuxVzPackageDynamicProcessBindingsV1 {
     pub const fn none() -> Self {
         Self {
             derived_wheel_path: None,
-            console_executable_path: None,
-            console_executable_sha256: None,
+            derived_wheel_sha256: None,
         }
     }
 
     #[cfg(test)]
-    pub(crate) fn for_test_v1(
-        derived_wheel_path: Option<&str>,
-        console_executable: Option<(&str, Sha256Digest)>,
-    ) -> Self {
+    pub(crate) fn for_test_v1(derived_wheel: Option<(&str, Sha256Digest)>) -> Self {
         Self {
-            derived_wheel_path: derived_wheel_path.map(str::to_string),
-            console_executable_path: console_executable
-                .as_ref()
-                .map(|(path, _)| (*path).to_string()),
-            console_executable_sha256: console_executable.map(|(_, digest)| digest),
+            derived_wheel_path: derived_wheel.as_ref().map(|(path, _)| (*path).to_string()),
+            derived_wheel_sha256: derived_wheel.map(|(_, digest)| digest),
+        }
+    }
+
+    pub(crate) fn for_derived_wheel_v1(path: String, sha256: Sha256Digest) -> Self {
+        Self {
+            derived_wheel_path: Some(path),
+            derived_wheel_sha256: Some(sha256),
         }
     }
 }
@@ -117,7 +116,6 @@ impl ValidatedLinuxVzPackageDynamicProcessBindingsV1 {
 pub enum LinuxVzPackageResolvedExecutableClassV1 {
     PinnedRootfsRuntime,
     PackageGeneratedVirtualEnvironmentPythonCopy,
-    ValidatorBoundDerivedConsoleEntryPoint,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -359,43 +357,19 @@ pub fn derive_linux_vz_package_process_launch_contract_v1(
         MacosLinuxVzPackageProcessExecutableV1::PinnedRuntimeFile {
             absolute_path,
             expected_sha256,
-        } => {
-            require_no_console_binding_v1(bindings)?;
-            (
-                LinuxVzPackageResolvedExecutableClassV1::PinnedRootfsRuntime,
-                absolute_path.clone(),
-                expected_sha256.clone(),
-            )
-        }
+        } => (
+            LinuxVzPackageResolvedExecutableClassV1::PinnedRootfsRuntime,
+            absolute_path.clone(),
+            expected_sha256.clone(),
+        ),
         MacosLinuxVzPackageProcessExecutableV1::FreshVirtualEnvironmentPythonCopy {
             absolute_path,
             source_python_sha256,
-        } => {
-            require_no_console_binding_v1(bindings)?;
-            (
-                LinuxVzPackageResolvedExecutableClassV1::PackageGeneratedVirtualEnvironmentPythonCopy,
-                absolute_path.clone(),
-                source_python_sha256.clone(),
-            )
-        }
-        MacosLinuxVzPackageProcessExecutableV1::ValidatedDerivedConsoleEntryPoint {
-            absolute_path,
-            ..
-        } => {
-            let (bound_path, bound_sha256) = bindings
-                .console_executable_path
-                .as_deref()
-                .zip(bindings.console_executable_sha256.as_ref())
-                .ok_or(LinuxVzPackageProcessLaunchContractErrorV1::DynamicBindingMissing)?;
-            if bound_path != absolute_path {
-                return Err(LinuxVzPackageProcessLaunchContractErrorV1::DynamicBindingInvalid);
-            }
-            (
-                LinuxVzPackageResolvedExecutableClassV1::ValidatorBoundDerivedConsoleEntryPoint,
-                bound_path.to_string(),
-                bound_sha256.clone(),
-            )
-        }
+        } => (
+            LinuxVzPackageResolvedExecutableClassV1::PackageGeneratedVirtualEnvironmentPythonCopy,
+            absolute_path.clone(),
+            source_python_sha256.clone(),
+        ),
     };
     validate_absolute_path_v1(&executable_path, true)
         .map_err(|_| LinuxVzPackageProcessLaunchContractErrorV1::InvalidExecutable)?;
@@ -403,6 +377,7 @@ pub fn derive_linux_vz_package_process_launch_contract_v1(
     let mut argv = Vec::with_capacity(process.arguments().len() + 1);
     argv.push(executable_path.clone());
     let mut used_derived_wheel = false;
+    let mut resolved_derived_wheel = None;
     for argument in process.arguments() {
         let value = match argument {
             MacosLinuxVzPackageProcessArgumentV1::Literal { value } => value.clone(),
@@ -415,7 +390,12 @@ pub fn derive_linux_vz_package_process_launch_contract_v1(
                     .derived_wheel_path
                     .as_deref()
                     .ok_or(LinuxVzPackageProcessLaunchContractErrorV1::DynamicBindingMissing)?;
+                let digest = bindings
+                    .derived_wheel_sha256
+                    .as_ref()
+                    .ok_or(LinuxVzPackageProcessLaunchContractErrorV1::DynamicBindingMissing)?;
                 validate_derived_wheel_path_v1(path)?;
+                resolved_derived_wheel = Some((path.to_string(), digest.clone()));
                 path.to_string()
             }
         };
@@ -424,8 +404,13 @@ pub fn derive_linux_vz_package_process_launch_contract_v1(
         }
         argv.push(value);
     }
-    if !used_derived_wheel && bindings.derived_wheel_path.is_some() {
+    if !used_derived_wheel
+        && (bindings.derived_wheel_path.is_some() || bindings.derived_wheel_sha256.is_some())
+    {
         return Err(LinuxVzPackageProcessLaunchContractErrorV1::DynamicBindingUnexpected);
+    }
+    if bindings.derived_wheel_path.is_some() != bindings.derived_wheel_sha256.is_some() {
+        return Err(LinuxVzPackageProcessLaunchContractErrorV1::DynamicBindingInvalid);
     }
     if argv.is_empty() || argv.len() > MAX_ARGUMENT_COUNT_V1 {
         return Err(LinuxVzPackageProcessLaunchContractErrorV1::LimitExceeded);
@@ -478,7 +463,7 @@ pub fn derive_linux_vz_package_process_launch_contract_v1(
     for input in process.measured_inputs() {
         validate_absolute_path_v1(input.absolute_path(), true)
             .map_err(|_| LinuxVzPackageProcessLaunchContractErrorV1::InvalidMeasuredInput)?;
-        if !seen_measured_paths.insert(input.absolute_path())
+        if !seen_measured_paths.insert(input.absolute_path().to_string())
             || input.absolute_path() == executable_path
         {
             return Err(LinuxVzPackageProcessLaunchContractErrorV1::InvalidMeasuredInput);
@@ -487,6 +472,16 @@ pub fn derive_linux_vz_package_process_launch_contract_v1(
             role: input.role(),
             absolute_path: input.absolute_path().to_string(),
             expected_sha256: input.expected_sha256().clone(),
+        });
+    }
+    if let Some((absolute_path, expected_sha256)) = resolved_derived_wheel {
+        if !seen_measured_paths.insert(absolute_path.clone()) || absolute_path == executable_path {
+            return Err(LinuxVzPackageProcessLaunchContractErrorV1::InvalidMeasuredInput);
+        }
+        measured_inputs.push(LinuxVzPackageResolvedMeasuredInputV1 {
+            role: MacosLinuxVzPackageMeasuredProcessInputRoleV1::DerivedWheel,
+            absolute_path,
+            expected_sha256,
         });
     }
 
@@ -538,15 +533,6 @@ pub fn derive_linux_vz_package_process_launch_contract_v1(
         measured_inputs,
         limits,
     })
-}
-
-fn require_no_console_binding_v1(
-    bindings: &ValidatedLinuxVzPackageDynamicProcessBindingsV1,
-) -> Result<(), LinuxVzPackageProcessLaunchContractErrorV1> {
-    if bindings.console_executable_path.is_some() || bindings.console_executable_sha256.is_some() {
-        return Err(LinuxVzPackageProcessLaunchContractErrorV1::DynamicBindingUnexpected);
-    }
-    Ok(())
 }
 
 fn validate_absolute_path_v1(
@@ -727,10 +713,10 @@ mod tests {
             derive_linux_vz_package_process_launch_contract_v1(
                 &plan,
                 1,
-                &ValidatedLinuxVzPackageDynamicProcessBindingsV1::for_test_v1(
-                    Some("/run/whoathere/derived/unexpected.whl"),
-                    None,
-                ),
+                &ValidatedLinuxVzPackageDynamicProcessBindingsV1::for_test_v1(Some((
+                    "/run/whoathere/derived/unexpected.whl",
+                    Sha256Digest::from_bytes(b"unexpected wheel"),
+                )),),
             ),
             Err(LinuxVzPackageProcessLaunchContractErrorV1::DynamicBindingUnexpected)
         );

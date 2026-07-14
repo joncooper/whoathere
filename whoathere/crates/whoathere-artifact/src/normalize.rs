@@ -139,12 +139,57 @@ pub fn normalize_artifact(
 
     match detected {
         ArtifactFormat::NpmTarGzip => normalize_npm(envelope, archive, limits),
-        ArtifactFormat::WheelZip => normalize_wheel(envelope, archive, limits),
+        ArtifactFormat::WheelZip => {
+            let subject = WheelNormalizationSubject {
+                artifact_sha256: &envelope.original_sha256,
+                original_filename: &envelope.original_filename,
+                expected_package_name: envelope.package_name.as_deref(),
+                expected_package_version: envelope.package_version.as_deref(),
+                expected_external_dependency_requirement: Some(
+                    envelope.requires_external_dependency_resolution,
+                ),
+            };
+            normalize_wheel(&subject, archive, limits)
+        }
         ArtifactFormat::SdistTarGzip | ArtifactFormat::SdistZip => {
             normalize_sdist(envelope, archive, detected, limits)
         }
         ArtifactFormat::Unknown => unreachable!("unknown format rejected above"),
     }
+}
+
+/// Safely normalize one wheel produced inside a contained build without inventing acquisition
+/// provenance for it.
+///
+/// The returned manifest binds the exact derived bytes and validates the same wheel filename,
+/// `.dist-info`, `METADATA`, `WHEEL`, `RECORD`, entry-point, and archive rules as a normally
+/// acquired wheel. Unlike [`normalize_artifact`], this parser has no registry/custody envelope and
+/// therefore does not pretend the derived output was acquired from one of those sources.
+pub fn normalize_derived_wheel(
+    original_filename: &str,
+    original_bytes: &[u8],
+    limits: NormalizationLimits,
+) -> Result<NormalizedArtifact, NormalizationError> {
+    if original_bytes.len() as u64 > limits.max_original_bytes {
+        return Err(NormalizationError::OriginalSizeLimit {
+            actual: original_bytes.len() as u64,
+            limit: limits.max_original_bytes,
+        });
+    }
+    let detected = detect_artifact_format(Ecosystem::Pypi, original_filename, original_bytes)?;
+    if detected != ArtifactFormat::WheelZip {
+        return Err(NormalizationError::FormatMismatch);
+    }
+    let archive = read_zip(original_bytes, limits.archive_limits())?;
+    let artifact_sha256 = Sha256Digest::from_bytes(original_bytes);
+    let subject = WheelNormalizationSubject {
+        artifact_sha256: &artifact_sha256,
+        original_filename,
+        expected_package_name: None,
+        expected_package_version: None,
+        expected_external_dependency_requirement: None,
+    };
+    normalize_wheel(&subject, archive, limits)
 }
 
 fn normalize_npm(
@@ -305,12 +350,20 @@ fn normalize_npm(
     finalize_artifact(input, &logical)
 }
 
+struct WheelNormalizationSubject<'a> {
+    artifact_sha256: &'a Sha256Digest,
+    original_filename: &'a str,
+    expected_package_name: Option<&'a str>,
+    expected_package_version: Option<&'a str>,
+    expected_external_dependency_requirement: Option<bool>,
+}
+
 fn normalize_wheel(
-    envelope: &ArtifactEnvelope,
+    subject: &WheelNormalizationSubject<'_>,
     archive: ArchiveMembers,
     limits: NormalizationLimits,
 ) -> Result<NormalizedArtifact, NormalizationError> {
-    let logical = logical_members(&archive.members, None, &envelope.original_sha256)?;
+    let logical = logical_members(&archive.members, None, subject.artifact_sha256)?;
     let dist_info_directories = logical
         .iter()
         .filter_map(|member| {
@@ -342,7 +395,13 @@ fn normalize_wheel(
     let display_name = one_header(&metadata_headers, "Name")?.to_string();
     let version = one_header(&metadata_headers, "Version")?.to_string();
     let normalized_name = normalize_pypi_name(&display_name)?;
-    verify_envelope_identity(envelope, &normalized_name, &version)?;
+    verify_expected_identity(
+        Ecosystem::Pypi,
+        subject.expected_package_name,
+        subject.expected_package_version,
+        &normalized_name,
+        &version,
+    )?;
     verify_dist_info_identity(&dist_info, &normalized_name, &version)?;
 
     let wheel_headers = parse_email_headers(wheel_file.bytes)?;
@@ -370,7 +429,7 @@ fn normalize_wheel(
             "WHEEL has no Tag field".to_string(),
         ));
     }
-    verify_wheel_filename(envelope, &normalized_name, &version, &tags)?;
+    verify_wheel_filename(subject.original_filename, &normalized_name, &version, &tags)?;
     validate_wheel_record(&logical, record_file)?;
 
     let entry_points_path = format!("{dist_info}/entry_points.txt");
@@ -436,15 +495,22 @@ fn normalize_wheel(
         normalized_name,
         version,
     };
-    let mut input = manifest_input(
-        envelope,
+    let mut input = manifest_input_from_digest(
+        subject.artifact_sha256,
         ArtifactFormat::WheelZip,
         ".".to_string(),
         identity,
         &logical,
     );
     input.metadata.wheel = Some(wheel);
-    record_dependency_resolution_mismatch(envelope, requires_external, &mut input, &metadata_path);
+    if let Some(expected) = subject.expected_external_dependency_requirement {
+        record_expected_dependency_resolution_mismatch(
+            expected,
+            requires_external,
+            &mut input,
+            &metadata_path,
+        );
+    }
     add_inventory(&logical, &mut input);
     finalize_artifact(input, &logical)
 }
@@ -629,8 +695,24 @@ fn manifest_input(
     identity: PackageIdentity,
     members: &[LogicalMember<'_>],
 ) -> ArtifactManifestInput {
+    manifest_input_from_digest(
+        &envelope.original_sha256,
+        format,
+        canonical_root,
+        identity,
+        members,
+    )
+}
+
+fn manifest_input_from_digest(
+    artifact_sha256: &Sha256Digest,
+    format: ArtifactFormat,
+    canonical_root: String,
+    identity: PackageIdentity,
+    members: &[LogicalMember<'_>],
+) -> ArtifactManifestInput {
     let mut input = ArtifactManifestInput::new(
-        envelope.original_sha256.clone(),
+        artifact_sha256.clone(),
         format,
         canonical_root,
         Some(identity),
@@ -667,7 +749,21 @@ fn record_dependency_resolution_mismatch(
     input: &mut ArtifactManifestInput,
     path: &str,
 ) {
-    if envelope.requires_external_dependency_resolution == normalized_requirement {
+    record_expected_dependency_resolution_mismatch(
+        envelope.requires_external_dependency_resolution,
+        normalized_requirement,
+        input,
+        path,
+    );
+}
+
+fn record_expected_dependency_resolution_mismatch(
+    expected_requirement: bool,
+    normalized_requirement: bool,
+    input: &mut ArtifactManifestInput,
+    path: &str,
+) {
+    if expected_requirement == normalized_requirement {
         return;
     }
     input.issues.push(crate::ManifestIssue {
@@ -675,7 +771,7 @@ fn record_dependency_resolution_mismatch(
         path: Some(path.to_string()),
         detail: format!(
             "envelope={} normalized={normalized_requirement}",
-            envelope.requires_external_dependency_resolution
+            expected_requirement
         ),
     });
     input.normalization_completeness = NormalizationCompleteness::Incomplete;
@@ -683,6 +779,22 @@ fn record_dependency_resolution_mismatch(
 
 fn verify_envelope_identity(
     envelope: &ArtifactEnvelope,
+    normalized_name: &str,
+    version: &str,
+) -> Result<(), NormalizationError> {
+    verify_expected_identity(
+        envelope.ecosystem,
+        envelope.package_name.as_deref(),
+        envelope.package_version.as_deref(),
+        normalized_name,
+        version,
+    )
+}
+
+fn verify_expected_identity(
+    ecosystem: Ecosystem,
+    expected_package_name: Option<&str>,
+    expected_package_version: Option<&str>,
     normalized_name: &str,
     version: &str,
 ) -> Result<(), NormalizationError> {
@@ -694,8 +806,8 @@ fn verify_envelope_identity(
             "package version is empty or contains unsupported whitespace/control data".to_string(),
         ));
     }
-    if let Some(expected) = envelope.package_name.as_deref() {
-        let expected = match envelope.ecosystem {
+    if let Some(expected) = expected_package_name {
+        let expected = match ecosystem {
             Ecosystem::Npm => normalize_npm_name(expected)?,
             Ecosystem::Pypi => normalize_pypi_name(expected)?,
         };
@@ -705,7 +817,7 @@ fn verify_envelope_identity(
             )));
         }
     }
-    if let Some(expected) = envelope.package_version.as_deref() {
+    if let Some(expected) = expected_package_version {
         if expected != version {
             return Err(NormalizationError::IdentityMismatch(format!(
                 "envelope version `{expected}` != metadata version `{version}`"
@@ -1113,18 +1225,17 @@ fn verify_sdist_root(
 }
 
 fn verify_wheel_filename(
-    envelope: &ArtifactEnvelope,
+    original_filename: &str,
     normalized_name: &str,
     version: &str,
     metadata_tags: &[String],
 ) -> Result<(), NormalizationError> {
-    if !valid_wheel_basename(&envelope.original_filename) {
+    if !valid_wheel_basename(original_filename) {
         return Err(NormalizationError::IdentityMismatch(
             "wheel filename is not a safe canonical basename".to_string(),
         ));
     }
-    let stem = envelope
-        .original_filename
+    let stem = original_filename
         .strip_suffix(".whl")
         .ok_or_else(|| NormalizationError::IdentityMismatch("wheel filename suffix".to_string()))?;
     let parts = stem.split('-').collect::<Vec<_>>();
@@ -1137,7 +1248,7 @@ fn verify_wheel_filename(
     if normalize_pypi_name(parts[0])? != normalized_name || parts[1] != version {
         return Err(NormalizationError::IdentityMismatch(format!(
             "wheel filename `{}` disagrees with METADATA `{normalized_name}=={version}`",
-            envelope.original_filename
+            original_filename
         )));
     }
     if parts.len() == 6 && !valid_wheel_build_tag(parts[2]) {

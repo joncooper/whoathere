@@ -26,6 +26,7 @@ const SDIST_DERIVED: &str = "/run/whoathere/derived";
 
 const PYTHON_IMPORT_PROBE: &str = "import importlib,sys;importlib.import_module(sys.argv[1])";
 const PYTHON_PTH_PROBE: &str = "pass";
+const PYTHON_CONSOLE_ENTRY_POINT_PROBE: &str = "import functools,importlib,sys;command,module,callable,*arguments=sys.argv[1:];target=functools.reduce(getattr,callable.split('.'),importlib.import_module(module));sys.argv=[command,*arguments];raise SystemExit(target())";
 const PYTHON_PEP517_BUILD: &str = "import functools,importlib,sys;backend,out,*paths=sys.argv[1:];sys.path[:0]=paths;module,sep,obj=backend.partition(':');target=importlib.import_module(module);target=functools.reduce(getattr,obj.split('.'),target) if sep else target;name=target.build_wheel(out,config_settings=None,metadata_directory=None);print(name)";
 const PYTHON_LEGACY_BUILD: &str = "import runpy,sys;sys.path.insert(0,'/run/whoathere/source');sys.argv=['setup.py','bdist_wheel','--dist-dir','/run/whoathere/derived'];runpy.run_path('/run/whoathere/source/setup.py',run_name='__main__')";
 
@@ -52,10 +53,6 @@ pub enum MacosLinuxVzPackageProcessExecutableV1 {
         absolute_path: String,
         source_python_sha256: Sha256Digest,
     },
-    ValidatedDerivedConsoleEntryPoint {
-        absolute_path: String,
-        validated_target_sha256: Sha256Digest,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -70,6 +67,7 @@ pub enum MacosLinuxVzPackageProcessArgumentV1 {
 pub enum MacosLinuxVzPackageMeasuredProcessInputRoleV1 {
     NpmCli,
     PipCli,
+    DerivedWheel,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -161,8 +159,7 @@ pub enum MacosLinuxVzPackageInternalActionV1 {
     },
     ValidateSingleDerivedWheel,
     InspectDerivedWheelMetadata,
-    ValidateDerivedConsoleEntryPoint {
-        absolute_path: String,
+    ValidateConsoleEntryPointTarget {
         module: String,
         callable: String,
         target_sha256: Sha256Digest,
@@ -428,18 +425,31 @@ fn actions_for_stage_v1(
             target_sha256,
             ..
         } => {
-            let path = validated_console_path_v1(command_name)?;
+            validated_console_name_v1(command_name)?;
             vec![
                 MacosLinuxVzPackageExecutionActionV1::Internal {
                     action:
-                        MacosLinuxVzPackageInternalActionV1::ValidateDerivedConsoleEntryPoint {
-                            absolute_path: path.clone(),
+                        MacosLinuxVzPackageInternalActionV1::ValidateConsoleEntryPointTarget {
                             module: module.clone(),
                             callable: callable.clone(),
                             target_sha256: target_sha256.clone(),
                         },
                 },
-                process_action(console_process(path, target_sha256)),
+                process_action(venv_python_process(
+                    runtime,
+                    WHEEL_VENV,
+                    "python_console_entry_point_help_probe",
+                    vec![
+                        literal("-I"),
+                        literal("-c"),
+                        literal(PYTHON_CONSOLE_ENTRY_POINT_PROBE),
+                        literal(command_name),
+                        literal(module),
+                        literal(callable),
+                        literal("--help"),
+                    ],
+                    RUN_ROOT,
+                )?),
             ]
         }
         MacosLinuxVzPackageExecutionStageV1::PythonSafelyExtractExactSdist {
@@ -743,9 +753,9 @@ fn venv_python_process(
     })
 }
 
-fn validated_console_path_v1(
+fn validated_console_name_v1(
     command_name: &str,
-) -> Result<String, MacosLinuxVzPackageExecutionProcessPlanErrorV1> {
+) -> Result<(), MacosLinuxVzPackageExecutionProcessPlanErrorV1> {
     if command_name.is_empty()
         || command_name.starts_with('-')
         || !command_name
@@ -754,26 +764,7 @@ fn validated_console_path_v1(
     {
         return Err(MacosLinuxVzPackageExecutionProcessPlanErrorV1::InvalidDerivedPath);
     }
-    Ok(format!("{WHEEL_VENV}/bin/{command_name}"))
-}
-
-fn console_process(
-    path: String,
-    target_sha256: &Sha256Digest,
-) -> MacosLinuxVzPackageFixedProcessV1 {
-    MacosLinuxVzPackageFixedProcessV1 {
-        stage_name: "python_console_entry_point_help_probe".to_string(),
-        executable: MacosLinuxVzPackageProcessExecutableV1::ValidatedDerivedConsoleEntryPoint {
-            absolute_path: path.clone(),
-            validated_target_sha256: target_sha256.clone(),
-        },
-        arguments: vec![literal("--help")],
-        environment_policy: MacosLinuxVzPackageProcessEnvironmentPolicyV1::ClearThenExactMap,
-        environment: python_environment(),
-        current_directory: RUN_ROOT.to_string(),
-        measured_inputs: Vec::new(),
-        stdio_policy: MacosLinuxVzPackageProcessStdioPolicyV1::NullStdinBoundedCapturedOutput,
-    }
+    Ok(())
 }
 
 fn sdist_build_process(
@@ -1091,7 +1082,7 @@ mod tests {
     }
 
     #[test]
-    fn console_wrapper_is_validated_against_the_semantic_target_before_execution() {
+    fn console_target_is_data_to_a_fixed_venv_python_probe() {
         let target_sha256 = Sha256Digest::from_bytes(b"fixture_pkg.cli:main");
         let program = test_macos_linux_vz_package_execution_program_v1(
             python_runtime(),
@@ -1118,26 +1109,34 @@ mod tests {
         assert!(matches!(
             &plan.actions()[3],
             MacosLinuxVzPackageExecutionActionV1::Internal {
-                action: MacosLinuxVzPackageInternalActionV1::ValidateDerivedConsoleEntryPoint {
-                    absolute_path,
+                action: MacosLinuxVzPackageInternalActionV1::ValidateConsoleEntryPointTarget {
                     module,
                     callable,
                     target_sha256: action_target,
                 }
-            } if absolute_path == "/run/whoathere/work/wheel-venv/bin/fixture-tool"
-                && module == "fixture_pkg.cli"
+            } if module == "fixture_pkg.cli"
                 && callable == "main"
                 && action_target == &target_sha256
         ));
         assert!(matches!(
             process_at(&plan, 4).executable(),
-            MacosLinuxVzPackageProcessExecutableV1::ValidatedDerivedConsoleEntryPoint {
+            MacosLinuxVzPackageProcessExecutableV1::FreshVirtualEnvironmentPythonCopy {
                 absolute_path,
-                validated_target_sha256,
-            } if absolute_path == "/run/whoathere/work/wheel-venv/bin/fixture-tool"
-                && validated_target_sha256 == &target_sha256
+                ..
+            } if absolute_path == "/run/whoathere/work/wheel-venv/bin/python3"
         ));
-        assert_eq!(literal_arguments(process_at(&plan, 4)), ["--help"]);
+        assert_eq!(
+            literal_arguments(process_at(&plan, 4)),
+            [
+                "-I",
+                "-c",
+                PYTHON_CONSOLE_ENTRY_POINT_PROBE,
+                "fixture-tool",
+                "fixture_pkg.cli",
+                "main",
+                "--help"
+            ]
+        );
     }
 
     #[test]

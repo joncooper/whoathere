@@ -13,4 +13,6 @@ mod normalize;
 pub use error::{ArtifactModelError, NormalizationError};
 pub use extraction::*;
 pub use model::*;
-pub use normalize::{detect_artifact_format, normalize_artifact, NormalizationLimits};
+pub use normalize::{
+    detect_artifact_format, normalize_artifact, normalize_derived_wheel, NormalizationLimits,
+};

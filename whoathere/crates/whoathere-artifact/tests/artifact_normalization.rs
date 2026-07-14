@@ -2,9 +2,9 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use std::io::{Cursor, Write};
 use whoathere_artifact::{
-    normalize_artifact, AcquisitionMethod, ArtifactEnvelope, ArtifactEnvelopeInput, ArtifactFormat,
-    ArtifactManifest, ArtifactSourceType, Ecosystem, NormalizationCompleteness, NormalizationError,
-    NormalizationLimits, Sha256Digest,
+    normalize_artifact, normalize_derived_wheel, AcquisitionMethod, ArtifactEnvelope,
+    ArtifactEnvelopeInput, ArtifactFormat, ArtifactManifest, ArtifactSourceType, Ecosystem,
+    NormalizationCompleteness, NormalizationError, NormalizationLimits, Sha256Digest,
 };
 use zip::write::SimpleFileOptions;
 
@@ -318,6 +318,48 @@ fn normalizes_wheel_zip_with_complete_record_and_execution_surfaces() {
         .find(|member| member.normalized_path == "fixture_pkg.pth")
         .expect("wheel .pth member");
     assert_eq!(wheel.pth_file_ids, vec![pth_member.file_id.clone()]);
+}
+
+#[test]
+fn normalizes_derived_wheel_without_fabricating_acquisition_provenance() {
+    let bytes = wheel_zip();
+    let normalized = normalize_derived_wheel(
+        "fixture_pkg-1.2.3-py3-none-any.whl",
+        &bytes,
+        NormalizationLimits::default(),
+    )
+    .expect("normalize inert derived wheel");
+
+    assert_eq!(
+        normalized.manifest.artifact_sha256,
+        Sha256Digest::from_bytes(&bytes)
+    );
+    assert_eq!(
+        normalized
+            .manifest
+            .identity
+            .as_ref()
+            .map(|identity| (identity.normalized_name.as_str(), identity.version.as_str())),
+        Some(("fixture-pkg", "1.2.3"))
+    );
+    assert_eq!(
+        normalized.manifest.normalization_completeness,
+        NormalizationCompleteness::Complete
+    );
+    assert!(normalized.manifest.issues.is_empty());
+    assert!(normalized
+        .manifest
+        .verify_manifest_sha256()
+        .expect("manifest digest"));
+
+    assert!(matches!(
+        normalize_derived_wheel(
+            "renamed-9.9.9-py3-none-any.whl",
+            &bytes,
+            NormalizationLimits::default()
+        ),
+        Err(NormalizationError::IdentityMismatch(_))
+    ));
 }
 
 #[test]

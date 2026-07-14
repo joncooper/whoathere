@@ -228,6 +228,20 @@ remain open. No package has executed and the 7/11 malicious-package detection sc
 See the
 [protected process-supervisor checkpoint](artifact-native-linux-vz-protected-process-supervisor-checkpoint-2026-07-13.md).
 
+The root workspace constructor now creates the fixed home/tmp/cache/work/derived topology on a
+bounded fresh tmpfs and retains every directory identity. The derived-wheel validator requires
+exactly one safe wheel output, applies the full non-executing wheel normalizer without fabricating
+acquisition provenance, root-seals the exact file and directory, and creates the only production
+path-plus-digest binding. A derived-wheel pip launch now measures that sealed wheel as an input.
+The console probe no longer trusts or executes a pip-generated wrapper: a fixed isolated-Python
+program receives the validated module and callable only as argv data and invokes the same target
+with the fixed help profile. Native and Linux/aarch64 warnings-denied builds pass, but the tmpfs,
+validator, and corrected console plan are not yet wired to the protected agent or physically
+exercised. Protected sequencing, sensor correlation, signed evidence, a rebuilt qualified
+runtime, and inert cloud-Mac qualification remain open. No package has executed and the 7/11
+malicious-package detection score is unchanged. See the
+[workspace and derived-wheel checkpoint](artifact-native-linux-vz-workspace-derived-wheel-checkpoint-2026-07-13.md).
+
 The first protected-sensor bootstrap now also observes a cgroup-filtered inert fork/exec/exit chain
 whose child runs as UID/GID 65534 and cannot read or write the root-only sensor. This remains
 unsigned bootstrap evidence rather than a conformance receipt. See the
@@ -1846,6 +1860,7 @@ Repository evidence:
 - [Linux VZ package-runtime clone preflight checkpoint](artifact-native-linux-vz-package-runtime-clone-preflight-checkpoint-2026-07-13.md)
 - [Linux VZ root materialization checkpoint](artifact-native-linux-vz-root-materialization-checkpoint-2026-07-13.md)
 - [Linux VZ protected process-supervisor checkpoint](artifact-native-linux-vz-protected-process-supervisor-checkpoint-2026-07-13.md)
+- [Linux VZ workspace and derived-wheel checkpoint](artifact-native-linux-vz-workspace-derived-wheel-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification guest-candidate checkpoint](artifact-native-linux-vz-runtime-qualification-guest-candidate-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification host-launcher checkpoint](artifact-native-linux-vz-runtime-qualification-host-launcher-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification physical checkpoint](artifact-native-linux-vz-runtime-qualification-physical-checkpoint-2026-07-13.md)
