@@ -1560,7 +1560,7 @@ mod tests {
         MacosLinuxVzNpmLifecyclePolicyV1, MacosLinuxVzPackageDependencyPolicyV1,
         MacosLinuxVzPackageExecutionStageV1, MacosLinuxVzPackageRuntimeExecutablesV1,
         ValidatedLinuxVzPackageDynamicProcessBindingsV1,
-        LINUX_VZ_PACKAGE_PROCESS_SENSOR_CORRELATION_SCHEMA_V3,
+        LINUX_VZ_PACKAGE_PROCESS_SENSOR_CORRELATION_SCHEMA_V4,
     };
     use serde_json::{json, Value};
     use whoathere_detonation::NpmEnvironmentProfileV1;
@@ -1760,7 +1760,9 @@ mod tests {
             "launch_contract_sha256": contract.launch_contract_sha256(),
             "leader_correlated_before_release": true,
             "leader_exit_status": "0",
+            "leader_kernel_wait_status": "0",
             "leader_pid": "42",
+            "leader_supervisor_wait_status": "0",
             "leader_terminal": "exited",
             "network_event_count": network_event_count.to_string(),
             "network_evidence_sha256": Sha256Digest::from_bytes(network),
@@ -1774,7 +1776,7 @@ mod tests {
             "process_sensor_healthy": true,
             "process_started_monotonic_nanoseconds": "200",
             "public_network_route_present": false,
-            "schema_version": LINUX_VZ_PACKAGE_PROCESS_SENSOR_CORRELATION_SCHEMA_V3,
+            "schema_version": LINUX_VZ_PACKAGE_PROCESS_SENSOR_CORRELATION_SCHEMA_V4,
             "sensor_ended_monotonic_nanoseconds": "400",
             "sensor_session_challenge_sha256": challenge,
             "sensor_started_monotonic_nanoseconds": "100",
@@ -1799,6 +1801,7 @@ mod tests {
                 completion: LinuxVzPackageProcessCompletionV1::from_parts_v1(
                     200,
                     300,
+                    0,
                     LinuxVzPackageProcessTerminalV1::Exited,
                     Some(0),
                     None,

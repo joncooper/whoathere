@@ -4,16 +4,24 @@ Date: 2026-07-09
 
 Status: canonical execution plan for the next product milestone
 
-Current execution checkpoint (2026-07-14): the package BPF producer now reads the raw Linux wait
-status independently from the kernel through a `sched_process_exit` raw tracepoint and the exact
-runtime-BTF-resolved `task_struct.exit_code` member. Kernel event ABI v2, the fail-closed decoder,
-and process correlation retain that value. A strict inert cloud-Mac qualification bound the pinned
-BTF digest, exact byte offset `1964`, raw-tracepoint source, kernel status `0`, independent `waitpid`
-status `0`, the existing contiguous 14-event stream, zero loss, zero host frames, and a stopped VM.
-No package or malware ran, and the July detection score remains 7/11. A concrete root collector,
-supervisor/kernel terminal reconciliation, fanotify/file, filesystem-diff, network correlation,
-signed-envelope, full runtime, inert package scenario, benign, and malicious gates remain open. See
-the [kernel-exit checkpoint](artifact-native-linux-vz-package-sensor-kernel-exit-binding-checkpoint-2026-07-14.md).
+Current execution checkpoint (2026-07-14): the root supervisor now retains its exact raw Linux
+`waitpid` status, protected finish-v3 binds and echoes that value, and correlation-v4 requires a
+separate kernel status to equal it exactly. Raw/typed inconsistencies, missing source fields, and
+kernel/supervisor disagreement fail closed, including preservation of the signal core-dump bit.
+No VM, package, or malware ran for this code-and-protocol checkpoint. It closes the consumer
+contract but does not instantiate the production root collector that must source the kernel value
+from the BPF stream. The July detection score remains 7/11. Fanotify/file, filesystem-diff, network
+correlation, signed-envelope, full runtime, inert package scenario, benign, and malicious gates
+also remain open. See the
+[terminal-reconciliation checkpoint](artifact-native-linux-vz-package-sensor-terminal-reconciliation-checkpoint-2026-07-14.md).
+
+The preceding kernel-exit gate made the independent source possible. The package BPF producer reads
+the raw Linux wait status through a `sched_process_exit` raw tracepoint and the exact
+runtime-BTF-resolved `task_struct.exit_code` member. A strict inert cloud-Mac qualification bound
+the pinned BTF digest, exact byte offset `1964`, raw-tracepoint source, kernel status `0`, independent
+`waitpid` status `0`, the existing contiguous 14-event stream, zero loss, zero host frames, and a
+stopped VM. See the
+[kernel-exit checkpoint](artifact-native-linux-vz-package-sensor-kernel-exit-binding-checkpoint-2026-07-14.md).
 
 The preceding launch-binding gate independently verified that the blocked package leader's
 kernel-reported parent was the root runner identified by peer credentials, then carried that
@@ -403,6 +411,15 @@ equal `waitpid` and independently pinned the BTF digest and byte offset `1964`; 
 loss, topology, and VM-stop invariants also passed. Production collector integration and live
 supervisor/kernel reconciliation remain open, so the 7/11 score is unchanged. See the
 [kernel-exit checkpoint](artifact-native-linux-vz-package-sensor-kernel-exit-binding-checkpoint-2026-07-14.md).
+
+The terminal-reconciliation contract now connects that independent source to the supervisor's
+terminal result without pretending that the collector exists. The supervisor retains the exact
+raw `waitpid` value, finish-v3 binds and echoes it, and correlation-v4 requires both the expected
+supervisor status and an equal kernel status. Raw/typed mismatches, a missing source, source
+disagreement, and stopped or malformed encodings fail closed; a signal core-dump bit remains
+observable. The current fixtures prove the consumer contract only. A production root collector
+must still source the kernel value from the BPF stream, so the 7/11 score is unchanged. See the
+[terminal-reconciliation checkpoint](artifact-native-linux-vz-package-sensor-terminal-reconciliation-checkpoint-2026-07-14.md).
 
 The first protected-sensor bootstrap now also observes a cgroup-filtered inert fork/exec/exit chain
 whose child runs as UID/GID 65534 and cannot read or write the root-only sensor. This remains
@@ -2040,6 +2057,7 @@ Repository evidence:
 - [Linux VZ package sensor terminal-binding checkpoint](artifact-native-linux-vz-package-sensor-terminal-binding-checkpoint-2026-07-14.md)
 - [Linux VZ package sensor launch-binding checkpoint](artifact-native-linux-vz-package-sensor-launch-binding-checkpoint-2026-07-14.md)
 - [Linux VZ package sensor kernel-exit checkpoint](artifact-native-linux-vz-package-sensor-kernel-exit-binding-checkpoint-2026-07-14.md)
+- [Linux VZ package sensor terminal-reconciliation checkpoint](artifact-native-linux-vz-package-sensor-terminal-reconciliation-checkpoint-2026-07-14.md)
 - [Linux VZ runtime-qualification guest-candidate checkpoint](artifact-native-linux-vz-runtime-qualification-guest-candidate-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification host-launcher checkpoint](artifact-native-linux-vz-runtime-qualification-host-launcher-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification physical checkpoint](artifact-native-linux-vz-runtime-qualification-physical-checkpoint-2026-07-13.md)

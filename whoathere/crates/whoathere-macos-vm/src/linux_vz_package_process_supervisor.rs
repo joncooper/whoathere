@@ -111,6 +111,7 @@ pub enum LinuxVzPackageProcessTerminalV1 {
 pub struct LinuxVzPackageProcessCompletionV1 {
     process_started_monotonic_nanoseconds: u64,
     process_ended_monotonic_nanoseconds: u64,
+    supervisor_wait_status: u16,
     terminal: LinuxVzPackageProcessTerminalV1,
     exit_status: Option<u8>,
     termination_signal: Option<u8>,
@@ -120,20 +121,18 @@ impl LinuxVzPackageProcessCompletionV1 {
     pub(crate) fn from_parts_v1(
         process_started_monotonic_nanoseconds: u64,
         process_ended_monotonic_nanoseconds: u64,
+        supervisor_wait_status: u16,
         terminal: LinuxVzPackageProcessTerminalV1,
         exit_status: Option<u8>,
         termination_signal: Option<u8>,
     ) -> Result<Self, LinuxVzPackageProcessSupervisorErrorV1> {
         if process_started_monotonic_nanoseconds == 0
             || process_ended_monotonic_nanoseconds <= process_started_monotonic_nanoseconds
-            || !matches!(
-                (terminal, exit_status, termination_signal),
-                (LinuxVzPackageProcessTerminalV1::Exited, Some(_), None)
-                    | (
-                        LinuxVzPackageProcessTerminalV1::Signaled,
-                        None,
-                        Some(1..=64)
-                    )
+            || !wait_status_matches_terminal_v1(
+                supervisor_wait_status,
+                terminal,
+                exit_status,
+                termination_signal,
             )
         {
             return Err(LinuxVzPackageProcessSupervisorErrorV1::WaitFailed);
@@ -141,6 +140,7 @@ impl LinuxVzPackageProcessCompletionV1 {
         Ok(Self {
             process_started_monotonic_nanoseconds,
             process_ended_monotonic_nanoseconds,
+            supervisor_wait_status,
             terminal,
             exit_status,
             termination_signal,
@@ -155,6 +155,10 @@ impl LinuxVzPackageProcessCompletionV1 {
         self.process_ended_monotonic_nanoseconds
     }
 
+    pub const fn supervisor_wait_status(&self) -> u16 {
+        self.supervisor_wait_status
+    }
+
     pub const fn terminal(&self) -> LinuxVzPackageProcessTerminalV1 {
         self.terminal
     }
@@ -165,6 +169,23 @@ impl LinuxVzPackageProcessCompletionV1 {
 
     pub const fn termination_signal(&self) -> Option<u8> {
         self.termination_signal
+    }
+}
+
+const fn wait_status_matches_terminal_v1(
+    wait_status: u16,
+    terminal: LinuxVzPackageProcessTerminalV1,
+    exit_status: Option<u8>,
+    termination_signal: Option<u8>,
+) -> bool {
+    match (terminal, exit_status, termination_signal) {
+        (LinuxVzPackageProcessTerminalV1::Exited, Some(exit_status), None) => {
+            wait_status == (exit_status as u16) << 8
+        }
+        (LinuxVzPackageProcessTerminalV1::Signaled, None, Some(termination_signal @ 1..=64)) => {
+            wait_status & 0xff00 == 0 && wait_status & 0x007f == termination_signal as u16
+        }
+        _ => false,
     }
 }
 
@@ -943,10 +964,13 @@ mod linux {
             let leader_status =
                 leader_status.ok_or(LinuxVzPackageProcessSupervisorErrorV1::WaitFailed)?;
             let (terminal, exit_status, termination_signal) = decode_wait_status_v1(leader_status)?;
+            let supervisor_wait_status = u16::try_from(leader_status)
+                .map_err(|_| LinuxVzPackageProcessSupervisorErrorV1::WaitFailed)?;
             let ended = monotonic_nanoseconds_v1()?;
             let completion = LinuxVzPackageProcessCompletionV1::from_parts_v1(
                 started,
                 ended,
+                supervisor_wait_status,
                 terminal,
                 exit_status,
                 termination_signal,
@@ -2008,17 +2032,20 @@ mod tests {
         let exited = LinuxVzPackageProcessCompletionV1::from_parts_v1(
             100,
             200,
+            0,
             LinuxVzPackageProcessTerminalV1::Exited,
             Some(0),
             None,
         )
         .expect("exited completion");
+        assert_eq!(exited.supervisor_wait_status(), 0);
         assert_eq!(exited.exit_status(), Some(0));
         assert_eq!(exited.termination_signal(), None);
 
         let signaled = LinuxVzPackageProcessCompletionV1::from_parts_v1(
             100,
             200,
+            9,
             LinuxVzPackageProcessTerminalV1::Signaled,
             None,
             Some(9),
@@ -2033,6 +2060,7 @@ mod tests {
             LinuxVzPackageProcessCompletionV1::from_parts_v1(
                 0,
                 200,
+                0,
                 LinuxVzPackageProcessTerminalV1::Exited,
                 Some(0),
                 None,
@@ -2040,6 +2068,7 @@ mod tests {
             LinuxVzPackageProcessCompletionV1::from_parts_v1(
                 200,
                 200,
+                0,
                 LinuxVzPackageProcessTerminalV1::Exited,
                 Some(0),
                 None,
@@ -2047,6 +2076,7 @@ mod tests {
             LinuxVzPackageProcessCompletionV1::from_parts_v1(
                 100,
                 200,
+                0,
                 LinuxVzPackageProcessTerminalV1::Exited,
                 None,
                 Some(9),
@@ -2054,6 +2084,7 @@ mod tests {
             LinuxVzPackageProcessCompletionV1::from_parts_v1(
                 100,
                 200,
+                0,
                 LinuxVzPackageProcessTerminalV1::Signaled,
                 None,
                 Some(0),
@@ -2061,9 +2092,34 @@ mod tests {
             LinuxVzPackageProcessCompletionV1::from_parts_v1(
                 100,
                 200,
+                65,
                 LinuxVzPackageProcessTerminalV1::Signaled,
                 None,
                 Some(65),
+            ),
+            LinuxVzPackageProcessCompletionV1::from_parts_v1(
+                100,
+                200,
+                0,
+                LinuxVzPackageProcessTerminalV1::Exited,
+                Some(7),
+                None,
+            ),
+            LinuxVzPackageProcessCompletionV1::from_parts_v1(
+                100,
+                200,
+                9,
+                LinuxVzPackageProcessTerminalV1::Signaled,
+                None,
+                Some(15),
+            ),
+            LinuxVzPackageProcessCompletionV1::from_parts_v1(
+                100,
+                200,
+                0x7f,
+                LinuxVzPackageProcessTerminalV1::Signaled,
+                None,
+                Some(64),
             ),
         ] {
             assert_eq!(
@@ -2071,6 +2127,28 @@ mod tests {
                 Err(LinuxVzPackageProcessSupervisorErrorV1::WaitFailed)
             );
         }
+
+        let nonzero_exit = LinuxVzPackageProcessCompletionV1::from_parts_v1(
+            100,
+            200,
+            0x0700,
+            LinuxVzPackageProcessTerminalV1::Exited,
+            Some(7),
+            None,
+        )
+        .expect("nonzero exit completion");
+        assert_eq!(nonzero_exit.supervisor_wait_status(), 0x0700);
+
+        let core_dump = LinuxVzPackageProcessCompletionV1::from_parts_v1(
+            100,
+            200,
+            0x008b,
+            LinuxVzPackageProcessTerminalV1::Signaled,
+            None,
+            Some(11),
+        )
+        .expect("core-dump completion");
+        assert_eq!(core_dump.supervisor_wait_status(), 0x008b);
     }
 
     #[test]
