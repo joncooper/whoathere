@@ -5,7 +5,8 @@ use crate::linux_vz_package_sensor_event_stream::{
     LinuxVzPackageBpfRingBufferV1, LinuxVzPackageKernelEventV1,
 };
 use crate::linux_vz_package_sensor_event_stream::{
-    LinuxVzPackageSensorEventStreamErrorV1, LINUX_VZ_PACKAGE_KERNEL_EVENT_BYTES_V1,
+    LinuxVzPackageSelectedSyscallV1, LinuxVzPackageSensorEventStreamErrorV1,
+    LINUX_VZ_PACKAGE_KERNEL_EVENT_BYTES_V1,
 };
 #[cfg(target_os = "linux")]
 use crate::linux_vz_package_sensor_tracepoint::read_linux_vz_package_tracepoint_layout_v1;
@@ -46,6 +47,7 @@ const BPF_X_V1: u8 = 0x08;
 const BPF_ADD_V1: u8 = 0x00;
 const BPF_RSH_V1: u8 = 0x70;
 const BPF_MOV_V1: u8 = 0xb0;
+const BPF_JA_V1: u8 = 0x00;
 const BPF_JEQ_V1: u8 = 0x10;
 const BPF_JNE_V1: u8 = 0x50;
 const BPF_CALL_V1: u8 = 0x80;
@@ -357,6 +359,12 @@ impl BpfProgramBuilderV1 {
         index
     }
 
+    fn jump_always_placeholder_v1(&mut self) -> usize {
+        let index = self.instructions.len();
+        self.instruction_v1(BPF_JMP_V1 | BPF_JA_V1, 0, 0, 0, 0);
+        index
+    }
+
     fn patch_forward_jump_v1(
         &mut self,
         instruction: usize,
@@ -520,6 +528,241 @@ fn build_lifecycle_program_v1(
     Ok(program.instructions)
 }
 
+fn build_selected_syscall_program_v1(
+    layout: &LinuxVzPackageTracepointLayoutV1,
+    configuration_map: i32,
+    ring_buffer_map: i32,
+    drop_counter_map: i32,
+) -> Result<Vec<BpfInstructionV1>, LinuxVzPackageSensorBpfErrorV1> {
+    if configuration_map < 0 || ring_buffer_map < 0 || drop_counter_map < 0 {
+        return Err(LinuxVzPackageSensorBpfErrorV1::Descriptor);
+    }
+    let (kind, result_present) = match layout.kind_v1() {
+        LinuxVzPackageTracepointKindV1::RawSyscallsSysEnter => (4_u32, false),
+        LinuxVzPackageTracepointKindV1::RawSyscallsSysExit => (5_u32, true),
+        LinuxVzPackageTracepointKindV1::SchedProcessFork
+        | LinuxVzPackageTracepointKindV1::SchedProcessExec
+        | LinuxVzPackageTracepointKindV1::SchedProcessExit => {
+            return Err(LinuxVzPackageSensorBpfErrorV1::InvalidLayout);
+        }
+    };
+    let syscall_id = layout
+        .syscall_id_v1()
+        .ok_or(LinuxVzPackageSensorBpfErrorV1::InvalidLayout)?;
+    if syscall_id.size_v1() != size_of::<u64>()
+        || !syscall_id.signed_v1()
+        || syscall_id.data_location_v1()
+    {
+        return Err(LinuxVzPackageSensorBpfErrorV1::InvalidLayout);
+    }
+    let syscall_id_offset = i16::try_from(syscall_id.offset_v1())
+        .map_err(|_| LinuxVzPackageSensorBpfErrorV1::InvalidLayout)?;
+    let syscall_arguments_offset = if result_present {
+        None
+    } else {
+        let arguments = layout
+            .syscall_arguments_v1()
+            .ok_or(LinuxVzPackageSensorBpfErrorV1::InvalidLayout)?;
+        if arguments.size_v1() != 6 * size_of::<u64>()
+            || arguments.signed_v1()
+            || arguments.data_location_v1()
+        {
+            return Err(LinuxVzPackageSensorBpfErrorV1::InvalidLayout);
+        }
+        Some(
+            i16::try_from(arguments.offset_v1())
+                .map_err(|_| LinuxVzPackageSensorBpfErrorV1::InvalidLayout)?,
+        )
+    };
+    let syscall_result_offset = if result_present {
+        let result = layout
+            .syscall_result_v1()
+            .ok_or(LinuxVzPackageSensorBpfErrorV1::InvalidLayout)?;
+        if result.size_v1() != size_of::<u64>() || !result.signed_v1() || result.data_location_v1()
+        {
+            return Err(LinuxVzPackageSensorBpfErrorV1::InvalidLayout);
+        }
+        Some(
+            i16::try_from(result.offset_v1())
+                .map_err(|_| LinuxVzPackageSensorBpfErrorV1::InvalidLayout)?,
+        )
+    } else {
+        None
+    };
+
+    let mut program = BpfProgramBuilderV1::default();
+    program.mov64_register_v1(BPF_REG_6_V1, BPF_REG_1_V1);
+    program.load_register_v1(BPF_DW_V1, BPF_REG_9_V1, BPF_REG_6_V1, syscall_id_offset);
+    program.call_v1(BPF_FUNC_GET_CURRENT_CGROUP_ID_V1);
+    program.mov64_register_v1(BPF_REG_8_V1, BPF_REG_0_V1);
+    program.store_immediate_v1(BPF_W_V1, BPF_REG_10_V1, -4, 0);
+    program.load_map_descriptor_v1(BPF_REG_1_V1, configuration_map);
+    program.mov64_register_v1(BPF_REG_2_V1, BPF_REG_10_V1);
+    program.add64_immediate_v1(BPF_REG_2_V1, -4);
+    program.call_v1(BPF_FUNC_MAP_LOOKUP_ELEM_V1);
+    let missing_configuration = program.jump_immediate_placeholder_v1(BPF_JEQ_V1, BPF_REG_0_V1, 0);
+    program.load_register_v1(BPF_DW_V1, BPF_REG_1_V1, BPF_REG_0_V1, 0);
+    let wrong_cgroup = program.jump_register_placeholder_v1(BPF_JNE_V1, BPF_REG_8_V1, BPF_REG_1_V1);
+    let mut selected_syscall_jumps =
+        Vec::with_capacity(LinuxVzPackageSelectedSyscallV1::ALL_V1.len());
+    for syscall in LinuxVzPackageSelectedSyscallV1::ALL_V1 {
+        selected_syscall_jumps.push(program.jump_immediate_placeholder_v1(
+            BPF_JEQ_V1,
+            BPF_REG_9_V1,
+            syscall as i32,
+        ));
+    }
+    program.mov64_immediate_v1(BPF_REG_0_V1, 0);
+    program.exit_v1();
+    let selected_syscall = program.instructions.len();
+    for jump in selected_syscall_jumps {
+        program.patch_forward_jump_v1(jump, selected_syscall)?;
+    }
+
+    program.load_map_descriptor_v1(BPF_REG_1_V1, ring_buffer_map);
+    program.mov64_immediate_v1(
+        BPF_REG_2_V1,
+        i32::try_from(LINUX_VZ_PACKAGE_KERNEL_EVENT_BYTES_V1)
+            .map_err(|_| LinuxVzPackageSensorBpfErrorV1::InvalidLayout)?,
+    );
+    program.mov64_immediate_v1(BPF_REG_3_V1, 0);
+    program.call_v1(BPF_FUNC_RINGBUF_RESERVE_V1);
+    let reservation_failed = program.jump_immediate_placeholder_v1(BPF_JEQ_V1, BPF_REG_0_V1, 0);
+    program.mov64_register_v1(BPF_REG_7_V1, BPF_REG_0_V1);
+
+    for offset in (0..LINUX_VZ_PACKAGE_KERNEL_EVENT_BYTES_V1).step_by(size_of::<u64>()) {
+        program.store_immediate_v1(
+            BPF_DW_V1,
+            BPF_REG_7_V1,
+            i16::try_from(offset).map_err(|_| LinuxVzPackageSensorBpfErrorV1::InvalidLayout)?,
+            0,
+        );
+    }
+    program.store_immediate_v1(BPF_W_V1, BPF_REG_7_V1, 0, KERNEL_EVENT_MAGIC_LE_V1);
+    let version_and_kind = (kind << 16) | KERNEL_EVENT_VERSION_V1;
+    program.store_immediate_v1(
+        BPF_W_V1,
+        BPF_REG_7_V1,
+        4,
+        i32::try_from(version_and_kind)
+            .map_err(|_| LinuxVzPackageSensorBpfErrorV1::InvalidLayout)?,
+    );
+    if result_present {
+        program.store_immediate_v1(BPF_W_V1, BPF_REG_7_V1, 8, 1 << 1);
+    }
+    program.store_immediate_v1(
+        BPF_W_V1,
+        BPF_REG_7_V1,
+        12,
+        i32::try_from(LINUX_VZ_PACKAGE_KERNEL_EVENT_BYTES_V1)
+            .map_err(|_| LinuxVzPackageSensorBpfErrorV1::InvalidLayout)?,
+    );
+    program.store_register_v1(BPF_DW_V1, BPF_REG_7_V1, BPF_REG_8_V1, 16);
+    program.call_v1(BPF_FUNC_KTIME_GET_NS_V1);
+    program.store_register_v1(BPF_DW_V1, BPF_REG_7_V1, BPF_REG_0_V1, 24);
+    program.call_v1(BPF_FUNC_GET_CURRENT_PID_TGID_V1);
+    program.store_register_v1(BPF_W_V1, BPF_REG_7_V1, BPF_REG_0_V1, 32);
+    program.store_register_v1(BPF_W_V1, BPF_REG_7_V1, BPF_REG_0_V1, 44);
+    program.mov64_register_v1(BPF_REG_1_V1, BPF_REG_0_V1);
+    program.rsh64_immediate_v1(BPF_REG_1_V1, 32);
+    program.store_register_v1(BPF_W_V1, BPF_REG_7_V1, BPF_REG_1_V1, 36);
+    program.store_register_v1(BPF_W_V1, BPF_REG_7_V1, BPF_REG_9_V1, 48);
+
+    if let Some(arguments_offset) = syscall_arguments_offset {
+        let mut completed_argument_shapes = Vec::new();
+        let syscalls = LinuxVzPackageSelectedSyscallV1::ALL_V1;
+        for (position, syscall) in syscalls.into_iter().enumerate() {
+            let mismatch = if position + 1 < syscalls.len() {
+                Some(program.jump_immediate_placeholder_v1(
+                    BPF_JNE_V1,
+                    BPF_REG_9_V1,
+                    syscall as i32,
+                ))
+            } else {
+                None
+            };
+            for argument in selected_syscall_argument_indices_v1(syscall) {
+                let source_offset = arguments_offset
+                    .checked_add(
+                        i16::try_from(*argument * size_of::<u64>())
+                            .map_err(|_| LinuxVzPackageSensorBpfErrorV1::InvalidLayout)?,
+                    )
+                    .ok_or(LinuxVzPackageSensorBpfErrorV1::InvalidLayout)?;
+                let destination_offset = i16::try_from(64 + *argument * size_of::<u64>())
+                    .map_err(|_| LinuxVzPackageSensorBpfErrorV1::InvalidLayout)?;
+                program.load_register_v1(BPF_DW_V1, BPF_REG_1_V1, BPF_REG_6_V1, source_offset);
+                program.store_register_v1(
+                    BPF_DW_V1,
+                    BPF_REG_7_V1,
+                    BPF_REG_1_V1,
+                    destination_offset,
+                );
+            }
+            if position + 1 < syscalls.len() {
+                completed_argument_shapes.push(program.jump_always_placeholder_v1());
+                let next_shape = program.instructions.len();
+                program.patch_forward_jump_v1(
+                    mismatch.ok_or(LinuxVzPackageSensorBpfErrorV1::InvalidLayout)?,
+                    next_shape,
+                )?;
+            }
+        }
+        let arguments_complete = program.instructions.len();
+        for jump in completed_argument_shapes {
+            program.patch_forward_jump_v1(jump, arguments_complete)?;
+        }
+    }
+    if let Some(result_offset) = syscall_result_offset {
+        program.load_register_v1(BPF_DW_V1, BPF_REG_1_V1, BPF_REG_6_V1, result_offset);
+        program.store_register_v1(BPF_DW_V1, BPF_REG_7_V1, BPF_REG_1_V1, 56);
+    }
+    program.call_v1(BPF_FUNC_GET_SMP_PROCESSOR_ID_V1);
+    program.store_register_v1(BPF_W_V1, BPF_REG_7_V1, BPF_REG_0_V1, 184);
+    program.mov64_register_v1(BPF_REG_1_V1, BPF_REG_7_V1);
+    program.mov64_immediate_v1(BPF_REG_2_V1, 0);
+    program.call_v1(BPF_FUNC_RINGBUF_SUBMIT_V1);
+    program.mov64_immediate_v1(BPF_REG_0_V1, 0);
+    program.exit_v1();
+
+    let drop_counter = program.instructions.len();
+    program.store_immediate_v1(BPF_W_V1, BPF_REG_10_V1, -4, 0);
+    program.load_map_descriptor_v1(BPF_REG_1_V1, drop_counter_map);
+    program.mov64_register_v1(BPF_REG_2_V1, BPF_REG_10_V1);
+    program.add64_immediate_v1(BPF_REG_2_V1, -4);
+    program.call_v1(BPF_FUNC_MAP_LOOKUP_ELEM_V1);
+    let missing_drop_counter = program.jump_immediate_placeholder_v1(BPF_JEQ_V1, BPF_REG_0_V1, 0);
+    program.mov64_immediate_v1(BPF_REG_1_V1, 1);
+    program.instruction_v1(
+        BPF_STX_V1 | BPF_XADD_V1 | BPF_DW_V1,
+        BPF_REG_0_V1,
+        BPF_REG_1_V1,
+        0,
+        0,
+    );
+    let final_exit = program.instructions.len();
+    program.mov64_immediate_v1(BPF_REG_0_V1, 0);
+    program.exit_v1();
+
+    program.patch_forward_jump_v1(missing_configuration, final_exit)?;
+    program.patch_forward_jump_v1(wrong_cgroup, final_exit)?;
+    program.patch_forward_jump_v1(reservation_failed, drop_counter)?;
+    program.patch_forward_jump_v1(missing_drop_counter, final_exit)?;
+    Ok(program.instructions)
+}
+
+fn selected_syscall_argument_indices_v1(
+    syscall: LinuxVzPackageSelectedSyscallV1,
+) -> &'static [usize] {
+    match syscall {
+        LinuxVzPackageSelectedSyscallV1::Setgid
+        | LinuxVzPackageSelectedSyscallV1::Setuid
+        | LinuxVzPackageSelectedSyscallV1::Setgroups => &[0],
+        LinuxVzPackageSelectedSyscallV1::Connect => &[0, 2],
+        LinuxVzPackageSelectedSyscallV1::Sendto => &[0, 2, 3, 5],
+        LinuxVzPackageSelectedSyscallV1::Mmap => &[1, 2, 3, 4, 5],
+    }
+}
+
 fn decode_online_cpus_v1(bytes: &[u8]) -> Result<Vec<u32>, LinuxVzPackageSensorBpfErrorV1> {
     if bytes.is_empty() || bytes.len() > MAX_ONLINE_CPU_BYTES_V1 {
         return Err(LinuxVzPackageSensorBpfErrorV1::OnlineCpu);
@@ -673,7 +916,7 @@ pub(crate) struct LinuxVzPackageSensorBpfProducerV1 {
     drop_counter: OwnedFd,
     configuration: OwnedFd,
     ring_buffer: LinuxVzPackageBpfRingBufferV1,
-    layouts: [LinuxVzPackageTracepointLayoutV1; 3],
+    layouts: [LinuxVzPackageTracepointLayoutV1; 5],
     online_cpus: Vec<u32>,
     attachment_cpu: u32,
     expected_cgroup_id: u64,
@@ -731,6 +974,12 @@ impl LinuxVzPackageSensorBpfProducerV1 {
             read_linux_vz_package_tracepoint_layout_v1(
                 LinuxVzPackageTracepointKindV1::SchedProcessExit,
             )?,
+            read_linux_vz_package_tracepoint_layout_v1(
+                LinuxVzPackageTracepointKindV1::RawSyscallsSysEnter,
+            )?,
+            read_linux_vz_package_tracepoint_layout_v1(
+                LinuxVzPackageTracepointKindV1::RawSyscallsSysExit,
+            )?,
         ];
         let configuration = create_map_v1(
             BPF_MAP_TYPE_ARRAY_V1,
@@ -760,22 +1009,33 @@ impl LinuxVzPackageSensorBpfProducerV1 {
         let mut programs = Vec::with_capacity(layouts.len());
         let mut links = Vec::with_capacity(layouts.len());
         for layout in &layouts {
-            let instructions = build_lifecycle_program_v1(
-                layout,
-                configuration.as_raw_fd(),
-                ring_map.as_raw_fd(),
-                drop_counter.as_raw_fd(),
-            )?;
+            let instructions = match layout.kind_v1() {
+                LinuxVzPackageTracepointKindV1::SchedProcessFork
+                | LinuxVzPackageTracepointKindV1::SchedProcessExec
+                | LinuxVzPackageTracepointKindV1::SchedProcessExit => build_lifecycle_program_v1(
+                    layout,
+                    configuration.as_raw_fd(),
+                    ring_map.as_raw_fd(),
+                    drop_counter.as_raw_fd(),
+                )?,
+                LinuxVzPackageTracepointKindV1::RawSyscallsSysEnter
+                | LinuxVzPackageTracepointKindV1::RawSyscallsSysExit => {
+                    build_selected_syscall_program_v1(
+                        layout,
+                        configuration.as_raw_fd(),
+                        ring_map.as_raw_fd(),
+                        drop_counter.as_raw_fd(),
+                    )?
+                }
+            };
             let program = load_tracepoint_program_v1(
                 &instructions,
                 match layout.kind_v1() {
                     LinuxVzPackageTracepointKindV1::SchedProcessFork => "wt_pkg_fork",
                     LinuxVzPackageTracepointKindV1::SchedProcessExec => "wt_pkg_exec",
                     LinuxVzPackageTracepointKindV1::SchedProcessExit => "wt_pkg_exit",
-                    LinuxVzPackageTracepointKindV1::RawSyscallsSysEnter
-                    | LinuxVzPackageTracepointKindV1::RawSyscallsSysExit => {
-                        return Err(LinuxVzPackageSensorBpfErrorV1::InvalidLayout);
-                    }
+                    LinuxVzPackageTracepointKindV1::RawSyscallsSysEnter => "wt_pkg_sys_in",
+                    LinuxVzPackageTracepointKindV1::RawSyscallsSysExit => "wt_pkg_sys_out",
                 },
             )?;
             links.push(attach_tracepoint_program_v1(
@@ -821,7 +1081,7 @@ impl LinuxVzPackageSensorBpfProducerV1 {
         self.ring_buffer.last_source_sequence()
     }
 
-    pub(crate) fn layouts_v1(&self) -> &[LinuxVzPackageTracepointLayoutV1; 3] {
+    pub(crate) fn layouts_v1(&self) -> &[LinuxVzPackageTracepointLayoutV1; 5] {
         &self.layouts
     }
 
@@ -1084,8 +1344,14 @@ mod tests {
             LinuxVzPackageTracepointKindV1::SchedProcessExit => {
                 "\tfield:pid_t pid; offset:24; size:4; signed:1;"
             }
-            LinuxVzPackageTracepointKindV1::RawSyscallsSysEnter
-            | LinuxVzPackageTracepointKindV1::RawSyscallsSysExit => panic!("not lifecycle"),
+            LinuxVzPackageTracepointKindV1::RawSyscallsSysEnter => {
+                "\tfield:long id; offset:8; size:8; signed:1;\n\
+\tfield:unsigned long args[6]; offset:16; size:48; signed:0;"
+            }
+            LinuxVzPackageTracepointKindV1::RawSyscallsSysExit => {
+                "\tfield:long id; offset:8; size:8; signed:1;\n\
+\tfield:long ret; offset:16; size:8; signed:1;"
+            }
         };
         let bytes = format!(
             "name: {}\nID: 220\nformat:\n{COMMON}\n{fields}\nprint fmt: \"closed\"\n",
@@ -1186,12 +1452,87 @@ mod tests {
     fn lifecycle_programs_reject_syscall_layouts_and_bad_descriptors() {
         assert_eq!(
             build_lifecycle_program_v1(
+                &layout_v1(LinuxVzPackageTracepointKindV1::RawSyscallsSysEnter),
+                11,
+                12,
+                13,
+            ),
+            Err(LinuxVzPackageSensorBpfErrorV1::InvalidLayout)
+        );
+        assert_eq!(
+            build_lifecycle_program_v1(
                 &layout_v1(LinuxVzPackageTracepointKindV1::SchedProcessExec),
                 -1,
                 12,
                 13,
             ),
             Err(LinuxVzPackageSensorBpfErrorV1::Descriptor)
+        );
+    }
+
+    #[test]
+    fn selected_syscall_programs_are_closed_bounded_and_redact_pointer_arguments() {
+        for kind in [
+            LinuxVzPackageTracepointKindV1::RawSyscallsSysEnter,
+            LinuxVzPackageTracepointKindV1::RawSyscallsSysExit,
+        ] {
+            let instructions = build_selected_syscall_program_v1(&layout_v1(kind), 11, 12, 13)
+                .expect("selected syscall program");
+            assert!(instructions.len() < 256);
+            assert_eq!(
+                instructions
+                    .iter()
+                    .filter(|instruction| {
+                        instruction.code == BPF_ST_V1 | BPF_MEM_V1 | BPF_DW_V1
+                            && instruction.destination_v1() == BPF_REG_7_V1
+                            && instruction.immediate == 0
+                            && instruction.offset >= 0
+                            && usize::try_from(instruction.offset)
+                                .is_ok_and(|offset| offset % 8 == 0 && offset < 192)
+                    })
+                    .count(),
+                24
+            );
+            for syscall in LinuxVzPackageSelectedSyscallV1::ALL_V1 {
+                assert!(instructions.iter().any(|instruction| {
+                    instruction.code == BPF_JMP_V1 | BPF_JEQ_V1 | BPF_K_V1
+                        && instruction.destination_v1() == BPF_REG_9_V1
+                        && instruction.immediate == syscall as i32
+                }));
+            }
+            for (index, instruction) in instructions.iter().enumerate() {
+                let operation = instruction.code & 0xf0;
+                if instruction.code & 0x07 == BPF_JMP_V1
+                    && !matches!(operation, BPF_CALL_V1 | BPF_EXIT_V1)
+                {
+                    let target = isize::try_from(index).expect("index")
+                        + 1
+                        + isize::from(instruction.offset);
+                    assert!(target > isize::try_from(index).expect("index"));
+                    assert!(usize::try_from(target).is_ok_and(|target| target < instructions.len()));
+                }
+            }
+        }
+        assert_eq!(
+            build_selected_syscall_program_v1(
+                &layout_v1(LinuxVzPackageTracepointKindV1::SchedProcessExec),
+                11,
+                12,
+                13,
+            ),
+            Err(LinuxVzPackageSensorBpfErrorV1::InvalidLayout)
+        );
+        assert_eq!(
+            selected_syscall_argument_indices_v1(LinuxVzPackageSelectedSyscallV1::Connect),
+            &[0, 2]
+        );
+        assert_eq!(
+            selected_syscall_argument_indices_v1(LinuxVzPackageSelectedSyscallV1::Sendto),
+            &[0, 2, 3, 5]
+        );
+        assert_eq!(
+            selected_syscall_argument_indices_v1(LinuxVzPackageSelectedSyscallV1::Mmap),
+            &[1, 2, 3, 4, 5]
         );
     }
 

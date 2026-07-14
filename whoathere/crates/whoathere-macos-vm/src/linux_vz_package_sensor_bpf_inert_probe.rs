@@ -3,7 +3,9 @@ use std::fmt;
 #[cfg(target_os = "linux")]
 use crate::linux_vz_package_sensor_bpf::LinuxVzPackageSensorBpfProducerV1;
 #[cfg(target_os = "linux")]
-use crate::linux_vz_package_sensor_event_stream::LinuxVzPackageKernelEventKindV1;
+use crate::linux_vz_package_sensor_event_stream::{
+    LinuxVzPackageKernelEventKindV1, LinuxVzPackageSelectedSyscallV1,
+};
 #[cfg(target_os = "linux")]
 use serde::Serialize;
 #[cfg(target_os = "linux")]
@@ -110,7 +112,7 @@ struct InertProbeEvidenceWireV1 {
     discarded_record_count: String,
     dropped_event_count: String,
     event_count: String,
-    event_kinds: [&'static str; 2],
+    event_kinds: Vec<&'static str>,
     event_sequence_end: String,
     event_sequence_start: String,
     fixture_exit_status: String,
@@ -341,7 +343,7 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
             .drain_available_v1(64)
             .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::EventStream)?;
         events.extend(available);
-        if events.len() >= 2 || Instant::now() >= deadline {
+        if events.len() >= 14 || Instant::now() >= deadline {
             break;
         }
         std::thread::sleep(Duration::from_millis(1));
@@ -351,9 +353,7 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
             .drain_available_v1(64)
             .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::EventStream)?,
     );
-    if events.len() != 2
-        || events[0].kind() != LinuxVzPackageKernelEventKindV1::Exec
-        || events[1].kind() != LinuxVzPackageKernelEventKindV1::Exit
+    if events.len() != 14
         || events.iter().any(|event| {
             event.pid() != child as u32
                 || event.tgid() != child as u32
@@ -361,9 +361,32 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
                 || event.subject_pid() != child as u32
                 || event.cgroup_id() != cgroup.id
         })
-        || events[0].timestamp_nanoseconds() >= events[1].timestamp_nanoseconds()
-        || events[0].source_sequence() != 1
-        || events[1].source_sequence() != 2
+        || events
+            .windows(2)
+            .any(|pair| pair[0].timestamp_nanoseconds() >= pair[1].timestamp_nanoseconds())
+        || events.iter().enumerate().any(|(index, event)| {
+            event.source_sequence() != u64::try_from(index + 1).unwrap_or(u64::MAX)
+        })
+        || !matches_selected_syscall_pair_v1(
+            &events[0..2],
+            LinuxVzPackageSelectedSyscallV1::Setgroups,
+            0,
+        )
+        || !matches_selected_syscall_pair_v1(
+            &events[2..4],
+            LinuxVzPackageSelectedSyscallV1::Setgid,
+            u64::from(PACKAGE_GID_V1),
+        )
+        || !matches_selected_syscall_pair_v1(
+            &events[4..6],
+            LinuxVzPackageSelectedSyscallV1::Setuid,
+            u64::from(PACKAGE_UID_V1),
+        )
+        || events[6].kind() != LinuxVzPackageKernelEventKindV1::Exec
+        || !matches_mmap_syscall_pair_v1(&events[7..9])
+        || !matches_mmap_syscall_pair_v1(&events[9..11])
+        || !matches_mmap_syscall_pair_v1(&events[11..13])
+        || events[13].kind() != LinuxVzPackageKernelEventKindV1::Exit
     {
         return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::EventMismatch);
     }
@@ -381,10 +404,8 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
                 crate::linux_vz_package_sensor_tracepoint::LinuxVzPackageTracepointKindV1::SchedProcessFork => "sched_process_fork",
                 crate::linux_vz_package_sensor_tracepoint::LinuxVzPackageTracepointKindV1::SchedProcessExec => "sched_process_exec",
                 crate::linux_vz_package_sensor_tracepoint::LinuxVzPackageTracepointKindV1::SchedProcessExit => "sched_process_exit",
-                crate::linux_vz_package_sensor_tracepoint::LinuxVzPackageTracepointKindV1::RawSyscallsSysEnter
-                | crate::linux_vz_package_sensor_tracepoint::LinuxVzPackageTracepointKindV1::RawSyscallsSysExit => {
-                    return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::EventMismatch);
-                }
+                crate::linux_vz_package_sensor_tracepoint::LinuxVzPackageTracepointKindV1::RawSyscallsSysEnter => "sys_enter",
+                crate::linux_vz_package_sensor_tracepoint::LinuxVzPackageTracepointKindV1::RawSyscallsSysExit => "sys_exit",
             },
             layout.format_sha256_v1().as_str().to_string(),
         );
@@ -396,7 +417,22 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
         discarded_record_count: discarded.to_string(),
         dropped_event_count: dropped.to_string(),
         event_count: events.len().to_string(),
-        event_kinds: ["exec", "exit"],
+        event_kinds: vec![
+            "setgroups_enter",
+            "setgroups_exit",
+            "setgid_enter",
+            "setgid_exit",
+            "setuid_enter",
+            "setuid_exit",
+            "exec",
+            "mmap_enter",
+            "mmap_exit",
+            "mmap_enter",
+            "mmap_exit",
+            "mmap_enter",
+            "mmap_exit",
+            "exit",
+        ],
         event_sequence_end: producer.last_source_sequence_v1().to_string(),
         event_sequence_start: "1".to_string(),
         fixture_exit_status: "0".to_string(),
@@ -411,7 +447,7 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
         package_execution: false,
         package_gid: PACKAGE_GID_V1.to_string(),
         package_uid: PACKAGE_UID_V1.to_string(),
-        schema_version: "whoathere.linux_vz_package_sensor_bpf_inert_probe.v1",
+        schema_version: "whoathere.linux_vz_package_sensor_bpf_inert_probe.v2",
         sync_back: false,
         tracepoint_format_sha256: tracepoints,
     };
@@ -419,6 +455,42 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
     cgroup.remove_v1()?;
     serde_json::to_string(&evidence)
         .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::Serialization)
+}
+
+#[cfg(target_os = "linux")]
+fn matches_selected_syscall_pair_v1(
+    events: &[crate::linux_vz_package_sensor_event_stream::LinuxVzPackageKernelEventV1],
+    syscall: LinuxVzPackageSelectedSyscallV1,
+    first_argument: u64,
+) -> bool {
+    events.len() == 2
+        && events[0].kind() == LinuxVzPackageKernelEventKindV1::SyscallEnter
+        && events[1].kind() == LinuxVzPackageKernelEventKindV1::SyscallExit
+        && events[0].selected_syscall_v1() == Ok(syscall)
+        && events[1].selected_syscall_v1() == Ok(syscall)
+        && events[0].arguments()[0] == first_argument
+        && events[0].arguments()[1..]
+            .iter()
+            .all(|argument| *argument == 0)
+        && events[0].result().is_none()
+        && events[1].result() == Some(0)
+        && events[1].arguments().iter().all(|argument| *argument == 0)
+}
+
+#[cfg(target_os = "linux")]
+fn matches_mmap_syscall_pair_v1(
+    events: &[crate::linux_vz_package_sensor_event_stream::LinuxVzPackageKernelEventV1],
+) -> bool {
+    events.len() == 2
+        && events[0].kind() == LinuxVzPackageKernelEventKindV1::SyscallEnter
+        && events[1].kind() == LinuxVzPackageKernelEventKindV1::SyscallExit
+        && events[0].selected_syscall_v1() == Ok(LinuxVzPackageSelectedSyscallV1::Mmap)
+        && events[1].selected_syscall_v1() == Ok(LinuxVzPackageSelectedSyscallV1::Mmap)
+        && events[0].arguments()[0] == 0
+        && events[0].arguments()[1] > 0
+        && events[0].result().is_none()
+        && events[1].result().is_some_and(|result| result > 0)
+        && events[1].arguments().iter().all(|argument| *argument == 0)
 }
 
 #[cfg(target_os = "linux")]

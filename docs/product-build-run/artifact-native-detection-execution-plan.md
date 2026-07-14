@@ -4,16 +4,22 @@ Date: 2026-07-09
 
 Status: canonical execution plan for the next product milestone
 
-Current execution checkpoint (2026-07-14): the final diagnostic-free package-sensor BPF lifecycle
-producer now passes a strict physical inert gate on the approved cloud Mac. The exact pinned guest
-accepted the producer, and the protected UID/GID 65534 fixture yielded one cgroup-filtered
-`exec`/`exit` sequence with zero reservation drops, zero discarded records, and zero host-observed
-raw frames. A new strict host decoder bound the exact kernel, initramfs, fixture, canonical guest
-payload, safety markers, stable image identity, absent disks/shares, and stopped VM before exiting
-0. No package or malware ran, no sync-back path existed, and the July detection score remains 7/11.
-This qualifies only the selected lifecycle-producer slice; syscall, fanotify/file, filesystem-diff,
-network correlation, signed-envelope, full runtime, inert package-scenario, benign, and malicious
-gates remain open. See the
+Current execution checkpoint (2026-07-14): the final diagnostic-free package-sensor BPF producer
+now passes a strict physical inert gate for a closed selected-syscall slice on the approved cloud
+Mac. The exact pinned guest yielded 14 cgroup-filtered events: successful `setgroups`, `setgid`, and
+`setuid` entry/exit pairs, `exec`, three runtime-linker `mmap` entry/exit pairs, and `exit`, with
+zero reservation drops, zero discarded records, and zero host-observed raw frames. Pointer-bearing
+arguments are zeroed in BPF and independently rejected if present. `connect` and `sendto` are in
+the closed unit-tested and Linux-cross-compiled arm64 allowlist but have not yet been exercised
+physically. No package or malware ran, no sync-back path existed, and the July detection score
+remains 7/11. This qualifies only selected-syscall production; protected-service integration,
+typed correlation, fanotify/file, filesystem-diff, network correlation, signed-envelope, full
+runtime, inert package-scenario, benign, and malicious gates remain open. See the
+[selected-syscall checkpoint](artifact-native-linux-vz-package-sensor-syscall-checkpoint-2026-07-14.md).
+
+The preceding lifecycle-only gate captured one exact cgroup-filtered `exec`/`exit` sequence from
+the same inert fixture and established the strict image, topology, safety-marker, zero-loss, and
+VM-stop host checks that the selected-syscall gate preserves. See the
 [package-sensor BPF inert qualification checkpoint](artifact-native-linux-vz-package-sensor-bpf-inert-qualification-checkpoint-2026-07-14.md).
 
 The previously qualified telemetry checkpoint (2026-07-13) established that all 38 authenticated
@@ -334,6 +340,15 @@ detection-score improvement. No package or malware ran and the 7/11 score is unc
 [package sensor BPF producer checkpoint](artifact-native-linux-vz-package-sensor-bpf-producer-checkpoint-2026-07-14.md).
 The physical follow-up is recorded in the
 [package-sensor BPF inert qualification checkpoint](artifact-native-linux-vz-package-sensor-bpf-inert-qualification-checkpoint-2026-07-14.md).
+
+The producer now also implements a closed arm64 allowlist for `setgroups`, `setgid`, `setuid`,
+`connect`, `sendto`, and `mmap`, with BPF-side cgroup filtering, pointer redaction, paired
+entry/exit records, and the same protected loss path. A final diagnostic-free physical inert run
+captured the exact credential transition, lifecycle, and three runtime-linker `mmap` pairs as a
+contiguous 14-event sequence with zero loss. The network syscalls remain physically unqualified,
+and the producer is still disconnected from the protected root service and verdict pipeline, so
+the 7/11 detection score is unchanged. See the
+[selected-syscall checkpoint](artifact-native-linux-vz-package-sensor-syscall-checkpoint-2026-07-14.md).
 
 The first protected-sensor bootstrap now also observes a cgroup-filtered inert fork/exec/exit chain
 whose child runs as UID/GID 65534 and cannot read or write the root-only sensor. This remains
@@ -1966,6 +1981,7 @@ Repository evidence:
 - [Linux VZ package sensor event-stream checkpoint](artifact-native-linux-vz-package-sensor-event-stream-checkpoint-2026-07-13.md)
 - [Linux VZ package sensor BPF producer checkpoint](artifact-native-linux-vz-package-sensor-bpf-producer-checkpoint-2026-07-14.md)
 - [Linux VZ package sensor BPF inert qualification checkpoint](artifact-native-linux-vz-package-sensor-bpf-inert-qualification-checkpoint-2026-07-14.md)
+- [Linux VZ package sensor selected-syscall checkpoint](artifact-native-linux-vz-package-sensor-syscall-checkpoint-2026-07-14.md)
 - [Linux VZ runtime-qualification guest-candidate checkpoint](artifact-native-linux-vz-runtime-qualification-guest-candidate-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification host-launcher checkpoint](artifact-native-linux-vz-runtime-qualification-host-launcher-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification physical checkpoint](artifact-native-linux-vz-runtime-qualification-physical-checkpoint-2026-07-13.md)

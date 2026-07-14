@@ -1,7 +1,7 @@
 import Foundation
 
-public let linuxVzPackageSensorBpfInertEvidenceSchemaV1 =
-    "whoathere.linux_vz_package_sensor_bpf_inert_probe.v1"
+public let linuxVzPackageSensorBpfInertEvidenceSchemaV2 =
+    "whoathere.linux_vz_package_sensor_bpf_inert_probe.v2"
 public let linuxVzPackageSensorBpfInertEvidenceSerialPrefixV1 =
     "WHOATHERE_PACKAGE_SENSOR_BPF_INERT_EVIDENCE "
 
@@ -29,7 +29,7 @@ public enum LinuxVzPackageSensorBpfInertEvidenceError: Error, Equatable {
     case invalidSchema
 }
 
-public struct LinuxVzPackageSensorBpfInertEvidenceV1: Equatable, Sendable {
+public struct LinuxVzPackageSensorBpfInertEvidenceV2: Equatable, Sendable {
     public let canonicalJSON: Data
     public let payloadSHA256: String
     public let evidenceByteLength: UInt64
@@ -39,10 +39,10 @@ public struct LinuxVzPackageSensorBpfInertEvidenceV1: Equatable, Sendable {
     public let tracepointFormatSHA256: [String: String]
 }
 
-public func decodeLinuxVzPackageSensorBpfInertEvidenceV1(
+public func decodeLinuxVzPackageSensorBpfInertEvidenceV2(
     _ serialData: Data,
     expectedFixtureSHA256: String
-) throws -> LinuxVzPackageSensorBpfInertEvidenceV1 {
+) throws -> LinuxVzPackageSensorBpfInertEvidenceV2 {
     guard packageSensorBpfInertDigest(expectedFixtureSHA256) else {
         throw LinuxVzPackageSensorBpfInertEvidenceError.invalidSchema
     }
@@ -78,15 +78,20 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV1(
         "package_uid", "schema_version", "sync_back", "tracepoint_format_sha256",
     ])
     guard Set(value.keys) == expectedKeys,
-          value["schema_version"] as? String == linuxVzPackageSensorBpfInertEvidenceSchemaV1,
+          value["schema_version"] as? String == linuxVzPackageSensorBpfInertEvidenceSchemaV2,
           value["attachment_cpu"] as? String == "0",
           value["attachment_scope"] as? String == "tracepoint_wide",
           packageSensorBpfInertDecimal(value["discarded_record_count"]) == 0,
           packageSensorBpfInertDecimal(value["dropped_event_count"]) == 0,
-          packageSensorBpfInertDecimal(value["event_count"]) == 2,
-          value["event_kinds"] as? [String] == ["exec", "exit"],
+          packageSensorBpfInertDecimal(value["event_count"]) == 14,
+          value["event_kinds"] as? [String] == [
+              "setgroups_enter", "setgroups_exit", "setgid_enter", "setgid_exit",
+              "setuid_enter", "setuid_exit", "exec",
+              "mmap_enter", "mmap_exit", "mmap_enter", "mmap_exit",
+              "mmap_enter", "mmap_exit", "exit",
+          ],
           packageSensorBpfInertDecimal(value["event_sequence_start"]) == 1,
-          packageSensorBpfInertDecimal(value["event_sequence_end"]) == 2,
+          packageSensorBpfInertDecimal(value["event_sequence_end"]) == 14,
           packageSensorBpfInertDecimal(value["fixture_exit_status"]) == 0,
           let cgroupID = packageSensorBpfInertDecimal(value["cgroup_id"]),
           cgroupID > 0,
@@ -102,12 +107,13 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV1(
           let tracepoints = value["tracepoint_format_sha256"] as? [String: String],
           Set(tracepoints.keys) == Set([
               "sched_process_exec", "sched_process_exit", "sched_process_fork",
+              "sys_enter", "sys_exit",
           ]),
           tracepoints.values.allSatisfy(packageSensorBpfInertDigest),
           Set(tracepoints.values).count == tracepoints.count else {
         throw LinuxVzPackageSensorBpfInertEvidenceError.invalidSchema
     }
-    return LinuxVzPackageSensorBpfInertEvidenceV1(
+    return LinuxVzPackageSensorBpfInertEvidenceV2(
         canonicalJSON: payload,
         payloadSHA256: sha256(payload),
         evidenceByteLength: UInt64(payload.count),

@@ -7,14 +7,14 @@ private let fixtureSHA256 =
 
 @Test func packageSensorBpfInertEvidenceBindsExactLifecycleAndLossState() throws {
     let serial = packageSensorBpfInertSerial(value: packageSensorBpfInertValue())
-    let evidence = try decodeLinuxVzPackageSensorBpfInertEvidenceV1(
+    let evidence = try decodeLinuxVzPackageSensorBpfInertEvidenceV2(
         serial,
         expectedFixtureSHA256: fixtureSHA256
     )
     #expect(evidence.cgroupID == 21)
     #expect(evidence.fixturePID == 387)
     #expect(evidence.fixtureSHA256 == fixtureSHA256)
-    #expect(evidence.tracepointFormatSHA256.count == 3)
+    #expect(evidence.tracepointFormatSHA256.count == 5)
     #expect(evidence.payloadSHA256.hasPrefix("sha256:"))
     #expect(linuxVzPackageSensorBpfInertMissingMarkersV1(serial).isEmpty)
     #expect(!linuxVzPackageSensorBpfInertFailurePresentV1(serial))
@@ -24,7 +24,7 @@ private let fixtureSHA256 =
     var value = packageSensorBpfInertValue()
     value["dropped_event_count"] = "1"
     #expect(throws: LinuxVzPackageSensorBpfInertEvidenceError.invalidSchema) {
-        try decodeLinuxVzPackageSensorBpfInertEvidenceV1(
+        try decodeLinuxVzPackageSensorBpfInertEvidenceV2(
             packageSensorBpfInertSerial(value: value),
             expectedFixtureSHA256: fixtureSHA256
         )
@@ -33,7 +33,7 @@ private let fixtureSHA256 =
     value = packageSensorBpfInertValue()
     value["package_execution"] = true
     #expect(throws: LinuxVzPackageSensorBpfInertEvidenceError.invalidSchema) {
-        try decodeLinuxVzPackageSensorBpfInertEvidenceV1(
+        try decodeLinuxVzPackageSensorBpfInertEvidenceV2(
             packageSensorBpfInertSerial(value: value),
             expectedFixtureSHA256: fixtureSHA256
         )
@@ -42,7 +42,7 @@ private let fixtureSHA256 =
     let line = Data(linuxVzPackageSensorBpfInertEvidenceSerialPrefixV1.utf8)
         + (try canonicalJSONData(packageSensorBpfInertValue())) + Data("\n".utf8)
     #expect(throws: LinuxVzPackageSensorBpfInertEvidenceError.duplicate) {
-        try decodeLinuxVzPackageSensorBpfInertEvidenceV1(
+        try decodeLinuxVzPackageSensorBpfInertEvidenceV2(
             line + line,
             expectedFixtureSHA256: fixtureSHA256
         )
@@ -52,10 +52,10 @@ private let fixtureSHA256 =
 @Test func packageSensorBpfInertEvidenceRejectsNoncanonicalAndFailureTranscripts() throws {
     let noncanonical = Data(
         (linuxVzPackageSensorBpfInertEvidenceSerialPrefixV1
-            + "{\"schema_version\":\"whoathere.linux_vz_package_sensor_bpf_inert_probe.v1\",\"attachment_cpu\":\"0\"}\n").utf8
+            + "{\"schema_version\":\"whoathere.linux_vz_package_sensor_bpf_inert_probe.v2\",\"attachment_cpu\":\"0\"}\n").utf8
     )
     #expect(throws: LinuxVzPackageSensorBpfInertEvidenceError.nonCanonical) {
-        try decodeLinuxVzPackageSensorBpfInertEvidenceV1(
+        try decodeLinuxVzPackageSensorBpfInertEvidenceV2(
             noncanonical,
             expectedFixtureSHA256: fixtureSHA256
         )
@@ -85,9 +85,14 @@ private func packageSensorBpfInertValue() -> [String: Any] {
         "cgroup_id": "21",
         "discarded_record_count": "0",
         "dropped_event_count": "0",
-        "event_count": "2",
-        "event_kinds": ["exec", "exit"],
-        "event_sequence_end": "2",
+        "event_count": "14",
+        "event_kinds": [
+            "setgroups_enter", "setgroups_exit", "setgid_enter", "setgid_exit",
+            "setuid_enter", "setuid_exit", "exec",
+            "mmap_enter", "mmap_exit", "mmap_enter", "mmap_exit",
+            "mmap_enter", "mmap_exit", "exit",
+        ],
+        "event_sequence_end": "14",
         "event_sequence_start": "1",
         "fixture_exit_status": "0",
         "fixture_pid": "387",
@@ -97,7 +102,7 @@ private func packageSensorBpfInertValue() -> [String: Any] {
         "package_execution": false,
         "package_gid": "65534",
         "package_uid": "65534",
-        "schema_version": linuxVzPackageSensorBpfInertEvidenceSchemaV1,
+        "schema_version": linuxVzPackageSensorBpfInertEvidenceSchemaV2,
         "sync_back": false,
         "tracepoint_format_sha256": [
             "sched_process_exec":
@@ -106,6 +111,10 @@ private func packageSensorBpfInertValue() -> [String: Any] {
                 "sha256:b04a7c7b2e0c473705fe812851c161126b0a68f3eab604e92da952a241eb5870",
             "sched_process_fork":
                 "sha256:84863bfaed832693cea3a4be6992a28a4d578c9bfc5cbef787a251c81a12e52f",
+            "sys_enter":
+                "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "sys_exit":
+                "sha256:2222222222222222222222222222222222222222222222222222222222222222",
         ],
     ]
 }

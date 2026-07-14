@@ -32,6 +32,51 @@ pub(crate) enum LinuxVzPackageKernelEventKindV1 {
     SyscallExit = 5,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub(crate) enum LinuxVzPackageSelectedSyscallV1 {
+    Setgid = 144,
+    Setuid = 146,
+    Setgroups = 159,
+    Connect = 203,
+    Sendto = 206,
+    Mmap = 222,
+}
+
+impl LinuxVzPackageSelectedSyscallV1 {
+    pub(crate) const ALL_V1: [Self; 6] = [
+        Self::Setgid,
+        Self::Setuid,
+        Self::Setgroups,
+        Self::Connect,
+        Self::Sendto,
+        Self::Mmap,
+    ];
+
+    const fn from_u32_v1(value: u32) -> Result<Self, LinuxVzPackageSensorEventStreamErrorV1> {
+        match value {
+            144 => Ok(Self::Setgid),
+            146 => Ok(Self::Setuid),
+            159 => Ok(Self::Setgroups),
+            203 => Ok(Self::Connect),
+            206 => Ok(Self::Sendto),
+            222 => Ok(Self::Mmap),
+            _ => Err(LinuxVzPackageSensorEventStreamErrorV1::InvalidPayload),
+        }
+    }
+
+    pub(crate) const fn name_v1(self) -> &'static str {
+        match self {
+            Self::Setgid => "setgid",
+            Self::Setuid => "setuid",
+            Self::Setgroups => "setgroups",
+            Self::Connect => "connect",
+            Self::Sendto => "sendto",
+            Self::Mmap => "mmap",
+        }
+    }
+}
+
 impl LinuxVzPackageKernelEventKindV1 {
     fn from_u16_v1(value: u16) -> Result<Self, LinuxVzPackageSensorEventStreamErrorV1> {
         match value {
@@ -166,6 +211,12 @@ impl LinuxVzPackageKernelEventV1 {
         self.syscall_number
     }
 
+    pub(crate) fn selected_syscall_v1(
+        &self,
+    ) -> Result<LinuxVzPackageSelectedSyscallV1, LinuxVzPackageSensorEventStreamErrorV1> {
+        LinuxVzPackageSelectedSyscallV1::from_u32_v1(self.syscall_number)
+    }
+
     pub(crate) const fn address_family(&self) -> u16 {
         self.address_family
     }
@@ -291,14 +342,28 @@ pub(crate) fn decode_linux_vz_package_kernel_event_v1(
                 || syscall_number == 0
                 || result_present
                 || result != 0
+                || address_family != 0
+                || data_length != 0
             {
+                return Err(LinuxVzPackageSensorEventStreamErrorV1::InvalidPayload);
+            }
+            let syscall = LinuxVzPackageSelectedSyscallV1::from_u32_v1(syscall_number)?;
+            if !valid_selected_syscall_arguments_v1(syscall, &arguments) {
                 return Err(LinuxVzPackageSensorEventStreamErrorV1::InvalidPayload);
             }
         }
         LinuxVzPackageKernelEventKindV1::SyscallExit => {
-            if parent_pid != 0 || subject_pid != pid || syscall_number == 0 || !result_present {
+            if parent_pid != 0
+                || subject_pid != pid
+                || syscall_number == 0
+                || !result_present
+                || address_family != 0
+                || data_length != 0
+                || arguments.iter().any(|argument| *argument != 0)
+            {
                 return Err(LinuxVzPackageSensorEventStreamErrorV1::InvalidPayload);
             }
+            LinuxVzPackageSelectedSyscallV1::from_u32_v1(syscall_number)?;
         }
     }
     if !matches!(address_family, 0 | 2 | 10) {
@@ -321,6 +386,24 @@ pub(crate) fn decode_linux_vz_package_kernel_event_v1(
         source_sequence: stream_sequence,
         cpu,
     })
+}
+
+fn valid_selected_syscall_arguments_v1(
+    syscall: LinuxVzPackageSelectedSyscallV1,
+    arguments: &[u64; KERNEL_EVENT_ARGUMENT_COUNT_V1],
+) -> bool {
+    let retained = match syscall {
+        LinuxVzPackageSelectedSyscallV1::Setgid
+        | LinuxVzPackageSelectedSyscallV1::Setuid
+        | LinuxVzPackageSelectedSyscallV1::Setgroups => &[0][..],
+        LinuxVzPackageSelectedSyscallV1::Connect => &[0, 2][..],
+        LinuxVzPackageSelectedSyscallV1::Sendto => &[0, 2, 3, 5][..],
+        LinuxVzPackageSelectedSyscallV1::Mmap => &[1, 2, 3, 4, 5][..],
+    };
+    arguments
+        .iter()
+        .enumerate()
+        .all(|(index, argument)| *argument == 0 || retained.contains(&index))
 }
 
 fn read_u16_v1(bytes: &[u8], offset: usize) -> Result<u16, LinuxVzPackageSensorEventStreamErrorV1> {
@@ -674,9 +757,8 @@ mod tests {
             LinuxVzPackageKernelEventKindV1::SyscallEnter => {
                 bytes[40..44].copy_from_slice(&0_u32.to_le_bytes());
                 bytes[48..52].copy_from_slice(&203_u32.to_le_bytes());
-                bytes[52..54].copy_from_slice(&2_u16.to_le_bytes());
-                bytes[54..56].copy_from_slice(&4_u16.to_le_bytes());
-                bytes[112..116].copy_from_slice(&[2, 0, 1, 187]);
+                bytes[64..72].copy_from_slice(&7_u64.to_le_bytes());
+                bytes[80..88].copy_from_slice(&16_u64.to_le_bytes());
             }
             LinuxVzPackageKernelEventKindV1::SyscallExit => {
                 bytes[40..44].copy_from_slice(&0_u32.to_le_bytes());
@@ -703,9 +785,19 @@ mod tests {
             assert_eq!(event.cgroup_id(), 41);
             assert_eq!(event.source_sequence(), 1);
             assert_eq!(event.cpu(), 3);
+            if matches!(
+                kind,
+                LinuxVzPackageKernelEventKindV1::SyscallEnter
+                    | LinuxVzPackageKernelEventKindV1::SyscallExit
+            ) {
+                assert_eq!(
+                    event.selected_syscall_v1(),
+                    Ok(LinuxVzPackageSelectedSyscallV1::Connect)
+                );
+            }
             let debug = format!("{event:?}");
             assert!(debug.contains("<redacted>"));
-            assert!(!debug.contains("[2, 0, 1, 187]"));
+            assert!(!debug.contains("[7, 0, 16"));
         }
     }
 
@@ -774,6 +866,55 @@ mod tests {
                 0
             ),
             Err(LinuxVzPackageSensorEventStreamErrorV1::InvalidSequence)
+        );
+    }
+
+    #[test]
+    fn syscall_events_accept_only_the_closed_aarch64_set_and_redacted_argument_shapes() {
+        for syscall in LinuxVzPackageSelectedSyscallV1::ALL_V1 {
+            let mut enter = event_bytes_v1(LinuxVzPackageKernelEventKindV1::SyscallEnter);
+            enter[48..52].copy_from_slice(&(syscall as u32).to_le_bytes());
+            enter[64..112].fill(0);
+            let retained = match syscall {
+                LinuxVzPackageSelectedSyscallV1::Setgid
+                | LinuxVzPackageSelectedSyscallV1::Setuid
+                | LinuxVzPackageSelectedSyscallV1::Setgroups => &[0][..],
+                LinuxVzPackageSelectedSyscallV1::Connect => &[0, 2][..],
+                LinuxVzPackageSelectedSyscallV1::Sendto => &[0, 2, 3, 5][..],
+                LinuxVzPackageSelectedSyscallV1::Mmap => &[1, 2, 3, 4, 5][..],
+            };
+            for index in retained {
+                enter[64 + *index * 8..72 + *index * 8]
+                    .copy_from_slice(&(100_u64 + *index as u64).to_le_bytes());
+            }
+            let event = decode_linux_vz_package_kernel_event_v1(&enter, 41, 1)
+                .expect("selected syscall enter");
+            assert_eq!(event.selected_syscall_v1(), Ok(syscall));
+            assert_eq!(
+                syscall.name_v1(),
+                match syscall {
+                    LinuxVzPackageSelectedSyscallV1::Setgid => "setgid",
+                    LinuxVzPackageSelectedSyscallV1::Setuid => "setuid",
+                    LinuxVzPackageSelectedSyscallV1::Setgroups => "setgroups",
+                    LinuxVzPackageSelectedSyscallV1::Connect => "connect",
+                    LinuxVzPackageSelectedSyscallV1::Sendto => "sendto",
+                    LinuxVzPackageSelectedSyscallV1::Mmap => "mmap",
+                }
+            );
+        }
+
+        let mut unknown = event_bytes_v1(LinuxVzPackageKernelEventKindV1::SyscallEnter);
+        unknown[48..52].copy_from_slice(&204_u32.to_le_bytes());
+        assert_eq!(
+            decode_linux_vz_package_kernel_event_v1(&unknown, 41, 1),
+            Err(LinuxVzPackageSensorEventStreamErrorV1::InvalidPayload)
+        );
+
+        let mut raw_pointer = event_bytes_v1(LinuxVzPackageKernelEventKindV1::SyscallEnter);
+        raw_pointer[72..80].copy_from_slice(&0x7fff_1234_u64.to_le_bytes());
+        assert_eq!(
+            decode_linux_vz_package_kernel_event_v1(&raw_pointer, 41, 1),
+            Err(LinuxVzPackageSensorEventStreamErrorV1::InvalidPayload)
         );
     }
 }

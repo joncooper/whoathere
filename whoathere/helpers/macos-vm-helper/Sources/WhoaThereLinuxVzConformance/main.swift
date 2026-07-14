@@ -218,7 +218,7 @@ private struct LinuxVzConformanceHarness {
         let imageIdentityStable = finalKernelSHA256 == kernelSHA256
             && finalInitramfsSHA256 == initramfsSHA256
         if let expectedFixtureSHA256 = options.expectedPackageSensorFixtureSHA256 {
-            let evidence = try? decodeLinuxVzPackageSensorBpfInertEvidenceV1(
+            let evidence = try? decodeLinuxVzPackageSensorBpfInertEvidenceV2(
                 serialData,
                 expectedFixtureSHA256: expectedFixtureSHA256
             )
