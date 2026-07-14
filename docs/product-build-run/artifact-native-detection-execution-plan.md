@@ -296,6 +296,18 @@ legitimate evidence or improve detection. Native tests and Linux/aarch64 warning
 pass. No package, VM, cloud host, or malware ran and the 7/11 score is unchanged. See the
 [package sensor-service driver checkpoint](artifact-native-linux-vz-package-sensor-service-driver-checkpoint-2026-07-13.md).
 
+The first non-fixture event-stream primitive now exists. A closed 192-byte kernel-event ABI covers
+fork, exec, exit, selected syscall-enter, and selected syscall-exit observations with exact cgroup,
+process, timestamp, bounded-data, field-use, and reserved-byte validation. A root-only Linux BPF
+ring-buffer consumer verifies the map type and capacity, uses the kernel consumer/producer and
+double data mappings, preserves ring reservation order, assigns the userspace stream sequence,
+counts discards, and rejects busy/malformed/over-capacity records. Raw arguments and detail are
+redacted from debug and cannot yet become serialized evidence. No BPF producer is loaded or
+attached, the service does not instantiate this consumer, and the mmap path has only been
+cross-compiled; this is not behavior observation or a detection improvement. No package, VM,
+cloud host, or malware ran and the 7/11 score is unchanged. See the
+[package sensor event-stream checkpoint](artifact-native-linux-vz-package-sensor-event-stream-checkpoint-2026-07-13.md).
+
 The first protected-sensor bootstrap now also observes a cgroup-filtered inert fork/exec/exit chain
 whose child runs as UID/GID 65534 and cannot read or write the root-only sensor. This remains
 unsigned bootstrap evidence rather than a conformance receipt. See the
@@ -1917,6 +1929,7 @@ Repository evidence:
 - [Linux VZ workspace and derived-wheel checkpoint](artifact-native-linux-vz-workspace-derived-wheel-checkpoint-2026-07-13.md)
 - [Linux VZ protected sequencer checkpoint](artifact-native-linux-vz-protected-sequencer-checkpoint-2026-07-13.md)
 - [Linux VZ package sensor-service driver checkpoint](artifact-native-linux-vz-package-sensor-service-driver-checkpoint-2026-07-13.md)
+- [Linux VZ package sensor event-stream checkpoint](artifact-native-linux-vz-package-sensor-event-stream-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification guest-candidate checkpoint](artifact-native-linux-vz-runtime-qualification-guest-candidate-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification host-launcher checkpoint](artifact-native-linux-vz-runtime-qualification-host-launcher-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification physical checkpoint](artifact-native-linux-vz-runtime-qualification-physical-checkpoint-2026-07-13.md)

@@ -38,6 +38,7 @@ mod linux_vz_package_runtime_qualification_request;
 mod linux_vz_package_runtime_qualification_transport;
 mod linux_vz_package_sdist_materialization;
 mod linux_vz_package_sensor_control;
+mod linux_vz_package_sensor_event_stream;
 mod linux_vz_package_workspace;
 mod linux_vz_platform_evidence_payload;
 mod linux_vz_process_evidence_payload;
