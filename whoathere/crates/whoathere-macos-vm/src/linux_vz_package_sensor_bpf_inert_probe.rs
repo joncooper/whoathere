@@ -1,6 +1,8 @@
 use std::fmt;
 
 #[cfg(target_os = "linux")]
+use crate::linux_vz_package_sensor_control::kill_cgroup_from_descriptor_v1;
+#[cfg(target_os = "linux")]
 use crate::linux_vz_package_sensor_event_stream::{
     LinuxVzPackageKernelEventKindV1, LinuxVzPackageSelectedSyscallV1,
 };
@@ -44,7 +46,11 @@ const MAX_FIXTURE_BYTES_V1: usize = 16 * 1024 * 1024;
 #[cfg(target_os = "linux")]
 const RING_BUFFER_BYTES_V1: usize = 64 * 1024;
 #[cfg(target_os = "linux")]
+const FAULT_MAXIMUM_SOURCE_EVENTS_V1: usize = 8;
+#[cfg(target_os = "linux")]
 const CHILD_DEADLINE_V1: Duration = Duration::from_secs(5);
+#[cfg(target_os = "linux")]
+const FAULT_SIGNAL_TIMEOUT_V1: Duration = Duration::from_secs(2);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinuxVzPackageSensorBpfInertProbeErrorV1 {
     UnsupportedPlatform,
@@ -126,6 +132,15 @@ struct InertProbeEvidenceWireV1 {
     event_sequence_start: String,
     exit_attachment: &'static str,
     exit_status_source: &'static str,
+    fault_cgroup_id: String,
+    fault_cgroup_kill_used: bool,
+    fault_fixture_pid: String,
+    fault_fixture_termination_signal: String,
+    fault_maximum_source_events: String,
+    fault_signal_kind: &'static str,
+    fault_signal_latency_microseconds: String,
+    fault_signal_observed: bool,
+    fault_trigger: &'static str,
     finish_drain_event_count: String,
     fixture_cpu: String,
     fixture_exit_status: String,
@@ -266,6 +281,136 @@ impl ProbeCgroupV1 {
         self.removed = true;
         Ok(())
     }
+}
+
+#[cfg(target_os = "linux")]
+struct FaultSignalQualificationV1 {
+    cgroup_id: u64,
+    fixture_pid: u32,
+    latency_microseconds: u128,
+    termination_signal: u8,
+}
+
+#[cfg(target_os = "linux")]
+fn qualify_fault_signal_v1(
+    fixture: RawFd,
+    fixture_cpu: u32,
+) -> Result<FaultSignalQualificationV1, LinuxVzPackageSensorBpfInertProbeErrorV1> {
+    let mut cgroup = ProbeCgroupV1::create_v1()?;
+    let mut collector = LinuxVzPackageRootProcessCollectorV1::arm_v1(
+        cgroup.id,
+        RING_BUFFER_BYTES_V1,
+        FAULT_MAXIMUM_SOURCE_EVENTS_V1,
+    )
+    .map_err(|error| {
+        eprintln!("WHOATHERE_PACKAGE_SENSOR_BPF_INERT_FAULT_COLLECTOR_DETAIL {error}");
+        LinuxVzPackageSensorBpfInertProbeErrorV1::Collector
+    })?;
+    if !collector
+        .online_cpus_v1()
+        .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::Collector)?
+        .contains(&fixture_cpu)
+    {
+        return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::CpuAffinity);
+    }
+    let fixture_path = CString::new("process-fixture-child")
+        .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::Fixture)?;
+    let fixture_case = CString::new("continuous_drain")
+        .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::Fixture)?;
+    let environment = [
+        CString::new("CI=true").map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::Fixture)?,
+        CString::new("HOME=/nonexistent")
+            .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::Fixture)?,
+        CString::new("NO_COLOR=1")
+            .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::Fixture)?,
+        CString::new("PATH=/usr/bin:/bin")
+            .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::Fixture)?,
+    ];
+    let arguments = [
+        fixture_path.as_ptr(),
+        fixture_case.as_ptr(),
+        std::ptr::null(),
+    ];
+    let environment_pointers = [
+        environment[0].as_ptr(),
+        environment[1].as_ptr(),
+        environment[2].as_ptr(),
+        environment[3].as_ptr(),
+        std::ptr::null(),
+    ];
+    let child = unsafe { libc::fork() };
+    if child < 0 {
+        return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::Fork);
+    }
+    if child == 0 {
+        unsafe { child_exec_v1(fixture, arguments.as_ptr(), environment_pointers.as_ptr()) }
+    }
+    let mut child_guard = ChildGuardV1 {
+        process: child,
+        reaped: false,
+    };
+    require_stopped_child_v1(child)?;
+    cgroup.add_process_v1(child)?;
+    pin_process_to_cpu_v1(child, fixture_cpu)?;
+    collector
+        .leader_attached_before_release_v1(child as u32)
+        .map_err(|error| {
+            eprintln!("WHOATHERE_PACKAGE_SENSOR_BPF_INERT_FAULT_COLLECTOR_DETAIL {error}");
+            LinuxVzPackageSensorBpfInertProbeErrorV1::Collector
+        })?;
+    let fault_signal_fd = collector
+        .fault_signal_fd_v1()
+        .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::Collector)?;
+    let started = Instant::now();
+    if unsafe { libc::kill(child, libc::SIGCONT) } != 0 {
+        return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::ChildState);
+    }
+    let mut descriptor = libc::pollfd {
+        fd: fault_signal_fd,
+        events: libc::POLLIN | libc::POLLHUP | libc::POLLERR,
+        revents: 0,
+    };
+    loop {
+        let remaining = FAULT_SIGNAL_TIMEOUT_V1.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::ChildTimeout);
+        }
+        let timeout_milliseconds = i32::try_from(remaining.as_millis().max(1))
+            .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::ChildTimeout)?;
+        descriptor.revents = 0;
+        let result = unsafe { libc::poll(&mut descriptor, 1, timeout_milliseconds) };
+        if result > 0 {
+            break;
+        }
+        if result == 0 {
+            return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::ChildTimeout);
+        }
+        if last_errno_v1() != libc::EINTR {
+            return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::Collector);
+        }
+    }
+    let latency_microseconds = started.elapsed().as_micros();
+    if descriptor.revents & libc::POLLIN == 0
+        || descriptor.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0
+        || collector.require_healthy_v1().is_ok()
+    {
+        return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::EventMismatch);
+    }
+    kill_cgroup_from_descriptor_v1(cgroup.directory.as_raw_fd())
+        .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::Cgroup)?;
+    let status = wait_for_child_v1(child)?;
+    child_guard.reaped = true;
+    if !libc::WIFSIGNALED(status) || libc::WTERMSIG(status) != libc::SIGKILL {
+        return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::ChildFailed);
+    }
+    collector.abort_v1();
+    cgroup.remove_v1()?;
+    Ok(FaultSignalQualificationV1 {
+        cgroup_id: cgroup.id,
+        fixture_pid: child as u32,
+        latency_microseconds,
+        termination_signal: libc::SIGKILL as u8,
+    })
 }
 
 #[cfg(target_os = "linux")]
@@ -443,6 +588,8 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
     for (name, digest) in collection.tracepoint_format_sha256_v1() {
         tracepoints.insert(*name, digest.as_str().to_string());
     }
+    cgroup.remove_v1()?;
+    let fault = qualify_fault_signal_v1(fixture.as_raw_fd(), fixture_cpu)?;
     let evidence = InertProbeEvidenceWireV1 {
         active_drain_poll_count: collection.active_drain_poll_count_v1().to_string(),
         active_nonempty_drain_count: collection.active_nonempty_drain_count_v1().to_string(),
@@ -474,6 +621,15 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
         event_sequence_start: "1".to_string(),
         exit_attachment: "raw_tracepoint:sched_process_exit",
         exit_status_source: "runtime_btf:task_struct.exit_code",
+        fault_cgroup_id: fault.cgroup_id.to_string(),
+        fault_cgroup_kill_used: true,
+        fault_fixture_pid: fault.fixture_pid.to_string(),
+        fault_fixture_termination_signal: fault.termination_signal.to_string(),
+        fault_maximum_source_events: FAULT_MAXIMUM_SOURCE_EVENTS_V1.to_string(),
+        fault_signal_kind: "nonblocking_pipe_marker",
+        fault_signal_latency_microseconds: fault.latency_microseconds.to_string(),
+        fault_signal_observed: true,
+        fault_trigger: "source_event_limit",
         finish_drain_event_count: collection.finish_drain_event_count_v1().to_string(),
         fixture_cpu: fixture_cpu.to_string(),
         fixture_exit_status: "0".to_string(),
@@ -499,7 +655,7 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
         pre_release_event_count: "0".to_string(),
         process_collector_coverage_complete: collection.coverage_complete_v1(),
         runtime_btf_sha256: collection.runtime_btf_sha256_v1().as_str().to_string(),
-        schema_version: "whoathere.linux_vz_package_sensor_bpf_inert_probe.v6",
+        schema_version: "whoathere.linux_vz_package_sensor_bpf_inert_probe.v7",
         source_event_count_before_finish: collection
             .source_event_count_before_finish_v1()
             .to_string(),
@@ -508,7 +664,6 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
         tracepoint_format_sha256: tracepoints,
         waitpid_wait_status: waitpid_wait_status.to_string(),
     };
-    cgroup.remove_v1()?;
     serde_json::to_string(&evidence)
         .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::Serialization)
 }

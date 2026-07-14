@@ -4,16 +4,23 @@ Date: 2026-07-09
 
 Status: canonical execution plan for the next product milestone
 
-Current execution checkpoint (2026-07-14): the root process collector now continuously drains its
-BPF ring through a dedicated root-owned worker instead of waiting for finish. A bounded 50 ms inert
-qualification produced 38 active polls; one nonempty poll consumed source records `1..13` while
-the leader was running, and finish consumed only exit record `14`. All 14 records still formed the
-exact eight observations with zero loss, cross-CPU delivery, and exact BTF-derived
-kernel/supervisor terminal agreement. The strict schema-v6 Mac verifier also required the
-continuous-worker mode, exact pre-finish/final accounting, zero host frames, stable images, and a
-stopped VM. No package or malware ran. Protected service integration, asynchronous fault
-termination, file/network collection, authenticated composite evidence, runtime package scenarios,
-benign scoring, and malicious regression remain open, so the July score remains 7/11. See the
+Current execution checkpoint (2026-07-14): the continuous process collector now exposes a
+nonblocking first-fault descriptor, the protected service polls it alongside the authenticated
+control channel, and the root-runner supervisor checks channel health before release and throughout
+execution. On fault, the service uses the validated transferred cgroup descriptor to invoke
+`cgroup.kill`, abort sensors, and close the channel; local cgroup ownership remains an independent
+second cleanup path. A fresh-guest schema-v7 inert qualification deliberately exceeded an
+eight-event collector limit, observed the fault marker in 1.271 ms, killed the second fixture with
+`SIGKILL`, and retained the normal 14-event zero-loss proof. No package or malware ran. The concrete
+adapter remains process-only and truthfully reports file/network unavailable, so the service still
+refuses package release. Typed process evidence, file/network collectors, composite authentication,
+runtime scenarios, benign scoring, and malicious regression remain open; the July score remains
+7/11. See the
+[fault-propagation checkpoint](artifact-native-linux-vz-package-root-process-fault-propagation-checkpoint-2026-07-14.md).
+
+The preceding checkpoint moved the BPF ring to a dedicated continuous-drain worker and physically
+proved that source records were consumed while the leader was running instead of only at finish.
+See the
 [continuous-drain checkpoint](artifact-native-linux-vz-package-root-process-continuous-drain-checkpoint-2026-07-14.md).
 
 The preceding checkpoint instantiated the process-only root collector and physically qualified its
@@ -414,6 +421,17 @@ all previous loss, topology, BTF, terminal, and VM-stop invariants intact. The s
 asynchronous sensor-fault termination remain open, as do file, network, composite evidence,
 runtime, benign, and malicious gates; the 7/11 score is unchanged. See the
 [continuous-drain checkpoint](artifact-native-linux-vz-package-root-process-continuous-drain-checkpoint-2026-07-14.md).
+
+The continuous worker now exposes a nonblocking first-fault pipe. The process-only protected
+service adapter requires that descriptor, the service polls it beside the authenticated control
+socket and kills through the transferred cgroup descriptor, and the root-runner supervisor treats
+service-channel teardown as a fault before release and throughout execution. A schema-v7 physical
+inert gate exceeded an eight-source-event limit, observed the marker after 1.271 ms, used the same
+descriptor-relative cgroup-kill helper, and required `SIGKILL` cleanup, while the normal 14-event
+case remained zero-loss. The adapter reports file/network unavailable, so package release remains
+refused until those collectors and composite evidence exist. Runtime, benign, and malicious gates
+also remain open; the 7/11 score is unchanged. See the
+[fault-propagation checkpoint](artifact-native-linux-vz-package-root-process-fault-propagation-checkpoint-2026-07-14.md).
 
 The producer now also implements a closed arm64 allowlist for `setgroups`, `setgid`, `setuid`,
 `connect`, `sendto`, and `mmap`, with BPF-side cgroup filtering, pointer redaction, paired
@@ -2108,6 +2126,7 @@ Repository evidence:
 - [Linux VZ package sensor cross-CPU coverage checkpoint](artifact-native-linux-vz-package-sensor-cross-cpu-coverage-checkpoint-2026-07-14.md)
 - [Linux VZ package root process-collector checkpoint](artifact-native-linux-vz-package-root-process-collector-checkpoint-2026-07-14.md)
 - [Linux VZ package root process continuous-drain checkpoint](artifact-native-linux-vz-package-root-process-continuous-drain-checkpoint-2026-07-14.md)
+- [Linux VZ package root process fault-propagation checkpoint](artifact-native-linux-vz-package-root-process-fault-propagation-checkpoint-2026-07-14.md)
 - [Linux VZ runtime-qualification guest-candidate checkpoint](artifact-native-linux-vz-runtime-qualification-guest-candidate-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification host-launcher checkpoint](artifact-native-linux-vz-runtime-qualification-host-launcher-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification physical checkpoint](artifact-native-linux-vz-runtime-qualification-physical-checkpoint-2026-07-13.md)

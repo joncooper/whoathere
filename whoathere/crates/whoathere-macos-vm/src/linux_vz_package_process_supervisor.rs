@@ -527,6 +527,12 @@ pub trait LinuxVzPackageProtectedProcessObserverV1:
         leader_pid: u32,
     ) -> Result<(), LinuxVzPackageProcessSupervisorErrorV1>;
 
+    /// Checks the authenticated protected-sensor channel without blocking.
+    ///
+    /// The supervisor calls this before release and throughout execution. Any sensor-side fault,
+    /// unexpected message, or channel teardown must fail the action and trigger cgroup cleanup.
+    fn require_healthy_v1(&mut self) -> Result<(), LinuxVzPackageProcessSupervisorErrorV1>;
+
     fn finish_v1(
         &mut self,
         contract: &LinuxVzPackageProcessLaunchContractV1,
@@ -860,6 +866,7 @@ mod linux {
                     LinuxVzPackageProcessSupervisorErrorV1::ProtectedSensorCorrelationFailed,
                 );
             }
+            observer.require_healthy_v1()?;
             if pipes.release_child_v1().is_err() {
                 let _ = cgroup.kill_all_v1();
                 let _ = reap_until_no_children_v1(
@@ -882,6 +889,7 @@ mod linux {
             let mut cgroup_kill_used = false;
 
             loop {
+                observer.require_healthy_v1()?;
                 pipes.drain_outputs_v1(&mut stdout, &mut stderr)?;
                 let reaped = reap_available_v1(Some(child), &mut leader_status)?;
                 reaped_process_count = reaped_process_count
@@ -907,6 +915,7 @@ mod linux {
                     break;
                 }
                 pipes.poll_v1(25)?;
+                observer.require_healthy_v1()?;
             }
 
             if cgroup.populated_v1()? {
@@ -917,6 +926,7 @@ mod linux {
                         .saturating_mul(1_000_000),
                 );
                 while monotonic_nanoseconds_v1()? < term_deadline {
+                    observer.require_healthy_v1()?;
                     pipes.drain_outputs_v1(&mut stdout, &mut stderr)?;
                     let reaped = reap_available_v1(Some(child), &mut leader_status)?;
                     reaped_process_count = reaped_process_count
@@ -926,6 +936,7 @@ mod linux {
                         break;
                     }
                     pipes.poll_v1(10)?;
+                    observer.require_healthy_v1()?;
                 }
             }
             if cgroup.populated_v1()? {
@@ -946,12 +957,14 @@ mod linux {
                 .ok_or(LinuxVzPackageProcessSupervisorErrorV1::LimitExceeded)?;
             leader_status = observed_leader_status;
             while cgroup.populated_v1()? && monotonic_nanoseconds_v1()? < teardown_deadline {
+                observer.require_healthy_v1()?;
                 pipes.drain_outputs_v1(&mut stdout, &mut stderr)?;
                 let reaped = reap_available_v1(Some(child), &mut leader_status)?;
                 reaped_process_count = reaped_process_count
                     .checked_add(reaped)
                     .ok_or(LinuxVzPackageProcessSupervisorErrorV1::LimitExceeded)?;
                 pipes.poll_v1(10)?;
+                observer.require_healthy_v1()?;
             }
             if cgroup.populated_v1()? {
                 return Err(LinuxVzPackageProcessSupervisorErrorV1::TeardownFailed);
@@ -961,6 +974,7 @@ mod linux {
             if !child_setup_clean {
                 return Err(LinuxVzPackageProcessSupervisorErrorV1::ChildSetupFailed);
             }
+            observer.require_healthy_v1()?;
             let leader_status =
                 leader_status.ok_or(LinuxVzPackageProcessSupervisorErrorV1::WaitFailed)?;
             let (terminal, exit_status, termination_signal) = decode_wait_status_v1(leader_status)?;

@@ -17,6 +17,11 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::thread::JoinHandle;
 #[cfg(target_os = "linux")]
 use std::time::Duration;
+#[cfg(target_os = "linux")]
+use std::{
+    io,
+    os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
+};
 use whoathere_artifact::Sha256Digest;
 
 const MIN_ROOT_PROCESS_RING_BUFFER_BYTES_V1: usize = 64 * 1024;
@@ -226,6 +231,7 @@ enum LinuxVzPackageRootProcessWorkerCommandV1 {
 struct LinuxVzPackageRootProcessWorkerV1 {
     producer: LinuxVzPackageSensorBpfProducerV1,
     correlator: LinuxVzPackageProcessEventCorrelatorV1,
+    fault_signal_write: OwnedFd,
     leader_pid: Option<u32>,
     fault: Option<LinuxVzPackageRootProcessCollectorErrorV1>,
     ingested_source_event_count: u64,
@@ -241,6 +247,7 @@ pub(crate) struct LinuxVzPackageRootProcessCollectorV1 {
     leader_pid: Option<u32>,
     online_cpus: Vec<u32>,
     attachment_cpu: u32,
+    fault_signal_read: OwnedFd,
     command_sender: Option<SyncSender<LinuxVzPackageRootProcessWorkerCommandV1>>,
     worker: Option<JoinHandle<()>>,
 }
@@ -278,6 +285,7 @@ impl LinuxVzPackageRootProcessCollectorV1 {
         }
         let (command_sender, command_receiver) = mpsc::sync_channel(1);
         let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
+        let (fault_signal_read, fault_signal_write) = create_fault_signal_pipe_v1()?;
         let worker = std::thread::Builder::new()
             .name("whoathere-root-process-sensor-v1".to_string())
             .spawn(move || {
@@ -285,6 +293,7 @@ impl LinuxVzPackageRootProcessCollectorV1 {
                     expected_cgroup_id,
                     ring_buffer_capacity,
                     maximum_source_events,
+                    fault_signal_write,
                     ready_sender,
                     command_receiver,
                 );
@@ -307,6 +316,7 @@ impl LinuxVzPackageRootProcessCollectorV1 {
             leader_pid: None,
             online_cpus: ready.online_cpus,
             attachment_cpu: ready.attachment_cpu,
+            fault_signal_read,
             command_sender: Some(command_sender),
             worker: Some(worker),
         })
@@ -364,6 +374,42 @@ impl LinuxVzPackageRootProcessCollectorV1 {
             return Err(LinuxVzPackageRootProcessCollectorErrorV1::InvalidState);
         }
         Ok(self.attachment_cpu)
+    }
+
+    pub(crate) fn fault_signal_fd_v1(
+        &self,
+    ) -> Result<RawFd, LinuxVzPackageRootProcessCollectorErrorV1> {
+        if !matches!(
+            self.state,
+            LinuxVzPackageRootProcessCollectorStateV1::Armed
+                | LinuxVzPackageRootProcessCollectorStateV1::LeaderAttached
+        ) {
+            return Err(LinuxVzPackageRootProcessCollectorErrorV1::InvalidState);
+        }
+        Ok(self.fault_signal_read.as_raw_fd())
+    }
+
+    pub(crate) fn require_healthy_v1(
+        &self,
+    ) -> Result<(), LinuxVzPackageRootProcessCollectorErrorV1> {
+        let descriptor = self.fault_signal_fd_v1()?;
+        let mut poll_descriptor = libc::pollfd {
+            fd: descriptor,
+            events: libc::POLLIN | libc::POLLHUP | libc::POLLERR,
+            revents: 0,
+        };
+        loop {
+            let result = unsafe { libc::poll(&mut poll_descriptor, 1, 0) };
+            if result == 0 {
+                return Ok(());
+            }
+            if result > 0 {
+                return Err(LinuxVzPackageRootProcessCollectorErrorV1::Worker);
+            }
+            if io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
+                return Err(LinuxVzPackageRootProcessCollectorErrorV1::Worker);
+            }
+        }
     }
 
     /// Finalizes only after the protected caller has proved the cgroup empty and reaped the leader.
@@ -448,6 +494,7 @@ fn run_linux_vz_package_root_process_worker_v1(
     expected_cgroup_id: u64,
     ring_buffer_capacity: usize,
     maximum_source_events: usize,
+    fault_signal_write: OwnedFd,
     ready_sender: SyncSender<
         Result<LinuxVzPackageRootProcessWorkerReadyV1, LinuxVzPackageRootProcessCollectorErrorV1>,
     >,
@@ -484,6 +531,7 @@ fn run_linux_vz_package_root_process_worker_v1(
     LinuxVzPackageRootProcessWorkerV1 {
         producer,
         correlator,
+        fault_signal_write,
         leader_pid: None,
         fault: None,
         ingested_source_event_count: 0,
@@ -541,7 +589,7 @@ impl LinuxVzPackageRootProcessWorkerV1 {
         if self.leader_pid.is_none() {
             if self.fault.is_none() {
                 if let Err(error) = self.require_prerelease_quiet_v1() {
-                    self.fault = Some(error);
+                    self.record_fault_v1(error);
                 }
             } else {
                 self.drain_after_fault_v1();
@@ -551,25 +599,26 @@ impl LinuxVzPackageRootProcessWorkerV1 {
         self.active_drain_poll_count = match self.active_drain_poll_count.checked_add(1) {
             Some(value) => value,
             None => {
-                self.fault = Some(LinuxVzPackageRootProcessCollectorErrorV1::Worker);
+                self.record_fault_v1(LinuxVzPackageRootProcessCollectorErrorV1::Worker);
                 return;
             }
         };
         if self.fault.is_none() {
             match self.drain_correlated_until_empty_v1() {
                 Ok(drained) if drained > 0 => {
-                    self.active_nonempty_drain_count =
-                        match self.active_nonempty_drain_count.checked_add(1) {
-                            Some(value) => value,
-                            None => {
-                                self.fault =
-                                    Some(LinuxVzPackageRootProcessCollectorErrorV1::Worker);
-                                return;
-                            }
-                        };
+                    self.active_nonempty_drain_count = match self
+                        .active_nonempty_drain_count
+                        .checked_add(1)
+                    {
+                        Some(value) => value,
+                        None => {
+                            self.record_fault_v1(LinuxVzPackageRootProcessCollectorErrorV1::Worker);
+                            return;
+                        }
+                    };
                 }
                 Ok(_) => {}
-                Err(error) => self.fault = Some(error),
+                Err(error) => self.record_fault_v1(error),
             }
         } else {
             self.drain_after_fault_v1();
@@ -643,6 +692,30 @@ impl LinuxVzPackageRootProcessWorkerV1 {
                 Ok(_) => {}
                 Err(_) => return,
             }
+        }
+    }
+
+    fn record_fault_v1(&mut self, error: LinuxVzPackageRootProcessCollectorErrorV1) {
+        if self.fault.is_some() {
+            return;
+        }
+        self.fault = Some(error);
+        let marker = [1_u8];
+        loop {
+            let written = unsafe {
+                libc::write(
+                    self.fault_signal_write.as_raw_fd(),
+                    marker.as_ptr().cast(),
+                    marker.len(),
+                )
+            };
+            if written == marker.len() as isize {
+                break;
+            }
+            if written < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            break;
         }
     }
 
@@ -721,6 +794,29 @@ impl LinuxVzPackageRootProcessWorkerV1 {
             maximum_drain_batch_record_count: self.maximum_drain_batch_record_count,
         })
     }
+}
+
+#[cfg(target_os = "linux")]
+fn create_fault_signal_pipe_v1(
+) -> Result<(OwnedFd, OwnedFd), LinuxVzPackageRootProcessCollectorErrorV1> {
+    let mut descriptors = [-1_i32; 2];
+    if unsafe { libc::pipe2(descriptors.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) } != 0 {
+        return Err(LinuxVzPackageRootProcessCollectorErrorV1::Worker);
+    }
+    if descriptors[0] < 0 || descriptors[1] < 0 || descriptors[0] == descriptors[1] {
+        for descriptor in descriptors {
+            if descriptor >= 0 {
+                let _ = unsafe { libc::close(descriptor) };
+            }
+        }
+        return Err(LinuxVzPackageRootProcessCollectorErrorV1::Worker);
+    }
+    Ok(unsafe {
+        (
+            OwnedFd::from_raw_fd(descriptors[0]),
+            OwnedFd::from_raw_fd(descriptors[1]),
+        )
+    })
 }
 
 #[cfg(target_os = "linux")]
@@ -958,5 +1054,36 @@ mod tests {
             assert!(codes.insert(error.reason_code()));
             assert_eq!(error.to_string(), error.reason_code());
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn fault_signal_pipe_is_nonblocking_close_on_exec_and_level_triggered() {
+        let (read, write) = create_fault_signal_pipe_v1().expect("fault signal pipe");
+        for descriptor in [read.as_raw_fd(), write.as_raw_fd()] {
+            let descriptor_flags = unsafe { libc::fcntl(descriptor, libc::F_GETFD) };
+            let status_flags = unsafe { libc::fcntl(descriptor, libc::F_GETFL) };
+            assert!(descriptor_flags >= 0);
+            assert_ne!(descriptor_flags & libc::FD_CLOEXEC, 0);
+            assert!(status_flags >= 0);
+            assert_ne!(status_flags & libc::O_NONBLOCK, 0);
+        }
+        let mut poll_descriptor = libc::pollfd {
+            fd: read.as_raw_fd(),
+            events: libc::POLLIN | libc::POLLHUP | libc::POLLERR,
+            revents: 0,
+        };
+        assert_eq!(unsafe { libc::poll(&mut poll_descriptor, 1, 0) }, 0);
+        assert_eq!(
+            unsafe { libc::write(write.as_raw_fd(), [1_u8].as_ptr().cast(), 1) },
+            1
+        );
+        poll_descriptor.revents = 0;
+        assert_eq!(unsafe { libc::poll(&mut poll_descriptor, 1, 0) }, 1);
+        assert_ne!(poll_descriptor.revents & libc::POLLIN, 0);
+        drop(write);
+        poll_descriptor.revents = 0;
+        assert_eq!(unsafe { libc::poll(&mut poll_descriptor, 1, 0) }, 1);
+        assert_ne!(poll_descriptor.revents & (libc::POLLIN | libc::POLLHUP), 0);
     }
 }

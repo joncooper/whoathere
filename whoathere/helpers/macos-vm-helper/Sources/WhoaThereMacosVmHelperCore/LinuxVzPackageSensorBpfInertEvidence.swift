@@ -1,7 +1,7 @@
 import Foundation
 
-public let linuxVzPackageSensorBpfInertEvidenceSchemaV6 =
-    "whoathere.linux_vz_package_sensor_bpf_inert_probe.v6"
+public let linuxVzPackageSensorBpfInertEvidenceSchemaV7 =
+    "whoathere.linux_vz_package_sensor_bpf_inert_probe.v7"
 public let linuxVzPackageSensorBpfInertEvidenceSerialPrefixV1 =
     "WHOATHERE_PACKAGE_SENSOR_BPF_INERT_EVIDENCE "
 
@@ -29,7 +29,7 @@ public enum LinuxVzPackageSensorBpfInertEvidenceError: Error, Equatable {
     case invalidSchema
 }
 
-public struct LinuxVzPackageSensorBpfInertEvidenceV6: Equatable, Sendable {
+public struct LinuxVzPackageSensorBpfInertEvidenceV7: Equatable, Sendable {
     public let canonicalJSON: Data
     public let payloadSHA256: String
     public let evidenceByteLength: UInt64
@@ -50,18 +50,22 @@ public struct LinuxVzPackageSensorBpfInertEvidenceV6: Equatable, Sendable {
     public let sourceEventCountBeforeFinish: UInt64
     public let finishDrainEventCount: UInt64
     public let maximumDrainBatchRecordCount: UInt64
+    public let faultCgroupID: UInt64
+    public let faultFixturePID: UInt64
+    public let faultSignalLatencyMicroseconds: UInt64
+    public let faultFixtureTerminationSignal: UInt64
     public let leaderExecCount: UInt64
     public let preReleaseEventCount: UInt64
     public let processCollectorCoverageComplete: Bool
     public let tracepointFormatSHA256: [String: String]
 }
 
-public func decodeLinuxVzPackageSensorBpfInertEvidenceV6(
+public func decodeLinuxVzPackageSensorBpfInertEvidenceV7(
     _ serialData: Data,
     expectedFixtureSHA256: String,
     expectedRuntimeBTFSHA256: String,
     expectedTaskExitCodeByteOffset: UInt64
-) throws -> LinuxVzPackageSensorBpfInertEvidenceV6 {
+) throws -> LinuxVzPackageSensorBpfInertEvidenceV7 {
     guard packageSensorBpfInertDigest(expectedFixtureSHA256),
           packageSensorBpfInertDigest(expectedRuntimeBTFSHA256),
           expectedTaskExitCodeByteOffset > 0,
@@ -98,6 +102,9 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV6(
         "collector_mode",
         "discarded_record_count", "dropped_event_count", "event_count", "event_kinds",
         "event_sequence_end", "event_sequence_start", "exit_attachment", "exit_status_source",
+        "fault_cgroup_id", "fault_cgroup_kill_used", "fault_fixture_pid",
+        "fault_fixture_termination_signal", "fault_maximum_source_events", "fault_signal_kind",
+        "fault_signal_latency_microseconds", "fault_signal_observed", "fault_trigger",
         "finish_drain_event_count", "fixture_cpu", "fixture_exit_status", "fixture_pid",
         "fixture_sha256",
         "kernel_exit_wait_status", "leader_exec_count", "malware_execution",
@@ -108,7 +115,7 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV6(
         "task_exit_code_byte_offset", "tracepoint_format_sha256", "waitpid_wait_status",
     ])
     guard Set(value.keys) == expectedKeys,
-          value["schema_version"] as? String == linuxVzPackageSensorBpfInertEvidenceSchemaV6,
+          value["schema_version"] as? String == linuxVzPackageSensorBpfInertEvidenceSchemaV7,
           let activeDrainPollCount = packageSensorBpfInertDecimal(
               value["active_drain_poll_count"]
           ),
@@ -136,6 +143,21 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV6(
           packageSensorBpfInertDecimal(value["event_sequence_end"]) == 14,
           value["exit_attachment"] as? String == "raw_tracepoint:sched_process_exit",
           value["exit_status_source"] as? String == "runtime_btf:task_struct.exit_code",
+          let faultCgroupID = packageSensorBpfInertDecimal(value["fault_cgroup_id"]),
+          faultCgroupID > 0,
+          value["fault_cgroup_kill_used"] as? Bool == true,
+          let faultFixturePID = packageSensorBpfInertDecimal(value["fault_fixture_pid"]),
+          faultFixturePID >= 2, faultFixturePID <= UInt64(Int32.max),
+          packageSensorBpfInertDecimal(value["fault_fixture_termination_signal"]) == 9,
+          packageSensorBpfInertDecimal(value["fault_maximum_source_events"]) == 8,
+          value["fault_signal_kind"] as? String == "nonblocking_pipe_marker",
+          let faultSignalLatencyMicroseconds = packageSensorBpfInertDecimal(
+              value["fault_signal_latency_microseconds"]
+          ),
+          faultSignalLatencyMicroseconds >= 1,
+          faultSignalLatencyMicroseconds <= 2_000_000,
+          value["fault_signal_observed"] as? Bool == true,
+          value["fault_trigger"] as? String == "source_event_limit",
           let finishDrainEventCount = packageSensorBpfInertDecimal(
               value["finish_drain_event_count"]
           ),
@@ -146,7 +168,7 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV6(
           let cgroupID = packageSensorBpfInertDecimal(value["cgroup_id"]),
           cgroupID > 0,
           let fixturePID = packageSensorBpfInertDecimal(value["fixture_pid"]),
-          fixturePID >= 2, fixturePID <= UInt64(Int32.max),
+          fixturePID >= 2, fixturePID <= UInt64(Int32.max), fixturePID != faultFixturePID,
           value["fixture_sha256"] as? String == expectedFixtureSHA256,
           let kernelExitWaitStatus = packageSensorBpfInertDecimal(
               value["kernel_exit_wait_status"]
@@ -190,7 +212,7 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV6(
           waitpidWaitStatus == kernelExitWaitStatus else {
         throw LinuxVzPackageSensorBpfInertEvidenceError.invalidSchema
     }
-    return LinuxVzPackageSensorBpfInertEvidenceV6(
+    return LinuxVzPackageSensorBpfInertEvidenceV7(
         canonicalJSON: payload,
         payloadSHA256: sha256(payload),
         evidenceByteLength: UInt64(payload.count),
@@ -211,6 +233,10 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV6(
         sourceEventCountBeforeFinish: sourceEventCountBeforeFinish,
         finishDrainEventCount: finishDrainEventCount,
         maximumDrainBatchRecordCount: maximumDrainBatchRecordCount,
+        faultCgroupID: faultCgroupID,
+        faultFixturePID: faultFixturePID,
+        faultSignalLatencyMicroseconds: faultSignalLatencyMicroseconds,
+        faultFixtureTerminationSignal: 9,
         leaderExecCount: 1,
         preReleaseEventCount: 0,
         processCollectorCoverageComplete: true,
