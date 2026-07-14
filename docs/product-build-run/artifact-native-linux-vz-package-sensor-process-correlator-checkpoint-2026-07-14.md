@@ -146,9 +146,11 @@ This checkpoint exposes three concrete requirements for the production root-serv
    afterward. A cgroup-filtered BPF producer therefore cannot observe that initial fork. The
    supervisor/service protocol must bind a trusted leader-start observation without pretending it
    came from BPF.
-2. The current lifecycle producer does not retain `sched_process_exit.exit_code`. Verdict-grade
-   process evidence needs that exact terminal value or an independently bound supervisor terminal
-   result.
+2. At this checkpoint, the lifecycle producer did not retain `sched_process_exit.exit_code`, and
+   no independent terminal value crossed the service boundary. The subsequent
+   [terminal-binding checkpoint](artifact-native-linux-vz-package-sensor-terminal-binding-checkpoint-2026-07-14.md)
+   now binds the root supervisor's exact wait result through control and evidence correlation;
+   adding BPF `exit_code` remains an open independent consistency check.
 3. The current exec event intentionally captures no raw argv or path. The protected service needs
    an exact launch-contract-bound executable digest, argv digest, and argv item count without
    accepting unbound caller claims or raw package-controlled strings.

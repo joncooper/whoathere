@@ -1050,6 +1050,11 @@ fn decode_process_payload_v1(
                     }
                 }
                 LinuxVzPackageProcessEventKindV1::Exit => {
+                    if exit_status != correlation.leader_exit_status()
+                        || termination_signal != correlation.leader_termination_signal()
+                    {
+                        return Err(LinuxVzPackageSensorPayloadErrorV1::InvalidEvent);
+                    }
                     if leader_exit_sequence.replace(sequence).is_some() {
                         return Err(LinuxVzPackageSensorPayloadErrorV1::InvalidEvent);
                     }
@@ -1536,10 +1541,11 @@ mod tests {
         derive_linux_vz_package_process_launch_contract_v1,
         derive_macos_linux_vz_package_execution_process_plan_v1,
         linux_vz_package_execution_program::test_macos_linux_vz_package_execution_program_v1,
-        LinuxVzPackageExpectedProcessSensorCorrelationV1, MacosLinuxVzNpmLifecyclePolicyV1,
+        LinuxVzPackageExpectedProcessSensorCorrelationV1, LinuxVzPackageProcessCompletionV1,
+        LinuxVzPackageProcessTerminalV1, MacosLinuxVzNpmLifecyclePolicyV1,
         MacosLinuxVzPackageDependencyPolicyV1, MacosLinuxVzPackageExecutionStageV1,
         MacosLinuxVzPackageRuntimeExecutablesV1, ValidatedLinuxVzPackageDynamicProcessBindingsV1,
-        LINUX_VZ_PACKAGE_PROCESS_SENSOR_CORRELATION_SCHEMA_V1,
+        LINUX_VZ_PACKAGE_PROCESS_SENSOR_CORRELATION_SCHEMA_V2,
     };
     use serde_json::{json, Value};
     use whoathere_detonation::NpmEnvironmentProfileV1;
@@ -1734,7 +1740,9 @@ mod tests {
             "heartbeat_count": "2",
             "launch_contract_sha256": contract.launch_contract_sha256(),
             "leader_correlated_before_release": true,
+            "leader_exit_status": "0",
             "leader_pid": "42",
+            "leader_terminal": "exited",
             "network_event_count": network_event_count.to_string(),
             "network_evidence_sha256": Sha256Digest::from_bytes(network),
             "network_sensor_healthy": true,
@@ -1747,7 +1755,7 @@ mod tests {
             "process_sensor_healthy": true,
             "process_started_monotonic_nanoseconds": "200",
             "public_network_route_present": false,
-            "schema_version": LINUX_VZ_PACKAGE_PROCESS_SENSOR_CORRELATION_SCHEMA_V1,
+            "schema_version": LINUX_VZ_PACKAGE_PROCESS_SENSOR_CORRELATION_SCHEMA_V2,
             "sensor_ended_monotonic_nanoseconds": "400",
             "sensor_session_challenge_sha256": challenge,
             "sensor_started_monotonic_nanoseconds": "100",
@@ -1761,8 +1769,14 @@ mod tests {
                 contract,
                 cgroup_name: "whoathere-package-action-1",
                 leader_pid: 42,
-                process_started_monotonic_nanoseconds: 200,
-                process_ended_monotonic_nanoseconds: 300,
+                completion: LinuxVzPackageProcessCompletionV1::from_parts_v1(
+                    200,
+                    300,
+                    LinuxVzPackageProcessTerminalV1::Exited,
+                    Some(0),
+                    None,
+                )
+                .expect("completion"),
             },
         )
         .expect("correlation")
@@ -1820,6 +1834,13 @@ mod tests {
         assert_eq!(
             decode_process_payload_v1(&correlation, &canonical_v1(&raw)),
             Err(LinuxVzPackageSensorPayloadErrorV1::InvalidCoverage)
+        );
+
+        let mut rebound_exit = exact_process.clone();
+        rebound_exit["events"][2]["exit_status"] = json!("1");
+        assert_eq!(
+            decode_process_payload_v1(&correlation, &canonical_v1(&rebound_exit)),
+            Err(LinuxVzPackageSensorPayloadErrorV1::InvalidEvent)
         );
 
         let mut no_leader_exit = exact_process;

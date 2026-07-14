@@ -13,7 +13,7 @@ use crate::{
     MacosLinuxVzPackageExecutionProcessPlanV1,
     StructurallyValidatedMacosLinuxVzPackageExecutionRequestV1,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fmt;
 #[cfg(target_os = "linux")]
@@ -99,11 +99,72 @@ impl fmt::Display for LinuxVzPackageProcessSupervisorErrorV1 {
 
 impl std::error::Error for LinuxVzPackageProcessSupervisorErrorV1 {}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LinuxVzPackageProcessTerminalV1 {
     Exited,
     Signaled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LinuxVzPackageProcessCompletionV1 {
+    process_started_monotonic_nanoseconds: u64,
+    process_ended_monotonic_nanoseconds: u64,
+    terminal: LinuxVzPackageProcessTerminalV1,
+    exit_status: Option<u8>,
+    termination_signal: Option<u8>,
+}
+
+impl LinuxVzPackageProcessCompletionV1 {
+    pub(crate) fn from_parts_v1(
+        process_started_monotonic_nanoseconds: u64,
+        process_ended_monotonic_nanoseconds: u64,
+        terminal: LinuxVzPackageProcessTerminalV1,
+        exit_status: Option<u8>,
+        termination_signal: Option<u8>,
+    ) -> Result<Self, LinuxVzPackageProcessSupervisorErrorV1> {
+        if process_started_monotonic_nanoseconds == 0
+            || process_ended_monotonic_nanoseconds <= process_started_monotonic_nanoseconds
+            || !matches!(
+                (terminal, exit_status, termination_signal),
+                (LinuxVzPackageProcessTerminalV1::Exited, Some(_), None)
+                    | (
+                        LinuxVzPackageProcessTerminalV1::Signaled,
+                        None,
+                        Some(1..=64)
+                    )
+            )
+        {
+            return Err(LinuxVzPackageProcessSupervisorErrorV1::WaitFailed);
+        }
+        Ok(Self {
+            process_started_monotonic_nanoseconds,
+            process_ended_monotonic_nanoseconds,
+            terminal,
+            exit_status,
+            termination_signal,
+        })
+    }
+
+    pub const fn process_started_monotonic_nanoseconds(&self) -> u64 {
+        self.process_started_monotonic_nanoseconds
+    }
+
+    pub const fn process_ended_monotonic_nanoseconds(&self) -> u64 {
+        self.process_ended_monotonic_nanoseconds
+    }
+
+    pub const fn terminal(&self) -> LinuxVzPackageProcessTerminalV1 {
+        self.terminal
+    }
+
+    pub const fn exit_status(&self) -> Option<u8> {
+        self.exit_status
+    }
+
+    pub const fn termination_signal(&self) -> Option<u8> {
+        self.termination_signal
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -449,8 +510,7 @@ pub trait LinuxVzPackageProtectedProcessObserverV1:
         contract: &LinuxVzPackageProcessLaunchContractV1,
         cgroup_name: &str,
         leader_pid: u32,
-        process_started_monotonic_nanoseconds: u64,
-        process_ended_monotonic_nanoseconds: u64,
+        completion: &LinuxVzPackageProcessCompletionV1,
     ) -> Result<LinuxVzPackageProtectedSensorOutputV1, LinuxVzPackageProcessSupervisorErrorV1>;
 
     fn abort_v1(&mut self) -> Result<(), LinuxVzPackageProcessSupervisorErrorV1>;
@@ -878,9 +938,16 @@ mod linux {
                 leader_status.ok_or(LinuxVzPackageProcessSupervisorErrorV1::WaitFailed)?;
             let (terminal, exit_status, termination_signal) = decode_wait_status_v1(leader_status)?;
             let ended = monotonic_nanoseconds_v1()?;
+            let completion = LinuxVzPackageProcessCompletionV1::from_parts_v1(
+                started,
+                ended,
+                terminal,
+                exit_status,
+                termination_signal,
+            )?;
             let cgroup_name = cgroup.name.clone();
             let protected_sensor_result = observer
-                .finish_v1(contract, &cgroup_name, leader_pid, started, ended)
+                .finish_v1(contract, &cgroup_name, leader_pid, &completion)
                 .and_then(|output| {
                     let correlation = decode_linux_vz_package_process_sensor_correlation_v1(
                         &output.correlation,
@@ -889,8 +956,7 @@ mod linux {
                             contract,
                             cgroup_name: &cgroup_name,
                             leader_pid,
-                            process_started_monotonic_nanoseconds: started,
-                            process_ended_monotonic_nanoseconds: ended,
+                            completion,
                         },
                     )
                     .map_err(|_| {
@@ -1925,6 +1991,76 @@ mod tests {
             LinuxVzPackageProcessSupervisorErrorV1::UnsupportedPlatform.reason_code(),
             "linux_vz_package_process_supervisor_platform_unsupported"
         );
+    }
+
+    #[test]
+    fn process_completion_requires_one_exact_wait_terminal() {
+        let exited = LinuxVzPackageProcessCompletionV1::from_parts_v1(
+            100,
+            200,
+            LinuxVzPackageProcessTerminalV1::Exited,
+            Some(0),
+            None,
+        )
+        .expect("exited completion");
+        assert_eq!(exited.exit_status(), Some(0));
+        assert_eq!(exited.termination_signal(), None);
+
+        let signaled = LinuxVzPackageProcessCompletionV1::from_parts_v1(
+            100,
+            200,
+            LinuxVzPackageProcessTerminalV1::Signaled,
+            None,
+            Some(9),
+        )
+        .expect("signaled completion");
+        assert_eq!(
+            signaled.terminal(),
+            LinuxVzPackageProcessTerminalV1::Signaled
+        );
+
+        for invalid in [
+            LinuxVzPackageProcessCompletionV1::from_parts_v1(
+                0,
+                200,
+                LinuxVzPackageProcessTerminalV1::Exited,
+                Some(0),
+                None,
+            ),
+            LinuxVzPackageProcessCompletionV1::from_parts_v1(
+                200,
+                200,
+                LinuxVzPackageProcessTerminalV1::Exited,
+                Some(0),
+                None,
+            ),
+            LinuxVzPackageProcessCompletionV1::from_parts_v1(
+                100,
+                200,
+                LinuxVzPackageProcessTerminalV1::Exited,
+                None,
+                Some(9),
+            ),
+            LinuxVzPackageProcessCompletionV1::from_parts_v1(
+                100,
+                200,
+                LinuxVzPackageProcessTerminalV1::Signaled,
+                None,
+                Some(0),
+            ),
+            LinuxVzPackageProcessCompletionV1::from_parts_v1(
+                100,
+                200,
+                LinuxVzPackageProcessTerminalV1::Signaled,
+                None,
+                Some(65),
+            ),
+        ] {
+            assert_eq!(
+                invalid,
+                Err(LinuxVzPackageProcessSupervisorErrorV1::WaitFailed)
+            );
+        }
     }
 
     #[test]
