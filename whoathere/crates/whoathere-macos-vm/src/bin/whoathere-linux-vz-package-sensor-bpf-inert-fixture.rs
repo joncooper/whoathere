@@ -87,7 +87,7 @@ fn main() {
                 sin_family: libc::AF_INET as libc::sa_family_t,
                 sin_port: 443_u16.to_be(),
                 sin_addr: libc::in_addr {
-                    s_addr: u32::from_ne_bytes([192, 0, 2, 9]),
+                    s_addr: u32::from_ne_bytes([198, 51, 100, 9]),
                 },
                 sin_zero: [0; 8],
             };
@@ -110,35 +110,34 @@ fn main() {
             }
 
             let udp =
-                unsafe { libc::socket(libc::AF_INET6, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) };
+                unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) };
             if udp < 0 {
                 std::process::exit(84);
             }
             let udp = unsafe { OwnedFd::from_raw_fd(udp) };
-            let ipv6_target = libc::sockaddr_in6 {
-                sin6_family: libc::AF_INET6 as libc::sa_family_t,
-                sin6_port: 53_u16.to_be(),
-                sin6_flowinfo: 0,
-                sin6_addr: libc::in6_addr {
-                    s6_addr: [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9],
+            let ipv4_target = libc::sockaddr_in {
+                sin_family: libc::AF_INET as libc::sa_family_t,
+                sin_port: 40_553_u16.to_be(),
+                sin_addr: libc::in_addr {
+                    s_addr: u32::from_ne_bytes([192, 0, 2, 1]),
                 },
-                sin6_scope_id: 0,
+                sin_zero: [0; 8],
             };
-            let marker = [0x57_u8];
+            let marker = b"WHOATHERE_RAW_V1";
             let send_result = unsafe {
                 libc::sendto(
                     udp.as_raw_fd(),
                     marker.as_ptr().cast(),
                     marker.len(),
                     0,
-                    (&ipv6_target as *const libc::sockaddr_in6).cast(),
-                    std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t,
+                    (&ipv4_target as *const libc::sockaddr_in).cast(),
+                    std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
                 )
             };
             let send_errno = (send_result == -1)
                 .then(|| std::io::Error::last_os_error().raw_os_error())
                 .flatten();
-            if send_result != -1 || send_errno != Some(libc::EADDRNOTAVAIL) {
+            if send_result != marker.len() as isize || send_errno.is_some() {
                 eprintln!(
                     "WHOATHERE_PACKAGE_SENSOR_BPF_INERT_NETWORK_FAILURE operation=sendto result={send_result} errno={}",
                     send_errno.unwrap_or(0)

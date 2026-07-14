@@ -72,6 +72,7 @@ const FAULT_SIGNAL_TIMEOUT_V1: Duration = Duration::from_secs(2);
 pub enum LinuxVzPackageSensorBpfInertProbeErrorV1 {
     UnsupportedPlatform,
     Identity,
+    NetworkSetup,
     Fixture,
     Cgroup,
     Producer,
@@ -94,6 +95,7 @@ impl LinuxVzPackageSensorBpfInertProbeErrorV1 {
         match self {
             Self::UnsupportedPlatform => "linux_vz_package_sensor_bpf_probe_platform_unsupported",
             Self::Identity => "linux_vz_package_sensor_bpf_probe_identity_invalid",
+            Self::NetworkSetup => "linux_vz_package_sensor_bpf_probe_network_setup_failed",
             Self::Fixture => "linux_vz_package_sensor_bpf_probe_fixture_invalid",
             Self::Cgroup => "linux_vz_package_sensor_bpf_probe_cgroup_failed",
             Self::Producer => "linux_vz_package_sensor_bpf_probe_producer_failed",
@@ -191,6 +193,8 @@ struct InertProbeEvidenceWireV1 {
     network_intent_count: String,
     network_raw_addresses_captured: bool,
     network_sendto_destination_class: &'static str,
+    network_sendto_destination_token_sha256: String,
+    network_sendto_enter_source_sequence: String,
     network_sendto_family: &'static str,
     network_sendto_port: String,
     network_sendto_result: String,
@@ -238,6 +242,7 @@ struct InertProbeEvidenceWireV1 {
     root_network_evidence_unobserved_capabilities: Vec<&'static str>,
     runtime_btf_sha256: String,
     schema_version: &'static str,
+    sensor_session_challenge_sha256: String,
     source_event_count_before_finish: String,
     sync_back: bool,
     task_exit_code_byte_offset: String,
@@ -493,6 +498,136 @@ fn qualify_fault_signal_v1(
 }
 
 #[cfg(target_os = "linux")]
+fn configure_inert_ipv4_sinkhole_v1() -> Result<(), LinuxVzPackageSensorBpfInertProbeErrorV1> {
+    const INTERFACE_NAME_V1: &[u8] = b"eth0";
+    const SOURCE_ADDRESS_V1: [u8; 4] = [192, 0, 2, 2];
+    const NETWORK_MASK_V1: [u8; 4] = [255, 255, 255, 0];
+    const SINKHOLE_ADDRESS_V1: [u8; 4] = [192, 0, 2, 1];
+    const SINKHOLE_MAC_V1: [u8; 6] = [0x02, 0x57, 0x48, 0x4f, 0x41, 0xfe];
+
+    std::fs::write("/proc/sys/net/ipv6/conf/eth0/disable_ipv6", b"1\n")
+        .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::NetworkSetup)?;
+    let descriptor =
+        unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) };
+    if descriptor < 0 {
+        return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::NetworkSetup);
+    }
+    let descriptor = unsafe { OwnedFd::from_raw_fd(descriptor) };
+
+    let mut flags = interface_request_v1(INTERFACE_NAME_V1)?;
+    if unsafe {
+        libc::ioctl(
+            descriptor.as_raw_fd(),
+            libc::SIOCGIFFLAGS as libc::c_int,
+            &mut flags,
+        )
+    } != 0
+    {
+        return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::NetworkSetup);
+    }
+    let current_flags = unsafe { flags.ifr_ifru.ifru_flags };
+    flags.ifr_ifru.ifru_flags = current_flags | libc::IFF_UP as libc::c_short;
+    if unsafe {
+        libc::ioctl(
+            descriptor.as_raw_fd(),
+            libc::SIOCSIFFLAGS as libc::c_int,
+            &flags,
+        )
+    } != 0
+    {
+        return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::NetworkSetup);
+    }
+    set_interface_ipv4_v1(
+        descriptor.as_raw_fd(),
+        INTERFACE_NAME_V1,
+        libc::SIOCSIFADDR as libc::c_int,
+        SOURCE_ADDRESS_V1,
+    )?;
+    set_interface_ipv4_v1(
+        descriptor.as_raw_fd(),
+        INTERFACE_NAME_V1,
+        libc::SIOCSIFNETMASK as libc::c_int,
+        NETWORK_MASK_V1,
+    )?;
+
+    let mut neighbor: libc::arpreq = unsafe { zeroed() };
+    neighbor.arp_pa = ipv4_sockaddr_v1(SINKHOLE_ADDRESS_V1);
+    neighbor.arp_ha.sa_family = libc::ARPHRD_ETHER;
+    for (destination, source) in neighbor
+        .arp_ha
+        .sa_data
+        .iter_mut()
+        .zip(SINKHOLE_MAC_V1.iter())
+    {
+        *destination = *source as libc::c_char;
+    }
+    neighbor.arp_flags = libc::ATF_COM | libc::ATF_PERM;
+    copy_interface_name_v1(&mut neighbor.arp_dev, INTERFACE_NAME_V1)?;
+    if unsafe {
+        libc::ioctl(
+            descriptor.as_raw_fd(),
+            libc::SIOCSARP as libc::c_int,
+            &neighbor,
+        )
+    } != 0
+    {
+        return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::NetworkSetup);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn set_interface_ipv4_v1(
+    descriptor: RawFd,
+    interface_name: &[u8],
+    operation: libc::c_int,
+    address: [u8; 4],
+) -> Result<(), LinuxVzPackageSensorBpfInertProbeErrorV1> {
+    let mut request = interface_request_v1(interface_name)?;
+    request.ifr_ifru.ifru_addr = ipv4_sockaddr_v1(address);
+    if unsafe { libc::ioctl(descriptor, operation, &request) } != 0 {
+        return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::NetworkSetup);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn interface_request_v1(
+    interface_name: &[u8],
+) -> Result<libc::ifreq, LinuxVzPackageSensorBpfInertProbeErrorV1> {
+    let mut request: libc::ifreq = unsafe { zeroed() };
+    copy_interface_name_v1(&mut request.ifr_name, interface_name)?;
+    Ok(request)
+}
+
+#[cfg(target_os = "linux")]
+fn copy_interface_name_v1(
+    destination: &mut [libc::c_char],
+    interface_name: &[u8],
+) -> Result<(), LinuxVzPackageSensorBpfInertProbeErrorV1> {
+    if interface_name.is_empty() || interface_name.len() >= destination.len() {
+        return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::NetworkSetup);
+    }
+    for (destination, source) in destination.iter_mut().zip(interface_name.iter()) {
+        *destination = *source as libc::c_char;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn ipv4_sockaddr_v1(address: [u8; 4]) -> libc::sockaddr {
+    let value = libc::sockaddr_in {
+        sin_family: libc::AF_INET as libc::sa_family_t,
+        sin_port: 0,
+        sin_addr: libc::in_addr {
+            s_addr: u32::from_ne_bytes(address),
+        },
+        sin_zero: [0; 8],
+    };
+    unsafe { std::ptr::read((&value as *const libc::sockaddr_in).cast::<libc::sockaddr>()) }
+}
+
+#[cfg(target_os = "linux")]
 fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
 ) -> Result<String, LinuxVzPackageSensorBpfInertProbeErrorV1> {
     if unsafe { libc::getuid() } != 0
@@ -502,6 +637,7 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
     {
         return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::Identity);
     }
+    configure_inert_ipv4_sinkhole_v1()?;
     let (fixture, fixture_sha256) = open_and_measure_fixture_v1()?;
     relocate_descriptor_v1(fixture.as_raw_fd(), 3)?;
     let fixture = if fixture.as_raw_fd() == 3 {
@@ -803,6 +939,8 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
                 LinuxVzPackageSensorBpfInertProbeErrorV1::Evidence
             })?;
     if root_network_evidence.events().len() != 2
+        || sensor_session_challenge_sha256.as_str()
+            != "sha256:0a6d2053eb627f5f1ed55c993237d3bd832dc1b72f4084c40c9a224e83d6c965"
         || !root_network_evidence.connect_sendto_intent_coverage_complete()
         || root_network_evidence.guest_intent_coverage_complete()
         || root_network_evidence.host_frame_correlation_complete()
@@ -823,7 +961,7 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
         return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::Evidence);
     }
     let root_file_expected = LinuxVzPackageExpectedRootFileEvidenceV1::from_action_v1(
-        sensor_session_challenge_sha256,
+        sensor_session_challenge_sha256.clone(),
         launch_contract_sha256,
         process_plan_sha256,
         action_index,
@@ -855,6 +993,10 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
     {
         return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::Evidence);
     }
+    let transmitted_sendto = root_network_evidence
+        .events()
+        .get(1)
+        .ok_or(LinuxVzPackageSensorBpfInertProbeErrorV1::Evidence)?;
     let mut tracepoints = BTreeMap::new();
     for (name, digest) in collection.tracepoint_format_sha256_v1() {
         tracepoints.insert(*name, digest.as_str().to_string());
@@ -954,9 +1096,16 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
         network_intent_count: "2".to_string(),
         network_raw_addresses_captured: false,
         network_sendto_destination_class: "documentation",
-        network_sendto_family: "ipv6",
-        network_sendto_port: "53".to_string(),
-        network_sendto_result: (-libc::EADDRNOTAVAIL).to_string(),
+        network_sendto_destination_token_sha256: transmitted_sendto
+            .destination_token_sha256()
+            .as_str()
+            .to_string(),
+        network_sendto_enter_source_sequence: transmitted_sendto
+            .enter_source_sequence()
+            .to_string(),
+        network_sendto_family: "ipv4",
+        network_sendto_port: "40553".to_string(),
+        network_sendto_result: "16".to_string(),
         observed_event_cpus: vec![fixture_cpu.to_string()],
         online_cpus: collection
             .online_cpus_v1()
@@ -1042,7 +1191,8 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
             "http_observation",
         ],
         runtime_btf_sha256: collection.runtime_btf_sha256_v1().as_str().to_string(),
-        schema_version: "whoathere.linux_vz_package_sensor_bpf_inert_probe.v12",
+        schema_version: "whoathere.linux_vz_package_sensor_bpf_inert_probe.v13",
+        sensor_session_challenge_sha256: sensor_session_challenge_sha256.as_str().to_string(),
         source_event_count_before_finish: collection
             .source_event_count_before_finish_v1()
             .to_string(),
@@ -1120,7 +1270,7 @@ fn matches_exact_correlated_stream_v1(
             15,
             LinuxVzPackageNetworkAddressFamilyV1::Ipv4,
             443,
-            &[192, 0, 2, 9],
+            &[198, 51, 100, 9],
             i64::from(-libc::ENETUNREACH),
             context,
         )
@@ -1129,10 +1279,10 @@ fn matches_exact_correlated_stream_v1(
             LinuxVzPackageSelectedSyscallV1::Sendto,
             16,
             17,
-            LinuxVzPackageNetworkAddressFamilyV1::Ipv6,
-            53,
-            &[0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9],
-            i64::from(-libc::EADDRNOTAVAIL),
+            LinuxVzPackageNetworkAddressFamilyV1::Ipv4,
+            40_553,
+            &[192, 0, 2, 1],
+            16,
             context,
         )
         && matches_correlated_lifecycle_v1(
@@ -1159,12 +1309,14 @@ fn matches_exact_root_network_evidence_v1(evidence: &LinuxVzPackageRootNetworkEv
         && connect.exit_source_sequence() == 15
         && connect.syscall_result() == i64::from(-libc::ENETUNREACH)
         && sendto.kind() == LinuxVzPackageRootNetworkEventKindV1::Sendto
-        && sendto.address_family() == LinuxVzPackageRootNetworkAddressFamilyV1::Ipv6
+        && sendto.address_family() == LinuxVzPackageRootNetworkAddressFamilyV1::Ipv4
         && sendto.destination_class() == LinuxVzPackageRootNetworkDestinationClassV1::Documentation
-        && sendto.destination_port() == 53
+        && sendto.destination_port() == 40_553
         && sendto.enter_source_sequence() == 16
         && sendto.exit_source_sequence() == 17
-        && sendto.syscall_result() == i64::from(-libc::EADDRNOTAVAIL)
+        && sendto.syscall_result() == 16
+        && sendto.destination_token_sha256().as_str()
+            == "sha256:3ef258ec5ef33c871db55bb52239931372585c08ad3fbafda224bc498ad0ed7b"
         && connect.destination_token_sha256() != sendto.destination_token_sha256()
 }
 
@@ -1198,10 +1350,10 @@ fn matches_correlated_network_v1(
         LinuxVzPackageSelectedSyscallV1::Sendto => {
             arguments[0] > 2
                 && arguments[1] == 0
-                && arguments[2] == 1
+                && arguments[2] == 16
                 && arguments[3] == 0
                 && arguments[4] == 0
-                && arguments[5] == 28
+                && arguments[5] == 16
         }
         _ => false,
     };
@@ -1535,6 +1687,7 @@ mod tests {
         let errors = [
             LinuxVzPackageSensorBpfInertProbeErrorV1::UnsupportedPlatform,
             LinuxVzPackageSensorBpfInertProbeErrorV1::Identity,
+            LinuxVzPackageSensorBpfInertProbeErrorV1::NetworkSetup,
             LinuxVzPackageSensorBpfInertProbeErrorV1::Fixture,
             LinuxVzPackageSensorBpfInertProbeErrorV1::Cgroup,
             LinuxVzPackageSensorBpfInertProbeErrorV1::Producer,
@@ -1546,6 +1699,7 @@ mod tests {
             LinuxVzPackageSensorBpfInertProbeErrorV1::ChildFailed,
             LinuxVzPackageSensorBpfInertProbeErrorV1::EventStream,
             LinuxVzPackageSensorBpfInertProbeErrorV1::EventMismatch,
+            LinuxVzPackageSensorBpfInertProbeErrorV1::Evidence,
             LinuxVzPackageSensorBpfInertProbeErrorV1::LossObserved,
             LinuxVzPackageSensorBpfInertProbeErrorV1::Cleanup,
             LinuxVzPackageSensorBpfInertProbeErrorV1::Serialization,

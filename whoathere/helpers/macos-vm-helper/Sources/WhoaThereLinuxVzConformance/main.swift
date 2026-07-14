@@ -264,7 +264,7 @@ private struct LinuxVzConformanceHarness {
         if let expectedFixtureSHA256 = options.expectedPackageSensorFixtureSHA256,
            let expectedRuntimeBTFSHA256 = options.expectedRuntimeBTFSHA256,
            let expectedTaskExitCodeByteOffset = options.expectedTaskExitCodeByteOffset {
-            let evidence = try? decodeLinuxVzPackageSensorBpfInertEvidenceV12(
+            let evidence = try? decodeLinuxVzPackageSensorBpfInertEvidenceV13(
                 serialData,
                 expectedFixtureSHA256: expectedFixtureSHA256,
                 expectedRuntimeBTFSHA256: expectedRuntimeBTFSHA256,
@@ -272,14 +272,32 @@ private struct LinuxVzConformanceHarness {
             )
             let missingMarkers = linuxVzPackageSensorBpfInertMissingMarkersV1(serialData)
             let failurePresent = linuxVzPackageSensorBpfInertFailurePresentV1(serialData)
-            let success = stopped && evidence != nil && missingMarkers.isEmpty
-                && !failurePresent && rawFrameCount == 0
+            let hostUDPSendtoEvidence: LinuxVzPackageHostUDPSendtoEvidenceV1? = if let evidence {
+                try? makeLinuxVzPackageHostUDPSendtoEvidenceV1(
+                    expected: LinuxVzPackageExpectedHostUDPSendtoV1(
+                        rootNetworkEvidenceSHA256: evidence.rootNetworkEvidenceSHA256,
+                        processEvidenceSHA256: evidence.rootProcessEvidenceSHA256,
+                        sensorSessionChallengeSHA256: evidence.sensorSessionChallengeSHA256,
+                        destinationTokenSHA256: evidence.networkSendtoDestinationTokenSHA256,
+                        destinationClass: .documentation,
+                        destinationPort: 40_553,
+                        enterSourceSequence: evidence.networkSendtoEnterSourceSequence,
+                        syscallResult: evidence.networkSendtoResult
+                    ),
+                    collection: rawFrameCollection,
+                    expectedSourceMAC: linuxVzInertGuestNetworkMACV1
+                )
+            } else {
+                nil
+            }
+            let success = stopped && evidence != nil && hostUDPSendtoEvidence != nil
+                && missingMarkers.isEmpty && !failurePresent && rawFrameCount == 1
                 && rawFrameCollection.droppedFrameCount == 0
                 && rawFrameCollection.truncatedFrameCount == 0
                 && rawFrameCollection.healthy && imageIdentityStable
             emitJSON([
                 "schema_version":
-                    "whoathere.linux_vz_package_sensor_bpf_inert_boot_result.v2",
+                    "whoathere.linux_vz_package_sensor_bpf_inert_boot_result.v3",
                 "status": success ? "ok" : "error",
                 "operation": "linux_vz_package_sensor_bpf_inert_qualification",
                 "kernel_sha256": kernelSHA256,
@@ -318,6 +336,24 @@ private struct LinuxVzConformanceHarness {
                 ),
                 "root_network_evidence_unobserved_capabilities":
                     evidence?.rootNetworkEvidenceUnobservedCapabilities ?? [],
+                "host_udp_sendto_evidence_valid": hostUDPSendtoEvidence != nil,
+                "host_udp_sendto_evidence_sha256":
+                    hostUDPSendtoEvidence?.payloadSHA256 ?? "unavailable",
+                "host_udp_sendto_frame_sha256":
+                    hostUDPSendtoEvidence?.frameSHA256 ?? "unavailable",
+                "host_udp_sendto_source_port": String(
+                    hostUDPSendtoEvidence?.sourcePort ?? 0
+                ),
+                "host_udp_sendto_destination_port": String(
+                    hostUDPSendtoEvidence?.destinationPort ?? 0
+                ),
+                "host_udp_sendto_payload_byte_count": String(
+                    hostUDPSendtoEvidence?.payloadByteCount ?? 0
+                ),
+                "host_udp_sendto_selected_correlation_complete":
+                    hostUDPSendtoEvidence?.selectedCorrelationComplete ?? false,
+                "host_udp_sendto_broad_frame_coverage_complete":
+                    hostUDPSendtoEvidence?.broadHostFrameCoverageComplete ?? false,
                 "root_file_evidence_sha256":
                     evidence?.rootFileEvidenceSHA256 ?? "unavailable",
                 "root_file_evidence_byte_length": String(
