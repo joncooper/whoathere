@@ -113,6 +113,7 @@ private enum HarnessError: Error {
     case imageDigestMismatch(String)
     case startTimeout
     case startFailed(String)
+    case packetSensor
 }
 
 @main
@@ -130,7 +131,7 @@ private struct LinuxVzConformanceHarness {
             exit(64)
         } catch {
             emitJSON([
-                "schema_version": "whoathere.linux_vz_inert_boot_result.v3",
+                "schema_version": "whoathere.linux_vz_inert_boot_result.v4",
                 "status": "error",
                 "reason": String(describing: error),
                 "virtualization_supported": VZVirtualMachine.isSupported,
@@ -169,6 +170,23 @@ private struct LinuxVzConformanceHarness {
         defer {
             if sockets[0] >= 0 { close(sockets[0]) }
             if sockets[1] >= 0 { close(sockets[1]) }
+        }
+        let rawFrameCollector = try LinuxVzBoundedHostRawFrameCollector(capacity: 512)
+        let rawFrameCollectionResult = LockedBox<LinuxVzBoundedHostRawFrameCollection>()
+        let rawFrameCollectionDone = DispatchSemaphore(value: 0)
+        var rawFrameCollectionFinished = false
+        let rawFrameDescriptor = sockets[1]
+        DispatchQueue.global(qos: .userInitiated).async {
+            rawFrameCollectionResult.store(
+                rawFrameCollector.collect(fileDescriptor: rawFrameDescriptor)
+            )
+            rawFrameCollectionDone.signal()
+        }
+        defer {
+            if !rawFrameCollectionFinished {
+                rawFrameCollector.requestStop()
+                _ = rawFrameCollectionDone.wait(timeout: .now() + .seconds(2))
+            }
         }
         let guestNetworkSocket = FileHandle(fileDescriptor: sockets[0], closeOnDealloc: false)
         let configuration = try buildLinuxVzInertVMConfiguration(
@@ -221,6 +239,12 @@ private struct LinuxVzConformanceHarness {
             _ = stopCompletion.wait(timeout: .now() + .seconds(10))
             stopped = queue.sync { virtualMachine.state == .stopped }
         }
+        rawFrameCollector.requestStop()
+        guard rawFrameCollectionDone.wait(timeout: .now() + .seconds(2)) == .success,
+              let rawFrameCollection = rawFrameCollectionResult.load() else {
+            throw HarnessError.packetSensor
+        }
+        rawFrameCollectionFinished = true
         try? serialOutput.synchronize()
 
         let serialData = (try? Data(contentsOf: options.serialLog)) ?? Data()
@@ -232,7 +256,7 @@ private struct LinuxVzConformanceHarness {
             marker: linuxVzInertSuccessMarkerV1
         )
         let missingRequiredMarkers = linuxVzInertMissingRequiredEvidenceMarkersV2(serialData)
-        let rawFrameCount = drainRawFrames(fileDescriptor: sockets[1])
+        let rawFrameCount = rawFrameCollection.ingressFrameCount
         let finalKernelSHA256 = try fileSHA256(options.kernel)
         let finalInitramfsSHA256 = try fileSHA256(options.initramfs)
         let imageIdentityStable = finalKernelSHA256 == kernelSHA256
@@ -249,10 +273,13 @@ private struct LinuxVzConformanceHarness {
             let missingMarkers = linuxVzPackageSensorBpfInertMissingMarkersV1(serialData)
             let failurePresent = linuxVzPackageSensorBpfInertFailurePresentV1(serialData)
             let success = stopped && evidence != nil && missingMarkers.isEmpty
-                && !failurePresent && rawFrameCount == 0 && imageIdentityStable
+                && !failurePresent && rawFrameCount == 0
+                && rawFrameCollection.droppedFrameCount == 0
+                && rawFrameCollection.truncatedFrameCount == 0
+                && rawFrameCollection.healthy && imageIdentityStable
             emitJSON([
                 "schema_version":
-                    "whoathere.linux_vz_package_sensor_bpf_inert_boot_result.v1",
+                    "whoathere.linux_vz_package_sensor_bpf_inert_boot_result.v2",
                 "status": success ? "ok" : "error",
                 "operation": "linux_vz_package_sensor_bpf_inert_qualification",
                 "kernel_sha256": kernelSHA256,
@@ -315,6 +342,11 @@ private struct LinuxVzConformanceHarness {
                 "missing_required_markers": missingMarkers,
                 "failure_marker_present": failurePresent,
                 "raw_frame_count": rawFrameCount,
+                "raw_frame_retained_count": rawFrameCollection.retainedFrameCount,
+                "raw_frame_dropped_count": rawFrameCollection.droppedFrameCount,
+                "raw_frame_truncated_count": rawFrameCollection.truncatedFrameCount,
+                "packet_sensor_healthy": rawFrameCollection.healthy,
+                "packet_sensor_terminal": rawFrameCollection.terminal,
                 "external_route": false,
                 "root_disk_present": false,
                 "storage_device_count": "0",
@@ -333,9 +365,11 @@ private struct LinuxVzConformanceHarness {
         let processEvidence = try? decodeLinuxVzProcessEvidencePayloadV1(serialData)
         let success = stopped && markerPresent && processSensorMarkerPresent
             && processEvidence != nil && missingRequiredMarkers.isEmpty && rawFrameCount == 0
-            && imageIdentityStable
+            && rawFrameCollection.droppedFrameCount == 0
+            && rawFrameCollection.truncatedFrameCount == 0
+            && rawFrameCollection.healthy && imageIdentityStable
         emitJSON([
-            "schema_version": "whoathere.linux_vz_inert_boot_result.v3",
+            "schema_version": "whoathere.linux_vz_inert_boot_result.v4",
             "status": success ? "ok" : "error",
             "operation": "linux_vz_inert_boot",
             "kernel_sha256": kernelSHA256,
@@ -361,6 +395,11 @@ private struct LinuxVzConformanceHarness {
             "required_process_sensor_marker_count": linuxVzInertProcessSensorMarkersV2.count,
             "missing_required_markers": missingRequiredMarkers,
             "raw_frame_count": rawFrameCount,
+            "raw_frame_retained_count": rawFrameCollection.retainedFrameCount,
+            "raw_frame_dropped_count": rawFrameCollection.droppedFrameCount,
+            "raw_frame_truncated_count": rawFrameCollection.truncatedFrameCount,
+            "packet_sensor_healthy": rawFrameCollection.healthy,
+            "packet_sensor_terminal": rawFrameCollection.terminal,
             "external_route": false,
             "package_execution": false,
             "sync_back": false,
@@ -379,25 +418,6 @@ private struct LinuxVzConformanceHarness {
             hasher.update(data: chunk)
         }
         return "sha256:" + hasher.finalize().map { String(format: "%02x", $0) }.joined()
-    }
-
-    private static func drainRawFrames(fileDescriptor: Int32) -> Int {
-        var count = 0
-        var buffer = [UInt8](repeating: 0, count: 65_535)
-        while true {
-            let received = recv(
-                fileDescriptor,
-                &buffer,
-                buffer.count,
-                MSG_DONTWAIT
-            )
-            if received > 0 {
-                count += 1
-                continue
-            }
-            break
-        }
-        return count
     }
 
     private static func emitJSON(_ fields: [String: Any]) {

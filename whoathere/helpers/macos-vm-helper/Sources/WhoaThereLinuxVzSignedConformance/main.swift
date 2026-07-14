@@ -25,72 +25,6 @@ private final class LockedBox<Value>: @unchecked Sendable {
     }
 }
 
-private struct BoundedHostFrameCollection: Sendable {
-    let retainedFrames: [Data]
-    let ingressFrameCount: Int
-    let droppedFrameCount: Int
-    let healthy: Bool
-    let terminal: String
-}
-
-private final class BoundedHostFrameCollector: @unchecked Sendable {
-    private let lock = NSLock()
-    private let capacity: Int
-    private var retainedFrames = [Data]()
-    private var ingressFrameCount = 0
-    private var droppedFrameCount = 0
-    private var healthy = true
-    private var stopRequested = false
-
-    init(capacity: Int) {
-        self.capacity = capacity
-    }
-
-    func requestStop() {
-        lock.lock()
-        stopRequested = true
-        lock.unlock()
-    }
-
-    func run(fileDescriptor: Int32) -> BoundedHostFrameCollection {
-        var buffer = [UInt8](repeating: 0, count: 65_535)
-        while true {
-            let received = recv(fileDescriptor, &buffer, buffer.count, MSG_DONTWAIT)
-            if received >= 0 {
-                lock.lock()
-                ingressFrameCount += 1
-                if retainedFrames.count < capacity {
-                    retainedFrames.append(Data(buffer.prefix(received)))
-                } else {
-                    droppedFrameCount += 1
-                }
-                lock.unlock()
-                continue
-            }
-            if errno != EAGAIN && errno != EWOULDBLOCK {
-                lock.lock()
-                healthy = false
-                lock.unlock()
-                break
-            }
-            lock.lock()
-            let shouldStop = stopRequested
-            lock.unlock()
-            if shouldStop { break }
-            usleep(1_000)
-        }
-        lock.lock()
-        defer { lock.unlock() }
-        return BoundedHostFrameCollection(
-            retainedFrames: retainedFrames,
-            ingressFrameCount: ingressFrameCount,
-            droppedFrameCount: droppedFrameCount,
-            healthy: healthy,
-            terminal: healthy ? "bounded_queue_overflow_accounted" : "socket_error"
-        )
-    }
-}
-
 private struct HostSensorDeathCollection: Sendable {
     let ingressFrameCount: Int
     let workerStarted: Bool
@@ -338,10 +272,10 @@ private struct LinuxVzSignedConformanceHarness {
             if sockets[1] >= 0 { close(sockets[1]) }
         }
         let overflowCollector = runSpec.fixtureCase == "host_frame_overflow"
-            ? BoundedHostFrameCollector(capacity: 64) : nil
+            ? try LinuxVzBoundedHostRawFrameCollector(capacity: 64) : nil
         let hostSensorDeathCollector = runSpec.fixtureCase == "host_sensor_death"
             ? HostSensorDeathCollector() : nil
-        let overflowCollectionResult = LockedBox<BoundedHostFrameCollection>()
+        let overflowCollectionResult = LockedBox<LinuxVzBoundedHostRawFrameCollection>()
         let overflowCollectionDone = DispatchSemaphore(value: 0)
         var overflowCollectionFinished = false
         let hostSensorDeathCollectionResult = LockedBox<HostSensorDeathCollection>()
@@ -352,7 +286,7 @@ private struct LinuxVzSignedConformanceHarness {
             let descriptor = sockets[1]
             DispatchQueue.global(qos: .userInitiated).async {
                 overflowCollectionResult.store(
-                    collectorBox.value.run(fileDescriptor: descriptor)
+                    collectorBox.value.collect(fileDescriptor: descriptor)
                 )
                 overflowCollectionDone.signal()
             }
@@ -517,7 +451,7 @@ private struct LinuxVzSignedConformanceHarness {
         let receipt = try decodeLinuxVzGuestSignerResponse(responseData)
 
         try waitForStop(virtualMachine: virtualMachine, queue: queue, deadline: deadline)
-        let boundedHostFrames: BoundedHostFrameCollection?
+        let boundedHostFrames: LinuxVzBoundedHostRawFrameCollection?
         if let overflowCollector {
             overflowCollector.requestStop()
             guard overflowCollectionDone.wait(timeout: .now() + .seconds(2)) == .success,
@@ -1939,7 +1873,7 @@ private struct LinuxVzSignedConformanceHarness {
         networkFixtureCase: String?,
         networkSourcePort: UInt16?,
         hostFrameTriggerCount: UInt64?,
-        boundedHostFrames: BoundedHostFrameCollection?
+        boundedHostFrames: LinuxVzBoundedHostRawFrameCollection?
     ) -> PacketSensorResult {
         var count = 0
         var matched = 0
