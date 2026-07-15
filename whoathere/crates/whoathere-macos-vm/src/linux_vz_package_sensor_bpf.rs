@@ -43,6 +43,8 @@ const MAX_RING_BUFFER_BYTES_V1: usize = 16 * 1024 * 1024;
 const MAX_ONLINE_CPU_BYTES_V1: usize = 4096;
 const MAX_ONLINE_CPUS_V1: usize = 256;
 const MAX_CPU_ID_V1: u32 = 4095;
+#[cfg(target_os = "linux")]
+const BPF_VERIFIER_LOG_BYTES_V1: usize = 64 * 1024;
 
 const BPF_LD_V1: u8 = 0x00;
 const BPF_LDX_V1: u8 = 0x01;
@@ -1890,12 +1892,17 @@ fn load_cgroup_egress_program_v1(
         return Err(LinuxVzPackageSensorBpfErrorV1::InvalidLayout);
     }
     static LICENSE: &[u8] = b"GPL\0";
+    let mut verifier_log = vec![0_u8; BPF_VERIFIER_LOG_BYTES_V1];
     let mut attributes = unsafe { std::mem::zeroed::<BpfProgramLoadAttributeV1>() };
     attributes.program_type = BPF_PROG_TYPE_CGROUP_SKB_V1;
     attributes.instruction_count = u32::try_from(instructions.len())
         .map_err(|_| LinuxVzPackageSensorBpfErrorV1::InvalidLayout)?;
     attributes.instructions = instructions.as_ptr() as u64;
     attributes.license = LICENSE.as_ptr() as u64;
+    attributes.log_level = 1;
+    attributes.log_size = u32::try_from(verifier_log.len())
+        .map_err(|_| LinuxVzPackageSensorBpfErrorV1::InvalidConfiguration)?;
+    attributes.log_buffer = verifier_log.as_mut_ptr() as u64;
     attributes.expected_attach_type = BPF_CGROUP_INET_EGRESS_V1;
     copy_object_name_v1(name, &mut attributes.program_name)?;
     let result = unsafe {
@@ -1906,13 +1913,39 @@ fn load_cgroup_egress_program_v1(
             size_of::<BpfProgramLoadAttributeV1>(),
         )
     };
+    let os_error_code = std::io::Error::last_os_error().raw_os_error();
     if result < 0 {
-        return Err(match std::io::Error::last_os_error().raw_os_error() {
+        emit_bpf_verifier_log_v1("cgroup_egress", &verifier_log);
+        verifier_log.fill(0);
+        return Err(match os_error_code {
             Some(code) => LinuxVzPackageSensorBpfErrorV1::ProgramLoadOs(code),
             None => LinuxVzPackageSensorBpfErrorV1::ProgramLoad,
         });
     }
+    verifier_log.fill(0);
     owned_descriptor_v1(result, LinuxVzPackageSensorBpfErrorV1::ProgramLoad)
+}
+
+#[cfg(target_os = "linux")]
+fn emit_bpf_verifier_log_v1(stage: &str, bytes: &[u8]) {
+    let used = bytes
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(bytes.len());
+    for raw_line in bytes[..used].split(|byte| *byte == b'\n').take(256) {
+        if raw_line.is_empty() {
+            continue;
+        }
+        let mut line = String::with_capacity(raw_line.len().min(512));
+        for byte in raw_line.iter().take(512) {
+            line.push(if byte.is_ascii_graphic() || *byte == b' ' {
+                char::from(*byte)
+            } else {
+                '?'
+            });
+        }
+        eprintln!("WHOATHERE_PACKAGE_SENSOR_BPF_VERIFIER_LOG stage={stage} {line}");
+    }
 }
 
 #[cfg(target_os = "linux")]
