@@ -3,8 +3,10 @@ use std::collections::BTreeSet;
 use std::fmt;
 use whoathere_artifact::Sha256Digest;
 
+pub const LINUX_VZ_PACKAGE_HOST_UDP_SENDTO_EVIDENCE_SCHEMA_V2: &str =
+    "whoathere.linux_vz_package_host_udp_sendto_evidence.v2";
 pub const LINUX_VZ_PACKAGE_HOST_UDP_SENDTO_EVIDENCE_SCHEMA_V1: &str =
-    "whoathere.linux_vz_package_host_udp_sendto_evidence.v1";
+    LINUX_VZ_PACKAGE_HOST_UDP_SENDTO_EVIDENCE_SCHEMA_V2;
 pub const MAX_LINUX_VZ_PACKAGE_HOST_UDP_SENDTO_EVIDENCE_BYTES_V1: usize = 64 * 1024;
 
 const UNOBSERVED_CAPABILITIES_V1: [&str; 4] = [
@@ -90,6 +92,7 @@ pub struct LinuxVzPackageExpectedHostUdpSendtoV1 {
     process_evidence_sha256: Sha256Digest,
     sensor_session_challenge_sha256: Sha256Digest,
     destination_token_sha256: Sha256Digest,
+    egress_packet_correlation_sha256: Sha256Digest,
     destination_class: LinuxVzPackageHostDestinationClassV1,
     destination_port: u16,
     enter_source_sequence: u64,
@@ -103,6 +106,7 @@ impl LinuxVzPackageExpectedHostUdpSendtoV1 {
         process_evidence_sha256: Sha256Digest,
         sensor_session_challenge_sha256: Sha256Digest,
         destination_token_sha256: Sha256Digest,
+        egress_packet_correlation_sha256: Sha256Digest,
         destination_class: LinuxVzPackageHostDestinationClassV1,
         destination_port: u16,
         enter_source_sequence: u64,
@@ -113,6 +117,7 @@ impl LinuxVzPackageExpectedHostUdpSendtoV1 {
             process_evidence_sha256,
             sensor_session_challenge_sha256,
             destination_token_sha256,
+            egress_packet_correlation_sha256,
             destination_class,
             destination_port,
             enter_source_sequence,
@@ -129,6 +134,7 @@ impl LinuxVzPackageExpectedHostUdpSendtoV1 {
             &self.process_evidence_sha256,
             &self.sensor_session_challenge_sha256,
             &self.destination_token_sha256,
+            &self.egress_packet_correlation_sha256,
         ];
         if digests.contains(&&empty)
             || digests.iter().collect::<BTreeSet<_>>().len() != digests.len()
@@ -150,6 +156,7 @@ pub struct LinuxVzPackageHostUdpSendtoEvidenceV1 {
     root_network_evidence_sha256: Sha256Digest,
     process_evidence_sha256: Sha256Digest,
     destination_token_sha256: Sha256Digest,
+    egress_packet_correlation_sha256: Sha256Digest,
     frame_sha256: Sha256Digest,
     source_port: u16,
     destination_port: u16,
@@ -171,6 +178,9 @@ impl LinuxVzPackageHostUdpSendtoEvidenceV1 {
     }
     pub fn destination_token_sha256(&self) -> &Sha256Digest {
         &self.destination_token_sha256
+    }
+    pub fn egress_packet_correlation_sha256(&self) -> &Sha256Digest {
+        &self.egress_packet_correlation_sha256
     }
     pub fn frame_sha256(&self) -> &Sha256Digest {
         &self.frame_sha256
@@ -205,6 +215,7 @@ struct HostUdpSendtoEvidenceWireV1 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct HostUdpSendtoBindingWireV1 {
+    egress_packet_correlation_sha256: Sha256Digest,
     process_evidence_sha256: Sha256Digest,
     root_network_evidence_sha256: Sha256Digest,
     sensor_session_challenge_sha256: Sha256Digest,
@@ -241,6 +252,7 @@ struct HostUdpSendtoEventWireV1 {
     enter_source_sequence: String,
     event_kind: String,
     frame_sha256: Sha256Digest,
+    network_layer_correlation_sha256: Sha256Digest,
     source_port: String,
     syscall_result: String,
     transport: String,
@@ -266,6 +278,7 @@ pub fn decode_linux_vz_package_host_udp_sendto_evidence_v1(
     if wire.schema_version != LINUX_VZ_PACKAGE_HOST_UDP_SENDTO_EVIDENCE_SCHEMA_V1
         || wire.binding
             != (HostUdpSendtoBindingWireV1 {
+                egress_packet_correlation_sha256: expected.egress_packet_correlation_sha256.clone(),
                 process_evidence_sha256: expected.process_evidence_sha256.clone(),
                 root_network_evidence_sha256: expected.root_network_evidence_sha256.clone(),
                 sensor_session_challenge_sha256: expected.sensor_session_challenge_sha256.clone(),
@@ -310,6 +323,7 @@ pub fn decode_linux_vz_package_host_udp_sendto_evidence_v1(
         &expected.process_evidence_sha256,
         &expected.sensor_session_challenge_sha256,
         &expected.destination_token_sha256,
+        &expected.egress_packet_correlation_sha256,
     ];
     if wire.event.destination_class != expected.destination_class.as_str_v1()
         || destination_port != expected.destination_port
@@ -317,6 +331,7 @@ pub fn decode_linux_vz_package_host_udp_sendto_evidence_v1(
         || enter_source_sequence != expected.enter_source_sequence
         || wire.event.event_kind != "sendto"
         || binding_digests.contains(&&wire.event.frame_sha256)
+        || wire.event.network_layer_correlation_sha256 != expected.egress_packet_correlation_sha256
         || syscall_result != expected.syscall_result
         || payload_byte_count != expected.syscall_result
         || wire.event.transport != "udp"
@@ -329,6 +344,7 @@ pub fn decode_linux_vz_package_host_udp_sendto_evidence_v1(
         root_network_evidence_sha256: expected.root_network_evidence_sha256.clone(),
         process_evidence_sha256: expected.process_evidence_sha256.clone(),
         destination_token_sha256: expected.destination_token_sha256.clone(),
+        egress_packet_correlation_sha256: expected.egress_packet_correlation_sha256.clone(),
         frame_sha256: wire.event.frame_sha256,
         source_port,
         destination_port,
@@ -377,6 +393,7 @@ mod tests {
                 "sha256:3ef258ec5ef33c871db55bb52239931372585c08ad3fbafda224bc498ad0ed7b",
             )
             .expect("token"),
+            Sha256Digest::from_bytes(b"egress packet correlation"),
             LinuxVzPackageHostDestinationClassV1::Documentation,
             40_553,
             16,
@@ -389,6 +406,7 @@ mod tests {
         let expected = expected_v1();
         HostUdpSendtoEvidenceWireV1 {
             binding: HostUdpSendtoBindingWireV1 {
+                egress_packet_correlation_sha256: expected.egress_packet_correlation_sha256.clone(),
                 process_evidence_sha256: expected.process_evidence_sha256.clone(),
                 root_network_evidence_sha256: expected.root_network_evidence_sha256.clone(),
                 sensor_session_challenge_sha256: expected.sensor_session_challenge_sha256.clone(),
@@ -422,6 +440,7 @@ mod tests {
                     "sha256:68a91108eb3257418ef82965c5c5ba6d2b5aa8aaded43647c25aad1be43caf1e",
                 )
                 .expect("frame"),
+                network_layer_correlation_sha256: expected.egress_packet_correlation_sha256.clone(),
                 source_port: "49152".to_string(),
                 syscall_result: "16".to_string(),
                 transport: "udp".to_string(),
@@ -440,11 +459,15 @@ mod tests {
         assert_eq!(evidence.canonical_json(), canonical);
         assert_eq!(
             evidence.payload_sha256().as_str(),
-            "sha256:9ce0d72ff3ceaf553b65168fe59983dc4093c392fa61ec1db3f916055640b818"
+            "sha256:02f0933f372d6b92acaa7f9295a635bc3339ab043a9935ee2f8b3287c51f33a5"
         );
         assert_eq!(evidence.source_port(), 49_152);
         assert_eq!(evidence.destination_port(), 40_553);
         assert_eq!(evidence.payload_byte_count(), 16);
+        assert_eq!(
+            evidence.egress_packet_correlation_sha256(),
+            &Sha256Digest::from_bytes(b"egress packet correlation")
+        );
         assert!(evidence.selected_correlation_complete());
         assert!(!evidence.broad_host_frame_coverage_complete());
         let text = String::from_utf8(canonical).expect("utf8");
@@ -491,6 +514,39 @@ mod tests {
                 &expected,
             ),
             Err(LinuxVzPackageHostUdpSendtoEvidenceErrorV1::CorrelationMismatch)
+        );
+
+        let mut rebound_egress = exact_wire_v1();
+        rebound_egress.binding.egress_packet_correlation_sha256 =
+            Sha256Digest::from_bytes(b"rebound egress correlation");
+        assert_eq!(
+            decode_linux_vz_package_host_udp_sendto_evidence_v1(
+                &canonical_json_v1(&rebound_egress).expect("rebound egress"),
+                &expected,
+            ),
+            Err(LinuxVzPackageHostUdpSendtoEvidenceErrorV1::BindingMismatch)
+        );
+
+        let mut mismatched_packet = exact_wire_v1();
+        mismatched_packet.event.network_layer_correlation_sha256 =
+            Sha256Digest::from_bytes(b"different packet correlation");
+        assert_eq!(
+            decode_linux_vz_package_host_udp_sendto_evidence_v1(
+                &canonical_json_v1(&mismatched_packet).expect("mismatched packet"),
+                &expected,
+            ),
+            Err(LinuxVzPackageHostUdpSendtoEvidenceErrorV1::CorrelationMismatch)
+        );
+
+        let mut obsolete_schema = exact_wire_v1();
+        obsolete_schema.schema_version =
+            "whoathere.linux_vz_package_host_udp_sendto_evidence.v1".to_string();
+        assert_eq!(
+            decode_linux_vz_package_host_udp_sendto_evidence_v1(
+                &canonical_json_v1(&obsolete_schema).expect("obsolete schema"),
+                &expected,
+            ),
+            Err(LinuxVzPackageHostUdpSendtoEvidenceErrorV1::BindingMismatch)
         );
     }
 

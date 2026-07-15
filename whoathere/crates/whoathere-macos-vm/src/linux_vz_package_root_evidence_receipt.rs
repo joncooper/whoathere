@@ -153,7 +153,6 @@ impl LinuxVzPackageRootEvidenceReceiptClaimsV1 {
         grant: &MacosLinuxVzPackageExecutionGrantObservationV1,
         sensor_identity: &LinuxVzPackageRootSensorIdentityV1,
         sensor_session_challenge_sha256: Sha256Digest,
-        guest_evidence_public_key_sha256: Sha256Digest,
         launch_contract_sha256: Sha256Digest,
         process_plan_sha256: Sha256Digest,
         action_index: usize,
@@ -273,7 +272,7 @@ impl LinuxVzPackageRootEvidenceReceiptClaimsV1 {
             attempt_binding_sha256: grant.attempt_binding_sha256().clone(),
             clone_binding_sha256: request.clone_binding_sha256().clone(),
             sensor_session_challenge_sha256,
-            guest_evidence_public_key_sha256,
+            guest_evidence_public_key_sha256: grant.guest_evidence_public_key_sha256().clone(),
             guest_evidence_signer_sha256: sensor_identity.guest_evidence_signer_sha256().clone(),
             protected_sensor_bundle_sha256: sensor_identity
                 .protected_sensor_bundle_sha256()
@@ -629,6 +628,30 @@ impl VerifiedLinuxVzPackageRootEvidenceReceiptV1 {
 
     pub const fn sync_back_permitted(&self) -> bool {
         false
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn test_verified_linux_vz_package_root_evidence_receipt_v1(
+    request: &MacosLinuxVzPackageAuthorityRequestV1,
+    grant: &MacosLinuxVzPackageExecutionGrantObservationV1,
+    receipt_sha256: Sha256Digest,
+    sensor_session_challenge_sha256: Sha256Digest,
+    process_evidence_sha256: Sha256Digest,
+    file_evidence_sha256: Sha256Digest,
+    network_evidence_sha256: Sha256Digest,
+    evidence_complete: bool,
+) -> VerifiedLinuxVzPackageRootEvidenceReceiptV1 {
+    VerifiedLinuxVzPackageRootEvidenceReceiptV1 {
+        receipt_sha256,
+        artifact_sha256: request.artifact_sha256().clone(),
+        execution_grant_sha256: grant.execution_grant_sha256().clone(),
+        sensor_session_challenge_sha256,
+        process_evidence_sha256,
+        file_evidence_sha256,
+        network_evidence_sha256,
+        evidence_complete,
     }
 }
 

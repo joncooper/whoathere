@@ -67,6 +67,14 @@ impl VerifiedMacosLinuxVzPackageExecutionRuntimeQualificationV1 {
         &self.package_execution_runner_sha256
     }
 
+    pub fn guest_evidence_public_key_sha256(&self) -> &Sha256Digest {
+        &self.guest_evidence_public_key_sha256
+    }
+
+    pub fn host_evidence_public_key_sha256(&self) -> &Sha256Digest {
+        &self.host_evidence_public_key_sha256
+    }
+
     pub fn execution_grant_issuer_public_key_sha256(&self) -> &Sha256Digest {
         &self.execution_grant_issuer_public_key_sha256
     }
@@ -132,6 +140,8 @@ pub struct MacosLinuxVzPackageExecutionGrantContextV1 {
     execution_runtime_rootfs_byte_length: u64,
     execution_runtime_manifest_sha256: Sha256Digest,
     package_execution_runner_sha256: Sha256Digest,
+    guest_evidence_public_key_sha256: Sha256Digest,
+    host_evidence_public_key_sha256: Sha256Digest,
     execution_grant_issuer_public_key_sha256: Sha256Digest,
     request_challenge_sha256: Sha256Digest,
     grant_challenge_sha256: Sha256Digest,
@@ -231,6 +241,12 @@ impl MacosLinuxVzPackageExecutionGrantContextV1 {
                 .clone(),
             package_execution_runner_sha256: qualification
                 .package_execution_runner_sha256()
+                .clone(),
+            guest_evidence_public_key_sha256: qualification
+                .guest_evidence_public_key_sha256()
+                .clone(),
+            host_evidence_public_key_sha256: qualification
+                .host_evidence_public_key_sha256()
                 .clone(),
             execution_grant_issuer_public_key_sha256: qualification
                 .execution_grant_issuer_public_key_sha256()
@@ -506,6 +522,8 @@ pub struct MacosLinuxVzPackageExecutionGrantObservationV1 {
     grant_challenge_sha256: Sha256Digest,
     attempt_binding_sha256: Sha256Digest,
     clone_binding_sha256: Sha256Digest,
+    guest_evidence_public_key_sha256: Sha256Digest,
+    host_evidence_public_key_sha256: Sha256Digest,
     issued_at_unix_seconds: u64,
     expires_at_unix_seconds: u64,
     verified_at_unix_seconds: u64,
@@ -541,6 +559,18 @@ impl MacosLinuxVzPackageExecutionGrantObservationV1 {
 
     pub fn clone_binding_sha256(&self) -> &Sha256Digest {
         &self.clone_binding_sha256
+    }
+
+    /// Measured guest receipt key carried from the verified runtime qualification that created
+    /// this grant context. It is not caller-selected after grant consumption.
+    pub fn guest_evidence_public_key_sha256(&self) -> &Sha256Digest {
+        &self.guest_evidence_public_key_sha256
+    }
+
+    /// Measured Mac host-evidence key carried from the verified runtime qualification that created
+    /// this grant context. Host composition must use this value instead of an ad hoc caller key.
+    pub fn host_evidence_public_key_sha256(&self) -> &Sha256Digest {
+        &self.host_evidence_public_key_sha256
     }
 
     pub const fn issued_at_unix_seconds(&self) -> u64 {
@@ -715,6 +745,8 @@ fn decode_and_verify_grant_v1(
         grant_challenge_sha256: context.grant_challenge_sha256.clone(),
         attempt_binding_sha256: context.attempt_binding_sha256.clone(),
         clone_binding_sha256: context.clone_binding_sha256.clone(),
+        guest_evidence_public_key_sha256: context.guest_evidence_public_key_sha256.clone(),
+        host_evidence_public_key_sha256: context.host_evidence_public_key_sha256.clone(),
         issued_at_unix_seconds: context.issued_at_unix_seconds,
         expires_at_unix_seconds: context.expires_at_unix_seconds,
         verified_at_unix_seconds: observed_unix_seconds,
@@ -770,6 +802,19 @@ fn unsigned_grant_v1(
 pub(crate) fn test_macos_linux_vz_package_execution_grant_observation_v1(
     request: &MacosLinuxVzPackageAuthorityRequestV1,
 ) -> MacosLinuxVzPackageExecutionGrantObservationV1 {
+    test_macos_linux_vz_package_execution_grant_observation_with_evidence_keys_v1(
+        request,
+        Sha256Digest::from_bytes(b"test guest evidence key"),
+        Sha256Digest::from_bytes(b"test host evidence key"),
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn test_macos_linux_vz_package_execution_grant_observation_with_evidence_keys_v1(
+    request: &MacosLinuxVzPackageAuthorityRequestV1,
+    guest_evidence_public_key_sha256: Sha256Digest,
+    host_evidence_public_key_sha256: Sha256Digest,
+) -> MacosLinuxVzPackageExecutionGrantObservationV1 {
     MacosLinuxVzPackageExecutionGrantObservationV1 {
         execution_grant_sha256: Sha256Digest::from_bytes(b"test exact signed execution grant"),
         package_authority_request_sha256: request.request_sha256().clone(),
@@ -780,6 +825,8 @@ pub(crate) fn test_macos_linux_vz_package_execution_grant_observation_v1(
         grant_challenge_sha256: Sha256Digest::from_bytes(b"test grant challenge"),
         attempt_binding_sha256: Sha256Digest::from_bytes(b"test attempt binding"),
         clone_binding_sha256: request.clone_binding_sha256().clone(),
+        guest_evidence_public_key_sha256,
+        host_evidence_public_key_sha256,
         issued_at_unix_seconds: 1_784_044_800,
         expires_at_unix_seconds: 1_784_045_100,
         verified_at_unix_seconds: 1_784_044_801,
@@ -865,6 +912,8 @@ mod tests {
             execution_runtime_rootfs_byte_length: 1_073_741_824,
             execution_runtime_manifest_sha256: digest("execution runtime manifest"),
             package_execution_runner_sha256: digest("package execution runner"),
+            guest_evidence_public_key_sha256: digest("guest evidence key"),
+            host_evidence_public_key_sha256: digest("host evidence key"),
             execution_grant_issuer_public_key_sha256: Sha256Digest::from_bytes(&public_key),
             request_challenge_sha256: digest("request challenge"),
             grant_challenge_sha256: digest("grant challenge"),
@@ -932,6 +981,14 @@ mod tests {
             .verify_and_consume(grant.as_bytes().to_vec(), context.issued_at_unix_seconds())
             .expect("verify");
         assert!(observed.consumed());
+        assert_eq!(
+            observed.guest_evidence_public_key_sha256(),
+            &context.guest_evidence_public_key_sha256
+        );
+        assert_eq!(
+            observed.host_evidence_public_key_sha256(),
+            &context.host_evidence_public_key_sha256
+        );
         assert_eq!(
             observed.package_execution_scope(),
             MacosLinuxVzPackageExecutionScopeV1::OneTypedScenarioOneAttempt

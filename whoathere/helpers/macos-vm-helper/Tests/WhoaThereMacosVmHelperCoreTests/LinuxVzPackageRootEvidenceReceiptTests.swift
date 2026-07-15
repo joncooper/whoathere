@@ -6,6 +6,9 @@ import Testing
 private let rootReceiptGoldenSignature =
     "053fa74681b22607ebc86a26d7341d07da26cb0b091f0a6c94683e09569740a2"
     + "f989a9a360ba134bf65bce99ab705553d66ca25eb88784fe94ae55a1e9a78701"
+private let rustHostCompositeGoldenSignature =
+    "4e92d17e8b04a52f53e5c0a92dd5664d55ba4ffe07edf16c9671ea58551bada0"
+    + "7fd8400c08cc398a2340836e6aefdc213680f9fb67eb77422d585f48b55c190d"
 
 @Test func linuxVzPackageRootReceiptVerifiesRustCrossLanguageGolden() throws {
     let privateKey = try rootReceiptPrivateKey()
@@ -171,6 +174,10 @@ private let rootReceiptGoldenSignature =
     )
     #expect(evidence.rootReceiptSHA256 == root.verified.receiptSHA256)
     #expect(evidence.hostNetworkEvidenceSHA256 == hostNetwork.payloadSHA256)
+    #expect(
+        evidence.evidenceSHA256
+            == "sha256:ab65634f16bbdf22c57a4f5146fa5e7885720b9722b3a1b8cd1c2b65fb46c5ee"
+    )
     #expect(evidence.lifecycleComplete)
     #expect(evidence.selectedHostCorrelationComplete)
     #expect(!evidence.broadHostNetworkCoverageComplete)
@@ -195,6 +202,9 @@ private let rootReceiptGoldenSignature =
         signingSeed: &hostSeed
     )
     #expect(hostSeed == Data(repeating: 0, count: 32))
+    let receiptObject = try #require(
+        JSONSerialization.jsonObject(with: receipt) as? [String: Any]
+    )
     let verified = try verifyLinuxVzPackageHostCompositeReceiptV1(
         receipt,
         evidence: evidence,
@@ -208,6 +218,22 @@ private let rootReceiptGoldenSignature =
     #expect(!verified.compositeEvidenceComplete)
     #expect(!verified.authoritativeVerdictPermitted)
     #expect(!verified.syncBackPermitted)
+
+    var rustReceiptObject = receiptObject
+    rustReceiptObject["signature_ed25519_hex"] = rustHostCompositeGoldenSignature
+    let rustReceipt = try canonicalJSONData(rustReceiptObject)
+    #expect(
+        sha256(rustReceipt)
+            == "sha256:6a45287c15812d0ad932e7558ae9c34cb4ade14bc81dbb052d23d2c952f173f0"
+    )
+    let rustVerified = try verifyLinuxVzPackageHostCompositeReceiptV1(
+        rustReceipt,
+        evidence: evidence,
+        lifecycle: lifecycle,
+        hostVerifyingKey: hostPublicKey,
+        observedAtUnixSeconds: 1_750_000_010
+    )
+    #expect(rustVerified.compositeEvidenceSHA256 == evidence.evidenceSHA256)
 }
 
 @Test func linuxVzPackageHostCompositeFailsClosedOnLifecycleRebindingAndForgery() throws {

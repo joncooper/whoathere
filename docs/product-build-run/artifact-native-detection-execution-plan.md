@@ -4,6 +4,18 @@ Date: 2026-07-09
 
 Status: canonical execution plan for the next product milestone
 
+Independent host-verification checkpoint (2026-07-15): the Mac host-composite receipt now has a
+separately implemented Rust verifier. The one-use grant observation carries the measured guest and
+host evidence-key identities from its opaque runtime qualification, root-receipt construction takes
+the guest key only from that consumed grant, and the Rust composite verifier takes the host key only
+from the same verified-source chain. Rust now decodes the current selected-UDP schema-v2 packet
+correlation rather than the obsolete v1 shape. Swift and Rust produce byte-identical composite
+evidence; Swift verifies a pinned Rust signature and Rust verifies a pinned CryptoKit signature.
+The result remains deliberately incomplete and non-authorizing: no physical guest root service
+emits the receipt yet, broad network coverage is false, no verdict is permitted, sync-back is
+structurally absent, no VM or package ran, and the July score remains 7/11. See the
+[independent host-composite verification checkpoint](artifact-native-linux-vz-package-independent-host-composite-verification-checkpoint-2026-07-15.md).
+
 Authenticated-evidence checkpoint (2026-07-15): the package root-evidence receipt now has a
 separately implemented Mac verifier. Swift/Foundation strictly parses the Rust schema-v2 wire,
 requires canonical bytes and the complete key set, independently hashes the exact process, file,
@@ -15,9 +27,9 @@ selected-UDP host-frame evidence, terminated guest channel, stopped VM, stable r
 destroyed clone, and digest-only restricted-evidence references. The composite remains explicitly
 `inconclusive_incomplete_coverage`: it cannot claim broad host-network coverage, issue an
 authoritative verdict, or permit sync-back. These are tested protocol boundaries; the measured
-guest signer/root service and a physical package run do not emit them yet, and the host-composite
-receipt does not yet have an independent Rust verifier. No VM, package, or malware ran for this
-checkpoint, so the July score remains 7/11. See the
+guest signer/root service and a physical package run do not emit them yet. The host-composite
+receipt now has an independent Rust verifier, but physical end-to-end integration remains open. No
+VM, package, or malware ran for this checkpoint, so the July score remains 7/11. See the
 [authenticated host-composition checkpoint](artifact-native-linux-vz-package-authenticated-host-composition-checkpoint-2026-07-15.md).
 
 Current execution checkpoint (2026-07-14): the selected transmitted UDP case now has a physically
@@ -1861,8 +1873,10 @@ authenticated composite evidence also remain open. AN-506 now has a strict packa
 receipt protocol that binds exact authority, scenario, grant, runtime, sensor, action, terminal,
 process, file, and network claims under a short-lived Ed25519 signature. It deliberately reports
 the current evidence as incomplete and grants no verdict or sync-back authority. Root-service
-integration, an independent verifier, host-frame and lifecycle composition, destruction proof, and
-the final control-plane envelope remain. These partial results do not satisfy the Phase 5 exit gate.
+integration, protected signer custody, physical receipt transport, destruction proof, broader
+network coverage, and the final control-plane envelope remain. An independent Rust verifier and
+strict host-frame/lifecycle composition now exist at the protocol level, but neither is connected to
+a physical package run. These partial results do not satisfy the Phase 5 exit gate.
 
 Exit gate:
 

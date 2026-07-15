@@ -100,8 +100,9 @@ shape. AN-506 still requires:
    to the untrusted package supervisor;
 3. replace or bridge the older complete-legacy-payload assumption in the execution supervisor so
    incomplete root evidence reaches host composition without being mistaken for clean evidence;
-4. source the expected host evidence key from the authenticated runtime qualification rather than
-   an ad hoc caller value, and independently verify the host-composite receipt in Rust;
+4. connect the now-qualified grant-key propagation and independent Rust host-composite verifier to
+   the physical guest/host execution path; the protocol-level work is recorded in the
+   [independent host-composite verification checkpoint](artifact-native-linux-vz-package-independent-host-composite-verification-checkpoint-2026-07-15.md);
 5. physically populate and verify both receipts with inert npm, exact wheel, and nested-sdist
    scenarios while preserving no route, no share, no sync-back, stop-before-destroy, and exact image
    identity; and
