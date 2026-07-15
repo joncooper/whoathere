@@ -188,6 +188,43 @@ impl LinuxVzPackageEgressEventV1 {
         Sha256Digest::from_bytes(&self.packet_prefix)
     }
 
+    pub(crate) fn packet_correlation_sha256_v1(
+        &self,
+    ) -> Result<Sha256Digest, LinuxVzPackageEgressStreamErrorV1> {
+        if self.decision != LinuxVzPackageEgressDecisionV1::Allow || self.prefix_truncated {
+            return Err(LinuxVzPackageEgressStreamErrorV1::InvalidPacket);
+        }
+        let mut normalized = self.packet_prefix.clone();
+        let protocol_marker = match self.protocol {
+            LinuxVzPackageEgressNetworkProtocolV1::Ipv4 => {
+                let header_length = usize::from(normalized[0] & 0x0f) * 4;
+                if header_length < 20 || header_length > normalized.len() {
+                    return Err(LinuxVzPackageEgressStreamErrorV1::InvalidPacket);
+                }
+                let transport_protocol = normalized[9];
+                normalized[10..12].zeroize();
+                zero_transport_checksum_v1(&mut normalized, header_length, transport_protocol)?;
+                4_u8
+            }
+            LinuxVzPackageEgressNetworkProtocolV1::Ipv6 => {
+                let transport_protocol = normalized[6];
+                zero_transport_checksum_v1(&mut normalized, 40, transport_protocol)?;
+                6_u8
+            }
+            LinuxVzPackageEgressNetworkProtocolV1::Unsupported => {
+                return Err(LinuxVzPackageEgressStreamErrorV1::InvalidPacket);
+            }
+        };
+        let mut input = b"whoathere.linux_vz_package_egress_packet_correlation.v1\0".to_vec();
+        input.push(protocol_marker);
+        input.extend_from_slice(&self.packet_length.to_be_bytes());
+        input.extend_from_slice(&normalized);
+        let digest = Sha256Digest::from_bytes(&input);
+        input.zeroize();
+        normalized.zeroize();
+        Ok(digest)
+    }
+
     pub(crate) const fn prefix_truncated_v1(&self) -> bool {
         self.prefix_truncated
     }
@@ -199,6 +236,26 @@ impl LinuxVzPackageEgressEventV1 {
     pub(crate) const fn cpu_v1(&self) -> u32 {
         self.cpu
     }
+}
+
+fn zero_transport_checksum_v1(
+    packet: &mut [u8],
+    transport_offset: usize,
+    transport_protocol: u8,
+) -> Result<(), LinuxVzPackageEgressStreamErrorV1> {
+    let checksum_offset = match transport_protocol {
+        6 => 16,
+        17 => 6,
+        _ => return Ok(()),
+    };
+    let start = transport_offset
+        .checked_add(checksum_offset)
+        .ok_or(LinuxVzPackageEgressStreamErrorV1::InvalidPacket)?;
+    packet
+        .get_mut(start..start + 2)
+        .ok_or(LinuxVzPackageEgressStreamErrorV1::InvalidPacket)?
+        .zeroize();
+    Ok(())
 }
 
 pub(crate) fn decode_linux_vz_package_egress_event_v1(
@@ -749,5 +806,41 @@ mod tests {
             decode_linux_vz_package_egress_event_v1(&false_allow, 41, 1),
             Err(LinuxVzPackageEgressStreamErrorV1::InvalidFlags)
         );
+    }
+
+    #[test]
+    fn correlation_digest_ignores_only_network_and_transport_checksums() {
+        let mut bytes = event_bytes_v1(LinuxVzPackageEgressNetworkProtocolV1::Ipv4);
+        let packet = [
+            0x45, 0x00, 0x00, 0x2c, 0x12, 0x34, 0x40, 0x00, 0x40, 0x11, 0x00, 0x00, 192, 0, 2, 2,
+            192, 0, 2, 1, 0xc0, 0x00, 0x9e, 0x69, 0x00, 0x18, 0x00, 0x00, b'W', b'H', b'O', b'A',
+            b'T', b'H', b'E', b'R', b'E', b'_', b'R', b'A', b'W', b'_', b'V', b'1',
+        ];
+        bytes[32..36].copy_from_slice(&44_u32.to_le_bytes());
+        bytes[36..40].copy_from_slice(&44_u32.to_le_bytes());
+        bytes[60..64].copy_from_slice(&44_u32.to_le_bytes());
+        bytes[EGRESS_EVENT_PREFIX_OFFSET_V1..EGRESS_EVENT_PREFIX_OFFSET_V1 + packet.len()]
+            .copy_from_slice(&packet);
+        bytes[EGRESS_EVENT_PREFIX_OFFSET_V1 + 10] = 0x12;
+        bytes[EGRESS_EVENT_PREFIX_OFFSET_V1 + 11] = 0x34;
+        bytes[EGRESS_EVENT_PREFIX_OFFSET_V1 + 26] = 0x56;
+        bytes[EGRESS_EVENT_PREFIX_OFFSET_V1 + 27] = 0x78;
+        let event = decode_linux_vz_package_egress_event_v1(&bytes, 41, 1).unwrap();
+        let digest = event.packet_correlation_sha256_v1().unwrap();
+        assert_eq!(
+            digest.as_str(),
+            "sha256:3e6baece59efbbc17f2135b6d036b7aec82ebc22f27c30e8064c756b4269f9ff"
+        );
+
+        bytes[EGRESS_EVENT_PREFIX_OFFSET_V1 + 10] = 0xab;
+        bytes[EGRESS_EVENT_PREFIX_OFFSET_V1 + 11] = 0xcd;
+        bytes[EGRESS_EVENT_PREFIX_OFFSET_V1 + 26] = 0xef;
+        bytes[EGRESS_EVENT_PREFIX_OFFSET_V1 + 27] = 0x01;
+        let rebound = decode_linux_vz_package_egress_event_v1(&bytes, 41, 1).unwrap();
+        assert_eq!(rebound.packet_correlation_sha256_v1().unwrap(), digest);
+
+        bytes[EGRESS_EVENT_PREFIX_OFFSET_V1 + 28] = 1;
+        let changed = decode_linux_vz_package_egress_event_v1(&bytes, 41, 1).unwrap();
+        assert_ne!(changed.packet_correlation_sha256_v1().unwrap(), digest);
     }
 }

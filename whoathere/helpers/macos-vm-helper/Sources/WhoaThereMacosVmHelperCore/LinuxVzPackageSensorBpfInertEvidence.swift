@@ -53,6 +53,7 @@ public struct LinuxVzPackageSensorBpfInertEvidenceV13: Equatable, Sendable {
     public let finishDrainEventCount: UInt64
     public let maximumDrainBatchRecordCount: UInt64
     public let egressEventCount: UInt64
+    public let egressPacketCorrelationSHA256: String
     public let egressPacketPrefixSHA256: String
     public let networkIntentCount: UInt64
     public let networkSendtoDestinationTokenSHA256: String
@@ -297,7 +298,8 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV13(
           Set(egressObservation.keys) == Set([
               "cpu", "decision", "egress_interface_index", "gso_segment_count",
               "gso_segment_size", "ingress_interface_index", "packet_length",
-              "packet_prefix_byte_length", "packet_prefix_sha256", "prefix_truncated",
+              "packet_correlation_sha256", "packet_prefix_byte_length",
+              "packet_prefix_sha256", "prefix_truncated",
               "protocol", "raw_skb_protocol", "source_sequence", "wire_length",
           ]),
           packageSensorBpfInertDecimal(egressObservation["cpu"]) == fixtureCPU,
@@ -310,6 +312,9 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV13(
           packageSensorBpfInertDecimal(egressObservation["gso_segment_size"]) == 0,
           packageSensorBpfInertDecimal(egressObservation["ingress_interface_index"]) == 0,
           packageSensorBpfInertDecimal(egressObservation["packet_length"]) == 44,
+          let egressPacketCorrelationSHA256 =
+              egressObservation["packet_correlation_sha256"] as? String,
+          packageSensorBpfInertDigest(egressPacketCorrelationSHA256),
           packageSensorBpfInertDecimal(
               egressObservation["packet_prefix_byte_length"]
           ) == 44,
@@ -448,9 +453,10 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV13(
           Set([rootFileEvidenceSHA256, rootFileEvidenceBaselineSnapshotSHA256,
                rootFileEvidenceFinalSnapshotSHA256, rootFileEvidenceWorkspaceDiffSHA256,
                rootProcessEvidenceSHA256, rootNetworkEvidenceSHA256,
-               networkSendtoDestinationTokenSHA256, egressPacketPrefixSHA256,
+               networkSendtoDestinationTokenSHA256, egressPacketCorrelationSHA256,
+               egressPacketPrefixSHA256,
                sensorSessionChallengeSHA256,
-               expectedFixtureSHA256, expectedRuntimeBTFSHA256]).count == 11,
+               expectedFixtureSHA256, expectedRuntimeBTFSHA256]).count == 12,
           let rootFileEvidenceSourceEventCount = packageSensorBpfInertDecimal(
               value["root_file_evidence_source_event_count"]
           ),
@@ -499,6 +505,7 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV13(
         finishDrainEventCount: finishDrainEventCount,
         maximumDrainBatchRecordCount: maximumDrainBatchRecordCount,
         egressEventCount: egressEventCount,
+        egressPacketCorrelationSHA256: egressPacketCorrelationSHA256,
         egressPacketPrefixSHA256: egressPacketPrefixSHA256,
         networkIntentCount: networkIntentCount,
         networkSendtoDestinationTokenSHA256: networkSendtoDestinationTokenSHA256,

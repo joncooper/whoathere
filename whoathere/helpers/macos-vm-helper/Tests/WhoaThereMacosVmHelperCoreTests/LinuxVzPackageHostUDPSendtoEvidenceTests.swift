@@ -27,7 +27,7 @@ private let packageHostUDPSendtoToken =
     #expect(evidence.frameSHA256 ==
         "sha256:68a91108eb3257418ef82965c5c5ba6d2b5aa8aaded43647c25aad1be43caf1e")
     #expect(evidence.payloadSHA256 ==
-        "sha256:9ce0d72ff3ceaf553b65168fe59983dc4093c392fa61ec1db3f916055640b818")
+        "sha256:21a949fb480e3f1d252e848f5d81b2f8ce8a5c1a08450dcb80e47a0072f56b54")
     #expect(evidence.sourcePort == 49_152)
     #expect(evidence.destinationPort == 40_553)
     #expect(evidence.payloadByteCount == 16)
@@ -47,6 +47,7 @@ private let packageHostUDPSendtoToken =
         processEvidenceSHA256: packageHostDigest("process"),
         sensorSessionChallengeSHA256: packageHostUDPSendtoChallenge,
         destinationTokenSHA256: packageHostDigest("wrong-token"),
+        egressPacketCorrelationSHA256: try packageHostUDPSendtoCorrelationSHA256(),
         destinationClass: .documentation,
         destinationPort: 40_553,
         enterSourceSequence: 16,
@@ -64,6 +65,24 @@ private let packageHostUDPSendtoToken =
             expected: try packageHostUDPSendtoExpected(),
             collection: collection,
             expectedSourceMAC: linuxVzPackageGuestNetworkMACV1
+        )
+    }
+    let wrongCorrelation = try LinuxVzPackageExpectedHostUDPSendtoV1(
+        rootNetworkEvidenceSHA256: packageHostDigest("network"),
+        processEvidenceSHA256: packageHostDigest("process"),
+        sensorSessionChallengeSHA256: packageHostUDPSendtoChallenge,
+        destinationTokenSHA256: packageHostUDPSendtoToken,
+        egressPacketCorrelationSHA256: packageHostDigest("wrong-correlation"),
+        destinationClass: .documentation,
+        destinationPort: 40_553,
+        enterSourceSequence: 16,
+        syscallResult: 16
+    )
+    #expect(throws: LinuxVzPackageHostUDPSendtoEvidenceError.correlationMismatch) {
+        try makeLinuxVzPackageHostUDPSendtoEvidenceV1(
+            expected: wrongCorrelation,
+            collection: collection,
+            expectedSourceMAC: linuxVzInertGuestNetworkMACV1
         )
     }
 }
@@ -106,11 +125,13 @@ private let packageHostUDPSendtoToken =
         expectedSourceMAC: linuxVzInertGuestNetworkMACV1
     )
     for (section, field, changed): (String, String, Any) in [
+        ("binding", "egress_packet_correlation_sha256", packageHostDigest("rebound-egress")),
         ("binding", "root_network_evidence_sha256", packageHostDigest("rebound")),
         ("collector", "dropped_frame_count", "1"),
         ("coverage", "broad_host_frame_coverage_complete", true),
         ("coverage", "raw_addresses_serialized", true),
         ("event", "destination_port", "53"),
+        ("event", "network_layer_correlation_sha256", packageHostDigest("rebound-frame")),
         ("event", "syscall_result", "15"),
     ] {
         var value = try #require(
@@ -141,11 +162,19 @@ private func packageHostUDPSendtoExpected() throws -> LinuxVzPackageExpectedHost
         processEvidenceSHA256: packageHostDigest("process"),
         sensorSessionChallengeSHA256: packageHostUDPSendtoChallenge,
         destinationTokenSHA256: packageHostUDPSendtoToken,
+        egressPacketCorrelationSHA256: try packageHostUDPSendtoCorrelationSHA256(),
         destinationClass: .documentation,
         destinationPort: 40_553,
         enterSourceSequence: 16,
         syscallResult: 16
     )
+}
+
+private func packageHostUDPSendtoCorrelationSHA256() throws -> String {
+    try decodeLinuxVzPackageHostIPv4FrameV1(
+        packageHostUDPSendtoFrame(),
+        expectedSourceMAC: linuxVzInertGuestNetworkMACV1
+    ).networkLayerCorrelationSHA256
 }
 
 private func packageHostUDPSendtoCollection(

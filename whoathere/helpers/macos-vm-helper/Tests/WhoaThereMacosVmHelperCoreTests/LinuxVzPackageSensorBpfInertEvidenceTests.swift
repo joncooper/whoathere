@@ -34,6 +34,8 @@ private let taskExitCodeByteOffset: UInt64 = 1_964
     #expect(evidence.finishDrainEventCount == 1)
     #expect(evidence.maximumDrainBatchRecordCount == 13)
     #expect(evidence.egressEventCount == 1)
+    #expect(evidence.egressPacketCorrelationSHA256 ==
+        "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
     #expect(evidence.egressPacketPrefixSHA256 ==
         "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
     #expect(evidence.networkIntentCount == 2)
@@ -414,6 +416,8 @@ private func packageSensorBpfInertValue() -> [String: Any] {
             "gso_segment_size": "0",
             "ingress_interface_index": "0",
             "packet_length": "44",
+            "packet_correlation_sha256":
+                "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             "packet_prefix_byte_length": "44",
             "packet_prefix_sha256":
                 "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",

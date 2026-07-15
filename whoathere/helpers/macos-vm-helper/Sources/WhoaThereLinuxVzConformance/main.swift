@@ -279,6 +279,8 @@ private struct LinuxVzConformanceHarness {
                         processEvidenceSHA256: evidence.rootProcessEvidenceSHA256,
                         sensorSessionChallengeSHA256: evidence.sensorSessionChallengeSHA256,
                         destinationTokenSHA256: evidence.networkSendtoDestinationTokenSHA256,
+                        egressPacketCorrelationSHA256:
+                            evidence.egressPacketCorrelationSHA256,
                         destinationClass: .documentation,
                         destinationPort: 40_553,
                         enterSourceSequence: evidence.networkSendtoEnterSourceSequence,

@@ -15,6 +15,8 @@ import Testing
     #expect(decoded.transportPayloadByteCount == 16)
     #expect(decoded.tcpFlags == nil)
     #expect(decoded.frameSHA256.hasPrefix("sha256:"))
+    #expect(decoded.networkLayerCorrelationSHA256 ==
+        "sha256:3e6baece59efbbc17f2135b6d036b7aec82ebc22f27c30e8064c756b4269f9ff")
 
     let token = try decoded.destinationTokenSHA256(
         sensorSessionChallengeSHA256:

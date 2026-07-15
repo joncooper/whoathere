@@ -1,7 +1,9 @@
 import Foundation
 
+public let linuxVzPackageHostUDPSendtoEvidenceSchemaV2 =
+    "whoathere.linux_vz_package_host_udp_sendto_evidence.v2"
 public let linuxVzPackageHostUDPSendtoEvidenceSchemaV1 =
-    "whoathere.linux_vz_package_host_udp_sendto_evidence.v1"
+    linuxVzPackageHostUDPSendtoEvidenceSchemaV2
 public let maximumLinuxVzPackageHostUDPSendtoEvidenceBytesV1 = 64 * 1024
 
 private let linuxVzPackageHostUDPSendtoUnobservedV1 = [
@@ -29,6 +31,7 @@ public struct LinuxVzPackageHostUDPSendtoEvidenceV1: Equatable, Sendable {
     public let rootNetworkEvidenceSHA256: String
     public let processEvidenceSHA256: String
     public let destinationTokenSHA256: String
+    public let egressPacketCorrelationSHA256: String
     public let frameSHA256: String
     public let sourcePort: UInt16
     public let destinationPort: UInt16
@@ -42,6 +45,7 @@ public struct LinuxVzPackageExpectedHostUDPSendtoV1: Equatable, Sendable {
     public let processEvidenceSHA256: String
     public let sensorSessionChallengeSHA256: String
     public let destinationTokenSHA256: String
+    public let egressPacketCorrelationSHA256: String
     public let destinationClass: LinuxVzPackageHostDestinationClassV1
     public let destinationPort: UInt16
     public let enterSourceSequence: UInt64
@@ -52,16 +56,19 @@ public struct LinuxVzPackageExpectedHostUDPSendtoV1: Equatable, Sendable {
         processEvidenceSHA256: String,
         sensorSessionChallengeSHA256: String,
         destinationTokenSHA256: String,
+        egressPacketCorrelationSHA256: String,
         destinationClass: LinuxVzPackageHostDestinationClassV1,
         destinationPort: UInt16,
         enterSourceSequence: UInt64,
         syscallResult: UInt64
     ) throws {
         guard [rootNetworkEvidenceSHA256, processEvidenceSHA256,
-               sensorSessionChallengeSHA256, destinationTokenSHA256]
+               sensorSessionChallengeSHA256, destinationTokenSHA256,
+               egressPacketCorrelationSHA256]
                 .allSatisfy(linuxVzPackageHostUDPSendtoDigestV1),
               Set([rootNetworkEvidenceSHA256, processEvidenceSHA256,
-                   sensorSessionChallengeSHA256, destinationTokenSHA256]).count == 4,
+                   sensorSessionChallengeSHA256, destinationTokenSHA256,
+                   egressPacketCorrelationSHA256]).count == 5,
               destinationPort > 0, enterSourceSequence > 0,
               syscallResult > 0, syscallResult <= UInt64(UInt16.max) else {
             throw LinuxVzPackageHostUDPSendtoEvidenceError.invalidBinding
@@ -70,6 +77,7 @@ public struct LinuxVzPackageExpectedHostUDPSendtoV1: Equatable, Sendable {
         self.processEvidenceSHA256 = processEvidenceSHA256
         self.sensorSessionChallengeSHA256 = sensorSessionChallengeSHA256
         self.destinationTokenSHA256 = destinationTokenSHA256
+        self.egressPacketCorrelationSHA256 = egressPacketCorrelationSHA256
         self.destinationClass = destinationClass
         self.destinationPort = destinationPort
         self.enterSourceSequence = enterSourceSequence
@@ -113,11 +121,13 @@ public func makeLinuxVzPackageHostUDPSendtoEvidenceV1(
           frame.destinationClass == expected.destinationClass,
           frame.destinationPort == expected.destinationPort,
           frame.transportPayloadByteCount == Int(expected.syscallResult),
+          frame.networkLayerCorrelationSHA256 == expected.egressPacketCorrelationSHA256,
           token == expected.destinationTokenSHA256 else {
         throw LinuxVzPackageHostUDPSendtoEvidenceError.correlationMismatch
     }
     let value: [String: Any] = [
         "binding": [
+            "egress_packet_correlation_sha256": expected.egressPacketCorrelationSHA256,
             "process_evidence_sha256": expected.processEvidenceSHA256,
             "root_network_evidence_sha256": expected.rootNetworkEvidenceSHA256,
             "sensor_session_challenge_sha256": expected.sensorSessionChallengeSHA256,
@@ -145,12 +155,13 @@ public func makeLinuxVzPackageHostUDPSendtoEvidenceV1(
             "enter_source_sequence": String(expected.enterSourceSequence),
             "event_kind": "sendto",
             "frame_sha256": frame.frameSHA256,
+            "network_layer_correlation_sha256": frame.networkLayerCorrelationSHA256,
             "source_port": String(frame.sourcePort),
             "syscall_result": String(expected.syscallResult),
             "transport": "udp",
             "transport_payload_byte_count": String(frame.transportPayloadByteCount),
         ],
-        "schema_version": linuxVzPackageHostUDPSendtoEvidenceSchemaV1,
+        "schema_version": linuxVzPackageHostUDPSendtoEvidenceSchemaV2,
     ]
     return try decodeLinuxVzPackageHostUDPSendtoEvidenceV1(
         canonicalJSONData(value),
@@ -175,12 +186,15 @@ public func decodeLinuxVzPackageHostUDPSendtoEvidenceV1(
         throw LinuxVzPackageHostUDPSendtoEvidenceError.nonCanonical
     }
     guard Set(value.keys) == Set(["binding", "collector", "coverage", "event", "schema_version"]),
-          value["schema_version"] as? String == linuxVzPackageHostUDPSendtoEvidenceSchemaV1,
+          value["schema_version"] as? String == linuxVzPackageHostUDPSendtoEvidenceSchemaV2,
           let binding = value["binding"] as? [String: Any],
           Set(binding.keys) == Set([
-              "process_evidence_sha256", "root_network_evidence_sha256",
+              "egress_packet_correlation_sha256", "process_evidence_sha256",
+              "root_network_evidence_sha256",
               "sensor_session_challenge_sha256",
           ]),
+          binding["egress_packet_correlation_sha256"] as? String ==
+            expected.egressPacketCorrelationSHA256,
           binding["process_evidence_sha256"] as? String == expected.processEvidenceSHA256,
           binding["root_network_evidence_sha256"] as? String ==
             expected.rootNetworkEvidenceSHA256,
@@ -221,7 +235,8 @@ public func decodeLinuxVzPackageHostUDPSendtoEvidenceV1(
     guard let event = value["event"] as? [String: Any],
           Set(event.keys) == Set([
               "destination_class", "destination_port", "destination_token_sha256",
-              "enter_source_sequence", "event_kind", "frame_sha256", "source_port",
+              "enter_source_sequence", "event_kind", "frame_sha256",
+              "network_layer_correlation_sha256", "source_port",
               "syscall_result", "transport", "transport_payload_byte_count",
           ]),
           event["destination_class"] as? String == expected.destinationClass.rawValue,
@@ -234,8 +249,11 @@ public func decodeLinuxVzPackageHostUDPSendtoEvidenceV1(
           let frameSHA256 = event["frame_sha256"] as? String,
           linuxVzPackageHostUDPSendtoDigestV1(frameSHA256),
           ![expected.rootNetworkEvidenceSHA256, expected.processEvidenceSHA256,
-             expected.sensorSessionChallengeSHA256, expected.destinationTokenSHA256]
+             expected.sensorSessionChallengeSHA256, expected.destinationTokenSHA256,
+             expected.egressPacketCorrelationSHA256]
                 .contains(frameSHA256),
+          event["network_layer_correlation_sha256"] as? String ==
+            expected.egressPacketCorrelationSHA256,
           let sourcePortValue = linuxVzPackageHostUDPSendtoDecimalV1(event["source_port"]),
           sourcePortValue > 0, sourcePortValue <= UInt64(UInt16.max),
           linuxVzPackageHostUDPSendtoDecimalV1(event["syscall_result"]) ==
@@ -251,6 +269,7 @@ public func decodeLinuxVzPackageHostUDPSendtoEvidenceV1(
         rootNetworkEvidenceSHA256: expected.rootNetworkEvidenceSHA256,
         processEvidenceSHA256: expected.processEvidenceSHA256,
         destinationTokenSHA256: expected.destinationTokenSHA256,
+        egressPacketCorrelationSHA256: expected.egressPacketCorrelationSHA256,
         frameSHA256: frameSHA256,
         sourcePort: UInt16(sourcePortValue),
         destinationPort: expected.destinationPort,

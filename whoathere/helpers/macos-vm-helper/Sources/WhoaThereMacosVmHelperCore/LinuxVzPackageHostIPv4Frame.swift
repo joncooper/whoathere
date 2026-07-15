@@ -34,6 +34,7 @@ public enum LinuxVzPackageHostDestinationClassV1: String, Equatable, Sendable {
 
 public struct LinuxVzPackageHostIPv4FrameV1: Equatable, Sendable {
     public let frameSHA256: String
+    public let networkLayerCorrelationSHA256: String
     public let transport: LinuxVzPackageHostFrameTransportV1
     public let destinationClass: LinuxVzPackageHostDestinationClassV1
     public let sourcePort: UInt16
@@ -160,8 +161,14 @@ public func decodeLinuxVzPackageHostIPv4FrameV1(
     guard linuxVzPackageHostChecksumValidV1(pseudoHeader) else {
         throw LinuxVzPackageHostIPv4FrameError.invalidChecksum
     }
+    let networkLayerCorrelationSHA256 = try linuxVzPackageHostPacketCorrelationSHA256V1(
+        Data(bytes[14..<bytes.count]),
+        ipv4HeaderByteCount: headerByteCount,
+        transportProtocol: bytes[23]
+    )
     return LinuxVzPackageHostIPv4FrameV1(
         frameSHA256: linuxVzPackageHostFrameSHA256V1(frame),
+        networkLayerCorrelationSHA256: networkLayerCorrelationSHA256,
         transport: transport,
         destinationClass: linuxVzPackageHostIPv4ClassV1([UInt8](destinationAddress)),
         sourcePort: sourcePort,
@@ -170,6 +177,48 @@ public func decodeLinuxVzPackageHostIPv4FrameV1(
         tcpFlags: tcpFlags,
         destinationAddress: destinationAddress
     )
+}
+
+private func linuxVzPackageHostPacketCorrelationSHA256V1(
+    _ packet: Data,
+    ipv4HeaderByteCount: Int,
+    transportProtocol: UInt8
+) throws -> String {
+    guard packet.count >= 20, ipv4HeaderByteCount >= 20,
+          ipv4HeaderByteCount <= packet.count else {
+        throw LinuxVzPackageHostIPv4FrameError.invalidCorrelationBinding
+    }
+    var normalized = packet
+    normalized[10] = 0
+    normalized[11] = 0
+    let transportChecksumOffset: Int? = switch transportProtocol {
+    case 6: 16
+    case 17: 6
+    default: nil
+    }
+    if let transportChecksumOffset {
+        let checksum = ipv4HeaderByteCount + transportChecksumOffset
+        guard checksum + 2 <= normalized.count else {
+            throw LinuxVzPackageHostIPv4FrameError.invalidCorrelationBinding
+        }
+        normalized[checksum] = 0
+        normalized[checksum + 1] = 0
+    }
+    var input = Data(
+        "whoathere.linux_vz_package_egress_packet_correlation.v1\0".utf8
+    )
+    input.append(4)
+    guard let packetLength = UInt32(exactly: packet.count) else {
+        throw LinuxVzPackageHostIPv4FrameError.invalidCorrelationBinding
+    }
+    var bigEndianPacketLength = packetLength.bigEndian
+    withUnsafeBytes(of: &bigEndianPacketLength) { input.append(contentsOf: $0) }
+    input.append(normalized)
+    defer {
+        input.resetBytes(in: 0..<input.count)
+        normalized.resetBytes(in: 0..<normalized.count)
+    }
+    return linuxVzPackageHostFrameSHA256V1(input)
 }
 
 private func linuxVzPackageHostIPv4ClassV1(

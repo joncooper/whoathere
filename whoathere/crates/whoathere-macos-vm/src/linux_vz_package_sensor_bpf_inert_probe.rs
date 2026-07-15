@@ -279,6 +279,7 @@ struct InertEgressObservationWireV1 {
     gso_segment_size: String,
     ingress_interface_index: String,
     packet_length: String,
+    packet_correlation_sha256: String,
     packet_prefix_byte_length: String,
     packet_prefix_sha256: String,
     prefix_truncated: bool,
@@ -1020,6 +1021,9 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
     {
         return Err(LinuxVzPackageSensorBpfInertProbeErrorV1::EventMismatch);
     }
+    let egress_packet_correlation_sha256 = egress_event
+        .packet_correlation_sha256_v1()
+        .map_err(|_| LinuxVzPackageSensorBpfInertProbeErrorV1::EventMismatch)?;
     let egress_observations = collection
         .egress_events_v1()
         .iter()
@@ -1034,6 +1038,7 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
             gso_segment_size: event.gso_segment_size_v1().to_string(),
             ingress_interface_index: event.ingress_interface_index_v1().to_string(),
             packet_length: event.packet_length_v1().to_string(),
+            packet_correlation_sha256: egress_packet_correlation_sha256.as_str().to_string(),
             packet_prefix_byte_length: event.packet_prefix_v1().len().to_string(),
             packet_prefix_sha256: event.packet_prefix_sha256_v1().as_str().to_string(),
             prefix_truncated: event.prefix_truncated_v1(),
