@@ -103,6 +103,56 @@ impl LinuxVzPackageExecutionRuntimeQualificationProbeEvidenceV1 {
         &self.wire.seed_public_key_sha256
     }
 
+    pub fn service_pid(&self) -> u32 {
+        self.wire
+            .service_pid
+            .parse()
+            .expect("validated service pid")
+    }
+
+    pub fn runner_pid(&self) -> u32 {
+        self.wire.runner_pid.parse().expect("validated runner pid")
+    }
+
+    pub fn runner_thread_count(&self) -> u32 {
+        self.wire
+            .runner_thread_count
+            .parse()
+            .expect("validated runner thread count")
+    }
+
+    pub fn runner_open_descriptor_count(&self) -> u32 {
+        self.wire
+            .runner_open_descriptor_count
+            .parse()
+            .expect("validated runner descriptor count")
+    }
+
+    pub fn runner_inheritable_capabilities(&self) -> u64 {
+        u64::from_str_radix(&self.wire.runner_inheritable_capabilities, 16)
+            .expect("validated inheritable capabilities")
+    }
+
+    pub fn runner_permitted_capabilities(&self) -> u64 {
+        u64::from_str_radix(&self.wire.runner_permitted_capabilities, 16)
+            .expect("validated permitted capabilities")
+    }
+
+    pub fn runner_effective_capabilities(&self) -> u64 {
+        u64::from_str_radix(&self.wire.runner_effective_capabilities, 16)
+            .expect("validated effective capabilities")
+    }
+
+    pub fn runner_bounding_capabilities(&self) -> u64 {
+        u64::from_str_radix(&self.wire.runner_bounding_capabilities, 16)
+            .expect("validated bounding capabilities")
+    }
+
+    pub fn runner_ambient_capabilities(&self) -> u64 {
+        u64::from_str_radix(&self.wire.runner_ambient_capabilities, 16)
+            .expect("validated ambient capabilities")
+    }
+
     pub const fn coordinator_split_exercised(&self) -> bool {
         true
     }

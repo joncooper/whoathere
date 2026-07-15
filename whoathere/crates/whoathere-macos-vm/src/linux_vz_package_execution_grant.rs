@@ -24,9 +24,9 @@ pub enum MacosLinuxVzPackageExecutionScopeV1 {
     OneTypedScenarioOneAttempt,
 }
 
-/// Opaque proof that a separately measured execution-capable runtime passed its future physical
-/// qualification gate. There is intentionally no public constructor in this checkpoint. A later
-/// evidence verifier must be the only production path that can create this value.
+/// Opaque proof that a separately measured execution-capable runtime passed its physical
+/// qualification gate. The signed execution-runtime qualification-record verifier is the only
+/// production path that can create this value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedMacosLinuxVzPackageExecutionRuntimeQualificationV1 {
     qualification_record_sha256: Sha256Digest,
@@ -43,6 +43,37 @@ pub struct VerifiedMacosLinuxVzPackageExecutionRuntimeQualificationV1 {
 }
 
 impl VerifiedMacosLinuxVzPackageExecutionRuntimeQualificationV1 {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_verified_record_v1(
+        qualification_record_sha256: Sha256Digest,
+        qualified_telemetry_backend_sha256: Sha256Digest,
+        execution_runtime_rootfs_sha256: Sha256Digest,
+        execution_runtime_rootfs_byte_length: u64,
+        execution_runtime_manifest_sha256: Sha256Digest,
+        package_execution_runner_sha256: Sha256Digest,
+        guest_evidence_public_key_sha256: Sha256Digest,
+        host_evidence_public_key_sha256: Sha256Digest,
+        execution_grant_issuer_public_key_sha256: Sha256Digest,
+        package_uid: u32,
+        package_gid: u32,
+    ) -> Result<Self, MacosLinuxVzPackageExecutionGrantErrorV1> {
+        let value = Self {
+            qualification_record_sha256,
+            qualified_telemetry_backend_sha256,
+            execution_runtime_rootfs_sha256,
+            execution_runtime_rootfs_byte_length,
+            execution_runtime_manifest_sha256,
+            package_execution_runner_sha256,
+            guest_evidence_public_key_sha256,
+            host_evidence_public_key_sha256,
+            execution_grant_issuer_public_key_sha256,
+            package_uid,
+            package_gid,
+        };
+        value.validate()?;
+        Ok(value)
+    }
+
     pub fn qualification_record_sha256(&self) -> &Sha256Digest {
         &self.qualification_record_sha256
     }

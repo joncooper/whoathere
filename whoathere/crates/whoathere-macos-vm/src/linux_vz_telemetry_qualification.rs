@@ -54,6 +54,10 @@ pub struct QualifiedMacosLinuxVzTelemetryBackendV1 {
     guest_sensor_sha256: Sha256Digest,
     guest_bpf_bundle_sha256: Sha256Digest,
     guest_sensor_configuration_sha256: Sha256Digest,
+    guest_evidence_public_key_sha256: Sha256Digest,
+    host_evidence_public_key_sha256: Sha256Digest,
+    package_uid: u32,
+    package_gid: u32,
 }
 
 impl fmt::Debug for QualifiedMacosLinuxVzTelemetryBackendV1 {
@@ -106,6 +110,22 @@ impl QualifiedMacosLinuxVzTelemetryBackendV1 {
 
     pub fn guest_sensor_configuration_sha256(&self) -> &Sha256Digest {
         &self.guest_sensor_configuration_sha256
+    }
+
+    pub fn guest_evidence_public_key_sha256(&self) -> &Sha256Digest {
+        &self.guest_evidence_public_key_sha256
+    }
+
+    pub fn host_evidence_public_key_sha256(&self) -> &Sha256Digest {
+        &self.host_evidence_public_key_sha256
+    }
+
+    pub const fn package_uid(&self) -> u32 {
+        self.package_uid
+    }
+
+    pub const fn package_gid(&self) -> u32 {
+        self.package_gid
     }
 
     pub const fn eligible_for_typed_package_execution_authority_request(&self) -> bool {
@@ -256,6 +276,10 @@ pub fn qualify_macos_linux_vz_telemetry_backend_v1(
         guest_sensor_sha256: backend.guest_sensor_sha256().clone(),
         guest_bpf_bundle_sha256: backend.guest_bpf_bundle_sha256().clone(),
         guest_sensor_configuration_sha256: backend.guest_sensor_configuration_sha256().clone(),
+        guest_evidence_public_key_sha256: backend.guest_evidence_public_key_sha256().clone(),
+        host_evidence_public_key_sha256: backend.host_evidence_public_key_sha256().clone(),
+        package_uid: backend.package_uid(),
+        package_gid: backend.package_gid(),
     })
 }
 
@@ -375,5 +399,32 @@ pub fn decode_qualified_macos_linux_vz_telemetry_backend_v1(
         guest_sensor_configuration_sha256: expected_backend
             .guest_sensor_configuration_sha256()
             .clone(),
+        guest_evidence_public_key_sha256: expected_backend
+            .guest_evidence_public_key_sha256()
+            .clone(),
+        host_evidence_public_key_sha256: expected_backend.host_evidence_public_key_sha256().clone(),
+        package_uid: expected_backend.package_uid(),
+        package_gid: expected_backend.package_gid(),
     })
+}
+
+#[cfg(test)]
+pub(crate) fn test_qualified_macos_linux_vz_telemetry_backend_v1(
+    guest_evidence_public_key_sha256: Sha256Digest,
+    host_evidence_public_key_sha256: Sha256Digest,
+) -> QualifiedMacosLinuxVzTelemetryBackendV1 {
+    QualifiedMacosLinuxVzTelemetryBackendV1 {
+        canonical_json: b"test-qualified-backend".to_vec(),
+        qualified_backend_sha256: Sha256Digest::from_bytes(b"test-qualified-backend"),
+        backend_identity_sha256: Sha256Digest::from_bytes(b"test-backend-identity"),
+        telemetry_requirements_sha256: Sha256Digest::from_bytes(b"test-requirements"),
+        conformance_evidence_set_sha256: Sha256Digest::from_bytes(b"test-conformance-set"),
+        guest_sensor_sha256: Sha256Digest::from_bytes(b"test-guest-sensor"),
+        guest_bpf_bundle_sha256: Sha256Digest::from_bytes(b"test-bpf-bundle"),
+        guest_sensor_configuration_sha256: Sha256Digest::from_bytes(b"test-sensor-configuration"),
+        guest_evidence_public_key_sha256,
+        host_evidence_public_key_sha256,
+        package_uid: 65_534,
+        package_gid: 65_534,
+    }
 }
