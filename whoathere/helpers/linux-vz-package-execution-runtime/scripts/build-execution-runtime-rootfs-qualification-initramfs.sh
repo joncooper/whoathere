@@ -144,6 +144,7 @@ overlay_gzip="$overlay.gz"
 gzip -n -9 -c "$overlay" > "$overlay_gzip"
 final_initramfs="$work_output/whoathere-execution-runtime-rootfs-qualification-initramfs-virt"
 cp "$base_initramfs" "$final_initramfs"
+chmod 0600 "$final_initramfs"
 /bin/cat "$overlay_gzip" >> "$final_initramfs"
 chmod 0600 "$overlay" "$overlay_gzip" "$final_initramfs"
 
