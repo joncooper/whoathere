@@ -1,0 +1,533 @@
+{
+  "cases": [
+    {
+      "artifact_filename": "whoathere-fixture-npm-ci-canary-1.0.0.tgz",
+      "artifact_kind": "npm_tgz",
+      "artifact_sha256": "1f164d9453c53781cac18cace8cb6be890a2d2726f1d95ec58eda542a367705c",
+      "campaign_id": "canonical-inert-fixture-v1",
+      "ecosystem": "npm",
+      "expected_result": "malicious",
+      "family_id": "canonical-npm-ci-lifecycle-v1",
+      "matched_neighbor_sample_id": "fixture-npm-ci-neighbor-v1",
+      "profiles": [
+        {
+          "expected_activation": false,
+          "expected_observation_kinds": [],
+          "profile_id": "npm_lifecycle_ci_false",
+          "require_complete": true,
+          "required_behavior_labels": [
+            "ci_gated_activation"
+          ],
+          "required_evidence_modalities": [
+            "process",
+            "scenario"
+          ],
+          "required_modalities": [
+            "deterministic",
+            "dynamic",
+            "fused"
+          ],
+          "trigger_label": "npm_lifecycle"
+        },
+        {
+          "expected_activation": true,
+          "expected_observation_kinds": [
+            "local_sinkhole_network_intent"
+          ],
+          "profile_id": "npm_lifecycle_ci_true",
+          "require_complete": true,
+          "required_behavior_labels": [
+            "npm_token_access",
+            "ci_gated_activation"
+          ],
+          "required_evidence_modalities": [
+            "process",
+            "filesystem",
+            "canary",
+            "network",
+            "scenario"
+          ],
+          "required_modalities": [
+            "deterministic",
+            "dynamic",
+            "fused"
+          ],
+          "trigger_label": "npm_lifecycle"
+        }
+      ],
+      "sample_id": "fixture-npm-ci-canary-v1",
+      "threat_classes": [
+        "credential_and_sensitive_file_discovery",
+        "network_and_exfiltration",
+        "environment_and_time_gating"
+      ],
+      "trigger_labels": [
+        "npm_lifecycle"
+      ]
+    },
+    {
+      "artifact_filename": "whoathere-fixture-npm-ci-neighbor-1.0.0.tgz",
+      "artifact_kind": "npm_tgz",
+      "artifact_sha256": "6f49db0d6ec8c4ff1a189a7d65ee697e6fc2bfa20e27a2ac654da43a8c79dacb",
+      "campaign_id": "canonical-inert-fixture-v1",
+      "ecosystem": "npm",
+      "expected_result": "benign",
+      "family_id": "canonical-npm-ci-lifecycle-v1",
+      "matched_neighbor_sample_id": "fixture-npm-ci-canary-v1",
+      "profiles": [
+        {
+          "expected_activation": false,
+          "expected_observation_kinds": [],
+          "profile_id": "npm_lifecycle_ci_false",
+          "require_complete": true,
+          "required_behavior_labels": [],
+          "required_evidence_modalities": [
+            "process",
+            "scenario"
+          ],
+          "required_modalities": [
+            "deterministic",
+            "dynamic",
+            "fused"
+          ],
+          "trigger_label": "npm_lifecycle"
+        },
+        {
+          "expected_activation": true,
+          "expected_observation_kinds": [
+            "local_sinkhole_network_intent"
+          ],
+          "profile_id": "npm_lifecycle_ci_true",
+          "require_complete": true,
+          "required_behavior_labels": [],
+          "required_evidence_modalities": [
+            "process",
+            "filesystem",
+            "network",
+            "scenario"
+          ],
+          "required_modalities": [
+            "deterministic",
+            "dynamic",
+            "fused"
+          ],
+          "trigger_label": "npm_lifecycle"
+        }
+      ],
+      "sample_id": "fixture-npm-ci-neighbor-v1",
+      "threat_classes": [],
+      "trigger_labels": [
+        "npm_lifecycle"
+      ]
+    },
+    {
+      "artifact_filename": "whoathere_fixture_wheel_canary-1.0.0-py3-none-any.whl",
+      "artifact_kind": "wheel",
+      "artifact_sha256": "1a56ad55c53a6f6caf62e8e6891652cad38899fd0bda5016dc5fd393a5bfafcb",
+      "campaign_id": "canonical-inert-fixture-v1",
+      "ecosystem": "pypi",
+      "expected_result": "malicious",
+      "family_id": "canonical-wheel-trigger-matrix-v1",
+      "matched_neighbor_sample_id": "fixture-wheel-neighbor-v1",
+      "profiles": [
+        {
+          "expected_activation": true,
+          "expected_observation_kinds": [
+            "local_sinkhole_network_intent"
+          ],
+          "profile_id": "wheel_pth",
+          "require_complete": true,
+          "required_behavior_labels": [
+            "pypi_token_access"
+          ],
+          "required_evidence_modalities": [
+            "process",
+            "filesystem",
+            "canary",
+            "network",
+            "scenario"
+          ],
+          "required_modalities": [
+            "deterministic",
+            "dynamic",
+            "fused"
+          ],
+          "trigger_label": "wheel_pth"
+        },
+        {
+          "expected_activation": true,
+          "expected_observation_kinds": [
+            "local_sinkhole_network_intent"
+          ],
+          "profile_id": "wheel_import",
+          "require_complete": true,
+          "required_behavior_labels": [
+            "pypi_token_access"
+          ],
+          "required_evidence_modalities": [
+            "process",
+            "filesystem",
+            "canary",
+            "network",
+            "scenario"
+          ],
+          "required_modalities": [
+            "deterministic",
+            "dynamic",
+            "fused"
+          ],
+          "trigger_label": "wheel_import"
+        },
+        {
+          "expected_activation": true,
+          "expected_observation_kinds": [
+            "local_sinkhole_network_intent"
+          ],
+          "profile_id": "wheel_entry_point",
+          "require_complete": true,
+          "required_behavior_labels": [
+            "pypi_token_access"
+          ],
+          "required_evidence_modalities": [
+            "process",
+            "filesystem",
+            "canary",
+            "network",
+            "scenario"
+          ],
+          "required_modalities": [
+            "deterministic",
+            "dynamic",
+            "fused"
+          ],
+          "trigger_label": "wheel_entry_point"
+        }
+      ],
+      "sample_id": "fixture-wheel-canary-v1",
+      "threat_classes": [
+        "credential_and_sensitive_file_discovery",
+        "network_and_exfiltration"
+      ],
+      "trigger_labels": [
+        "wheel_pth",
+        "wheel_import",
+        "wheel_entry_point"
+      ]
+    },
+    {
+      "artifact_filename": "whoathere_fixture_wheel_neighbor-1.0.0-py3-none-any.whl",
+      "artifact_kind": "wheel",
+      "artifact_sha256": "e9bc51a6480b4cddcd6f5fb697e9bc40c783bfc7db6a8625d32d25f65b21bf77",
+      "campaign_id": "canonical-inert-fixture-v1",
+      "ecosystem": "pypi",
+      "expected_result": "benign",
+      "family_id": "canonical-wheel-trigger-matrix-v1",
+      "matched_neighbor_sample_id": "fixture-wheel-canary-v1",
+      "profiles": [
+        {
+          "expected_activation": true,
+          "expected_observation_kinds": [
+            "local_sinkhole_network_intent"
+          ],
+          "profile_id": "wheel_pth",
+          "require_complete": true,
+          "required_behavior_labels": [],
+          "required_evidence_modalities": [
+            "process",
+            "filesystem",
+            "network",
+            "scenario"
+          ],
+          "required_modalities": [
+            "deterministic",
+            "dynamic",
+            "fused"
+          ],
+          "trigger_label": "wheel_pth"
+        },
+        {
+          "expected_activation": true,
+          "expected_observation_kinds": [
+            "local_sinkhole_network_intent"
+          ],
+          "profile_id": "wheel_import",
+          "require_complete": true,
+          "required_behavior_labels": [],
+          "required_evidence_modalities": [
+            "process",
+            "filesystem",
+            "network",
+            "scenario"
+          ],
+          "required_modalities": [
+            "deterministic",
+            "dynamic",
+            "fused"
+          ],
+          "trigger_label": "wheel_import"
+        },
+        {
+          "expected_activation": true,
+          "expected_observation_kinds": [
+            "local_sinkhole_network_intent"
+          ],
+          "profile_id": "wheel_entry_point",
+          "require_complete": true,
+          "required_behavior_labels": [],
+          "required_evidence_modalities": [
+            "process",
+            "filesystem",
+            "network",
+            "scenario"
+          ],
+          "required_modalities": [
+            "deterministic",
+            "dynamic",
+            "fused"
+          ],
+          "trigger_label": "wheel_entry_point"
+        }
+      ],
+      "sample_id": "fixture-wheel-neighbor-v1",
+      "threat_classes": [],
+      "trigger_labels": [
+        "wheel_pth",
+        "wheel_import",
+        "wheel_entry_point"
+      ]
+    },
+    {
+      "artifact_filename": "whoathere_fixture_sdist_canary-1.0.0.tar.gz",
+      "artifact_kind": "sdist_tar_gz",
+      "artifact_sha256": "f604947b4a3343bfac3039157dd6ef8a8333c30ad6c224575203b6874af16c80",
+      "campaign_id": "canonical-inert-fixture-v1",
+      "ecosystem": "pypi",
+      "expected_result": "malicious",
+      "family_id": "canonical-sdist-pep517-trigger-matrix-v1",
+      "matched_neighbor_sample_id": "fixture-sdist-neighbor-v1",
+      "profiles": [
+        {
+          "expected_activation": true,
+          "expected_observation_kinds": [
+            "local_sinkhole_network_intent"
+          ],
+          "profile_id": "sdist_build_backend",
+          "require_complete": true,
+          "required_behavior_labels": [
+            "pypi_token_access"
+          ],
+          "required_evidence_modalities": [
+            "process",
+            "filesystem",
+            "canary",
+            "network",
+            "scenario"
+          ],
+          "required_modalities": [
+            "deterministic",
+            "dynamic",
+            "fused"
+          ],
+          "trigger_label": "sdist_build_backend"
+        },
+        {
+          "expected_activation": true,
+          "expected_observation_kinds": [
+            "local_sinkhole_network_intent"
+          ],
+          "profile_id": "derived_wheel_pth",
+          "require_complete": true,
+          "required_behavior_labels": [
+            "pypi_token_access"
+          ],
+          "required_evidence_modalities": [
+            "process",
+            "filesystem",
+            "canary",
+            "network",
+            "scenario"
+          ],
+          "required_modalities": [
+            "deterministic",
+            "dynamic",
+            "fused"
+          ],
+          "trigger_label": "wheel_pth"
+        },
+        {
+          "expected_activation": true,
+          "expected_observation_kinds": [
+            "local_sinkhole_network_intent"
+          ],
+          "profile_id": "derived_wheel_import",
+          "require_complete": true,
+          "required_behavior_labels": [
+            "pypi_token_access"
+          ],
+          "required_evidence_modalities": [
+            "process",
+            "filesystem",
+            "canary",
+            "network",
+            "scenario"
+          ],
+          "required_modalities": [
+            "deterministic",
+            "dynamic",
+            "fused"
+          ],
+          "trigger_label": "sdist_import"
+        },
+        {
+          "expected_activation": true,
+          "expected_observation_kinds": [
+            "local_sinkhole_network_intent"
+          ],
+          "profile_id": "derived_wheel_entry_point",
+          "require_complete": true,
+          "required_behavior_labels": [
+            "pypi_token_access"
+          ],
+          "required_evidence_modalities": [
+            "process",
+            "filesystem",
+            "canary",
+            "network",
+            "scenario"
+          ],
+          "required_modalities": [
+            "deterministic",
+            "dynamic",
+            "fused"
+          ],
+          "trigger_label": "wheel_entry_point"
+        }
+      ],
+      "sample_id": "fixture-sdist-canary-v1",
+      "threat_classes": [
+        "credential_and_sensitive_file_discovery",
+        "network_and_exfiltration"
+      ],
+      "trigger_labels": [
+        "sdist_build_backend",
+        "wheel_pth",
+        "sdist_import",
+        "wheel_entry_point"
+      ]
+    },
+    {
+      "artifact_filename": "whoathere_fixture_sdist_neighbor-1.0.0.tar.gz",
+      "artifact_kind": "sdist_tar_gz",
+      "artifact_sha256": "5e6b945e58d226e323d73cb5fd5869537302682c1a0f09b2740c9859b3795530",
+      "campaign_id": "canonical-inert-fixture-v1",
+      "ecosystem": "pypi",
+      "expected_result": "benign",
+      "family_id": "canonical-sdist-pep517-trigger-matrix-v1",
+      "matched_neighbor_sample_id": "fixture-sdist-canary-v1",
+      "profiles": [
+        {
+          "expected_activation": true,
+          "expected_observation_kinds": [
+            "local_sinkhole_network_intent"
+          ],
+          "profile_id": "sdist_build_backend",
+          "require_complete": true,
+          "required_behavior_labels": [],
+          "required_evidence_modalities": [
+            "process",
+            "filesystem",
+            "network",
+            "scenario"
+          ],
+          "required_modalities": [
+            "deterministic",
+            "dynamic",
+            "fused"
+          ],
+          "trigger_label": "sdist_build_backend"
+        },
+        {
+          "expected_activation": true,
+          "expected_observation_kinds": [
+            "local_sinkhole_network_intent"
+          ],
+          "profile_id": "derived_wheel_pth",
+          "require_complete": true,
+          "required_behavior_labels": [],
+          "required_evidence_modalities": [
+            "process",
+            "filesystem",
+            "network",
+            "scenario"
+          ],
+          "required_modalities": [
+            "deterministic",
+            "dynamic",
+            "fused"
+          ],
+          "trigger_label": "wheel_pth"
+        },
+        {
+          "expected_activation": true,
+          "expected_observation_kinds": [
+            "local_sinkhole_network_intent"
+          ],
+          "profile_id": "derived_wheel_import",
+          "require_complete": true,
+          "required_behavior_labels": [],
+          "required_evidence_modalities": [
+            "process",
+            "filesystem",
+            "network",
+            "scenario"
+          ],
+          "required_modalities": [
+            "deterministic",
+            "dynamic",
+            "fused"
+          ],
+          "trigger_label": "sdist_import"
+        },
+        {
+          "expected_activation": true,
+          "expected_observation_kinds": [
+            "local_sinkhole_network_intent"
+          ],
+          "profile_id": "derived_wheel_entry_point",
+          "require_complete": true,
+          "required_behavior_labels": [],
+          "required_evidence_modalities": [
+            "process",
+            "filesystem",
+            "network",
+            "scenario"
+          ],
+          "required_modalities": [
+            "deterministic",
+            "dynamic",
+            "fused"
+          ],
+          "trigger_label": "wheel_entry_point"
+        }
+      ],
+      "sample_id": "fixture-sdist-neighbor-v1",
+      "threat_classes": [],
+      "trigger_labels": [
+        "sdist_build_backend",
+        "wheel_pth",
+        "sdist_import",
+        "wheel_entry_point"
+      ]
+    }
+  ],
+  "fixture_safety": {
+    "canary_material": "sentinel-prefixed fake values only",
+    "network_destination": "fixed loopback UDP sinkhole 127.0.0.1:48739",
+    "network_payload": "constant marker; fake canary bytes are never transmitted",
+    "publication_authority": false,
+    "raw_malware": false
+  },
+  "scanner_input_policy": "exact_artifact_only_expectations_sidecar_forbidden",
+  "schema_version": "whoathere.canonical_fixture_expectations.v2",
+  "taxonomy_schema_version": "whoathere.behavior_threat_taxonomy.v1"
+}
