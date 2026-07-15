@@ -675,6 +675,138 @@ pub fn decode_and_verify_macos_linux_vz_package_authority_request_v1(
     Ok(expected)
 }
 
+/// Strictly reconstructs a non-authorizing authority request from its canonical wire bytes and
+/// the exact artifact/scenario inputs available inside the measured guest runtime.
+///
+/// Candidate-runtime and challenge identities remain data in this request; they grant no
+/// execution authority. The separately signed one-use execution grant must bind the request
+/// digest and the independently verified execution-runtime qualification before execution can be
+/// prepared.
+pub fn structurally_decode_macos_linux_vz_package_authority_request_v1(
+    bytes: &[u8],
+    qualified_backend: &QualifiedMacosLinuxVzTelemetryBackendV1,
+    artifact_bytes: &[u8],
+    scenario_plan_bytes: &[u8],
+    scenario_template_bytes: &[u8],
+) -> Result<MacosLinuxVzPackageAuthorityRequestV1, MacosLinuxVzPackageAuthorityRequestErrorV1> {
+    if bytes.is_empty() || bytes.len() > MAX_MACOS_LINUX_VZ_PACKAGE_AUTHORITY_REQUEST_BYTES_V1 {
+        return Err(MacosLinuxVzPackageAuthorityRequestErrorV1::LimitExceeded);
+    }
+    if !qualified_backend.eligible_for_typed_package_execution_authority_request()
+        || qualified_backend.package_execution_authority_permitted()
+        || qualified_backend.sync_back_permitted()
+        || artifact_bytes.is_empty()
+    {
+        return Err(MacosLinuxVzPackageAuthorityRequestErrorV1::BackendNotEligible);
+    }
+    let mut deserializer = serde_json::Deserializer::from_slice(bytes);
+    let wire = PackageAuthorityRequestWireV1::deserialize(&mut deserializer)
+        .map_err(|_| MacosLinuxVzPackageAuthorityRequestErrorV1::InvalidRequest)?;
+    deserializer
+        .end()
+        .map_err(|_| MacosLinuxVzPackageAuthorityRequestErrorV1::InvalidRequest)?;
+    let canonical = serde_json_canonicalizer::to_vec(&wire)
+        .map_err(|_| MacosLinuxVzPackageAuthorityRequestErrorV1::Serialization)?;
+    if canonical != bytes {
+        return Err(MacosLinuxVzPackageAuthorityRequestErrorV1::NonCanonical);
+    }
+    let binding = validate_macos_linux_vz_typed_package_scenario_binding_v1(
+        wire.artifact_kind,
+        scenario_plan_bytes,
+        scenario_template_bytes,
+    )?;
+    let artifact_byte_length = strict_positive_decimal_u64_v1(&wire.artifact_byte_length)
+        .ok_or(MacosLinuxVzPackageAuthorityRequestErrorV1::InvalidRequest)?;
+    let runtime_rootfs_byte_length =
+        strict_positive_decimal_u64_v1(&wire.candidate_runtime_rootfs_byte_length)
+            .filter(|length| *length <= MAX_MACOS_LINUX_VZ_CANDIDATE_RUNTIME_ROOTFS_BYTES_V1)
+            .ok_or(MacosLinuxVzPackageAuthorityRequestErrorV1::CandidateRuntimeInvalid)?;
+    let exact_artifact_sha256 = Sha256Digest::from_bytes(artifact_bytes);
+    let empty = Sha256Digest::from_bytes(&[]);
+    let candidate_digests = [
+        &wire.candidate_runtime_rootfs_sha256,
+        &wire.candidate_runtime_manifest_sha256,
+        &wire.candidate_package_runner_sha256,
+    ];
+    if wire.schema_version != MACOS_LINUX_VZ_PACKAGE_AUTHORITY_REQUEST_SCHEMA_V1
+        || wire.artifact_sha256 != exact_artifact_sha256
+        || artifact_byte_length != artifact_bytes.len() as u64
+        || binding.artifact_sha256 != exact_artifact_sha256
+        || binding.artifact_byte_length != artifact_byte_length
+        || !artifact_magic_matches_format_v1(binding.artifact_format, artifact_bytes)
+        || wire.envelope_sha256 != binding.envelope_sha256
+        || wire.manifest_sha256 != binding.manifest_sha256
+        || wire.scenario_plan_sha256 != binding.scenario_plan_sha256
+        || wire.scenario_plan_id != binding.scenario_plan_id
+        || wire.scenario_template_sha256 != binding.scenario_template_sha256
+        || wire.scenario_id != binding.scenario_id
+        || wire.scenario_kind != binding.scenario_kind
+        || wire.scenario_kind_sha256 != binding.scenario_kind_sha256
+        || wire.scenario_policy_sha256 != binding.scenario_policy_sha256
+        || wire.dependency_closure_sha256 != binding.dependency_closure_sha256
+        || wire.runtime_target != ArtifactRuntimeTargetV1::LinuxArm64
+        || wire.runtime_profile_sha256 != binding.runtime_profile_sha256
+        || wire.candidate_runtime_qualification_state
+            != MacosLinuxVzCandidateRuntimeQualificationStateV1::CandidateExactBytesNotYetIndependentlyQualified
+        || candidate_digests.contains(&&empty)
+        || candidate_digests
+            .iter()
+            .enumerate()
+            .any(|(index, digest)| candidate_digests[..index].contains(digest))
+        || wire.qualified_telemetry_backend_sha256 != *qualified_backend.qualified_backend_sha256()
+        || wire.backend_identity_sha256 != *qualified_backend.backend_identity_sha256()
+        || wire.telemetry_requirements_sha256 != *qualified_backend.telemetry_requirements_sha256()
+        || wire.conformance_evidence_set_sha256
+            != *qualified_backend.conformance_evidence_set_sha256()
+        || wire.request_challenge_sha256 == empty
+        || wire.clone_binding_sha256 == empty
+        || wire.request_challenge_sha256 == wire.clone_binding_sha256
+        || wire.artifact_transport != ArtifactTransportV1::DigestCheckedBoundedRawBytes
+        || wire.network_policy != ArtifactNetworkPolicyV1::NoNetworkDevice
+        || wire.package_privilege != ArtifactPackagePrivilegeV1::DedicatedUnprivilegedUidGid
+        || wire.clone_disposition != ArtifactCloneDispositionV1::DestroyClone
+        || wire.execution_eligibility
+            != "independent_runtime_qualification_then_one_use_execution_grant"
+        || wire.execution_authority_issued
+        || wire.package_execution_permitted
+        || wire.sync_back_policy != ArtifactTelemetrySyncBackPolicyV1::StructurallyAbsent
+    {
+        return Err(MacosLinuxVzPackageAuthorityRequestErrorV1::BindingMismatch);
+    }
+    Ok(MacosLinuxVzPackageAuthorityRequestV1 {
+        canonical_json: canonical.clone(),
+        request_sha256: Sha256Digest::from_bytes(&canonical),
+        artifact_kind: wire.artifact_kind,
+        artifact_sha256: wire.artifact_sha256,
+        artifact_byte_length,
+        scenario_plan_sha256: wire.scenario_plan_sha256,
+        scenario_template_sha256: wire.scenario_template_sha256,
+        scenario_id: wire.scenario_id,
+        scenario_kind_sha256: wire.scenario_kind_sha256,
+        scenario_policy_sha256: wire.scenario_policy_sha256,
+        dependency_closure_sha256: wire.dependency_closure_sha256,
+        runtime_profile_sha256: wire.runtime_profile_sha256,
+        candidate_runtime_rootfs_sha256: wire.candidate_runtime_rootfs_sha256,
+        candidate_runtime_rootfs_byte_length: runtime_rootfs_byte_length,
+        candidate_runtime_manifest_sha256: wire.candidate_runtime_manifest_sha256,
+        candidate_package_runner_sha256: wire.candidate_package_runner_sha256,
+        qualified_telemetry_backend_sha256: wire.qualified_telemetry_backend_sha256,
+        request_challenge_sha256: wire.request_challenge_sha256,
+        clone_binding_sha256: wire.clone_binding_sha256,
+    })
+}
+
+fn strict_positive_decimal_u64_v1(value: &str) -> Option<u64> {
+    if value.is_empty()
+        || value.len() > 20
+        || (value.len() > 1 && value.starts_with('0'))
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    value.parse::<u64>().ok().filter(|value| *value > 0)
+}
+
 pub fn validate_macos_linux_vz_typed_package_scenario_binding_v1(
     artifact_kind: MacosLinuxVzPackageArtifactKindV1,
     scenario_plan_bytes: &[u8],

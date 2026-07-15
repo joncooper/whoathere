@@ -35,6 +35,14 @@ private struct Options {
     let expectedTaskExitCodeByteOffset: UInt64?
     let expectedRootCoordinatorProbeSHA256: String?
     let expectedRootCoordinatorPublicKeySHA256: String?
+    let expectedExecutionRuntimeSHA256: String?
+    let expectedExecutionRuntimePublicKeySHA256: String?
+    let executionRuntimeRootfs: URL?
+    let executionRuntimeManifest: URL?
+    let executionRuntimeQualificationImageManifest: URL?
+    let expectedExecutionRuntimeRootfsSHA256: String?
+    let expectedExecutionRuntimeManifestSHA256: String?
+    let expectedExecutionRuntimeQualificationImageManifestSHA256: String?
     let serialLog: URL
     let timeoutSeconds: Int
 
@@ -48,6 +56,14 @@ private struct Options {
         var expectedTaskExitCodeByteOffset: UInt64?
         var expectedRootCoordinatorProbeSHA256: String?
         var expectedRootCoordinatorPublicKeySHA256: String?
+        var expectedExecutionRuntimeSHA256: String?
+        var expectedExecutionRuntimePublicKeySHA256: String?
+        var executionRuntimeRootfs: URL?
+        var executionRuntimeManifest: URL?
+        var executionRuntimeQualificationImageManifest: URL?
+        var expectedExecutionRuntimeRootfsSHA256: String?
+        var expectedExecutionRuntimeManifestSHA256: String?
+        var expectedExecutionRuntimeQualificationImageManifestSHA256: String?
         var serialLog: URL?
         var timeoutSeconds = 30
         var seenOptions = Set<String>()
@@ -75,6 +91,22 @@ private struct Options {
                 expectedRootCoordinatorProbeSHA256 = value
             case "--expected-root-coordinator-public-key-sha256":
                 expectedRootCoordinatorPublicKeySHA256 = value
+            case "--expected-execution-runtime-sha256":
+                expectedExecutionRuntimeSHA256 = value
+            case "--expected-execution-runtime-public-key-sha256":
+                expectedExecutionRuntimePublicKeySHA256 = value
+            case "--execution-runtime-rootfs":
+                executionRuntimeRootfs = URL(fileURLWithPath: value)
+            case "--execution-runtime-manifest":
+                executionRuntimeManifest = URL(fileURLWithPath: value)
+            case "--execution-runtime-qualification-image-manifest":
+                executionRuntimeQualificationImageManifest = URL(fileURLWithPath: value)
+            case "--expected-execution-runtime-rootfs-sha256":
+                expectedExecutionRuntimeRootfsSHA256 = value
+            case "--expected-execution-runtime-manifest-sha256":
+                expectedExecutionRuntimeManifestSHA256 = value
+            case "--expected-execution-runtime-qualification-image-manifest-sha256":
+                expectedExecutionRuntimeQualificationImageManifestSHA256 = value
             case "--serial-log": serialLog = URL(fileURLWithPath: value)
             case "--timeout-seconds":
                 guard let parsed = Int(value), parsed >= 5, parsed <= 120 else {
@@ -93,6 +125,22 @@ private struct Options {
             && expectedRootCoordinatorPublicKeySHA256 != nil
         let rootCoordinatorOptionsAbsent = expectedRootCoordinatorProbeSHA256 == nil
             && expectedRootCoordinatorPublicKeySHA256 == nil
+        let executionRuntimeMode = expectedExecutionRuntimeSHA256 != nil
+            && expectedExecutionRuntimePublicKeySHA256 != nil
+        let executionRuntimeOptionsAbsent = expectedExecutionRuntimeSHA256 == nil
+            && expectedExecutionRuntimePublicKeySHA256 == nil
+        let executionRuntimeRootfsMode = executionRuntimeRootfs != nil
+            && executionRuntimeManifest != nil
+            && executionRuntimeQualificationImageManifest != nil
+            && expectedExecutionRuntimeRootfsSHA256 != nil
+            && expectedExecutionRuntimeManifestSHA256 != nil
+            && expectedExecutionRuntimeQualificationImageManifestSHA256 != nil
+        let executionRuntimeRootfsOptionsAbsent = executionRuntimeRootfs == nil
+            && executionRuntimeManifest == nil
+            && executionRuntimeQualificationImageManifest == nil
+            && expectedExecutionRuntimeRootfsSHA256 == nil
+            && expectedExecutionRuntimeManifestSHA256 == nil
+            && expectedExecutionRuntimeQualificationImageManifestSHA256 == nil
         guard let kernel, let initramfs, let expectedKernelSHA256,
               let expectedInitramfsSHA256, let serialLog,
               kernel.path.hasPrefix("/"), initramfs.path.hasPrefix("/"),
@@ -102,9 +150,21 @@ private struct Options {
               expectedRuntimeBTFSHA256.map(validSHA256) ?? true,
               expectedRootCoordinatorProbeSHA256.map(validSHA256) ?? true,
               expectedRootCoordinatorPublicKeySHA256.map(validSHA256) ?? true,
+              expectedExecutionRuntimeSHA256.map(validSHA256) ?? true,
+              expectedExecutionRuntimePublicKeySHA256.map(validSHA256) ?? true,
+              expectedExecutionRuntimeRootfsSHA256.map(validSHA256) ?? true,
+              expectedExecutionRuntimeManifestSHA256.map(validSHA256) ?? true,
+              expectedExecutionRuntimeQualificationImageManifestSHA256.map(validSHA256) ?? true,
+              executionRuntimeRootfs.map({ $0.path.hasPrefix("/") }) ?? true,
+              executionRuntimeManifest.map({ $0.path.hasPrefix("/") }) ?? true,
+              executionRuntimeQualificationImageManifest.map({ $0.path.hasPrefix("/") }) ?? true,
               packageSensorOptionsAbsent || packageSensorMode,
               rootCoordinatorOptionsAbsent || rootCoordinatorMode,
-              !(packageSensorMode && rootCoordinatorMode) else {
+              executionRuntimeOptionsAbsent || executionRuntimeMode,
+              executionRuntimeRootfsOptionsAbsent || executionRuntimeRootfsMode,
+              !executionRuntimeRootfsMode || executionRuntimeMode,
+              [packageSensorMode, rootCoordinatorMode, executionRuntimeMode]
+                .filter({ $0 }).count <= 1 else {
             throw HarnessError.usage
         }
         return Self(
@@ -117,6 +177,17 @@ private struct Options {
             expectedTaskExitCodeByteOffset: expectedTaskExitCodeByteOffset,
             expectedRootCoordinatorProbeSHA256: expectedRootCoordinatorProbeSHA256,
             expectedRootCoordinatorPublicKeySHA256: expectedRootCoordinatorPublicKeySHA256,
+            expectedExecutionRuntimeSHA256: expectedExecutionRuntimeSHA256,
+            expectedExecutionRuntimePublicKeySHA256:
+                expectedExecutionRuntimePublicKeySHA256,
+            executionRuntimeRootfs: executionRuntimeRootfs,
+            executionRuntimeManifest: executionRuntimeManifest,
+            executionRuntimeQualificationImageManifest:
+                executionRuntimeQualificationImageManifest,
+            expectedExecutionRuntimeRootfsSHA256: expectedExecutionRuntimeRootfsSHA256,
+            expectedExecutionRuntimeManifestSHA256: expectedExecutionRuntimeManifestSHA256,
+            expectedExecutionRuntimeQualificationImageManifestSHA256:
+                expectedExecutionRuntimeQualificationImageManifestSHA256,
             serialLog: serialLog,
             timeoutSeconds: timeoutSeconds
         )
@@ -142,7 +213,7 @@ private struct LinuxVzConformanceHarness {
             exit(exitCode)
         } catch HarnessError.usage {
             fputs(
-                "usage: whoathere-linux-vz-conformance --kernel PATH --initramfs PATH --expected-kernel-sha256 SHA256 --expected-initramfs-sha256 SHA256 --serial-log PATH [--expected-package-sensor-fixture-sha256 SHA256 --expected-runtime-btf-sha256 SHA256 --expected-task-exit-code-byte-offset DECIMAL | --expected-root-coordinator-probe-sha256 SHA256 --expected-root-coordinator-public-key-sha256 SHA256] [--timeout-seconds 30]\n",
+                "usage: whoathere-linux-vz-conformance --kernel PATH --initramfs PATH --expected-kernel-sha256 SHA256 --expected-initramfs-sha256 SHA256 --serial-log PATH [--expected-package-sensor-fixture-sha256 SHA256 --expected-runtime-btf-sha256 SHA256 --expected-task-exit-code-byte-offset DECIMAL | --expected-root-coordinator-probe-sha256 SHA256 --expected-root-coordinator-public-key-sha256 SHA256 | --expected-execution-runtime-sha256 SHA256 --expected-execution-runtime-public-key-sha256 SHA256 [--execution-runtime-rootfs PATH --execution-runtime-manifest PATH --execution-runtime-qualification-image-manifest PATH --expected-execution-runtime-rootfs-sha256 SHA256 --expected-execution-runtime-manifest-sha256 SHA256 --expected-execution-runtime-qualification-image-manifest-sha256 SHA256]] [--timeout-seconds 30]\n",
                 stderr
             )
             exit(64)
@@ -169,6 +240,72 @@ private struct LinuxVzConformanceHarness {
         }
         guard initramfsSHA256 == options.expectedInitramfsSHA256 else {
             throw HarnessError.imageDigestMismatch("initramfs")
+        }
+        let executionRuntimeManifest: ParsedLinuxVzPackageExecutionRuntimeManifest?
+        let executionRuntimeQualificationImageManifest:
+            ParsedLinuxVzPackageExecutionRuntimeQualificationImageManifest?
+        let executionRuntimeRootfsSHA256: String?
+        let executionRuntimeManifestSHA256: String?
+        let executionRuntimeQualificationImageManifestSHA256: String?
+        if let rootfs = options.executionRuntimeRootfs,
+           let manifestURL = options.executionRuntimeManifest,
+           let qualificationImageManifestURL =
+            options.executionRuntimeQualificationImageManifest,
+           let expectedRootfsSHA256 = options.expectedExecutionRuntimeRootfsSHA256,
+           let expectedManifestSHA256 = options.expectedExecutionRuntimeManifestSHA256,
+           let expectedQualificationImageManifestSHA256 =
+            options.expectedExecutionRuntimeQualificationImageManifestSHA256,
+           let expectedRuntimeSHA256 = options.expectedExecutionRuntimeSHA256,
+           let expectedPublicKeySHA256 = options.expectedExecutionRuntimePublicKeySHA256 {
+            guard try regularNonSymlinkFile(manifestURL),
+                  try regularNonSymlinkFile(qualificationImageManifestURL) else {
+                throw HarnessError.imageDigestMismatch("execution_runtime_manifest_metadata")
+            }
+            let manifestData = try Data(contentsOf: manifestURL)
+            let parsed = try decodeLinuxVzPackageExecutionRuntimeManifest(manifestData)
+            let qualificationImageManifestData = try Data(
+                contentsOf: qualificationImageManifestURL
+            )
+            let parsedQualificationImageManifest = try
+                decodeLinuxVzPackageExecutionRuntimeQualificationImageManifest(
+                    qualificationImageManifestData,
+                    runtimeManifest: parsed,
+                    expectedGuestEvidencePublicKeySHA256: expectedPublicKeySHA256
+                )
+            let measuredManifestSHA256 = try fileSHA256(manifestURL)
+            let measuredQualificationImageManifestSHA256 = try fileSHA256(
+                qualificationImageManifestURL
+            )
+            let measuredRootfsSHA256 = try fileSHA256(rootfs)
+            let rootfsValues = try rootfs.resourceValues(forKeys: [.fileSizeKey])
+            guard measuredManifestSHA256 == expectedManifestSHA256,
+                  parsed.manifestSHA256 == expectedManifestSHA256,
+                  measuredQualificationImageManifestSHA256
+                    == expectedQualificationImageManifestSHA256,
+                  parsedQualificationImageManifest.manifestSHA256
+                    == expectedQualificationImageManifestSHA256,
+                  parsedQualificationImageManifest.initramfsSHA256 == initramfsSHA256,
+                  measuredRootfsSHA256 == expectedRootfsSHA256,
+                  parsed.rootfsSHA256 == expectedRootfsSHA256,
+                  rootfsValues.fileSize.map(UInt64.init) == parsed.rootfsByteLength,
+                  parsed.packageRunnerSHA256 == expectedRuntimeSHA256,
+                  !parsed.executionAuthorityPermitted,
+                  !parsed.packageExecutionPermitted,
+                  !parsed.syncBackPermitted else {
+                throw HarnessError.imageDigestMismatch("execution_runtime_manifest_binding")
+            }
+            executionRuntimeManifest = parsed
+            executionRuntimeQualificationImageManifest = parsedQualificationImageManifest
+            executionRuntimeRootfsSHA256 = measuredRootfsSHA256
+            executionRuntimeManifestSHA256 = measuredManifestSHA256
+            executionRuntimeQualificationImageManifestSHA256 =
+                measuredQualificationImageManifestSHA256
+        } else {
+            executionRuntimeManifest = nil
+            executionRuntimeQualificationImageManifest = nil
+            executionRuntimeRootfsSHA256 = nil
+            executionRuntimeManifestSHA256 = nil
+            executionRuntimeQualificationImageManifestSHA256 = nil
         }
         try FileManager.default.createDirectory(
             at: options.serialLog.deletingLastPathComponent(),
@@ -206,13 +343,25 @@ private struct LinuxVzConformanceHarness {
             }
         }
         let guestNetworkSocket = FileHandle(fileDescriptor: sockets[0], closeOnDealloc: false)
-        let configuration = try buildLinuxVzInertVMConfiguration(
-            kernelURL: options.kernel,
-            initramfsURL: options.initramfs,
-            serialInput: nil,
-            serialOutput: serialOutput,
-            rawFrameSocket: guestNetworkSocket
-        )
+        let configuration: VZVirtualMachineConfiguration
+        if let rootfs = options.executionRuntimeRootfs {
+            configuration = try buildLinuxVzPackageExecutionRuntimeQualificationVMConfiguration(
+                kernelURL: options.kernel,
+                initramfsURL: options.initramfs,
+                rootfsURL: rootfs,
+                serialInput: nil,
+                serialOutput: serialOutput,
+                rawFrameSocket: guestNetworkSocket
+            )
+        } else {
+            configuration = try buildLinuxVzInertVMConfiguration(
+                kernelURL: options.kernel,
+                initramfsURL: options.initramfs,
+                serialInput: nil,
+                serialOutput: serialOutput,
+                rawFrameSocket: guestNetworkSocket
+            )
+        }
 
         let queue = DispatchQueue(label: "whoathere.linux-vz.inert-vm")
         let virtualMachine = VZVirtualMachine(configuration: configuration, queue: queue)
@@ -276,8 +425,145 @@ private struct LinuxVzConformanceHarness {
         let rawFrameCount = rawFrameCollection.ingressFrameCount
         let finalKernelSHA256 = try fileSHA256(options.kernel)
         let finalInitramfsSHA256 = try fileSHA256(options.initramfs)
+        let finalExecutionRuntimeRootfsSHA256 = try options.executionRuntimeRootfs.map {
+            try fileSHA256($0)
+        }
+        let finalExecutionRuntimeManifestSHA256 = try options.executionRuntimeManifest.map {
+            try fileSHA256($0)
+        }
+        let finalExecutionRuntimeQualificationImageManifestSHA256 = try options
+            .executionRuntimeQualificationImageManifest.map {
+                try fileSHA256($0)
+            }
         let imageIdentityStable = finalKernelSHA256 == kernelSHA256
             && finalInitramfsSHA256 == initramfsSHA256
+            && finalExecutionRuntimeRootfsSHA256 == executionRuntimeRootfsSHA256
+            && finalExecutionRuntimeManifestSHA256 == executionRuntimeManifestSHA256
+            && finalExecutionRuntimeQualificationImageManifestSHA256
+                == executionRuntimeQualificationImageManifestSHA256
+        if let expectedRuntimeSHA256 = options.expectedExecutionRuntimeSHA256,
+           let expectedPublicKeySHA256 = options.expectedExecutionRuntimePublicKeySHA256 {
+            let evidence = try? decodeLinuxVzPackageExecutionRuntimeQualificationEvidenceV1(
+                serialData,
+                expectedRuntimeSHA256: expectedRuntimeSHA256,
+                expectedPublicKeySHA256: expectedPublicKeySHA256
+            )
+            let rootfsMode = executionRuntimeManifest != nil
+            let rootfsMarkers = [
+                "WHOATHERE_CAPABILITY execution_runtime_manifest=verified_exact",
+                "WHOATHERE_CAPABILITY execution_runtime_rootfs=verified_exact_read_only",
+                "WHOATHERE_CAPABILITY execution_runtime_toolchain=verified_exact_unprivileged",
+            ]
+            var missingMarkers =
+                linuxVzPackageExecutionRuntimeQualificationMissingMarkersV1(serialData)
+            if rootfsMode {
+                let lines = Set(serialData.split(separator: 0x0a).map { rawLine in
+                    var line = Array(rawLine)
+                    if line.last == 0x0d { line.removeLast() }
+                    return String(decoding: line, as: UTF8.self)
+                })
+                missingMarkers.append(contentsOf: rootfsMarkers.filter { !lines.contains($0) })
+            }
+            let failurePresent =
+                linuxVzPackageExecutionRuntimeQualificationFailurePresentV1(serialData)
+            let success = stopped && evidence != nil && missingMarkers.isEmpty
+                && !failurePresent && rawFrameCount == 0
+                && rawFrameCollection.droppedFrameCount == 0
+                && rawFrameCollection.truncatedFrameCount == 0
+                && rawFrameCollection.healthy && imageIdentityStable
+            emitJSON([
+                "schema_version":
+                    rootfsMode
+                        ? "whoathere.linux_vz_package_execution_runtime_rootfs_qualification_boot_result.v1"
+                        : "whoathere.linux_vz_package_execution_runtime_qualification_boot_result.v1",
+                "status": success ? "ok" : "error",
+                "operation": rootfsMode
+                    ? "linux_vz_package_execution_runtime_rootfs_qualification"
+                    : "linux_vz_package_execution_runtime_qualification",
+                "kernel_sha256": kernelSHA256,
+                "initramfs_sha256": initramfsSHA256,
+                "runtime_sha256": expectedRuntimeSHA256,
+                "runtime_manifest_sha256":
+                    executionRuntimeManifest?.manifestSHA256 ?? "unavailable",
+                "runtime_qualification_image_manifest_sha256":
+                    executionRuntimeQualificationImageManifest?.manifestSHA256
+                        ?? "unavailable",
+                "runtime_rootfs_sha256":
+                    executionRuntimeManifest?.rootfsSHA256 ?? "unavailable",
+                "runtime_rootfs_byte_length": String(
+                    executionRuntimeManifest?.rootfsByteLength ?? 0
+                ),
+                "node_executable_sha256":
+                    executionRuntimeManifest?.nodeExecutableSHA256 ?? "unavailable",
+                "npm_cli_sha256": executionRuntimeManifest?.npmCLISHA256 ?? "unavailable",
+                "python_executable_sha256":
+                    executionRuntimeManifest?.pythonExecutableSHA256 ?? "unavailable",
+                "pip_entrypoint_sha256":
+                    executionRuntimeManifest?.pipEntrypointSHA256 ?? "unavailable",
+                "guest_evidence_public_key_sha256": expectedPublicKeySHA256,
+                "kernel_command_line": linuxVzInertKernelCommandLineV1,
+                "network_topology": "host_raw_frame_sinkhole_no_external_route",
+                "virtualization_supported": VZVirtualMachine.isSupported,
+                "image_identity_stable": imageIdentityStable,
+                "vm_stopped": stopped,
+                "evidence_valid": evidence != nil,
+                "evidence_payload_sha256": evidence?.payloadSHA256 ?? "unavailable",
+                "evidence_byte_length": String(evidence?.canonicalJSON.count ?? 0),
+                "service_pid": String(evidence?.servicePID ?? 0),
+                "runner_pid": String(evidence?.runnerPID ?? 0),
+                "runner_thread_count": String(evidence?.threadCount ?? 0),
+                "runner_open_descriptor_count": String(
+                    evidence?.openDescriptorCount ?? 0
+                ),
+                "runner_inheritable_capabilities": String(
+                    format: "%016llx", evidence?.inheritableCapabilities ?? 0
+                ),
+                "runner_permitted_capabilities": String(
+                    format: "%016llx", evidence?.permittedCapabilities ?? 0
+                ),
+                "runner_effective_capabilities": String(
+                    format: "%016llx", evidence?.effectiveCapabilities ?? 0
+                ),
+                "runner_bounding_capabilities": String(
+                    format: "%016llx", evidence?.boundingCapabilities ?? 0
+                ),
+                "runner_ambient_capabilities": String(
+                    format: "%016llx", evidence?.ambientCapabilities ?? 0
+                ),
+                "required_marker_count":
+                    linuxVzPackageExecutionRuntimeQualificationRequiredMarkersV1.count
+                        + (rootfsMode ? rootfsMarkers.count : 0),
+                "missing_required_markers": missingMarkers,
+                "failure_marker_present": failurePresent,
+                "raw_frame_count": rawFrameCount,
+                "raw_frame_retained_count": rawFrameCollection.retainedFrameCount,
+                "raw_frame_dropped_count": rawFrameCollection.droppedFrameCount,
+                "raw_frame_truncated_count": rawFrameCollection.truncatedFrameCount,
+                "packet_sensor_healthy": rawFrameCollection.healthy,
+                "packet_sensor_terminal": rawFrameCollection.terminal,
+                "external_route": false,
+                "root_disk_present": rootfsMode,
+                "root_disk_read_only": rootfsMode,
+                "rootfs_identity_stable": finalExecutionRuntimeRootfsSHA256
+                    == executionRuntimeRootfsSHA256,
+                "runtime_manifest_identity_stable": finalExecutionRuntimeManifestSHA256
+                    == executionRuntimeManifestSHA256,
+                "runtime_qualification_image_manifest_identity_stable":
+                    finalExecutionRuntimeQualificationImageManifestSHA256
+                        == executionRuntimeQualificationImageManifestSHA256,
+                "storage_device_count": rootfsMode ? "1" : "0",
+                "writable_storage_device_count": "0",
+                "directory_share_count": "0",
+                "execution_authority_issued": false,
+                "execution_grant_consumed": false,
+                "execution_request_consumed": false,
+                "package_execution": false,
+                "malware_execution": false,
+                "sync_back": false,
+                "exit_code": success ? 0 : 70,
+            ])
+            return success ? 0 : 70
+        }
         if let expectedProbeSHA256 = options.expectedRootCoordinatorProbeSHA256,
            let expectedPublicKeySHA256 = options.expectedRootCoordinatorPublicKeySHA256 {
             let evidence = try? decodeLinuxVzPackageRootCoordinatorEvidenceV1(
@@ -562,4 +848,9 @@ private func validSHA256(_ value: String) -> Bool {
     return value.dropFirst(7).utf8.allSatisfy { byte in
         (byte >= 48 && byte <= 57) || (byte >= 97 && byte <= 102)
     }
+}
+
+private func regularNonSymlinkFile(_ url: URL) throws -> Bool {
+    let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+    return values.isRegularFile == true && values.isSymbolicLink != true
 }

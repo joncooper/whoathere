@@ -787,6 +787,277 @@ impl MacosLinuxVzPackageExecutionGrantVerifierV1 {
     }
 }
 
+/// Runtime-qualified identities required to verify a self-contained signed execution grant in the
+/// measured guest before the root coordinator forks.
+///
+/// This value is not execution authority. The grant issuer's Ed25519 signature, the exact
+/// non-authorizing authority request, and the one-use verifier below are all still required.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MacosLinuxVzPackageExecutionRuntimeGrantBindingsV1 {
+    execution_runtime_qualification_record_sha256: Sha256Digest,
+    guest_evidence_public_key_sha256: Sha256Digest,
+    host_evidence_public_key_sha256: Sha256Digest,
+    execution_grant_issuer_public_key_sha256: Sha256Digest,
+}
+
+impl MacosLinuxVzPackageExecutionRuntimeGrantBindingsV1 {
+    pub fn new(
+        execution_runtime_qualification_record_sha256: Sha256Digest,
+        guest_evidence_public_key_sha256: Sha256Digest,
+        host_evidence_public_key_sha256: Sha256Digest,
+        execution_grant_issuer_public_key_sha256: Sha256Digest,
+    ) -> Result<Self, MacosLinuxVzPackageExecutionGrantErrorV1> {
+        let value = Self {
+            execution_runtime_qualification_record_sha256,
+            guest_evidence_public_key_sha256,
+            host_evidence_public_key_sha256,
+            execution_grant_issuer_public_key_sha256,
+        };
+        value.validate_v1()?;
+        Ok(value)
+    }
+
+    fn validate_v1(&self) -> Result<(), MacosLinuxVzPackageExecutionGrantErrorV1> {
+        let empty = Sha256Digest::from_bytes(&[]);
+        let values = [
+            &self.execution_runtime_qualification_record_sha256,
+            &self.guest_evidence_public_key_sha256,
+            &self.host_evidence_public_key_sha256,
+            &self.execution_grant_issuer_public_key_sha256,
+        ];
+        if values.contains(&&empty)
+            || values
+                .iter()
+                .enumerate()
+                .any(|(index, digest)| values[..index].contains(digest))
+        {
+            return Err(MacosLinuxVzPackageExecutionGrantErrorV1::QualificationInvalid);
+        }
+        Ok(())
+    }
+
+    pub fn execution_runtime_qualification_record_sha256(&self) -> &Sha256Digest {
+        &self.execution_runtime_qualification_record_sha256
+    }
+
+    pub fn guest_evidence_public_key_sha256(&self) -> &Sha256Digest {
+        &self.guest_evidence_public_key_sha256
+    }
+
+    pub fn host_evidence_public_key_sha256(&self) -> &Sha256Digest {
+        &self.host_evidence_public_key_sha256
+    }
+
+    pub fn execution_grant_issuer_public_key_sha256(&self) -> &Sha256Digest {
+        &self.execution_grant_issuer_public_key_sha256
+    }
+
+    pub const fn execution_authority_permitted(&self) -> bool {
+        false
+    }
+
+    pub const fn sync_back_permitted(&self) -> bool {
+        false
+    }
+}
+
+/// One-boot verifier for the signed grant received by the measured execution runtime.
+///
+/// The verifier burns before parsing, time validation, request binding, or signature validation.
+/// Signed grant fields are accepted only when they match the exact reconstructed authority
+/// request and the independently supplied runtime-qualified identities.
+pub struct MacosLinuxVzPackageExecutionRuntimeGrantVerifierV1 {
+    bindings: MacosLinuxVzPackageExecutionRuntimeGrantBindingsV1,
+    verifying_key: VerifyingKey,
+    consumed: AtomicBool,
+}
+
+impl fmt::Debug for MacosLinuxVzPackageExecutionRuntimeGrantVerifierV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("MacosLinuxVzPackageExecutionRuntimeGrantVerifierV1")
+            .field("bindings", &self.bindings)
+            .field("verifying_key", &"<runtime-qualified-public-key>")
+            .field("consumed", &self.consumed.load(Ordering::Acquire))
+            .finish()
+    }
+}
+
+impl MacosLinuxVzPackageExecutionRuntimeGrantVerifierV1 {
+    pub fn new(
+        bindings: MacosLinuxVzPackageExecutionRuntimeGrantBindingsV1,
+        verifying_key_bytes: [u8; 32],
+    ) -> Result<Self, MacosLinuxVzPackageExecutionGrantErrorV1> {
+        bindings.validate_v1()?;
+        if Sha256Digest::from_bytes(&verifying_key_bytes)
+            != bindings.execution_grant_issuer_public_key_sha256
+        {
+            return Err(MacosLinuxVzPackageExecutionGrantErrorV1::PublicKeyMismatch);
+        }
+        let verifying_key = VerifyingKey::from_bytes(&verifying_key_bytes)
+            .map_err(|_| MacosLinuxVzPackageExecutionGrantErrorV1::PublicKeyMismatch)?;
+        if verifying_key.is_weak() {
+            return Err(MacosLinuxVzPackageExecutionGrantErrorV1::PublicKeyMismatch);
+        }
+        Ok(Self {
+            bindings,
+            verifying_key,
+            consumed: AtomicBool::new(false),
+        })
+    }
+
+    pub fn verify_and_consume(
+        &self,
+        mut bytes: Vec<u8>,
+        request: &MacosLinuxVzPackageAuthorityRequestV1,
+        observed_unix_seconds: u64,
+    ) -> Result<
+        MacosLinuxVzPackageExecutionGrantObservationV1,
+        MacosLinuxVzPackageExecutionGrantErrorV1,
+    > {
+        let result = if self.consumed.swap(true, Ordering::AcqRel) {
+            Err(MacosLinuxVzPackageExecutionGrantErrorV1::AlreadyConsumed)
+        } else {
+            decode_and_verify_runtime_grant_v1(
+                &bytes,
+                request,
+                &self.bindings,
+                &self.verifying_key,
+                observed_unix_seconds,
+            )
+        };
+        bytes.zeroize();
+        result
+    }
+
+    pub fn consumed(&self) -> bool {
+        self.consumed.load(Ordering::Acquire)
+    }
+}
+
+fn decode_and_verify_runtime_grant_v1(
+    bytes: &[u8],
+    request: &MacosLinuxVzPackageAuthorityRequestV1,
+    bindings: &MacosLinuxVzPackageExecutionRuntimeGrantBindingsV1,
+    verifying_key: &VerifyingKey,
+    observed_unix_seconds: u64,
+) -> Result<MacosLinuxVzPackageExecutionGrantObservationV1, MacosLinuxVzPackageExecutionGrantErrorV1>
+{
+    if bytes.is_empty() || bytes.len() > MAX_MACOS_LINUX_VZ_PACKAGE_EXECUTION_GRANT_BYTES_V1 {
+        return Err(MacosLinuxVzPackageExecutionGrantErrorV1::LimitExceeded);
+    }
+    let mut deserializer = serde_json::Deserializer::from_slice(bytes);
+    let wire = ExecutionGrantWireV1::deserialize(&mut deserializer)
+        .map_err(|_| MacosLinuxVzPackageExecutionGrantErrorV1::InvalidGrant)?;
+    deserializer
+        .end()
+        .map_err(|_| MacosLinuxVzPackageExecutionGrantErrorV1::InvalidGrant)?;
+    let canonical = serde_json_canonicalizer::to_vec(&wire)
+        .map_err(|_| MacosLinuxVzPackageExecutionGrantErrorV1::Serialization)?;
+    if canonical != bytes || !valid_signature_hex_v1(&wire.signature_ed25519_hex) {
+        return Err(MacosLinuxVzPackageExecutionGrantErrorV1::NonCanonical);
+    }
+    let signature_hex = wire.signature_ed25519_hex.clone();
+    let unsigned = wire.into_unsigned();
+    let issued_at_unix_seconds = strict_positive_decimal_u64_v1(&unsigned.issued_at_unix_seconds)
+        .ok_or(MacosLinuxVzPackageExecutionGrantErrorV1::InvalidTime)?;
+    let expires_at_unix_seconds = strict_positive_decimal_u64_v1(&unsigned.expires_at_unix_seconds)
+        .ok_or(MacosLinuxVzPackageExecutionGrantErrorV1::InvalidTime)?;
+    let runtime_rootfs_byte_length =
+        strict_positive_decimal_u64_v1(&unsigned.execution_runtime_rootfs_byte_length)
+            .ok_or(MacosLinuxVzPackageExecutionGrantErrorV1::ContextBindingMismatch)?;
+    let empty = Sha256Digest::from_bytes(&[]);
+    if unsigned.schema_version != MACOS_LINUX_VZ_PACKAGE_EXECUTION_GRANT_SCHEMA_V1
+        || unsigned.authority != EXECUTION_GRANT_AUTHORITY_V1
+        || unsigned.artifact_kind != request.artifact_kind()
+        || unsigned.artifact_sha256 != *request.artifact_sha256()
+        || unsigned.package_authority_request_sha256 != *request.request_sha256()
+        || unsigned.scenario_plan_sha256 != *request.scenario_plan_sha256()
+        || unsigned.scenario_template_sha256 != *request.scenario_template_sha256()
+        || unsigned.runtime_profile_sha256 != *request.runtime_profile_sha256()
+        || unsigned.qualified_telemetry_backend_sha256
+            != *request.qualified_telemetry_backend_sha256()
+        || unsigned.execution_runtime_qualification_record_sha256
+            != bindings.execution_runtime_qualification_record_sha256
+        || unsigned.execution_runtime_rootfs_sha256 != *request.candidate_runtime_rootfs_sha256()
+        || runtime_rootfs_byte_length != request.candidate_runtime_rootfs_byte_length()
+        || unsigned.execution_runtime_manifest_sha256
+            != *request.candidate_runtime_manifest_sha256()
+        || unsigned.package_execution_runner_sha256 != *request.candidate_package_runner_sha256()
+        || unsigned.execution_grant_issuer_public_key_sha256
+            != bindings.execution_grant_issuer_public_key_sha256
+        || unsigned.request_challenge_sha256 != *request.request_challenge_sha256()
+        || unsigned.clone_binding_sha256 != *request.clone_binding_sha256()
+        || unsigned.grant_challenge_sha256 == empty
+        || unsigned.attempt_binding_sha256 == empty
+        || unsigned.grant_challenge_sha256 == unsigned.attempt_binding_sha256
+        || unsigned.grant_challenge_sha256 == unsigned.request_challenge_sha256
+        || unsigned.grant_challenge_sha256 == unsigned.clone_binding_sha256
+        || unsigned.attempt_binding_sha256 == unsigned.request_challenge_sha256
+        || unsigned.attempt_binding_sha256 == unsigned.clone_binding_sha256
+        || issued_at_unix_seconds >= expires_at_unix_seconds
+        || expires_at_unix_seconds - issued_at_unix_seconds
+            > MAX_MACOS_LINUX_VZ_PACKAGE_EXECUTION_GRANT_LIFETIME_SECONDS_V1
+        || unsigned.package_uid != PACKAGE_UID_V1.to_string()
+        || unsigned.package_gid != PACKAGE_GID_V1.to_string()
+        || unsigned.attempt_limit != "1"
+        || unsigned.execution_scope
+            != MacosLinuxVzPackageExecutionScopeV1::OneTypedScenarioOneAttempt
+        || unsigned.public_network_route_present
+        || !unsigned.execution_authority_issued
+        || !unsigned.package_execution_permitted
+        || unsigned.sync_back_policy != ArtifactTelemetrySyncBackPolicyV1::StructurallyAbsent
+        || request.package_execution_authority_permitted()
+        || request.sync_back_permitted()
+    {
+        return Err(MacosLinuxVzPackageExecutionGrantErrorV1::ContextBindingMismatch);
+    }
+    let unsigned_bytes = serde_json_canonicalizer::to_vec(&unsigned)
+        .map_err(|_| MacosLinuxVzPackageExecutionGrantErrorV1::Serialization)?;
+    let signature = Signature::from_bytes(&decode_signature_v1(&signature_hex)?);
+    verifying_key
+        .verify_strict(&signature_message_v1(&unsigned_bytes), &signature)
+        .map_err(|_| MacosLinuxVzPackageExecutionGrantErrorV1::SignatureFailed)?;
+    if observed_unix_seconds < issued_at_unix_seconds {
+        return Err(MacosLinuxVzPackageExecutionGrantErrorV1::NotYetValid);
+    }
+    if observed_unix_seconds >= expires_at_unix_seconds {
+        return Err(MacosLinuxVzPackageExecutionGrantErrorV1::Expired);
+    }
+    Ok(MacosLinuxVzPackageExecutionGrantObservationV1 {
+        execution_grant_sha256: Sha256Digest::from_bytes(bytes),
+        package_authority_request_sha256: request.request_sha256().clone(),
+        execution_runtime_qualification_record_sha256: bindings
+            .execution_runtime_qualification_record_sha256
+            .clone(),
+        request_challenge_sha256: request.request_challenge_sha256().clone(),
+        grant_challenge_sha256: unsigned.grant_challenge_sha256,
+        attempt_binding_sha256: unsigned.attempt_binding_sha256,
+        clone_binding_sha256: request.clone_binding_sha256().clone(),
+        guest_evidence_public_key_sha256: bindings.guest_evidence_public_key_sha256.clone(),
+        host_evidence_public_key_sha256: bindings.host_evidence_public_key_sha256.clone(),
+        issued_at_unix_seconds,
+        expires_at_unix_seconds,
+        verified_at_unix_seconds: observed_unix_seconds,
+        package_uid: PACKAGE_UID_V1,
+        package_gid: PACKAGE_GID_V1,
+        consumed: true,
+        execution_request_consumed: AtomicBool::new(false),
+        root_evidence_signing_authority_issued: AtomicBool::new(false),
+    })
+}
+
+fn strict_positive_decimal_u64_v1(value: &str) -> Option<u64> {
+    if value.is_empty()
+        || value.len() > 20
+        || (value.len() > 1 && value.starts_with('0'))
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    value.parse::<u64>().ok().filter(|value| *value > 0)
+}
+
 fn decode_and_verify_grant_v1(
     bytes: &[u8],
     context: &MacosLinuxVzPackageExecutionGrantContextV1,
@@ -1114,6 +1385,77 @@ mod tests {
         assert_eq!(
             verifier
                 .verify_and_consume(grant.as_bytes().to_vec(), context.issued_at_unix_seconds()),
+            Err(MacosLinuxVzPackageExecutionGrantErrorV1::AlreadyConsumed)
+        );
+    }
+
+    #[test]
+    fn measured_runtime_consumes_self_contained_signed_grant_against_exact_request() {
+        let mut context = context();
+        let request = crate::linux_vz_package_authority_request::test_macos_linux_vz_package_authority_request_for_execution_v1(
+            digest("runtime authority request"),
+            MacosLinuxVzPackageArtifactKindV1::NpmTarball,
+            digest("runtime artifact"),
+            digest("runtime request challenge"),
+            digest("runtime clone binding"),
+        );
+        context.artifact_kind = request.artifact_kind();
+        context.artifact_sha256 = request.artifact_sha256().clone();
+        context.package_authority_request_sha256 = request.request_sha256().clone();
+        context.scenario_plan_sha256 = request.scenario_plan_sha256().clone();
+        context.scenario_template_sha256 = request.scenario_template_sha256().clone();
+        context.runtime_profile_sha256 = request.runtime_profile_sha256().clone();
+        context.qualified_telemetry_backend_sha256 =
+            request.qualified_telemetry_backend_sha256().clone();
+        context.execution_runtime_rootfs_sha256 = request.candidate_runtime_rootfs_sha256().clone();
+        context.execution_runtime_rootfs_byte_length =
+            request.candidate_runtime_rootfs_byte_length();
+        context.execution_runtime_manifest_sha256 =
+            request.candidate_runtime_manifest_sha256().clone();
+        context.package_execution_runner_sha256 = request.candidate_package_runner_sha256().clone();
+        context.request_challenge_sha256 = request.request_challenge_sha256().clone();
+        context.clone_binding_sha256 = request.clone_binding_sha256().clone();
+        let public_key = SigningKey::from_bytes(&SIGNING_SEED)
+            .verifying_key()
+            .to_bytes();
+        let grant = sign_macos_linux_vz_package_execution_grant_v1(&context, SIGNING_SEED)
+            .expect("signed runtime grant");
+        let bindings = MacosLinuxVzPackageExecutionRuntimeGrantBindingsV1::new(
+            context
+                .execution_runtime_qualification_record_sha256
+                .clone(),
+            context.guest_evidence_public_key_sha256.clone(),
+            context.host_evidence_public_key_sha256.clone(),
+            context.execution_grant_issuer_public_key_sha256.clone(),
+        )
+        .expect("runtime bindings");
+        let verifier =
+            MacosLinuxVzPackageExecutionRuntimeGrantVerifierV1::new(bindings, public_key)
+                .expect("runtime verifier");
+        let observed = verifier
+            .verify_and_consume(
+                grant.as_bytes().to_vec(),
+                &request,
+                context.issued_at_unix_seconds,
+            )
+            .expect("runtime consumes grant");
+        assert!(observed.consumed());
+        assert!(!observed.execution_request_consumed());
+        assert_eq!(
+            observed.execution_grant_sha256(),
+            &Sha256Digest::from_bytes(grant.as_bytes())
+        );
+        assert_eq!(
+            observed.guest_evidence_public_key_sha256(),
+            &context.guest_evidence_public_key_sha256
+        );
+        assert!(verifier.consumed());
+        assert_eq!(
+            verifier.verify_and_consume(
+                grant.as_bytes().to_vec(),
+                &request,
+                context.issued_at_unix_seconds,
+            ),
             Err(MacosLinuxVzPackageExecutionGrantErrorV1::AlreadyConsumed)
         );
     }

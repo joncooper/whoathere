@@ -1287,6 +1287,11 @@ fn sdist_operation_v1(
 }
 
 #[cfg(test)]
+pub(crate) fn test_inert_npm_execution_inputs_v1() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    tests::inert_npm_execution_inputs()
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use flate2::write::GzEncoder;
@@ -1310,7 +1315,7 @@ mod tests {
         Sha256Digest::from_bytes(label.as_bytes())
     }
 
-    fn inert_npm_execution_inputs() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    pub(super) fn inert_npm_execution_inputs() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
         let encoder = GzEncoder::new(Vec::new(), Compression::default());
         let mut archive = tar::Builder::new(encoder);
         for (path, bytes) in [

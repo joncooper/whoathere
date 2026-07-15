@@ -24,6 +24,7 @@ use whoathere_macos_vm::{
     qualify_macos_linux_vz_telemetry_backend_v1,
     sign_macos_linux_vz_package_runtime_qualification_guest_receipt_v1,
     sign_macos_linux_vz_telemetry_guest_receipt_v1, sign_macos_linux_vz_telemetry_host_receipt_v1,
+    structurally_decode_macos_linux_vz_package_authority_request_v1,
     verify_macos_linux_vz_package_runtime_qualification_guest_receipt_v1,
     verify_macos_linux_vz_telemetry_conformance_case_v1,
     verify_macos_linux_vz_telemetry_guest_receipt_v1,
@@ -448,6 +449,24 @@ fn qualified_backend_binds_an_exact_linux_npm_request_without_issuing_authority(
     )
     .expect("independently verified request");
     assert_eq!(verified.request_sha256(), request.request_sha256());
+    let structurally_decoded = structurally_decode_macos_linux_vz_package_authority_request_v1(
+        request.canonical_json_v1(),
+        &qualified,
+        &artifact_bytes,
+        &plan_bytes,
+        &template_bytes,
+    )
+    .expect("measured guest structurally reconstructs request");
+    assert_eq!(
+        structurally_decoded.request_sha256(),
+        request.request_sha256()
+    );
+    assert_eq!(
+        structurally_decoded.candidate_runtime_rootfs_sha256(),
+        candidate_runtime.rootfs_sha256()
+    );
+    assert!(!structurally_decoded.package_execution_authority_permitted());
+    assert!(!structurally_decoded.sync_back_permitted());
 
     assert_eq!(
         build_macos_linux_vz_package_authority_request_v1(
@@ -526,6 +545,16 @@ fn qualified_backend_binds_an_exact_linux_npm_request_without_issuing_authority(
     elevated["execution_authority_issued"] = serde_json::json!(true);
     elevated["package_execution_permitted"] = serde_json::json!(true);
     let elevated = serde_json_canonicalizer::to_vec(&elevated).expect("elevated request");
+    assert_eq!(
+        structurally_decode_macos_linux_vz_package_authority_request_v1(
+            &elevated,
+            &qualified,
+            &artifact_bytes,
+            &plan_bytes,
+            &template_bytes,
+        ),
+        Err(MacosLinuxVzPackageAuthorityRequestErrorV1::BindingMismatch)
+    );
     assert_eq!(
         decode_and_verify_macos_linux_vz_package_authority_request_v1(
             &elevated,

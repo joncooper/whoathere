@@ -23,7 +23,7 @@ use crate::{
     MacosLinuxVzPackageExecutionActionV1, MacosLinuxVzPackageExecutionProcessPlanV1,
     MacosLinuxVzPackageInternalActionV1, MacosLinuxVzPackageProcessArgumentV1,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 #[cfg(target_os = "linux")]
 use std::fs::File;
@@ -88,7 +88,7 @@ impl fmt::Display for LinuxVzPackageExecutionSequencerErrorV1 {
 
 impl std::error::Error for LinuxVzPackageExecutionSequencerErrorV1 {}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LinuxVzPackageExecutionSequenceTerminalV1 {
     Complete,

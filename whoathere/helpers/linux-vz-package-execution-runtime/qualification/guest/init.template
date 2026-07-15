@@ -1,0 +1,153 @@
+#!/usr/bin/sh
+set -u
+
+PATH=/usr/bin:/usr/sbin:/bin:/sbin
+export PATH
+busybox=/usr/bin/busybox
+runtime_sha256="__WHOATHERE_RUNTIME_SHA256__"
+rootfs_sha256="__WHOATHERE_ROOTFS_SHA256__"
+manifest_sha256="__WHOATHERE_MANIFEST_SHA256__"
+node_sha256="__WHOATHERE_NODE_SHA256__"
+npm_cli_sha256="__WHOATHERE_NPM_CLI_SHA256__"
+python_sha256="__WHOATHERE_PYTHON_SHA256__"
+pip_entrypoint_sha256="__WHOATHERE_PIP_ENTRYPOINT_SHA256__"
+public_key_sha256="__WHOATHERE_PUBLIC_KEY_SHA256__"
+
+power_off() {
+    "$busybox" poweroff -f
+    "$busybox" sleep 5
+    echo "WHOATHERE_PACKAGE_EXECUTION_RUNTIME_QUALIFICATION_FAILED reason=poweroff_failed"
+    exit 1
+}
+
+fail() {
+    reason=$1
+    exec 9<&- 2>/dev/null || true
+    "$busybox" umount /runtime/proc 2>/dev/null || true
+    "$busybox" umount /runtime 2>/dev/null || true
+    echo "WHOATHERE_PACKAGE_EXECUTION_RUNTIME_QUALIFICATION_FAILED reason=$reason"
+    power_off
+}
+
+sha256_path() {
+    "$busybox" sha256sum "$1" | "$busybox" awk '{print "sha256:" $1}'
+}
+
+run_as_package() {
+    "$busybox" chroot /runtime /bin/su -s /bin/sh nobody -c "$1"
+}
+
+"$busybox" chmod 0755 /
+"$busybox" mkdir -p /proc /sys /dev /run /runtime
+"$busybox" mount -t proc proc /proc || fail proc_mount_failed
+"$busybox" mount -t sysfs sysfs /sys || fail sys_mount_failed
+"$busybox" mount -t devtmpfs devtmpfs /dev || true
+"$busybox" mount -t tmpfs -o mode=0700 tmpfs /run || fail run_mount_failed
+"$busybox" chmod 0700 /runtime
+
+echo "WHOATHERE_PACKAGE_EXECUTION_RUNTIME_QUALIFICATION_BEGIN"
+echo "WHOATHERE_CAPABILITY kernel_release=$("$busybox" uname -r)"
+echo "WHOATHERE_CAPABILITY architecture=$("$busybox" uname -m)"
+
+if ! "$busybox" insmod /whoathere/modules/virtio_blk.ko \
+    || ! "$busybox" insmod /whoathere/modules/crc16.ko \
+    || ! "$busybox" insmod /whoathere/modules/mbcache.ko \
+    || ! "$busybox" insmod /whoathere/modules/jbd2.ko \
+    || ! "$busybox" insmod /whoathere/modules/ext4.ko
+then
+    fail runtime_modules_failed
+fi
+
+attempt=0
+while [ ! -b /dev/vda ] && [ "$attempt" -lt 100 ]; do
+    "$busybox" sleep 0.1
+    attempt=$((attempt + 1))
+done
+[ -b /dev/vda ] || fail rootfs_block_device_missing
+[ "$(sha256_path /whoathere/execution-runtime-manifest.json)" = "$manifest_sha256" ] \
+    || fail runtime_manifest_digest_mismatch
+[ "$(sha256_path /dev/vda)" = "$rootfs_sha256" ] || fail rootfs_digest_mismatch
+echo "WHOATHERE_CAPABILITY execution_runtime_manifest=verified_exact"
+
+"$busybox" mount -t ext2 -o ro,nodev,nosuid /dev/vda /runtime \
+    || fail rootfs_mount_failed
+if ! "$busybox" awk '
+    $2 == "/runtime" && $3 == "ext2" {
+        count = split($4, values, ","); ro = 0; rw = 0; nodev = 0; nosuid = 0;
+        for (i = 1; i <= count; i++) {
+            if (values[i] == "ro") ro = 1;
+            if (values[i] == "rw") rw = 1;
+            if (values[i] == "nodev") nodev = 1;
+            if (values[i] == "nosuid") nosuid = 1;
+        }
+        if (ro && !rw && nodev && nosuid) valid = 1;
+    }
+    END { exit valid ? 0 : 1 }
+' /proc/mounts
+then
+    fail rootfs_mount_policy_invalid
+fi
+if "$busybox" touch /runtime/whoathere/.qualification-write-test 2>/dev/null; then
+    fail rootfs_write_succeeded
+fi
+[ "$("$busybox" stat -c '%u:%g:%a' /runtime/whoathere/package-root-runtime)" = \
+  "0:0:500" ] || fail runtime_metadata_invalid
+[ "$(sha256_path /runtime/whoathere/package-root-runtime)" = "$runtime_sha256" ] \
+    || fail runtime_digest_mismatch
+[ "$(sha256_path /runtime/usr/bin/node)" = "$node_sha256" ] \
+    || fail node_digest_mismatch
+[ "$(sha256_path /runtime/usr/lib/node_modules/npm/bin/npm-cli.js)" = "$npm_cli_sha256" ] \
+    || fail npm_digest_mismatch
+[ "$(sha256_path /runtime/usr/bin/python3.14)" = "$python_sha256" ] \
+    || fail python_digest_mismatch
+[ "$(sha256_path /runtime/usr/bin/pip3)" = "$pip_entrypoint_sha256" ] \
+    || fail pip_digest_mismatch
+[ "$(run_as_package 'exec /usr/bin/env -i HOME=/workspace PATH=/usr/bin:/bin /usr/bin/id -u')" = \
+  "65534" ] || fail package_uid_invalid
+[ "$(run_as_package 'exec /usr/bin/env -i HOME=/workspace PATH=/usr/bin:/bin /usr/bin/id -g')" = \
+  "65534" ] || fail package_gid_invalid
+[ "$(run_as_package 'exec /usr/bin/env -i HOME=/workspace PATH=/usr/bin:/bin /usr/bin/node --version')" = \
+  "v24.17.0" ] || fail node_version_invalid
+[ "$(run_as_package 'exec /usr/bin/env -i HOME=/workspace PATH=/usr/bin:/bin /usr/bin/npm --version')" = \
+  "11.12.1" ] || fail npm_version_invalid
+[ "$(run_as_package 'exec /usr/bin/env -i HOME=/workspace PATH=/usr/bin:/bin /usr/bin/python3 --version')" = \
+  "Python 3.14.5" ] || fail python_version_invalid
+case "$(run_as_package 'exec /usr/bin/env -i HOME=/workspace PATH=/usr/bin:/bin /usr/bin/python3 -m pip --version')" in
+    'pip 26.1.2 from '*'/pip (python 3.14)') ;;
+    *) fail pip_version_invalid ;;
+esac
+echo "WHOATHERE_CAPABILITY execution_runtime_rootfs=verified_exact_read_only"
+echo "WHOATHERE_CAPABILITY execution_runtime_toolchain=verified_exact_unprivileged"
+
+"$busybox" mount -t proc -o ro,nodev,nosuid,noexec proc /runtime/proc \
+    || fail runtime_proc_mount_failed
+"$busybox" mkfifo -m 0600 /run/whoathere-signing-seed \
+    || fail seed_fifo_create_failed
+"$busybox" cat /whoathere/guest-ed25519.seed > /run/whoathere-signing-seed &
+seed_writer_pid=$!
+exec 9< /run/whoathere-signing-seed
+wait "$seed_writer_pid" || fail seed_writer_failed
+"$busybox" rm -f /whoathere/guest-ed25519.seed /run/whoathere-signing-seed
+if [ -e /whoathere/guest-ed25519.seed ] || [ -e /run/whoathere-signing-seed ]; then
+    fail seed_path_cleanup_failed
+fi
+
+if ! "$busybox" chroot /runtime /whoathere/package-root-runtime \
+    --qualification-probe \
+    --seed-fd 9 \
+    --expected-runtime-sha256 "$runtime_sha256" \
+    --expected-public-key-sha256 "$public_key_sha256"
+then
+    fail probe_failed
+fi
+exec 9<&-
+"$busybox" umount /runtime/proc || fail runtime_proc_unmount_failed
+"$busybox" umount /runtime || fail rootfs_unmount_failed
+[ "$(sha256_path /dev/vda)" = "$rootfs_sha256" ] || fail rootfs_postrun_digest_mismatch
+
+echo "WHOATHERE_PACKAGE_EXECUTION_RUNTIME_QUALIFICATION_OK"
+echo "WHOATHERE_CAPABILITY external_route_configured=false"
+echo "WHOATHERE_CAPABILITY package_execution=false"
+echo "WHOATHERE_CAPABILITY malware_execution=false"
+echo "WHOATHERE_CAPABILITY sync_back=false"
+power_off
