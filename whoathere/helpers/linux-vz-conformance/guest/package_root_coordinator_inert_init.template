@@ -1,0 +1,48 @@
+#!/usr/bin/sh
+set -eu
+
+PATH=/usr/bin:/usr/sbin:/bin:/sbin
+export PATH
+busybox=/usr/bin/busybox
+probe_sha256="sha256:__WHOATHERE_PROBE_SHA256__"
+public_key_sha256="sha256:__WHOATHERE_PUBLIC_KEY_SHA256__"
+
+"$busybox" chmod 0755 /
+"$busybox" mkdir -p /proc /sys /dev /run
+"$busybox" mount -t proc proc /proc
+"$busybox" mount -t sysfs sysfs /sys
+"$busybox" mount -t devtmpfs devtmpfs /dev || true
+"$busybox" mount -t tmpfs tmpfs /run
+
+echo "WHOATHERE_PACKAGE_ROOT_COORDINATOR_BEGIN"
+echo "WHOATHERE_CAPABILITY kernel_release=$("$busybox" uname -r)"
+echo "WHOATHERE_CAPABILITY architecture=$("$busybox" uname -m)"
+
+"$busybox" mkfifo -m 0600 /run/whoathere-signing-seed
+"$busybox" cat /whoathere/guest-ed25519.seed > /run/whoathere-signing-seed &
+seed_writer_pid=$!
+exec 9< /run/whoathere-signing-seed
+wait "$seed_writer_pid"
+"$busybox" rm -f /whoathere/guest-ed25519.seed /run/whoathere-signing-seed
+
+if [ -e /whoathere/guest-ed25519.seed ] || [ -e /run/whoathere-signing-seed ]; then
+    echo "WHOATHERE_PACKAGE_ROOT_COORDINATOR_FAILED reason=seed_path_cleanup_failed"
+elif /whoathere/guest-signer \
+    --seed-fd 9 \
+    --expected-probe-sha256 "$probe_sha256" \
+    --expected-public-key-sha256 "$public_key_sha256"; then
+    echo "WHOATHERE_PACKAGE_ROOT_COORDINATOR_OK"
+else
+    echo "WHOATHERE_PACKAGE_ROOT_COORDINATOR_FAILED reason=probe_failed"
+fi
+exec 9<&-
+
+echo "WHOATHERE_CAPABILITY external_route_configured=false"
+echo "WHOATHERE_CAPABILITY package_execution=false"
+echo "WHOATHERE_CAPABILITY malware_execution=false"
+echo "WHOATHERE_CAPABILITY sync_back=false"
+"$busybox" sync
+"$busybox" poweroff -f
+"$busybox" sleep 5
+echo "WHOATHERE_PACKAGE_ROOT_COORDINATOR_FAILED reason=poweroff_failed"
+exit 1
