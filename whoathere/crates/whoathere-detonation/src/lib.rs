@@ -5,6 +5,7 @@
 //! package, return a verdict, or expose a sync-back operation.
 
 mod artifact;
+mod execution_bundle;
 mod npm;
 mod sdist;
 mod telemetry;
@@ -12,6 +13,7 @@ mod wheel;
 mod wire;
 
 pub use artifact::*;
+pub use execution_bundle::*;
 pub use npm::*;
 pub use sdist::*;
 pub use telemetry::*;
