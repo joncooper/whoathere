@@ -69,6 +69,7 @@ private let taskExitCodeByteOffset: UInt64 = 1_964
     #expect(evidence.rootProcessEvidenceSHA256.hasPrefix("sha256:"))
     #expect(evidence.rootProcessEvidenceSourceEventCount == 18)
     #expect(evidence.rootNetworkEvidenceByteLength == 2_048)
+    #expect(evidence.rootNetworkEvidenceEgressEventCount == 1)
     #expect(evidence.rootNetworkEvidenceEventCount == 2)
     #expect(evidence.rootNetworkEvidenceSHA256.hasPrefix("sha256:"))
     #expect(evidence.rootNetworkEvidenceUnobservedCapabilities == [
@@ -265,6 +266,28 @@ private let taskExitCodeByteOffset: UInt64 = 1_964
 
     value = packageSensorBpfInertValue()
     value["root_network_evidence_guest_intent_coverage_complete"] = true
+    #expect(throws: LinuxVzPackageSensorBpfInertEvidenceError.invalidSchema) {
+        try decodeLinuxVzPackageSensorBpfInertEvidenceV13(
+            packageSensorBpfInertSerial(value: value),
+            expectedFixtureSHA256: fixtureSHA256,
+            expectedRuntimeBTFSHA256: runtimeBTFSHA256,
+            expectedTaskExitCodeByteOffset: taskExitCodeByteOffset
+        )
+    }
+
+    value = packageSensorBpfInertValue()
+    value["root_network_evidence_egress_packet_coverage_complete"] = false
+    #expect(throws: LinuxVzPackageSensorBpfInertEvidenceError.invalidSchema) {
+        try decodeLinuxVzPackageSensorBpfInertEvidenceV13(
+            packageSensorBpfInertSerial(value: value),
+            expectedFixtureSHA256: fixtureSHA256,
+            expectedRuntimeBTFSHA256: runtimeBTFSHA256,
+            expectedTaskExitCodeByteOffset: taskExitCodeByteOffset
+        )
+    }
+
+    value = packageSensorBpfInertValue()
+    value["root_network_evidence_egress_event_count"] = "0"
     #expect(throws: LinuxVzPackageSensorBpfInertEvidenceError.invalidSchema) {
         try decodeLinuxVzPackageSensorBpfInertEvidenceV13(
             packageSensorBpfInertSerial(value: value),
@@ -530,6 +553,8 @@ private func packageSensorBpfInertValue() -> [String: Any] {
         "root_network_evidence_composite_coverage_complete": false,
         "root_network_evidence_connect_sendto_coverage_complete": true,
         "root_network_evidence_dns_coverage_complete": false,
+        "root_network_evidence_egress_event_count": "1",
+        "root_network_evidence_egress_packet_coverage_complete": true,
         "root_network_evidence_event_count": "2",
         "root_network_evidence_guest_intent_coverage_complete": false,
         "root_network_evidence_host_frame_correlation_complete": false,
@@ -538,7 +563,7 @@ private func packageSensorBpfInertValue() -> [String: Any] {
             "sha256:4444444444444444444444444444444444444444444444444444444444444444",
         "root_network_evidence_raw_addresses_serialized": false,
         "root_network_evidence_schema":
-            "whoathere.linux_vz_package_root_network_evidence.v1",
+            "whoathere.linux_vz_package_root_network_evidence.v2",
         "root_network_evidence_sha256":
             "sha256:9999999999999999999999999999999999999999999999999999999999999999",
         "root_network_evidence_unobserved_capabilities": [
@@ -563,7 +588,7 @@ private func packageSensorBpfInertValue() -> [String: Any] {
         "root_file_evidence_workspace_diff_sha256":
             "sha256:8888888888888888888888888888888888888888888888888888888888888888",
         "runtime_btf_sha256": runtimeBTFSHA256,
-        "schema_version": linuxVzPackageSensorBpfInertEvidenceSchemaV15,
+        "schema_version": linuxVzPackageSensorBpfInertEvidenceSchemaV16,
         "sensor_session_challenge_sha256":
             "sha256:0a6d2053eb627f5f1ed55c993237d3bd832dc1b72f4084c40c9a224e83d6c965",
         "source_event_count_before_finish": "17",

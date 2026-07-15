@@ -1,7 +1,9 @@
 import Foundation
 
+public let linuxVzPackageSensorBpfInertEvidenceSchemaV16 =
+    "whoathere.linux_vz_package_sensor_bpf_inert_probe.v16"
 public let linuxVzPackageSensorBpfInertEvidenceSchemaV15 =
-    "whoathere.linux_vz_package_sensor_bpf_inert_probe.v15"
+    linuxVzPackageSensorBpfInertEvidenceSchemaV16
 public let linuxVzPackageSensorBpfInertEvidenceSchemaV14 =
     linuxVzPackageSensorBpfInertEvidenceSchemaV15
 public let linuxVzPackageSensorBpfInertEvidenceSchemaV13 =
@@ -84,6 +86,7 @@ public struct LinuxVzPackageSensorBpfInertEvidenceV13: Equatable, Sendable {
     public let rootProcessEvidenceSHA256: String
     public let rootProcessEvidenceSourceEventCount: UInt64
     public let rootNetworkEvidenceByteLength: UInt64
+    public let rootNetworkEvidenceEgressEventCount: UInt64
     public let rootNetworkEvidenceEventCount: UInt64
     public let rootNetworkEvidenceSHA256: String
     public let rootNetworkEvidenceUnobservedCapabilities: [String]
@@ -172,7 +175,10 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV13(
         "root_network_evidence_byte_length", "root_network_evidence_canonical",
         "root_network_evidence_composite_coverage_complete",
         "root_network_evidence_connect_sendto_coverage_complete",
-        "root_network_evidence_dns_coverage_complete", "root_network_evidence_event_count",
+        "root_network_evidence_dns_coverage_complete",
+        "root_network_evidence_egress_event_count",
+        "root_network_evidence_egress_packet_coverage_complete",
+        "root_network_evidence_event_count",
         "root_network_evidence_guest_intent_coverage_complete",
         "root_network_evidence_host_frame_correlation_complete",
         "root_network_evidence_http_observation_complete",
@@ -192,7 +198,7 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV13(
         "task_exit_code_byte_offset", "tracepoint_format_sha256", "waitpid_wait_status",
     ])
     guard Set(value.keys) == expectedKeys,
-          value["schema_version"] as? String == linuxVzPackageSensorBpfInertEvidenceSchemaV15,
+          value["schema_version"] as? String == linuxVzPackageSensorBpfInertEvidenceSchemaV16,
           let sensorSessionChallengeSHA256 =
               value["sensor_session_challenge_sha256"] as? String,
           sensorSessionChallengeSHA256 ==
@@ -409,6 +415,11 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV13(
           value["root_network_evidence_composite_coverage_complete"] as? Bool == false,
           value["root_network_evidence_connect_sendto_coverage_complete"] as? Bool == true,
           value["root_network_evidence_dns_coverage_complete"] as? Bool == false,
+          let rootNetworkEvidenceEgressEventCount = packageSensorBpfInertDecimal(
+              value["root_network_evidence_egress_event_count"]
+          ),
+          rootNetworkEvidenceEgressEventCount == egressEventCount,
+          value["root_network_evidence_egress_packet_coverage_complete"] as? Bool == true,
           let rootNetworkEvidenceEventCount = packageSensorBpfInertDecimal(
               value["root_network_evidence_event_count"]
           ),
@@ -419,7 +430,7 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV13(
           value["root_network_evidence_process_sha256"] as? String == rootProcessEvidenceSHA256,
           value["root_network_evidence_raw_addresses_serialized"] as? Bool == false,
           value["root_network_evidence_schema"] as? String ==
-              "whoathere.linux_vz_package_root_network_evidence.v1",
+              "whoathere.linux_vz_package_root_network_evidence.v2",
           let rootNetworkEvidenceSHA256 = value["root_network_evidence_sha256"] as? String,
           packageSensorBpfInertDigest(rootNetworkEvidenceSHA256),
           rootNetworkEvidenceSHA256 != rootProcessEvidenceSHA256,
@@ -539,6 +550,7 @@ public func decodeLinuxVzPackageSensorBpfInertEvidenceV13(
         rootProcessEvidenceSHA256: rootProcessEvidenceSHA256,
         rootProcessEvidenceSourceEventCount: rootProcessEvidenceSourceEventCount,
         rootNetworkEvidenceByteLength: rootNetworkEvidenceByteLength,
+        rootNetworkEvidenceEgressEventCount: rootNetworkEvidenceEgressEventCount,
         rootNetworkEvidenceEventCount: rootNetworkEvidenceEventCount,
         rootNetworkEvidenceSHA256: rootNetworkEvidenceSHA256,
         rootNetworkEvidenceUnobservedCapabilities: rootNetworkEvidenceUnobservedCapabilities,

@@ -4,7 +4,8 @@ use std::fmt;
 use crate::linux_vz_package_sensor_control::kill_cgroup_from_descriptor_v1;
 #[cfg(target_os = "linux")]
 use crate::linux_vz_package_sensor_egress_stream::{
-    LinuxVzPackageEgressDecisionV1, LinuxVzPackageEgressNetworkProtocolV1,
+    LinuxVzPackageEgressDecisionV1, LinuxVzPackageEgressEventV1,
+    LinuxVzPackageEgressNetworkProtocolV1,
 };
 #[cfg(target_os = "linux")]
 use crate::linux_vz_package_sensor_event_stream::{
@@ -28,9 +29,10 @@ use crate::{
     LinuxVzPackageExpectedRootNetworkEvidenceV1, LinuxVzPackageExpectedRootProcessEvidenceV1,
     LinuxVzPackageProcessCompletionV1, LinuxVzPackageProcessLaunchIdentityV1,
     LinuxVzPackageProcessTerminalV1, LinuxVzPackageRootNetworkAddressFamilyV1,
-    LinuxVzPackageRootNetworkDestinationClassV1, LinuxVzPackageRootNetworkEventKindV1,
+    LinuxVzPackageRootNetworkDestinationClassV1, LinuxVzPackageRootNetworkEgressDecisionV1,
+    LinuxVzPackageRootNetworkEgressProtocolV1, LinuxVzPackageRootNetworkEventKindV1,
     LinuxVzPackageRootNetworkEvidenceV1, LINUX_VZ_PACKAGE_ROOT_FILE_EVIDENCE_SCHEMA_V1,
-    LINUX_VZ_PACKAGE_ROOT_NETWORK_EVIDENCE_SCHEMA_V1,
+    LINUX_VZ_PACKAGE_ROOT_NETWORK_EVIDENCE_SCHEMA_V2,
     LINUX_VZ_PACKAGE_ROOT_PROCESS_EVIDENCE_SCHEMA_V1,
 };
 #[cfg(target_os = "linux")]
@@ -250,6 +252,8 @@ struct InertProbeEvidenceWireV1 {
     root_network_evidence_composite_coverage_complete: bool,
     root_network_evidence_connect_sendto_coverage_complete: bool,
     root_network_evidence_dns_coverage_complete: bool,
+    root_network_evidence_egress_event_count: String,
+    root_network_evidence_egress_packet_coverage_complete: bool,
     root_network_evidence_event_count: String,
     root_network_evidence_guest_intent_coverage_complete: bool,
     root_network_evidence_host_frame_correlation_complete: bool,
@@ -1200,7 +1204,10 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
         ]
     {
         Some("root_network_unobserved_capabilities")
-    } else if !matches_exact_root_network_evidence_v1(&root_network_evidence) {
+    } else if match collection.egress_events_v1().first() {
+        Some(source) => !matches_exact_root_network_evidence_v1(&root_network_evidence, source),
+        None => true,
+    } {
         Some("root_network_exact_events")
     } else {
         None
@@ -1425,6 +1432,12 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
             .connect_sendto_intent_coverage_complete(),
         root_network_evidence_dns_coverage_complete: root_network_evidence
             .dns_intent_coverage_complete(),
+        root_network_evidence_egress_event_count: root_network_evidence
+            .egress_observations()
+            .len()
+            .to_string(),
+        root_network_evidence_egress_packet_coverage_complete: root_network_evidence
+            .egress_packet_coverage_complete(),
         root_network_evidence_event_count: root_network_evidence.events().len().to_string(),
         root_network_evidence_guest_intent_coverage_complete: root_network_evidence
             .guest_intent_coverage_complete(),
@@ -1438,7 +1451,7 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
             .to_string(),
         root_network_evidence_raw_addresses_serialized: root_network_evidence
             .raw_addresses_serialized(),
-        root_network_evidence_schema: LINUX_VZ_PACKAGE_ROOT_NETWORK_EVIDENCE_SCHEMA_V1,
+        root_network_evidence_schema: LINUX_VZ_PACKAGE_ROOT_NETWORK_EVIDENCE_SCHEMA_V2,
         root_network_evidence_sha256: root_network_evidence.payload_sha256().as_str().to_string(),
         root_network_evidence_unobserved_capabilities: vec![
             "dns_intent",
@@ -1447,7 +1460,7 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
             "http_observation",
         ],
         runtime_btf_sha256: collection.runtime_btf_sha256_v1().as_str().to_string(),
-        schema_version: "whoathere.linux_vz_package_sensor_bpf_inert_probe.v15",
+        schema_version: "whoathere.linux_vz_package_sensor_bpf_inert_probe.v16",
         sensor_session_challenge_sha256: sensor_session_challenge_sha256.as_str().to_string(),
         source_event_count_before_finish: collection
             .source_event_count_before_finish_v1()
@@ -1551,12 +1564,24 @@ fn matches_exact_correlated_stream_v1(
 }
 
 #[cfg(target_os = "linux")]
-fn matches_exact_root_network_evidence_v1(evidence: &LinuxVzPackageRootNetworkEvidenceV1) -> bool {
+fn matches_exact_root_network_evidence_v1(
+    evidence: &LinuxVzPackageRootNetworkEvidenceV1,
+    source: &LinuxVzPackageEgressEventV1,
+) -> bool {
     let [connect, sendto] = evidence.events() else {
+        return false;
+    };
+    let [egress] = evidence.egress_observations() else {
+        return false;
+    };
+    let Ok(source_packet_correlation_sha256) = source.packet_correlation_sha256_v1() else {
         return false;
     };
     evidence.process_source_event_count() == 18
         && evidence.process_observation_count() == 10
+        && evidence.egress_packet_coverage_complete()
+        && evidence.egress_dropped_event_count() == 0
+        && evidence.egress_discarded_record_count() == 0
         && connect.kind() == LinuxVzPackageRootNetworkEventKindV1::Connect
         && connect.address_family() == LinuxVzPackageRootNetworkAddressFamilyV1::Ipv4
         && connect.destination_class() == LinuxVzPackageRootNetworkDestinationClassV1::Documentation
@@ -1574,6 +1599,24 @@ fn matches_exact_root_network_evidence_v1(evidence: &LinuxVzPackageRootNetworkEv
         && sendto.destination_token_sha256().as_str()
             == "sha256:3ef258ec5ef33c871db55bb52239931372585c08ad3fbafda224bc498ad0ed7b"
         && connect.destination_token_sha256() != sendto.destination_token_sha256()
+        && egress.decision() == LinuxVzPackageRootNetworkEgressDecisionV1::Allow
+        && egress.protocol() == LinuxVzPackageRootNetworkEgressProtocolV1::Ipv4
+        && egress.cgroup_id() == source.cgroup_id_v1()
+        && egress.timestamp_monotonic_nanoseconds() == source.timestamp_nanoseconds_v1()
+        && egress.packet_length() == source.packet_length_v1()
+        && egress.wire_length() == source.wire_length_v1()
+        && egress.raw_skb_protocol() == source.raw_skb_protocol_v1()
+        && egress.ingress_interface_index() == source.ingress_interface_index_v1()
+        && egress.egress_interface_index() == source.egress_interface_index_v1()
+        && egress.gso_segment_count() == source.gso_segment_count_v1()
+        && egress.gso_segment_size() == source.gso_segment_size_v1()
+        && egress.packet_prefix_byte_length() == source.packet_prefix_v1().len()
+        && egress.packet_prefix_sha256() == &source.packet_prefix_sha256_v1()
+        && egress.packet_correlation_sha256() == Some(&source_packet_correlation_sha256)
+        && egress.prefix_truncated() == source.prefix_truncated_v1()
+        && egress.wire_gso_metadata_available() == source.wire_gso_metadata_available_v1()
+        && egress.source_sequence() == source.source_sequence_v1()
+        && egress.cpu() == source.cpu_v1()
 }
 
 #[cfg(target_os = "linux")]

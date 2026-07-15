@@ -1,5 +1,9 @@
 #![cfg_attr(not(target_os = "linux"), allow(dead_code))]
 
+use crate::linux_vz_package_sensor_egress_stream::{
+    LinuxVzPackageEgressDecisionV1, LinuxVzPackageEgressEventV1,
+    LinuxVzPackageEgressNetworkProtocolV1,
+};
 use crate::linux_vz_package_sensor_event_stream::{
     LinuxVzPackageNetworkAddressFamilyV1, LinuxVzPackageNetworkTargetV1,
     LinuxVzPackageSelectedSyscallV1,
@@ -19,6 +23,8 @@ use zeroize::Zeroize;
 
 pub const LINUX_VZ_PACKAGE_ROOT_NETWORK_EVIDENCE_SCHEMA_V1: &str =
     "whoathere.linux_vz_package_root_network_evidence.v1";
+pub const LINUX_VZ_PACKAGE_ROOT_NETWORK_EVIDENCE_SCHEMA_V2: &str =
+    "whoathere.linux_vz_package_root_network_evidence.v2";
 
 const PACKAGE_UID_V1: u32 = 65_534;
 const PACKAGE_GID_V1: u32 = 65_534;
@@ -264,6 +270,151 @@ pub struct LinuxVzPackageRootNetworkEventV1 {
     exit_cpu: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinuxVzPackageRootNetworkEgressDecisionV1 {
+    Allow,
+    Block,
+}
+
+impl LinuxVzPackageRootNetworkEgressDecisionV1 {
+    const fn as_str_v1(self) -> &'static str {
+        match self {
+            Self::Allow => "allow",
+            Self::Block => "block",
+        }
+    }
+
+    fn parse_v1(value: &str) -> Result<Self, LinuxVzPackageRootNetworkEvidenceErrorV1> {
+        match value {
+            "allow" => Ok(Self::Allow),
+            "block" => Ok(Self::Block),
+            _ => Err(LinuxVzPackageRootNetworkEvidenceErrorV1::InvalidEvent),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinuxVzPackageRootNetworkEgressProtocolV1 {
+    Ipv4,
+    Ipv6,
+    Unsupported,
+}
+
+impl LinuxVzPackageRootNetworkEgressProtocolV1 {
+    const fn as_str_v1(self) -> &'static str {
+        match self {
+            Self::Ipv4 => "ipv4",
+            Self::Ipv6 => "ipv6",
+            Self::Unsupported => "unsupported",
+        }
+    }
+
+    fn parse_v1(value: &str) -> Result<Self, LinuxVzPackageRootNetworkEvidenceErrorV1> {
+        match value {
+            "ipv4" => Ok(Self::Ipv4),
+            "ipv6" => Ok(Self::Ipv6),
+            "unsupported" => Ok(Self::Unsupported),
+            _ => Err(LinuxVzPackageRootNetworkEvidenceErrorV1::InvalidEvent),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinuxVzPackageRootNetworkEgressObservationV1 {
+    decision: LinuxVzPackageRootNetworkEgressDecisionV1,
+    protocol: LinuxVzPackageRootNetworkEgressProtocolV1,
+    cgroup_id: u64,
+    timestamp_monotonic_nanoseconds: u64,
+    packet_length: u32,
+    wire_length: u32,
+    raw_skb_protocol: u32,
+    ingress_interface_index: u32,
+    egress_interface_index: u32,
+    gso_segment_count: u32,
+    gso_segment_size: u32,
+    packet_prefix_byte_length: usize,
+    packet_prefix_sha256: Sha256Digest,
+    packet_correlation_sha256: Option<Sha256Digest>,
+    prefix_truncated: bool,
+    wire_gso_metadata_available: bool,
+    source_sequence: u64,
+    cpu: u32,
+}
+
+impl LinuxVzPackageRootNetworkEgressObservationV1 {
+    pub const fn decision(&self) -> LinuxVzPackageRootNetworkEgressDecisionV1 {
+        self.decision
+    }
+
+    pub const fn protocol(&self) -> LinuxVzPackageRootNetworkEgressProtocolV1 {
+        self.protocol
+    }
+
+    pub const fn cgroup_id(&self) -> u64 {
+        self.cgroup_id
+    }
+
+    pub const fn timestamp_monotonic_nanoseconds(&self) -> u64 {
+        self.timestamp_monotonic_nanoseconds
+    }
+
+    pub const fn packet_length(&self) -> u32 {
+        self.packet_length
+    }
+
+    pub const fn wire_length(&self) -> u32 {
+        self.wire_length
+    }
+
+    pub const fn raw_skb_protocol(&self) -> u32 {
+        self.raw_skb_protocol
+    }
+
+    pub const fn ingress_interface_index(&self) -> u32 {
+        self.ingress_interface_index
+    }
+
+    pub const fn egress_interface_index(&self) -> u32 {
+        self.egress_interface_index
+    }
+
+    pub const fn gso_segment_count(&self) -> u32 {
+        self.gso_segment_count
+    }
+
+    pub const fn gso_segment_size(&self) -> u32 {
+        self.gso_segment_size
+    }
+
+    pub const fn packet_prefix_byte_length(&self) -> usize {
+        self.packet_prefix_byte_length
+    }
+
+    pub fn packet_prefix_sha256(&self) -> &Sha256Digest {
+        &self.packet_prefix_sha256
+    }
+
+    pub fn packet_correlation_sha256(&self) -> Option<&Sha256Digest> {
+        self.packet_correlation_sha256.as_ref()
+    }
+
+    pub const fn prefix_truncated(&self) -> bool {
+        self.prefix_truncated
+    }
+
+    pub const fn wire_gso_metadata_available(&self) -> bool {
+        self.wire_gso_metadata_available
+    }
+
+    pub const fn source_sequence(&self) -> u64 {
+        self.source_sequence
+    }
+
+    pub const fn cpu(&self) -> u32 {
+        self.cpu
+    }
+}
+
 impl LinuxVzPackageRootNetworkEventV1 {
     pub const fn kind(&self) -> LinuxVzPackageRootNetworkEventKindV1 {
         self.kind
@@ -306,6 +457,9 @@ pub struct LinuxVzPackageRootNetworkEvidenceV1 {
     process_source_event_count: u64,
     process_observation_count: usize,
     connect_sendto_intent_coverage_complete: bool,
+    egress_packet_coverage_complete: bool,
+    egress_dropped_event_count: u64,
+    egress_discarded_record_count: u64,
     guest_intent_coverage_complete: bool,
     host_frame_correlation_complete: bool,
     dns_intent_coverage_complete: bool,
@@ -313,6 +467,7 @@ pub struct LinuxVzPackageRootNetworkEvidenceV1 {
     composite_network_coverage_complete: bool,
     raw_addresses_serialized: bool,
     events: Vec<LinuxVzPackageRootNetworkEventV1>,
+    egress_observations: Vec<LinuxVzPackageRootNetworkEgressObservationV1>,
     unobserved_capabilities: Vec<String>,
 }
 
@@ -328,6 +483,7 @@ impl fmt::Debug for LinuxVzPackageRootNetworkEvidenceV1 {
             )
             .field("process_observation_count", &self.process_observation_count)
             .field("event_count", &self.events.len())
+            .field("egress_event_count", &self.egress_observations.len())
             .field(
                 "connect_sendto_intent_coverage_complete",
                 &self.connect_sendto_intent_coverage_complete,
@@ -370,6 +526,18 @@ impl LinuxVzPackageRootNetworkEvidenceV1 {
         self.connect_sendto_intent_coverage_complete
     }
 
+    pub const fn egress_packet_coverage_complete(&self) -> bool {
+        self.egress_packet_coverage_complete
+    }
+
+    pub const fn egress_dropped_event_count(&self) -> u64 {
+        self.egress_dropped_event_count
+    }
+
+    pub const fn egress_discarded_record_count(&self) -> u64 {
+        self.egress_discarded_record_count
+    }
+
     pub const fn guest_intent_coverage_complete(&self) -> bool {
         self.guest_intent_coverage_complete
     }
@@ -398,6 +566,10 @@ impl LinuxVzPackageRootNetworkEvidenceV1 {
         &self.events
     }
 
+    pub fn egress_observations(&self) -> &[LinuxVzPackageRootNetworkEgressObservationV1] {
+        &self.egress_observations
+    }
+
     pub fn unobserved_capabilities(&self) -> &[String] {
         &self.unobserved_capabilities
     }
@@ -408,6 +580,7 @@ impl LinuxVzPackageRootNetworkEvidenceV1 {
 struct RootNetworkEvidenceWireV1 {
     binding: RootNetworkBindingWireV1,
     coverage: RootNetworkCoverageWireV1,
+    egress_observations: Vec<RootNetworkEgressObservationWireV1>,
     events: Vec<RootNetworkEventWireV1>,
     process_observation_count: String,
     process_source_event_count: String,
@@ -444,6 +617,10 @@ struct RootNetworkCoverageWireV1 {
     discarded_record_count: String,
     dns_intent_coverage_complete: bool,
     dropped_event_count: String,
+    egress_discarded_record_count: String,
+    egress_dropped_event_count: String,
+    egress_event_count: String,
+    egress_packet_coverage_complete: bool,
     evidence_truncated: bool,
     guest_intent_coverage_complete: bool,
     host_frame_correlation_complete: bool,
@@ -453,6 +630,30 @@ struct RootNetworkCoverageWireV1 {
     raw_addresses_serialized: bool,
     target_detail_complete: bool,
     unobserved_capabilities: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RootNetworkEgressObservationWireV1 {
+    cgroup_id: String,
+    cpu: String,
+    decision: String,
+    egress_interface_index: String,
+    gso_segment_count: String,
+    gso_segment_size: String,
+    ingress_interface_index: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    packet_correlation_sha256: Option<Sha256Digest>,
+    packet_length: String,
+    packet_prefix_byte_length: String,
+    packet_prefix_sha256: Sha256Digest,
+    prefix_truncated: bool,
+    protocol: String,
+    raw_skb_protocol: String,
+    source_sequence: String,
+    timestamp_monotonic_nanoseconds: String,
+    wire_gso_metadata_available: bool,
+    wire_length: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -491,9 +692,12 @@ pub(crate) fn encode_linux_vz_package_root_network_evidence_v1(
             > expected.completion.process_ended_monotonic_nanoseconds()
         || stream.expected_cgroup_id_v1() != expected.cgroup_id
         || !collection.coverage_complete_v1()
+        || !collection.egress_coverage_complete_v1()
         || !stream.coverage_complete_v1()
         || collection.dropped_event_count_v1() != 0
         || collection.discarded_record_count_v1() != 0
+        || collection.egress_dropped_event_count_v1() != 0
+        || collection.egress_discarded_record_count_v1() != 0
     {
         return Err(LinuxVzPackageRootNetworkEvidenceErrorV1::BindingMismatch);
     }
@@ -526,6 +730,16 @@ pub(crate) fn encode_linux_vz_package_root_network_evidence_v1(
     if events.len() > MAX_ROOT_NETWORK_EVENTS_V1 {
         return Err(LinuxVzPackageRootNetworkEvidenceErrorV1::LimitExceeded);
     }
+    let egress_observations = collection
+        .egress_events_v1()
+        .iter()
+        .map(|event| egress_observation_wire_v1(expected, event))
+        .collect::<Result<Vec<_>, _>>()?;
+    if egress_observations.len() > MAX_ROOT_NETWORK_EVENTS_V1
+        || events.len().saturating_add(egress_observations.len()) > MAX_ROOT_NETWORK_EVENTS_V1
+    {
+        return Err(LinuxVzPackageRootNetworkEvidenceErrorV1::LimitExceeded);
+    }
 
     let wire = RootNetworkEvidenceWireV1 {
         binding: binding_wire_v1(expected),
@@ -535,6 +749,12 @@ pub(crate) fn encode_linux_vz_package_root_network_evidence_v1(
             discarded_record_count: collection.discarded_record_count_v1().to_string(),
             dns_intent_coverage_complete: false,
             dropped_event_count: collection.dropped_event_count_v1().to_string(),
+            egress_discarded_record_count: collection
+                .egress_discarded_record_count_v1()
+                .to_string(),
+            egress_dropped_event_count: collection.egress_dropped_event_count_v1().to_string(),
+            egress_event_count: egress_observations.len().to_string(),
+            egress_packet_coverage_complete: true,
             evidence_truncated: false,
             guest_intent_coverage_complete: false,
             host_frame_correlation_complete: false,
@@ -548,10 +768,11 @@ pub(crate) fn encode_linux_vz_package_root_network_evidence_v1(
                 .map(|value| (*value).to_string())
                 .collect(),
         },
+        egress_observations,
         events,
         process_observation_count: stream.observations_v1().len().to_string(),
         process_source_event_count: stream.source_event_count_v1().to_string(),
-        schema_version: LINUX_VZ_PACKAGE_ROOT_NETWORK_EVIDENCE_SCHEMA_V1.to_string(),
+        schema_version: LINUX_VZ_PACKAGE_ROOT_NETWORK_EVIDENCE_SCHEMA_V2.to_string(),
     };
     let canonical_json = canonical_json_v1(&wire)?;
     decode_linux_vz_package_root_network_evidence_v1(&canonical_json, expected)
@@ -573,7 +794,7 @@ pub fn decode_linux_vz_package_root_network_evidence_v1(
     if canonical_json_v1(&wire)?.as_slice() != bytes {
         return Err(LinuxVzPackageRootNetworkEvidenceErrorV1::NonCanonical);
     }
-    if wire.schema_version != LINUX_VZ_PACKAGE_ROOT_NETWORK_EVIDENCE_SCHEMA_V1
+    if wire.schema_version != LINUX_VZ_PACKAGE_ROOT_NETWORK_EVIDENCE_SCHEMA_V2
         || wire.binding != binding_wire_v1(expected)
     {
         return Err(LinuxVzPackageRootNetworkEvidenceErrorV1::BindingMismatch);
@@ -587,6 +808,12 @@ pub fn decode_linux_vz_package_root_network_evidence_v1(
         || process_observation_count > process_source_event_count_usize
         || wire.events.len() > process_observation_count
         || wire.events.len() > MAX_ROOT_NETWORK_EVENTS_V1
+        || wire.egress_observations.len() > MAX_ROOT_NETWORK_EVENTS_V1
+        || wire
+            .events
+            .len()
+            .saturating_add(wire.egress_observations.len())
+            > MAX_ROOT_NETWORK_EVENTS_V1
         || wire.coverage
             != (RootNetworkCoverageWireV1 {
                 composite_network_coverage_complete: false,
@@ -594,6 +821,10 @@ pub fn decode_linux_vz_package_root_network_evidence_v1(
                 discarded_record_count: "0".to_string(),
                 dns_intent_coverage_complete: false,
                 dropped_event_count: "0".to_string(),
+                egress_discarded_record_count: "0".to_string(),
+                egress_dropped_event_count: "0".to_string(),
+                egress_event_count: wire.egress_observations.len().to_string(),
+                egress_packet_coverage_complete: true,
                 evidence_truncated: false,
                 guest_intent_coverage_complete: false,
                 host_frame_correlation_complete: false,
@@ -631,6 +862,29 @@ pub fn decode_linux_vz_package_root_network_evidence_v1(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
+    let mut prior_egress_sequence = 0_u64;
+    let mut prior_egress_timestamp = 0_u64;
+    let mut correlation_digests = BTreeSet::new();
+    let egress_observations = wire
+        .egress_observations
+        .iter()
+        .map(|observation| {
+            let decoded = decode_egress_observation_wire_v1(observation, expected)?;
+            if decoded.source_sequence != prior_egress_sequence + 1
+                || decoded.timestamp_monotonic_nanoseconds <= prior_egress_timestamp
+                || decoded
+                    .packet_correlation_sha256
+                    .as_ref()
+                    .is_some_and(|digest| !correlation_digests.insert(digest.clone()))
+            {
+                return Err(LinuxVzPackageRootNetworkEvidenceErrorV1::InvalidEvent);
+            }
+            prior_egress_sequence = decoded.source_sequence;
+            prior_egress_timestamp = decoded.timestamp_monotonic_nanoseconds;
+            Ok(decoded)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
     Ok(LinuxVzPackageRootNetworkEvidenceV1 {
         canonical_json: bytes.to_vec(),
         payload_sha256: Sha256Digest::from_bytes(bytes),
@@ -638,6 +892,9 @@ pub fn decode_linux_vz_package_root_network_evidence_v1(
         process_source_event_count,
         process_observation_count,
         connect_sendto_intent_coverage_complete: true,
+        egress_packet_coverage_complete: true,
+        egress_dropped_event_count: 0,
+        egress_discarded_record_count: 0,
         guest_intent_coverage_complete: false,
         host_frame_correlation_complete: false,
         dns_intent_coverage_complete: false,
@@ -645,10 +902,164 @@ pub fn decode_linux_vz_package_root_network_evidence_v1(
         composite_network_coverage_complete: false,
         raw_addresses_serialized: false,
         events,
+        egress_observations,
         unobserved_capabilities: UNOBSERVED_CAPABILITIES_V1
             .iter()
             .map(|value| (*value).to_string())
             .collect(),
+    })
+}
+
+fn egress_observation_wire_v1(
+    expected: &LinuxVzPackageExpectedRootNetworkEvidenceV1,
+    event: &LinuxVzPackageEgressEventV1,
+) -> Result<RootNetworkEgressObservationWireV1, LinuxVzPackageRootNetworkEvidenceErrorV1> {
+    if event.cgroup_id_v1() != expected.cgroup_id
+        || event.timestamp_nanoseconds_v1()
+            < expected.completion.process_started_monotonic_nanoseconds()
+        || event.timestamp_nanoseconds_v1()
+            > expected.completion.process_ended_monotonic_nanoseconds()
+        || event.source_sequence_v1() == 0
+    {
+        return Err(LinuxVzPackageRootNetworkEvidenceErrorV1::InvalidEvent);
+    }
+    let decision = match event.decision_v1() {
+        LinuxVzPackageEgressDecisionV1::Allow => LinuxVzPackageRootNetworkEgressDecisionV1::Allow,
+        LinuxVzPackageEgressDecisionV1::Block => LinuxVzPackageRootNetworkEgressDecisionV1::Block,
+    };
+    let protocol = match event.protocol_v1() {
+        LinuxVzPackageEgressNetworkProtocolV1::Ipv4 => {
+            LinuxVzPackageRootNetworkEgressProtocolV1::Ipv4
+        }
+        LinuxVzPackageEgressNetworkProtocolV1::Ipv6 => {
+            LinuxVzPackageRootNetworkEgressProtocolV1::Ipv6
+        }
+        LinuxVzPackageEgressNetworkProtocolV1::Unsupported => {
+            LinuxVzPackageRootNetworkEgressProtocolV1::Unsupported
+        }
+    };
+    let packet_correlation_sha256 = if decision == LinuxVzPackageRootNetworkEgressDecisionV1::Allow
+        && !event.prefix_truncated_v1()
+    {
+        Some(
+            event
+                .packet_correlation_sha256_v1()
+                .map_err(|_| LinuxVzPackageRootNetworkEvidenceErrorV1::InvalidEvent)?,
+        )
+    } else {
+        None
+    };
+    Ok(RootNetworkEgressObservationWireV1 {
+        cgroup_id: event.cgroup_id_v1().to_string(),
+        cpu: event.cpu_v1().to_string(),
+        decision: decision.as_str_v1().to_string(),
+        egress_interface_index: event.egress_interface_index_v1().to_string(),
+        gso_segment_count: event.gso_segment_count_v1().to_string(),
+        gso_segment_size: event.gso_segment_size_v1().to_string(),
+        ingress_interface_index: event.ingress_interface_index_v1().to_string(),
+        packet_correlation_sha256,
+        packet_length: event.packet_length_v1().to_string(),
+        packet_prefix_byte_length: event.packet_prefix_v1().len().to_string(),
+        packet_prefix_sha256: event.packet_prefix_sha256_v1(),
+        prefix_truncated: event.prefix_truncated_v1(),
+        protocol: protocol.as_str_v1().to_string(),
+        raw_skb_protocol: event.raw_skb_protocol_v1().to_string(),
+        source_sequence: event.source_sequence_v1().to_string(),
+        timestamp_monotonic_nanoseconds: event.timestamp_nanoseconds_v1().to_string(),
+        wire_gso_metadata_available: event.wire_gso_metadata_available_v1(),
+        wire_length: event.wire_length_v1().to_string(),
+    })
+}
+
+fn decode_egress_observation_wire_v1(
+    wire: &RootNetworkEgressObservationWireV1,
+    expected: &LinuxVzPackageExpectedRootNetworkEvidenceV1,
+) -> Result<LinuxVzPackageRootNetworkEgressObservationV1, LinuxVzPackageRootNetworkEvidenceErrorV1>
+{
+    let decision = LinuxVzPackageRootNetworkEgressDecisionV1::parse_v1(&wire.decision)?;
+    let protocol = LinuxVzPackageRootNetworkEgressProtocolV1::parse_v1(&wire.protocol)?;
+    let cgroup_id = parse_u64_v1(&wire.cgroup_id)?;
+    let timestamp_monotonic_nanoseconds = parse_u64_v1(&wire.timestamp_monotonic_nanoseconds)?;
+    let packet_length = parse_u32_v1(&wire.packet_length)?;
+    let wire_length = parse_u32_v1(&wire.wire_length)?;
+    let raw_skb_protocol = parse_u32_v1(&wire.raw_skb_protocol)?;
+    let ingress_interface_index = parse_u32_v1(&wire.ingress_interface_index)?;
+    let egress_interface_index = parse_u32_v1(&wire.egress_interface_index)?;
+    let gso_segment_count = parse_u32_v1(&wire.gso_segment_count)?;
+    let gso_segment_size = parse_u32_v1(&wire.gso_segment_size)?;
+    let packet_prefix_byte_length = parse_usize_v1(&wire.packet_prefix_byte_length)?;
+    let source_sequence = parse_u64_v1(&wire.source_sequence)?;
+    let cpu = parse_u32_v1(&wire.cpu)?;
+    let packet_length_usize = usize::try_from(packet_length)
+        .map_err(|_| LinuxVzPackageRootNetworkEvidenceErrorV1::InvalidEvent)?;
+    let expected_prefix_length = packet_length_usize.min(160);
+    let protocol_matches_raw = match protocol {
+        LinuxVzPackageRootNetworkEgressProtocolV1::Ipv4 => raw_skb_protocol == 8,
+        LinuxVzPackageRootNetworkEgressProtocolV1::Ipv6 => raw_skb_protocol == 56_710,
+        LinuxVzPackageRootNetworkEgressProtocolV1::Unsupported => {
+            !matches!(raw_skb_protocol, 8 | 56_710)
+        }
+    };
+    let digest_is_bound = |digest: &Sha256Digest| {
+        digest == expected.sensor_session_challenge_sha256()
+            || digest == &expected.launch_contract_sha256
+            || digest == &expected.process_plan_sha256
+            || digest == expected.process_evidence_sha256()
+            || digest == &Sha256Digest::from_bytes(&[])
+    };
+    if cgroup_id != expected.cgroup_id
+        || timestamp_monotonic_nanoseconds
+            < expected.completion.process_started_monotonic_nanoseconds()
+        || timestamp_monotonic_nanoseconds
+            > expected.completion.process_ended_monotonic_nanoseconds()
+        || packet_length == 0
+        || packet_prefix_byte_length != expected_prefix_length
+        || wire.prefix_truncated != (packet_prefix_byte_length < packet_length_usize)
+        || !protocol_matches_raw
+        || wire.wire_gso_metadata_available
+        || wire_length != 0
+        || gso_segment_count != 0
+        || gso_segment_size != 0
+        || source_sequence == 0
+        || digest_is_bound(&wire.packet_prefix_sha256)
+        || match decision {
+            LinuxVzPackageRootNetworkEgressDecisionV1::Allow => {
+                protocol == LinuxVzPackageRootNetworkEgressProtocolV1::Unsupported
+                    || wire.prefix_truncated
+                    || match wire.packet_correlation_sha256.as_ref() {
+                        Some(digest) => {
+                            digest_is_bound(digest) || digest == &wire.packet_prefix_sha256
+                        }
+                        None => true,
+                    }
+            }
+            LinuxVzPackageRootNetworkEgressDecisionV1::Block => {
+                protocol != LinuxVzPackageRootNetworkEgressProtocolV1::Unsupported
+                    || wire.packet_correlation_sha256.is_some()
+            }
+        }
+    {
+        return Err(LinuxVzPackageRootNetworkEvidenceErrorV1::InvalidEvent);
+    }
+    Ok(LinuxVzPackageRootNetworkEgressObservationV1 {
+        decision,
+        protocol,
+        cgroup_id,
+        timestamp_monotonic_nanoseconds,
+        packet_length,
+        wire_length,
+        raw_skb_protocol,
+        ingress_interface_index,
+        egress_interface_index,
+        gso_segment_count,
+        gso_segment_size,
+        packet_prefix_byte_length,
+        packet_prefix_sha256: wire.packet_prefix_sha256.clone(),
+        packet_correlation_sha256: wire.packet_correlation_sha256.clone(),
+        prefix_truncated: wire.prefix_truncated,
+        wire_gso_metadata_available: false,
+        source_sequence,
+        cpu,
     })
 }
 
@@ -1118,6 +1529,10 @@ mod tests {
                 discarded_record_count: "0".to_string(),
                 dns_intent_coverage_complete: false,
                 dropped_event_count: "0".to_string(),
+                egress_discarded_record_count: "0".to_string(),
+                egress_dropped_event_count: "0".to_string(),
+                egress_event_count: "1".to_string(),
+                egress_packet_coverage_complete: true,
                 evidence_truncated: false,
                 guest_intent_coverage_complete: false,
                 host_frame_correlation_complete: false,
@@ -1131,6 +1546,28 @@ mod tests {
                     .map(|value| (*value).to_string())
                     .collect(),
             },
+            egress_observations: vec![RootNetworkEgressObservationWireV1 {
+                cgroup_id: TEST_CGROUP_ID_V1.to_string(),
+                cpu: "1".to_string(),
+                decision: "allow".to_string(),
+                egress_interface_index: "2".to_string(),
+                gso_segment_count: "0".to_string(),
+                gso_segment_size: "0".to_string(),
+                ingress_interface_index: "0".to_string(),
+                packet_correlation_sha256: Some(Sha256Digest::from_bytes(
+                    b"normalized egress packet",
+                )),
+                packet_length: "44".to_string(),
+                packet_prefix_byte_length: "44".to_string(),
+                packet_prefix_sha256: Sha256Digest::from_bytes(b"raw egress packet prefix"),
+                prefix_truncated: false,
+                protocol: "ipv4".to_string(),
+                raw_skb_protocol: "8".to_string(),
+                source_sequence: "1".to_string(),
+                timestamp_monotonic_nanoseconds: "700".to_string(),
+                wire_gso_metadata_available: false,
+                wire_length: "0".to_string(),
+            }],
             events: vec![RootNetworkEventWireV1 {
                 address_family: "ipv4".to_string(),
                 cgroup_id: "77".to_string(),
@@ -1150,7 +1587,7 @@ mod tests {
             }],
             process_observation_count: "10".to_string(),
             process_source_event_count: "18".to_string(),
-            schema_version: LINUX_VZ_PACKAGE_ROOT_NETWORK_EVIDENCE_SCHEMA_V1.to_string(),
+            schema_version: LINUX_VZ_PACKAGE_ROOT_NETWORK_EVIDENCE_SCHEMA_V2.to_string(),
         }
     }
 
@@ -1162,6 +1599,19 @@ mod tests {
             decode_linux_vz_package_root_network_evidence_v1(&bytes, &expected).expect("decode");
         assert_eq!(evidence.events().len(), 1);
         assert!(evidence.connect_sendto_intent_coverage_complete());
+        assert!(evidence.egress_packet_coverage_complete());
+        assert_eq!(evidence.egress_dropped_event_count(), 0);
+        assert_eq!(evidence.egress_discarded_record_count(), 0);
+        assert_eq!(evidence.egress_observations().len(), 1);
+        assert_eq!(
+            evidence.egress_observations()[0].decision(),
+            LinuxVzPackageRootNetworkEgressDecisionV1::Allow
+        );
+        assert_eq!(
+            evidence.egress_observations()[0].protocol(),
+            LinuxVzPackageRootNetworkEgressProtocolV1::Ipv4
+        );
+        assert!(!evidence.egress_observations()[0].wire_gso_metadata_available());
         assert!(!evidence.guest_intent_coverage_complete());
         assert!(!evidence.host_frame_correlation_complete());
         assert!(!evidence.composite_network_coverage_complete());
@@ -1273,6 +1723,63 @@ mod tests {
                 &expected
             ),
             Err(LinuxVzPackageRootNetworkEvidenceErrorV1::InvalidCoverage)
+        );
+
+        let mut missing_egress_coverage = exact_wire_v1();
+        missing_egress_coverage
+            .coverage
+            .egress_packet_coverage_complete = false;
+        assert_eq!(
+            decode_linux_vz_package_root_network_evidence_v1(
+                &canonical_json_v1(&missing_egress_coverage).expect("missing egress coverage"),
+                &expected
+            ),
+            Err(LinuxVzPackageRootNetworkEvidenceErrorV1::InvalidCoverage)
+        );
+
+        let mut forged_wire_metadata = exact_wire_v1();
+        forged_wire_metadata.egress_observations[0].wire_gso_metadata_available = true;
+        forged_wire_metadata.egress_observations[0].wire_length = "44".to_string();
+        assert_eq!(
+            decode_linux_vz_package_root_network_evidence_v1(
+                &canonical_json_v1(&forged_wire_metadata).expect("forged wire metadata"),
+                &expected
+            ),
+            Err(LinuxVzPackageRootNetworkEvidenceErrorV1::InvalidEvent)
+        );
+
+        let mut rebound_egress = exact_wire_v1();
+        rebound_egress.egress_observations[0].cgroup_id = "78".to_string();
+        assert_eq!(
+            decode_linux_vz_package_root_network_evidence_v1(
+                &canonical_json_v1(&rebound_egress).expect("rebound egress"),
+                &expected
+            ),
+            Err(LinuxVzPackageRootNetworkEvidenceErrorV1::InvalidEvent)
+        );
+
+        let mut mislabeled_protocol = exact_wire_v1();
+        mislabeled_protocol.egress_observations[0].protocol = "unsupported".to_string();
+        assert_eq!(
+            decode_linux_vz_package_root_network_evidence_v1(
+                &canonical_json_v1(&mislabeled_protocol).expect("mislabeled protocol"),
+                &expected
+            ),
+            Err(LinuxVzPackageRootNetworkEvidenceErrorV1::InvalidEvent)
+        );
+
+        let mut duplicate_packet_digest = exact_wire_v1();
+        duplicate_packet_digest.egress_observations[0].packet_correlation_sha256 = Some(
+            duplicate_packet_digest.egress_observations[0]
+                .packet_prefix_sha256
+                .clone(),
+        );
+        assert_eq!(
+            decode_linux_vz_package_root_network_evidence_v1(
+                &canonical_json_v1(&duplicate_packet_digest).expect("duplicate packet digest"),
+                &expected
+            ),
+            Err(LinuxVzPackageRootNetworkEvidenceErrorV1::InvalidEvent)
         );
         assert!(!canonical.is_empty());
     }

@@ -12,12 +12,14 @@ use zeroize::Zeroize;
 
 pub const LINUX_VZ_PACKAGE_ROOT_EVIDENCE_RECEIPT_SCHEMA_V1: &str =
     "whoathere.linux_vz_package_root_evidence_receipt.v1";
+pub const LINUX_VZ_PACKAGE_ROOT_EVIDENCE_RECEIPT_SCHEMA_V2: &str =
+    "whoathere.linux_vz_package_root_evidence_receipt.v2";
 pub const MAX_LINUX_VZ_PACKAGE_ROOT_EVIDENCE_RECEIPT_BYTES_V1: usize = 256 * 1024;
 pub const MAX_LINUX_VZ_PACKAGE_ROOT_EVIDENCE_RECEIPT_LIFETIME_SECONDS_V1: u64 = 10 * 60;
 
 const ROOT_EVIDENCE_RECEIPT_AUTHORITY_V1: &str = "guest_protected_sensor";
-const ROOT_EVIDENCE_RECEIPT_SIGNATURE_DOMAIN_V1: &[u8] =
-    b"whoathere.linux_vz_package_root_evidence_receipt.signature.v1\0";
+const ROOT_EVIDENCE_RECEIPT_SIGNATURE_DOMAIN_V2: &[u8] =
+    b"whoathere.linux_vz_package_root_evidence_receipt.signature.v2\0";
 const PACKAGE_UID_V1: u32 = 65_534;
 const PACKAGE_GID_V1: u32 = 65_534;
 
@@ -126,6 +128,10 @@ pub struct LinuxVzPackageRootEvidenceReceiptClaimsV1 {
     network_evidence_sha256: Sha256Digest,
     network_evidence_byte_length: usize,
     network_event_count: usize,
+    egress_event_count: usize,
+    egress_packet_coverage_complete: bool,
+    egress_dropped_event_count: u64,
+    egress_discarded_record_count: u64,
     connect_sendto_intent_coverage_complete: bool,
     guest_intent_coverage_complete: bool,
     host_frame_correlation_complete: bool,
@@ -202,6 +208,9 @@ impl LinuxVzPackageRootEvidenceReceiptClaimsV1 {
             || file.raw_paths_captured()
             || network.raw_addresses_serialized()
             || !network.connect_sendto_intent_coverage_complete()
+            || !network.egress_packet_coverage_complete()
+            || network.egress_dropped_event_count() != 0
+            || network.egress_discarded_record_count() != 0
             || network.composite_network_coverage_complete()
                 != (network.guest_intent_coverage_complete()
                     && network.host_frame_correlation_complete()
@@ -296,6 +305,10 @@ impl LinuxVzPackageRootEvidenceReceiptClaimsV1 {
             network_evidence_sha256: network.payload_sha256().clone(),
             network_evidence_byte_length: network.canonical_json_v1().len(),
             network_event_count: network.events().len(),
+            egress_event_count: network.egress_observations().len(),
+            egress_packet_coverage_complete: network.egress_packet_coverage_complete(),
+            egress_dropped_event_count: network.egress_dropped_event_count(),
+            egress_discarded_record_count: network.egress_discarded_record_count(),
             connect_sendto_intent_coverage_complete: network
                 .connect_sendto_intent_coverage_complete(),
             guest_intent_coverage_complete: network.guest_intent_coverage_complete(),
@@ -380,6 +393,9 @@ impl LinuxVzPackageRootEvidenceReceiptClaimsV1 {
             && self.file_global_mount_coverage_complete
             && self.composite_network_coverage_complete;
         if !self.connect_sendto_intent_coverage_complete
+            || !self.egress_packet_coverage_complete
+            || self.egress_dropped_event_count != 0
+            || self.egress_discarded_record_count != 0
             || self.composite_network_coverage_complete
                 != (self.guest_intent_coverage_complete
                     && self.host_frame_correlation_complete
@@ -505,6 +521,10 @@ struct UnsignedRootEvidenceReceiptWireV1 {
     network_evidence_sha256: Sha256Digest,
     network_evidence_byte_length: String,
     network_event_count: String,
+    egress_event_count: String,
+    egress_packet_coverage_complete: bool,
+    egress_dropped_event_count: String,
+    egress_discarded_record_count: String,
     connect_sendto_intent_coverage_complete: bool,
     guest_intent_coverage_complete: bool,
     host_frame_correlation_complete: bool,
@@ -703,7 +723,7 @@ fn unsigned_receipt_v1(
     claims: &LinuxVzPackageRootEvidenceReceiptClaimsV1,
 ) -> UnsignedRootEvidenceReceiptWireV1 {
     UnsignedRootEvidenceReceiptWireV1 {
-        schema_version: LINUX_VZ_PACKAGE_ROOT_EVIDENCE_RECEIPT_SCHEMA_V1.to_string(),
+        schema_version: LINUX_VZ_PACKAGE_ROOT_EVIDENCE_RECEIPT_SCHEMA_V2.to_string(),
         authority: ROOT_EVIDENCE_RECEIPT_AUTHORITY_V1.to_string(),
         artifact_kind: claims.artifact_kind,
         artifact_sha256: claims.artifact_sha256.clone(),
@@ -770,6 +790,10 @@ fn unsigned_receipt_v1(
         network_evidence_sha256: claims.network_evidence_sha256.clone(),
         network_evidence_byte_length: claims.network_evidence_byte_length.to_string(),
         network_event_count: claims.network_event_count.to_string(),
+        egress_event_count: claims.egress_event_count.to_string(),
+        egress_packet_coverage_complete: claims.egress_packet_coverage_complete,
+        egress_dropped_event_count: claims.egress_dropped_event_count.to_string(),
+        egress_discarded_record_count: claims.egress_discarded_record_count.to_string(),
         connect_sendto_intent_coverage_complete: claims.connect_sendto_intent_coverage_complete,
         guest_intent_coverage_complete: claims.guest_intent_coverage_complete,
         host_frame_correlation_complete: claims.host_frame_correlation_complete,
@@ -802,9 +826,9 @@ fn unsigned_receipt_v1(
 
 fn signature_message_v1(unsigned_receipt: &[u8]) -> Vec<u8> {
     let mut message = Vec::with_capacity(
-        ROOT_EVIDENCE_RECEIPT_SIGNATURE_DOMAIN_V1.len() + unsigned_receipt.len(),
+        ROOT_EVIDENCE_RECEIPT_SIGNATURE_DOMAIN_V2.len() + unsigned_receipt.len(),
     );
-    message.extend_from_slice(ROOT_EVIDENCE_RECEIPT_SIGNATURE_DOMAIN_V1);
+    message.extend_from_slice(ROOT_EVIDENCE_RECEIPT_SIGNATURE_DOMAIN_V2);
     message.extend_from_slice(unsigned_receipt);
     message
 }
@@ -916,6 +940,10 @@ mod tests {
             network_evidence_sha256: digest("network evidence"),
             network_evidence_byte_length: 2459,
             network_event_count: 2,
+            egress_event_count: 1,
+            egress_packet_coverage_complete: true,
+            egress_dropped_event_count: 0,
+            egress_discarded_record_count: 0,
             connect_sendto_intent_coverage_complete: true,
             guest_intent_coverage_complete: false,
             host_frame_correlation_complete: false,
@@ -1054,6 +1082,20 @@ mod tests {
         overclaim.evidence_complete = true;
         assert_eq!(
             sign_linux_vz_package_root_evidence_receipt_v1(&overclaim, SIGNING_SEED),
+            Err(LinuxVzPackageRootEvidenceReceiptErrorV1::InvalidCoverage)
+        );
+
+        let mut missing_egress = claims_v1();
+        missing_egress.egress_packet_coverage_complete = false;
+        assert_eq!(
+            sign_linux_vz_package_root_evidence_receipt_v1(&missing_egress, SIGNING_SEED),
+            Err(LinuxVzPackageRootEvidenceReceiptErrorV1::InvalidCoverage)
+        );
+
+        let mut dropped_egress = claims_v1();
+        dropped_egress.egress_dropped_event_count = 1;
+        assert_eq!(
+            sign_linux_vz_package_root_evidence_receipt_v1(&dropped_egress, SIGNING_SEED),
             Err(LinuxVzPackageRootEvidenceReceiptErrorV1::InvalidCoverage)
         );
     }
