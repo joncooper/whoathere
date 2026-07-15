@@ -2,8 +2,13 @@
 
 Date: 2026-07-14
 
-Status: package-specific guest receipt protocol implemented and tested; root-service integration,
-independent verification, host composition, and physical qualification remain open
+Status: package-specific guest receipt protocol implemented and tested; independent Mac
+verification and a host-composition protocol followed on 2026-07-15; root-service signing and
+physical qualification remain open
+
+Follow-on: the separately implemented Swift verifier and Mac-signed composite envelope are
+documented in the
+[authenticated host-composition checkpoint](artifact-native-linux-vz-package-authenticated-host-composition-checkpoint-2026-07-15.md).
 
 ## Result
 
@@ -20,7 +25,7 @@ and file coverage rather than upgrading the selected UDP result into a broad obs
 
 ## Implemented boundary
 
-The schema `whoathere.linux_vz_package_root_evidence_receipt.v1` binds:
+The current schema `whoathere.linux_vz_package_root_evidence_receipt.v2` binds:
 
 - exact npm tarball, PyPI wheel, or PyPI sdist identity and byte length;
 - package-authority request, typed scenario, dependency closure, and runtime-profile digests;
@@ -62,13 +67,16 @@ or malware executed.
 
 ## Remaining gate
 
-AN-506 remains open until all of the following are complete:
+AN-506 remains open until all of the following are complete. Items 3 and the protocol portion of 4
+now have implementations, but they are not physical evidence until the root service emits an
+authenticated guest receipt during an inert package run:
 
 1. Pass exact authority/grant and key-lifecycle bindings into the protected root service.
 2. Have the measured guest signer authenticate the receipt after the collectors finish.
-3. Add a separately implemented verifier, starting with the Mac host implementation.
-4. Bind host raw-frame evidence, VM stop, image identity, clone destruction, and restricted raw
-   evidence references into a distinct host-signed composite envelope.
+3. Wire the separately implemented Mac verifier into the physical launcher and add an independent
+   verifier for the host-composite receipt.
+4. Physically populate the host-signed composite envelope with host raw-frame evidence, VM stop,
+   image identity, clone destruction, and restricted raw-evidence references.
 5. Prove missing, killed, stale, rebound, or forged sensors/receipts yield error or inconclusive and
    can never produce observed-clean.
 6. Physically qualify the authenticated path with inert npm, wheel, and nested-sdist scenarios

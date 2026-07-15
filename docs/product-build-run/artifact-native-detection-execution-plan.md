@@ -4,6 +4,22 @@ Date: 2026-07-09
 
 Status: canonical execution plan for the next product milestone
 
+Authenticated-evidence checkpoint (2026-07-15): the package root-evidence receipt now has a
+separately implemented Mac verifier. Swift/Foundation strictly parses the Rust schema-v2 wire,
+requires canonical bytes and the complete key set, independently hashes the exact process, file,
+and network payload bytes, checks host-supplied authority/grant/action/count/coverage bindings,
+verifies the measured Ed25519 key with CryptoKit, and rejects stale, rebound, forged, elevated, or
+noncanonical evidence. A Rust-produced deterministic receipt is pinned as a cross-language golden.
+A distinct Mac-signed composite contract then binds that verified guest receipt to the typed
+selected-UDP host-frame evidence, terminated guest channel, stopped VM, stable runtime image,
+destroyed clone, and digest-only restricted-evidence references. The composite remains explicitly
+`inconclusive_incomplete_coverage`: it cannot claim broad host-network coverage, issue an
+authoritative verdict, or permit sync-back. These are tested protocol boundaries; the measured
+guest signer/root service and a physical package run do not emit them yet, and the host-composite
+receipt does not yet have an independent Rust verifier. No VM, package, or malware ran for this
+checkpoint, so the July score remains 7/11. See the
+[authenticated host-composition checkpoint](artifact-native-linux-vz-package-authenticated-host-composition-checkpoint-2026-07-15.md).
+
 Current execution checkpoint (2026-07-14): the selected transmitted UDP case now has a physically
 proven guest denominator as well as an independently retained host frame. A cgroup-`SKB` egress BPF
 source emitted exactly one 44-byte IPv4/UDP observation, and the host collector retained exactly one
@@ -31,8 +47,9 @@ independently rebuilds every expected claim before signature validation and reje
 mutation, wrong keys, noncanonical bytes, premature or expired evidence, and false coverage
 upgrades. The receipt honestly remains incomplete: it records the current file and network gaps,
 requires later host composition, contains no VM-destruction claim, cannot authorize a verdict, and
-cannot permit sync-back. It is a tested protocol boundary, not yet wired into the physical root
-service or independently implemented in Swift, so AN-506 remains open. See the
+cannot permit sync-back. A separate Swift verifier and the first host-composition contract now
+exist, but the receipt is not yet emitted by the physical root service or measured guest signer, so
+AN-506 remains open. See the
 [package root-evidence receipt checkpoint](artifact-native-linux-vz-package-root-evidence-receipt-checkpoint-2026-07-14.md).
 
 The preceding checkpoint made the concrete root service compose process and file

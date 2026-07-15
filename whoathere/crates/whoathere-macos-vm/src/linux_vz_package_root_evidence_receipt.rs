@@ -970,6 +970,48 @@ mod tests {
             .as_bytes()
     }
 
+    fn cross_language_claims_v2() -> LinuxVzPackageRootEvidenceReceiptClaimsV1 {
+        let mut claims = claims_v1();
+        let process = br#"{"type":"process"}"#;
+        let file = br#"{"type":"file"}"#;
+        let network = br#"{"type":"network"}"#;
+        claims.process_evidence_sha256 = Sha256Digest::from_bytes(process);
+        claims.process_evidence_byte_length = process.len();
+        claims.file_evidence_sha256 = Sha256Digest::from_bytes(file);
+        claims.file_evidence_byte_length = file.len();
+        claims.network_evidence_sha256 = Sha256Digest::from_bytes(network);
+        claims.network_evidence_byte_length = network.len();
+        claims
+    }
+
+    #[test]
+    fn cross_language_root_receipt_fixture_v2_is_stable() {
+        let claims = cross_language_claims_v2();
+        let receipt = sign_linux_vz_package_root_evidence_receipt_v1(&claims, SIGNING_SEED)
+            .expect("sign receipt");
+        let wire: serde_json::Value = serde_json::from_slice(&receipt).expect("receipt json");
+        assert_eq!(
+            wire["signature_ed25519_hex"].as_str().expect("signature"),
+            "053fa74681b22607ebc86a26d7341d07da26cb0b091f0a6c94683e09569740a2\
+             f989a9a360ba134bf65bce99ab705553d66ca25eb88784fe94ae55a1e9a78701"
+        );
+        assert_eq!(
+            Sha256Digest::from_bytes(&receipt).as_str(),
+            "sha256:dc91df448364fa0d8ddb2fb60d4f7c89027f3326d7ae9136a70bebaedc6d8a22"
+        );
+        assert_eq!(
+            lower_hex_v1(&verifying_key_v1()),
+            "772c8a442b7db06e166cfbc1ccbcbcde6f3eba76a4e98ef3ffc519502237d6ef"
+        );
+        assert_eq!(
+            Sha256Digest::from_bytes(
+                &serde_json_canonicalizer::to_vec(&wire["claims"]).expect("claims")
+            )
+            .as_str(),
+            "sha256:9c24aa8dd83ad562f72415d1c110bff61548412b2f18aedf75e182cc39d776f9"
+        );
+    }
+
     #[test]
     fn signed_receipt_binds_exact_incomplete_evidence_without_verdict_authority() {
         let claims = claims_v1();
