@@ -33,6 +33,8 @@ private struct Options {
     let expectedPackageSensorFixtureSHA256: String?
     let expectedRuntimeBTFSHA256: String?
     let expectedTaskExitCodeByteOffset: UInt64?
+    let expectedRootCoordinatorProbeSHA256: String?
+    let expectedRootCoordinatorPublicKeySHA256: String?
     let serialLog: URL
     let timeoutSeconds: Int
 
@@ -44,6 +46,8 @@ private struct Options {
         var expectedPackageSensorFixtureSHA256: String?
         var expectedRuntimeBTFSHA256: String?
         var expectedTaskExitCodeByteOffset: UInt64?
+        var expectedRootCoordinatorProbeSHA256: String?
+        var expectedRootCoordinatorPublicKeySHA256: String?
         var serialLog: URL?
         var timeoutSeconds = 30
         var seenOptions = Set<String>()
@@ -67,6 +71,10 @@ private struct Options {
                     throw HarnessError.usage
                 }
                 expectedTaskExitCodeByteOffset = parsed
+            case "--expected-root-coordinator-probe-sha256":
+                expectedRootCoordinatorProbeSHA256 = value
+            case "--expected-root-coordinator-public-key-sha256":
+                expectedRootCoordinatorPublicKeySHA256 = value
             case "--serial-log": serialLog = URL(fileURLWithPath: value)
             case "--timeout-seconds":
                 guard let parsed = Int(value), parsed >= 5, parsed <= 120 else {
@@ -77,6 +85,14 @@ private struct Options {
             }
             index += 2
         }
+        let packageSensorMode = expectedPackageSensorFixtureSHA256 != nil
+            && expectedRuntimeBTFSHA256 != nil && expectedTaskExitCodeByteOffset != nil
+        let packageSensorOptionsAbsent = expectedPackageSensorFixtureSHA256 == nil
+            && expectedRuntimeBTFSHA256 == nil && expectedTaskExitCodeByteOffset == nil
+        let rootCoordinatorMode = expectedRootCoordinatorProbeSHA256 != nil
+            && expectedRootCoordinatorPublicKeySHA256 != nil
+        let rootCoordinatorOptionsAbsent = expectedRootCoordinatorProbeSHA256 == nil
+            && expectedRootCoordinatorPublicKeySHA256 == nil
         guard let kernel, let initramfs, let expectedKernelSHA256,
               let expectedInitramfsSHA256, let serialLog,
               kernel.path.hasPrefix("/"), initramfs.path.hasPrefix("/"),
@@ -84,12 +100,11 @@ private struct Options {
               validSHA256(expectedKernelSHA256), validSHA256(expectedInitramfsSHA256),
               expectedPackageSensorFixtureSHA256.map(validSHA256) ?? true,
               expectedRuntimeBTFSHA256.map(validSHA256) ?? true,
-              (expectedPackageSensorFixtureSHA256 == nil
-                  && expectedRuntimeBTFSHA256 == nil
-                  && expectedTaskExitCodeByteOffset == nil)
-                  || (expectedPackageSensorFixtureSHA256 != nil
-                      && expectedRuntimeBTFSHA256 != nil
-                      && expectedTaskExitCodeByteOffset != nil) else {
+              expectedRootCoordinatorProbeSHA256.map(validSHA256) ?? true,
+              expectedRootCoordinatorPublicKeySHA256.map(validSHA256) ?? true,
+              packageSensorOptionsAbsent || packageSensorMode,
+              rootCoordinatorOptionsAbsent || rootCoordinatorMode,
+              !(packageSensorMode && rootCoordinatorMode) else {
             throw HarnessError.usage
         }
         return Self(
@@ -100,6 +115,8 @@ private struct Options {
             expectedPackageSensorFixtureSHA256: expectedPackageSensorFixtureSHA256,
             expectedRuntimeBTFSHA256: expectedRuntimeBTFSHA256,
             expectedTaskExitCodeByteOffset: expectedTaskExitCodeByteOffset,
+            expectedRootCoordinatorProbeSHA256: expectedRootCoordinatorProbeSHA256,
+            expectedRootCoordinatorPublicKeySHA256: expectedRootCoordinatorPublicKeySHA256,
             serialLog: serialLog,
             timeoutSeconds: timeoutSeconds
         )
@@ -125,7 +142,7 @@ private struct LinuxVzConformanceHarness {
             exit(exitCode)
         } catch HarnessError.usage {
             fputs(
-                "usage: whoathere-linux-vz-conformance --kernel PATH --initramfs PATH --expected-kernel-sha256 SHA256 --expected-initramfs-sha256 SHA256 --serial-log PATH [--expected-package-sensor-fixture-sha256 SHA256 --expected-runtime-btf-sha256 SHA256 --expected-task-exit-code-byte-offset DECIMAL] [--timeout-seconds 30]\n",
+                "usage: whoathere-linux-vz-conformance --kernel PATH --initramfs PATH --expected-kernel-sha256 SHA256 --expected-initramfs-sha256 SHA256 --serial-log PATH [--expected-package-sensor-fixture-sha256 SHA256 --expected-runtime-btf-sha256 SHA256 --expected-task-exit-code-byte-offset DECIMAL | --expected-root-coordinator-probe-sha256 SHA256 --expected-root-coordinator-public-key-sha256 SHA256] [--timeout-seconds 30]\n",
                 stderr
             )
             exit(64)
@@ -261,6 +278,76 @@ private struct LinuxVzConformanceHarness {
         let finalInitramfsSHA256 = try fileSHA256(options.initramfs)
         let imageIdentityStable = finalKernelSHA256 == kernelSHA256
             && finalInitramfsSHA256 == initramfsSHA256
+        if let expectedProbeSHA256 = options.expectedRootCoordinatorProbeSHA256,
+           let expectedPublicKeySHA256 = options.expectedRootCoordinatorPublicKeySHA256 {
+            let evidence = try? decodeLinuxVzPackageRootCoordinatorEvidenceV1(
+                serialData,
+                expectedProbeSHA256: expectedProbeSHA256,
+                expectedPublicKeySHA256: expectedPublicKeySHA256
+            )
+            let missingMarkers = linuxVzPackageRootCoordinatorMissingMarkersV1(serialData)
+            let failurePresent = linuxVzPackageRootCoordinatorFailurePresentV1(serialData)
+            let success = stopped && evidence != nil && missingMarkers.isEmpty
+                && !failurePresent && rawFrameCount == 0
+                && rawFrameCollection.droppedFrameCount == 0
+                && rawFrameCollection.truncatedFrameCount == 0
+                && rawFrameCollection.healthy && imageIdentityStable
+            emitJSON([
+                "schema_version":
+                    "whoathere.linux_vz_package_root_coordinator_boot_result.v1",
+                "status": success ? "ok" : "error",
+                "operation": "linux_vz_package_root_coordinator_qualification",
+                "kernel_sha256": kernelSHA256,
+                "initramfs_sha256": initramfsSHA256,
+                "probe_sha256": expectedProbeSHA256,
+                "guest_evidence_public_key_sha256": expectedPublicKeySHA256,
+                "kernel_command_line": linuxVzInertKernelCommandLineV1,
+                "network_topology": "host_raw_frame_sinkhole_no_external_route",
+                "virtualization_supported": VZVirtualMachine.isSupported,
+                "image_identity_stable": imageIdentityStable,
+                "vm_stopped": stopped,
+                "evidence_valid": evidence != nil,
+                "evidence_payload_sha256": evidence?.payloadSHA256 ?? "unavailable",
+                "evidence_byte_length": String(evidence?.canonicalJSON.count ?? 0),
+                "service_pid": String(evidence?.servicePID ?? 0),
+                "runner_pid": String(evidence?.runnerPID ?? 0),
+                "runner_thread_count": String(evidence?.threadCount ?? 0),
+                "runner_open_descriptor_count": String(evidence?.openDescriptorCount ?? 0),
+                "runner_inheritable_capabilities": String(
+                    format: "%016llx", evidence?.inheritableCapabilities ?? 0
+                ),
+                "runner_permitted_capabilities": String(
+                    format: "%016llx", evidence?.permittedCapabilities ?? 0
+                ),
+                "runner_effective_capabilities": String(
+                    format: "%016llx", evidence?.effectiveCapabilities ?? 0
+                ),
+                "runner_bounding_capabilities": String(
+                    format: "%016llx", evidence?.boundingCapabilities ?? 0
+                ),
+                "runner_ambient_capabilities": String(
+                    format: "%016llx", evidence?.ambientCapabilities ?? 0
+                ),
+                "required_marker_count": linuxVzPackageRootCoordinatorRequiredMarkersV1.count,
+                "missing_required_markers": missingMarkers,
+                "failure_marker_present": failurePresent,
+                "raw_frame_count": rawFrameCount,
+                "raw_frame_retained_count": rawFrameCollection.retainedFrameCount,
+                "raw_frame_dropped_count": rawFrameCollection.droppedFrameCount,
+                "raw_frame_truncated_count": rawFrameCollection.truncatedFrameCount,
+                "packet_sensor_healthy": rawFrameCollection.healthy,
+                "packet_sensor_terminal": rawFrameCollection.terminal,
+                "external_route": false,
+                "root_disk_present": false,
+                "storage_device_count": "0",
+                "directory_share_count": "0",
+                "package_execution": false,
+                "malware_execution": false,
+                "sync_back": false,
+                "exit_code": success ? 0 : 70,
+            ])
+            return success ? 0 : 70
+        }
         if let expectedFixtureSHA256 = options.expectedPackageSensorFixtureSHA256,
            let expectedRuntimeBTFSHA256 = options.expectedRuntimeBTFSHA256,
            let expectedTaskExitCodeByteOffset = options.expectedTaskExitCodeByteOffset {
