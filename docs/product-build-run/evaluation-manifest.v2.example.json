@@ -1,0 +1,83 @@
+{
+  "schema": "whoathere.actual_malware.evaluation_manifest.v2",
+  "evaluation_id": "example-evaluation-v2",
+  "created_at_utc": "2026-07-14T23:59:00Z",
+  "corpus_sha256": "sha256:0eef66eab84e7b9a1eb7c61d19cfeaf188f78b86ecd6595addf60be095b87f11",
+  "identities": {
+    "runtime_sha256": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "prompt_set_sha256": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+    "observation_schema_sha256": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+    "provider_adapter_sha256": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+    "policy_sha256": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+    "scorer_id": "whoathere-actual-malware-evaluation.py:score-results-v2"
+  },
+  "verified_evidence_registry": {
+    "registry_id": "example-verified-evidence",
+    "verifier_id": "example-independent-verifier",
+    "verifier_public_key_sha256": "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+  },
+  "evaluation_window": {
+    "starts_at_utc": "2026-07-15T00:00:00Z",
+    "ends_at_utc": "2026-07-15T01:00:00Z",
+    "maximum_result_to_registry_seconds": 600
+  },
+  "thresholds": {
+    "malicious_behavior_detection_rate_min": 1.0,
+    "benign_false_malicious_rate_max": 0.0,
+    "benign_friction_rate_max": 0.0,
+    "required_run_completion_rate_min": 1.0,
+    "safety_pass_rate_min": 1.0
+  },
+  "cohorts": [
+    {
+      "cohort_id": "example-malicious",
+      "expected_result": "malicious",
+      "description": "Example-only malicious cohort; do not use for a real claim."
+    },
+    {
+      "cohort_id": "example-benign",
+      "expected_result": "benign",
+      "description": "Example-only benign cohort; do not use for a real claim."
+    }
+  ],
+  "required_runs": [
+    {
+      "sample_id": "example-malware-npm-001",
+      "profile_id": "npm-ci-false",
+      "cohort_id": "example-malicious",
+      "family_id": "example-malicious-family",
+      "campaign_id": "example-malicious-campaign",
+      "artifact_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "ecosystem": "npm",
+      "expected_result": "malicious",
+      "required_behavior_labels": [
+        "credential_env_access",
+        "https_exfil",
+        "second_stage_fetch"
+      ],
+      "required_modalities": [
+        "deterministic",
+        "dynamic"
+      ],
+      "require_complete": true
+    },
+    {
+      "sample_id": "example-benign-npm-001",
+      "profile_id": "npm-ci-false",
+      "cohort_id": "example-benign",
+      "family_id": "example-benign-family",
+      "campaign_id": "example-benign-campaign",
+      "artifact_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "ecosystem": "npm",
+      "expected_result": "benign",
+      "required_behavior_labels": [
+        "benign_postinstall"
+      ],
+      "required_modalities": [
+        "deterministic",
+        "dynamic"
+      ],
+      "require_complete": true
+    }
+  ]
+}
