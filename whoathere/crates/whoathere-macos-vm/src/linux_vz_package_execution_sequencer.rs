@@ -31,6 +31,8 @@ use whoathere_artifact::Sha256Digest;
 
 pub const LINUX_VZ_PACKAGE_EXECUTION_SEQUENCE_TRANSCRIPT_SCHEMA_V1: &str =
     "whoathere.linux_vz_package_execution_sequence_transcript.v1";
+pub const LINUX_VZ_PACKAGE_EXECUTION_SEQUENCE_TRANSCRIPT_SCHEMA_V2: &str =
+    "whoathere.linux_vz_package_execution_sequence_transcript.v2";
 pub const MAX_LINUX_VZ_PACKAGE_EXECUTION_SEQUENCE_TRANSCRIPT_BYTES_V1: usize = 512 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,9 +145,14 @@ struct ProcessSummaryWireV1<'a> {
     action_index: String,
     stage_name: &'a str,
     supervisor_evidence_sha256: &'a Sha256Digest,
-    protected_sensor_correlation_sha256: &'a Sha256Digest,
-    protected_sensor_payload_set_sha256: &'a Sha256Digest,
+    protected_sensor_evidence_kind: crate::LinuxVzPackageProtectedSensorEvidenceKindV1,
+    protected_sensor_authentication_sha256: &'a Sha256Digest,
+    protected_sensor_evidence_set_sha256: &'a Sha256Digest,
     sensor_session_challenge_sha256: &'a Sha256Digest,
+    process_sensor_evidence_sha256: &'a Sha256Digest,
+    file_sensor_evidence_sha256: &'a Sha256Digest,
+    network_sensor_evidence_sha256: &'a Sha256Digest,
+    protected_sensor_authenticated: bool,
     terminal: LinuxVzPackageProcessTerminalV1,
     #[serde(skip_serializing_if = "Option::is_none")]
     exit_status: Option<String>,
@@ -154,6 +161,8 @@ struct ProcessSummaryWireV1<'a> {
     deadline_reached: bool,
     descendant_teardown_complete: bool,
     coverage_complete: bool,
+    host_composition_required: bool,
+    authoritative_verdict_permitted: bool,
 }
 
 #[cfg(target_os = "linux")]
@@ -738,7 +747,7 @@ fn build_transcript_wire_v1<'a>(
     terminal: LinuxVzPackageExecutionSequenceTerminalV1,
 ) -> ExecutionSequenceTranscriptWireV1<'a> {
     ExecutionSequenceTranscriptWireV1 {
-        schema_version: LINUX_VZ_PACKAGE_EXECUTION_SEQUENCE_TRANSCRIPT_SCHEMA_V1,
+        schema_version: LINUX_VZ_PACKAGE_EXECUTION_SEQUENCE_TRANSCRIPT_SCHEMA_V2,
         execution_request_sha256,
         execution_grant_sha256,
         attempt_binding_sha256,
@@ -800,13 +809,20 @@ fn build_transcript_wire_v1<'a>(
                 action_index: value.supervisor().action_index().to_string(),
                 stage_name: value.supervisor().stage_name(),
                 supervisor_evidence_sha256: value.supervisor().evidence_sha256(),
-                protected_sensor_correlation_sha256: value.protected_sensor().correlation_sha256(),
-                protected_sensor_payload_set_sha256: value
-                    .protected_sensor_payloads()
-                    .payload_set_sha256(),
+                protected_sensor_evidence_kind: value.supervisor().protected_sensor_evidence_kind(),
+                protected_sensor_authentication_sha256: value
+                    .supervisor()
+                    .protected_sensor_authentication_sha256(),
+                protected_sensor_evidence_set_sha256: value
+                    .supervisor()
+                    .protected_sensor_evidence_set_sha256(),
                 sensor_session_challenge_sha256: value
-                    .protected_sensor()
+                    .supervisor()
                     .sensor_session_challenge_sha256(),
+                process_sensor_evidence_sha256: value.supervisor().process_sensor_evidence_sha256(),
+                file_sensor_evidence_sha256: value.supervisor().file_sensor_evidence_sha256(),
+                network_sensor_evidence_sha256: value.supervisor().network_sensor_evidence_sha256(),
+                protected_sensor_authenticated: value.supervisor().protected_sensor_authenticated(),
                 terminal: value.supervisor().terminal(),
                 exit_status: value
                     .supervisor()
@@ -819,6 +835,8 @@ fn build_transcript_wire_v1<'a>(
                 deadline_reached: value.supervisor().deadline_reached(),
                 descendant_teardown_complete: value.supervisor().descendant_teardown_complete(),
                 coverage_complete: value.coverage_complete(),
+                host_composition_required: value.host_composition_required(),
+                authoritative_verdict_permitted: value.authoritative_verdict_permitted(),
             })
             .collect(),
         completed_action_count: completed_action_count.to_string(),

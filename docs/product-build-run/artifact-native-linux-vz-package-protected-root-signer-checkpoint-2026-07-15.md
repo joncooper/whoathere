@@ -6,6 +6,11 @@ Status: shared one-use execution-request state and a grant-bound protected root-
 authority are implemented and tested; physical root-service custody, receipt transport, and inert
 package qualification remain open
 
+Subsequent progress: the crate-private root service and observer now implement the distinct
+authenticated-incomplete receipt transport and typed process-supervisor path described in the
+[authenticated root-transport checkpoint](artifact-native-linux-vz-package-authenticated-root-transport-checkpoint-2026-07-15.md).
+Physical measured-service custody and inert package qualification remain open.
+
 ## Result
 
 The verified package execution-grant observation now owns the one-use execution-request burn. An
@@ -81,16 +86,15 @@ private host path, canary, signing seed, or credential was added to tracked file
 This checkpoint establishes the protected authority primitive but does not claim that a measured
 root-service process owns it yet. AN-506 remains open until the physical path:
 
-1. supplies the exact request, consumed grant, measured signer key, process plan, and launch contract
-   to the protected root service without exposing them as package-controlled inputs;
-2. constructs and signs claims only after process, file, and guest-network collectors finish;
-3. transports the bounded receipt and honestly incomplete canonical evidence to the Mac instead of
-   routing it through the older complete-legacy-payload decoder;
-4. composes and independently verifies the guest and host receipts after VM stop, stable image
+1. instantiates the measured protected service as the sole owner of the exact request/grant-bound
+   signer seed instead of only proving the crate-private ownership API;
+2. physically transports the now-implemented bounded receipt and honestly incomplete canonical
+   evidence path during inert package execution;
+3. composes and independently verifies the guest and host receipts after VM stop, stable image
    remeasurement, and clone destruction;
-5. runs inert npm, exact-wheel, and nested-sdist qualification with no route, share, or sync-back;
-6. broadens network observation and measures benign controls; and
-7. only then requests separate approval for the restricted eleven-sample regression.
+4. runs inert npm, exact-wheel, and nested-sdist qualification with no route, share, or sync-back;
+5. broadens network observation and measures benign controls; and
+6. only then requests separate approval for the restricted eleven-sample regression.
 
 The July actual-malware score remains 7/11. This checkpoint improves evidence authority and replay
 resistance; it does not detect another sample or support a broader product claim.

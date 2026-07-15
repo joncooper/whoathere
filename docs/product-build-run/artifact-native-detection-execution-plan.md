@@ -4,6 +4,19 @@ Date: 2026-07-09
 
 Status: canonical execution plan for the next product milestone
 
+Authenticated root-transport checkpoint (2026-07-15): the concrete protected collector now returns
+its canonical process, file, and network evidence instead of discarding an honestly incomplete
+result. The root service owns the previously constructed one-use signing authority, signs exact
+claims, and emits separately bounded evidence plus a distinct receipt frame and finish-v4
+acknowledgement. The root-runner observer requires the source authority request, consumed grant, and
+measured public key; it strictly decodes every root schema and verifies the receipt before the
+process supervisor accepts a variant-tagged `authenticated_root_incomplete` observation. The new
+path cannot be decoded as the older complete payload, claim clean coverage, authorize a verdict, or
+sync back. The execution transcript remains globally unauthenticated pending independently verified
+host composition. This is a compiled and unit-tested code/protocol boundary, not physical guest
+service custody or a package run; no VM or package ran and the July score remains 7/11. See the
+[authenticated root-transport checkpoint](artifact-native-linux-vz-package-authenticated-root-transport-checkpoint-2026-07-15.md).
+
 Protected root-signer checkpoint (2026-07-15): the verified one-use grant observation now owns the
 execution-request burn, so multiple authorizer wrappers cannot mint multiple requests while later
 evidence composition retains the exact source observation. Root-receipt and host-composite
@@ -1886,13 +1899,15 @@ authenticated composite evidence also remain open. AN-506 now has a strict packa
 receipt protocol that binds exact authority, scenario, grant, runtime, sensor, action, terminal,
 process, file, and network claims under a short-lived Ed25519 signature. It deliberately reports
 the current evidence as incomplete and grants no verdict or sync-back authority. Root-service
-integration, physical signer custody and receipt transport, destruction proof, broader network
-coverage, and the final control-plane envelope remain. The one-use grant now shares its
+physical signer custody, physical receipt transport, destruction proof, broader network coverage,
+and the final control-plane envelope remain. The one-use grant now shares its
 execution-request burn with later evidence composition, and a grant-key-bound authority burns each
-action before signing exact claims, but that authority is not yet owned by the measured root-service
-process. An independent Rust verifier and strict host-frame/lifecycle composition also exist at the
-protocol level, but none of these boundaries is connected to a physical package run. See the
-[protected root-signer checkpoint](artifact-native-linux-vz-package-protected-root-signer-checkpoint-2026-07-15.md).
+action before signing exact claims. The crate-private root service now accepts that authority as its
+only request/grant source, emits a distinct authenticated-incomplete result, and the observer
+verifies it before process evidence acceptance; however, the measured physical service binary does
+not own the seed yet and no physical package run has crossed this boundary. An independent Rust
+verifier and strict host-frame/lifecycle composition also exist at the protocol level. See the
+[authenticated root-transport checkpoint](artifact-native-linux-vz-package-authenticated-root-transport-checkpoint-2026-07-15.md).
 These partial results do not satisfy the Phase 5 exit gate.
 
 Exit gate:
@@ -2254,6 +2269,7 @@ Repository evidence:
 - [Linux VZ package protected network-intent source checkpoint](artifact-native-linux-vz-package-network-intent-source-checkpoint-2026-07-14.md)
 - [Linux VZ package canonical root network-evidence checkpoint](artifact-native-linux-vz-package-root-network-evidence-checkpoint-2026-07-14.md)
 - [Linux VZ package root-evidence receipt checkpoint](artifact-native-linux-vz-package-root-evidence-receipt-checkpoint-2026-07-14.md)
+- [Linux VZ package authenticated root-transport checkpoint](artifact-native-linux-vz-package-authenticated-root-transport-checkpoint-2026-07-15.md)
 - [Linux VZ runtime-qualification guest-candidate checkpoint](artifact-native-linux-vz-runtime-qualification-guest-candidate-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification host-launcher checkpoint](artifact-native-linux-vz-runtime-qualification-host-launcher-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification physical checkpoint](artifact-native-linux-vz-runtime-qualification-physical-checkpoint-2026-07-13.md)

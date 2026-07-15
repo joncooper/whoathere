@@ -559,6 +559,18 @@ impl<'execution> LinuxVzPackageRootEvidenceSigningAuthorityV1<'execution> {
         sign_linux_vz_package_root_evidence_receipt_with_key_v1(claims, &self.signing_key)
     }
 
+    #[cfg(target_os = "linux")]
+    pub(crate) const fn request_v1(&self) -> &'execution MacosLinuxVzPackageAuthorityRequestV1 {
+        self.request
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) const fn grant_v1(
+        &self,
+    ) -> &'execution MacosLinuxVzPackageExecutionGrantObservationV1 {
+        self.grant
+    }
+
     fn claims_match_execution_v1(
         &self,
         claims: &LinuxVzPackageRootEvidenceReceiptClaimsV1,

@@ -4,15 +4,24 @@ use crate::LinuxVzPackageProcessLaunchContractV1;
 use crate::{
     decode_linux_vz_package_process_sensor_correlation_v1,
     decode_linux_vz_package_protected_sensor_payload_set_v1,
+    decode_linux_vz_package_root_file_evidence_v1,
+    decode_linux_vz_package_root_network_evidence_v1,
+    decode_linux_vz_package_root_process_evidence_v1,
     validate_linux_vz_package_protected_sensor_payloads_v1,
-    LinuxVzPackageExpectedProcessSensorCorrelationV1, LinuxVzPackageProcessLaunchIdentityV1,
-    MeasuredLinuxVzPackageProcessV1,
+    verify_linux_vz_package_root_evidence_receipt_v1,
+    LinuxVzPackageExpectedProcessSensorCorrelationV1, LinuxVzPackageExpectedRootFileEvidenceV1,
+    LinuxVzPackageExpectedRootNetworkEvidenceV1, LinuxVzPackageExpectedRootProcessEvidenceV1,
+    LinuxVzPackageProcessLaunchIdentityV1, LinuxVzPackageRootEvidenceReceiptClaimsV1,
+    LinuxVzPackageRootSensorIdentityV1, MacosLinuxVzPackageAuthorityRequestV1,
+    MacosLinuxVzPackageExecutionGrantObservationV1, MeasuredLinuxVzPackageProcessV1,
 };
 use crate::{
     LinuxVzPackageProcessMeasurementObservationV1, LinuxVzPackageProcessSensorCorrelationV1,
-    LinuxVzPackageProtectedSensorPayloadSetV1, MacosLinuxVzPackageExecutionActionV1,
-    MacosLinuxVzPackageExecutionProcessPlanV1,
+    LinuxVzPackageProtectedSensorPayloadSetV1, LinuxVzPackageRootFileEvidenceV1,
+    LinuxVzPackageRootNetworkEvidenceV1, LinuxVzPackageRootProcessEvidenceV1,
+    MacosLinuxVzPackageExecutionActionV1, MacosLinuxVzPackageExecutionProcessPlanV1,
     StructurallyValidatedMacosLinuxVzPackageExecutionRequestV1,
+    VerifiedLinuxVzPackageRootEvidenceReceiptV1,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -23,6 +32,8 @@ use whoathere_artifact::Sha256Digest;
 
 pub const LINUX_VZ_PACKAGE_PROCESS_SUPERVISOR_EVIDENCE_SCHEMA_V1: &str =
     "whoathere.linux_vz_package_process_supervisor_evidence.v1";
+pub const LINUX_VZ_PACKAGE_PROCESS_SUPERVISOR_EVIDENCE_SCHEMA_V2: &str =
+    "whoathere.linux_vz_package_process_supervisor_evidence.v2";
 pub const MAX_LINUX_VZ_PACKAGE_PROCESS_SUPERVISOR_EVIDENCE_BYTES_V1: usize = 256 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -220,10 +231,22 @@ impl LinuxVzPackageBoundedOutputObservationV1 {
     }
 }
 
+/// Discriminator for evidence that crossed the protected root-sensor boundary.
+///
+/// The authenticated root variant is intentionally distinct from the older complete payload set:
+/// callers cannot decode canonical root evidence through the legacy correlation schema or silently
+/// promote its known file/network gaps to complete coverage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LinuxVzPackageProtectedSensorEvidenceKindV1 {
+    LegacyComplete,
+    AuthenticatedRootIncomplete,
+}
+
 #[cfg(target_os = "linux")]
 #[derive(Serialize)]
 #[serde(deny_unknown_fields)]
-struct PackageProcessSupervisorEvidenceWireV1<'a> {
+struct PackageProcessSupervisorEvidenceWireV2<'a> {
     schema_version: &'static str,
     execution_grant_sha256: &'a Sha256Digest,
     attempt_binding_sha256: &'a Sha256Digest,
@@ -233,8 +256,17 @@ struct PackageProcessSupervisorEvidenceWireV1<'a> {
     stage_name: &'a str,
     preexec_measurement_sha256: &'a Sha256Digest,
     postrun_measurement_sha256: &'a Sha256Digest,
-    protected_sensor_correlation_sha256: &'a Sha256Digest,
-    protected_sensor_payload_set_sha256: &'a Sha256Digest,
+    protected_sensor_evidence_kind: LinuxVzPackageProtectedSensorEvidenceKindV1,
+    protected_sensor_authentication_sha256: &'a Sha256Digest,
+    protected_sensor_evidence_set_sha256: &'a Sha256Digest,
+    sensor_session_challenge_sha256: &'a Sha256Digest,
+    process_sensor_evidence_sha256: &'a Sha256Digest,
+    file_sensor_evidence_sha256: &'a Sha256Digest,
+    network_sensor_evidence_sha256: &'a Sha256Digest,
+    protected_sensor_authenticated: bool,
+    protected_sensor_coverage_complete: bool,
+    host_composition_required: bool,
+    authoritative_verdict_permitted: bool,
     cgroup_name: &'a str,
     cgroup_version: &'static str,
     leader_pid: String,
@@ -277,8 +309,16 @@ pub struct LinuxVzPackageProcessSupervisorEvidenceV1 {
     stage_name: String,
     preexec_measurement: LinuxVzPackageProcessMeasurementObservationV1,
     postrun_measurement: LinuxVzPackageProcessMeasurementObservationV1,
-    protected_sensor_correlation_sha256: Sha256Digest,
-    protected_sensor_payload_set_sha256: Sha256Digest,
+    protected_sensor_evidence_kind: LinuxVzPackageProtectedSensorEvidenceKindV1,
+    protected_sensor_authentication_sha256: Sha256Digest,
+    protected_sensor_evidence_set_sha256: Sha256Digest,
+    sensor_session_challenge_sha256: Sha256Digest,
+    process_sensor_evidence_sha256: Sha256Digest,
+    file_sensor_evidence_sha256: Sha256Digest,
+    network_sensor_evidence_sha256: Sha256Digest,
+    protected_sensor_authenticated: bool,
+    protected_sensor_coverage_complete: bool,
+    host_composition_required: bool,
     cgroup_name: String,
     leader_pid: u32,
     terminal: LinuxVzPackageProcessTerminalV1,
@@ -360,12 +400,50 @@ impl LinuxVzPackageProcessSupervisorEvidenceV1 {
         &self.postrun_measurement
     }
 
-    pub fn protected_sensor_correlation_sha256(&self) -> &Sha256Digest {
-        &self.protected_sensor_correlation_sha256
+    pub const fn protected_sensor_evidence_kind(
+        &self,
+    ) -> LinuxVzPackageProtectedSensorEvidenceKindV1 {
+        self.protected_sensor_evidence_kind
     }
 
-    pub fn protected_sensor_payload_set_sha256(&self) -> &Sha256Digest {
-        &self.protected_sensor_payload_set_sha256
+    pub fn protected_sensor_authentication_sha256(&self) -> &Sha256Digest {
+        &self.protected_sensor_authentication_sha256
+    }
+
+    pub fn protected_sensor_evidence_set_sha256(&self) -> &Sha256Digest {
+        &self.protected_sensor_evidence_set_sha256
+    }
+
+    pub fn sensor_session_challenge_sha256(&self) -> &Sha256Digest {
+        &self.sensor_session_challenge_sha256
+    }
+
+    pub fn process_sensor_evidence_sha256(&self) -> &Sha256Digest {
+        &self.process_sensor_evidence_sha256
+    }
+
+    pub fn file_sensor_evidence_sha256(&self) -> &Sha256Digest {
+        &self.file_sensor_evidence_sha256
+    }
+
+    pub fn network_sensor_evidence_sha256(&self) -> &Sha256Digest {
+        &self.network_sensor_evidence_sha256
+    }
+
+    pub const fn protected_sensor_authenticated(&self) -> bool {
+        self.protected_sensor_authenticated
+    }
+
+    pub const fn protected_sensor_coverage_complete(&self) -> bool {
+        self.protected_sensor_coverage_complete
+    }
+
+    pub const fn host_composition_required(&self) -> bool {
+        self.host_composition_required
+    }
+
+    pub const fn authoritative_verdict_permitted(&self) -> bool {
+        false
     }
 
     pub fn cgroup_name(&self) -> &str {
@@ -445,10 +523,255 @@ impl LinuxVzPackageProcessSupervisorEvidenceV1 {
     }
 }
 
+pub struct LinuxVzPackageAuthenticatedRootSensorOutputV1 {
+    receipt_bytes: Vec<u8>,
+    receipt: VerifiedLinuxVzPackageRootEvidenceReceiptV1,
+    process: LinuxVzPackageRootProcessEvidenceV1,
+    file: LinuxVzPackageRootFileEvidenceV1,
+    network: LinuxVzPackageRootNetworkEvidenceV1,
+    evidence_set_sha256: Sha256Digest,
+}
+
+impl fmt::Debug for LinuxVzPackageAuthenticatedRootSensorOutputV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LinuxVzPackageAuthenticatedRootSensorOutputV1")
+            .field("receipt_sha256", &self.receipt.receipt_sha256())
+            .field("evidence_set_sha256", &self.evidence_set_sha256)
+            .field("evidence_complete", &self.receipt.evidence_complete())
+            .field("receipt_bytes", &"<authenticated-evidence-redacted>")
+            .finish()
+    }
+}
+
+impl LinuxVzPackageAuthenticatedRootSensorOutputV1 {
+    #[cfg(target_os = "linux")]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn verify_from_wire_v1(
+        request: &MacosLinuxVzPackageAuthorityRequestV1,
+        grant: &MacosLinuxVzPackageExecutionGrantObservationV1,
+        identity: &LinuxVzPackageRootSensorIdentityV1,
+        sensor_session_challenge_sha256: Sha256Digest,
+        contract: &LinuxVzPackageProcessLaunchContractV1,
+        cgroup_name: String,
+        cgroup_id: u64,
+        root_runner_pid: u32,
+        leader_pid: u32,
+        completion: &LinuxVzPackageProcessCompletionV1,
+        heartbeat_count: u64,
+        process_bytes: &[u8],
+        file_bytes: &[u8],
+        network_bytes: &[u8],
+        receipt_bytes: &[u8],
+        verifying_key_bytes: [u8; 32],
+        created_at_unix_seconds: u64,
+        expires_at_unix_seconds: u64,
+        observed_at_unix_seconds: u64,
+    ) -> Result<Self, LinuxVzPackageProcessSupervisorErrorV1> {
+        let launch_identity = LinuxVzPackageProcessLaunchIdentityV1::from_contract_v1(contract)
+            .map_err(|_| LinuxVzPackageProcessSupervisorErrorV1::InvalidContract)?;
+        let process_expected = LinuxVzPackageExpectedRootProcessEvidenceV1::from_action_v1(
+            sensor_session_challenge_sha256.clone(),
+            contract.launch_contract_sha256().clone(),
+            contract.process_plan_sha256().clone(),
+            contract.action_index(),
+            cgroup_name.clone(),
+            cgroup_id,
+            root_runner_pid,
+            leader_pid,
+            &launch_identity,
+            completion,
+        )
+        .map_err(|_| LinuxVzPackageProcessSupervisorErrorV1::ProtectedSensorCorrelationFailed)?;
+        let process =
+            decode_linux_vz_package_root_process_evidence_v1(&process_expected, process_bytes)
+                .map_err(|_| {
+                    LinuxVzPackageProcessSupervisorErrorV1::ProtectedSensorCorrelationFailed
+                })?;
+        let file_expected = LinuxVzPackageExpectedRootFileEvidenceV1::from_action_v1(
+            sensor_session_challenge_sha256.clone(),
+            contract.launch_contract_sha256().clone(),
+            contract.process_plan_sha256().clone(),
+            contract.action_index(),
+            cgroup_name.clone(),
+            cgroup_id,
+            root_runner_pid,
+            leader_pid,
+            completion,
+        )
+        .map_err(|_| LinuxVzPackageProcessSupervisorErrorV1::ProtectedSensorCorrelationFailed)?;
+        let file = decode_linux_vz_package_root_file_evidence_v1(&file_expected, file_bytes)
+            .map_err(|_| {
+                LinuxVzPackageProcessSupervisorErrorV1::ProtectedSensorCorrelationFailed
+            })?;
+        let network_expected = LinuxVzPackageExpectedRootNetworkEvidenceV1::from_action_v1(
+            sensor_session_challenge_sha256.clone(),
+            contract.launch_contract_sha256().clone(),
+            contract.process_plan_sha256().clone(),
+            process.payload_sha256().clone(),
+            contract.action_index(),
+            cgroup_name.clone(),
+            cgroup_id,
+            root_runner_pid,
+            leader_pid,
+            completion,
+        )
+        .map_err(|_| LinuxVzPackageProcessSupervisorErrorV1::ProtectedSensorCorrelationFailed)?;
+        let network =
+            decode_linux_vz_package_root_network_evidence_v1(network_bytes, &network_expected)
+                .map_err(|_| {
+                    LinuxVzPackageProcessSupervisorErrorV1::ProtectedSensorCorrelationFailed
+                })?;
+        let claims = LinuxVzPackageRootEvidenceReceiptClaimsV1::from_validated_root_evidence_v1(
+            request,
+            grant,
+            identity,
+            sensor_session_challenge_sha256,
+            contract.launch_contract_sha256().clone(),
+            contract.process_plan_sha256().clone(),
+            contract.action_index(),
+            cgroup_name,
+            cgroup_id,
+            root_runner_pid,
+            leader_pid,
+            completion,
+            heartbeat_count,
+            &process,
+            &file,
+            &network,
+            created_at_unix_seconds,
+            expires_at_unix_seconds,
+        )
+        .map_err(|_| LinuxVzPackageProcessSupervisorErrorV1::ProtectedSensorCorrelationFailed)?;
+        let receipt = verify_linux_vz_package_root_evidence_receipt_v1(
+            &claims,
+            receipt_bytes,
+            verifying_key_bytes,
+            observed_at_unix_seconds,
+        )
+        .map_err(|_| LinuxVzPackageProcessSupervisorErrorV1::ProtectedSensorCorrelationFailed)?;
+        Self::from_verified_v1(receipt_bytes.to_vec(), receipt, process, file, network)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn from_verified_v1(
+        receipt_bytes: Vec<u8>,
+        receipt: VerifiedLinuxVzPackageRootEvidenceReceiptV1,
+        process: LinuxVzPackageRootProcessEvidenceV1,
+        file: LinuxVzPackageRootFileEvidenceV1,
+        network: LinuxVzPackageRootNetworkEvidenceV1,
+    ) -> Result<Self, LinuxVzPackageProcessSupervisorErrorV1> {
+        if receipt_bytes.is_empty()
+            || Sha256Digest::from_bytes(&receipt_bytes) != *receipt.receipt_sha256()
+            || receipt.process_evidence_sha256() != process.payload_sha256()
+            || receipt.file_evidence_sha256() != file.payload_sha256()
+            || receipt.network_evidence_sha256() != network.payload_sha256()
+            || receipt.evidence_complete()
+            || !receipt.host_composition_required()
+            || receipt.authoritative_verdict_permitted()
+            || receipt.sync_back_permitted()
+        {
+            return Err(LinuxVzPackageProcessSupervisorErrorV1::ProtectedSensorCorrelationFailed);
+        }
+        let evidence_set_sha256 = authenticated_root_evidence_set_sha256_v1(
+            receipt.receipt_sha256(),
+            process.payload_sha256(),
+            file.payload_sha256(),
+            network.payload_sha256(),
+        );
+        Ok(Self {
+            receipt_bytes,
+            receipt,
+            process,
+            file,
+            network,
+            evidence_set_sha256,
+        })
+    }
+
+    pub fn receipt_bytes_v1(&self) -> &[u8] {
+        &self.receipt_bytes
+    }
+
+    pub fn receipt(&self) -> &VerifiedLinuxVzPackageRootEvidenceReceiptV1 {
+        &self.receipt
+    }
+
+    pub fn process(&self) -> &LinuxVzPackageRootProcessEvidenceV1 {
+        &self.process
+    }
+
+    pub fn file(&self) -> &LinuxVzPackageRootFileEvidenceV1 {
+        &self.file
+    }
+
+    pub fn network(&self) -> &LinuxVzPackageRootNetworkEvidenceV1 {
+        &self.network
+    }
+
+    pub fn evidence_set_sha256(&self) -> &Sha256Digest {
+        &self.evidence_set_sha256
+    }
+
+    pub const fn coverage_complete(&self) -> bool {
+        false
+    }
+
+    pub const fn authenticated(&self) -> bool {
+        true
+    }
+
+    pub const fn host_composition_required(&self) -> bool {
+        true
+    }
+
+    pub const fn authoritative_verdict_permitted(&self) -> bool {
+        false
+    }
+
+    pub const fn sync_back_permitted(&self) -> bool {
+        false
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn authenticated_root_evidence_set_sha256_v1(
+    receipt: &Sha256Digest,
+    process: &Sha256Digest,
+    file: &Sha256Digest,
+    network: &Sha256Digest,
+) -> Sha256Digest {
+    let mut value = b"whoathere.linux_vz_package_authenticated_root_evidence_set.v1\0".to_vec();
+    for digest in [receipt, process, file, network] {
+        value.extend_from_slice(digest.as_str().as_bytes());
+        value.push(0);
+    }
+    Sha256Digest::from_bytes(&value)
+}
+
+pub enum LinuxVzPackageObservedProtectedSensorEvidenceV1 {
+    LegacyComplete {
+        correlation: Box<LinuxVzPackageProcessSensorCorrelationV1>,
+        payloads: Box<LinuxVzPackageProtectedSensorPayloadSetV1>,
+    },
+    AuthenticatedRootIncomplete(Box<LinuxVzPackageAuthenticatedRootSensorOutputV1>),
+}
+
+impl fmt::Debug for LinuxVzPackageObservedProtectedSensorEvidenceV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::LegacyComplete { correlation, .. } => formatter
+                .debug_struct("LegacyComplete")
+                .field("correlation", correlation)
+                .finish(),
+            Self::AuthenticatedRootIncomplete(output) => output.fmt(formatter),
+        }
+    }
+}
+
 pub struct LinuxVzPackageObservedProcessEvidenceV1 {
     supervisor: LinuxVzPackageProcessSupervisorEvidenceV1,
-    protected_sensor: LinuxVzPackageProcessSensorCorrelationV1,
-    protected_sensor_payloads: LinuxVzPackageProtectedSensorPayloadSetV1,
+    protected_sensor: LinuxVzPackageObservedProtectedSensorEvidenceV1,
 }
 
 impl fmt::Debug for LinuxVzPackageObservedProcessEvidenceV1 {
@@ -466,28 +789,59 @@ impl LinuxVzPackageObservedProcessEvidenceV1 {
         &self.supervisor
     }
 
-    pub fn protected_sensor(&self) -> &LinuxVzPackageProcessSensorCorrelationV1 {
+    pub fn protected_sensor(&self) -> &LinuxVzPackageObservedProtectedSensorEvidenceV1 {
         &self.protected_sensor
     }
 
     pub fn process_sensor_evidence(&self) -> &[u8] {
-        self.protected_sensor_payloads.process().canonical_json_v1()
+        match &self.protected_sensor {
+            LinuxVzPackageObservedProtectedSensorEvidenceV1::LegacyComplete {
+                payloads, ..
+            } => payloads.process().canonical_json_v1(),
+            LinuxVzPackageObservedProtectedSensorEvidenceV1::AuthenticatedRootIncomplete(
+                output,
+            ) => output.process().canonical_json_v1(),
+        }
     }
 
     pub fn file_sensor_evidence(&self) -> &[u8] {
-        self.protected_sensor_payloads.file().canonical_json_v1()
+        match &self.protected_sensor {
+            LinuxVzPackageObservedProtectedSensorEvidenceV1::LegacyComplete {
+                payloads, ..
+            } => payloads.file().canonical_json_v1(),
+            LinuxVzPackageObservedProtectedSensorEvidenceV1::AuthenticatedRootIncomplete(
+                output,
+            ) => output.file().canonical_json_v1(),
+        }
     }
 
     pub fn network_sensor_evidence(&self) -> &[u8] {
-        self.protected_sensor_payloads.network().canonical_json_v1()
-    }
-
-    pub fn protected_sensor_payloads(&self) -> &LinuxVzPackageProtectedSensorPayloadSetV1 {
-        &self.protected_sensor_payloads
+        match &self.protected_sensor {
+            LinuxVzPackageObservedProtectedSensorEvidenceV1::LegacyComplete {
+                payloads, ..
+            } => payloads.network().canonical_json_v1(),
+            LinuxVzPackageObservedProtectedSensorEvidenceV1::AuthenticatedRootIncomplete(
+                output,
+            ) => output.network().canonical_json_v1(),
+        }
     }
 
     pub const fn coverage_complete(&self) -> bool {
-        true
+        matches!(
+            self.protected_sensor,
+            LinuxVzPackageObservedProtectedSensorEvidenceV1::LegacyComplete { .. }
+        )
+    }
+
+    pub const fn host_composition_required(&self) -> bool {
+        matches!(
+            self.protected_sensor,
+            LinuxVzPackageObservedProtectedSensorEvidenceV1::AuthenticatedRootIncomplete(_)
+        )
+    }
+
+    pub const fn authoritative_verdict_permitted(&self) -> bool {
+        false
     }
 
     pub const fn sync_back_permitted(&self) -> bool {
@@ -496,11 +850,14 @@ impl LinuxVzPackageObservedProcessEvidenceV1 {
 }
 
 #[cfg(target_os = "linux")]
-pub struct LinuxVzPackageProtectedSensorOutputV1 {
-    pub(crate) correlation: Vec<u8>,
-    pub(crate) process_evidence: Vec<u8>,
-    pub(crate) file_evidence: Vec<u8>,
-    pub(crate) network_evidence: Vec<u8>,
+pub enum LinuxVzPackageProtectedSensorOutputV1 {
+    LegacyComplete {
+        correlation: Vec<u8>,
+        process_evidence: Vec<u8>,
+        file_evidence: Vec<u8>,
+        network_evidence: Vec<u8>,
+    },
+    AuthenticatedRootIncomplete(Box<LinuxVzPackageAuthenticatedRootSensorOutputV1>),
 }
 
 /// Crate-sealed process observation boundary.
@@ -994,44 +1351,73 @@ mod linux {
             let cgroup_name = cgroup.name.clone();
             let protected_sensor_result = observer
                 .finish_v1(contract, &cgroup_name, leader_pid, &completion)
-                .and_then(|output| {
-                    let correlation = decode_linux_vz_package_process_sensor_correlation_v1(
-                        &output.correlation,
-                        LinuxVzPackageExpectedProcessSensorCorrelationV1 {
-                            sensor_session_challenge_sha256: &sensor_session_challenge_sha256,
-                            contract,
-                            cgroup_name: &cgroup_name,
-                            leader_pid,
-                            leader_parent_pid,
-                            launch_identity,
-                            completion,
-                        },
-                    )
-                    .map_err(|_| {
-                        LinuxVzPackageProcessSupervisorErrorV1::ProtectedSensorCorrelationFailed
-                    })?;
-                    validate_linux_vz_package_protected_sensor_payloads_v1(
-                        &correlation,
-                        &output.process_evidence,
-                        &output.file_evidence,
-                        &output.network_evidence,
-                    )
-                    .map_err(|_| {
-                        LinuxVzPackageProcessSupervisorErrorV1::ProtectedSensorCorrelationFailed
-                    })?;
-                    let payloads = decode_linux_vz_package_protected_sensor_payload_set_v1(
-                        &correlation,
-                        &output.process_evidence,
-                        &output.file_evidence,
-                        &output.network_evidence,
-                    )
-                    .map_err(|_| {
-                        LinuxVzPackageProcessSupervisorErrorV1::ProtectedSensorCorrelationFailed
-                    })?;
-                    Ok((correlation, payloads))
+                .and_then(|output| match output {
+                    LinuxVzPackageProtectedSensorOutputV1::LegacyComplete {
+                        correlation,
+                        process_evidence,
+                        file_evidence,
+                        network_evidence,
+                    } => {
+                        let correlation = decode_linux_vz_package_process_sensor_correlation_v1(
+                            &correlation,
+                            LinuxVzPackageExpectedProcessSensorCorrelationV1 {
+                                sensor_session_challenge_sha256: &sensor_session_challenge_sha256,
+                                contract,
+                                cgroup_name: &cgroup_name,
+                                leader_pid,
+                                leader_parent_pid,
+                                launch_identity,
+                                completion,
+                            },
+                        )
+                        .map_err(|_| {
+                            LinuxVzPackageProcessSupervisorErrorV1::ProtectedSensorCorrelationFailed
+                        })?;
+                        validate_linux_vz_package_protected_sensor_payloads_v1(
+                            &correlation,
+                            &process_evidence,
+                            &file_evidence,
+                            &network_evidence,
+                        )
+                        .map_err(|_| {
+                            LinuxVzPackageProcessSupervisorErrorV1::ProtectedSensorCorrelationFailed
+                        })?;
+                        let payloads = decode_linux_vz_package_protected_sensor_payload_set_v1(
+                            &correlation,
+                            &process_evidence,
+                            &file_evidence,
+                            &network_evidence,
+                        )
+                        .map_err(|_| {
+                            LinuxVzPackageProcessSupervisorErrorV1::ProtectedSensorCorrelationFailed
+                        })?;
+                        Ok(LinuxVzPackageObservedProtectedSensorEvidenceV1::LegacyComplete {
+                            correlation: Box::new(correlation),
+                            payloads: Box::new(payloads),
+                        })
+                    }
+                    LinuxVzPackageProtectedSensorOutputV1::AuthenticatedRootIncomplete(output) => {
+                        if output.receipt().sensor_session_challenge_sha256()
+                            != &sensor_session_challenge_sha256
+                            || output.coverage_complete()
+                            || !output.authenticated()
+                            || !output.host_composition_required()
+                            || output.authoritative_verdict_permitted()
+                            || output.sync_back_permitted()
+                        {
+                            return Err(
+                                LinuxVzPackageProcessSupervisorErrorV1::ProtectedSensorCorrelationFailed,
+                            );
+                        }
+                        Ok(
+                            LinuxVzPackageObservedProtectedSensorEvidenceV1::AuthenticatedRootIncomplete(
+                                output,
+                            ),
+                        )
+                    }
                 });
             cgroup.remove_v1()?;
-            let (protected_sensor, protected_sensor_payloads) = protected_sensor_result?;
+            let protected_sensor = protected_sensor_result?;
             let postrun_measurement = measured
                 .verify_postrun()
                 .map_err(|_| LinuxVzPackageProcessSupervisorErrorV1::PostrunMeasurementFailed)?;
@@ -1039,8 +1425,51 @@ mod linux {
             let (stdout_observation, stdout_bytes) = stdout.finish_v1();
             let (stderr_observation, stderr_bytes) = stderr.finish_v1();
 
-            let wire = PackageProcessSupervisorEvidenceWireV1 {
-                schema_version: LINUX_VZ_PACKAGE_PROCESS_SUPERVISOR_EVIDENCE_SCHEMA_V1,
+            let (
+                protected_sensor_evidence_kind,
+                protected_sensor_authentication_sha256,
+                protected_sensor_evidence_set_sha256,
+                protected_sensor_session_challenge_sha256,
+                process_sensor_evidence_sha256,
+                file_sensor_evidence_sha256,
+                network_sensor_evidence_sha256,
+                protected_sensor_authenticated,
+                protected_sensor_coverage_complete,
+                host_composition_required,
+            ) = match &protected_sensor {
+                LinuxVzPackageObservedProtectedSensorEvidenceV1::LegacyComplete {
+                    correlation,
+                    payloads,
+                } => (
+                    LinuxVzPackageProtectedSensorEvidenceKindV1::LegacyComplete,
+                    correlation.correlation_sha256(),
+                    payloads.payload_set_sha256(),
+                    correlation.sensor_session_challenge_sha256(),
+                    payloads.process().payload_sha256(),
+                    payloads.file().payload_sha256(),
+                    payloads.network().payload_sha256(),
+                    false,
+                    true,
+                    false,
+                ),
+                LinuxVzPackageObservedProtectedSensorEvidenceV1::AuthenticatedRootIncomplete(
+                    output,
+                ) => (
+                    LinuxVzPackageProtectedSensorEvidenceKindV1::AuthenticatedRootIncomplete,
+                    output.receipt().receipt_sha256(),
+                    output.evidence_set_sha256(),
+                    output.receipt().sensor_session_challenge_sha256(),
+                    output.process().payload_sha256(),
+                    output.file().payload_sha256(),
+                    output.network().payload_sha256(),
+                    true,
+                    false,
+                    true,
+                ),
+            };
+
+            let wire = PackageProcessSupervisorEvidenceWireV2 {
+                schema_version: LINUX_VZ_PACKAGE_PROCESS_SUPERVISOR_EVIDENCE_SCHEMA_V2,
                 execution_grant_sha256: authority.execution_grant_sha256(),
                 attempt_binding_sha256: authority.attempt_binding_sha256(),
                 launch_contract_sha256: contract.launch_contract_sha256(),
@@ -1049,8 +1478,17 @@ mod linux {
                 stage_name: contract.stage_name(),
                 preexec_measurement_sha256: &preexec_measurement_sha256,
                 postrun_measurement_sha256: &postrun_measurement_sha256,
-                protected_sensor_correlation_sha256: protected_sensor.correlation_sha256(),
-                protected_sensor_payload_set_sha256: protected_sensor_payloads.payload_set_sha256(),
+                protected_sensor_evidence_kind,
+                protected_sensor_authentication_sha256,
+                protected_sensor_evidence_set_sha256,
+                sensor_session_challenge_sha256: protected_sensor_session_challenge_sha256,
+                process_sensor_evidence_sha256,
+                file_sensor_evidence_sha256,
+                network_sensor_evidence_sha256,
+                protected_sensor_authenticated,
+                protected_sensor_coverage_complete,
+                host_composition_required,
+                authoritative_verdict_permitted: false,
                 cgroup_name: &cgroup_name,
                 cgroup_version: "v2",
                 leader_pid: leader_pid.to_string(),
@@ -1099,10 +1537,17 @@ mod linux {
                 stage_name: contract.stage_name().to_string(),
                 preexec_measurement,
                 postrun_measurement,
-                protected_sensor_correlation_sha256: protected_sensor.correlation_sha256().clone(),
-                protected_sensor_payload_set_sha256: protected_sensor_payloads
-                    .payload_set_sha256()
+                protected_sensor_evidence_kind,
+                protected_sensor_authentication_sha256: protected_sensor_authentication_sha256
                     .clone(),
+                protected_sensor_evidence_set_sha256: protected_sensor_evidence_set_sha256.clone(),
+                sensor_session_challenge_sha256: protected_sensor_session_challenge_sha256.clone(),
+                process_sensor_evidence_sha256: process_sensor_evidence_sha256.clone(),
+                file_sensor_evidence_sha256: file_sensor_evidence_sha256.clone(),
+                network_sensor_evidence_sha256: network_sensor_evidence_sha256.clone(),
+                protected_sensor_authenticated,
+                protected_sensor_coverage_complete,
+                host_composition_required,
                 cgroup_name,
                 leader_pid,
                 terminal,
@@ -1124,7 +1569,6 @@ mod linux {
             Ok(LinuxVzPackageObservedProcessEvidenceV1 {
                 supervisor,
                 protected_sensor,
-                protected_sensor_payloads,
             })
         })();
         match result {
@@ -2186,5 +2630,54 @@ mod tests {
         );
         assert_eq!(authority.burned_process_action_count(), 1);
         assert!(!authority.sync_back_permitted());
+    }
+
+    #[test]
+    fn authenticated_root_variant_is_distinct_and_digest_binds_every_payload() {
+        assert_eq!(
+            serde_json::to_string(
+                &LinuxVzPackageProtectedSensorEvidenceKindV1::AuthenticatedRootIncomplete
+            )
+            .expect("root evidence kind"),
+            "\"authenticated_root_incomplete\""
+        );
+        assert_eq!(
+            serde_json::to_string(&LinuxVzPackageProtectedSensorEvidenceKindV1::LegacyComplete)
+                .expect("legacy evidence kind"),
+            "\"legacy_complete\""
+        );
+        let receipt = Sha256Digest::from_bytes(b"receipt");
+        let process = Sha256Digest::from_bytes(b"process");
+        let file = Sha256Digest::from_bytes(b"file");
+        let network = Sha256Digest::from_bytes(b"network");
+        let exact = authenticated_root_evidence_set_sha256_v1(&receipt, &process, &file, &network);
+        for rebound in [
+            authenticated_root_evidence_set_sha256_v1(
+                &Sha256Digest::from_bytes(b"other receipt"),
+                &process,
+                &file,
+                &network,
+            ),
+            authenticated_root_evidence_set_sha256_v1(
+                &receipt,
+                &Sha256Digest::from_bytes(b"other process"),
+                &file,
+                &network,
+            ),
+            authenticated_root_evidence_set_sha256_v1(
+                &receipt,
+                &process,
+                &Sha256Digest::from_bytes(b"other file"),
+                &network,
+            ),
+            authenticated_root_evidence_set_sha256_v1(
+                &receipt,
+                &process,
+                &file,
+                &Sha256Digest::from_bytes(b"other network"),
+            ),
+        ] {
+            assert_ne!(rebound, exact);
+        }
     }
 }
