@@ -817,6 +817,13 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
     )
     .map_err(|error| {
         eprintln!("WHOATHERE_PACKAGE_SENSOR_BPF_INERT_COLLECTOR_DETAIL {error}");
+        if let Some((producer, source)) = error.producer_diagnostic_v1() {
+            eprintln!(
+                "WHOATHERE_PACKAGE_SENSOR_BPF_INERT_PRODUCER_DIAGNOSTIC producer={producer} bpf_error={} errno={}",
+                source.reason_code(),
+                source.os_error_code_v1().unwrap_or(0)
+            );
+        }
         LinuxVzPackageSensorBpfInertProbeErrorV1::Collector
     })?;
     let mut file_collector = LinuxVzPackageRootFileCollectorV1::arm_v1(

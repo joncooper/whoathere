@@ -226,6 +226,16 @@ impl LinuxVzPackageSensorBpfErrorV1 {
             Self::EgressStream(error) => error.reason_code(),
         }
     }
+
+    pub(crate) const fn os_error_code_v1(self) -> Option<i32> {
+        match self {
+            Self::ProgramLoadOs(code)
+            | Self::PerfEventOpenOs(code)
+            | Self::PerfEventSetBpfOs(code)
+            | Self::PerfEventEnableOs(code) => Some(code),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for LinuxVzPackageSensorBpfErrorV1 {

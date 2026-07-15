@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use crate::linux_vz_package_sensor_bpf::LinuxVzPackageSensorBpfErrorV1;
 #[cfg(target_os = "linux")]
 use crate::linux_vz_package_sensor_bpf::{
     LinuxVzPackageEgressBpfProducerV1, LinuxVzPackageSensorBpfProducerV1,
@@ -41,6 +42,8 @@ pub(crate) enum LinuxVzPackageRootProcessCollectorErrorV1 {
     InvalidState,
     Worker,
     Producer,
+    ProcessProducer(LinuxVzPackageSensorBpfErrorV1),
+    EgressProducer(LinuxVzPackageSensorBpfErrorV1),
     ProcessStream,
     PreReleaseEvent,
     LeaderLifecycle,
@@ -59,6 +62,12 @@ impl LinuxVzPackageRootProcessCollectorErrorV1 {
             Self::InvalidState => "linux_vz_package_root_process_collector_state_invalid",
             Self::Worker => "linux_vz_package_root_process_collector_worker_failed",
             Self::Producer => "linux_vz_package_root_process_collector_producer_failed",
+            Self::ProcessProducer(_) => {
+                "linux_vz_package_root_process_collector_process_producer_failed"
+            }
+            Self::EgressProducer(_) => {
+                "linux_vz_package_root_process_collector_egress_producer_failed"
+            }
             Self::ProcessStream => "linux_vz_package_root_process_collector_stream_invalid",
             Self::PreReleaseEvent => {
                 "linux_vz_package_root_process_collector_prerelease_event_rejected"
@@ -67,6 +76,16 @@ impl LinuxVzPackageRootProcessCollectorErrorV1 {
                 "linux_vz_package_root_process_collector_leader_lifecycle_invalid"
             }
             Self::TerminalMismatch => "linux_vz_package_root_process_collector_terminal_mismatch",
+        }
+    }
+
+    pub(crate) const fn producer_diagnostic_v1(
+        self,
+    ) -> Option<(&'static str, LinuxVzPackageSensorBpfErrorV1)> {
+        match self {
+            Self::ProcessProducer(error) => Some(("process", error)),
+            Self::EgressProducer(error) => Some(("egress", error)),
+            _ => None,
         }
     }
 }
@@ -578,8 +597,10 @@ fn run_linux_vz_package_root_process_worker_v1(
         match LinuxVzPackageSensorBpfProducerV1::start_v1(expected_cgroup_id, ring_buffer_capacity)
         {
             Ok(producer) => producer,
-            Err(_) => {
-                let _ = ready_sender.send(Err(LinuxVzPackageRootProcessCollectorErrorV1::Producer));
+            Err(error) => {
+                let _ = ready_sender.send(Err(
+                    LinuxVzPackageRootProcessCollectorErrorV1::ProcessProducer(error),
+                ));
                 return;
             }
         };
@@ -589,8 +610,10 @@ fn run_linux_vz_package_root_process_worker_v1(
         ring_buffer_capacity,
     ) {
         Ok(producer) => producer,
-        Err(_) => {
-            let _ = ready_sender.send(Err(LinuxVzPackageRootProcessCollectorErrorV1::Producer));
+        Err(error) => {
+            let _ = ready_sender.send(Err(
+                LinuxVzPackageRootProcessCollectorErrorV1::EgressProducer(error),
+            ));
             return;
         }
     };
@@ -1206,6 +1229,12 @@ mod tests {
             LinuxVzPackageRootProcessCollectorErrorV1::InvalidState,
             LinuxVzPackageRootProcessCollectorErrorV1::Worker,
             LinuxVzPackageRootProcessCollectorErrorV1::Producer,
+            LinuxVzPackageRootProcessCollectorErrorV1::ProcessProducer(
+                LinuxVzPackageSensorBpfErrorV1::ProgramLoadOs(libc::EINVAL),
+            ),
+            LinuxVzPackageRootProcessCollectorErrorV1::EgressProducer(
+                LinuxVzPackageSensorBpfErrorV1::Attach,
+            ),
             LinuxVzPackageRootProcessCollectorErrorV1::ProcessStream,
             LinuxVzPackageRootProcessCollectorErrorV1::PreReleaseEvent,
             LinuxVzPackageRootProcessCollectorErrorV1::LeaderLifecycle,
@@ -1216,6 +1245,17 @@ mod tests {
             assert!(codes.insert(error.reason_code()));
             assert_eq!(error.to_string(), error.reason_code());
         }
+        assert_eq!(
+            errors[5].producer_diagnostic_v1(),
+            Some((
+                "process",
+                LinuxVzPackageSensorBpfErrorV1::ProgramLoadOs(libc::EINVAL)
+            ))
+        );
+        assert_eq!(
+            errors[6].producer_diagnostic_v1(),
+            Some(("egress", LinuxVzPackageSensorBpfErrorV1::Attach))
+        );
     }
 
     #[cfg(target_os = "linux")]
