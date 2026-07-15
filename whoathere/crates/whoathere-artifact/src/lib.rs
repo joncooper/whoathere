@@ -9,6 +9,7 @@ mod error;
 mod extraction;
 mod model;
 mod normalize;
+mod release_context;
 
 pub use error::{ArtifactModelError, NormalizationError};
 pub use extraction::*;
@@ -16,3 +17,4 @@ pub use model::*;
 pub use normalize::{
     detect_artifact_format, normalize_artifact, normalize_derived_wheel, NormalizationLimits,
 };
+pub use release_context::*;
