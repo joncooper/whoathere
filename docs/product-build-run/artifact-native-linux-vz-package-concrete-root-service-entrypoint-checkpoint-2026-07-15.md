@@ -5,6 +5,11 @@ Date: 2026-07-15
 Status: verified code boundary; post-fork signing-seed custody, an execution-runtime qualification,
 and physical package execution remain open
 
+Subsequent progress: the post-fork descriptor/capability split was physically qualified later on
+July 15. The measured runtime still must construct this service's grant-bound authority from that
+one-use token and run the complete protocol. See the
+[root-coordinator custody checkpoint](artifact-native-linux-vz-package-root-coordinator-custody-checkpoint-2026-07-15.md).
+
 ## Result
 
 The Linux VZ package library now exposes one production-shaped entrypoint that instantiates the

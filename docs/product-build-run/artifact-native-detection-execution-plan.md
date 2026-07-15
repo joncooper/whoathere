@@ -4,15 +4,29 @@ Date: 2026-07-09
 
 Status: canonical execution plan for the next product milestone
 
+Root-coordinator custody checkpoint (2026-07-15): the measured Linux split now keeps the guest
+evidence signing seed out of the root-runner branch. Before returning to caller code, the runner
+closes every unrelated descriptor, removes `CAP_SYS_PTRACE` from all five capability sets, clears
+ambient capabilities, becomes non-dumpable and no-new-privileges, and waits behind a private
+barrier. The service independently verifies the runner's root credentials, one thread, four exact
+descriptors, tracer absence, and capability masks before releasing it or receiving the one-use
+seed token. A strict independent Mac decoder bound exact probe/key/image bytes and host lifecycle
+evidence. Three diskless, no-route Linux VZ runs passed on the approved cloud Mac; an independent
+overlay/initramfs rebuild was byte-identical, no package or malware ran, and the July score remains
+7/11. This closes physical seed custody only: the measured package runtime still must burn the real
+grant/request, construct the service authority, run the concrete multi-action session, and
+transport its receipts. See the
+[root-coordinator custody checkpoint](artifact-native-linux-vz-package-root-coordinator-custody-checkpoint-2026-07-15.md).
+
 Concrete root-service entrypoint checkpoint (2026-07-15): the previously internal service loop and
 real process/file/network collector now have one production-shaped entrypoint. It derives sensor
 identity only from the qualified telemetry backend, fixes bounded collector capacities internally,
 and consumes the one-use signing authority so callers cannot substitute collectors, rebind measured
-sensor components, or retain the authority after service startup. This closes composition at the
-API boundary, not physical signer custody: a measured coordinator must still separate the runner
-and service before reading the signing seed, keep the seed descriptor out of the runner branch, and
-bind those exact bytes into a new execution-runtime qualification. No VM or package ran and the July
-score remains 7/11. See the
+sensor components, or retain the authority after service startup. That checkpoint closed
+composition at the API boundary but not physical signer custody; the subsequent coordinator
+checkpoint now physically qualifies the split while full service-authority construction and an
+execution-runtime qualification remain open. No VM or package ran at this earlier checkpoint and
+the July score remains 7/11. See the
 [concrete root-service entrypoint checkpoint](artifact-native-linux-vz-package-concrete-root-service-entrypoint-checkpoint-2026-07-15.md).
 
 Multi-action sensor-session checkpoint (2026-07-15): physical inert-package preparation exposed a
@@ -1922,19 +1936,21 @@ observation and AN-506
 authenticated composite evidence also remain open. AN-506 now has a strict package-specific guest
 receipt protocol that binds exact authority, scenario, grant, runtime, sensor, action, terminal,
 process, file, and network claims under a short-lived Ed25519 signature. It deliberately reports
-the current evidence as incomplete and grants no verdict or sync-back authority. Root-service
-physical signer custody, physical receipt transport, destruction proof, broader network coverage,
-and the final control-plane envelope remain. The one-use grant now shares its
+the current evidence as incomplete and grants no verdict or sync-back authority. The
+root-coordinator seed split is now physically qualified, but grant-bound authority construction in
+the measured service, physical receipt transport, destruction proof, broader network coverage, and
+the final control-plane envelope remain. The one-use grant now shares its
 execution-request burn with later evidence composition, and a grant-key-bound authority burns each
 action before signing exact claims. The crate-private root service now accepts that authority as its
 only request/grant source, emits a distinct authenticated-incomplete result, and the observer
 verifies it before process evidence acceptance. That service and observer can now retain one
 protected session across the ordered process actions required by wheel and sdist plans, and a
 distinct completion handshake binds the exact authenticated action list without upgrading evidence
-coverage or authority. However, the measured physical service binary does not own the seed yet, the
-current package-runtime candidate is deliberately nonexecuting, and no physical package run has
-crossed this boundary. An independent Rust verifier and strict host-frame/lifecycle composition also
-exist at the protocol level. See the
+coverage or authority. However, no measured package service has yet constructed that authority
+from the post-fork token, the current package-runtime candidate is deliberately nonexecuting, and
+no physical package run has crossed this boundary. An independent Rust verifier and strict
+host-frame/lifecycle composition also exist at the protocol level. See the
+[root-coordinator custody checkpoint](artifact-native-linux-vz-package-root-coordinator-custody-checkpoint-2026-07-15.md),
 [concrete root-service entrypoint checkpoint](artifact-native-linux-vz-package-concrete-root-service-entrypoint-checkpoint-2026-07-15.md),
 [multi-action sensor-session checkpoint](artifact-native-linux-vz-package-multi-action-sensor-session-checkpoint-2026-07-15.md)
 and preceding
@@ -2303,6 +2319,7 @@ Repository evidence:
 - [Linux VZ package authenticated root-transport checkpoint](artifact-native-linux-vz-package-authenticated-root-transport-checkpoint-2026-07-15.md)
 - [Linux VZ package multi-action sensor-session checkpoint](artifact-native-linux-vz-package-multi-action-sensor-session-checkpoint-2026-07-15.md)
 - [Linux VZ package concrete root-service entrypoint checkpoint](artifact-native-linux-vz-package-concrete-root-service-entrypoint-checkpoint-2026-07-15.md)
+- [Linux VZ package root-coordinator custody checkpoint](artifact-native-linux-vz-package-root-coordinator-custody-checkpoint-2026-07-15.md)
 - [Linux VZ runtime-qualification guest-candidate checkpoint](artifact-native-linux-vz-runtime-qualification-guest-candidate-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification host-launcher checkpoint](artifact-native-linux-vz-runtime-qualification-host-launcher-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification physical checkpoint](artifact-native-linux-vz-runtime-qualification-physical-checkpoint-2026-07-13.md)

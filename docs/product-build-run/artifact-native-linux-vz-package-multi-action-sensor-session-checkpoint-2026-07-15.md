@@ -5,6 +5,11 @@ Date: 2026-07-15
 Status: verified code-and-protocol checkpoint; measured guest-service custody, an
 execution-capable package runtime, and physical artifact qualification remain open
 
+Subsequent progress: the root-coordinator's post-fork seed-custody split is now physically
+qualified. Grant-bound service construction in an execution-capable runtime and physical artifact
+qualification remain open. See the
+[root-coordinator custody checkpoint](artifact-native-linux-vz-package-root-coordinator-custody-checkpoint-2026-07-15.md).
+
 ## Result
 
 The Linux VZ package sequencer can now keep one protected root-sensor session open across every
