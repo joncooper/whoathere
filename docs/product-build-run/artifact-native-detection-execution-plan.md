@@ -96,29 +96,30 @@ receipt now has an independent Rust verifier, but physical end-to-end integratio
 VM, package, or malware ran for this checkpoint, so the July score remains 7/11. See the
 [authenticated host-composition checkpoint](artifact-native-linux-vz-package-authenticated-host-composition-checkpoint-2026-07-15.md).
 
-Current execution checkpoint (2026-07-14): the selected transmitted UDP case now has a physically
-proven guest denominator as well as an independently retained host frame. A cgroup-`SKB` egress BPF
-source emitted exactly one 44-byte IPv4/UDP observation, and the host collector retained exactly one
-checksum-valid Ethernet frame. Both sides independently produced the same normalized packet digest;
-process and egress BPF drops/discards, fanotify overflow, and host drops/truncations were all zero.
-The accepted schema-v15 run had 18 contiguous process events, 10 correlated observations, two
-network intents, one cgroup-egress packet, one host frame, canonical process/file/network payloads,
-stable image bytes, and a stopped VM. It had no root disk, share, external route, package execution,
-malware execution, or sync-back. Two independently built CPIO archives, gzip overlays, and final
-initramfses were byte-identical to the exact image that passed. The pinned kernel does not permit
-the cgroup-`SKB` program to read wire-length or GSO metadata, so schema v15 explicitly reports that
-metadata unavailable and requires its values to remain zero. The claim remains narrow: IPv6, TCP,
-GSO/segmentation, retransmission, DNS, HTTP(S), additional guest egress interfaces, protected
-transport, composite authentication, runtime package scenarios, benign scoring, and malicious
-regression remain open. No package or malware ran, and the July score remains 7/11. See the
-[package cgroup-egress checkpoint](artifact-native-linux-vz-package-cgroup-egress-checkpoint-2026-07-14.md)
+Current execution checkpoint (2026-07-14): the selected cgroup-`SKB` packet is now first-class
+canonical root network evidence rather than qualification-wrapper-only data. Root network schema
+v2 binds redacted egress observations, exact packet coverage, and drop/discard counts alongside the
+existing `connect` and `sendto` intents. Root receipt schema v2 binds those new claims under its
+domain-separated signature input and refuses missing coverage or packet loss. A fresh physical
+schema-v16 run carried 18 contiguous process events, 10 observations, two network intents, one
+canonical root egress observation, and one independently retained checksum-valid host frame. Guest
+and host produced the same normalized packet digest; all process, egress, fanotify, and host loss
+counters were zero. The strict verifier accepted root network v2, stable image bytes, no disk/share
+or external route, no package or malware execution, no sync-back, and a stopped VM. Two canonical
+CPIO/gzip/final-initramfs constructions were byte-identical. The receipt-v2 production guest-signing
+path and host-composed envelope remain open. IPv6, TCP, GSO/segmentation, retransmission, DNS,
+HTTP(S), additional guest egress interfaces, runtime package scenarios, benign scoring, and
+malicious regression also remain open. No package or malware ran, and the July score remains 7/11.
+See the
+[canonical root-egress evidence checkpoint](artifact-native-linux-vz-package-root-egress-evidence-checkpoint-2026-07-14.md)
 and preceding
-[canonical root network-evidence checkpoint](artifact-native-linux-vz-package-root-network-evidence-checkpoint-2026-07-14.md).
+[package cgroup-egress checkpoint](artifact-native-linux-vz-package-cgroup-egress-checkpoint-2026-07-14.md).
 
-The first package-specific authenticated root-evidence protocol now exists in Rust. Its
+The first package-specific authenticated root-evidence protocol now exists in Rust. Its v2
 domain-separated Ed25519 receipt binds the exact artifact, typed scenario, one-use execution grant,
 runtime qualification, sensor identities, fresh action/session bindings, terminal state, validity
-window, and exact canonical process/file/network payload digests and lengths. Verification
+window, exact canonical process/file/network payload digests and lengths, and the new egress
+observation count, coverage, drop, and discard claims. Verification
 independently rebuilds every expected claim before signature validation and rejects rebinding,
 mutation, wrong keys, noncanonical bytes, premature or expired evidence, and false coverage
 upgrades. The receipt honestly remains incomplete: it records the current file and network gaps,
@@ -1921,16 +1922,18 @@ Work packages:
 
 Current AN-504 subgate (2026-07-14): the cgroup-filtered BPF/process stream physically captures and
 normalizes closed IPv4 `connect` and `sendto` intents with explicit loss accounting and encodes them
-in a separate canonical payload bound to canonical process evidence. A separate cgroup-`SKB` egress
-BPF producer now observes the selected transmitted packet itself before the continuously draining,
-bounded host raw-frame sink. One controlled 16-byte UDP transmission produced exactly one 44-byte
+in canonical root network schema v2 bound to canonical process evidence. The same payload now also
+binds every protected cgroup-`SKB` observation, packet-collector coverage, and exact drop/discard
+counts. One controlled 16-byte UDP transmission physically produced exactly one canonical 44-byte
 guest egress observation and one checksum-valid retained host frame with the same independently
 computed normalized digest and zero guest or host loss. The pinned kernel forbids cgroup-`SKB`
 access to wire-length/GSO fields, so the strict schema reports those fields unavailable rather than
-fabricating them. Separate host evidence marks selected correlation complete while broad frame
-coverage remains false; the guest payload likewise keeps broad guest intent and host-frame
-correlation false because additional guest network interfaces and APIs remain unobserved and host
-evidence is composed later. Remaining AN-504 work includes DNS intent plus IPv6, TCP,
+fabricating them. Root receipt v2 binds the egress count and loss/coverage state, but production
+guest signing and later host composition remain open. Separate host evidence marks selected
+correlation complete while broad frame coverage remains false; the guest payload likewise keeps
+broad guest intent and host-frame correlation false because additional guest network interfaces
+and APIs remain unobserved and host evidence is composed later. Remaining AN-504 work includes DNS
+intent plus IPv6, TCP,
 GSO/segmentation, retransmission, and additional egress-hook qualification. AN-505 protected HTTP(S)
 observation and AN-506
 authenticated composite evidence also remain open. AN-506 now has a strict package-specific guest
@@ -2316,6 +2319,8 @@ Repository evidence:
 - [Linux VZ package protected network-intent source checkpoint](artifact-native-linux-vz-package-network-intent-source-checkpoint-2026-07-14.md)
 - [Linux VZ package canonical root network-evidence checkpoint](artifact-native-linux-vz-package-root-network-evidence-checkpoint-2026-07-14.md)
 - [Linux VZ package root-evidence receipt checkpoint](artifact-native-linux-vz-package-root-evidence-receipt-checkpoint-2026-07-14.md)
+- [Linux VZ package cgroup-egress checkpoint](artifact-native-linux-vz-package-cgroup-egress-checkpoint-2026-07-14.md)
+- [Linux VZ package canonical root-egress evidence checkpoint](artifact-native-linux-vz-package-root-egress-evidence-checkpoint-2026-07-14.md)
 - [Linux VZ package authenticated root-transport checkpoint](artifact-native-linux-vz-package-authenticated-root-transport-checkpoint-2026-07-15.md)
 - [Linux VZ package multi-action sensor-session checkpoint](artifact-native-linux-vz-package-multi-action-sensor-session-checkpoint-2026-07-15.md)
 - [Linux VZ package concrete root-service entrypoint checkpoint](artifact-native-linux-vz-package-concrete-root-service-entrypoint-checkpoint-2026-07-15.md)
