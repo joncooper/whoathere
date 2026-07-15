@@ -35,6 +35,10 @@ pub struct VerifiedMacosLinuxVzPackageExecutionRuntimeQualificationV1 {
     execution_runtime_rootfs_byte_length: u64,
     execution_runtime_manifest_sha256: Sha256Digest,
     package_execution_runner_sha256: Sha256Digest,
+    node_executable_sha256: Sha256Digest,
+    npm_cli_sha256: Sha256Digest,
+    python_executable_sha256: Sha256Digest,
+    pip_entrypoint_sha256: Sha256Digest,
     guest_evidence_public_key_sha256: Sha256Digest,
     host_evidence_public_key_sha256: Sha256Digest,
     execution_grant_issuer_public_key_sha256: Sha256Digest,
@@ -51,6 +55,10 @@ impl VerifiedMacosLinuxVzPackageExecutionRuntimeQualificationV1 {
         execution_runtime_rootfs_byte_length: u64,
         execution_runtime_manifest_sha256: Sha256Digest,
         package_execution_runner_sha256: Sha256Digest,
+        node_executable_sha256: Sha256Digest,
+        npm_cli_sha256: Sha256Digest,
+        python_executable_sha256: Sha256Digest,
+        pip_entrypoint_sha256: Sha256Digest,
         guest_evidence_public_key_sha256: Sha256Digest,
         host_evidence_public_key_sha256: Sha256Digest,
         execution_grant_issuer_public_key_sha256: Sha256Digest,
@@ -64,6 +72,10 @@ impl VerifiedMacosLinuxVzPackageExecutionRuntimeQualificationV1 {
             execution_runtime_rootfs_byte_length,
             execution_runtime_manifest_sha256,
             package_execution_runner_sha256,
+            node_executable_sha256,
+            npm_cli_sha256,
+            python_executable_sha256,
+            pip_entrypoint_sha256,
             guest_evidence_public_key_sha256,
             host_evidence_public_key_sha256,
             execution_grant_issuer_public_key_sha256,
@@ -96,6 +108,38 @@ impl VerifiedMacosLinuxVzPackageExecutionRuntimeQualificationV1 {
 
     pub fn package_execution_runner_sha256(&self) -> &Sha256Digest {
         &self.package_execution_runner_sha256
+    }
+
+    pub fn node_executable_sha256(&self) -> &Sha256Digest {
+        &self.node_executable_sha256
+    }
+
+    pub fn npm_cli_sha256(&self) -> &Sha256Digest {
+        &self.npm_cli_sha256
+    }
+
+    pub fn python_executable_sha256(&self) -> &Sha256Digest {
+        &self.python_executable_sha256
+    }
+
+    pub fn pip_entrypoint_sha256(&self) -> &Sha256Digest {
+        &self.pip_entrypoint_sha256
+    }
+
+    pub const fn node_version(&self) -> &'static str {
+        "24.17.0"
+    }
+
+    pub const fn npm_version(&self) -> &'static str {
+        "11.12.1"
+    }
+
+    pub const fn python_version(&self) -> &'static str {
+        "3.14.5"
+    }
+
+    pub const fn pip_version(&self) -> &'static str {
+        "26.1.2"
     }
 
     pub fn guest_evidence_public_key_sha256(&self) -> &Sha256Digest {
@@ -138,6 +182,10 @@ impl VerifiedMacosLinuxVzPackageExecutionRuntimeQualificationV1 {
             &self.execution_runtime_rootfs_sha256,
             &self.execution_runtime_manifest_sha256,
             &self.package_execution_runner_sha256,
+            &self.node_executable_sha256,
+            &self.npm_cli_sha256,
+            &self.python_executable_sha256,
+            &self.pip_entrypoint_sha256,
             &self.guest_evidence_public_key_sha256,
             &self.host_evidence_public_key_sha256,
             &self.execution_grant_issuer_public_key_sha256,
@@ -1340,6 +1388,10 @@ mod tests {
             execution_runtime_rootfs_byte_length: 1_073_741_824,
             execution_runtime_manifest_sha256: digest("manifest"),
             package_execution_runner_sha256: digest("runner"),
+            node_executable_sha256: digest("node executable"),
+            npm_cli_sha256: digest("npm cli"),
+            python_executable_sha256: digest("python executable"),
+            pip_entrypoint_sha256: digest("pip entrypoint"),
             guest_evidence_public_key_sha256: digest("guest evidence key"),
             host_evidence_public_key_sha256: digest("host evidence key"),
             execution_grant_issuer_public_key_sha256: Sha256Digest::from_bytes(&public_key),

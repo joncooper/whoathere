@@ -1,4 +1,7 @@
-use crate::QualifiedMacosLinuxVzTelemetryBackendV1;
+use crate::{
+    QualifiedMacosLinuxVzTelemetryBackendV1,
+    VerifiedMacosLinuxVzPackageExecutionRuntimeQualificationV1,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt;
@@ -51,6 +54,24 @@ pub struct MacosLinuxVzCandidatePackageRuntimeV1 {
 }
 
 impl MacosLinuxVzCandidatePackageRuntimeV1 {
+    pub fn from_verified_execution_runtime_qualification_v1(
+        qualification: &VerifiedMacosLinuxVzPackageExecutionRuntimeQualificationV1,
+    ) -> Result<Self, MacosLinuxVzPackageAuthorityRequestErrorV1> {
+        if !qualification.execution_authority_issuance_permitted()
+            || qualification.sync_back_permitted()
+        {
+            return Err(MacosLinuxVzPackageAuthorityRequestErrorV1::CandidateRuntimeInvalid);
+        }
+        let value = Self {
+            rootfs_sha256: qualification.execution_runtime_rootfs_sha256().clone(),
+            rootfs_byte_length: qualification.execution_runtime_rootfs_byte_length(),
+            runtime_manifest_sha256: qualification.execution_runtime_manifest_sha256().clone(),
+            package_runner_sha256: qualification.package_execution_runner_sha256().clone(),
+        };
+        value.validate()?;
+        Ok(value)
+    }
+
     pub fn from_exact_bytes(
         rootfs_bytes: &[u8],
         runtime_manifest_bytes: &[u8],

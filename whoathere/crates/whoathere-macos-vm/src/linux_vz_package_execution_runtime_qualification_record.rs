@@ -656,6 +656,10 @@ fn decode_and_verify_record_v1(
             claims.runtime_manifest.rootfs_byte_length_v1(),
             claims.runtime_manifest_source_sha256.clone(),
             claims.runtime_manifest.package_runner_sha256.clone(),
+            claims.runtime_manifest.node_executable_sha256.clone(),
+            claims.runtime_manifest.npm_cli_sha256.clone(),
+            claims.runtime_manifest.python_executable_sha256.clone(),
+            claims.runtime_manifest.pip_entrypoint_sha256.clone(),
             claims.guest_evidence_public_key_sha256.clone(),
             claims.host_evidence_public_key_sha256.clone(),
             claims.execution_grant_issuer_public_key_sha256.clone(),
@@ -1234,6 +1238,27 @@ mod tests {
         assert_eq!(
             qualification.qualified_telemetry_backend_sha256(),
             fixture.backend.qualified_backend_sha256()
+        );
+        assert_eq!(qualification.node_executable_sha256(), &digest("node"));
+        assert_eq!(qualification.npm_cli_sha256(), &digest("npm"));
+        assert_eq!(qualification.python_executable_sha256(), &digest("python"));
+        assert_eq!(qualification.pip_entrypoint_sha256(), &digest("pip"));
+        assert_eq!(qualification.node_version(), "24.17.0");
+        assert_eq!(qualification.npm_version(), "11.12.1");
+        assert_eq!(qualification.python_version(), "3.14.5");
+        assert_eq!(qualification.pip_version(), "26.1.2");
+        let candidate =
+            crate::MacosLinuxVzCandidatePackageRuntimeV1::from_verified_execution_runtime_qualification_v1(
+                &qualification,
+            )
+            .expect("candidate identity from verified runtime");
+        assert_eq!(
+            candidate.rootfs_sha256(),
+            qualification.execution_runtime_rootfs_sha256()
+        );
+        assert_eq!(
+            candidate.runtime_manifest_sha256(),
+            qualification.execution_runtime_manifest_sha256()
         );
         assert!(qualification.execution_authority_issuance_permitted());
         assert!(!qualification.sync_back_permitted());
