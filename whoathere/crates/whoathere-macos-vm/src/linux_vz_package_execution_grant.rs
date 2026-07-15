@@ -513,7 +513,6 @@ impl Drop for MacosLinuxVzPackageExecutionGrantBytesV1 {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
 pub struct MacosLinuxVzPackageExecutionGrantObservationV1 {
     execution_grant_sha256: Sha256Digest,
     package_authority_request_sha256: Sha256Digest,
@@ -530,7 +529,75 @@ pub struct MacosLinuxVzPackageExecutionGrantObservationV1 {
     package_uid: u32,
     package_gid: u32,
     consumed: bool,
+    execution_request_consumed: AtomicBool,
+    root_evidence_signing_authority_issued: AtomicBool,
 }
+
+impl fmt::Debug for MacosLinuxVzPackageExecutionGrantObservationV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("MacosLinuxVzPackageExecutionGrantObservationV1")
+            .field("execution_grant_sha256", &self.execution_grant_sha256)
+            .field(
+                "package_authority_request_sha256",
+                &self.package_authority_request_sha256,
+            )
+            .field(
+                "execution_runtime_qualification_record_sha256",
+                &self.execution_runtime_qualification_record_sha256,
+            )
+            .field("attempt_binding_sha256", &self.attempt_binding_sha256)
+            .field("clone_binding_sha256", &self.clone_binding_sha256)
+            .field("issued_at_unix_seconds", &self.issued_at_unix_seconds)
+            .field("expires_at_unix_seconds", &self.expires_at_unix_seconds)
+            .field("verified_at_unix_seconds", &self.verified_at_unix_seconds)
+            .field("package_uid", &self.package_uid)
+            .field("package_gid", &self.package_gid)
+            .field("consumed", &self.consumed)
+            .field(
+                "execution_request_consumed",
+                &self.execution_request_consumed.load(Ordering::Acquire),
+            )
+            .field(
+                "root_evidence_signing_authority_issued",
+                &self
+                    .root_evidence_signing_authority_issued
+                    .load(Ordering::Acquire),
+            )
+            .finish()
+    }
+}
+
+impl PartialEq for MacosLinuxVzPackageExecutionGrantObservationV1 {
+    fn eq(&self, other: &Self) -> bool {
+        self.execution_grant_sha256 == other.execution_grant_sha256
+            && self.package_authority_request_sha256 == other.package_authority_request_sha256
+            && self.execution_runtime_qualification_record_sha256
+                == other.execution_runtime_qualification_record_sha256
+            && self.request_challenge_sha256 == other.request_challenge_sha256
+            && self.grant_challenge_sha256 == other.grant_challenge_sha256
+            && self.attempt_binding_sha256 == other.attempt_binding_sha256
+            && self.clone_binding_sha256 == other.clone_binding_sha256
+            && self.guest_evidence_public_key_sha256 == other.guest_evidence_public_key_sha256
+            && self.host_evidence_public_key_sha256 == other.host_evidence_public_key_sha256
+            && self.issued_at_unix_seconds == other.issued_at_unix_seconds
+            && self.expires_at_unix_seconds == other.expires_at_unix_seconds
+            && self.verified_at_unix_seconds == other.verified_at_unix_seconds
+            && self.package_uid == other.package_uid
+            && self.package_gid == other.package_gid
+            && self.consumed == other.consumed
+            && self.execution_request_consumed.load(Ordering::Acquire)
+                == other.execution_request_consumed.load(Ordering::Acquire)
+            && self
+                .root_evidence_signing_authority_issued
+                .load(Ordering::Acquire)
+                == other
+                    .root_evidence_signing_authority_issued
+                    .load(Ordering::Acquire)
+    }
+}
+
+impl Eq for MacosLinuxVzPackageExecutionGrantObservationV1 {}
 
 impl MacosLinuxVzPackageExecutionGrantObservationV1 {
     pub fn execution_grant_sha256(&self) -> &Sha256Digest {
@@ -595,6 +662,29 @@ impl MacosLinuxVzPackageExecutionGrantObservationV1 {
 
     pub const fn consumed(&self) -> bool {
         self.consumed
+    }
+
+    /// Burns the one execution-request derivation attached to this verified observation.
+    ///
+    /// The state belongs to the observation rather than an authorizer wrapper so retaining the
+    /// observation for evidence composition cannot accidentally create a second request authority.
+    pub(crate) fn burn_execution_request_v1(&self) -> bool {
+        !self.execution_request_consumed.swap(true, Ordering::AcqRel)
+    }
+
+    pub fn execution_request_consumed(&self) -> bool {
+        self.execution_request_consumed.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn burn_root_evidence_signing_authority_v1(&self) -> bool {
+        !self
+            .root_evidence_signing_authority_issued
+            .swap(true, Ordering::AcqRel)
+    }
+
+    pub fn root_evidence_signing_authority_issued(&self) -> bool {
+        self.root_evidence_signing_authority_issued
+            .load(Ordering::Acquire)
     }
 
     pub const fn package_execution_scope(&self) -> MacosLinuxVzPackageExecutionScopeV1 {
@@ -753,6 +843,8 @@ fn decode_and_verify_grant_v1(
         package_uid: context.package_uid,
         package_gid: context.package_gid,
         consumed: true,
+        execution_request_consumed: AtomicBool::new(false),
+        root_evidence_signing_authority_issued: AtomicBool::new(false),
     })
 }
 
@@ -833,7 +925,16 @@ pub(crate) fn test_macos_linux_vz_package_execution_grant_observation_with_evide
         package_uid: PACKAGE_UID_V1,
         package_gid: PACKAGE_GID_V1,
         consumed: true,
+        execution_request_consumed: AtomicBool::new(false),
+        root_evidence_signing_authority_issued: AtomicBool::new(false),
     }
+}
+
+#[cfg(test)]
+pub(crate) fn test_burn_macos_linux_vz_package_execution_request_v1(
+    grant: &MacosLinuxVzPackageExecutionGrantObservationV1,
+) {
+    assert!(grant.burn_execution_request_v1());
 }
 
 fn signature_message_v1(unsigned_grant: &[u8]) -> Vec<u8> {
@@ -1039,7 +1140,7 @@ mod tests {
                 context.request_challenge_sha256.clone(),
                 context.clone_binding_sha256.clone(),
             );
-        let authorizer = crate::MacosLinuxVzPackageExecutionRequestAuthorizerV1::new(observed)
+        let authorizer = crate::MacosLinuxVzPackageExecutionRequestAuthorizerV1::new(&observed)
             .expect("request authorizer");
         assert_eq!(
             authorizer

@@ -104,9 +104,12 @@ private host path, canary, or credential was added to tracked files.
 
 AN-506 remains open. The next engineering slice is to:
 
-1. carry the exact authority request and consumed grant into the protected root service;
-2. construct and sign the root receipt after process, file, and guest-network collectors finish,
-   without exposing the signing seed to the untrusted package supervisor;
+1. carry the exact authority request and consumed grant into the protected root service using the
+   shared one-use state and grant-key-bound authority now recorded in the
+   [protected root-signer checkpoint](artifact-native-linux-vz-package-protected-root-signer-checkpoint-2026-07-15.md);
+2. give that authority physical custody of the measured signing key and construct the root receipt
+   only after process, file, and guest-network collectors finish, without exposing the key to the
+   untrusted package supervisor;
 3. transport the bounded receipt and incomplete root evidence to host composition instead of the
    older complete-legacy-payload path;
 4. exercise that path physically with inert npm, exact-wheel, and nested-sdist scenarios while

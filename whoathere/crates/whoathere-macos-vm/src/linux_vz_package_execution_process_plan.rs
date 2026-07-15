@@ -973,7 +973,7 @@ mod tests {
         );
         let grant = test_macos_linux_vz_package_execution_grant_observation_v1(&authority);
         let authorizer =
-            MacosLinuxVzPackageExecutionRequestAuthorizerV1::new(grant).expect("authorizer");
+            MacosLinuxVzPackageExecutionRequestAuthorizerV1::new(&grant).expect("authorizer");
         let request = authorizer
             .build_and_consume(
                 &authority,

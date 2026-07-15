@@ -4,6 +4,19 @@ Date: 2026-07-09
 
 Status: canonical execution plan for the next product milestone
 
+Protected root-signer checkpoint (2026-07-15): the verified one-use grant observation now owns the
+execution-request burn, so multiple authorizer wrappers cannot mint multiple requests while later
+evidence composition retains the exact source observation. Root-receipt and host-composite
+construction require that burn. A protected signing authority then accepts only the exact request,
+its consumed grant, and a zeroizing Ed25519 seed matching the grant-qualified guest evidence key.
+The grant burns the single signer-authority issuance before key validation, and the authority burns
+each process action before claims validation. It independently rejects artifact, scenario, runtime,
+telemetry, challenge, grant, or key rebinding. The result still requires host composition, cannot
+issue a verdict, and cannot sync back. This is a tested authority primitive, not physical
+root-service custody or receipt transport; no VM or package ran and the July score remains 7/11.
+See the
+[protected root-signer checkpoint](artifact-native-linux-vz-package-protected-root-signer-checkpoint-2026-07-15.md).
+
 Independent host-verification checkpoint (2026-07-15): the Mac host-composite receipt now has a
 separately implemented Rust verifier. The one-use grant observation carries the measured guest and
 host evidence-key identities from its opaque runtime qualification, root-receipt construction takes
@@ -1873,10 +1886,14 @@ authenticated composite evidence also remain open. AN-506 now has a strict packa
 receipt protocol that binds exact authority, scenario, grant, runtime, sensor, action, terminal,
 process, file, and network claims under a short-lived Ed25519 signature. It deliberately reports
 the current evidence as incomplete and grants no verdict or sync-back authority. Root-service
-integration, protected signer custody, physical receipt transport, destruction proof, broader
-network coverage, and the final control-plane envelope remain. An independent Rust verifier and
-strict host-frame/lifecycle composition now exist at the protocol level, but neither is connected to
-a physical package run. These partial results do not satisfy the Phase 5 exit gate.
+integration, physical signer custody and receipt transport, destruction proof, broader network
+coverage, and the final control-plane envelope remain. The one-use grant now shares its
+execution-request burn with later evidence composition, and a grant-key-bound authority burns each
+action before signing exact claims, but that authority is not yet owned by the measured root-service
+process. An independent Rust verifier and strict host-frame/lifecycle composition also exist at the
+protocol level, but none of these boundaries is connected to a physical package run. See the
+[protected root-signer checkpoint](artifact-native-linux-vz-package-protected-root-signer-checkpoint-2026-07-15.md).
+These partial results do not satisfy the Phase 5 exit gate.
 
 Exit gate:
 

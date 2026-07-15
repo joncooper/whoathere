@@ -5,7 +5,6 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use std::sync::atomic::{AtomicBool, Ordering};
 use whoathere_artifact::{ArtifactFormat, Sha256Digest};
 use whoathere_detonation::{
     decode_and_validate_artifact_scenario_template_v1, decode_and_validate_sdist_scenario_plan_v1,
@@ -924,24 +923,23 @@ impl std::error::Error for MacosLinuxVzPackageExecutionRequestErrorV1 {}
 
 /// One-boot protected authority that consumes a verified grant observation before doing any other
 /// request validation. Invalid and valid derivation attempts both burn the authority.
-pub struct MacosLinuxVzPackageExecutionRequestAuthorizerV1 {
-    grant: MacosLinuxVzPackageExecutionGrantObservationV1,
-    consumed: AtomicBool,
+pub struct MacosLinuxVzPackageExecutionRequestAuthorizerV1<'grant> {
+    grant: &'grant MacosLinuxVzPackageExecutionGrantObservationV1,
 }
 
-impl fmt::Debug for MacosLinuxVzPackageExecutionRequestAuthorizerV1 {
+impl fmt::Debug for MacosLinuxVzPackageExecutionRequestAuthorizerV1<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("MacosLinuxVzPackageExecutionRequestAuthorizerV1")
             .field("grant", &self.grant)
-            .field("consumed", &self.consumed.load(Ordering::Acquire))
+            .field("consumed", &self.grant.execution_request_consumed())
             .finish()
     }
 }
 
-impl MacosLinuxVzPackageExecutionRequestAuthorizerV1 {
+impl<'grant> MacosLinuxVzPackageExecutionRequestAuthorizerV1<'grant> {
     pub fn new(
-        grant: MacosLinuxVzPackageExecutionGrantObservationV1,
+        grant: &'grant MacosLinuxVzPackageExecutionGrantObservationV1,
     ) -> Result<Self, MacosLinuxVzPackageExecutionRequestErrorV1> {
         if !grant.consumed()
             || grant.package_execution_scope()
@@ -955,10 +953,7 @@ impl MacosLinuxVzPackageExecutionRequestAuthorizerV1 {
         {
             return Err(MacosLinuxVzPackageExecutionRequestErrorV1::GrantInvalid);
         }
-        Ok(Self {
-            grant,
-            consumed: AtomicBool::new(false),
-        })
+        Ok(Self { grant })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -970,11 +965,11 @@ impl MacosLinuxVzPackageExecutionRequestAuthorizerV1 {
         scenario_template_bytes: &[u8],
     ) -> Result<MacosLinuxVzPackageExecutionRequestV1, MacosLinuxVzPackageExecutionRequestErrorV1>
     {
-        if self.consumed.swap(true, Ordering::AcqRel) {
+        if !self.grant.burn_execution_request_v1() {
             return Err(MacosLinuxVzPackageExecutionRequestErrorV1::AlreadyConsumed);
         }
         build_execution_request_v1(
-            &self.grant,
+            self.grant,
             authority_request,
             artifact_bytes,
             scenario_plan_bytes,
@@ -983,7 +978,7 @@ impl MacosLinuxVzPackageExecutionRequestAuthorizerV1 {
     }
 
     pub fn consumed(&self) -> bool {
-        self.consumed.load(Ordering::Acquire)
+        self.grant.execution_request_consumed()
     }
 }
 
@@ -1615,8 +1610,10 @@ mod tests {
         );
         let grant = crate::linux_vz_package_execution_grant::test_macos_linux_vz_package_execution_grant_observation_v1(&authority_request);
         let expected_grant_sha256 = grant.execution_grant_sha256().clone();
-        let authorizer = MacosLinuxVzPackageExecutionRequestAuthorizerV1::new(grant)
+        let authorizer = MacosLinuxVzPackageExecutionRequestAuthorizerV1::new(&grant)
             .expect("request authorizer");
+        let duplicate_authorizer = MacosLinuxVzPackageExecutionRequestAuthorizerV1::new(&grant)
+            .expect("duplicate wrapper cannot mint a second authority");
         let request = authorizer
             .build_and_consume(
                 &authority_request,
@@ -1626,6 +1623,19 @@ mod tests {
             )
             .expect("bound execution request");
         assert!(authorizer.consumed());
+        assert!(grant.execution_request_consumed());
+        assert_eq!(grant.execution_grant_sha256(), &expected_grant_sha256);
+        assert_eq!(
+            duplicate_authorizer
+                .build_and_consume(
+                    &authority_request,
+                    &artifact_bytes,
+                    &plan_bytes,
+                    &template_bytes,
+                )
+                .expect_err("shared grant must reject a second request"),
+            MacosLinuxVzPackageExecutionRequestErrorV1::AlreadyConsumed
+        );
         assert_eq!(request.execution_grant_sha256(), &expected_grant_sha256);
         assert_eq!(
             request.artifact_sha256(),

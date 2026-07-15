@@ -163,6 +163,7 @@ impl LinuxVzPackageHostCompositeExpectedBindingsV1 {
     ) -> Result<Self, LinuxVzPackageHostCompositeReceiptErrorV1> {
         lifecycle.validate_v1()?;
         if !grant.consumed()
+            || !grant.execution_request_consumed()
             || request.sync_back_permitted()
             || grant.sync_back_permitted()
             || root.sync_back_permitted()
@@ -729,7 +730,10 @@ mod tests {
     use crate::{
         decode_linux_vz_package_host_udp_sendto_evidence_v1,
         linux_vz_package_authority_request::test_macos_linux_vz_package_authority_request_for_execution_v1,
-        linux_vz_package_execution_grant::test_macos_linux_vz_package_execution_grant_observation_with_evidence_keys_v1,
+        linux_vz_package_execution_grant::{
+            test_burn_macos_linux_vz_package_execution_request_v1,
+            test_macos_linux_vz_package_execution_grant_observation_with_evidence_keys_v1,
+        },
         linux_vz_package_root_evidence_receipt::test_verified_linux_vz_package_root_evidence_receipt_v1,
         LinuxVzPackageExpectedHostUdpSendtoV1, LinuxVzPackageHostDestinationClassV1,
         MacosLinuxVzPackageArtifactKindV1,
@@ -882,6 +886,17 @@ mod tests {
             0,
         )
         .expect("lifecycle");
+        assert_eq!(
+            LinuxVzPackageHostCompositeExpectedBindingsV1::from_verified_sources_v1(
+                &request,
+                &grant,
+                &root,
+                &host_network,
+                lifecycle.clone(),
+            ),
+            Err(LinuxVzPackageHostCompositeReceiptErrorV1::InvalidBinding)
+        );
+        test_burn_macos_linux_vz_package_execution_request_v1(&grant);
         let expected = LinuxVzPackageHostCompositeExpectedBindingsV1::from_verified_sources_v1(
             &request,
             &grant,

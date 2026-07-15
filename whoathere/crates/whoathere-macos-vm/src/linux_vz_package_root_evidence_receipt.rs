@@ -6,9 +6,10 @@ use crate::{
 };
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::fmt;
 use whoathere_artifact::Sha256Digest;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 pub const LINUX_VZ_PACKAGE_ROOT_EVIDENCE_RECEIPT_SCHEMA_V1: &str =
     "whoathere.linux_vz_package_root_evidence_receipt.v1";
@@ -25,6 +26,8 @@ const PACKAGE_GID_V1: u32 = 65_534;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinuxVzPackageRootEvidenceReceiptErrorV1 {
+    ActionAlreadyConsumed,
+    SigningAuthorityAlreadyIssued,
     BindingMismatch,
     InvalidEvidence,
     InvalidCoverage,
@@ -42,6 +45,12 @@ pub enum LinuxVzPackageRootEvidenceReceiptErrorV1 {
 impl LinuxVzPackageRootEvidenceReceiptErrorV1 {
     pub const fn reason_code(self) -> &'static str {
         match self {
+            Self::ActionAlreadyConsumed => {
+                "linux_vz_package_root_evidence_receipt_action_already_consumed"
+            }
+            Self::SigningAuthorityAlreadyIssued => {
+                "linux_vz_package_root_evidence_receipt_signing_authority_already_issued"
+            }
             Self::BindingMismatch => "linux_vz_package_root_evidence_receipt_binding_mismatch",
             Self::InvalidEvidence => "linux_vz_package_root_evidence_receipt_evidence_invalid",
             Self::InvalidCoverage => "linux_vz_package_root_evidence_receipt_coverage_invalid",
@@ -177,6 +186,7 @@ impl LinuxVzPackageRootEvidenceReceiptClaimsV1 {
             || grant.package_uid() != PACKAGE_UID_V1
             || grant.package_gid() != PACKAGE_GID_V1
             || !grant.consumed()
+            || !grant.execution_request_consumed()
             || request.sync_back_permitted()
             || grant.sync_back_permitted()
         {
@@ -462,6 +472,132 @@ impl LinuxVzPackageRootEvidenceReceiptClaimsV1 {
     }
 }
 
+/// Protected guest authority for receipts emitted after one exact execution request was consumed.
+///
+/// The signing key never crosses this interface, and every nonzero action index is burned before
+/// claims validation. A malformed evidence attempt therefore cannot be repaired and re-signed for
+/// the same package process action.
+pub struct LinuxVzPackageRootEvidenceSigningAuthorityV1<'execution> {
+    request: &'execution MacosLinuxVzPackageAuthorityRequestV1,
+    grant: &'execution MacosLinuxVzPackageExecutionGrantObservationV1,
+    signing_key: SigningKey,
+    burned_action_indexes: BTreeSet<usize>,
+}
+
+impl fmt::Debug for LinuxVzPackageRootEvidenceSigningAuthorityV1<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LinuxVzPackageRootEvidenceSigningAuthorityV1")
+            .field(
+                "package_authority_request_sha256",
+                &self.request.request_sha256(),
+            )
+            .field(
+                "execution_grant_sha256",
+                &self.grant.execution_grant_sha256(),
+            )
+            .field("burned_action_count", &self.burned_action_indexes.len())
+            .field("signing_key", &"<protected-and-zeroized-on-drop>")
+            .finish()
+    }
+}
+
+impl<'execution> LinuxVzPackageRootEvidenceSigningAuthorityV1<'execution> {
+    pub fn from_consumed_execution_v1(
+        request: &'execution MacosLinuxVzPackageAuthorityRequestV1,
+        grant: &'execution MacosLinuxVzPackageExecutionGrantObservationV1,
+        mut signing_seed: Zeroizing<[u8; 32]>,
+    ) -> Result<Self, LinuxVzPackageRootEvidenceReceiptErrorV1> {
+        if !grant.consumed()
+            || !grant.execution_request_consumed()
+            || request.sync_back_permitted()
+            || grant.sync_back_permitted()
+            || grant.package_uid() != PACKAGE_UID_V1
+            || grant.package_gid() != PACKAGE_GID_V1
+            || request.request_sha256() != grant.package_authority_request_sha256()
+            || request.request_challenge_sha256() != grant.request_challenge_sha256()
+            || request.clone_binding_sha256() != grant.clone_binding_sha256()
+            || grant.issued_at_unix_seconds() == 0
+            || grant.verified_at_unix_seconds() < grant.issued_at_unix_seconds()
+            || grant.verified_at_unix_seconds() >= grant.expires_at_unix_seconds()
+        {
+            return Err(LinuxVzPackageRootEvidenceReceiptErrorV1::BindingMismatch);
+        }
+        if !grant.burn_root_evidence_signing_authority_v1() {
+            return Err(LinuxVzPackageRootEvidenceReceiptErrorV1::SigningAuthorityAlreadyIssued);
+        }
+        let signing_key = SigningKey::from_bytes(&signing_seed);
+        signing_seed.zeroize();
+        if signing_key.verifying_key().is_weak()
+            || Sha256Digest::from_bytes(signing_key.verifying_key().as_bytes())
+                != *grant.guest_evidence_public_key_sha256()
+        {
+            return Err(LinuxVzPackageRootEvidenceReceiptErrorV1::PublicKeyMismatch);
+        }
+        Ok(Self {
+            request,
+            grant,
+            signing_key,
+            burned_action_indexes: BTreeSet::new(),
+        })
+    }
+
+    pub fn sign_bound_claims_v1(
+        &mut self,
+        claims: &LinuxVzPackageRootEvidenceReceiptClaimsV1,
+    ) -> Result<Vec<u8>, LinuxVzPackageRootEvidenceReceiptErrorV1> {
+        if claims.action_index == 0 {
+            return Err(LinuxVzPackageRootEvidenceReceiptErrorV1::BindingMismatch);
+        }
+        if !self.burned_action_indexes.insert(claims.action_index) {
+            return Err(LinuxVzPackageRootEvidenceReceiptErrorV1::ActionAlreadyConsumed);
+        }
+        claims.validate_v1()?;
+        if !self.claims_match_execution_v1(claims) {
+            return Err(LinuxVzPackageRootEvidenceReceiptErrorV1::BindingMismatch);
+        }
+        sign_linux_vz_package_root_evidence_receipt_with_key_v1(claims, &self.signing_key)
+    }
+
+    fn claims_match_execution_v1(
+        &self,
+        claims: &LinuxVzPackageRootEvidenceReceiptClaimsV1,
+    ) -> bool {
+        claims.artifact_kind == self.request.artifact_kind()
+            && claims.artifact_sha256 == *self.request.artifact_sha256()
+            && claims.artifact_byte_length == self.request.artifact_byte_length()
+            && claims.package_authority_request_sha256 == *self.request.request_sha256()
+            && claims.execution_grant_sha256 == *self.grant.execution_grant_sha256()
+            && claims.execution_grant_issued_at_unix_seconds == self.grant.issued_at_unix_seconds()
+            && claims.execution_grant_verified_at_unix_seconds
+                == self.grant.verified_at_unix_seconds()
+            && claims.execution_grant_expires_at_unix_seconds
+                == self.grant.expires_at_unix_seconds()
+            && claims.execution_runtime_qualification_record_sha256
+                == *self.grant.execution_runtime_qualification_record_sha256()
+            && claims.scenario_plan_sha256 == *self.request.scenario_plan_sha256()
+            && claims.scenario_template_sha256 == *self.request.scenario_template_sha256()
+            && claims.scenario_kind_sha256 == *self.request.scenario_kind_sha256()
+            && claims.scenario_policy_sha256 == *self.request.scenario_policy_sha256()
+            && claims.dependency_closure_sha256 == *self.request.dependency_closure_sha256()
+            && claims.runtime_profile_sha256 == *self.request.runtime_profile_sha256()
+            && claims.execution_runtime_rootfs_sha256
+                == *self.request.candidate_runtime_rootfs_sha256()
+            && claims.execution_runtime_manifest_sha256
+                == *self.request.candidate_runtime_manifest_sha256()
+            && claims.package_execution_runner_sha256
+                == *self.request.candidate_package_runner_sha256()
+            && claims.qualified_telemetry_backend_sha256
+                == *self.request.qualified_telemetry_backend_sha256()
+            && claims.request_challenge_sha256 == *self.request.request_challenge_sha256()
+            && claims.grant_challenge_sha256 == *self.grant.grant_challenge_sha256()
+            && claims.attempt_binding_sha256 == *self.grant.attempt_binding_sha256()
+            && claims.clone_binding_sha256 == *self.request.clone_binding_sha256()
+            && claims.guest_evidence_public_key_sha256
+                == *self.grant.guest_evidence_public_key_sha256()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct UnsignedRootEvidenceReceiptWireV1 {
@@ -667,6 +803,13 @@ pub fn sign_linux_vz_package_root_evidence_receipt_v1(
     {
         return Err(LinuxVzPackageRootEvidenceReceiptErrorV1::PublicKeyMismatch);
     }
+    sign_linux_vz_package_root_evidence_receipt_with_key_v1(claims, &signing_key)
+}
+
+fn sign_linux_vz_package_root_evidence_receipt_with_key_v1(
+    claims: &LinuxVzPackageRootEvidenceReceiptClaimsV1,
+    signing_key: &SigningKey,
+) -> Result<Vec<u8>, LinuxVzPackageRootEvidenceReceiptErrorV1> {
     let unsigned = unsigned_receipt_v1(claims);
     let unsigned_bytes = serde_json_canonicalizer::to_vec(&unsigned)
         .map_err(|_| LinuxVzPackageRootEvidenceReceiptErrorV1::Serialization)?;
@@ -896,6 +1039,13 @@ fn hex_nibble_v1(byte: u8) -> Result<u8, LinuxVzPackageRootEvidenceReceiptErrorV
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        linux_vz_package_authority_request::test_macos_linux_vz_package_authority_request_for_execution_v1,
+        linux_vz_package_execution_grant::{
+            test_burn_macos_linux_vz_package_execution_request_v1,
+            test_macos_linux_vz_package_execution_grant_observation_with_evidence_keys_v1,
+        },
+    };
 
     const SIGNING_SEED: [u8; 32] = [73_u8; 32];
     const GRANT_VERIFIED_AT: u64 = 1_750_000_000;
@@ -993,6 +1143,63 @@ mod tests {
             .as_bytes()
     }
 
+    fn exact_consumed_execution_v1() -> (
+        MacosLinuxVzPackageAuthorityRequestV1,
+        MacosLinuxVzPackageExecutionGrantObservationV1,
+    ) {
+        let request = test_macos_linux_vz_package_authority_request_for_execution_v1(
+            digest("authority request"),
+            MacosLinuxVzPackageArtifactKindV1::NpmTarball,
+            digest("artifact"),
+            digest("request challenge"),
+            digest("clone binding"),
+        );
+        let grant = test_macos_linux_vz_package_execution_grant_observation_with_evidence_keys_v1(
+            &request,
+            Sha256Digest::from_bytes(&verifying_key_v1()),
+            digest("host evidence key"),
+        );
+        (request, grant)
+    }
+
+    fn claims_bound_to_execution_v1(
+        request: &MacosLinuxVzPackageAuthorityRequestV1,
+        grant: &MacosLinuxVzPackageExecutionGrantObservationV1,
+    ) -> LinuxVzPackageRootEvidenceReceiptClaimsV1 {
+        let mut claims = claims_v1();
+        claims.artifact_kind = request.artifact_kind();
+        claims.artifact_sha256 = request.artifact_sha256().clone();
+        claims.artifact_byte_length = request.artifact_byte_length();
+        claims.package_authority_request_sha256 = request.request_sha256().clone();
+        claims.execution_grant_sha256 = grant.execution_grant_sha256().clone();
+        claims.execution_grant_issued_at_unix_seconds = grant.issued_at_unix_seconds();
+        claims.execution_grant_verified_at_unix_seconds = grant.verified_at_unix_seconds();
+        claims.execution_grant_expires_at_unix_seconds = grant.expires_at_unix_seconds();
+        claims.execution_runtime_qualification_record_sha256 = grant
+            .execution_runtime_qualification_record_sha256()
+            .clone();
+        claims.scenario_plan_sha256 = request.scenario_plan_sha256().clone();
+        claims.scenario_template_sha256 = request.scenario_template_sha256().clone();
+        claims.scenario_kind_sha256 = request.scenario_kind_sha256().clone();
+        claims.scenario_policy_sha256 = request.scenario_policy_sha256().clone();
+        claims.dependency_closure_sha256 = request.dependency_closure_sha256().clone();
+        claims.runtime_profile_sha256 = request.runtime_profile_sha256().clone();
+        claims.execution_runtime_rootfs_sha256 = request.candidate_runtime_rootfs_sha256().clone();
+        claims.execution_runtime_manifest_sha256 =
+            request.candidate_runtime_manifest_sha256().clone();
+        claims.package_execution_runner_sha256 = request.candidate_package_runner_sha256().clone();
+        claims.qualified_telemetry_backend_sha256 =
+            request.qualified_telemetry_backend_sha256().clone();
+        claims.request_challenge_sha256 = request.request_challenge_sha256().clone();
+        claims.grant_challenge_sha256 = grant.grant_challenge_sha256().clone();
+        claims.attempt_binding_sha256 = grant.attempt_binding_sha256().clone();
+        claims.clone_binding_sha256 = request.clone_binding_sha256().clone();
+        claims.guest_evidence_public_key_sha256 = grant.guest_evidence_public_key_sha256().clone();
+        claims.created_at_unix_seconds = grant.verified_at_unix_seconds() + 1;
+        claims.expires_at_unix_seconds = grant.expires_at_unix_seconds() - 1;
+        claims
+    }
+
     fn cross_language_claims_v2() -> LinuxVzPackageRootEvidenceReceiptClaimsV1 {
         let mut claims = claims_v1();
         let process = br#"{"type":"process"}"#;
@@ -1032,6 +1239,103 @@ mod tests {
             )
             .as_str(),
             "sha256:9c24aa8dd83ad562f72415d1c110bff61548412b2f18aedf75e182cc39d776f9"
+        );
+    }
+
+    #[test]
+    fn protected_signer_requires_consumed_request_and_burns_each_action() {
+        let (wrong_key_request, wrong_key_grant) = exact_consumed_execution_v1();
+        assert!(matches!(
+            LinuxVzPackageRootEvidenceSigningAuthorityV1::from_consumed_execution_v1(
+                &wrong_key_request,
+                &wrong_key_grant,
+                Zeroizing::new(SIGNING_SEED),
+            ),
+            Err(LinuxVzPackageRootEvidenceReceiptErrorV1::BindingMismatch)
+        ));
+        assert!(!wrong_key_grant.root_evidence_signing_authority_issued());
+        test_burn_macos_linux_vz_package_execution_request_v1(&wrong_key_grant);
+        assert!(matches!(
+            LinuxVzPackageRootEvidenceSigningAuthorityV1::from_consumed_execution_v1(
+                &wrong_key_request,
+                &wrong_key_grant,
+                Zeroizing::new([8_u8; 32]),
+            ),
+            Err(LinuxVzPackageRootEvidenceReceiptErrorV1::PublicKeyMismatch)
+        ));
+        assert!(wrong_key_grant.root_evidence_signing_authority_issued());
+        assert!(matches!(
+            LinuxVzPackageRootEvidenceSigningAuthorityV1::from_consumed_execution_v1(
+                &wrong_key_request,
+                &wrong_key_grant,
+                Zeroizing::new(SIGNING_SEED),
+            ),
+            Err(LinuxVzPackageRootEvidenceReceiptErrorV1::SigningAuthorityAlreadyIssued)
+        ));
+
+        let (request, grant) = exact_consumed_execution_v1();
+        test_burn_macos_linux_vz_package_execution_request_v1(&grant);
+        let claims = claims_bound_to_execution_v1(&request, &grant);
+        let mut authority =
+            LinuxVzPackageRootEvidenceSigningAuthorityV1::from_consumed_execution_v1(
+                &request,
+                &grant,
+                Zeroizing::new(SIGNING_SEED),
+            )
+            .expect("protected signing authority");
+        assert!(grant.root_evidence_signing_authority_issued());
+        assert!(matches!(
+            LinuxVzPackageRootEvidenceSigningAuthorityV1::from_consumed_execution_v1(
+                &request,
+                &grant,
+                Zeroizing::new(SIGNING_SEED),
+            ),
+            Err(LinuxVzPackageRootEvidenceReceiptErrorV1::SigningAuthorityAlreadyIssued)
+        ));
+        let debug = format!("{authority:?}");
+        assert!(debug.contains(grant.execution_grant_sha256().as_str()));
+        assert!(!debug.contains(&lower_hex_v1(&SIGNING_SEED)));
+        let receipt = authority
+            .sign_bound_claims_v1(&claims)
+            .expect("bound receipt");
+        let verified = verify_linux_vz_package_root_evidence_receipt_v1(
+            &claims,
+            &receipt,
+            verifying_key_v1(),
+            claims.created_at_unix_seconds,
+        )
+        .expect("verified protected receipt");
+        assert!(!verified.evidence_complete());
+        assert!(verified.host_composition_required());
+        assert!(!verified.authoritative_verdict_permitted());
+        assert!(!verified.sync_back_permitted());
+        assert_eq!(
+            authority.sign_bound_claims_v1(&claims),
+            Err(LinuxVzPackageRootEvidenceReceiptErrorV1::ActionAlreadyConsumed)
+        );
+    }
+
+    #[test]
+    fn protected_signer_burns_rebound_action_before_validation_or_retry() {
+        let (request, grant) = exact_consumed_execution_v1();
+        test_burn_macos_linux_vz_package_execution_request_v1(&grant);
+        let valid = claims_bound_to_execution_v1(&request, &grant);
+        let mut rebound = valid.clone();
+        rebound.artifact_sha256 = digest("rebound artifact");
+        let mut authority =
+            LinuxVzPackageRootEvidenceSigningAuthorityV1::from_consumed_execution_v1(
+                &request,
+                &grant,
+                Zeroizing::new(SIGNING_SEED),
+            )
+            .expect("protected signing authority");
+        assert_eq!(
+            authority.sign_bound_claims_v1(&rebound),
+            Err(LinuxVzPackageRootEvidenceReceiptErrorV1::BindingMismatch)
+        );
+        assert_eq!(
+            authority.sign_bound_claims_v1(&valid),
+            Err(LinuxVzPackageRootEvidenceReceiptErrorV1::ActionAlreadyConsumed)
         );
     }
 
