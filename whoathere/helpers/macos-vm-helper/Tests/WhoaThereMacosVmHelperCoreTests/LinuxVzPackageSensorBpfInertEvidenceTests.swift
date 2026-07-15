@@ -38,6 +38,7 @@ private let taskExitCodeByteOffset: UInt64 = 1_964
         "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
     #expect(evidence.egressPacketPrefixSHA256 ==
         "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    #expect(!evidence.egressWireGSOMetadataAvailable)
     #expect(evidence.networkIntentCount == 2)
     #expect(evidence.networkSendtoDestinationTokenSHA256 ==
         "sha256:3ef258ec5ef33c871db55bb52239931372585c08ad3fbafda224bc498ad0ed7b")
@@ -273,6 +274,24 @@ private let taskExitCodeByteOffset: UInt64 = 1_964
         )
     }
 
+    for (field, changed): (String, Any) in [
+        ("wire_gso_metadata_available", true),
+        ("wire_length", "44"),
+    ] {
+        value = packageSensorBpfInertValue()
+        var observations = try #require(value["egress_observations"] as? [[String: Any]])
+        observations[0][field] = changed
+        value["egress_observations"] = observations
+        #expect(throws: LinuxVzPackageSensorBpfInertEvidenceError.invalidSchema) {
+            try decodeLinuxVzPackageSensorBpfInertEvidenceV13(
+                packageSensorBpfInertSerial(value: value),
+                expectedFixtureSHA256: fixtureSHA256,
+                expectedRuntimeBTFSHA256: runtimeBTFSHA256,
+                expectedTaskExitCodeByteOffset: taskExitCodeByteOffset
+            )
+        }
+    }
+
     value = packageSensorBpfInertValue()
     value["attachment_cpu"] = "1"
     #expect(throws: LinuxVzPackageSensorBpfInertEvidenceError.invalidSchema) {
@@ -425,7 +444,8 @@ private func packageSensorBpfInertValue() -> [String: Any] {
             "protocol": "ipv4",
             "raw_skb_protocol": "8",
             "source_sequence": "1",
-            "wire_length": "44",
+            "wire_gso_metadata_available": false,
+            "wire_length": "0",
         ]],
         "event_count": "18",
         "event_kinds": [
@@ -543,7 +563,7 @@ private func packageSensorBpfInertValue() -> [String: Any] {
         "root_file_evidence_workspace_diff_sha256":
             "sha256:8888888888888888888888888888888888888888888888888888888888888888",
         "runtime_btf_sha256": runtimeBTFSHA256,
-        "schema_version": linuxVzPackageSensorBpfInertEvidenceSchemaV14,
+        "schema_version": linuxVzPackageSensorBpfInertEvidenceSchemaV15,
         "sensor_session_challenge_sha256":
             "sha256:0a6d2053eb627f5f1ed55c993237d3bd832dc1b72f4084c40c9a224e83d6c965",
         "source_event_count_before_finish": "17",

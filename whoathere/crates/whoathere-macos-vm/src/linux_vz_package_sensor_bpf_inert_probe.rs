@@ -287,6 +287,7 @@ struct InertEgressObservationWireV1 {
     raw_skb_protocol: String,
     source_sequence: String,
     wire_length: String,
+    wire_gso_metadata_available: bool,
 }
 
 #[cfg(target_os = "linux")]
@@ -1015,12 +1016,13 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
         || !(process_started_monotonic_nanoseconds..=process_ended_monotonic_nanoseconds)
             .contains(&egress_event.timestamp_nanoseconds_v1())
         || egress_event.packet_length_v1() != 44
-        || egress_event.wire_length_v1() != 44
+        || egress_event.wire_length_v1() != 0
         || egress_event.raw_skb_protocol_v1() != 8
         || egress_event.ingress_interface_index_v1() != 0
         || egress_event.egress_interface_index_v1() == 0
         || egress_event.gso_segment_count_v1() != 0
         || egress_event.gso_segment_size_v1() != 0
+        || egress_event.wire_gso_metadata_available_v1()
         || egress_event.packet_prefix_v1().len() != 44
         || egress_event.prefix_truncated_v1()
         || egress_event.source_sequence_v1() != 1
@@ -1057,6 +1059,7 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
             raw_skb_protocol: event.raw_skb_protocol_v1().to_string(),
             source_sequence: event.source_sequence_v1().to_string(),
             wire_length: event.wire_length_v1().to_string(),
+            wire_gso_metadata_available: event.wire_gso_metadata_available_v1(),
         })
         .collect::<Vec<_>>();
     let file_change = file_collection.changes_v1().first();
@@ -1444,7 +1447,7 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
             "http_observation",
         ],
         runtime_btf_sha256: collection.runtime_btf_sha256_v1().as_str().to_string(),
-        schema_version: "whoathere.linux_vz_package_sensor_bpf_inert_probe.v14",
+        schema_version: "whoathere.linux_vz_package_sensor_bpf_inert_probe.v15",
         sensor_session_challenge_sha256: sensor_session_challenge_sha256.as_str().to_string(),
         source_event_count_before_finish: collection
             .source_event_count_before_finish_v1()

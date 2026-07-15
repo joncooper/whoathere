@@ -104,6 +104,7 @@ const EGRESS_EVENT_VERSION_AND_KIND_LE_V1: i32 = (1 << 16) | 1;
 const EGRESS_EVENT_FLAG_PREFIX_TRUNCATED_V1: i32 = 1 << 0;
 const EGRESS_EVENT_FLAG_ALLOW_V1: i32 = 1 << 1;
 const EGRESS_EVENT_FLAG_BLOCK_V1: i32 = 1 << 2;
+const EGRESS_EVENT_FLAG_WIRE_GSO_METADATA_UNAVAILABLE_V1: i32 = 1 << 3;
 const EGRESS_EVENT_PREFIX_OFFSET_V1: i32 = 72;
 const EGRESS_EVENT_PREFIX_BYTES_V1: i32 = 160;
 const RAW_ETHERTYPE_IPV4_LITTLE_ENDIAN_V1: i32 = 0x0000_0008;
@@ -526,12 +527,9 @@ fn build_cgroup_egress_program_v1(
     program.store_register_v1(BPF_DW_V1, BPF_REG_7_V1, BPF_REG_0_V1, 24);
     program.store_register_v1(BPF_W_V1, BPF_REG_7_V1, BPF_REG_9_V1, 32);
     for (context_offset, record_offset) in [
-        (SKB_WIRE_LENGTH_OFFSET_V1, 36_i16),
         (SKB_PROTOCOL_OFFSET_V1, 40_i16),
         (SKB_INGRESS_INTERFACE_INDEX_OFFSET_V1, 44_i16),
         (SKB_EGRESS_INTERFACE_INDEX_OFFSET_V1, 48_i16),
-        (SKB_GSO_SEGMENT_COUNT_OFFSET_V1, 52_i16),
-        (SKB_GSO_SEGMENT_SIZE_OFFSET_V1, 56_i16),
     ] {
         program.load_register_v1(BPF_W_V1, BPF_REG_1_V1, BPF_REG_6_V1, context_offset);
         program.store_register_v1(BPF_W_V1, BPF_REG_7_V1, BPF_REG_1_V1, record_offset);
@@ -549,12 +547,18 @@ fn build_cgroup_egress_program_v1(
         BPF_REG_8_V1,
         RAW_ETHERTYPE_IPV6_LITTLE_ENDIAN_V1,
     );
-    program.mov64_immediate_v1(BPF_REG_5_V1, EGRESS_EVENT_FLAG_BLOCK_V1);
+    program.mov64_immediate_v1(
+        BPF_REG_5_V1,
+        EGRESS_EVENT_FLAG_BLOCK_V1 | EGRESS_EVENT_FLAG_WIRE_GSO_METADATA_UNAVAILABLE_V1,
+    );
     let decision_ready = program.jump_always_placeholder_v1();
     let allowed = program.instructions.len();
     program.patch_forward_jump_v1(ipv4, allowed)?;
     program.patch_forward_jump_v1(ipv6, allowed)?;
-    program.mov64_immediate_v1(BPF_REG_5_V1, EGRESS_EVENT_FLAG_ALLOW_V1);
+    program.mov64_immediate_v1(
+        BPF_REG_5_V1,
+        EGRESS_EVENT_FLAG_ALLOW_V1 | EGRESS_EVENT_FLAG_WIRE_GSO_METADATA_UNAVAILABLE_V1,
+    );
     let prefix_length = program.instructions.len();
     program.patch_forward_jump_v1(decision_ready, prefix_length)?;
     program.mov64_register_v1(BPF_REG_4_V1, BPF_REG_9_V1);
@@ -2322,6 +2326,17 @@ mod tests {
         ] {
             assert!(instructions.iter().any(|instruction| {
                 instruction.code == BPF_JMP_V1 | BPF_CALL_V1 && instruction.immediate == helper
+            }));
+        }
+        for inaccessible_offset in [
+            SKB_WIRE_LENGTH_OFFSET_V1,
+            SKB_GSO_SEGMENT_COUNT_OFFSET_V1,
+            SKB_GSO_SEGMENT_SIZE_OFFSET_V1,
+        ] {
+            assert!(!instructions.iter().any(|instruction| {
+                instruction.code == BPF_LDX_V1 | BPF_MEM_V1 | BPF_W_V1
+                    && instruction.source_v1() == BPF_REG_6_V1
+                    && instruction.offset == inaccessible_offset
             }));
         }
         assert_eq!(

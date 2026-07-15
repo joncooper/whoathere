@@ -17,8 +17,11 @@ const EGRESS_EVENT_KIND_PACKET_V1: u16 = 1;
 const EGRESS_EVENT_FLAG_PREFIX_TRUNCATED_V1: u32 = 1 << 0;
 const EGRESS_EVENT_FLAG_ALLOW_V1: u32 = 1 << 1;
 const EGRESS_EVENT_FLAG_BLOCK_V1: u32 = 1 << 2;
-const EGRESS_EVENT_ALLOWED_FLAGS_V1: u32 =
-    EGRESS_EVENT_FLAG_PREFIX_TRUNCATED_V1 | EGRESS_EVENT_FLAG_ALLOW_V1 | EGRESS_EVENT_FLAG_BLOCK_V1;
+const EGRESS_EVENT_FLAG_WIRE_GSO_METADATA_UNAVAILABLE_V1: u32 = 1 << 3;
+const EGRESS_EVENT_ALLOWED_FLAGS_V1: u32 = EGRESS_EVENT_FLAG_PREFIX_TRUNCATED_V1
+    | EGRESS_EVENT_FLAG_ALLOW_V1
+    | EGRESS_EVENT_FLAG_BLOCK_V1
+    | EGRESS_EVENT_FLAG_WIRE_GSO_METADATA_UNAVAILABLE_V1;
 const EGRESS_EVENT_PREFIX_OFFSET_V1: usize = 72;
 const EGRESS_EVENT_PREFIX_BYTES_V1: usize = 160;
 const RAW_ETHERTYPE_IPV4_LITTLE_ENDIAN_V1: u32 = 0x0000_0008;
@@ -120,6 +123,7 @@ impl fmt::Debug for LinuxVzPackageEgressEventV1 {
             .field("egress_interface_index", &self.egress_interface_index)
             .field("gso_segment_count", &self.gso_segment_count)
             .field("gso_segment_size", &self.gso_segment_size)
+            .field("wire_gso_metadata_available", &false)
             .field("packet_prefix_length", &self.packet_prefix.len())
             .field("packet_prefix", &"<redacted>")
             .field("prefix_truncated", &self.prefix_truncated)
@@ -178,6 +182,10 @@ impl LinuxVzPackageEgressEventV1 {
 
     pub(crate) const fn gso_segment_size_v1(&self) -> u32 {
         self.gso_segment_size
+    }
+
+    pub(crate) const fn wire_gso_metadata_available_v1(&self) -> bool {
+        false
     }
 
     pub(crate) fn packet_prefix_v1(&self) -> &[u8] {
@@ -315,6 +323,8 @@ pub(crate) fn decode_linux_vz_package_egress_event_v1(
         .map_err(|_| LinuxVzPackageEgressStreamErrorV1::InvalidPacket)?
         .min(EGRESS_EVENT_PREFIX_BYTES_V1);
     let prefix_truncated = flags & EGRESS_EVENT_FLAG_PREFIX_TRUNCATED_V1 != 0;
+    let wire_gso_metadata_unavailable =
+        flags & EGRESS_EVENT_FLAG_WIRE_GSO_METADATA_UNAVAILABLE_V1 != 0;
     if packet_length == 0
         || prefix_length != expected_prefix_length
         || prefix_truncated != (expected_prefix_length < packet_length as usize)
@@ -322,8 +332,10 @@ pub(crate) fn decode_linux_vz_package_egress_event_v1(
             ..EGRESS_EVENT_PREFIX_OFFSET_V1 + EGRESS_EVENT_PREFIX_BYTES_V1]
             .iter()
             .any(|byte| *byte != 0)
-        || wire_length != 0 && wire_length < packet_length
-        || (gso_segment_count == 0) != (gso_segment_size == 0)
+        || !wire_gso_metadata_unavailable
+        || wire_length != 0
+        || gso_segment_count != 0
+        || gso_segment_size != 0
     {
         return Err(LinuxVzPackageEgressStreamErrorV1::InvalidPacket);
     }
@@ -693,7 +705,10 @@ mod tests {
         bytes[0..4].copy_from_slice(EGRESS_EVENT_MAGIC_V1);
         bytes[4..6].copy_from_slice(&EGRESS_EVENT_VERSION_V1.to_le_bytes());
         bytes[6..8].copy_from_slice(&EGRESS_EVENT_KIND_PACKET_V1.to_le_bytes());
-        bytes[8..12].copy_from_slice(&EGRESS_EVENT_FLAG_ALLOW_V1.to_le_bytes());
+        bytes[8..12].copy_from_slice(
+            &(EGRESS_EVENT_FLAG_ALLOW_V1 | EGRESS_EVENT_FLAG_WIRE_GSO_METADATA_UNAVAILABLE_V1)
+                .to_le_bytes(),
+        );
         bytes[12..16].copy_from_slice(
             &u32::try_from(LINUX_VZ_PACKAGE_EGRESS_EVENT_BYTES_V1)
                 .unwrap()
@@ -711,7 +726,6 @@ mod tests {
             LinuxVzPackageEgressNetworkProtocolV1::Unsupported => (48_u32, 0_u32, 0xf0),
         };
         bytes[32..36].copy_from_slice(&packet_length.to_le_bytes());
-        bytes[36..40].copy_from_slice(&packet_length.to_le_bytes());
         bytes[40..44].copy_from_slice(&raw_protocol.to_le_bytes());
         bytes[48..52].copy_from_slice(&2_u32.to_le_bytes());
         bytes[60..64].copy_from_slice(&packet_length.to_le_bytes());
@@ -734,6 +748,7 @@ mod tests {
             assert_eq!(event.timestamp_nanoseconds_v1(), 99);
             assert_eq!(event.source_sequence_v1(), 7);
             assert_eq!(event.cpu_v1(), 3);
+            assert!(!event.wire_gso_metadata_available_v1());
             assert!(!event.prefix_truncated_v1());
             let debug = format!("{event:?}");
             assert!(debug.contains("<redacted>"));
@@ -749,17 +764,22 @@ mod tests {
     fn decodes_truncated_prefix_and_unsupported_block() {
         let mut bytes = event_bytes_v1(LinuxVzPackageEgressNetworkProtocolV1::Ipv4);
         bytes[8..12].copy_from_slice(
-            &(EGRESS_EVENT_FLAG_ALLOW_V1 | EGRESS_EVENT_FLAG_PREFIX_TRUNCATED_V1).to_le_bytes(),
+            &(EGRESS_EVENT_FLAG_ALLOW_V1
+                | EGRESS_EVENT_FLAG_PREFIX_TRUNCATED_V1
+                | EGRESS_EVENT_FLAG_WIRE_GSO_METADATA_UNAVAILABLE_V1)
+                .to_le_bytes(),
         );
         bytes[32..36].copy_from_slice(&200_u32.to_le_bytes());
-        bytes[36..40].copy_from_slice(&200_u32.to_le_bytes());
         bytes[60..64].copy_from_slice(&160_u32.to_le_bytes());
         let event = decode_linux_vz_package_egress_event_v1(&bytes, 41, 1).unwrap();
         assert_eq!(event.packet_prefix_v1().len(), 160);
         assert!(event.prefix_truncated_v1());
 
         let mut blocked = event_bytes_v1(LinuxVzPackageEgressNetworkProtocolV1::Unsupported);
-        blocked[8..12].copy_from_slice(&EGRESS_EVENT_FLAG_BLOCK_V1.to_le_bytes());
+        blocked[8..12].copy_from_slice(
+            &(EGRESS_EVENT_FLAG_BLOCK_V1 | EGRESS_EVENT_FLAG_WIRE_GSO_METADATA_UNAVAILABLE_V1)
+                .to_le_bytes(),
+        );
         let event = decode_linux_vz_package_egress_event_v1(&blocked, 41, 2).unwrap();
         assert_eq!(event.decision_v1(), LinuxVzPackageEgressDecisionV1::Block);
         assert_eq!(
@@ -787,8 +807,24 @@ mod tests {
             Err(LinuxVzPackageEgressStreamErrorV1::InvalidMetadata)
         );
 
+        let mut false_metadata_available = bytes.clone();
+        false_metadata_available[8..12].copy_from_slice(&EGRESS_EVENT_FLAG_ALLOW_V1.to_le_bytes());
+        assert_eq!(
+            decode_linux_vz_package_egress_event_v1(&false_metadata_available, 41, 1),
+            Err(LinuxVzPackageEgressStreamErrorV1::InvalidPacket)
+        );
+        let mut unavailable_but_populated = bytes.clone();
+        unavailable_but_populated[36..40].copy_from_slice(&48_u32.to_le_bytes());
+        assert_eq!(
+            decode_linux_vz_package_egress_event_v1(&unavailable_but_populated, 41, 1),
+            Err(LinuxVzPackageEgressStreamErrorV1::InvalidPacket)
+        );
+
         let mut false_block = bytes.clone();
-        false_block[8..12].copy_from_slice(&EGRESS_EVENT_FLAG_BLOCK_V1.to_le_bytes());
+        false_block[8..12].copy_from_slice(
+            &(EGRESS_EVENT_FLAG_BLOCK_V1 | EGRESS_EVENT_FLAG_WIRE_GSO_METADATA_UNAVAILABLE_V1)
+                .to_le_bytes(),
+        );
         assert_eq!(
             decode_linux_vz_package_egress_event_v1(&false_block, 41, 1),
             Err(LinuxVzPackageEgressStreamErrorV1::InvalidPacket)
@@ -800,7 +836,10 @@ mod tests {
             Err(LinuxVzPackageEgressStreamErrorV1::InvalidPacket)
         );
         false_allow[8..12].copy_from_slice(
-            &(EGRESS_EVENT_FLAG_ALLOW_V1 | EGRESS_EVENT_FLAG_BLOCK_V1).to_le_bytes(),
+            &(EGRESS_EVENT_FLAG_ALLOW_V1
+                | EGRESS_EVENT_FLAG_BLOCK_V1
+                | EGRESS_EVENT_FLAG_WIRE_GSO_METADATA_UNAVAILABLE_V1)
+                .to_le_bytes(),
         );
         assert_eq!(
             decode_linux_vz_package_egress_event_v1(&false_allow, 41, 1),
@@ -817,7 +856,6 @@ mod tests {
             b'T', b'H', b'E', b'R', b'E', b'_', b'R', b'A', b'W', b'_', b'V', b'1',
         ];
         bytes[32..36].copy_from_slice(&44_u32.to_le_bytes());
-        bytes[36..40].copy_from_slice(&44_u32.to_le_bytes());
         bytes[60..64].copy_from_slice(&44_u32.to_le_bytes());
         bytes[EGRESS_EVENT_PREFIX_OFFSET_V1..EGRESS_EVENT_PREFIX_OFFSET_V1 + packet.len()]
             .copy_from_slice(&packet);
