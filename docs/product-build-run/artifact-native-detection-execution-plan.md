@@ -4,23 +4,23 @@ Date: 2026-07-09
 
 Status: canonical execution plan for the next product milestone
 
-Current execution checkpoint (2026-07-14): one selected transmitted UDP guest/host correlation now
-passes physically on the cloud Mac. The protected guest source emits a strict canonical
-process-evidence-bound network payload for the exact `connect`/`sendto` slice, and the continuously
-draining bounded host collector independently retained exactly one checksum-valid inert
-Ethernet/IPv4/UDP frame. The host evidence binds that frame to the guest's challenge-bound
-destination token, source sequence, syscall result, and ephemeral source port. The accepted
-schema-v13 run had 18 contiguous process events, 10 correlated observations, two network events,
-one retained frame, zero drops or truncation, canonical process/file/network payloads, stable image
-bytes, and a stopped VM. It had no root disk, share, external route, package execution, malware
-execution, or sync-back. Two independently built final initramfses were byte-identical to the exact
-image that passed. Qualification also closed a missing `virtio_net` load, replaced the `eth0`
-assumption with bounded exact-MAC discovery, and made the guest challenge match the canonical
-identity already enforced by the independent Swift and Rust verifiers. The claim remains narrow:
-the guest payload still reports broad guest intent and host-frame correlation false, while separate
-host evidence reports selected correlation true and broad frame coverage false. DNS, HTTP(S),
-protected transport, composite authentication, runtime scenarios, benign scoring, and malicious
-regression remain open; no package or malware ran, and the July score remains 7/11. See the
+Current execution checkpoint (2026-07-14): the selected transmitted UDP case now has a physically
+proven guest denominator as well as an independently retained host frame. A cgroup-`SKB` egress BPF
+source emitted exactly one 44-byte IPv4/UDP observation, and the host collector retained exactly one
+checksum-valid Ethernet frame. Both sides independently produced the same normalized packet digest;
+process and egress BPF drops/discards, fanotify overflow, and host drops/truncations were all zero.
+The accepted schema-v15 run had 18 contiguous process events, 10 correlated observations, two
+network intents, one cgroup-egress packet, one host frame, canonical process/file/network payloads,
+stable image bytes, and a stopped VM. It had no root disk, share, external route, package execution,
+malware execution, or sync-back. Two independently built CPIO archives, gzip overlays, and final
+initramfses were byte-identical to the exact image that passed. The pinned kernel does not permit
+the cgroup-`SKB` program to read wire-length or GSO metadata, so schema v15 explicitly reports that
+metadata unavailable and requires its values to remain zero. The claim remains narrow: IPv6, TCP,
+GSO/segmentation, retransmission, DNS, HTTP(S), additional guest egress interfaces, protected
+transport, composite authentication, runtime package scenarios, benign scoring, and malicious
+regression remain open. No package or malware ran, and the July score remains 7/11. See the
+[package cgroup-egress checkpoint](artifact-native-linux-vz-package-cgroup-egress-checkpoint-2026-07-14.md)
+and preceding
 [canonical root network-evidence checkpoint](artifact-native-linux-vz-package-root-network-evidence-checkpoint-2026-07-14.md).
 
 The first package-specific authenticated root-evidence protocol now exists in Rust. Its
@@ -1828,15 +1828,18 @@ Work packages:
 
 Current AN-504 subgate (2026-07-14): the cgroup-filtered BPF/process stream physically captures and
 normalizes closed IPv4 `connect` and `sendto` intents with explicit loss accounting and encodes them
-in a separate canonical payload bound to canonical process evidence. The host raw-frame sink drains
-continuously with bounded retention and explicit overflow/truncation health. One controlled
-16-byte UDP transmission now passes the exact physical guest/host binding: the guest event, redacted
-destination token, source sequence/result, ephemeral source port, one checksum-valid retained
-frame, and stopped VM all agree with zero loss. The separate host evidence marks selected
-correlation complete while broad frame coverage remains false; the guest payload likewise keeps
-broad guest intent and host-frame correlation false because additional guest network interfaces
-remain unobserved and host evidence is composed later. Remaining AN-504 work is closing that
-syscall/hook gap and qualifying DNS intent. AN-505 protected HTTP(S) observation and AN-506
+in a separate canonical payload bound to canonical process evidence. A separate cgroup-`SKB` egress
+BPF producer now observes the selected transmitted packet itself before the continuously draining,
+bounded host raw-frame sink. One controlled 16-byte UDP transmission produced exactly one 44-byte
+guest egress observation and one checksum-valid retained host frame with the same independently
+computed normalized digest and zero guest or host loss. The pinned kernel forbids cgroup-`SKB`
+access to wire-length/GSO fields, so the strict schema reports those fields unavailable rather than
+fabricating them. Separate host evidence marks selected correlation complete while broad frame
+coverage remains false; the guest payload likewise keeps broad guest intent and host-frame
+correlation false because additional guest network interfaces and APIs remain unobserved and host
+evidence is composed later. Remaining AN-504 work includes DNS intent plus IPv6, TCP,
+GSO/segmentation, retransmission, and additional egress-hook qualification. AN-505 protected HTTP(S)
+observation and AN-506
 authenticated composite evidence also remain open. AN-506 now has a strict package-specific guest
 receipt protocol that binds exact authority, scenario, grant, runtime, sensor, action, terminal,
 process, file, and network claims under a short-lived Ed25519 signature. It deliberately reports
