@@ -90,11 +90,15 @@ gate remains open.
 
 ## Next gate
 
-Build and measure the dedicated guest service process that exclusively owns the one-use signing
-authority, and produce an execution-capable package runtime whose fixed runner can enact the already
-typed npm, wheel, and sdist process plans without accepting free-form commands. Rebuild and preflight
-that composition reproducibly. Only then run the inert npm, wheel, and nested-root sdist scenarios
-on the approved cloud Mac, requiring an authenticated incomplete receipt for every process action,
-the exact session-completion acknowledgement, independently verified host evidence, stopped VM,
-destroyed clone, no public route, no verdict upgrade, and no sync-back. Real-malware execution still
-requires the separate restricted-lab approval gate.
+The immediate follow-on connected the real collector and service loop behind one consuming,
+backend-derived entrypoint; see the
+[concrete root-service entrypoint checkpoint](artifact-native-linux-vz-package-concrete-root-service-entrypoint-checkpoint-2026-07-15.md).
+The remaining gate is to build and measure the root coordinator that separates the runner and
+service before the service reads the signing seed, then produce an execution-capable package
+runtime whose fixed runner can enact the already typed npm, wheel, and sdist process plans without
+accepting free-form commands. Rebuild and preflight that composition reproducibly. Only then run the
+inert npm, wheel, and nested-root sdist scenarios on the approved cloud Mac, requiring an
+authenticated incomplete receipt for every process action, the exact session-completion
+acknowledgement, independently verified host evidence, stopped VM, destroyed clone, no public route,
+no verdict upgrade, and no sync-back. Real-malware execution still requires the separate
+restricted-lab approval gate.

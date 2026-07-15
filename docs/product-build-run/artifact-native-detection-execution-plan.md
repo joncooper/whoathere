@@ -4,6 +4,17 @@ Date: 2026-07-09
 
 Status: canonical execution plan for the next product milestone
 
+Concrete root-service entrypoint checkpoint (2026-07-15): the previously internal service loop and
+real process/file/network collector now have one production-shaped entrypoint. It derives sensor
+identity only from the qualified telemetry backend, fixes bounded collector capacities internally,
+and consumes the one-use signing authority so callers cannot substitute collectors, rebind measured
+sensor components, or retain the authority after service startup. This closes composition at the
+API boundary, not physical signer custody: a measured coordinator must still separate the runner
+and service before reading the signing seed, keep the seed descriptor out of the runner branch, and
+bind those exact bytes into a new execution-runtime qualification. No VM or package ran and the July
+score remains 7/11. See the
+[concrete root-service entrypoint checkpoint](artifact-native-linux-vz-package-concrete-root-service-entrypoint-checkpoint-2026-07-15.md).
+
 Multi-action sensor-session checkpoint (2026-07-15): physical inert-package preparation exposed a
 real sequencing prerequisite: npm has one process action, while wheel and sdist plans require
 multiple actions, but the protected root service previously terminated after the first finish. One
@@ -1924,6 +1935,7 @@ coverage or authority. However, the measured physical service binary does not ow
 current package-runtime candidate is deliberately nonexecuting, and no physical package run has
 crossed this boundary. An independent Rust verifier and strict host-frame/lifecycle composition also
 exist at the protocol level. See the
+[concrete root-service entrypoint checkpoint](artifact-native-linux-vz-package-concrete-root-service-entrypoint-checkpoint-2026-07-15.md),
 [multi-action sensor-session checkpoint](artifact-native-linux-vz-package-multi-action-sensor-session-checkpoint-2026-07-15.md)
 and preceding
 [authenticated root-transport checkpoint](artifact-native-linux-vz-package-authenticated-root-transport-checkpoint-2026-07-15.md).
@@ -2290,6 +2302,7 @@ Repository evidence:
 - [Linux VZ package root-evidence receipt checkpoint](artifact-native-linux-vz-package-root-evidence-receipt-checkpoint-2026-07-14.md)
 - [Linux VZ package authenticated root-transport checkpoint](artifact-native-linux-vz-package-authenticated-root-transport-checkpoint-2026-07-15.md)
 - [Linux VZ package multi-action sensor-session checkpoint](artifact-native-linux-vz-package-multi-action-sensor-session-checkpoint-2026-07-15.md)
+- [Linux VZ package concrete root-service entrypoint checkpoint](artifact-native-linux-vz-package-concrete-root-service-entrypoint-checkpoint-2026-07-15.md)
 - [Linux VZ runtime-qualification guest-candidate checkpoint](artifact-native-linux-vz-runtime-qualification-guest-candidate-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification host-launcher checkpoint](artifact-native-linux-vz-runtime-qualification-host-launcher-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification physical checkpoint](artifact-native-linux-vz-runtime-qualification-physical-checkpoint-2026-07-13.md)

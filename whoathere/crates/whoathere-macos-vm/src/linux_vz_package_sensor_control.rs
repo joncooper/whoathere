@@ -100,6 +100,10 @@ const CGROUP2_SUPER_MAGIC_V1: i64 = 0x6367_7270;
 const PACKAGE_UID_V1: u32 = 65_534;
 const PACKAGE_GID_V1: u32 = 65_534;
 const MAX_SENSOR_SESSION_ACTIONS_V1: usize = 64;
+#[cfg(target_os = "linux")]
+const ROOT_SERVICE_RING_BUFFER_CAPACITY_V1: usize = 1024 * 1024;
+#[cfg(target_os = "linux")]
+const ROOT_SERVICE_MAXIMUM_SOURCE_EVENTS_V1: usize = 65_536;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
@@ -295,23 +299,6 @@ impl LinuxVzPackageRootSensorIdentityV1 {
 
     pub fn sensor_configuration_sha256(&self) -> &Sha256Digest {
         &self.sensor_configuration_sha256
-    }
-
-    #[cfg(target_os = "linux")]
-    fn from_measured_guest_components_v1(
-        qualified_telemetry_backend_sha256: Sha256Digest,
-        guest_evidence_signer_sha256: Sha256Digest,
-        protected_sensor_bundle_sha256: Sha256Digest,
-        sensor_configuration_sha256: Sha256Digest,
-    ) -> Result<Self, LinuxVzPackageSensorControlErrorV1> {
-        let value = Self {
-            qualified_telemetry_backend_sha256,
-            guest_evidence_signer_sha256,
-            protected_sensor_bundle_sha256,
-            sensor_configuration_sha256,
-        };
-        value.validate_v1()?;
-        Ok(value)
     }
 }
 
@@ -1509,28 +1496,43 @@ impl Drop for RootSensorServiceSessionV1<'_, '_> {
     }
 }
 
-/// Drives one protected root-sensor control session.
+/// Runs the concrete protected root-sensor service for one package execution attempt.
 ///
-/// This entry point is intentionally crate-private while the production streaming collector is
-/// unfinished. Every exit before a successful finish or abort invokes collector teardown and
-/// releases the received cgroup descriptor.
+/// The caller supplies no collector implementation or capacity knobs. Sensor identity comes only
+/// from the already qualified backend, and this function consumes the one-use signing authority so
+/// the caller cannot retain it after service startup. A production coordinator must construct the
+/// authority in the service branch only after the root-runner branch has been isolated; this API
+/// does not by itself prove that post-fork key-custody condition.
 #[cfg(target_os = "linux")]
-#[allow(dead_code)]
+pub fn run_linux_vz_package_root_sensor_service_v1<'execution>(
+    control_fd: OwnedFd,
+    mut signing_authority: LinuxVzPackageRootEvidenceSigningAuthorityV1<'execution>,
+    backend: &QualifiedMacosLinuxVzTelemetryBackendV1,
+) -> Result<(), LinuxVzPackageSensorControlErrorV1> {
+    let identity = LinuxVzPackageRootSensorIdentityV1::from_qualified_backend_v1(backend)?;
+    let mut collector = LinuxVzPackageRootProcessServiceCollectorV1::new_v1(
+        ROOT_SERVICE_RING_BUFFER_CAPACITY_V1,
+        ROOT_SERVICE_MAXIMUM_SOURCE_EVENTS_V1,
+    );
+    serve_linux_vz_package_root_sensor_control_session_v1(
+        control_fd,
+        &mut signing_authority,
+        identity,
+        &mut collector,
+    )
+}
+
+/// Drives one protected root-sensor control session with the internal concrete collector.
+///
+/// Every exit before a successful completion or abort invokes collector teardown and releases the
+/// received cgroup descriptor.
+#[cfg(target_os = "linux")]
 fn serve_linux_vz_package_root_sensor_control_session_v1<'execution>(
     control_fd: OwnedFd,
     signing_authority: &mut LinuxVzPackageRootEvidenceSigningAuthorityV1<'execution>,
-    qualified_telemetry_backend_sha256: Sha256Digest,
-    guest_evidence_signer_sha256: Sha256Digest,
-    protected_sensor_bundle_sha256: Sha256Digest,
-    sensor_configuration_sha256: Sha256Digest,
+    identity: LinuxVzPackageRootSensorIdentityV1,
     collector: &mut dyn LinuxVzPackageRootSensorServiceCollectorV1,
 ) -> Result<(), LinuxVzPackageSensorControlErrorV1> {
-    let identity = LinuxVzPackageRootSensorIdentityV1::from_measured_guest_components_v1(
-        qualified_telemetry_backend_sha256,
-        guest_evidence_signer_sha256,
-        protected_sensor_bundle_sha256,
-        sensor_configuration_sha256,
-    )?;
     let request = signing_authority.request_v1();
     if request.qualified_telemetry_backend_sha256() != identity.qualified_telemetry_backend_sha256()
     {
