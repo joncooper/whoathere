@@ -43,7 +43,20 @@ struct ArgumentsV1 {
     host_public_key: PathBuf,
     grant_public_key: PathBuf,
     grant_signing_seed: PathBuf,
+    clone_binding: PathBuf,
     output_directory: PathBuf,
+}
+
+#[derive(Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeCloneBindingWireV1 {
+    schema_version: String,
+    base_rootfs_sha256: Sha256Digest,
+    clone_file_device: String,
+    clone_file_inode: String,
+    clone_implementation_sha256: Sha256Digest,
+    initial_rootfs_sha256: Sha256Digest,
+    run_id: String,
 }
 
 #[derive(Serialize)]
@@ -61,6 +74,7 @@ struct BundleManifestV1<'a> {
     guest_evidence_public_key_sha256: &'a Sha256Digest,
     host_evidence_public_key_sha256: &'a Sha256Digest,
     execution_grant_issuer_public_key_sha256: &'a Sha256Digest,
+    clone_binding_sha256: &'a Sha256Digest,
     issued_at_unix_seconds: String,
     expires_at_unix_seconds: String,
     environment: NpmEnvironmentProfileV1,
@@ -116,6 +130,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         MacosLinuxVzCandidatePackageRuntimeV1::from_verified_execution_runtime_qualification_v1(
             &qualification,
         )?;
+    let clone_binding_bytes = read_regular_bounded_v1(&arguments.clone_binding, 64 * 1024)?;
+    let clone_binding: RuntimeCloneBindingWireV1 = serde_json::from_slice(&clone_binding_bytes)?;
+    let canonical_clone_binding = serde_json_canonicalizer::to_vec(&clone_binding)?;
+    if canonical_clone_binding != clone_binding_bytes
+        || clone_binding.schema_version != "whoathere.linux_vz_package_runtime_clone_binding.v1"
+        || clone_binding.base_rootfs_sha256 != *qualification.execution_runtime_rootfs_sha256()
+        || clone_binding.initial_rootfs_sha256 != *qualification.execution_runtime_rootfs_sha256()
+        || !canonical_nonzero_decimal_v1(&clone_binding.clone_file_device)
+        || !canonical_nonzero_decimal_v1(&clone_binding.clone_file_inode)
+        || !valid_run_id_v1(&clone_binding.run_id)
+    {
+        return Err(io::Error::other("runtime clone binding invalid").into());
+    }
+    let clone_binding_sha256 = Sha256Digest::from_bytes(&clone_binding_bytes);
 
     let artifact_bytes = inert_npm_tgz_v1()?;
     let envelope = ArtifactEnvelope::from_original_bytes(
@@ -195,7 +223,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let template_bytes = template.canonical_json_v1()?;
 
     let request_challenge = random_nonzero_v1()?;
-    let clone_binding = Sha256Digest::from_bytes(&random_nonzero_v1()?);
     let authority_request = build_macos_linux_vz_package_authority_request_v1(
         &qualified_backend,
         MacosLinuxVzPackageArtifactKindV1::NpmTarball,
@@ -204,7 +231,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         &template_bytes,
         &candidate_runtime,
         request_challenge,
-        clone_binding,
+        clone_binding_sha256.clone(),
     )?;
     let issued_at = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
     let grant_challenge = random_nonzero_v1()?;
@@ -262,6 +289,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     write_new_private_v1(
         &arguments
             .output_directory
+            .join("runtime-clone-binding.json"),
+        &clone_binding_bytes,
+    )?;
+    write_new_private_v1(
+        &arguments
+            .output_directory
             .join("guest-ed25519-public-key.bin"),
         &guest_public_key,
     )?;
@@ -291,6 +324,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         host_evidence_public_key_sha256: qualification.host_evidence_public_key_sha256(),
         execution_grant_issuer_public_key_sha256: qualification
             .execution_grant_issuer_public_key_sha256(),
+        clone_binding_sha256: &clone_binding_sha256,
         issued_at_unix_seconds: issued_at.to_string(),
         expires_at_unix_seconds: expires_at.to_string(),
         environment: NpmEnvironmentProfileV1::CiTrue,
@@ -337,13 +371,14 @@ fn parse_arguments_v1() -> Result<ArgumentsV1, io::Error> {
                 | "--host-public-key"
                 | "--grant-public-key"
                 | "--grant-signing-seed"
+                | "--clone-binding"
                 | "--output-directory"
         ) || parsed.insert(name, value).is_some()
         {
             return Err(io::Error::other("argument invalid"));
         }
     }
-    if parsed.len() != 8 || parsed.values().any(|path| !path.is_absolute()) {
+    if parsed.len() != 9 || parsed.values().any(|path| !path.is_absolute()) {
         return Err(io::Error::other("absolute arguments required"));
     }
     let mut take = |name: &str| {
@@ -359,6 +394,7 @@ fn parse_arguments_v1() -> Result<ArgumentsV1, io::Error> {
         host_public_key: take("--host-public-key")?,
         grant_public_key: take("--grant-public-key")?,
         grant_signing_seed: take("--grant-signing-seed")?,
+        clone_binding: take("--clone-binding")?,
         output_directory: take("--output-directory")?,
     })
 }
@@ -421,6 +457,22 @@ fn random_nonzero_v1() -> Result<[u8; 32], io::Error> {
         return Err(io::Error::other("entropy invalid"));
     }
     Ok(value)
+}
+
+fn canonical_nonzero_decimal_v1(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 20
+        && !value.starts_with('0')
+        && value.bytes().all(|byte| byte.is_ascii_digit())
+        && value.parse::<u64>().is_ok_and(|parsed| parsed > 0)
+}
+
+fn valid_run_id_v1(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
 
 fn inert_npm_tgz_v1() -> Result<Vec<u8>, io::Error> {

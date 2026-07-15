@@ -1,0 +1,237 @@
+#!/usr/bin/sh
+set -u
+
+PATH=/usr/bin:/usr/sbin:/bin:/sbin
+export PATH
+busybox=/usr/bin/busybox
+runtime_sha256="__WHOATHERE_RUNTIME_SHA256__"
+rootfs_sha256="__WHOATHERE_ROOTFS_SHA256__"
+runtime_manifest_sha256="__WHOATHERE_RUNTIME_MANIFEST_SHA256__"
+node_sha256="__WHOATHERE_NODE_SHA256__"
+npm_cli_sha256="__WHOATHERE_NPM_CLI_SHA256__"
+python_sha256="__WHOATHERE_PYTHON_SHA256__"
+pip_entrypoint_sha256="__WHOATHERE_PIP_ENTRYPOINT_SHA256__"
+bundle_manifest_sha256="__WHOATHERE_BUNDLE_MANIFEST_SHA256__"
+backend_identity_sha256="__WHOATHERE_BACKEND_IDENTITY_SHA256__"
+qualified_backend_sha256="__WHOATHERE_QUALIFIED_BACKEND_SHA256__"
+authority_request_sha256="__WHOATHERE_AUTHORITY_REQUEST_SHA256__"
+execution_grant_sha256="__WHOATHERE_EXECUTION_GRANT_SHA256__"
+artifact_sha256="__WHOATHERE_ARTIFACT_SHA256__"
+scenario_plan_sha256="__WHOATHERE_SCENARIO_PLAN_SHA256__"
+scenario_template_sha256="__WHOATHERE_SCENARIO_TEMPLATE_SHA256__"
+guest_public_key_sha256="__WHOATHERE_GUEST_PUBLIC_KEY_SHA256__"
+host_public_key_sha256="__WHOATHERE_HOST_PUBLIC_KEY_SHA256__"
+grant_public_key_sha256="__WHOATHERE_GRANT_PUBLIC_KEY_SHA256__"
+qualification_record_sha256="__WHOATHERE_QUALIFICATION_RECORD_SHA256__"
+clone_binding_sha256="__WHOATHERE_CLONE_BINDING_SHA256__"
+
+power_off() {
+    "$busybox" poweroff -f
+    "$busybox" sleep 5
+    echo "WHOATHERE_PACKAGE_EXECUTION_FAILED reason=poweroff_failed"
+    exit 1
+}
+
+cleanup_mounts() {
+    "$busybox" umount /runtime/run 2>/dev/null || true
+    "$busybox" umount /runtime/sys/fs/bpf 2>/dev/null || true
+    "$busybox" umount /runtime/sys/kernel/tracing 2>/dev/null || true
+    "$busybox" umount /runtime/sys/fs/cgroup 2>/dev/null || true
+    "$busybox" umount /runtime/dev 2>/dev/null || true
+    "$busybox" umount /runtime/sys 2>/dev/null || true
+    "$busybox" umount /runtime/proc 2>/dev/null || true
+    "$busybox" umount /runtime 2>/dev/null || true
+}
+
+fail() {
+    reason=$1
+    cleanup_mounts
+    echo "WHOATHERE_PACKAGE_EXECUTION_FAILED reason=$reason"
+    power_off
+}
+
+sha256_path() {
+    "$busybox" sha256sum "$1" | "$busybox" awk '{print "sha256:" $1}'
+}
+
+require_input() {
+    path=$1
+    expected=$2
+    [ "$("$busybox" stat -c '%u:%g:%a:%h' "$path")" = "0:0:444:1" ] \
+        || fail embedded_input_metadata_invalid
+    [ "$(sha256_path "$path")" = "$expected" ] \
+        || fail embedded_input_digest_mismatch
+}
+
+emit_base64_file() {
+    marker=$1
+    path=$2
+    [ -f "$path" ] || return 0
+    byte_length=$("$busybox" stat -c '%s' "$path")
+    [ "$byte_length" -gt 0 ] || return 0
+    digest=$(sha256_path "$path")
+    echo "${marker}_BEGIN"
+    "$busybox" base64 "$path" || fail evidence_base64_failed
+    echo "${marker}_END sha256=$digest byte_length=$byte_length"
+}
+
+"$busybox" chmod 0755 /
+"$busybox" mkdir -p /proc /sys /dev /run /runtime
+"$busybox" mount -t proc proc /proc || fail proc_mount_failed
+"$busybox" mount -t sysfs sysfs /sys || fail sys_mount_failed
+"$busybox" mount -t devtmpfs -o mode=0755,nosuid devtmpfs /dev || fail dev_mount_failed
+"$busybox" mount -t tmpfs -o mode=0700,size=402653184,nodev,nosuid,noexec tmpfs /run \
+    || fail run_mount_failed
+"$busybox" chmod 0700 /runtime
+
+echo "WHOATHERE_PACKAGE_EXECUTION_BEGIN"
+echo "WHOATHERE_CAPABILITY kernel_release=$("$busybox" uname -r)"
+echo "WHOATHERE_CAPABILITY architecture=$("$busybox" uname -m)"
+[ "$("$busybox" uname -r)" = "6.18.35-0-virt" ] || fail kernel_release_invalid
+[ "$("$busybox" uname -m)" = "aarch64" ] || fail architecture_invalid
+
+if ! "$busybox" insmod /whoathere/modules/virtio_blk.ko \
+    || ! "$busybox" insmod /whoathere/modules/crc16.ko \
+    || ! "$busybox" insmod /whoathere/modules/mbcache.ko \
+    || ! "$busybox" insmod /whoathere/modules/jbd2.ko \
+    || ! "$busybox" insmod /whoathere/modules/ext4.ko
+then
+    fail runtime_modules_failed
+fi
+
+attempt=0
+while [ ! -b /dev/vda ] && [ "$attempt" -lt 100 ]; do
+    "$busybox" sleep 0.1
+    attempt=$((attempt + 1))
+done
+[ -b /dev/vda ] || fail rootfs_block_device_missing
+
+[ "$("$busybox" stat -c '%u:%g:%a:%h' /whoathere/guest-ed25519.seed)" = \
+  "0:0:400:1" ] || fail signing_seed_metadata_invalid
+[ "$("$busybox" stat -c '%s' /whoathere/guest-ed25519.seed)" = "32" ] \
+    || fail signing_seed_length_invalid
+require_input /whoathere/execution-runtime-manifest.json "$runtime_manifest_sha256"
+require_input /whoathere/inputs/bundle-manifest.json "$bundle_manifest_sha256"
+require_input /whoathere/inputs/backend-identity.json "$backend_identity_sha256"
+require_input /whoathere/inputs/qualified-backend.json "$qualified_backend_sha256"
+require_input /whoathere/inputs/package-authority-request.json "$authority_request_sha256"
+require_input /whoathere/inputs/execution-grant.json "$execution_grant_sha256"
+require_input /whoathere/inputs/artifact.tgz "$artifact_sha256"
+require_input /whoathere/inputs/scenario-plan.json "$scenario_plan_sha256"
+require_input /whoathere/inputs/scenario-template.json "$scenario_template_sha256"
+require_input /whoathere/inputs/guest-ed25519-public-key.bin "$guest_public_key_sha256"
+require_input /whoathere/inputs/host-ed25519-public-key.bin "$host_public_key_sha256"
+require_input /whoathere/inputs/grant-issuer-ed25519-public-key.bin "$grant_public_key_sha256"
+require_input /whoathere/inputs/execution-runtime-qualification-record.json \
+    "$qualification_record_sha256"
+require_input /whoathere/inputs/runtime-clone-binding.json "$clone_binding_sha256"
+[ "$(sha256_path /dev/vda)" = "$rootfs_sha256" ] || fail rootfs_digest_mismatch
+echo "WHOATHERE_CAPABILITY signed_execution_inputs=verified_exact"
+
+"$busybox" mount -t ext2 -o ro,nodev,nosuid /dev/vda /runtime \
+    || fail rootfs_mount_failed
+if ! "$busybox" awk '
+    $2 == "/runtime" && $3 == "ext2" {
+        count = split($4, values, ","); ro = 0; rw = 0; nodev = 0; nosuid = 0;
+        for (i = 1; i <= count; i++) {
+            if (values[i] == "ro") ro = 1;
+            if (values[i] == "rw") rw = 1;
+            if (values[i] == "nodev") nodev = 1;
+            if (values[i] == "nosuid") nosuid = 1;
+        }
+        if (ro && !rw && nodev && nosuid) valid = 1;
+    }
+    END { exit valid ? 0 : 1 }
+' /proc/mounts
+then
+    fail rootfs_mount_policy_invalid
+fi
+if "$busybox" touch /runtime/whoathere/.execution-write-test 2>/dev/null; then
+    fail rootfs_write_succeeded
+fi
+[ "$("$busybox" stat -c '%u:%g:%a' /runtime/whoathere/package-root-runtime)" = \
+  "0:0:500" ] || fail runtime_metadata_invalid
+[ "$(sha256_path /runtime/whoathere/package-root-runtime)" = "$runtime_sha256" ] \
+    || fail runtime_digest_mismatch
+[ "$(sha256_path /runtime/usr/bin/node)" = "$node_sha256" ] \
+    || fail node_digest_mismatch
+[ "$(sha256_path /runtime/usr/lib/node_modules/npm/bin/npm-cli.js)" = "$npm_cli_sha256" ] \
+    || fail npm_digest_mismatch
+[ "$(sha256_path /runtime/usr/bin/python3.14)" = "$python_sha256" ] \
+    || fail python_digest_mismatch
+[ "$(sha256_path /runtime/usr/bin/pip3)" = "$pip_entrypoint_sha256" ] \
+    || fail pip_digest_mismatch
+
+"$busybox" mount -t proc -o ro,nodev,nosuid,noexec proc /runtime/proc \
+    || fail runtime_proc_mount_failed
+"$busybox" mount -t sysfs -o ro,nodev,nosuid,noexec sysfs /runtime/sys \
+    || fail runtime_sys_mount_failed
+"$busybox" mount -t devtmpfs -o mode=0755,nosuid devtmpfs /runtime/dev \
+    || fail runtime_dev_mount_failed
+"$busybox" mount -t cgroup2 -o nodev,nosuid,noexec cgroup2 /runtime/sys/fs/cgroup \
+    || fail runtime_cgroup_mount_failed
+"$busybox" mount -t tracefs -o ro,nodev,nosuid,noexec tracefs /runtime/sys/kernel/tracing \
+    || fail runtime_tracefs_mount_failed
+"$busybox" mount -t bpf -o nodev,nosuid,noexec bpf /runtime/sys/fs/bpf \
+    || fail runtime_bpf_mount_failed
+"$busybox" mount -t tmpfs -o mode=0755,size=16777216,nodev,nosuid tmpfs /runtime/run \
+    || fail runtime_run_mount_failed
+
+controllers=$("$busybox" cat /runtime/sys/fs/cgroup/cgroup.controllers)
+for controller in cpu memory pids; do
+    case " $controllers " in
+        *" $controller "*) ;;
+        *) fail runtime_cgroup_controller_missing ;;
+    esac
+done
+printf '%s\n' '+cpu +memory +pids' > /runtime/sys/fs/cgroup/cgroup.subtree_control \
+    || fail runtime_cgroup_controller_enable_failed
+[ -r /runtime/sys/kernel/btf/vmlinux ] || fail runtime_btf_missing
+if ! "$busybox" awk 'NR > 1 && $1 != "lo" { invalid = 1 } END { exit invalid ? 1 : 0 }' \
+    /runtime/proc/net/route
+then
+    fail public_ipv4_route_present
+fi
+if ! "$busybox" awk 'NF > 0 && $NF != "lo" { invalid = 1 } END { exit invalid ? 1 : 0 }' \
+    /runtime/proc/net/ipv6_route
+then
+    fail public_ipv6_route_present
+fi
+[ ! -s /runtime/etc/resolv.conf ] || fail resolver_configuration_present
+echo "WHOATHERE_CAPABILITY rootfs=verified_exact_read_only"
+echo "WHOATHERE_CAPABILITY cgroup_v2=mounted"
+echo "WHOATHERE_CAPABILITY tracefs=mounted"
+echo "WHOATHERE_CAPABILITY bpf_fs=mounted"
+echo "WHOATHERE_CAPABILITY external_route_configured=false"
+
+if ! /whoathere/execution-descriptor-launcher; then
+    emit_base64_file WHOATHERE_PACKAGE_EXECUTION_PARTIAL_RESULT_BASE64 \
+        /run/whoathere-package-execution-result.bin
+    emit_base64_file WHOATHERE_PACKAGE_EXECUTION_CHILD_LOG_BASE64 \
+        /run/whoathere-package-execution-child.log
+    fail package_runtime_failed
+fi
+[ ! -e /whoathere/guest-ed25519.seed ] || fail signing_seed_path_retained
+emit_base64_file WHOATHERE_PACKAGE_EXECUTION_RESULT_BASE64 \
+    /run/whoathere-package-execution-result.bin
+emit_base64_file WHOATHERE_PACKAGE_EXECUTION_CHILD_LOG_BASE64 \
+    /run/whoathere-package-execution-child.log
+"$busybox" rm -f /run/whoathere-package-execution-result.bin \
+    /run/whoathere-package-execution-child.log
+
+"$busybox" umount /runtime/run || fail runtime_run_unmount_failed
+"$busybox" umount /runtime/sys/fs/bpf || fail runtime_bpf_unmount_failed
+"$busybox" umount /runtime/sys/kernel/tracing || fail runtime_tracefs_unmount_failed
+"$busybox" umount /runtime/sys/fs/cgroup || fail runtime_cgroup_unmount_failed
+"$busybox" umount /runtime/dev || fail runtime_dev_unmount_failed
+"$busybox" umount /runtime/sys || fail runtime_sys_unmount_failed
+"$busybox" umount /runtime/proc || fail runtime_proc_unmount_failed
+"$busybox" umount /runtime || fail rootfs_unmount_failed
+[ "$(sha256_path /dev/vda)" = "$rootfs_sha256" ] || fail rootfs_postrun_digest_mismatch
+
+echo "WHOATHERE_PACKAGE_EXECUTION_OK"
+echo "WHOATHERE_CAPABILITY package_execution=true"
+echo "WHOATHERE_CAPABILITY malware_execution=false"
+echo "WHOATHERE_CAPABILITY external_route_configured=false"
+echo "WHOATHERE_CAPABILITY sync_back=false"
+power_off
