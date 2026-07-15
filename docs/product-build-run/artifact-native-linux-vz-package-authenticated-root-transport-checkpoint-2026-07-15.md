@@ -101,8 +101,11 @@ gate remains open.
 
 ## Next gate
 
-Wire the measured guest service process and runtime image to construct and exclusively own the
-one-use signing authority, then perform one inert npm/wheel/sdist qualification on the approved
-cloud Mac. The Mac host must independently verify the guest receipt, attach bounded host-frame and
-lifecycle evidence, preserve incomplete coverage, destroy the clone, and keep verdict and sync-back
-closed. Real-malware execution still requires the separate restricted-lab approval gate.
+The immediate follow-on closed the previously single-action protected service lifecycle; see the
+[multi-action sensor-session checkpoint](artifact-native-linux-vz-package-multi-action-sensor-session-checkpoint-2026-07-15.md).
+The remaining gate is to wire the measured guest service process and an execution-capable runtime
+image to construct and exclusively own the one-use signing authority, then perform inert
+npm/wheel/sdist qualification on the approved cloud Mac. The Mac host must independently verify
+every guest receipt, attach bounded host-frame and lifecycle evidence, preserve incomplete coverage,
+destroy the clone, and keep verdict and sync-back closed. Real-malware execution still requires the
+separate restricted-lab approval gate.

@@ -898,6 +898,10 @@ pub trait LinuxVzPackageProtectedProcessObserverV1:
         completion: &LinuxVzPackageProcessCompletionV1,
     ) -> Result<LinuxVzPackageProtectedSensorOutputV1, LinuxVzPackageProcessSupervisorErrorV1>;
 
+    /// Closes one multi-action sensor session only after every completed process action has
+    /// produced authenticated evidence. This is distinct from per-action `finish_v1`.
+    fn complete_sequence_v1(&mut self) -> Result<(), LinuxVzPackageProcessSupervisorErrorV1>;
+
     fn abort_v1(&mut self) -> Result<(), LinuxVzPackageProcessSupervisorErrorV1>;
 }
 

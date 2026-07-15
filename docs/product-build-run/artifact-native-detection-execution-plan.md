@@ -4,6 +4,19 @@ Date: 2026-07-09
 
 Status: canonical execution plan for the next product milestone
 
+Multi-action sensor-session checkpoint (2026-07-15): physical inert-package preparation exposed a
+real sequencing prerequisite: npm has one process action, while wheel and sdist plans require
+multiple actions, but the protected root service previously terminated after the first finish. One
+sensor session can now cycle through a bounded, strictly increasing list of process actions locked
+to one process-plan digest. Every action still requires its own exact cgroup, terminal, canonical
+root evidence, authenticated incomplete receipt, and cleanup. A distinct completion handshake binds
+the internally retained ordered action list and protected teardown while structurally denying clean
+coverage, verdict authority, public routing, and sync-back. The sequencer withholds its transcript
+until cleanup and that handshake succeed. This is a compiled and tested code/protocol boundary, not
+measured service custody, an execution-capable runtime, or a package run; no VM or package ran and
+the July score remains 7/11. See the
+[multi-action sensor-session checkpoint](artifact-native-linux-vz-package-multi-action-sensor-session-checkpoint-2026-07-15.md).
+
 Authenticated root-transport checkpoint (2026-07-15): the concrete protected collector now returns
 its canonical process, file, and network evidence instead of discarding an honestly incomplete
 result. The root service owns the previously constructed one-use signing authority, signs exact
@@ -1904,9 +1917,15 @@ and the final control-plane envelope remain. The one-use grant now shares its
 execution-request burn with later evidence composition, and a grant-key-bound authority burns each
 action before signing exact claims. The crate-private root service now accepts that authority as its
 only request/grant source, emits a distinct authenticated-incomplete result, and the observer
-verifies it before process evidence acceptance; however, the measured physical service binary does
-not own the seed yet and no physical package run has crossed this boundary. An independent Rust
-verifier and strict host-frame/lifecycle composition also exist at the protocol level. See the
+verifies it before process evidence acceptance. That service and observer can now retain one
+protected session across the ordered process actions required by wheel and sdist plans, and a
+distinct completion handshake binds the exact authenticated action list without upgrading evidence
+coverage or authority. However, the measured physical service binary does not own the seed yet, the
+current package-runtime candidate is deliberately nonexecuting, and no physical package run has
+crossed this boundary. An independent Rust verifier and strict host-frame/lifecycle composition also
+exist at the protocol level. See the
+[multi-action sensor-session checkpoint](artifact-native-linux-vz-package-multi-action-sensor-session-checkpoint-2026-07-15.md)
+and preceding
 [authenticated root-transport checkpoint](artifact-native-linux-vz-package-authenticated-root-transport-checkpoint-2026-07-15.md).
 These partial results do not satisfy the Phase 5 exit gate.
 
@@ -2270,6 +2289,7 @@ Repository evidence:
 - [Linux VZ package canonical root network-evidence checkpoint](artifact-native-linux-vz-package-root-network-evidence-checkpoint-2026-07-14.md)
 - [Linux VZ package root-evidence receipt checkpoint](artifact-native-linux-vz-package-root-evidence-receipt-checkpoint-2026-07-14.md)
 - [Linux VZ package authenticated root-transport checkpoint](artifact-native-linux-vz-package-authenticated-root-transport-checkpoint-2026-07-15.md)
+- [Linux VZ package multi-action sensor-session checkpoint](artifact-native-linux-vz-package-multi-action-sensor-session-checkpoint-2026-07-15.md)
 - [Linux VZ runtime-qualification guest-candidate checkpoint](artifact-native-linux-vz-runtime-qualification-guest-candidate-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification host-launcher checkpoint](artifact-native-linux-vz-runtime-qualification-host-launcher-checkpoint-2026-07-13.md)
 - [Linux VZ runtime-qualification physical checkpoint](artifact-native-linux-vz-runtime-qualification-physical-checkpoint-2026-07-13.md)

@@ -710,6 +710,9 @@ pub fn execute_linux_vz_package_sequence_v1(
     workspace
         .cleanup()
         .map_err(|_| LinuxVzPackageExecutionSequencerErrorV1::CleanupFailed)?;
+    observer
+        .complete_sequence_v1()
+        .map_err(|_| LinuxVzPackageExecutionSequencerErrorV1::ProcessSupervisionFailed)?;
 
     Ok(LinuxVzPackageExecutionSequenceTranscriptV1 {
         transcript_sha256: Sha256Digest::from_bytes(&canonical_json),
