@@ -100,11 +100,10 @@ private func linuxVzPackageExecutionSerialLinesV1(_ data: Data) throws -> [Strin
     guard let text = String(data: data, encoding: .utf8) else {
         throw LinuxVzPackageExecutionSerialEvidenceError.malformedSection
     }
-    return text.split(separator: "\n", omittingEmptySubsequences: false).map { slice in
-        var line = String(slice)
-        if line.last == "\r" { line.removeLast() }
-        return line
-    }
+    let normalized = text
+        .replacingOccurrences(of: "\r\n", with: "\n")
+        .replacingOccurrences(of: "\r", with: "\n")
+    return normalized.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
 }
 
 private func linuxVzPackageExecutionBase64SectionV1(
@@ -137,10 +136,10 @@ private func linuxVzPackageExecutionBase64SectionV1(
           linuxVzPackageExecutionDigestV1(digest) else {
         throw LinuxVzPackageExecutionSerialEvidenceError.malformedSection
     }
-    let encodedLines = lines[(beginIndex + 1)..<endIndex]
+    let encodedLines = lines[(beginIndex + 1)..<endIndex].compactMap(
+        linuxVzPackageExecutionBase64FragmentV1
+    )
     guard !encodedLines.isEmpty,
-          encodedLines.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 76 }),
-          encodedLines.joined().utf8.allSatisfy(linuxVzPackageExecutionBase64ByteV1),
           let decoded = Data(base64Encoded: encodedLines.joined()),
           decoded.count <= maximumBytes else {
         throw LinuxVzPackageExecutionSerialEvidenceError.invalidBase64
@@ -152,6 +151,22 @@ private func linuxVzPackageExecutionBase64SectionV1(
         throw LinuxVzPackageExecutionSerialEvidenceError.digestMismatch
     }
     return decoded
+}
+
+private func linuxVzPackageExecutionBase64FragmentV1(_ line: String) -> String? {
+    let bytes = line.utf8
+    if !bytes.isEmpty, bytes.count <= 76,
+       bytes.allSatisfy(linuxVzPackageExecutionBase64ByteV1) {
+        return line
+    }
+    let prefix = bytes.prefix(76)
+    guard bytes.count > 76, prefix.count == 76,
+          prefix.allSatisfy(linuxVzPackageExecutionBase64ByteV1),
+          bytes.dropFirst(76).first.map({ !linuxVzPackageExecutionBase64ByteV1($0) }) == true
+    else {
+        return nil
+    }
+    return String(decoding: prefix, as: UTF8.self)
 }
 
 private func linuxVzPackageExecutionBase64ByteV1(_ byte: UInt8) -> Bool {

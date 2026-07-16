@@ -569,8 +569,7 @@ private enum PackageExecutionMain {
         let runtimeResult = try parseLinuxVzPackageRootRuntimeResultV1(serialEvidence.result)
         progress.runtimeTerminal = runtimeResult.terminal
         guard ["complete", "process_failed"].contains(runtimeResult.terminal),
-              runtimeResult.actions.count == 1,
-              runtimeResult.executionRequestSHA256 == authority.requestSHA256,
+              !runtimeResult.actions.isEmpty,
               runtimeResult.executionGrantSHA256 == grantSHA256,
               runtimeResult.artifactSHA256 == artifactSHA256,
               runtimeResult.rootEvidenceAuthenticated,
@@ -581,7 +580,35 @@ private enum PackageExecutionMain {
               !runtimeResult.syncBackPermitted else {
             throw PackageExecutionHarnessError.verification("runtime_result_binding")
         }
-        let action = runtimeResult.actions[0]
+        // Preserve every authenticated process-action evidence group. The flat v1 aliases select
+        // the last action that actually ran, which can be an early failed setup action; bind its
+        // real stage identity from the authenticated transcript so downstream code cannot call it
+        // a later package trigger that never executed.
+        for runtimeAction in runtimeResult.actions where runtimeResult.actions.count > 1 {
+            let actionIndex = String(runtimeAction.actionIndex)
+            let actionEvidenceFiles: [(name: String, data: Data)] = [
+                ("action-\(actionIndex)-supervisor.bin", runtimeAction.supervisor),
+                ("action-\(actionIndex)-root-receipt.bin", runtimeAction.rootReceipt),
+                ("action-\(actionIndex)-process-evidence.bin", runtimeAction.process),
+                ("action-\(actionIndex)-file-evidence.bin", runtimeAction.file),
+                ("action-\(actionIndex)-network-evidence.bin", runtimeAction.network),
+            ]
+            for evidence in actionEvidenceFiles {
+                try writeNewPrivateFile(
+                    options.outputDirectory.appendingPathComponent(evidence.name),
+                    data: evidence.data
+                )
+            }
+        }
+        guard let action = runtimeResult.actions.last else {
+            throw PackageExecutionHarnessError.verification("runtime_result_action_missing")
+        }
+        let selectedActionIdentity = try selectedLinuxVzPackageExecutionActionIdentityV1(
+            runtimeResult
+        )
+        guard selectedActionIdentity.actionIndex == action.actionIndex else {
+            throw PackageExecutionHarnessError.verification("runtime_result_action_identity")
+        }
         let actionEvidenceFiles: [(name: String, data: Data)] = [
             ("action-supervisor.bin", action.supervisor),
             ("action-root-receipt.bin", action.rootReceipt),
@@ -645,6 +672,10 @@ private enum PackageExecutionMain {
             "execution_initramfs_sha256": image.initramfsSHA256,
             "runtime_result_sha256": serialEvidence.resultSHA256,
             "transcript_sha256": runtimeResult.transcriptSHA256,
+            "process_action_count": String(runtimeResult.actions.count),
+            "process_action_indexes": runtimeResult.actions.map { String($0.actionIndex) },
+            "selected_process_action_index": String(action.actionIndex),
+            "selected_process_stage_name": selectedActionIdentity.stageName,
             "supervisor_evidence_sha256": dataSHA256(action.supervisor),
             "supervisor_evidence_byte_length": String(action.supervisor.count),
             "root_receipt_sha256": dataSHA256(action.rootReceipt),

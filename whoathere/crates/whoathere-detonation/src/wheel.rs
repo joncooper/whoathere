@@ -679,9 +679,6 @@ pub fn compile_wheel_scenarios_v1(
         .ok_or(ArtifactScenarioCompileErrorV1::InvalidManifest)?;
     validate_wheel_manifest_contract(request.manifest, wheel)?;
     validate_supported_wheel_execution_contract(request.manifest, wheel)?;
-    if request.envelope.requires_external_dependency_resolution {
-        return Err(ArtifactScenarioCompileErrorV1::UnsupportedDependencyClosure);
-    }
 
     let kinds = validated_wheel_scenario_kinds_v1(wheel)?;
     if request.identities.identities.len() != kinds.len()
@@ -844,9 +841,6 @@ fn validate_supported_wheel_execution_contract(
     manifest: &ArtifactManifest,
     wheel: &WheelMetadata,
 ) -> Result<(), ArtifactScenarioCompileErrorV1> {
-    if !wheel.requires_dist.is_empty() {
-        return Err(ArtifactScenarioCompileErrorV1::UnsupportedDependencyClosure);
-    }
     if !wheel.native_tags.is_empty() || !manifest.native_binary_file_ids.is_empty() {
         return Err(ArtifactScenarioCompileErrorV1::UnsupportedNativeArtifact);
     }

@@ -36,8 +36,13 @@ impl Drop for TempRoot {
 }
 
 fn wheel_zip() -> Vec<u8> {
-    const METADATA: &[u8] =
-        b"Metadata-Version: 2.3\nName: exact-wheel-detonation\nVersion: 1.0.0\n";
+    wheel_zip_with_metadata_extra("")
+}
+
+fn wheel_zip_with_metadata_extra(metadata_extra: &str) -> Vec<u8> {
+    let metadata = format!(
+        "Metadata-Version: 2.3\nName: exact-wheel-detonation\nVersion: 1.0.0\n{metadata_extra}"
+    );
     const WHEEL: &[u8] = b"Wheel-Version: 1.0\nGenerator: whoathere-test\nRoot-Is-Purelib: true\nTag: py3-none-any\n";
     const ENTRY_POINTS: &[u8] =
         b"[console_scripts]\nexact-wheel = exact_wheel_detonation.cli:main\n";
@@ -46,12 +51,18 @@ fn wheel_zip() -> Vec<u8> {
     const PTH: &[u8] = b"import exact_wheel_detonation\n";
     let dist_info = "exact_wheel_detonation-1.0.0.dist-info";
     let mut members = vec![
-        (format!("{dist_info}/METADATA"), METADATA),
-        (format!("{dist_info}/WHEEL"), WHEEL),
-        (format!("{dist_info}/entry_points.txt"), ENTRY_POINTS),
-        ("exact_wheel_detonation/__init__.py".to_string(), INIT),
-        ("exact_wheel_detonation/cli.py".to_string(), CLI),
-        ("exact_wheel_detonation.pth".to_string(), PTH),
+        (format!("{dist_info}/METADATA"), metadata.into_bytes()),
+        (format!("{dist_info}/WHEEL"), WHEEL.to_vec()),
+        (
+            format!("{dist_info}/entry_points.txt"),
+            ENTRY_POINTS.to_vec(),
+        ),
+        (
+            "exact_wheel_detonation/__init__.py".to_string(),
+            INIT.to_vec(),
+        ),
+        ("exact_wheel_detonation/cli.py".to_string(), CLI.to_vec()),
+        ("exact_wheel_detonation.pth".to_string(), PTH.to_vec()),
     ];
     let record_path = format!("{dist_info}/RECORD");
     let mut record = String::new();
@@ -68,7 +79,7 @@ fn wheel_zip() -> Vec<u8> {
         writer
             .start_file(path, SimpleFileOptions::default())
             .expect("start wheel member");
-        writer.write_all(bytes).expect("write wheel member");
+        writer.write_all(&bytes).expect("write wheel member");
     }
     writer
         .start_file(record_path, SimpleFileOptions::default())
@@ -209,6 +220,7 @@ fn exact_wheel_adapter_runs_every_intent_with_the_verified_artifact_bytes() {
             acquired_at: "2026-07-16T12:34:56Z",
             ai_requested: false,
             ai_provider: None,
+            behavior_observation_requested: false,
             detonation_requested: true,
             normalization_limits: NormalizationLimits::default(),
         },
@@ -279,6 +291,68 @@ fn exact_wheel_adapter_runs_every_intent_with_the_verified_artifact_bytes() {
             "vm_wheel_action_{scenario_index}_evidence_incomplete"
         )));
     }
+    assert!(!report.observed_clean);
+    assert!(!report.admission_authority);
+    assert!(!report.sync_back_enabled);
+}
+
+#[test]
+fn dependency_bearing_pure_wheel_is_runtime_bound_and_executed_without_dependencies() {
+    let root = TempRoot::new("whoathere-exact-wheel-linux-vz-dependencies");
+    let artifact = wheel_zip_with_metadata_extra("Requires-Dist: requests>=2\n");
+    let artifact_sha256 = Sha256Digest::from_bytes(&artifact).to_string();
+    let artifact_path = root
+        .path()
+        .join("exact_wheel_detonation-1.0.0-py3-none-any.whl");
+    std::fs::write(&artifact_path, &artifact).expect("write dependency-bearing wheel fixture");
+    let helper_path = write_mock_helper(root.path(), &artifact_sha256);
+    let config = adapter_config(root.path(), helper_path);
+    let output_root = config.output_root.clone();
+    let adapter = LinuxVzExactWheelDetonationAdapterV1::new(config).expect("ready mock adapter");
+
+    let report = inspect_exact_artifact_v1(
+        ExactArtifactInspectionRequestV1 {
+            artifact_path: &artifact_path,
+            quarantine_root: &root.path().join("cas"),
+            ecosystem: None,
+            acquired_at: "2026-07-16T12:34:56Z",
+            ai_requested: false,
+            ai_provider: None,
+            behavior_observation_requested: false,
+            detonation_requested: true,
+            normalization_limits: NormalizationLimits::default(),
+        },
+        None,
+        Some(&adapter),
+    )
+    .expect("run dependency-bearing exact wheel detonation adapter");
+
+    assert_eq!(report.status, ExactArtifactDispositionV1::Inconclusive);
+    assert_eq!(
+        report.scenario_plan.status,
+        ExactArtifactStageStatusV1::Incomplete
+    );
+    assert!(report.scenario_plan.executable);
+    assert_eq!(report.scenario_plan.runtime_binding_status, "verified");
+    assert!(report
+        .scenario_plan
+        .reason_codes
+        .contains(&"exact_artifact_dependency_closure_required".to_string()));
+    let detonation = report
+        .stages
+        .iter()
+        .find(|stage| stage.stage == "detonation")
+        .expect("detonation stage");
+    assert_eq!(detonation.status, ExactArtifactStageStatusV1::Incomplete);
+    assert!(detonation
+        .reason_codes
+        .contains(&"vm_wheel_dependency_closure_not_installed".to_string()));
+    assert_eq!(
+        std::fs::read_dir(output_root)
+            .expect("read retained output root")
+            .count(),
+        1
+    );
     assert!(!report.observed_clean);
     assert!(!report.admission_authority);
     assert!(!report.sync_back_enabled);

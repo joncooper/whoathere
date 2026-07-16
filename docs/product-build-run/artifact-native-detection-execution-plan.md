@@ -31,12 +31,12 @@ The four misses are:
 - `mb-telnyx-4.87.2-sdist`;
 - `mb-telnyx-4.87.2-wheel`.
 
-The execution and telemetry substrate built since that campaign is substantial. The exact Linux VZ
-runtime has qualified on inert probes, evidence remains honestly authenticated-but-incomplete, and
-npm is closest to a physical end-to-end artifact run. That work did not improve the detection score
-by itself. The first package-shaped npm run exposed a specific runtime integration failure before
-package completion; pending diagnostic work must be qualified and rerun rather than hidden behind a
-generic failure.
+The execution and telemetry substrate built since that campaign is substantial. Exact npm artifacts
+now complete physically under both CI profiles, and exact wheels complete both a real-package smoke
+and an eight-scenario trigger-rich matrix with projected behavior bundles. Evidence remains honestly
+authenticated-but-incomplete. The sdist path now reaches its signed execution bundle but is parked
+on a host-side execution-image subprocess failure before VM boot. None of this changed the restricted
+campaign score by itself.
 
 The strategic correction is therefore:
 
@@ -54,19 +54,42 @@ macOS-hosted local detection beta. Cloudflare and AWS portability are a separate
 
 ### July 16 working checkpoint
 
-- A real subscription-backed Codex invocation completed through the exact-artifact path on an
-  inert npm fixture. All six declared findings were structurally valid and retained with exact
-  artifact citations: sensitive-path access, credential access, environment gating, process
-  execution, network capability, and credential exfiltration. Coverage remained honestly
-  incomplete, so the result carried no admission authority and could not become `observed_clean`.
-- The current qualified generic npm execution stack still stops before authenticated evidence
-  sealing with `linux_vz_package_sensor_control_io_failed`. A lifecycle-only fixture and a
-  canary-read fixture reproduce the same failure, so package-authored networking is not required.
-  The VM stops safely and no sync-back occurs; BLK-001 records the bounded resume experiment.
+- Exact inert npm artifacts completed physically under both `CI=false` and `CI=true`. The runs used
+  the exact local tarball with lifecycle scripts enabled and produced projected process, file,
+  canary, and network evidence while preserving verified VM stop, clone destruction, no public
+  route, and no sync-back. BLK-001 is resolved and no longer blocks npm or wheel execution.
+- A physical exact `packaging` wheel completed its install and import actions. A separate
+  trigger-rich wheel normalized to eight install, `.pth`, import-root, and console-entry scenarios;
+  all eight fresh-VM actions completed and produced projected behavior bundles with honest
+  incomplete coverage.
+- A real benign wheel with declared dependencies completed its offline install and import
+  scenarios with `pip --no-index --no-deps`. Both actions produced projected behavior bundles while
+  the product retained `vm_wheel_dependency_closure_not_installed`, an inconclusive verdict, no
+  admission authority, and no sync-back. This closes the execution shape needed by the two missed
+  dependency-bearing wheels without claiming their dependencies were analyzed.
+- Standalone Codex observation of the physical wheel `.pth` bundle succeeded after network access
+  was granted to the provider subprocess. It cited the `wheel_pth` event, retained incomplete
+  coverage, and reported context-only behavior rather than a malicious detection. The permission
+  was for the hosted observer invocation, not package networking inside the disposable VM.
+- Codex then analyzed two sanitized physical npm bundles. Its specialists cited exact event IDs and
+  hashes for credential-file open/read, two network sends, and protected `npm_token` canary
+  open/read, producing behavior-specific `credential_access`, `network_send`, and `canary_access`
+  findings. The correlator explicitly refused to infer credential or canary exfiltration from the
+  send events and retained every coverage gap. `artifact inspect` now exposes behavior observation
+  independently through `--behavior-observe` and `--approve-hosted-behavior-review`, so hosted
+  telemetry review no longer requires sending package source for hosted review.
+- The exact-sdist adapter and CLI route are implemented. A normalized nested-root PEP 517 fixture
+  reaches a digest-bound signed execution bundle, but repeated cloud-Mac attempts fail closed in the
+  host helper's execution-image subprocess before VM boot even though the exact image builder
+  succeeds when invoked manually. Pure-Python sdists with declared runtime dependencies now retain
+  an exact offline `--no-deps` execution path and an explicit missing-dependency-closure limitation;
+  they can never become clean or admissible on that evidence. BLK-005 records the bounded resume
+  experiment.
 - No restricted malware was rerun. The known-malware detection result therefore remains **7/11**;
-  this checkpoint proves a working static-AI detection slice, not an improved campaign score.
+  this checkpoint proves working npm and wheel execution/observation slices, not an improved
+  campaign score.
 
-### July 15 working checkpoint
+### July 15 historical checkpoint (superseded by July 16)
 
 - The exact npm adapter now validates exported process, file, canary, and network evidence and
   writes a sanitized, digest-bound `behavior-bundle.json` for each completed VM profile.
@@ -292,13 +315,14 @@ Each stage receives immutable digest-bound inputs and produces a strict, size-li
 not infer success from a reason-string substring. The orchestrator records partial valid evidence
 even when a later stage fails, while the overall completion state remains honest.
 
-The first usable spine is now implemented for exact artifacts and the existing npm and wheel
+The first usable spine is now implemented for exact artifacts and the npm, wheel, and sdist
 detonation adapters. Deterministic observations, Codex source observations, VM behavior bundles,
 and Codex behavioral observations survive into one report with exact artifact and manifest
 bindings. Positive behavioral findings survive an incomplete detonation result or a failing sibling
 AI role. Context-only behavioral findings remain visible but are not malicious or
-behavior-detection eligible. The strict frozen-corpus scorer and an sdist two-pass adapter remain
-separate follow-on slices; this product report does not grant admission authority or claim clean.
+behavior-detection eligible. The strict frozen-corpus scorer and a complete physical sdist run
+remain separate follow-on slices; this product report does not grant admission authority or claim
+clean.
 The current npm and wheel adapters each verify their runtime scenario plan before projection. The
 provider-neutral bundle contract does not yet carry an explicit parent inspection-plan digest, so
 supporting a new third-party detonation adapter requires adding that binding rather than trusting a
@@ -309,30 +333,34 @@ new adapter's internal derivation.
 The existing code is closer to physical wheel and sdist execution than the July campaign result
 alone suggests, but several bridges remain claim-critical:
 
-- **npm:** the exact adapter and shared helper now select npm explicitly and preserve the same
-  verified tarball across both CI profiles. Physical `ci_false` and `ci_true` runs both reached the
-  qualified runtime and then stopped on the same authenticated orphan `sendto` exit with no pending
-  entry. Safety and teardown held, but no package result was accepted. Further stream-protocol
-  patching is paused in favor of the bounded signed end-of-action journal described in blocker
-  `BLK-001`.
+- **npm:** the exact adapter and shared helper preserve the same verified tarball across both CI
+  profiles. Physical `ci_false` and `ci_true` runs now complete, project authenticated process,
+  file, canary, and network evidence, and preserve verified stop, clone destruction, no public
+  route, and no sync-back. Evidence coverage remains incomplete and therefore cannot authorize an
+  `observed_clean` result.
 - **wheel:** metadata-driven install, `.pth`, import-root, and console-entry-point scenario
   compilers, fixed offline process plans, the runtime-binding fanout bridge, generic physical
   `artifact.bin` packaging, shared Mac helper selection, and the exact-artifact adapter now exist.
   The adapter passes the outer inspection's canonical envelope and manifest into the builder,
   re-normalizes the same verified bytes there, and runs every derived trigger with a fresh action
-  binding. A pure-Python fixture passes all five mock actions, including generated-wrapper help and
-  no-argument probes. Missing evidence remains explicitly inconclusive. The remaining acceptance
-  gate is physical authenticated evidence and independent receipt verification, currently blocked
-  by the shared `BLK-001` runtime fault rather than missing wheel orchestration.
+  binding. A physical `packaging` wheel completed install and import, and a trigger-rich fixture
+  completed all eight fresh-VM install, `.pth`, import-root, and console-entry actions with projected
+  behavior bundles. A standalone Codex observer cited the physical `wheel_pth` event and correctly
+  kept it context-only under incomplete coverage. A real benign dependency-bearing wheel also
+  completed physical offline install and import with `--no-deps`; its missing closure remained an
+  explicit inconclusive limitation. Missing evidence remains explicitly inconclusive.
 - **sdist:** nested-root normalization, exact wheel-only build closure, fixed build plans, and
-  exactly-one-derived-wheel sealing now reach an exact PEP 517 execution bundle. The Mac helper,
+  exactly-one-derived-wheel sealing now reach an exact PEP 517 execution bundle. The product
+  adapter and CLI route are implemented. The Mac helper,
   initramfs builder, guest input verifier, canonical CPIO writer, and descriptor launcher carry an
   optional digest-and-length-bound closure to the existing root runtime; npm and wheel bundles
   reject closure state. The bundle preserves the outer artifact envelope and manifest, validates
   the framed closure against declared build requirements, and compiles build, derived-wheel
   inspection/install, and source-root import actions. Its nested-root empty-closure fixture passes
-  the Rust, Swift, shell, and C contract gates. It has not run physically because the same BLK-001
-  runtime fault blocks all package forms. The current plan also cannot honestly claim complete
+  the Rust, Swift, shell, and C contract gates. On the cloud Mac, the normalized fixture reaches its
+  signed bundle and then fails closed in the helper's execution-image subprocess before VM boot;
+  the exact image builder succeeds when invoked manually. BLK-005 isolates this host-side blocker.
+  The current plan also cannot honestly claim complete
   trigger coverage: source package-root guesses must not authorize post-build `.pth` or console
   probes. The next sdist expansion is a two-pass discovery/probe workflow in which an authenticated
   derived-wheel manifest drives fresh `.pth`, import, and entry-point actions. Legacy `setup.py` and

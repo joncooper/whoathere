@@ -773,7 +773,9 @@ pub trait ExactArtifactDetonationAdapterV1 {
     fn provider_id(&self) -> &str;
     fn readiness_reason(&self) -> Option<&'static str>;
     /// Returns true only when this adapter can bind and execute the supplied
-    /// complete scenario plan with its currently configured runtime.
+    /// scenario plan with its currently configured runtime. A plan may remain
+    /// incomplete when execution can collect useful evidence but cannot close
+    /// every declared coverage gap.
     fn supports_runtime_binding(
         &self,
         _prepared: &PreparedArtifact,
@@ -798,6 +800,7 @@ pub struct ExactArtifactInspectionRequestV1<'a> {
     pub acquired_at: &'a str,
     pub ai_requested: bool,
     pub ai_provider: Option<&'a str>,
+    pub behavior_observation_requested: bool,
     pub detonation_requested: bool,
     pub normalization_limits: NormalizationLimits,
 }
@@ -995,7 +998,7 @@ pub fn inspect_exact_artifact_with_behavior_v1(
     let mut scenario_plan = compile_scenario_intents(&prepared)?;
     if request.detonation_requested {
         if let Some(adapter) = detonation_adapter {
-            if scenario_plan.status == ExactArtifactStageStatusV1::Complete
+            if scenario_plan_runtime_binding_candidate_v1(&prepared, &scenario_plan)
                 && adapter.readiness_reason().is_none()
                 && adapter.supports_runtime_binding(&prepared, &scenario_plan)
             {
@@ -1047,7 +1050,7 @@ pub fn inspect_exact_artifact_with_behavior_v1(
     let behavior_bundles = detonation_outcome.behavior_bundles;
     stages.push(detonation_outcome.report);
     let behavior_outcomes = run_behavior_observation_stages(
-        request.ai_requested && request.detonation_requested,
+        request.behavior_observation_requested && request.detonation_requested,
         behavior_observer,
         &prepared,
         &deterministic,
@@ -1486,7 +1489,7 @@ fn deterministic_finding_detection_eligible_v1(category: ArtifactFindingCategory
     )
 }
 
-pub(crate) fn behavior_finding_detection_eligible_v1(kind: BehaviorFindingKindV1) -> bool {
+pub fn behavior_finding_detection_eligible_v1(kind: BehaviorFindingKindV1) -> bool {
     matches!(
         kind,
         BehaviorFindingKindV1::SecondStageHandoff
@@ -1697,22 +1700,31 @@ fn compile_scenario_intents(
                 reasons.push("exact_artifact_native_runtime_unqualified".to_string());
             }
             // Source-tree package roots are discovery hints, not authority for
-            // the post-build probe matrix. Until an authenticated derived-wheel
-            // manifest seals the exact wheel digest and enumerates its `.pth`,
-            // import, and entry-point triggers, authorize only build and derived
-            // artifact inspection intent.
+            // the complete post-build probe matrix. The existing PEP 517 VM
+            // sequence can still build, inspect, install, and exercise those
+            // bounded hints to collect evidence. Keep the plan incomplete until
+            // an authenticated derived-wheel manifest seals the exact wheel
+            // digest and enumerates its complete `.pth`, import, and entry-point
+            // trigger matrix.
             reasons.push("exact_artifact_derived_wheel_probe_manifest_required".to_string());
-            expected
-                .into_iter()
-                .filter(|kind| {
-                    matches!(
-                        kind,
-                        SdistScenarioKindV1::BuildExactSdist { .. }
-                            | SdistScenarioKindV1::InspectDerivedWheel
-                    )
-                })
-                .map(ExactArtifactScenarioKindV1::Sdist)
-                .collect()
+            if sdist.build_backend.is_some() {
+                expected
+                    .into_iter()
+                    .map(ExactArtifactScenarioKindV1::Sdist)
+                    .collect()
+            } else {
+                expected
+                    .into_iter()
+                    .filter(|kind| {
+                        matches!(
+                            kind,
+                            SdistScenarioKindV1::BuildExactSdist { .. }
+                                | SdistScenarioKindV1::InspectDerivedWheel
+                        )
+                    })
+                    .map(ExactArtifactScenarioKindV1::Sdist)
+                    .collect()
+            }
         }
         ArtifactFormat::Unknown => {
             return ExactArtifactScenarioPlanV1::new(
@@ -1730,6 +1742,55 @@ fn compile_scenario_intents(
     };
     reasons.push("exact_artifact_runtime_binding_not_supplied".to_string());
     ExactArtifactScenarioPlanV1::new(prepared, status, kinds, reasons)
+}
+
+fn scenario_plan_runtime_binding_candidate_v1(
+    prepared: &PreparedArtifact,
+    scenarios: &ExactArtifactScenarioPlanV1,
+) -> bool {
+    if scenarios.status == ExactArtifactStageStatusV1::Complete {
+        return true;
+    }
+    if scenarios.status != ExactArtifactStageStatusV1::Incomplete {
+        return false;
+    }
+    match prepared.normalized().manifest.magic_detected_format {
+        ArtifactFormat::WheelZip => {
+            let expected = match expected_wheel_scenario_kinds_v1(&prepared.normalized().manifest) {
+                Ok(expected) => expected,
+                Err(_) => return false,
+            };
+            let actual = scenarios
+                .intents
+                .iter()
+                .map(|intent| match &intent.kind {
+                    ExactArtifactScenarioKindV1::Wheel(kind) => Some(kind.clone()),
+                    ExactArtifactScenarioKindV1::Npm(_) | ExactArtifactScenarioKindV1::Sdist(_) => {
+                        None
+                    }
+                })
+                .collect::<Option<Vec<_>>>();
+            actual.is_some_and(|actual| actual == expected)
+        }
+        ArtifactFormat::SdistTarGzip | ArtifactFormat::SdistZip => {
+            let expected = match expected_sdist_scenario_kinds_v1(&prepared.normalized().manifest) {
+                Ok(expected) => expected,
+                Err(_) => return false,
+            };
+            let actual = scenarios
+                .intents
+                .iter()
+                .map(|intent| match &intent.kind {
+                    ExactArtifactScenarioKindV1::Sdist(kind) => Some(kind.clone()),
+                    ExactArtifactScenarioKindV1::Npm(_) | ExactArtifactScenarioKindV1::Wheel(_) => {
+                        None
+                    }
+                })
+                .collect::<Option<Vec<_>>>();
+            actual.is_some_and(|actual| actual == expected)
+        }
+        ArtifactFormat::NpmTarGzip | ArtifactFormat::Unknown => false,
+    }
 }
 
 struct OptionalStageOutcomeV1 {
@@ -1870,8 +1931,10 @@ fn run_detonation_stage(
             vec!["exact_artifact_detonation_adapter_not_attached".to_string()],
         ));
     };
-    if scenarios.status != ExactArtifactStageStatusV1::Complete
-        || !scenarios.executable
+    if !matches!(
+        scenarios.status,
+        ExactArtifactStageStatusV1::Complete | ExactArtifactStageStatusV1::Incomplete
+    ) || !scenarios.executable
         || scenarios.runtime_binding_status != "verified"
     {
         let mut report = ExactArtifactStageReportV1::bound(

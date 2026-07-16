@@ -7,37 +7,21 @@ An entry must distinguish confirmed evidence from inference, preserve the safety
 the smallest decision or experiment needed to resume it. Mainline work moves to another
 detection-bearing slice instead of continuing an unbounded patch loop.
 
-## BLK-001: physical npm evidence sealing stops on guest sensor control I/O
+## BLK-001: resolved -- physical npm evidence sealing stopped on guest sensor control I/O
 
-Status: paused after physical reproduction with the current qualified generic execution stack.
-Static exact-artifact work can proceed independently, but physical behavioral observation cannot
-claim success until this boundary emits an authenticated bundle.
+Status: resolved on July 16, 2026. It no longer blocks npm or wheel execution.
 
-Confirmed:
+Resolution evidence:
 
-- the earlier targetless-`sendto` and execution-window fixes were rebuilt and qualified;
-- exact inert npm runs now fail at the root runtime with
-  `linux_vz_package_sensor_control_io_failed`, before authenticated evidence sealing;
-- both a lifecycle-only fixture and a canary-read fixture reproduce the same failure, so
-  package-authored networking is not required;
-- matching the current generic helper, runtime, and image stack does not remove the failure, so it
-  is not explained by the older helper/parser mismatch;
-- the VM stops safely, the disposable clone is destroyed, no sync-back occurs, and no behavior
-  bundle is accepted.
+- the diagnostic runtime and host helper changes were rebuilt, re-signed, and requalified;
+- exact inert npm runs completed physically under both `ci_false` and `ci_true`;
+- authenticated process, file, canary, and network evidence reached typed projection;
+- the physical `packaging` wheel and all eight actions of the trigger-rich wheel also completed,
+  demonstrating that the former fault no longer blocks the shared npm/wheel execution path;
+- verified VM stop, clone destruction, no public route, and no sync-back held.
 
-Not established:
-
-- the exact control operation and guest component that fails have not yet been isolated;
-- no physical behavior bundle has reached the Codex observer, so the successful inert static-AI
-  result is not a physical detonation-observation claim.
-
-Smallest resume experiment:
-
-1. Add bounded stage and error reporting around the existing sensor-control exchange.
-2. Rerun the lifecycle-only fixture under `ci_false` and fix the first identified control failure.
-3. Require authenticated process, file, canary, and network evidence with honest coverage plus
-   verified stop, clone destruction, and no sync-back.
-4. Only then repeat `ci_true` and pass the resulting bundle to the Codex behavioral observer.
+No resume experiment is required. Preserve the completed inert npm and wheel runs as regression
+fixtures; reopen this entry only if the same sensor-control failure recurs on those pinned inputs.
 
 ## BLK-002: the signed event denominator and independent verifier do not exist
 
@@ -92,8 +76,8 @@ no new campaign can produce a claim-bearing verified registry.
 
 ## BLK-003: the physical host harness discards partial evidence and overstates failure state
 
-Status: parked after read-only audit. The Rust/C v7-v11 diagnostic core is a useful fail-closed
-checkpoint; the untracked Swift physical helper remains inert-only and non-authoritative.
+Status: partially superseded by successful physical npm and wheel runs. The remaining concern is
+limited to retaining and accurately reporting partial evidence on failed execution paths.
 
 Confirmed:
 
@@ -132,8 +116,8 @@ Smallest resume experiment:
    attempt/execution/stop/clone states and preserve the clone whenever stop is not proven.
 4. Reject duplicate or out-of-order serial markers, mismatched action indexes, forged completion,
    omitted frames, and receipt rebindings.
-5. Only after these inert cases pass may the physical helper be attached to real-package
-   acceptance; this does not resume BLK-001's online syscall-pair redesign.
+5. Preserve these as failure-path hardening gates; they do not invalidate the successful npm and
+   wheel physical runs recorded under resolved BLK-001.
 
 ## BLK-004: one static Codex specialist still misses an inert credential-exfiltration flow
 
@@ -148,3 +132,35 @@ authority.
 Do not spend the current working-solution slice tuning prompts around this one fixture. First feed
 Codex the actual bounded process, file, network, and canary observations from a disposable-VM run.
 Revisit static prompt/pass design afterward using multiple hidden positive and benign controls.
+
+## BLK-005: sdist helper fails in the execution-image subprocess before VM boot
+
+Status: parked after repeated physical reproduction on July 16, 2026. npm and wheel work proceeds
+independently; this is the only current blocker to the first physical PEP 517 sdist run.
+
+Confirmed:
+
+- the exact-sdist adapter and CLI dispatch are implemented;
+- the nested-root PEP 517 fixture normalizes and reaches its digest-bound signed execution bundle;
+- the host helper repeatedly fails closed while launching the execution-image subprocess, before
+  the disposable VM boots or package code executes;
+- the exact execution-image builder succeeds when invoked manually on the cloud Mac;
+- no sdist behavior bundle was accepted, no sync-back occurred, and this is not a physical sdist
+  detection claim.
+
+Not established:
+
+- the relevant difference between the helper-launched subprocess and the successful manual image
+  build has not been isolated.
+
+Smallest resume experiment:
+
+1. Capture a bounded, sanitized record of the helper's builder executable identity, arguments,
+   working directory, environment allowlist, exit status or signal, and stderr.
+2. Replay that exact invocation manually under the same cloud-Mac user and working directory, then
+   compare it with the already successful manual build.
+3. Correct only the first demonstrated launch, environment, path, or I/O difference; rebuild and
+   sign the helper once.
+4. Rerun the same fixture and require VM boot plus authenticated build, derived-wheel inspection,
+   install, and import action bundles, while retaining incomplete coverage, verified teardown, no
+   public route, and no sync-back.

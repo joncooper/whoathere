@@ -61,6 +61,61 @@ const INPUT_HANDOFF_ACK_V1: &[u8; 8] = b"WTPKIA01";
 #[cfg(target_os = "linux")]
 const RUNNER_FAILURE_EXIT_V1: i32 = 78;
 
+#[cfg(any(target_os = "linux", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LinuxVzPackageRootRunnerFailureStageV1 {
+    CustodyBoundary,
+    InputHandoffReceive,
+    InputHandoffAck,
+    ObserverConnect,
+    RequestDecode,
+    SequenceExecution,
+    ResultWrite,
+}
+
+#[cfg(any(target_os = "linux", test))]
+impl LinuxVzPackageRootRunnerFailureStageV1 {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::CustodyBoundary => "custody_boundary",
+            Self::InputHandoffReceive => "input_handoff_receive",
+            Self::InputHandoffAck => "input_handoff_ack",
+            Self::ObserverConnect => "observer_connect",
+            Self::RequestDecode => "request_decode",
+            Self::SequenceExecution => "sequence_execution",
+            Self::ResultWrite => "result_write",
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LinuxVzPackageRootRunnerFailureV1 {
+    stage: LinuxVzPackageRootRunnerFailureStageV1,
+    reason: &'static str,
+}
+
+#[cfg(target_os = "linux")]
+impl LinuxVzPackageRootRunnerFailureV1 {
+    const fn new(stage: LinuxVzPackageRootRunnerFailureStageV1, reason: &'static str) -> Self {
+        Self { stage, reason }
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn write_root_runner_failure_diagnostic_v1(
+    writer: &mut impl Write,
+    stage: LinuxVzPackageRootRunnerFailureStageV1,
+    reason: &'static str,
+) -> std::io::Result<()> {
+    writeln!(
+        writer,
+        "WHOATHERE_PACKAGE_ROOT_RUNNER_FAILED stage={} reason={reason}",
+        stage.as_str()
+    )?;
+    writer.flush()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinuxVzPackageRootRuntimeErrorV1 {
     UnsupportedPlatform,
@@ -681,11 +736,17 @@ mod linux {
         backend: &QualifiedMacosLinuxVzTelemetryBackendV1,
         guest_evidence_verifying_key: [u8; 32],
     ) -> ! {
-        let result = run_runner_v1(branch, prepared, backend, guest_evidence_verifying_key);
-        let exit_code = if result.is_ok() {
-            0
-        } else {
-            RUNNER_FAILURE_EXIT_V1
+        let exit_code = match run_runner_v1(branch, prepared, backend, guest_evidence_verifying_key)
+        {
+            Ok(()) => 0,
+            Err(failure) => {
+                let _ = write_root_runner_failure_diagnostic_v1(
+                    &mut std::io::stderr().lock(),
+                    failure.stage,
+                    failure.reason,
+                );
+                RUNNER_FAILURE_EXIT_V1
+            }
         };
         unsafe { libc::_exit(exit_code) }
     }
@@ -695,19 +756,30 @@ mod linux {
         prepared: PreparedLinuxVzPackageRootRuntimeExecutionV1<'_>,
         backend: &QualifiedMacosLinuxVzTelemetryBackendV1,
         guest_evidence_verifying_key: [u8; 32],
-    ) -> Result<(), LinuxVzPackageRootRuntimeErrorV1> {
+    ) -> Result<(), LinuxVzPackageRootRunnerFailureV1> {
         if !branch.signing_seed_descriptor_closed()
             || branch.ptrace_capability_present()
             || branch.dumpable()
             || !branch.no_new_privileges()
         {
-            return Err(LinuxVzPackageRootRuntimeErrorV1::CustodyBoundaryInvalid);
+            return Err(LinuxVzPackageRootRunnerFailureV1::new(
+                LinuxVzPackageRootRunnerFailureStageV1::CustodyBoundary,
+                LinuxVzPackageRootRuntimeErrorV1::CustodyBoundaryInvalid.reason_code(),
+            ));
         }
         let mut control = UnixStream::from(branch.into_control_fd_v1());
-        let mut inputs = receive_runner_inputs_v1(&mut control)?;
-        control
-            .write_all(INPUT_HANDOFF_ACK_V1)
-            .map_err(|_| LinuxVzPackageRootRuntimeErrorV1::InputHandoffFailed)?;
+        let mut inputs = receive_runner_inputs_v1(&mut control).map_err(|error| {
+            LinuxVzPackageRootRunnerFailureV1::new(
+                LinuxVzPackageRootRunnerFailureStageV1::InputHandoffReceive,
+                error.reason_code(),
+            )
+        })?;
+        control.write_all(INPUT_HANDOFF_ACK_V1).map_err(|_| {
+            LinuxVzPackageRootRunnerFailureV1::new(
+                LinuxVzPackageRootRunnerFailureStageV1::InputHandoffAck,
+                LinuxVzPackageRootRuntimeErrorV1::InputHandoffFailed.reason_code(),
+            )
+        })?;
         let control_fd = control.into();
         let mut observer = connect_linux_vz_package_root_sensor_observer_v1(
             control_fd,
@@ -716,11 +788,21 @@ mod linux {
             prepared.grant,
             guest_evidence_verifying_key,
         )
-        .map_err(|_| LinuxVzPackageRootRuntimeErrorV1::SensorObserverFailed)?;
+        .map_err(|error| {
+            LinuxVzPackageRootRunnerFailureV1::new(
+                LinuxVzPackageRootRunnerFailureStageV1::ObserverConnect,
+                error.reason_code(),
+            )
+        })?;
         let request = structurally_decode_macos_linux_vz_package_execution_request_v1(
             prepared.execution_request.canonical_json_v1(),
         )
-        .map_err(|_| LinuxVzPackageRootRuntimeErrorV1::RequestPreparationFailed)?;
+        .map_err(|error| {
+            LinuxVzPackageRootRunnerFailureV1::new(
+                LinuxVzPackageRootRunnerFailureStageV1::RequestDecode,
+                error.reason_code(),
+            )
+        })?;
         let closure = inputs.build_closure.as_mut();
         let transcript = execute_linux_vz_package_sequence_v1(
             request,
@@ -729,8 +811,18 @@ mod linux {
             closure,
             &mut observer,
         )
-        .map_err(|_| LinuxVzPackageRootRuntimeErrorV1::SequenceFailed)?;
-        write_execution_result_v1(&mut inputs.result_writer, &transcript)
+        .map_err(|error| {
+            LinuxVzPackageRootRunnerFailureV1::new(
+                LinuxVzPackageRootRunnerFailureStageV1::SequenceExecution,
+                error.reason_code(),
+            )
+        })?;
+        write_execution_result_v1(&mut inputs.result_writer, &transcript).map_err(|error| {
+            LinuxVzPackageRootRunnerFailureV1::new(
+                LinuxVzPackageRootRunnerFailureStageV1::ResultWrite,
+                error.reason_code(),
+            )
+        })
     }
 
     fn valid_custody_boundary_v1(branch: &LinuxVzPackageRootSensorServiceBranchV1) -> bool {
@@ -1376,6 +1468,55 @@ mod tests {
             ),
             Err(LinuxVzPackageRootRuntimeErrorV1::LimitExceeded)
         );
+    }
+
+    #[test]
+    fn root_runner_failure_diagnostic_contains_only_fixed_stage_and_reason_codes() {
+        let cases = [
+            (
+                LinuxVzPackageRootRunnerFailureStageV1::CustodyBoundary,
+                "custody_boundary",
+            ),
+            (
+                LinuxVzPackageRootRunnerFailureStageV1::InputHandoffReceive,
+                "input_handoff_receive",
+            ),
+            (
+                LinuxVzPackageRootRunnerFailureStageV1::InputHandoffAck,
+                "input_handoff_ack",
+            ),
+            (
+                LinuxVzPackageRootRunnerFailureStageV1::ObserverConnect,
+                "observer_connect",
+            ),
+            (
+                LinuxVzPackageRootRunnerFailureStageV1::RequestDecode,
+                "request_decode",
+            ),
+            (
+                LinuxVzPackageRootRunnerFailureStageV1::SequenceExecution,
+                "sequence_execution",
+            ),
+            (
+                LinuxVzPackageRootRunnerFailureStageV1::ResultWrite,
+                "result_write",
+            ),
+        ];
+        for (stage, expected) in cases {
+            let mut diagnostic = Vec::new();
+            write_root_runner_failure_diagnostic_v1(
+                &mut diagnostic,
+                stage,
+                LinuxVzPackageRootRuntimeErrorV1::SequenceFailed.reason_code(),
+            )
+            .expect("write diagnostic");
+            assert_eq!(
+                String::from_utf8(diagnostic).expect("UTF-8 diagnostic"),
+                format!(
+                    "WHOATHERE_PACKAGE_ROOT_RUNNER_FAILED stage={expected} reason=linux_vz_package_root_runtime_sequence_failed\n"
+                )
+            );
+        }
     }
 
     #[test]

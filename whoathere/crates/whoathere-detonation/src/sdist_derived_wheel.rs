@@ -667,12 +667,6 @@ pub fn prepare_sdist_derived_wheel_build_v1(
     {
         return Err(SdistDerivedWheelContractErrorV1::InvalidSourceManifest);
     }
-    if !sdist.requires_dist.is_empty() {
-        return Ok(review(
-            SdistDerivedWheelManualReviewReasonV1::SourceRuntimeDependenciesUnsupported,
-            sdist.requires_dist.len() as u64,
-        ));
-    }
     if !source_manifest.native_binary_file_ids.is_empty() {
         return Ok(review(
             SdistDerivedWheelManualReviewReasonV1::SourceNativeMaterialUnsupported,

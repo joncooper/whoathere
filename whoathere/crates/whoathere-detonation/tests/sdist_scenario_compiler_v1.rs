@@ -421,27 +421,6 @@ fn fixed_build_closure_and_unsupported_sdist_classes_fail_closed() {
         Err(ArtifactScenarioCompileErrorV1::PolicyMismatch)
     );
 
-    let dependency = sdist_fixture(
-        Some(DEFAULT_PYPROJECT),
-        "Requires-Dist: requests>=2\n",
-        b"VALUE = 'dependency inert'\n",
-        &[],
-    );
-    let dependency_policy = SdistScenarioPolicyV1::inert_qualification_only(
-        dependency.envelope.original_sha256.clone(),
-        runtime_profile(),
-        fixture_build_closure(&dependency).expect("dependency build closure"),
-    )
-    .expect("dependency policy");
-    assert_eq!(
-        compile(
-            &dependency,
-            &dependency_policy,
-            &identities(&dependency, "runtime-dependency").expect("identities")
-        ),
-        Err(ArtifactScenarioCompileErrorV1::UnsupportedDependencyClosure)
-    );
-
     let native = sdist_fixture(
         Some(DEFAULT_PYPROJECT),
         "",
@@ -462,6 +441,37 @@ fn fixed_build_closure_and_unsupported_sdist_classes_fail_closed() {
         ),
         Err(ArtifactScenarioCompileErrorV1::UnsupportedNativeArtifact)
     );
+}
+
+#[test]
+fn dependency_bearing_sdist_keeps_exact_offline_no_deps_execution() {
+    let fixture = sdist_fixture(
+        Some(DEFAULT_PYPROJECT),
+        "Requires-Dist: requests>=2\n",
+        b"VALUE = 'dependency inert'\n",
+        &[],
+    );
+    let closure = fixture_build_closure(&fixture).expect("dependency build closure");
+    let policy = SdistScenarioPolicyV1::inert_qualification_only(
+        fixture.envelope.original_sha256.clone(),
+        runtime_profile(),
+        closure,
+    )
+    .expect("dependency policy");
+    let plan = compile(
+        &fixture,
+        &policy,
+        &identities(&fixture, "runtime-dependency").expect("identities"),
+    )
+    .expect("no-deps sdist plan");
+
+    assert_eq!(plan.templates().len(), 4);
+    for template in plan.templates() {
+        let wire = template.canonical_json_v1().expect("canonical template");
+        let text = std::str::from_utf8(&wire).expect("template utf8");
+        assert!(text.contains("\"resolver_policy\":\"no_index_fixed_closure_only\""));
+        assert!(text.contains("\"network_policy\":\"no_network_device\""));
+    }
 }
 
 #[test]

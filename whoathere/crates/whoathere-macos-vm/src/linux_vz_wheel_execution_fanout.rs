@@ -658,9 +658,6 @@ fn validate_exact_wheel_v1(
         .wheel
         .as_ref()
         .ok_or(MacosLinuxVzWheelExecutionFanoutErrorV1::ManifestInvalid)?;
-    if !wheel.requires_dist.is_empty() {
-        return Err(MacosLinuxVzWheelExecutionFanoutErrorV1::UnsupportedDependencies);
-    }
     if wheel.root_is_purelib != Some(true)
         || !wheel.native_tags.is_empty()
         || !manifest.native_binary_file_ids.is_empty()

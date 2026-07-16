@@ -313,17 +313,36 @@ fn exact_wheel_compiles_install_pth_import_and_console_scenarios() {
 }
 
 #[test]
-fn wheel_compiler_rejects_dependencies_native_scripts_and_unvalidated_targets() {
+fn dependency_bearing_wheel_keeps_exact_offline_no_deps_execution() {
+    let fixture = wheel_fixture(
+        "Requires-Dist: requests>=2\n",
+        "[console_scripts]\nwheel-tool = wheel_fixture.cli:main\n",
+        &[],
+        b"VALUE = 'inert'\n",
+    );
+    let policy = WheelScenarioPolicyV1::inert_qualification_only(
+        fixture.envelope.original_sha256.clone(),
+        runtime_profile(),
+    )
+    .expect("policy");
+    let identities = identities(&fixture, "declared-dependency").expect("identities");
+    let plan = compile(&fixture, &policy, &identities).expect("no-deps wheel plan");
+
+    assert_eq!(plan.templates().len(), 5);
+    for template in plan.templates() {
+        let wire = template.canonical_json_v1().expect("canonical template");
+        let text = std::str::from_utf8(&wire).expect("template utf8");
+        assert!(text.contains("\"resolver_policy\":\"no_index_no_dependencies\""));
+        assert!(matches!(
+            template.dependency_closure(),
+            whoathere_detonation::DependencyClosureV1::Empty { .. }
+        ));
+    }
+}
+
+#[test]
+fn wheel_compiler_rejects_native_scripts_and_unvalidated_targets() {
     let cases = [
-        (
-            wheel_fixture(
-                "Requires-Dist: requests>=2\n",
-                "[console_scripts]\nwheel-tool = wheel_fixture.cli:main\n",
-                &[],
-                b"VALUE = 'inert'\n",
-            ),
-            ArtifactScenarioCompileErrorV1::UnsupportedDependencyClosure,
-        ),
         (
             wheel_fixture(
                 "",

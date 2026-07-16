@@ -195,7 +195,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let envelope = bindings.envelope;
     let normalized = bindings.normalized;
-    require_dependency_free_pure_wheel_v1(&normalized.manifest)?;
+    require_supported_pure_wheel_v1(&normalized.manifest)?;
 
     let cas_key =
         canonical_cas_object_key_for_artifact(normalized.manifest.artifact_sha256.as_str())
@@ -540,7 +540,7 @@ fn validate_outer_artifact_bindings_v1(
     })
 }
 
-fn require_dependency_free_pure_wheel_v1(
+fn require_supported_pure_wheel_v1(
     manifest: &whoathere_artifact::ArtifactManifest,
 ) -> Result<(), io::Error> {
     if manifest.magic_detected_format != ArtifactFormat::WheelZip {
@@ -556,11 +556,10 @@ fn require_dependency_free_pure_wheel_v1(
         || wheel.tags.iter().any(|tag| !tag.ends_with("-none-any"))
         || !wheel.native_tags.is_empty()
         || !manifest.native_binary_file_ids.is_empty()
-        || !wheel.requires_dist.is_empty()
         || !wheel.script_file_ids.is_empty()
     {
         return Err(io::Error::other(
-            "wheel requires dependencies, native execution, or an unsupported script surface",
+            "wheel requires native execution or an unsupported script surface",
         ));
     }
     Ok(())

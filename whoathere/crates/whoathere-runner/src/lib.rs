@@ -3,6 +3,7 @@ mod behavior_evidence_projector;
 mod exact_artifact;
 mod exact_artifact_codex;
 mod exact_npm_linux_vz;
+mod exact_sdist_linux_vz;
 mod exact_wheel_linux_vz;
 
 pub use behavior_codex_observer::*;
@@ -10,6 +11,7 @@ pub use behavior_evidence_projector::*;
 pub use exact_artifact::*;
 pub use exact_artifact_codex::*;
 pub use exact_npm_linux_vz::*;
+pub use exact_sdist_linux_vz::*;
 pub use exact_wheel_linux_vz::*;
 
 use whoathere_artifact::{

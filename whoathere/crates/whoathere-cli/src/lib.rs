@@ -43,13 +43,14 @@ use whoathere_policy::{
     NamespaceRule, PolicyDecision, PolicyDocument, SourceKind,
 };
 use whoathere_runner::{
-    canonical_utc_timestamp_from_unix_seconds_v1, execute_readonly,
-    inspect_exact_artifact_with_behavior_v1, plan_protected_execution,
+    behavior_finding_detection_eligible_v1, canonical_utc_timestamp_from_unix_seconds_v1,
+    execute_readonly, inspect_exact_artifact_with_behavior_v1, plan_protected_execution,
     BehaviorCodexObserverConfigV1, BehaviorCodexObserverV1, BehaviorCodexPanelOutcomeV1,
     ExactArtifactAiAdapterV1, ExactArtifactBehaviorObserverV1, ExactArtifactCodexAiAdapterV1,
     ExactArtifactCodexAiConfigV1, ExactArtifactDetonationAdapterV1, ExactArtifactInspectionErrorV1,
     ExactArtifactInspectionRequestV1, ExecutionDecision, LinuxVzExactNpmDetonationAdapterV1,
-    LinuxVzExactNpmDetonationConfigV1, LinuxVzExactWheelDetonationAdapterV1,
+    LinuxVzExactNpmDetonationConfigV1, LinuxVzExactSdistDetonationAdapterV1,
+    LinuxVzExactSdistDetonationConfigV1, LinuxVzExactWheelDetonationAdapterV1,
     LinuxVzExactWheelDetonationConfigV1,
 };
 use whoathere_sandbox::{
@@ -123,6 +124,8 @@ pub enum Command {
         ai_auth_home: Option<String>,
         ai_timeout_seconds: Option<u64>,
         approve_hosted_source_review: bool,
+        behavior_observe: bool,
+        approve_hosted_behavior_review: bool,
         detonation: bool,
         detonation_config: Option<String>,
     },
@@ -582,6 +585,8 @@ fn parse_exact_artifact_inspect(args: &[String]) -> Command {
     let mut ai_timeout_seconds = None;
     let mut ai_review = false;
     let mut approve_hosted_source_review = false;
+    let mut behavior_observe = false;
+    let mut approve_hosted_behavior_review = false;
     let mut detonation = false;
     let mut detonation_config = None;
     let mut seen = std::collections::BTreeSet::new();
@@ -593,7 +598,11 @@ fn parse_exact_artifact_inspect(args: &[String]) -> Command {
             None => (argument, None),
         };
         match flag {
-            "--ai-review" | "--approve-hosted-source-review" | "--detonation" => {
+            "--ai-review"
+            | "--approve-hosted-source-review"
+            | "--behavior-observe"
+            | "--approve-hosted-behavior-review"
+            | "--detonation" => {
                 if inline_value.is_some() {
                     return Command::ArtifactInspectInvalidOptions {
                         reason_code: "exact_artifact_option_malformed",
@@ -608,6 +617,10 @@ fn parse_exact_artifact_inspect(args: &[String]) -> Command {
                     ai_review = true;
                 } else if flag == "--approve-hosted-source-review" {
                     approve_hosted_source_review = true;
+                } else if flag == "--behavior-observe" {
+                    behavior_observe = true;
+                } else if flag == "--approve-hosted-behavior-review" {
+                    approve_hosted_behavior_review = true;
                 } else {
                     detonation = true;
                 }
@@ -692,6 +705,8 @@ fn parse_exact_artifact_inspect(args: &[String]) -> Command {
         ai_auth_home,
         ai_timeout_seconds,
         approve_hosted_source_review,
+        behavior_observe,
+        approve_hosted_behavior_review,
         detonation,
         detonation_config,
     }
@@ -1148,6 +1163,8 @@ fn render_command_text(command: Command) -> String {
             ai_auth_home,
             ai_timeout_seconds,
             approve_hosted_source_review,
+            behavior_observe,
+            approve_hosted_behavior_review,
             detonation,
             detonation_config,
         } => render_exact_artifact_inspect(ExactArtifactInspectArgs {
@@ -1163,6 +1180,8 @@ fn render_command_text(command: Command) -> String {
             ai_auth_home: ai_auth_home.as_deref(),
             ai_timeout_seconds,
             approve_hosted_source_review,
+            behavior_observe,
+            approve_hosted_behavior_review,
             detonation,
             detonation_config: detonation_config.as_deref(),
         }),
@@ -1786,7 +1805,7 @@ fn render_command_text(command: Command) -> String {
 fn command_help() -> String {
     concat!(
         "whoathere <",
-        "artifact inspect <npm.tgz|package.whl|package.tar.gz|package.zip> [--ecosystem auto|npm|pypi] [--state-dir <dir>] [--acquired-at <YYYY-MM-DDTHH:MM:SSZ>] [--ai-review --ai-provider codex --ai-client-path <absolute-native-binary> --ai-client-sha256 <sha256:...> --ai-model <exact-model> --ai-auth-home <dedicated-auth-home> --approve-hosted-source-review [--ai-timeout-seconds <1..600>]] [--detonation --detonation-config <absolute-json>]|",
+        "artifact inspect <npm.tgz|package.whl|package.tar.gz|package.zip> [--ecosystem auto|npm|pypi] [--state-dir <dir>] [--acquired-at <YYYY-MM-DDTHH:MM:SSZ>] [--ai-review --approve-hosted-source-review] [--behavior-observe --approve-hosted-behavior-review] [--ai-provider codex --ai-client-path <absolute-native-binary> --ai-client-sha256 <sha256:...> --ai-model <exact-model> --ai-auth-home <dedicated-auth-home> [--ai-timeout-seconds <1..600>]] [--detonation --detonation-config <absolute-json>]|",
         "behavior observe <behavior-bundle.json> --bundle-sha256 <sha256:...> --ai-provider codex --ai-client-path <absolute-native-binary> --ai-client-sha256 <sha256:...> --ai-model <exact-model> --ai-auth-home <dedicated-auth-home> --approve-hosted-behavior-review [--state-dir <dir>] [--ai-timeout-seconds <1..600>]|",
         "doctor [--json] [--state-dir <dir>] [--helper <path>]",
         "|status",
@@ -1853,6 +1872,8 @@ struct ExactArtifactInspectArgs<'a> {
     ai_auth_home: Option<&'a str>,
     ai_timeout_seconds: Option<u64>,
     approve_hosted_source_review: bool,
+    behavior_observe: bool,
+    approve_hosted_behavior_review: bool,
     detonation: bool,
     detonation_config: Option<&'a str>,
 }
@@ -2003,10 +2024,14 @@ fn render_behavior_observe(args: BehaviorObserveArgs<'_>) -> String {
         Ok(panel) => panel,
         Err(error) => return render_behavior_observe_inconclusive(error.reason_code()),
     };
-    let (status, exit_code) = match panel.outcome() {
-        BehaviorCodexPanelOutcomeV1::Positive => ("behavior_detected", 20),
-        BehaviorCodexPanelOutcomeV1::Uncertain => ("inconclusive", 22),
-    };
+    let detection_eligible = panel.correlation_report().is_some_and(|report| {
+        report
+            .findings()
+            .iter()
+            .any(|finding| behavior_finding_detection_eligible_v1(finding.kind()))
+    });
+    let (status, exit_code, reason_code) =
+        behavior_observe_status_v1(panel.outcome(), detection_eligible);
     serde_json::to_string_pretty(&serde_json::json!({
         "schema_version": "whoathere.behavior_observe.v1",
         "status": status,
@@ -2014,7 +2039,7 @@ fn render_behavior_observe(args: BehaviorObserveArgs<'_>) -> String {
         "provider": "codex",
         "artifact_sha256": bundle.artifact_sha256(),
         "bundle_sha256": bundle.bundle_sha256(),
-        "reason_codes": [panel.reason_code()],
+        "reason_codes": [reason_code, panel.reason_code()],
         "panel": panel,
         "observe_only": true,
         "admission_authority": false,
@@ -2023,6 +2048,25 @@ fn render_behavior_observe(args: BehaviorObserveArgs<'_>) -> String {
     .unwrap_or_else(|_| {
         render_behavior_observe_error("behavior_observe_output_serialization_failed", 70)
     })
+}
+
+fn behavior_observe_status_v1(
+    outcome: BehaviorCodexPanelOutcomeV1,
+    detection_eligible: bool,
+) -> (&'static str, i32, &'static str) {
+    match (outcome, detection_eligible) {
+        (BehaviorCodexPanelOutcomeV1::Positive, true) => (
+            "behavior_detected",
+            20,
+            "behavior_observe_detection_eligible_finding",
+        ),
+        (BehaviorCodexPanelOutcomeV1::Positive, false) => {
+            ("behavior_observed", 0, "behavior_observe_context_only")
+        }
+        (BehaviorCodexPanelOutcomeV1::Uncertain, _) => {
+            ("inconclusive", 22, "behavior_observe_inconclusive")
+        }
+    }
 }
 
 fn render_exact_artifact_inspect(args: ExactArtifactInspectArgs<'_>) -> String {
@@ -2037,14 +2081,50 @@ fn render_exact_artifact_inspect(args: ExactArtifactInspectArgs<'_>) -> String {
             .to_pretty_json()
         }
     };
+    if args.behavior_observe && !args.detonation {
+        return ExactArtifactInspectionErrorV1::invalid_request(
+            "exact_artifact_behavior_observe_requires_detonation",
+        )
+        .to_pretty_json();
+    }
+    if args.approve_hosted_source_review && !args.ai_review {
+        return ExactArtifactInspectionErrorV1::invalid_request(
+            "exact_artifact_ai_review_flag_required",
+        )
+        .to_pretty_json();
+    }
+    if args.approve_hosted_behavior_review && !args.behavior_observe {
+        return ExactArtifactInspectionErrorV1::invalid_request(
+            "exact_artifact_behavior_observe_flag_required",
+        )
+        .to_pretty_json();
+    }
+    if args.ai_review && !args.approve_hosted_source_review {
+        return ExactArtifactInspectionErrorV1::invalid_request(
+            "exact_artifact_hosted_source_review_approval_required",
+        )
+        .to_pretty_json();
+    }
+    if args.behavior_observe && !args.approve_hosted_behavior_review {
+        return ExactArtifactInspectionErrorV1::invalid_request(
+            "exact_artifact_hosted_behavior_review_approval_required",
+        )
+        .to_pretty_json();
+    }
+    let hosted_review_requested = args.ai_review || args.behavior_observe;
     let has_ai_configuration = args.ai_provider.is_some()
         || args.ai_client_path.is_some()
         || args.ai_client_sha256.is_some()
         || args.ai_model.is_some()
         || args.ai_auth_home.is_some()
         || args.ai_timeout_seconds.is_some()
-        || args.approve_hosted_source_review;
-    let ai_provider = match (args.ai_review, args.ai_provider, has_ai_configuration) {
+        || args.approve_hosted_source_review
+        || args.approve_hosted_behavior_review;
+    let ai_provider = match (
+        hosted_review_requested,
+        args.ai_provider,
+        has_ai_configuration,
+    ) {
         (false, None, false) => None,
         (false, _, _) => {
             return ExactArtifactInspectionErrorV1::invalid_request(
@@ -2179,6 +2259,28 @@ fn render_exact_artifact_inspect(args: ExactArtifactInspectArgs<'_>) -> String {
                 }
             };
             match config_value.get("artifact_kind") {
+                Some(serde_json::Value::String(kind)) if kind == "pypi_sdist" => {
+                    let config = match serde_json::from_value::<LinuxVzExactSdistDetonationConfigV1>(
+                        config_value,
+                    ) {
+                        Ok(value) => value,
+                        Err(_) => {
+                            return ExactArtifactInspectionErrorV1::invalid_request(
+                                "exact_artifact_detonation_config_invalid",
+                            )
+                            .to_pretty_json()
+                        }
+                    };
+                    match LinuxVzExactSdistDetonationAdapterV1::new(config) {
+                        Ok(value) => Some(Box::new(value)),
+                        Err(error) => {
+                            return ExactArtifactInspectionErrorV1::invalid_request(
+                                error.reason_code(),
+                            )
+                            .to_pretty_json()
+                        }
+                    }
+                }
                 Some(serde_json::Value::String(kind)) if kind == "pypi_wheel" => {
                     let config = match serde_json::from_value::<LinuxVzExactWheelDetonationConfigV1>(
                         config_value,
@@ -2232,13 +2334,7 @@ fn render_exact_artifact_inspect(args: ExactArtifactInspectArgs<'_>) -> String {
             }
         }
     };
-    let codex_adapter = if args.ai_review {
-        if !args.approve_hosted_source_review {
-            return ExactArtifactInspectionErrorV1::invalid_request(
-                "exact_artifact_hosted_source_review_approval_required",
-            )
-            .to_pretty_json();
-        }
+    let codex_adapter = if hosted_review_requested {
         let Some(client_path) = args.ai_client_path else {
             return ExactArtifactInspectionErrorV1::invalid_request(
                 "exact_artifact_ai_client_path_required",
@@ -2299,15 +2395,17 @@ fn render_exact_artifact_inspect(args: ExactArtifactInspectArgs<'_>) -> String {
         acquired_at,
         ai_requested: args.ai_review,
         ai_provider,
+        behavior_observation_requested: args.behavior_observe,
         detonation_requested: args.detonation,
         normalization_limits: whoathere_artifact::NormalizationLimits::default(),
     };
     let ai_adapter = codex_adapter
         .as_ref()
+        .filter(|_| args.ai_review)
         .map(|adapter| adapter as &dyn ExactArtifactAiAdapterV1);
     let behavior_observer = codex_adapter
         .as_ref()
-        .filter(|_| args.ai_review && args.detonation)
+        .filter(|_| args.behavior_observe)
         .map(|adapter| adapter as &dyn ExactArtifactBehaviorObserverV1);
     let detonation_adapter = detonation_adapter.as_deref();
     match inspect_exact_artifact_with_behavior_v1(
@@ -18698,6 +18796,26 @@ mod tests {
     }
 
     #[test]
+    fn behavior_observe_separates_context_from_detection_eligible_findings() {
+        assert_eq!(
+            behavior_observe_status_v1(BehaviorCodexPanelOutcomeV1::Positive, false),
+            ("behavior_observed", 0, "behavior_observe_context_only")
+        );
+        assert_eq!(
+            behavior_observe_status_v1(BehaviorCodexPanelOutcomeV1::Positive, true),
+            (
+                "behavior_detected",
+                20,
+                "behavior_observe_detection_eligible_finding"
+            )
+        );
+        assert_eq!(
+            behavior_observe_status_v1(BehaviorCodexPanelOutcomeV1::Uncertain, true),
+            ("inconclusive", 22, "behavior_observe_inconclusive")
+        );
+    }
+
+    #[test]
     fn behavior_observe_rejects_bad_options_and_never_returns_clean() {
         for (arguments, expected_reason) in [
             (
@@ -18759,6 +18877,8 @@ mod tests {
             "--ai-timeout-seconds".to_string(),
             "45".to_string(),
             "--approve-hosted-source-review".to_string(),
+            "--behavior-observe".to_string(),
+            "--approve-hosted-behavior-review".to_string(),
             "--detonation".to_string(),
             "--detonation-config".to_string(),
             "/tmp/whoathere-detonation.json".to_string(),
@@ -18781,6 +18901,8 @@ mod tests {
                 ai_auth_home: Some("/tmp/whoathere-codex-auth".to_string()),
                 ai_timeout_seconds: Some(45),
                 approve_hosted_source_review: true,
+                behavior_observe: true,
+                approve_hosted_behavior_review: true,
                 detonation: true,
                 detonation_config: Some("/tmp/whoathere-detonation.json".to_string()),
             }
@@ -18816,6 +18938,10 @@ mod tests {
             ),
             (
                 vec!["/tmp/inert.tgz", "--ai-review=false"],
+                "exact_artifact_option_malformed",
+            ),
+            (
+                vec!["/tmp/inert.tgz", "--behavior-observe=true"],
                 "exact_artifact_option_malformed",
             ),
             (
@@ -18887,6 +19013,8 @@ mod tests {
             ai_auth_home: None,
             ai_timeout_seconds: None,
             approve_hosted_source_review: false,
+            behavior_observe: false,
+            approve_hosted_behavior_review: false,
             detonation,
             detonation_config,
         };
@@ -18907,6 +19035,38 @@ mod tests {
             assert_eq!(json["reason_codes"][0], reason);
         }
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn exact_artifact_behavior_observation_requires_detonation_and_approval() {
+        for (arguments, expected_reason) in [
+            (
+                vec![
+                    "/tmp/inert.tgz",
+                    "--behavior-observe",
+                    "--approve-hosted-behavior-review",
+                ],
+                "exact_artifact_behavior_observe_requires_detonation",
+            ),
+            (
+                vec!["/tmp/inert.tgz", "--behavior-observe", "--detonation"],
+                "exact_artifact_hosted_behavior_review_approval_required",
+            ),
+            (
+                vec!["/tmp/inert.tgz", "--approve-hosted-behavior-review"],
+                "exact_artifact_behavior_observe_flag_required",
+            ),
+        ] {
+            let mut args = vec!["artifact".to_string(), "inspect".to_string()];
+            args.extend(arguments.into_iter().map(ToString::to_string));
+            let result = evaluate_command(parse_command(&args));
+            assert_eq!(result.exit_code, 64, "arguments: {args:?}");
+            let json: serde_json::Value =
+                serde_json::from_str(&result.output).expect("behavior option error is JSON");
+            assert_eq!(json["reason_codes"][0], expected_reason);
+            assert_eq!(json["admission_authority"], false);
+            assert_eq!(json["observed_clean"], false);
+        }
     }
 
     #[test]
@@ -18953,6 +19113,8 @@ mod tests {
             ai_auth_home: None,
             ai_timeout_seconds: None,
             approve_hosted_source_review: false,
+            behavior_observe: false,
+            approve_hosted_behavior_review: false,
             detonation: true,
             detonation_config: Some(config_path.display().to_string()),
         });
@@ -18961,6 +19123,66 @@ mod tests {
         assert_eq!(
             json["reason_codes"][0],
             "linux_vz_exact_wheel_input_invalid"
+        );
+        assert_eq!(json["admission_authority"], false);
+        assert_eq!(json["observed_clean"], false);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn exact_artifact_detonation_routes_sdist_configs_by_artifact_kind() {
+        let root = temp_root("whoathere-cli-exact-sdist-detonation-config");
+        let missing_input = root.join("missing-input");
+        let config_path = root.join("sdist-detonation.json");
+        let config = serde_json::json!({
+            "artifact_kind": "pypi_sdist",
+            "helper_path": missing_input,
+            "kernel_path": missing_input,
+            "base_initramfs_path": missing_input,
+            "runtime_directory": missing_input,
+            "bundle_builder_path": missing_input,
+            "image_builder_path": missing_input,
+            "backend_identity_path": missing_input,
+            "qualified_backend_path": missing_input,
+            "qualification_record_path": missing_input,
+            "guest_public_key_path": missing_input,
+            "host_public_key_path": missing_input,
+            "grant_public_key_path": missing_input,
+            "grant_signing_seed_path": missing_input,
+            "guest_signing_seed_path": missing_input,
+            "output_root": root.join("output"),
+            "timeout_seconds": 60,
+            "helper_sha256": null
+        });
+        std::fs::write(
+            &config_path,
+            serde_json::to_vec(&config).expect("serialize sdist config"),
+        )
+        .expect("write sdist config");
+
+        let result = evaluate_command(Command::ArtifactInspect {
+            path: root.join("missing.tar.gz").display().to_string(),
+            ecosystem: Some("pypi".to_string()),
+            state_dir: Some(root.join("state").display().to_string()),
+            acquired_at: Some("2026-07-15T00:00:00Z".to_string()),
+            ai_review: false,
+            ai_provider: None,
+            ai_client_path: None,
+            ai_client_sha256: None,
+            ai_model: None,
+            ai_auth_home: None,
+            ai_timeout_seconds: None,
+            approve_hosted_source_review: false,
+            behavior_observe: false,
+            approve_hosted_behavior_review: false,
+            detonation: true,
+            detonation_config: Some(config_path.display().to_string()),
+        });
+        let json: serde_json::Value =
+            serde_json::from_str(&result.output).expect("sdist config error is JSON");
+        assert_eq!(
+            json["reason_codes"][0],
+            "linux_vz_exact_sdist_input_invalid"
         );
         assert_eq!(json["admission_authority"], false);
         assert_eq!(json["observed_clean"], false);
@@ -19014,6 +19236,8 @@ mod tests {
             ai_auth_home: None,
             ai_timeout_seconds: None,
             approve_hosted_source_review: false,
+            behavior_observe: false,
+            approve_hosted_behavior_review: false,
             detonation: false,
             detonation_config: None,
         });
@@ -19065,6 +19289,8 @@ mod tests {
                 ai_auth_home: None,
                 ai_timeout_seconds: None,
                 approve_hosted_source_review: false,
+                behavior_observe: false,
+                approve_hosted_behavior_review: false,
                 detonation: false,
                 detonation_config: None,
             },
@@ -19081,6 +19307,8 @@ mod tests {
                 ai_auth_home: None,
                 ai_timeout_seconds: None,
                 approve_hosted_source_review: false,
+                behavior_observe: false,
+                approve_hosted_behavior_review: false,
                 detonation: false,
                 detonation_config: None,
             },
@@ -19097,6 +19325,8 @@ mod tests {
                 ai_auth_home: None,
                 ai_timeout_seconds: None,
                 approve_hosted_source_review: false,
+                behavior_observe: false,
+                approve_hosted_behavior_review: false,
                 detonation: false,
                 detonation_config: None,
             },
@@ -19113,6 +19343,8 @@ mod tests {
                 ai_auth_home: None,
                 ai_timeout_seconds: None,
                 approve_hosted_source_review: false,
+                behavior_observe: false,
+                approve_hosted_behavior_review: false,
                 detonation: false,
                 detonation_config: None,
             },
@@ -19129,6 +19361,8 @@ mod tests {
                 ai_auth_home: None,
                 ai_timeout_seconds: None,
                 approve_hosted_source_review: false,
+                behavior_observe: false,
+                approve_hosted_behavior_review: false,
                 detonation: false,
                 detonation_config: None,
             },
@@ -19145,6 +19379,8 @@ mod tests {
                 ai_auth_home: None,
                 ai_timeout_seconds: None,
                 approve_hosted_source_review: false,
+                behavior_observe: false,
+                approve_hosted_behavior_review: false,
                 detonation: false,
                 detonation_config: None,
             },
@@ -19161,6 +19397,8 @@ mod tests {
                 ai_auth_home: None,
                 ai_timeout_seconds: None,
                 approve_hosted_source_review: false,
+                behavior_observe: false,
+                approve_hosted_behavior_review: false,
                 detonation: false,
                 detonation_config: None,
             },

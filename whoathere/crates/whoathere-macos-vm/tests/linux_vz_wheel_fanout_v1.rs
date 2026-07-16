@@ -400,11 +400,10 @@ fn fanout_rejects_artifact_rebinding_and_recomputed_manifest_metadata_removal() 
 }
 
 #[test]
-fn unsupported_surfaces_are_manual_review_and_never_clean() {
+fn dependency_bearing_pure_wheel_fans_out_offline_and_never_claims_clean() {
     let fixture = wheel_fixture("Requires-Dist: requests>=2\n", None);
-    let clean = eight_action_fixture();
-    let plan = compile_plan(&clean, ArtifactRuntimeTargetV1::LinuxArm64);
-    let error = compile_macos_linux_vz_wheel_execution_fanout_v1(
+    let plan = compile_plan(&fixture, ArtifactRuntimeTargetV1::LinuxArm64);
+    let fanout = compile_macos_linux_vz_wheel_execution_fanout_v1(
         MacosLinuxVzWheelExecutionFanoutRequestV1 {
             envelope: &fixture.envelope,
             artifact_bytes: &fixture.bytes,
@@ -414,16 +413,15 @@ fn unsupported_surfaces_are_manual_review_and_never_clean() {
             normalization_limits: NormalizationLimits::default(),
         },
     )
-    .expect_err("dependency must fail closed");
-    assert_eq!(
-        error,
-        MacosLinuxVzWheelExecutionFanoutErrorV1::UnsupportedDependencies
-    );
-    assert_eq!(
-        error.disposition(),
-        whoathere_macos_vm::MacosLinuxVzWheelExecutionFanoutFailureDispositionV1::ManualReview
-    );
-    assert!(!error.establishes_clean_behavior());
+    .expect("dependency-bearing wheel fanout");
+
+    assert_eq!(fanout.actions().len(), 8);
+    assert!(fanout
+        .actions()
+        .iter()
+        .all(|action| action.exact_offline_install_required()));
+    assert!(!fanout.observed_clean_permitted());
+    assert!(!fanout.execution_authority_issued());
 }
 
 #[test]

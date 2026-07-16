@@ -166,6 +166,23 @@ fn pep517_source() -> SdistFixture {
     )
 }
 
+fn runtime_dependency_pep517_source() -> SdistFixture {
+    let mut entries = source_entries(Some(PEP517_PYPROJECT));
+    let pkg_info = entries
+        .iter_mut()
+        .find(|(path, _)| path.ends_with("/PKG-INFO"))
+        .expect("PKG-INFO fixture member");
+    pkg_info
+        .1
+        .extend_from_slice(b"Requires-Dist: requests>=2\n");
+    normalize_source(
+        tar_gzip(&entries),
+        ArtifactFormat::SdistTarGzip,
+        "nested_sdist-2.0.0.tar.gz",
+        true,
+    )
+}
+
 fn pep517_source_with_extra_member() -> SdistFixture {
     let mut entries = source_entries(Some(PEP517_PYPROJECT));
     entries.push((
@@ -703,6 +720,39 @@ fn nested_pep517_two_pass_contract_uses_only_the_exact_derived_wheel_for_probes(
             .expect("decode manifest"),
         manifest
     );
+}
+
+#[test]
+fn source_runtime_dependencies_do_not_block_exact_offline_build_preparation() {
+    let source = runtime_dependency_pep517_source();
+    let closure = closure_fixture();
+    let prepared = prepared(&source, &closure);
+
+    assert_eq!(
+        prepared.source_manifest_sha256(),
+        &source.artifact.manifest.manifest_sha256
+    );
+    assert_eq!(
+        source
+            .artifact
+            .manifest
+            .metadata
+            .sdist
+            .as_ref()
+            .expect("sdist metadata")
+            .requires_dist,
+        ["requests>=2".to_string()]
+    );
+    verify_prepared_sdist_derived_wheel_build_v1(
+        &prepared,
+        &source.envelope,
+        &source.artifact.manifest,
+        &source.bytes,
+        &closure.closure,
+        &closure.materials(),
+        NormalizationLimits::default(),
+    )
+    .expect("runtime dependency source remains exactly bound");
 }
 
 #[test]

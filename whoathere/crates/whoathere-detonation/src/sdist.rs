@@ -815,9 +815,6 @@ pub fn compile_sdist_scenarios_v1(
         .as_ref()
         .ok_or(ArtifactScenarioCompileErrorV1::InvalidManifest)?;
     validate_sdist_metadata_contract(sdist)?;
-    if !sdist.requires_dist.is_empty() {
-        return Err(ArtifactScenarioCompileErrorV1::UnsupportedDependencyClosure);
-    }
     let expected_declarations = build_requirement_set_sha256(&sdist.build_requires)?;
     if request.policy.build_closure.declaration_set_sha256() != &expected_declarations {
         return Err(ArtifactScenarioCompileErrorV1::PolicyMismatch);

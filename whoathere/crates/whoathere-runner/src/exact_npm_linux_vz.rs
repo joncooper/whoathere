@@ -9,7 +9,8 @@ use crate::{
     project_exact_detonation_behavior_v1, BoundOptionalEvidenceOutcomeV1, BoundOptionalEvidenceV1,
     ExactArtifactAdapterRequestV1, ExactArtifactDetonationAdapterV1, ExactArtifactOptionalResultV1,
     ExactArtifactScenarioKindV1, ExactArtifactScenarioPlanV1, ExactArtifactStageStatusV1,
-    ExactDetonationBehaviorProjectionInputV1, OptionalAdapterErrorV1, PreparedArtifact,
+    ExactDetonationBehaviorProjectionInputV1, OptionalAdapterErrorV1, PackageExecutionLeaderV1,
+    PreparedArtifact,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -22,7 +23,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use whoathere_artifact::{ArtifactFormat, Sha256Digest};
 use whoathere_cache::VerifiedArtifactLease;
-use whoathere_detector::BehaviorAnalysisBundleV1;
+use whoathere_detector::{BehaviorAnalysisBundleV1, PackageTriggerV1};
 use whoathere_detonation::{
     decode_and_validate_artifact_scenario_plan_v1,
     decode_and_validate_artifact_scenario_template_v1, ArtifactScenarioKindV1,
@@ -613,6 +614,9 @@ fn project_profile_behavior_v1(
         artifact_sha256,
         manifest_sha256,
         scenario_id: template.scenario_id(),
+        package_trigger: Some(PackageTriggerV1::NpmLifecycle),
+        package_execution_leader: PackageExecutionLeaderV1::Tooling,
+        expected_process_stage_name: "npm_install_exact_local_tarball",
         scenario_sha256: plan.plan_sha256(),
         process_plan_sha256: &process_plan_sha256,
         run_id,

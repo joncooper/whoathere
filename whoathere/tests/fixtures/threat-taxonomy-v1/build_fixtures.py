@@ -361,7 +361,7 @@ def sdist_artifact(active: bool) -> tuple[str, bytes]:
         "[build-system]\n"
         "requires = []\n"
         "build-backend = \"fixture_backend\"\n"
-        "backend-path = [\".\"]\n\n"
+        "backend-path = [\"backend\"]\n\n"
         "[project]\n"
         f"name = \"{distribution.replace('_', '-')}\"\n"
         f"version = \"{VERSION}\"\n"
@@ -377,9 +377,9 @@ def sdist_artifact(active: bool) -> tuple[str, bytes]:
     entries = {
         f"{root}/PKG-INFO": (pkg_info, FILE_MODE),
         f"{root}/pyproject.toml": (pyproject, FILE_MODE),
-        f"{root}/fixture_backend.py": (sdist_backend_source(distribution, active), FILE_MODE),
-        f"{root}/fixture_build_probe.py": (build_probe, FILE_MODE),
-        f"{root}/fixture-public.txt": (b"whoathere inert public fixture data\n", FILE_MODE),
+        f"{root}/backend/fixture_backend.py": (sdist_backend_source(distribution, active), FILE_MODE),
+        f"{root}/backend/fixture_build_probe.py": (build_probe, FILE_MODE),
+        f"{root}/backend/fixture-public.txt": (b"whoathere inert public fixture data\n", FILE_MODE),
         f"{root}/src/{distribution}/__init__.py": (b"VALUE = 'inert source tree'\n", FILE_MODE),
     }
     filename = f"{distribution}-{VERSION}.tar.gz"

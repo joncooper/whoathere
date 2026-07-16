@@ -7,6 +7,7 @@
 //! composite receipt is present, every projected modality remains incomplete.
 
 use serde_json::{Map, Value};
+use std::collections::BTreeSet;
 use std::fmt;
 use whoathere_artifact::Sha256Digest;
 use whoathere_detector::{
@@ -32,6 +33,9 @@ pub struct ExactDetonationBehaviorProjectionInputV1<'a> {
     pub artifact_sha256: &'a Sha256Digest,
     pub manifest_sha256: &'a Sha256Digest,
     pub scenario_id: &'a str,
+    pub package_trigger: Option<PackageTriggerV1>,
+    pub package_execution_leader: PackageExecutionLeaderV1,
+    pub expected_process_stage_name: &'a str,
     pub scenario_sha256: &'a Sha256Digest,
     pub process_plan_sha256: &'a Sha256Digest,
     pub run_id: &'a str,
@@ -41,6 +45,15 @@ pub struct ExactDetonationBehaviorProjectionInputV1<'a> {
     pub file_evidence_json: &'a [u8],
     pub network_evidence_json: &'a [u8],
     pub host_execution_run_json: &'a [u8],
+}
+
+/// Declares whether the bound action's leader is package code or execution
+/// tooling. This is supplied from the validated, typed scenario rather than
+/// inferred from a free-form scenario identifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PackageExecutionLeaderV1 {
+    Tooling,
+    PackageCode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,6 +114,7 @@ struct ProcessProjectionV1 {
     events: Vec<PendingEventV1>,
     observation_count: usize,
     coverage_complete: bool,
+    leader_pid: u64,
 }
 
 #[derive(Debug)]
@@ -129,6 +143,12 @@ struct HostExecutionCoverageV1 {
     lifecycle_complete: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ProcessActionAttributionV1 {
+    expected_stage_selected: bool,
+    selected_stage_leader: Option<PackageExecutionLeaderV1>,
+}
+
 /// Projects only allowlisted, typed fields from canonical evidence JSON.
 ///
 /// All emitted events cite the canonical root-receipt digest. The supplied host
@@ -153,9 +173,32 @@ pub fn project_exact_detonation_behavior_v1(
         return Err(BehaviorEvidenceProjectionErrorV1::BindingMismatch);
     }
 
-    let process_projection = project_process_v1(&process, input)?;
-    let file_projection = project_file_v1(&file, input)?;
-    let network_projection = project_network_v1(&network, input, &process_sha256)?;
+    let action_attribution = validate_process_action_attribution_v1(
+        &root_receipt,
+        &host_run,
+        input.expected_process_stage_name,
+        input.package_execution_leader,
+    )?;
+    let mut attributed_input = input;
+    if !action_attribution.expected_stage_selected {
+        // Keep every allowlisted observation, but never invent a typed trigger for a later action
+        // or package-owned leader for a later action when the selected flat aliases actually came
+        // from an earlier failure. A closed stage allowlist preserves package-code ownership for
+        // an earlier build/probe that really did run; unknown and setup-only stages stay tooling.
+        attributed_input.package_trigger = None;
+        attributed_input.package_execution_leader = action_attribution
+            .selected_stage_leader
+            .unwrap_or(PackageExecutionLeaderV1::Tooling);
+    }
+
+    let process_projection = project_process_v1(&process, attributed_input)?;
+    let file_projection = project_file_v1(&file, attributed_input, process_projection.leader_pid)?;
+    let network_projection = project_network_v1(
+        &network,
+        attributed_input,
+        &process_sha256,
+        process_projection.leader_pid,
+    )?;
 
     validate_root_receipt_bindings_v1(
         &root_receipt,
@@ -189,6 +232,10 @@ pub fn project_exact_detonation_behavior_v1(
             (
                 !process_projection.coverage_complete,
                 "process_evidence_coverage_incomplete",
+            ),
+            (
+                !action_attribution.expected_stage_selected,
+                "process_action_attribution_incomplete",
             ),
         ]),
     )?);
@@ -260,6 +307,10 @@ pub fn project_exact_detonation_behavior_v1(
                 "independent_host_composition_missing",
             ),
             (!host_coverage.lifecycle_complete, "vm_lifecycle_incomplete"),
+            (
+                !action_attribution.expected_stage_selected,
+                "selected_process_action_not_expected_trigger",
+            ),
         ]),
     )?);
 
@@ -312,6 +363,108 @@ pub fn project_exact_detonation_behavior_v1(
     .map_err(BehaviorEvidenceProjectionErrorV1::from)
 }
 
+fn validate_process_action_attribution_v1(
+    root_receipt: &Map<String, Value>,
+    host_run: &Map<String, Value>,
+    expected_stage_name: &str,
+    expected_stage_leader: PackageExecutionLeaderV1,
+) -> Result<ProcessActionAttributionV1, BehaviorEvidenceProjectionErrorV1> {
+    if expected_stage_name.is_empty()
+        || expected_stage_name.len() > 128
+        || !expected_stage_name
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+    {
+        return Err(BehaviorEvidenceProjectionErrorV1::InvalidField);
+    }
+    let claims = object_field(root_receipt, "claims")?;
+    let Some(root_action_index) = optional_decimal_u64_field(claims, "action_index")? else {
+        return Ok(ProcessActionAttributionV1 {
+            expected_stage_selected: false,
+            selected_stage_leader: None,
+        });
+    };
+    if root_action_index == 0 {
+        return Err(BehaviorEvidenceProjectionErrorV1::InvalidField);
+    }
+
+    let selected_action_index =
+        optional_decimal_u64_field(host_run, "selected_process_action_index")?;
+    let process_action_count = optional_decimal_u64_field(host_run, "process_action_count")?;
+    let process_action_indexes = match host_run.get("process_action_indexes") {
+        None => None,
+        Some(Value::Array(values)) => {
+            let mut indexes = Vec::with_capacity(values.len());
+            for value in values {
+                let raw = value
+                    .as_str()
+                    .ok_or(BehaviorEvidenceProjectionErrorV1::InvalidField)?;
+                indexes.push(parse_decimal_u64_v1(raw)?);
+            }
+            if indexes.is_empty()
+                || indexes.contains(&0)
+                || indexes.windows(2).any(|pair| pair[0] >= pair[1])
+            {
+                return Err(BehaviorEvidenceProjectionErrorV1::InvalidField);
+            }
+            Some(indexes)
+        }
+        Some(_) => return Err(BehaviorEvidenceProjectionErrorV1::InvalidField),
+    };
+    let selected_stage_name = match host_run.get("selected_process_stage_name") {
+        None => None,
+        Some(Value::String(value))
+            if !value.is_empty()
+                && value.len() <= 128
+                && value.bytes().all(|byte| {
+                    byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_'
+                }) =>
+        {
+            Some(value.as_str())
+        }
+        Some(_) => return Err(BehaviorEvidenceProjectionErrorV1::InvalidField),
+    };
+    let host_selection_bound = selected_action_index == Some(root_action_index)
+        && process_action_indexes
+            .as_ref()
+            .and_then(|indexes| indexes.last().copied())
+            == Some(root_action_index)
+        && process_action_count
+            == process_action_indexes
+                .as_ref()
+                .and_then(|indexes| u64::try_from(indexes.len()).ok());
+    let selected_stage_leader = host_selection_bound
+        .then(|| selected_stage_name.and_then(package_execution_leader_for_stage_v1))
+        .flatten();
+    Ok(ProcessActionAttributionV1 {
+        expected_stage_selected: host_selection_bound
+            && selected_stage_name == Some(expected_stage_name)
+            && selected_stage_leader == Some(expected_stage_leader),
+        selected_stage_leader,
+    })
+}
+
+fn package_execution_leader_for_stage_v1(stage_name: &str) -> Option<PackageExecutionLeaderV1> {
+    match stage_name {
+        "python_build_exact_sdist"
+        | "python_fresh_interpreter_pth_probe"
+        | "python_import_root_probe"
+        | "python_import_derived_wheel_root_probe"
+        | "python_installed_generated_console_wrapper_help_probe"
+        | "python_installed_generated_console_wrapper_no_arguments_probe" => {
+            Some(PackageExecutionLeaderV1::PackageCode)
+        }
+        "npm_install_exact_local_tarball"
+        | "python_create_fresh_wheel_virtual_environment"
+        | "python_pip_install_exact_wheel"
+        | "python_create_fresh_sdist_build_virtual_environment"
+        | "python_install_exact_sdist_build_closure"
+        | "python_create_fresh_derived_wheel_install_virtual_environment"
+        | "python_pip_install_derived_wheel" => Some(PackageExecutionLeaderV1::Tooling),
+        _ => None,
+    }
+}
+
 fn project_process_v1(
     process: &Map<String, Value>,
     input: ExactDetonationBehaviorProjectionInputV1<'_>,
@@ -333,8 +486,26 @@ fn project_process_v1(
         && decimal_u64_field(coverage, "dropped_event_count")? == 0
         && decimal_u64_field(coverage, "discarded_record_count")? == 0;
 
-    let trigger = package_trigger_for_scenario(input.scenario_id);
+    let mut direct_children = BTreeSet::new();
+    for observation in observations {
+        let observation = observation
+            .as_object()
+            .ok_or(BehaviorEvidenceProjectionErrorV1::InvalidField)?;
+        if string_field(observation, "observation_kind")? != "lifecycle"
+            || string_field(observation, "lifecycle_kind")? != "fork"
+        {
+            continue;
+        }
+        let parent_pid = decimal_u64_field(observation, "parent_pid")?;
+        let subject_pid = decimal_u64_field(observation, "subject_pid")?;
+        if parent_pid == leader_pid && subject_pid != leader_pid {
+            direct_children.insert(subject_pid);
+        }
+    }
+
     let mut events = Vec::new();
+    let mut triggered_direct_children = BTreeSet::new();
+    let mut leader_triggered = false;
     for (index, observation) in observations.iter().enumerate() {
         let observation = observation
             .as_object()
@@ -357,23 +528,35 @@ fn project_process_v1(
         if source_sequence == 0 || timestamp == 0 || subject_pid <= 1 {
             return Err(BehaviorEvidenceProjectionErrorV1::InvalidField);
         }
-        let signal = if lifecycle == "exec" && subject_pid == leader_pid {
-            trigger.map_or(
-                BehaviorEvidenceSignalV1::Process {
-                    action: ProcessActionV1::OrdinaryChild,
-                    trigger: None,
-                },
-                |trigger| BehaviorEvidenceSignalV1::Process {
-                    action: ProcessActionV1::PackageTrigger,
-                    trigger: Some(trigger),
-                },
-            )
+        let package_trigger = if lifecycle == "exec" {
+            match input.package_execution_leader {
+                PackageExecutionLeaderV1::PackageCode
+                    if subject_pid == leader_pid && !leader_triggered =>
+                {
+                    leader_triggered = true;
+                    input.package_trigger
+                }
+                PackageExecutionLeaderV1::Tooling
+                    if direct_children.contains(&subject_pid)
+                        && triggered_direct_children.insert(subject_pid) =>
+                {
+                    input.package_trigger
+                }
+                PackageExecutionLeaderV1::Tooling | PackageExecutionLeaderV1::PackageCode => None,
+            }
         } else {
-            BehaviorEvidenceSignalV1::Process {
+            None
+        };
+        let signal = package_trigger.map_or_else(
+            || BehaviorEvidenceSignalV1::Process {
                 action: ProcessActionV1::OrdinaryChild,
                 trigger: None,
-            }
-        };
+            },
+            |trigger| BehaviorEvidenceSignalV1::Process {
+                action: ProcessActionV1::PackageTrigger,
+                trigger: Some(trigger),
+            },
+        );
         events.push(PendingEventV1 {
             timestamp_monotonic_nanoseconds: timestamp,
             modality_order: 0,
@@ -387,16 +570,21 @@ fn project_process_v1(
         events,
         observation_count: observations.len(),
         coverage_complete,
+        leader_pid,
     })
 }
 
 fn project_file_v1(
     file: &Map<String, Value>,
     input: ExactDetonationBehaviorProjectionInputV1<'_>,
+    process_leader_pid: u64,
 ) -> Result<FileProjectionV1, BehaviorEvidenceProjectionErrorV1> {
     require_schema(file, ROOT_FILE_SCHEMA_V1)?;
     let binding = object_field(file, "binding")?;
     require_digest(binding, "process_plan_sha256", input.process_plan_sha256)?;
+    if decimal_u64_field(binding, "leader_pid")? != process_leader_pid {
+        return Err(BehaviorEvidenceProjectionErrorV1::BindingMismatch);
+    }
     let coverage = object_field(file, "coverage")?;
     let source_events = array_field(file, "events")?;
     require_count(coverage, "source_event_count", source_events.len())?;
@@ -412,10 +600,19 @@ fn project_file_v1(
             .as_object()
             .ok_or(BehaviorEvidenceProjectionErrorV1::InvalidField)?;
         let event_kind = string_field(source_event, "event_kind")?;
+        let actor_pid = decimal_u64_field(source_event, "actor_pid")?;
+        if actor_pid <= 1 {
+            return Err(BehaviorEvidenceProjectionErrorV1::InvalidField);
+        }
         if !matches!(event_kind, "open" | "read" | "write" | "open_exec") {
             return Err(BehaviorEvidenceProjectionErrorV1::InvalidField);
         }
         if !matches!(event_kind, "open" | "read") {
+            continue;
+        }
+        if input.package_execution_leader == PackageExecutionLeaderV1::Tooling
+            && actor_pid == process_leader_pid
+        {
             continue;
         }
         if !matches!(
@@ -466,11 +663,15 @@ fn project_network_v1(
     network: &Map<String, Value>,
     input: ExactDetonationBehaviorProjectionInputV1<'_>,
     process_sha256: &Sha256Digest,
+    process_leader_pid: u64,
 ) -> Result<NetworkProjectionV1, BehaviorEvidenceProjectionErrorV1> {
     require_schema(network, ROOT_NETWORK_SCHEMA_V2)?;
     let binding = object_field(network, "binding")?;
     require_digest(binding, "process_plan_sha256", input.process_plan_sha256)?;
     require_digest(binding, "process_evidence_sha256", process_sha256)?;
+    if decimal_u64_field(binding, "leader_pid")? != process_leader_pid {
+        return Err(BehaviorEvidenceProjectionErrorV1::BindingMismatch);
+    }
     let coverage = object_field(network, "coverage")?;
     let source_events = array_field(network, "events")?;
     require_count(coverage, "network_event_count", source_events.len())?;
@@ -491,6 +692,16 @@ fn project_network_v1(
         let source_event = source_event
             .as_object()
             .ok_or(BehaviorEvidenceProjectionErrorV1::InvalidField)?;
+        let pid = decimal_u64_field(source_event, "pid")?;
+        let tgid = decimal_u64_field(source_event, "tgid")?;
+        if pid <= 1 || tgid <= 1 {
+            return Err(BehaviorEvidenceProjectionErrorV1::InvalidField);
+        }
+        if input.package_execution_leader == PackageExecutionLeaderV1::Tooling
+            && tgid == process_leader_pid
+        {
+            continue;
+        }
         let event_kind = string_field(source_event, "event_kind")?;
         let action = match event_kind {
             "connect" => NetworkActionV1::Connect,
@@ -673,37 +884,6 @@ fn validate_host_execution_run_v1(
     })
 }
 
-fn package_trigger_for_scenario(scenario_id: &str) -> Option<PackageTriggerV1> {
-    let value = scenario_id.to_ascii_lowercase();
-    if value.contains("npm") {
-        if value.contains("bin") {
-            Some(PackageTriggerV1::NpmBin)
-        } else if value.contains("import") {
-            Some(PackageTriggerV1::NpmImport)
-        } else {
-            Some(PackageTriggerV1::NpmLifecycle)
-        }
-    } else if value.contains("wheel") {
-        if value.contains("pth") {
-            Some(PackageTriggerV1::WheelPth)
-        } else if value.contains("entry") || value.contains("console") {
-            Some(PackageTriggerV1::WheelEntryPoint)
-        } else {
-            Some(PackageTriggerV1::WheelImport)
-        }
-    } else if value.contains("sdist") {
-        if value.contains("setup") {
-            Some(PackageTriggerV1::SdistSetupPy)
-        } else if value.contains("import") {
-            Some(PackageTriggerV1::SdistImport)
-        } else {
-            Some(PackageTriggerV1::SdistBuildBackend)
-        }
-    } else {
-        None
-    }
-}
-
 fn map_network_destination_v1(
     value: &str,
 ) -> Result<NetworkDestinationClassV1, BehaviorEvidenceProjectionErrorV1> {
@@ -821,6 +1001,21 @@ fn decimal_u64_field(
     key: &str,
 ) -> Result<u64, BehaviorEvidenceProjectionErrorV1> {
     let value = string_field(object, key)?;
+    parse_decimal_u64_v1(value)
+}
+
+fn optional_decimal_u64_field(
+    object: &Map<String, Value>,
+    key: &str,
+) -> Result<Option<u64>, BehaviorEvidenceProjectionErrorV1> {
+    match object.get(key) {
+        None => Ok(None),
+        Some(Value::String(value)) => parse_decimal_u64_v1(value).map(Some),
+        Some(_) => Err(BehaviorEvidenceProjectionErrorV1::InvalidField),
+    }
+}
+
+fn parse_decimal_u64_v1(value: &str) -> Result<u64, BehaviorEvidenceProjectionErrorV1> {
     if value.is_empty()
         || (value.len() > 1 && value.starts_with('0'))
         || !value.bytes().all(|byte| byte.is_ascii_digit())
@@ -901,7 +1096,10 @@ mod tests {
             ExactDetonationBehaviorProjectionInputV1 {
                 artifact_sha256: &self.artifact,
                 manifest_sha256: &self.manifest,
-                scenario_id: "inert.npm.postinstall.ci_false.v1",
+                scenario_id: "linux-vz-inert-execution-gate-scenario-ci-false-v1",
+                package_trigger: Some(PackageTriggerV1::NpmLifecycle),
+                package_execution_leader: PackageExecutionLeaderV1::Tooling,
+                expected_process_stage_name: "npm_install_exact_local_tarball",
                 scenario_sha256: &self.scenario,
                 process_plan_sha256: &self.process_plan,
                 run_id: "inert-run-1",
@@ -925,54 +1123,72 @@ mod tests {
             "coverage": {
                 "continuous_drain": true, "coverage_complete": true,
                 "discarded_record_count": "0", "dropped_event_count": "0",
-                "evidence_truncated": false, "observation_count": "2",
+                "evidence_truncated": false, "observation_count": "4",
                 "process_sensor_healthy": true
             },
             "observations": [
                 {"lifecycle_kind": "exec", "observation_kind": "lifecycle",
-                 "source_sequence": "1", "subject_pid": "42",
+                 "parent_pid": "0", "pid": "42", "source_sequence": "1",
+                 "subject_pid": "42", "tgid": "42",
                  "timestamp_monotonic_nanoseconds": "100"},
                 {"lifecycle_kind": "fork", "observation_kind": "lifecycle",
-                 "source_sequence": "2", "subject_pid": "43",
-                 "timestamp_monotonic_nanoseconds": "200"}
+                 "parent_pid": "42", "pid": "42", "source_sequence": "2",
+                 "subject_pid": "43", "tgid": "42",
+                 "timestamp_monotonic_nanoseconds": "120"},
+                {"lifecycle_kind": "exec", "observation_kind": "lifecycle",
+                 "parent_pid": "0", "pid": "43", "source_sequence": "3",
+                 "subject_pid": "43", "tgid": "43",
+                 "timestamp_monotonic_nanoseconds": "130"},
+                {"lifecycle_kind": "exec", "observation_kind": "lifecycle",
+                 "parent_pid": "0", "pid": "43", "source_sequence": "4",
+                 "subject_pid": "43", "tgid": "43",
+                 "timestamp_monotonic_nanoseconds": "140"}
             ],
             "schema_version": ROOT_PROCESS_SCHEMA_V1
         }));
         let process_sha = Sha256Digest::from_bytes(&process);
         let file = canonical(json!({
-            "binding": {"process_plan_sha256": process_plan},
+            "binding": {"leader_pid": "42", "process_plan_sha256": process_plan},
             "coverage": {
                 "declared_scope_complete": true, "evidence_truncated": false,
                 "fanotify_overflow_count": "0", "file_sensor_healthy": true,
-                "global_mount_coverage_complete": false, "source_event_count": "2"
+                "global_mount_coverage_complete": false, "source_event_count": "3"
             },
             "events": [
-                {"access_outcome": "observed", "event_kind": "read",
+                {"access_outcome": "observed", "actor_pid": "42", "event_kind": "read",
                  "path_class": "sensitive_credential", "source_sequence": "1",
+                 "timestamp_monotonic_nanoseconds": "110"},
+                {"access_outcome": "observed", "actor_pid": "43", "event_kind": "read",
+                 "path_class": "sensitive_credential", "source_sequence": "2",
                  "timestamp_monotonic_nanoseconds": "150"},
-                {"access_outcome": "observed", "event_kind": "open",
-                 "path_class": "protected_canary", "source_sequence": "2",
-                 "timestamp_monotonic_nanoseconds": "250"}
+                {"access_outcome": "observed", "actor_pid": "43", "event_kind": "open",
+                 "path_class": "protected_canary", "source_sequence": "3",
+                 "timestamp_monotonic_nanoseconds": "160"}
             ],
             "schema_version": ROOT_FILE_SCHEMA_V1
         }));
         let network = canonical(json!({
-            "binding": {"process_evidence_sha256": process_sha,
+            "binding": {"leader_pid": "42", "process_evidence_sha256": process_sha,
                          "process_plan_sha256": process_plan},
             "coverage": {
                 "connect_sendto_intent_coverage_complete": true,
                 "discarded_record_count": "0", "dns_intent_coverage_complete": false,
                 "dropped_event_count": "0", "evidence_truncated": false,
                 "host_frame_correlation_complete": false,
-                "http_observation_complete": false, "network_event_count": "2",
+                "http_observation_complete": false, "network_event_count": "3",
                 "process_sensor_healthy": true, "target_detail_complete": false
             },
             "events": [
-                {"destination_class": "public", "enter_source_sequence": "3",
-                 "enter_timestamp_monotonic_nanoseconds": "175", "event_kind": "connect",
-                 "target_status": "observed"},
                 {"enter_source_sequence": "5",
-                 "enter_timestamp_monotonic_nanoseconds": "275", "event_kind": "sendto",
+                 "enter_timestamp_monotonic_nanoseconds": "115", "event_kind": "sendto",
+                 "pid": "42", "tgid": "42", "target_status": "unavailable",
+                 "target_unavailable_reason": "sendto_destination_detail_unavailable"},
+                {"destination_class": "public", "enter_source_sequence": "7",
+                 "enter_timestamp_monotonic_nanoseconds": "170", "event_kind": "connect",
+                 "pid": "43", "tgid": "43", "target_status": "observed"},
+                {"enter_source_sequence": "9",
+                 "enter_timestamp_monotonic_nanoseconds": "180", "event_kind": "sendto",
+                 "pid": "43", "tgid": "43",
                  "target_status": "unavailable",
                  "target_unavailable_reason": "sendto_destination_detail_unavailable"}
             ],
@@ -983,13 +1199,14 @@ mod tests {
         let network_sha = Sha256Digest::from_bytes(&network);
         let root = canonical(json!({
             "claims": {
+                "action_index": "2",
                 "artifact_sha256": artifact, "authoritative_verdict_permitted": false,
                 "file_evidence_byte_length": file.len().to_string(),
-                "file_evidence_sha256": file_sha, "file_event_count": "2",
+                "file_evidence_sha256": file_sha, "file_event_count": "3",
                 "host_composition_required": true, "network_evidence_byte_length": network.len().to_string(),
-                "network_evidence_sha256": network_sha, "network_event_count": "2",
+                "network_evidence_sha256": network_sha, "network_event_count": "3",
                 "process_evidence_byte_length": process.len().to_string(),
-                "process_evidence_sha256": process_sha, "process_observation_count": "2",
+                "process_evidence_sha256": process_sha, "process_observation_count": "4",
                 "public_network_route_present": false, "raw_arguments_captured": false,
                 "raw_exec_paths_captured": false, "raw_file_paths_captured": false,
                 "raw_network_addresses_captured": false, "scenario_plan_sha256": scenario,
@@ -1006,9 +1223,13 @@ mod tests {
             "host_composition_complete": false, "image_identity_stable": true,
             "network_evidence_byte_length": network.len().to_string(),
             "network_evidence_sha256": network_sha,
+            "process_action_count": "1",
+            "process_action_indexes": ["2"],
             "process_evidence_byte_length": process.len().to_string(),
             "process_evidence_sha256": process_sha, "public_network_route_present": false,
             "root_receipt_byte_length": root.len().to_string(), "root_receipt_sha256": root_sha,
+            "selected_process_action_index": "2",
+            "selected_process_stage_name": "npm_install_exact_local_tarball",
             "schema_version": HOST_EXECUTION_RUN_SCHEMA_V1, "sync_back": false,
             "vm_started": true, "vm_stopped": true
         }));
@@ -1028,47 +1249,99 @@ mod tests {
     }
 
     #[test]
-    fn projects_stable_typed_timeline_without_raw_evidence() {
+    fn projects_package_owned_npm_behavior_and_excludes_tooling_baseline() {
         let fixtures = fixtures();
         let bundle =
             project_exact_detonation_behavior_v1(fixtures.input()).expect("project inert evidence");
         assert!(!bundle.is_complete());
-        assert_eq!(bundle.events().len(), 6);
+        assert_eq!(bundle.events().len(), 8);
         assert!(matches!(
             bundle.events()[0].signal(),
+            BehaviorEvidenceSignalV1::Process {
+                action: ProcessActionV1::OrdinaryChild,
+                trigger: None
+            }
+        ));
+        assert!(matches!(
+            bundle.events()[2].signal(),
             BehaviorEvidenceSignalV1::Process {
                 action: ProcessActionV1::PackageTrigger,
                 trigger: Some(PackageTriggerV1::NpmLifecycle)
             }
         ));
+        assert_eq!(
+            bundle
+                .events()
+                .iter()
+                .filter(|event| matches!(
+                    event.signal(),
+                    BehaviorEvidenceSignalV1::Process {
+                        action: ProcessActionV1::PackageTrigger,
+                        trigger: Some(PackageTriggerV1::NpmLifecycle)
+                    }
+                ))
+                .count(),
+            1,
+            "only the first exec for a direct npm child is the lifecycle trigger"
+        );
         assert!(matches!(
-            bundle.events()[1].signal(),
+            bundle.events()[4].signal(),
             BehaviorEvidenceSignalV1::Filesystem {
                 operation: FileOperationV1::Read,
                 target: FileTargetClassV1::CredentialFile
             }
         ));
         assert!(matches!(
-            bundle.events()[2].signal(),
-            BehaviorEvidenceSignalV1::Network {
-                action: NetworkActionV1::Connect,
-                destination: NetworkDestinationClassV1::ExternalInternet
-            }
-        ));
-        assert!(matches!(
-            bundle.events()[4].signal(),
+            bundle.events()[5].signal(),
             BehaviorEvidenceSignalV1::Canary {
                 action: CanaryActionV1::Read,
                 canary: CanaryClassV1::NpmToken
             }
         ));
         assert!(matches!(
-            bundle.events()[5].signal(),
+            bundle.events()[6].signal(),
+            BehaviorEvidenceSignalV1::Network {
+                action: NetworkActionV1::Connect,
+                destination: NetworkDestinationClassV1::ExternalInternet
+            }
+        ));
+        assert!(matches!(
+            bundle.events()[7].signal(),
             BehaviorEvidenceSignalV1::Network {
                 action: NetworkActionV1::Send,
                 destination: NetworkDestinationClassV1::Unavailable
             }
         ));
+        assert_eq!(
+            bundle
+                .events()
+                .iter()
+                .filter(|event| matches!(
+                    event.signal(),
+                    BehaviorEvidenceSignalV1::Filesystem {
+                        target: FileTargetClassV1::CredentialFile,
+                        ..
+                    }
+                ))
+                .count(),
+            1,
+            "the npm leader's .npmrc read must remain tooling baseline"
+        );
+        assert_eq!(
+            bundle
+                .events()
+                .iter()
+                .filter(|event| matches!(
+                    event.signal(),
+                    BehaviorEvidenceSignalV1::Network {
+                        action: NetworkActionV1::Send,
+                        ..
+                    }
+                ))
+                .count(),
+            1,
+            "the npm leader's send must remain tooling baseline"
+        );
         assert!(bundle.coverage().iter().any(|item| {
             item.modality() == BehaviorEvidenceModalityV1::Network
                 && item
@@ -1108,6 +1381,123 @@ mod tests {
         assert_eq!(
             project_exact_detonation_behavior_v1(input),
             Err(BehaviorEvidenceProjectionErrorV1::BindingMismatch)
+        );
+    }
+
+    #[test]
+    fn rejects_file_and_network_leader_binding_disagreement() {
+        let fixtures = fixtures();
+        let file = canonical_object(&fixtures.file, MAX_SENSOR_EVIDENCE_BYTES).expect("file");
+        assert_eq!(
+            project_file_v1(&file, fixtures.input(), 99).map(|_| ()),
+            Err(BehaviorEvidenceProjectionErrorV1::BindingMismatch)
+        );
+
+        let network =
+            canonical_object(&fixtures.network, MAX_SENSOR_EVIDENCE_BYTES).expect("network");
+        assert_eq!(
+            project_network_v1(
+                &network,
+                fixtures.input(),
+                &Sha256Digest::from_bytes(&fixtures.process),
+                99,
+            )
+            .map(|_| ()),
+            Err(BehaviorEvidenceProjectionErrorV1::BindingMismatch)
+        );
+    }
+
+    #[test]
+    fn early_failed_action_keeps_observations_without_inventing_final_trigger() {
+        let mut early_fixtures = fixtures();
+        let mut host_run = canonical_object(&early_fixtures.host_run, MAX_HOST_EXECUTION_RUN_BYTES)
+            .expect("host run");
+        host_run.insert(
+            "selected_process_stage_name".to_string(),
+            Value::String("python_create_fresh_wheel_virtual_environment".to_string()),
+        );
+        early_fixtures.host_run = canonical(Value::Object(host_run));
+        early_fixtures.host_run_sha256 = Sha256Digest::from_bytes(&early_fixtures.host_run);
+
+        let mut input = early_fixtures.input();
+        input.package_execution_leader = PackageExecutionLeaderV1::PackageCode;
+        let bundle = project_exact_detonation_behavior_v1(input).expect("preserve early evidence");
+
+        assert!(bundle.events().iter().all(|event| !matches!(
+            event.signal(),
+            BehaviorEvidenceSignalV1::Process {
+                action: ProcessActionV1::PackageTrigger,
+                ..
+            }
+        )));
+        assert!(bundle.events().iter().any(|event| matches!(
+            event.signal(),
+            BehaviorEvidenceSignalV1::Filesystem {
+                target: FileTargetClassV1::CredentialFile,
+                ..
+            }
+        )));
+        assert_eq!(
+            bundle
+                .events()
+                .iter()
+                .filter(|event| matches!(
+                    event.signal(),
+                    BehaviorEvidenceSignalV1::Filesystem {
+                        target: FileTargetClassV1::CredentialFile,
+                        ..
+                    }
+                ))
+                .count(),
+            1,
+            "the early setup leader must not inherit package-code attribution"
+        );
+        assert!(bundle.coverage().iter().any(|coverage| {
+            coverage.modality() == BehaviorEvidenceModalityV1::Process
+                && coverage
+                    .limitation_codes()
+                    .iter()
+                    .any(|code| code == "process_action_attribution_incomplete")
+        }));
+
+        let mut build_fixtures = fixtures();
+        let mut build_host_run =
+            canonical_object(&build_fixtures.host_run, MAX_HOST_EXECUTION_RUN_BYTES)
+                .expect("build host run");
+        build_host_run.insert(
+            "selected_process_stage_name".to_string(),
+            Value::String("python_build_exact_sdist".to_string()),
+        );
+        build_fixtures.host_run = canonical(Value::Object(build_host_run));
+        build_fixtures.host_run_sha256 = Sha256Digest::from_bytes(&build_fixtures.host_run);
+        let mut build_input = build_fixtures.input();
+        build_input.package_trigger = Some(PackageTriggerV1::SdistImport);
+        build_input.package_execution_leader = PackageExecutionLeaderV1::PackageCode;
+        build_input.expected_process_stage_name = "python_import_derived_wheel_root_probe";
+
+        let build_bundle = project_exact_detonation_behavior_v1(build_input)
+            .expect("preserve earlier package build evidence");
+        assert!(build_bundle.events().iter().all(|event| !matches!(
+            event.signal(),
+            BehaviorEvidenceSignalV1::Process {
+                action: ProcessActionV1::PackageTrigger,
+                ..
+            }
+        )));
+        assert_eq!(
+            build_bundle
+                .events()
+                .iter()
+                .filter(|event| matches!(
+                    event.signal(),
+                    BehaviorEvidenceSignalV1::Filesystem {
+                        target: FileTargetClassV1::CredentialFile,
+                        ..
+                    }
+                ))
+                .count(),
+            2,
+            "an earlier package-code build keeps positive evidence without an import trigger"
         );
     }
 }

@@ -158,6 +158,7 @@ fn exact_npm_adapter_runs_both_ci_profiles_with_the_verified_artifact_bytes() {
             acquired_at: "2026-07-15T12:34:56Z",
             ai_requested: false,
             ai_provider: None,
+            behavior_observation_requested: false,
             detonation_requested: true,
             normalization_limits: NormalizationLimits::default(),
         },

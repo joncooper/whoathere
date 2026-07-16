@@ -731,11 +731,13 @@ pub fn execute_linux_vz_package_sequence_v1(
             .cleanup()
             .map_err(|_| LinuxVzPackageExecutionSequencerErrorV1::CleanupFailed)?;
     }
+    build_closure.take();
     artifact
         .as_mut()
         .ok_or(LinuxVzPackageExecutionSequencerErrorV1::InvalidPlan)?
         .cleanup()
         .map_err(|_| LinuxVzPackageExecutionSequencerErrorV1::CleanupFailed)?;
+    artifact.take();
     workspace
         .cleanup()
         .map_err(|_| LinuxVzPackageExecutionSequencerErrorV1::CleanupFailed)?;

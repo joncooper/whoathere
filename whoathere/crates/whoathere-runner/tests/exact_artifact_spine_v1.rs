@@ -3,7 +3,8 @@ use flate2::Compression;
 use std::io::{Cursor, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 use whoathere_artifact::{
-    AcquisitionMethod, ArtifactSourceType, Ecosystem, NormalizationLimits, Sha256Digest,
+    AcquisitionMethod, ArtifactFormat, ArtifactSourceType, Ecosystem, NormalizationLimits,
+    Sha256Digest,
 };
 use whoathere_cache::VerifiedArtifactLease;
 use whoathere_detector::{
@@ -220,6 +221,31 @@ fn sdist_tgz() -> Vec<u8> {
         .expect("finish gzip")
 }
 
+fn dependency_bearing_sdist_tgz() -> Vec<u8> {
+    let encoder = GzEncoder::new(Vec::new(), Compression::default());
+    let mut archive = tar::Builder::new(encoder);
+    append_tar_file(
+        &mut archive,
+        "spine-sdist-1.0.0/PKG-INFO",
+        b"Metadata-Version: 2.3\nName: spine-sdist\nVersion: 1.0.0\nRequires-Dist: requests>=2\n",
+    );
+    append_tar_file(
+        &mut archive,
+        "spine-sdist-1.0.0/pyproject.toml",
+        b"[build-system]\nrequires = []\nbuild-backend = \"setuptools.build_meta\"\n\n[project]\nname = \"spine-sdist\"\nversion = \"1.0.0\"\n",
+    );
+    append_tar_file(
+        &mut archive,
+        "spine-sdist-1.0.0/src/spine_sdist/__init__.py",
+        b"VALUE = 'dependency inert'\n",
+    );
+    archive
+        .into_inner()
+        .expect("finish tar")
+        .finish()
+        .expect("finish gzip")
+}
+
 fn legacy_sdist_tgz() -> Vec<u8> {
     let encoder = GzEncoder::new(Vec::new(), Compression::default());
     let mut archive = tar::Builder::new(encoder);
@@ -320,6 +346,7 @@ fn inspect(
             acquired_at: "2026-07-15T00:00:00Z",
             ai_requested,
             ai_provider: ai_requested.then_some("mock-ai"),
+            behavior_observation_requested: false,
             detonation_requested,
             normalization_limits: NormalizationLimits::default(),
         },
@@ -514,6 +541,7 @@ fn ingress_rejects_symlinks_and_oversize_files_before_normalization() {
             acquired_at: "2026-07-15T00:00:00Z",
             ai_requested: false,
             ai_provider: None,
+            behavior_observation_requested: false,
             detonation_requested: false,
             normalization_limits: NormalizationLimits::default(),
         },
@@ -536,6 +564,7 @@ fn ingress_rejects_symlinks_and_oversize_files_before_normalization() {
             acquired_at: "2026-07-15T00:00:00Z",
             ai_requested: false,
             ai_provider: None,
+            behavior_observation_requested: false,
             detonation_requested: false,
             normalization_limits: NormalizationLimits {
                 max_original_bytes: 1,
@@ -608,14 +637,94 @@ fn nested_sdist_compiles_typed_matrix_but_reports_missing_build_closure() {
         .scenario_plan
         .reason_codes
         .contains(&"exact_artifact_derived_wheel_probe_manifest_required".to_string()));
-    assert_eq!(report.scenario_plan.intents.len(), 2);
+    assert_eq!(report.scenario_plan.intents.len(), 4);
     assert!(report.scenario_plan.intents.iter().all(|intent| matches!(
         intent.kind,
         ExactArtifactScenarioKindV1::Sdist(SdistScenarioKindV1::BuildExactSdist { .. })
             | ExactArtifactScenarioKindV1::Sdist(SdistScenarioKindV1::InspectDerivedWheel)
+            | ExactArtifactScenarioKindV1::Sdist(SdistScenarioKindV1::InstallDerivedWheel)
+            | ExactArtifactScenarioKindV1::Sdist(SdistScenarioKindV1::ImportRoot { .. })
+    )));
+    assert!(report.scenario_plan.intents.iter().any(|intent| matches!(
+        intent.kind,
+        ExactArtifactScenarioKindV1::Sdist(SdistScenarioKindV1::InstallDerivedWheel)
+    )));
+    assert!(report.scenario_plan.intents.iter().any(|intent| matches!(
+        intent.kind,
+        ExactArtifactScenarioKindV1::Sdist(SdistScenarioKindV1::ImportRoot { .. })
     )));
     assert_eq!(report.status, ExactArtifactDispositionV1::Inconclusive);
     assert!(!report.observed_clean);
+}
+
+#[test]
+fn incomplete_pep517_sdist_plan_can_bind_and_execute_without_becoming_clean() {
+    let root = TempRoot::new("whoathere-exact-spine-bound-sdist");
+    let report = inspect(
+        &root,
+        "spine-sdist-1.0.0.tar.gz",
+        &sdist_tgz(),
+        Some(Ecosystem::Pypi),
+        (false, true),
+        (None, Some(&BoundPep517SdistDetonation)),
+    );
+
+    assert_eq!(
+        report.scenario_plan.status,
+        ExactArtifactStageStatusV1::Incomplete
+    );
+    assert!(report.scenario_plan.executable);
+    assert_eq!(report.scenario_plan.runtime_binding_status, "verified");
+    assert!(!report
+        .scenario_plan
+        .reason_codes
+        .contains(&"exact_artifact_runtime_binding_not_supplied".to_string()));
+    assert!(report
+        .scenario_plan
+        .reason_codes
+        .contains(&"exact_artifact_derived_wheel_probe_manifest_required".to_string()));
+    assert!(report.stages.iter().any(|stage| {
+        stage.stage == "scenario_compilation"
+            && stage.status == ExactArtifactStageStatusV1::Incomplete
+    }));
+    assert!(report.stages.iter().any(|stage| {
+        stage.stage == "detonation"
+            && stage.status == ExactArtifactStageStatusV1::Incomplete
+            && stage
+                .reason_codes
+                .contains(&"mock_sdist_evidence_incomplete".to_string())
+    }));
+    assert_eq!(report.status, ExactArtifactDispositionV1::Inconclusive);
+    assert!(!report.observed_clean);
+    assert!(!report.admission_authority);
+}
+
+#[test]
+fn dependency_bearing_pep517_sdist_can_execute_but_stays_inconclusive() {
+    let root = TempRoot::new("whoathere-exact-spine-bound-dependency-sdist");
+    let report = inspect(
+        &root,
+        "spine-sdist-1.0.0.tar.gz",
+        &dependency_bearing_sdist_tgz(),
+        Some(Ecosystem::Pypi),
+        (false, true),
+        (None, Some(&BoundPep517SdistDetonation)),
+    );
+
+    assert_eq!(
+        report.scenario_plan.status,
+        ExactArtifactStageStatusV1::Incomplete
+    );
+    assert!(report.scenario_plan.executable);
+    assert_eq!(report.scenario_plan.runtime_binding_status, "verified");
+    assert!(report
+        .scenario_plan
+        .reason_codes
+        .contains(&"exact_artifact_dependency_closure_required".to_string()));
+    assert_eq!(report.status, ExactArtifactDispositionV1::Inconclusive);
+    assert!(!report.observed_clean);
+    assert!(!report.admission_authority);
+    assert!(!report.sync_back_enabled);
 }
 
 #[test]
@@ -908,6 +1017,60 @@ impl ExactArtifactDetonationAdapterV1 for MustNotRunUnboundDetonation {
         _scenarios: &ExactArtifactScenarioPlanV1,
     ) -> Result<BoundOptionalEvidenceV1, OptionalAdapterErrorV1> {
         panic!("an unbound scenario plan must never reach the detonation adapter")
+    }
+}
+
+struct BoundPep517SdistDetonation;
+
+impl ExactArtifactDetonationAdapterV1 for BoundPep517SdistDetonation {
+    fn provider_id(&self) -> &str {
+        "mock-sdist-detonation"
+    }
+
+    fn readiness_reason(&self) -> Option<&'static str> {
+        None
+    }
+
+    fn supports_runtime_binding(
+        &self,
+        prepared: &PreparedArtifact,
+        scenarios: &ExactArtifactScenarioPlanV1,
+    ) -> bool {
+        prepared.normalized().manifest.magic_detected_format == ArtifactFormat::SdistTarGzip
+            && scenarios.status == ExactArtifactStageStatusV1::Incomplete
+            && !scenarios.executable
+            && scenarios.runtime_binding_status == "not_bound"
+            && scenarios.intents.len() == 4
+            && scenarios
+                .intents
+                .iter()
+                .all(|intent| matches!(intent.kind, ExactArtifactScenarioKindV1::Sdist(_)))
+    }
+
+    fn detonate(
+        &self,
+        request: &ExactArtifactAdapterRequestV1,
+        artifact: &VerifiedArtifactLease,
+        prepared: &PreparedArtifact,
+        scenarios: &ExactArtifactScenarioPlanV1,
+    ) -> Result<BoundOptionalEvidenceV1, OptionalAdapterErrorV1> {
+        assert_eq!(request.stage, "detonation");
+        assert_eq!(
+            request.artifact_sha256,
+            Sha256Digest::from_bytes(artifact.bytes()).to_string()
+        );
+        assert_eq!(
+            request.artifact_sha256,
+            prepared.evidence_subject().artifact_sha256()
+        );
+        assert_eq!(scenarios.status, ExactArtifactStageStatusV1::Incomplete);
+        assert!(scenarios.executable);
+        assert_eq!(scenarios.runtime_binding_status, "verified");
+        Ok(optional_result(
+            request,
+            BoundOptionalEvidenceOutcomeV1::Incomplete,
+            "mock_sdist_evidence_incomplete",
+        ))
     }
 }
 

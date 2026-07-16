@@ -28,7 +28,7 @@ use whoathere_runner::{
     ExactArtifactCodexAiConfigV1, ExactArtifactDetonationAdapterV1, ExactArtifactDispositionV1,
     ExactArtifactEvidenceReferenceV1, ExactArtifactFindingKindV1, ExactArtifactInspectionRequestV1,
     ExactArtifactObservationSourceV1, ExactArtifactOptionalResultV1, ExactArtifactScenarioPlanV1,
-    ExactArtifactVerdictV1, OptionalAdapterErrorV1, PreparedArtifact,
+    ExactArtifactStageStatusV1, ExactArtifactVerdictV1, OptionalAdapterErrorV1, PreparedArtifact,
     EXACT_ARTIFACT_CODEX_PROVIDER_ID_V1,
 };
 
@@ -381,6 +381,13 @@ impl ExactArtifactDetonationAdapterV1 for InertProductDetonation {
 fn inspect_inert_product_with_codex(
     model_output: &serde_json::Value,
 ) -> (whoathere_runner::ExactArtifactInspectionReportV1, Vec<u8>) {
+    inspect_inert_product_with_codex_mode(model_output, true)
+}
+
+fn inspect_inert_product_with_codex_mode(
+    model_output: &serde_json::Value,
+    source_review_requested: bool,
+) -> (whoathere_runner::ExactArtifactInspectionReportV1, Vec<u8>) {
     let fixture = FixtureRuntime::new(model_output);
     let artifact_bytes = inert_npm_tgz();
     let artifact_path = fixture.root.join("observer-spine-inert-1.0.0.tgz");
@@ -402,12 +409,13 @@ fn inspect_inert_product_with_codex(
             quarantine_root: &quarantine_root,
             ecosystem: Some(Ecosystem::Npm),
             acquired_at: "2026-07-15T00:00:00Z",
-            ai_requested: true,
+            ai_requested: source_review_requested,
             ai_provider: Some(EXACT_ARTIFACT_CODEX_PROVIDER_ID_V1),
+            behavior_observation_requested: true,
             detonation_requested: true,
             normalization_limits: NormalizationLimits::default(),
         },
-        Some(&adapter as &dyn ExactArtifactAiAdapterV1),
+        source_review_requested.then_some(&adapter as &dyn ExactArtifactAiAdapterV1),
         Some(&detonation as &dyn ExactArtifactDetonationAdapterV1),
         Some(&adapter as &dyn ExactArtifactBehaviorObserverV1),
     )
@@ -527,6 +535,28 @@ fn one_artifact_inspection_fuses_detonation_evidence_into_a_cited_codex_detectio
     assert!(!report.admission_authority);
     assert!(!report.observed_clean);
     assert!(!report.sync_back_enabled);
+}
+
+#[test]
+fn behavior_observation_does_not_require_or_run_source_review() {
+    let reference = BehaviorEvidenceReferenceV1::for_event(&product_canary_event());
+    let (report, _) = inspect_inert_product_with_codex_mode(&positive_output(&reference), false);
+
+    let ai_stage = report
+        .stages
+        .iter()
+        .find(|stage| stage.stage == "ai_review")
+        .expect("source review stage");
+    assert_eq!(ai_stage.status, ExactArtifactStageStatusV1::NotRequested);
+    assert!(report
+        .stages
+        .iter()
+        .any(|stage| { stage.stage == "behavior_observation" && stage.observation_count > 0 }));
+    assert!(report.observations.iter().any(|observation| {
+        observation.source == ExactArtifactObservationSourceV1::AiBehavioral
+            && observation.finding_kind
+                == ExactArtifactFindingKindV1::AiBehavioral(BehaviorFindingKindV1::CanaryAccess)
+    }));
 }
 
 #[test]
