@@ -58,24 +58,53 @@ Alternatives considered:
   network intent, credential transitions, and dynamic-loading evidence, and could never support an
   observed-clean result.
 
-## BLK-002: independent receipt/event verifier executable does not exist
+## BLK-002: the signed event denominator and independent verifier do not exist
 
-Status: contract and fail-closed registry producer implemented; production registry remains
-`not_generated`.
+Status: parked after independent audit. The strict evaluator remains fail-closed, and production
+registry generation remains `not_generated`. The uncommitted Python producer prototype is not
+claim-bearing and must not be released as an independent verifier path.
 
-The evaluator requires an independently signed verified-evidence registry. The producer now
-enforces the frozen denominator, exact evidence mappings, an operator-pinned verifier executable,
-an existing off-tree Ed25519 key, exclusive output publication, and verify-only validation. It does
-not invent authentication when the verifier is absent.
+Confirmed:
 
-Resume requirement:
+- the prototype sent producer-authored `RunResultV2` observations and labels to its verifier, so a
+  verifier could merely echo the claimed detections;
+- exhaustiveness was measured against that producer-authored observation list, not against every
+  event committed by signed receipts;
+- the current work has no production native verifier executable;
+- a verifier cannot prove omitted events unless expected bindings, host composition, root receipts,
+  modality receipts, and streams commit to a complete ordered event denominator;
+- therefore a signed registry produced by the prototype would not make an 11/11 score trustworthy.
 
-- implement a side-effect-free Rust `whoathere-package-evidence-verify` executable for the closed
-  `whoathere-independent-receipt-event-verifier-v1` protocol;
-- reconstruct every host-supplied expected binding;
-- verify guest-root and host-composite signatures plus every typed event projection;
-- emit only the canonical non-authorizing response;
-- keep authenticated zero-frame evidence and complete host composition as prerequisites.
+Required v2 boundary:
 
-Until that executable and the missing physical receipt bindings exist, no new campaign can produce
-a claim-bearing verified registry.
+- the verifier request contains only frozen evaluation/run-slot identities and opaque, digest-bound
+  structural evidence sources; it contains no result, verdict, observation IDs, evidence types,
+  behavior labels, evidence references, or expected detection facts;
+- trusted expected bindings commit to the complete scenario/action set; the host-composite receipt
+  commits to every ordered action/root receipt; each root or modality receipt commits to every
+  stream's schema, length, digest, event count, and ordered event manifest or Merkle root;
+- a native, measured, side-effect-free verifier independently authenticates that receipt graph,
+  enumerates every committed event, and derives typed projections only from allowlisted primitive
+  event fields;
+- every authenticated event is assigned exactly one disposition: projected, recognized
+  non-observation, unsupported schema, or malformed signed event; unsupported or malformed events
+  preserve valid sibling positives but force incomplete coverage and can never support clean;
+- only after the verifier exits does the producer compare its independently derived run fact and
+  complete projection set bidirectionally with `RunResultV2`;
+- any missing action, receipt, stream, frame, event, projection, denominator commitment, or identity
+  match prevents registry generation.
+
+Smallest resume experiment:
+
+1. Define an inert signed receipt chain for one action with two ordered primitive events: one file
+   read that projects to a typed observation and one recognized non-observation.
+2. Have a native verifier derive both event IDs, the exact partition, and the one projection without
+   receiving any producer observation or label.
+3. Prove that omitting either event, inventing or relabeling a projection, changing an ordinal,
+   replaying another run, or substituting a source prevents registry generation.
+4. Prove that an unsupported third signed event preserves the positive projection but changes
+   coverage to incomplete and keeps `observed_clean` impossible.
+5. Only then reconnect the Python registry publisher and its off-tree signing helper.
+
+Until the receipt chain supplies that denominator and the native verifier passes this inert fixture,
+no new campaign can produce a claim-bearing verified registry.
