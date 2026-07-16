@@ -1178,6 +1178,42 @@ impl ExactArtifactAiAdapterV1 for ContextOnlyAi {
     }
 }
 
+struct SecondStageOnlyAi;
+
+impl ExactArtifactAiAdapterV1 for SecondStageOnlyAi {
+    fn provider_id(&self) -> &str {
+        "mock-ai"
+    }
+
+    fn readiness_reason(&self) -> Option<&'static str> {
+        None
+    }
+
+    fn analyze(
+        &self,
+        request: &ExactArtifactAdapterRequestV1,
+        prepared: &PreparedArtifact,
+        _deterministic: &ArtifactStaticAnalysis,
+        _scenarios: &ExactArtifactScenarioPlanV1,
+    ) -> Result<BoundOptionalEvidenceV1, OptionalAdapterErrorV1> {
+        let observation = mock_ai_observation_for(
+            prepared,
+            ArtifactReviewFindingCategoryV2::SecondStageExecution,
+        );
+        let result = ExactArtifactOptionalResultV1::with_evidence(
+            request.request_sha256.clone(),
+            BoundOptionalEvidenceOutcomeV1::FindingsWithIncompleteCoverage,
+            vec!["mock_second_stage_source_finding".to_string()],
+            vec![observation],
+            Vec::new(),
+        )?;
+        Ok(BoundOptionalEvidenceV1 {
+            canonical_result_bytes: result.to_canonical_json_bytes()?,
+            behavior_bundles: Vec::new(),
+        })
+    }
+}
+
 struct MustNotRunProviderMismatch;
 
 impl ExactArtifactAiAdapterV1 for MustNotRunProviderMismatch {
@@ -1376,12 +1412,12 @@ fn optional_result_bytes_must_be_canonical_and_are_hashed_by_the_product() {
         Some(expected_result_sha256.as_str())
     );
     assert!(ai_stage.request_sha256.is_some());
-    assert_eq!(accepted.status, ExactArtifactDispositionV1::Findings);
+    assert_eq!(accepted.status, ExactArtifactDispositionV1::Inconclusive);
     assert_eq!(
         accepted.verdict,
-        whoathere_runner::ExactArtifactVerdictV1::Malicious
+        whoathere_runner::ExactArtifactVerdictV1::Inconclusive
     );
-    assert_eq!(accepted.exit_code, 20);
+    assert_eq!(accepted.exit_code, 22);
     assert_eq!(accepted.behavior_detection_count, 0);
     assert!(accepted
         .observations
@@ -1390,6 +1426,9 @@ fn optional_result_bytes_must_be_canonical_and_are_hashed_by_the_product() {
             observation.source == ExactArtifactObservationSourceV1::AiSourceReview
         })
         .all(|observation| !observation.behavior_detection_eligible));
+    assert!(accepted
+        .reason_codes
+        .contains(&"exact_artifact_ai_source_review_requires_corroboration".to_string()));
     assert!(!accepted.admission_authority);
     assert!(!accepted.observed_clean);
 }
@@ -1451,6 +1490,43 @@ fn contextual_ai_source_finding_is_preserved_without_a_malware_verdict() {
     assert!(!report.observed_clean);
 }
 
+#[test]
+fn severe_ai_source_finding_requires_independent_corroboration() {
+    let root = TempRoot::new("whoathere-exact-spine-ai-second-stage-context");
+    let report = inspect(
+        &root,
+        "spine_wheel-1.0.0-py3-none-any.whl",
+        &wheel_zip(),
+        Some(Ecosystem::Pypi),
+        (true, false),
+        (Some(&SecondStageOnlyAi), None),
+    );
+
+    assert!(report.observations.iter().any(|observation| {
+        observation.finding_kind
+            == ExactArtifactFindingKindV1::AiSourceReview(
+                ArtifactReviewFindingCategoryV2::SecondStageExecution,
+            )
+            && !observation.behavior_detection_eligible
+    }));
+    assert!(report.stages.iter().any(|stage| {
+        stage.stage == "ai_review"
+            && stage.status == ExactArtifactStageStatusV1::FindingsWithIncompleteCoverage
+    }));
+    assert_eq!(report.status, ExactArtifactDispositionV1::Inconclusive);
+    assert_eq!(
+        report.verdict,
+        whoathere_runner::ExactArtifactVerdictV1::Inconclusive
+    );
+    assert_eq!(report.exit_code, 22);
+    assert_eq!(report.behavior_detection_count, 0);
+    assert!(report
+        .reason_codes
+        .contains(&"exact_artifact_ai_source_review_requires_corroboration".to_string()));
+    assert!(!report.admission_authority);
+    assert!(!report.observed_clean);
+}
+
 fn mock_ai_observation(prepared: &PreparedArtifact) -> ExactArtifactObservationV1 {
     mock_ai_observation_for(
         prepared,
@@ -1467,9 +1543,15 @@ fn mock_ai_observation_for(
         .files()
         .find(|file| !file.bytes().is_empty())
         .expect("mock AI citation target");
+    let threat_class = match category {
+        ArtifactReviewFindingCategoryV2::SecondStageExecution => {
+            ExactArtifactThreatClassV1::SecondStageNativeOrWasmHandoff
+        }
+        _ => ExactArtifactThreatClassV1::NetworkAndExfiltration,
+    };
     ExactArtifactObservationV1::new(
         ExactArtifactObservationSourceV1::AiSourceReview,
-        ExactArtifactThreatClassV1::NetworkAndExfiltration,
+        threat_class,
         ExactArtifactFindingKindV1::AiSourceReview(category),
         ExactArtifactObservationConfidenceV1::Moderate,
         Sha256Digest::parse(prepared.evidence_subject().artifact_sha256().to_string())

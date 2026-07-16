@@ -1098,6 +1098,12 @@ pub fn inspect_exact_artifact_with_behavior_v1(
     if !observations.is_empty() {
         reason_codes.push("exact_artifact_typed_observations_preserved".to_string());
     }
+    if observations
+        .iter()
+        .any(|observation| observation.source == ExactArtifactObservationSourceV1::AiSourceReview)
+    {
+        reason_codes.push("exact_artifact_ai_source_review_requires_corroboration".to_string());
+    }
     let identity = prepared
         .normalized()
         .manifest
@@ -1517,37 +1523,8 @@ fn observation_supports_malicious_verdict_v1(observation: &ExactArtifactObservat
     match &observation.finding_kind {
         ExactArtifactFindingKindV1::DeterministicStatic(_)
         | ExactArtifactFindingKindV1::AiBehavioral(_) => observation.behavior_detection_eligible,
-        ExactArtifactFindingKindV1::AiSourceReview(category) => {
-            source_review_finding_supports_malicious_verdict_v1(*category)
-        }
+        ExactArtifactFindingKindV1::AiSourceReview(_) => false,
     }
-}
-
-fn source_review_finding_supports_malicious_verdict_v1(
-    category: ArtifactReviewFindingCategoryV2,
-) -> bool {
-    matches!(
-        category,
-        ArtifactReviewFindingCategoryV2::CredentialAccess
-            | ArtifactReviewFindingCategoryV2::CredentialExfiltration
-            | ArtifactReviewFindingCategoryV2::SensitivePathAccess
-            | ArtifactReviewFindingCategoryV2::MetadataAccess
-            | ArtifactReviewFindingCategoryV2::Persistence
-            | ArtifactReviewFindingCategoryV2::SecondStageExecution
-            | ArtifactReviewFindingCategoryV2::ReverseShellCapability
-            | ArtifactReviewFindingCategoryV2::DestructiveBehavior
-            | ArtifactReviewFindingCategoryV2::SelfDeletion
-            | ArtifactReviewFindingCategoryV2::RepositoryMutation
-            | ArtifactReviewFindingCategoryV2::WorkflowMutation
-            | ArtifactReviewFindingCategoryV2::PackagePublication
-            | ArtifactReviewFindingCategoryV2::SelfPropagation
-            | ArtifactReviewFindingCategoryV2::DependencyConfusion
-            | ArtifactReviewFindingCategoryV2::TransitiveCompromise
-            | ArtifactReviewFindingCategoryV2::ImportTimeTampering
-            | ArtifactReviewFindingCategoryV2::ApiTampering
-            | ArtifactReviewFindingCategoryV2::DataTampering
-            | ArtifactReviewFindingCategoryV2::CryptographicTampering
-    )
 }
 
 fn deterministic_stage(

@@ -90,6 +90,14 @@ macOS-hosted local detection beta. Cloudflare and AWS portability are a separate
   context-only lifecycle execution and returned `behavior_observed`, not a malicious detection.
   The result remains inconclusive because evidence coverage and independent host composition are
   incomplete; it does not claim the artifact is clean.
+- Paired hosted source review exposed a separate arbitration defect: Codex labeled the normal
+  one-line `.pth` import in both active and benign wheels as second-stage execution, and the product
+  promoted that advisory positional label to `malicious`. Artifact Review v2 already marks hosted
+  source citations `behavior_gate_eligible: false`; the product now honors that contract. AI source
+  findings remain preserved, cited, visible, and sufficient to keep a result inconclusive/manual
+  review, but require independent deterministic or verified behavioral corroboration before the
+  fused artifact verdict becomes malicious. Verified Codex behavioral findings remain
+  detection-bearing.
 - Standalone Codex observation of the physical wheel `.pth` bundle succeeded after network access
   was granted to the provider subprocess. It cited the `wheel_pth` event, retained incomplete
   coverage, and reported context-only behavior rather than a malicious detection. The permission
