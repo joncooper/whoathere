@@ -116,6 +116,7 @@ struct NetworkProjectionV1 {
     events: Vec<PendingEventV1>,
     event_count: usize,
     connect_sendto_coverage_complete: bool,
+    target_detail_complete: bool,
     dns_coverage_complete: bool,
     http_coverage_complete: bool,
     host_frame_correlation_complete: bool,
@@ -232,6 +233,10 @@ pub fn project_exact_detonation_behavior_v1(
             (
                 !network_projection.connect_sendto_coverage_complete,
                 "connect_sendto_coverage_incomplete",
+            ),
+            (
+                !network_projection.target_detail_complete,
+                "network_target_detail_incomplete",
             ),
             (
                 !network_projection.host_frame_correlation_complete,
@@ -476,6 +481,7 @@ fn project_network_v1(
             && !bool_field(coverage, "evidence_truncated")?
             && decimal_u64_field(coverage, "dropped_event_count")? == 0
             && decimal_u64_field(coverage, "discarded_record_count")? == 0;
+    let target_detail_complete = bool_field(coverage, "target_detail_complete")?;
     let dns_coverage_complete = bool_field(coverage, "dns_intent_coverage_complete")?;
     let http_coverage_complete = bool_field(coverage, "http_observation_complete")?;
     let host_frame_correlation_complete = bool_field(coverage, "host_frame_correlation_complete")?;
@@ -491,8 +497,33 @@ fn project_network_v1(
             "sendto" => NetworkActionV1::Send,
             _ => return Err(BehaviorEvidenceProjectionErrorV1::InvalidField),
         };
-        let destination =
-            map_network_destination_v1(string_field(source_event, "destination_class")?)?;
+        let destination = match string_field(source_event, "target_status")? {
+            "observed" => {
+                if source_event.contains_key("target_unavailable_reason") {
+                    return Err(BehaviorEvidenceProjectionErrorV1::InvalidField);
+                }
+                map_network_destination_v1(string_field(source_event, "destination_class")?)?
+            }
+            "unavailable" => {
+                if source_event
+                    .get("target_unavailable_reason")
+                    .and_then(Value::as_str)
+                    != Some("sendto_destination_detail_unavailable")
+                    || [
+                        "address_family",
+                        "destination_class",
+                        "destination_port",
+                        "destination_token_sha256",
+                    ]
+                    .iter()
+                    .any(|field| source_event.contains_key(*field))
+                {
+                    return Err(BehaviorEvidenceProjectionErrorV1::InvalidField);
+                }
+                NetworkDestinationClassV1::Unavailable
+            }
+            _ => return Err(BehaviorEvidenceProjectionErrorV1::InvalidField),
+        };
         let source_sequence = decimal_u64_field(source_event, "enter_source_sequence")?;
         let timestamp = decimal_u64_field(source_event, "enter_timestamp_monotonic_nanoseconds")?;
         if source_sequence == 0 || timestamp == 0 {
@@ -514,6 +545,7 @@ fn project_network_v1(
         events,
         event_count: source_events.len(),
         connect_sendto_coverage_complete,
+        target_detail_complete,
         dns_coverage_complete,
         http_coverage_complete,
         host_frame_correlation_complete,
@@ -933,13 +965,16 @@ mod tests {
                 "dropped_event_count": "0", "evidence_truncated": false,
                 "host_frame_correlation_complete": false,
                 "http_observation_complete": false, "network_event_count": "2",
-                "process_sensor_healthy": true
+                "process_sensor_healthy": true, "target_detail_complete": false
             },
             "events": [
                 {"destination_class": "public", "enter_source_sequence": "3",
-                 "enter_timestamp_monotonic_nanoseconds": "175", "event_kind": "connect"},
-                {"destination_class": "metadata", "enter_source_sequence": "5",
-                 "enter_timestamp_monotonic_nanoseconds": "275", "event_kind": "sendto"}
+                 "enter_timestamp_monotonic_nanoseconds": "175", "event_kind": "connect",
+                 "target_status": "observed"},
+                {"enter_source_sequence": "5",
+                 "enter_timestamp_monotonic_nanoseconds": "275", "event_kind": "sendto",
+                 "target_status": "unavailable",
+                 "target_unavailable_reason": "sendto_destination_detail_unavailable"}
             ],
             "schema_version": ROOT_NETWORK_SCHEMA_V2
         }));
@@ -1027,6 +1062,20 @@ mod tests {
                 canary: CanaryClassV1::NpmToken
             }
         ));
+        assert!(matches!(
+            bundle.events()[5].signal(),
+            BehaviorEvidenceSignalV1::Network {
+                action: NetworkActionV1::Send,
+                destination: NetworkDestinationClassV1::Unavailable
+            }
+        ));
+        assert!(bundle.coverage().iter().any(|item| {
+            item.modality() == BehaviorEvidenceModalityV1::Network
+                && item
+                    .limitation_codes()
+                    .iter()
+                    .any(|code| code == "network_target_detail_incomplete")
+        }));
         assert!(bundle.events().iter().all(|event| {
             event.source_receipt_sha256() == &Sha256Digest::from_bytes(&fixtures.root)
                 && event.untrusted_detail().is_none()

@@ -460,7 +460,7 @@ fn network_send_is_detected_without_overclaiming_exfiltration() {
         digest("verified-network-receipt"),
         BehaviorEvidenceSignalV1::Network {
             action: NetworkActionV1::Send,
-            destination: NetworkDestinationClassV1::LocalSinkhole,
+            destination: NetworkDestinationClassV1::Unavailable,
         },
         None,
     )
@@ -478,7 +478,7 @@ fn network_send_is_detected_without_overclaiming_exfiltration() {
                 "kind": "network_send",
                 "confidence": "high",
                 "evidence": [reference],
-                "explanation": "The typed event records a send to the local sinkhole.",
+                "explanation": "The typed event records a send whose connected-socket destination was unavailable.",
             })],
         ),
         &bundle,

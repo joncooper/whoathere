@@ -29,6 +29,7 @@ pub const LINUX_VZ_PACKAGE_ROOT_NETWORK_EVIDENCE_SCHEMA_V2: &str =
 const PACKAGE_UID_V1: u32 = 65_534;
 const PACKAGE_GID_V1: u32 = 65_534;
 const MAX_ROOT_NETWORK_EVENTS_V1: usize = 4_096;
+const SENDTO_DESTINATION_DETAIL_UNAVAILABLE_V1: &str = "sendto_destination_detail_unavailable";
 const UNOBSERVED_CAPABILITIES_V1: [&str; 4] = [
     "dns_intent",
     "guest_intent_syscalls_beyond_connect_sendto",
@@ -167,6 +168,29 @@ pub enum LinuxVzPackageRootNetworkEventKindV1 {
     Sendto,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinuxVzPackageRootNetworkTargetStatusV1 {
+    Observed,
+    Unavailable,
+}
+
+impl LinuxVzPackageRootNetworkTargetStatusV1 {
+    const fn as_str_v1(self) -> &'static str {
+        match self {
+            Self::Observed => "observed",
+            Self::Unavailable => "unavailable",
+        }
+    }
+
+    fn parse_v1(value: &str) -> Result<Self, LinuxVzPackageRootNetworkEvidenceErrorV1> {
+        match value {
+            "observed" => Ok(Self::Observed),
+            "unavailable" => Ok(Self::Unavailable),
+            _ => Err(LinuxVzPackageRootNetworkEvidenceErrorV1::InvalidEvent),
+        }
+    }
+}
+
 impl LinuxVzPackageRootNetworkEventKindV1 {
     const fn as_str_v1(self) -> &'static str {
         match self {
@@ -254,10 +278,12 @@ impl LinuxVzPackageRootNetworkDestinationClassV1 {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinuxVzPackageRootNetworkEventV1 {
     kind: LinuxVzPackageRootNetworkEventKindV1,
-    address_family: LinuxVzPackageRootNetworkAddressFamilyV1,
-    destination_class: LinuxVzPackageRootNetworkDestinationClassV1,
-    destination_port: u16,
-    destination_token_sha256: Sha256Digest,
+    target_status: LinuxVzPackageRootNetworkTargetStatusV1,
+    address_family: Option<LinuxVzPackageRootNetworkAddressFamilyV1>,
+    destination_class: Option<LinuxVzPackageRootNetworkDestinationClassV1>,
+    destination_port: Option<u16>,
+    destination_token_sha256: Option<Sha256Digest>,
+    target_unavailable_reason: Option<String>,
     enter_source_sequence: u64,
     exit_source_sequence: u64,
     enter_timestamp_monotonic_nanoseconds: u64,
@@ -420,20 +446,28 @@ impl LinuxVzPackageRootNetworkEventV1 {
         self.kind
     }
 
-    pub const fn address_family(&self) -> LinuxVzPackageRootNetworkAddressFamilyV1 {
+    pub const fn target_status(&self) -> LinuxVzPackageRootNetworkTargetStatusV1 {
+        self.target_status
+    }
+
+    pub const fn address_family(&self) -> Option<LinuxVzPackageRootNetworkAddressFamilyV1> {
         self.address_family
     }
 
-    pub const fn destination_class(&self) -> LinuxVzPackageRootNetworkDestinationClassV1 {
+    pub const fn destination_class(&self) -> Option<LinuxVzPackageRootNetworkDestinationClassV1> {
         self.destination_class
     }
 
-    pub const fn destination_port(&self) -> u16 {
+    pub const fn destination_port(&self) -> Option<u16> {
         self.destination_port
     }
 
-    pub fn destination_token_sha256(&self) -> &Sha256Digest {
-        &self.destination_token_sha256
+    pub fn destination_token_sha256(&self) -> Option<&Sha256Digest> {
+        self.destination_token_sha256.as_ref()
+    }
+
+    pub fn target_unavailable_reason(&self) -> Option<&str> {
+        self.target_unavailable_reason.as_deref()
     }
 
     pub const fn enter_source_sequence(&self) -> u64 {
@@ -466,6 +500,7 @@ pub struct LinuxVzPackageRootNetworkEvidenceV1 {
     http_observation_complete: bool,
     composite_network_coverage_complete: bool,
     raw_addresses_serialized: bool,
+    target_detail_complete: bool,
     events: Vec<LinuxVzPackageRootNetworkEventV1>,
     egress_observations: Vec<LinuxVzPackageRootNetworkEgressObservationV1>,
     unobserved_capabilities: Vec<String>,
@@ -497,6 +532,7 @@ impl fmt::Debug for LinuxVzPackageRootNetworkEvidenceV1 {
                 &self.composite_network_coverage_complete,
             )
             .field("raw_addresses_serialized", &self.raw_addresses_serialized)
+            .field("target_detail_complete", &self.target_detail_complete)
             .finish()
     }
 }
@@ -560,6 +596,10 @@ impl LinuxVzPackageRootNetworkEvidenceV1 {
 
     pub const fn raw_addresses_serialized(&self) -> bool {
         self.raw_addresses_serialized
+    }
+
+    pub const fn target_detail_complete(&self) -> bool {
+        self.target_detail_complete
     }
 
     pub fn events(&self) -> &[LinuxVzPackageRootNetworkEventV1] {
@@ -659,11 +699,15 @@ struct RootNetworkEgressObservationWireV1 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RootNetworkEventWireV1 {
-    address_family: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    address_family: Option<String>,
     cgroup_id: String,
-    destination_class: String,
-    destination_port: String,
-    destination_token_sha256: Sha256Digest,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    destination_class: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    destination_port: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    destination_token_sha256: Option<Sha256Digest>,
     enter_cpu: String,
     enter_source_sequence: String,
     enter_timestamp_monotonic_nanoseconds: String,
@@ -673,6 +717,9 @@ struct RootNetworkEventWireV1 {
     exit_timestamp_monotonic_nanoseconds: String,
     pid: String,
     syscall_result: String,
+    target_status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    target_unavailable_reason: Option<String>,
     tgid: String,
 }
 
@@ -730,6 +777,9 @@ pub(crate) fn encode_linux_vz_package_root_network_evidence_v1(
     if events.len() > MAX_ROOT_NETWORK_EVENTS_V1 {
         return Err(LinuxVzPackageRootNetworkEvidenceErrorV1::LimitExceeded);
     }
+    let target_detail_complete = events.iter().all(|event| {
+        event.target_status == LinuxVzPackageRootNetworkTargetStatusV1::Observed.as_str_v1()
+    });
     let egress_observations = collection
         .egress_events_v1()
         .iter()
@@ -762,11 +812,8 @@ pub(crate) fn encode_linux_vz_package_root_network_evidence_v1(
             network_event_count: events.len().to_string(),
             process_sensor_healthy: true,
             raw_addresses_serialized: false,
-            target_detail_complete: true,
-            unobserved_capabilities: UNOBSERVED_CAPABILITIES_V1
-                .iter()
-                .map(|value| (*value).to_string())
-                .collect(),
+            target_detail_complete,
+            unobserved_capabilities: unobserved_capabilities_v1(target_detail_complete),
         },
         egress_observations,
         events,
@@ -803,6 +850,9 @@ pub fn decode_linux_vz_package_root_network_evidence_v1(
     let process_observation_count = parse_usize_v1(&wire.process_observation_count)?;
     let process_source_event_count_usize = usize::try_from(process_source_event_count)
         .map_err(|_| LinuxVzPackageRootNetworkEvidenceErrorV1::InvalidCoverage)?;
+    let target_detail_complete = wire.events.iter().all(|event| {
+        event.target_status == LinuxVzPackageRootNetworkTargetStatusV1::Observed.as_str_v1()
+    });
     if process_source_event_count == 0
         || process_observation_count == 0
         || process_observation_count > process_source_event_count_usize
@@ -832,11 +882,8 @@ pub fn decode_linux_vz_package_root_network_evidence_v1(
                 network_event_count: wire.events.len().to_string(),
                 process_sensor_healthy: true,
                 raw_addresses_serialized: false,
-                target_detail_complete: true,
-                unobserved_capabilities: UNOBSERVED_CAPABILITIES_V1
-                    .iter()
-                    .map(|value| (*value).to_string())
-                    .collect(),
+                target_detail_complete,
+                unobserved_capabilities: unobserved_capabilities_v1(target_detail_complete),
             })
     {
         return Err(LinuxVzPackageRootNetworkEvidenceErrorV1::InvalidCoverage);
@@ -852,7 +899,10 @@ pub fn decode_linux_vz_package_root_network_evidence_v1(
             let decoded = decode_event_wire_v1(event, expected, process_source_event_count)?;
             if decoded.enter_source_sequence <= prior_exit_sequence
                 || decoded.enter_timestamp_monotonic_nanoseconds <= prior_exit_timestamp
-                || !tokens.insert(decoded.destination_token_sha256.clone())
+                || decoded
+                    .destination_token_sha256
+                    .as_ref()
+                    .is_some_and(|token| !tokens.insert(token.clone()))
             {
                 return Err(LinuxVzPackageRootNetworkEvidenceErrorV1::InvalidEvent);
             }
@@ -901,12 +951,10 @@ pub fn decode_linux_vz_package_root_network_evidence_v1(
         http_observation_complete: false,
         composite_network_coverage_complete: false,
         raw_addresses_serialized: false,
+        target_detail_complete,
         events,
         egress_observations,
-        unobserved_capabilities: UNOBSERVED_CAPABILITIES_V1
-            .iter()
-            .map(|value| (*value).to_string())
-            .collect(),
+        unobserved_capabilities: unobserved_capabilities_v1(target_detail_complete),
     })
 }
 
@@ -1068,9 +1116,6 @@ fn network_event_wire_v1(
     event: &crate::linux_vz_package_sensor_process_stream::LinuxVzPackageCorrelatedSyscallV1,
     kind: LinuxVzPackageRootNetworkEventKindV1,
 ) -> Result<RootNetworkEventWireV1, LinuxVzPackageRootNetworkEvidenceErrorV1> {
-    let target = event
-        .network_target_v1()
-        .ok_or(LinuxVzPackageRootNetworkEvidenceErrorV1::InvalidEvent)?;
     if event.cgroup_id_v1() != expected.cgroup_id
         || event.pid_v1() <= 1
         || event.tgid_v1() <= 1
@@ -1084,20 +1129,52 @@ fn network_event_wire_v1(
     {
         return Err(LinuxVzPackageRootNetworkEvidenceErrorV1::InvalidEvent);
     }
-    let (family, destination_class) = classify_network_target_v1(target)?;
-    let destination_token_sha256 = network_target_token_v1(
-        &expected.sensor_session_challenge_sha256,
-        kind,
-        family,
-        target.port_v1(),
-        event.enter_source_sequence_v1(),
-        target.address_v1(),
-    )?;
+    let (
+        target_status,
+        address_family,
+        destination_class,
+        destination_port,
+        destination_token_sha256,
+        target_unavailable_reason,
+    ) = match event.network_target_v1() {
+        Some(target) => {
+            let (family, destination_class) = classify_network_target_v1(target)?;
+            let destination_token_sha256 = network_target_token_v1(
+                &expected.sensor_session_challenge_sha256,
+                kind,
+                family,
+                target.port_v1(),
+                event.enter_source_sequence_v1(),
+                target.address_v1(),
+            )?;
+            (
+                LinuxVzPackageRootNetworkTargetStatusV1::Observed,
+                Some(family.as_str_v1().to_string()),
+                Some(destination_class.as_str_v1().to_string()),
+                Some(target.port_v1().to_string()),
+                Some(destination_token_sha256),
+                None,
+            )
+        }
+        None if kind == LinuxVzPackageRootNetworkEventKindV1::Sendto
+            && event.arguments_v1()[5] == 0 =>
+        {
+            (
+                LinuxVzPackageRootNetworkTargetStatusV1::Unavailable,
+                None,
+                None,
+                None,
+                None,
+                Some(SENDTO_DESTINATION_DETAIL_UNAVAILABLE_V1.to_string()),
+            )
+        }
+        None => return Err(LinuxVzPackageRootNetworkEvidenceErrorV1::InvalidEvent),
+    };
     Ok(RootNetworkEventWireV1 {
-        address_family: family.as_str_v1().to_string(),
+        address_family,
         cgroup_id: event.cgroup_id_v1().to_string(),
-        destination_class: destination_class.as_str_v1().to_string(),
-        destination_port: target.port_v1().to_string(),
+        destination_class,
+        destination_port,
         destination_token_sha256,
         enter_cpu: event.enter_cpu_v1().to_string(),
         enter_source_sequence: event.enter_source_sequence_v1().to_string(),
@@ -1108,6 +1185,8 @@ fn network_event_wire_v1(
         exit_timestamp_monotonic_nanoseconds: event.exit_timestamp_nanoseconds_v1().to_string(),
         pid: event.pid_v1().to_string(),
         syscall_result: event.result_v1().to_string(),
+        target_status: target_status.as_str_v1().to_string(),
+        target_unavailable_reason,
         tgid: event.tgid_v1().to_string(),
     })
 }
@@ -1118,15 +1197,7 @@ fn decode_event_wire_v1(
     process_source_event_count: u64,
 ) -> Result<LinuxVzPackageRootNetworkEventV1, LinuxVzPackageRootNetworkEvidenceErrorV1> {
     let kind = LinuxVzPackageRootNetworkEventKindV1::parse_v1(&wire.event_kind)?;
-    let address_family = LinuxVzPackageRootNetworkAddressFamilyV1::parse_v1(&wire.address_family)?;
-    let destination_class =
-        LinuxVzPackageRootNetworkDestinationClassV1::parse_v1(&wire.destination_class)?;
-    if address_family == LinuxVzPackageRootNetworkAddressFamilyV1::Ipv6
-        && destination_class == LinuxVzPackageRootNetworkDestinationClassV1::Broadcast
-    {
-        return Err(LinuxVzPackageRootNetworkEvidenceErrorV1::InvalidEvent);
-    }
-    let destination_port = parse_u16_v1(&wire.destination_port)?;
+    let target_status = LinuxVzPackageRootNetworkTargetStatusV1::parse_v1(&wire.target_status)?;
     let enter_source_sequence = parse_u64_v1(&wire.enter_source_sequence)?;
     let exit_source_sequence = parse_u64_v1(&wire.exit_source_sequence)?;
     let enter_timestamp_monotonic_nanoseconds =
@@ -1139,8 +1210,7 @@ fn decode_event_wire_v1(
     let syscall_result = parse_i64_v1(&wire.syscall_result)?;
     let enter_cpu = parse_u32_v1(&wire.enter_cpu)?;
     let exit_cpu = parse_u32_v1(&wire.exit_cpu)?;
-    if destination_port == 0
-        || enter_source_sequence == 0
+    if enter_source_sequence == 0
         || exit_source_sequence != enter_source_sequence + 1
         || exit_source_sequence > process_source_event_count
         || enter_timestamp_monotonic_nanoseconds
@@ -1151,20 +1221,75 @@ fn decode_event_wire_v1(
         || cgroup_id != expected.cgroup_id
         || pid <= 1
         || tgid <= 1
-        || wire.destination_token_sha256 == Sha256Digest::from_bytes(&[])
-        || wire.destination_token_sha256 == expected.sensor_session_challenge_sha256
-        || wire.destination_token_sha256 == expected.launch_contract_sha256
-        || wire.destination_token_sha256 == expected.process_plan_sha256
-        || wire.destination_token_sha256 == expected.process_evidence_sha256
     {
         return Err(LinuxVzPackageRootNetworkEvidenceErrorV1::InvalidEvent);
     }
+    let (address_family, destination_class, destination_port, destination_token_sha256) =
+        match target_status {
+            LinuxVzPackageRootNetworkTargetStatusV1::Observed => {
+                if wire.target_unavailable_reason.is_some() {
+                    return Err(LinuxVzPackageRootNetworkEvidenceErrorV1::InvalidEvent);
+                }
+                let address_family = LinuxVzPackageRootNetworkAddressFamilyV1::parse_v1(
+                    wire.address_family
+                        .as_deref()
+                        .ok_or(LinuxVzPackageRootNetworkEvidenceErrorV1::InvalidEvent)?,
+                )?;
+                let destination_class = LinuxVzPackageRootNetworkDestinationClassV1::parse_v1(
+                    wire.destination_class
+                        .as_deref()
+                        .ok_or(LinuxVzPackageRootNetworkEvidenceErrorV1::InvalidEvent)?,
+                )?;
+                let destination_port = parse_u16_v1(
+                    wire.destination_port
+                        .as_deref()
+                        .ok_or(LinuxVzPackageRootNetworkEvidenceErrorV1::InvalidEvent)?,
+                )?;
+                let destination_token_sha256 = wire
+                    .destination_token_sha256
+                    .as_ref()
+                    .ok_or(LinuxVzPackageRootNetworkEvidenceErrorV1::InvalidEvent)?;
+                if destination_port == 0
+                    || (address_family == LinuxVzPackageRootNetworkAddressFamilyV1::Ipv6
+                        && destination_class
+                            == LinuxVzPackageRootNetworkDestinationClassV1::Broadcast)
+                    || destination_token_sha256 == &Sha256Digest::from_bytes(&[])
+                    || destination_token_sha256 == expected.sensor_session_challenge_sha256()
+                    || destination_token_sha256 == &expected.launch_contract_sha256
+                    || destination_token_sha256 == &expected.process_plan_sha256
+                    || destination_token_sha256 == expected.process_evidence_sha256()
+                {
+                    return Err(LinuxVzPackageRootNetworkEvidenceErrorV1::InvalidEvent);
+                }
+                (
+                    Some(address_family),
+                    Some(destination_class),
+                    Some(destination_port),
+                    Some(destination_token_sha256.clone()),
+                )
+            }
+            LinuxVzPackageRootNetworkTargetStatusV1::Unavailable => {
+                if kind != LinuxVzPackageRootNetworkEventKindV1::Sendto
+                    || wire.address_family.is_some()
+                    || wire.destination_class.is_some()
+                    || wire.destination_port.is_some()
+                    || wire.destination_token_sha256.is_some()
+                    || wire.target_unavailable_reason.as_deref()
+                        != Some(SENDTO_DESTINATION_DETAIL_UNAVAILABLE_V1)
+                {
+                    return Err(LinuxVzPackageRootNetworkEvidenceErrorV1::InvalidEvent);
+                }
+                (None, None, None, None)
+            }
+        };
     Ok(LinuxVzPackageRootNetworkEventV1 {
         kind,
+        target_status,
         address_family,
         destination_class,
         destination_port,
-        destination_token_sha256: wire.destination_token_sha256.clone(),
+        destination_token_sha256,
+        target_unavailable_reason: wire.target_unavailable_reason.clone(),
         enter_source_sequence,
         exit_source_sequence,
         enter_timestamp_monotonic_nanoseconds,
@@ -1326,6 +1451,18 @@ fn network_target_token_v1(
     let digest = Sha256Digest::from_bytes(&input);
     input.zeroize();
     Ok(digest)
+}
+
+fn unobserved_capabilities_v1(target_detail_complete: bool) -> Vec<String> {
+    let mut capabilities = UNOBSERVED_CAPABILITIES_V1
+        .iter()
+        .map(|value| (*value).to_string())
+        .collect::<Vec<_>>();
+    if !target_detail_complete {
+        capabilities.push(SENDTO_DESTINATION_DETAIL_UNAVAILABLE_V1.to_string());
+    }
+    capabilities.sort_unstable();
+    capabilities
 }
 
 fn canonical_json_v1<T: Serialize>(
@@ -1509,6 +1646,65 @@ mod tests {
         .expect("collection")
     }
 
+    fn targetless_sendto_collection_v1(
+        destination_length: u64,
+    ) -> LinuxVzPackageRootProcessCollectionV1 {
+        let completion = completion_v1();
+        let mut correlator = LinuxVzPackageProcessEventCorrelatorV1::new_v1(TEST_CGROUP_ID_V1, 8)
+            .expect("correlator");
+        correlator
+            .ingest_v1(kernel_event_v1(
+                LinuxVzPackageKernelEventKindV1::Exec,
+                1,
+                200,
+                None,
+                [0; 6],
+                None,
+                None,
+            ))
+            .expect("exec");
+        correlator
+            .ingest_v1(kernel_event_v1(
+                LinuxVzPackageKernelEventKindV1::SyscallEnter,
+                2,
+                300,
+                Some(LinuxVzPackageSelectedSyscallV1::Sendto),
+                [7, 0, 16, 0, 0, destination_length],
+                None,
+                None,
+            ))
+            .expect("sendto enter");
+        correlator
+            .ingest_v1(kernel_event_v1(
+                LinuxVzPackageKernelEventKindV1::SyscallExit,
+                3,
+                400,
+                Some(LinuxVzPackageSelectedSyscallV1::Sendto),
+                [0; 6],
+                Some(16),
+                None,
+            ))
+            .expect("sendto exit");
+        correlator
+            .ingest_v1(kernel_event_v1(
+                LinuxVzPackageKernelEventKindV1::Exit,
+                4,
+                900,
+                None,
+                [0; 6],
+                Some(0),
+                None,
+            ))
+            .expect("exit");
+        let stream = correlator.finish_v1(0, 0, 4).expect("stream");
+        LinuxVzPackageRootProcessCollectionV1::from_test_stream_v1(
+            stream,
+            TEST_LEADER_PID_V1,
+            &completion,
+        )
+        .expect("collection")
+    }
+
     fn exact_wire_v1() -> RootNetworkEvidenceWireV1 {
         let expected = expected_v1();
         let family = LinuxVzPackageRootNetworkAddressFamilyV1::Ipv4;
@@ -1541,10 +1737,7 @@ mod tests {
                 process_sensor_healthy: true,
                 raw_addresses_serialized: false,
                 target_detail_complete: true,
-                unobserved_capabilities: UNOBSERVED_CAPABILITIES_V1
-                    .iter()
-                    .map(|value| (*value).to_string())
-                    .collect(),
+                unobserved_capabilities: unobserved_capabilities_v1(true),
             },
             egress_observations: vec![RootNetworkEgressObservationWireV1 {
                 cgroup_id: TEST_CGROUP_ID_V1.to_string(),
@@ -1569,11 +1762,11 @@ mod tests {
                 wire_length: "0".to_string(),
             }],
             events: vec![RootNetworkEventWireV1 {
-                address_family: "ipv4".to_string(),
+                address_family: Some("ipv4".to_string()),
                 cgroup_id: "77".to_string(),
-                destination_class: "documentation".to_string(),
-                destination_port: "443".to_string(),
-                destination_token_sha256: token,
+                destination_class: Some("documentation".to_string()),
+                destination_port: Some("443".to_string()),
+                destination_token_sha256: Some(token),
                 enter_cpu: "1".to_string(),
                 enter_source_sequence: "14".to_string(),
                 enter_timestamp_monotonic_nanoseconds: "500".to_string(),
@@ -1583,6 +1776,8 @@ mod tests {
                 exit_timestamp_monotonic_nanoseconds: "600".to_string(),
                 pid: "51".to_string(),
                 syscall_result: "-101".to_string(),
+                target_status: "observed".to_string(),
+                target_unavailable_reason: None,
                 tgid: "51".to_string(),
             }],
             process_observation_count: "10".to_string(),
@@ -1616,13 +1811,120 @@ mod tests {
         assert!(!evidence.host_frame_correlation_complete());
         assert!(!evidence.composite_network_coverage_complete());
         assert!(!evidence.raw_addresses_serialized());
+        assert!(evidence.target_detail_complete());
         assert_eq!(
             evidence.events()[0].destination_class(),
-            LinuxVzPackageRootNetworkDestinationClassV1::Documentation
+            Some(LinuxVzPackageRootNetworkDestinationClassV1::Documentation)
         );
         let text = String::from_utf8(bytes).expect("utf8");
         assert!(!text.contains("192.0.2.9"));
         assert!(!text.contains("2001:db8"));
+    }
+
+    #[test]
+    fn encoder_preserves_targetless_sendto_and_marks_target_detail_incomplete() {
+        let expected = expected_v1();
+        let evidence = encode_linux_vz_package_root_network_evidence_v1(
+            &expected,
+            &targetless_sendto_collection_v1(0),
+        )
+        .expect("encode targetless sendto");
+
+        assert!(evidence.connect_sendto_intent_coverage_complete());
+        assert!(!evidence.target_detail_complete());
+        assert_eq!(evidence.events().len(), 1);
+        let event = &evidence.events()[0];
+        assert_eq!(event.kind(), LinuxVzPackageRootNetworkEventKindV1::Sendto);
+        assert_eq!(
+            event.target_status(),
+            LinuxVzPackageRootNetworkTargetStatusV1::Unavailable
+        );
+        assert_eq!(event.address_family(), None);
+        assert_eq!(event.destination_class(), None);
+        assert_eq!(event.destination_port(), None);
+        assert_eq!(event.destination_token_sha256(), None);
+        assert_eq!(
+            event.target_unavailable_reason(),
+            Some(SENDTO_DESTINATION_DETAIL_UNAVAILABLE_V1)
+        );
+        assert_eq!(event.syscall_result(), 16);
+        assert!(evidence
+            .unobserved_capabilities()
+            .windows(2)
+            .all(|pair| pair[0] < pair[1]));
+        assert!(evidence
+            .unobserved_capabilities()
+            .iter()
+            .any(|capability| capability == SENDTO_DESTINATION_DETAIL_UNAVAILABLE_V1));
+
+        let wire: RootNetworkEvidenceWireV1 =
+            serde_json::from_slice(evidence.canonical_json_v1()).expect("canonical wire");
+        let event = &wire.events[0];
+        assert_eq!(event.target_status, "unavailable");
+        assert_eq!(
+            event.target_unavailable_reason.as_deref(),
+            Some(SENDTO_DESTINATION_DETAIL_UNAVAILABLE_V1)
+        );
+        assert!(event.address_family.is_none());
+        assert!(event.destination_class.is_none());
+        assert!(event.destination_port.is_none());
+        assert!(event.destination_token_sha256.is_none());
+    }
+
+    #[test]
+    fn targetless_sendto_requires_zero_destination_length() {
+        assert_eq!(
+            encode_linux_vz_package_root_network_evidence_v1(
+                &expected_v1(),
+                &targetless_sendto_collection_v1(16),
+            ),
+            Err(LinuxVzPackageRootNetworkEvidenceErrorV1::InvalidEvent)
+        );
+    }
+
+    #[test]
+    fn unavailable_target_union_and_coverage_are_strict() {
+        let expected = expected_v1();
+        let evidence = encode_linux_vz_package_root_network_evidence_v1(
+            &expected,
+            &targetless_sendto_collection_v1(0),
+        )
+        .expect("encode targetless sendto");
+        let wire: RootNetworkEvidenceWireV1 =
+            serde_json::from_slice(evidence.canonical_json_v1()).expect("canonical wire");
+
+        let mut with_observed_field = wire.events[0].clone();
+        with_observed_field.address_family = Some("ipv4".to_string());
+        assert_eq!(
+            decode_event_wire_v1(&with_observed_field, &expected, 4),
+            Err(LinuxVzPackageRootNetworkEvidenceErrorV1::InvalidEvent)
+        );
+
+        let mut unavailable_connect = wire.events[0].clone();
+        unavailable_connect.event_kind = "connect".to_string();
+        assert_eq!(
+            decode_event_wire_v1(&unavailable_connect, &expected, 4),
+            Err(LinuxVzPackageRootNetworkEvidenceErrorV1::InvalidEvent)
+        );
+
+        let mut observed_without_fields = wire.events[0].clone();
+        observed_without_fields.target_status = "observed".to_string();
+        observed_without_fields.target_unavailable_reason = None;
+        assert_eq!(
+            decode_event_wire_v1(&observed_without_fields, &expected, 4),
+            Err(LinuxVzPackageRootNetworkEvidenceErrorV1::InvalidEvent)
+        );
+
+        let mut upgraded_coverage = wire;
+        upgraded_coverage.coverage.target_detail_complete = true;
+        upgraded_coverage.coverage.unobserved_capabilities = unobserved_capabilities_v1(true);
+        assert_eq!(
+            decode_linux_vz_package_root_network_evidence_v1(
+                &canonical_json_v1(&upgraded_coverage).expect("upgraded coverage"),
+                &expected,
+            ),
+            Err(LinuxVzPackageRootNetworkEvidenceErrorV1::InvalidCoverage)
+        );
     }
 
     #[test]

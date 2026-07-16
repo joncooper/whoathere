@@ -1361,6 +1361,7 @@ fn run_linux_vz_package_sensor_bpf_inert_probe_linux_v1(
         network_sendto_destination_class: "documentation",
         network_sendto_destination_token_sha256: transmitted_sendto
             .destination_token_sha256()
+            .ok_or(LinuxVzPackageSensorBpfInertProbeErrorV1::EventMismatch)?
             .as_str()
             .to_string(),
         network_sendto_enter_source_sequence: transmitted_sendto
@@ -1580,24 +1581,27 @@ fn matches_exact_root_network_evidence_v1(
     evidence.process_source_event_count() == 18
         && evidence.process_observation_count() == 10
         && evidence.egress_packet_coverage_complete()
+        && evidence.target_detail_complete()
         && evidence.egress_dropped_event_count() == 0
         && evidence.egress_discarded_record_count() == 0
         && connect.kind() == LinuxVzPackageRootNetworkEventKindV1::Connect
-        && connect.address_family() == LinuxVzPackageRootNetworkAddressFamilyV1::Ipv4
-        && connect.destination_class() == LinuxVzPackageRootNetworkDestinationClassV1::Documentation
-        && connect.destination_port() == 443
+        && connect.address_family() == Some(LinuxVzPackageRootNetworkAddressFamilyV1::Ipv4)
+        && connect.destination_class()
+            == Some(LinuxVzPackageRootNetworkDestinationClassV1::Documentation)
+        && connect.destination_port() == Some(443)
         && connect.enter_source_sequence() == 14
         && connect.exit_source_sequence() == 15
         && connect.syscall_result() == i64::from(-libc::ENETUNREACH)
         && sendto.kind() == LinuxVzPackageRootNetworkEventKindV1::Sendto
-        && sendto.address_family() == LinuxVzPackageRootNetworkAddressFamilyV1::Ipv4
-        && sendto.destination_class() == LinuxVzPackageRootNetworkDestinationClassV1::Documentation
-        && sendto.destination_port() == 40_553
+        && sendto.address_family() == Some(LinuxVzPackageRootNetworkAddressFamilyV1::Ipv4)
+        && sendto.destination_class()
+            == Some(LinuxVzPackageRootNetworkDestinationClassV1::Documentation)
+        && sendto.destination_port() == Some(40_553)
         && sendto.enter_source_sequence() == 16
         && sendto.exit_source_sequence() == 17
         && sendto.syscall_result() == 16
-        && sendto.destination_token_sha256().as_str()
-            == "sha256:3ef258ec5ef33c871db55bb52239931372585c08ad3fbafda224bc498ad0ed7b"
+        && sendto.destination_token_sha256().map(Sha256Digest::as_str)
+            == Some("sha256:3ef258ec5ef33c871db55bb52239931372585c08ad3fbafda224bc498ad0ed7b")
         && connect.destination_token_sha256() != sendto.destination_token_sha256()
         && egress.decision() == LinuxVzPackageRootNetworkEgressDecisionV1::Allow
         && egress.protocol() == LinuxVzPackageRootNetworkEgressProtocolV1::Ipv4
