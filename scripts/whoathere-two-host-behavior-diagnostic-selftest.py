@@ -54,7 +54,6 @@ def make_bundle(artifact: str, manifest: str, run_id: str = "wheel-run-0") -> tu
 
 
 def make_report(artifact: str, manifest: str, bundle_sha256: str) -> dict[str, Any]:
-    intent_sha256 = digest(b"wheel-intent")
     return {
         "schema_version": "whoathere.exact_artifact_inspection.v1",
         "identity": {
@@ -78,11 +77,14 @@ def make_report(artifact: str, manifest: str, bundle_sha256: str) -> dict[str, A
         "scenario_plan": {
             "artifact_sha256": artifact,
             "manifest_sha256": manifest,
-            "intents": [{"intent_sha256": intent_sha256}],
+            "plan_sha256": digest(b"scenario-plan"),
+            "intent_count": 1,
         },
         "admission_authority": False,
         "observed_clean": False,
         "sync_back_enabled": False,
+        "sanitized_projection": True,
+        "raw_source_or_telemetry_included": False,
     }
 
 
@@ -170,8 +172,19 @@ def main() -> int:
         code, result = run(report_path, bundles, observers)
         assert code == 20 and result["verdict"] == "diagnostic_detection", result
         assert result["reconciliation_complete"] is True, result
+        assert result["scenario_plan_sha256"] == digest(b"scenario-plan"), result
+        assert result["scenario_intent_count"] == 1, result
+        assert "scenario_intent_sha256" not in result["bundles"][0], result
         assert result["behavior_specific_findings"][0]["finding"]["kind"] == "canary_access"
         assert result["admission_authority"] is False and result["observed_clean"] is False
+
+        unsafe_projection = make_report(artifact, manifest, bundle_sha256)
+        unsafe_projection["raw_source_or_telemetry_included"] = True
+        write_json(report_path, unsafe_projection)
+        code, result = run(report_path, bundles, observers)
+        assert code == 22 and result["reconciliation_complete"] is False, result
+        assert "two_host_remote_sanitized_projection_invalid" in result["reason_codes"]
+        write_json(report_path, make_report(artifact, manifest, bundle_sha256))
 
         write_json(result_path, make_observer(bundle, bundle_sha256, positive=False))
         code, result = run(report_path, bundles, observers)

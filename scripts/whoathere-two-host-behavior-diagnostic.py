@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Join remote VZ behavior bundles to local ``whoathere behavior observe`` results.
+"""Join a sanitized remote VZ report to local ``whoathere behavior observe`` results.
 
 This bridge is intentionally diagnostic-only. It does not execute artifacts, invoke Codex, grant
 admission, or interpret missing evidence as clean. The Rust producer remains responsible for full
@@ -151,24 +151,14 @@ def collect_observer_results(
     return paths
 
 
-def action_intent_sha256(
-    provider: str, action_key: str, intents: list[dict[str, Any]]
-) -> str | None:
-    match = PHYSICAL_PROVIDERS[provider][1].fullmatch(action_key)
-    require(match is not None, "two_host_remote_action_key_invalid")
-    if provider == "linux_vz_exact_npm_v1":
-        profile = f"ci_{match.group(1)}"
-        candidates = [intent for intent in intents if profile in json.dumps(intent.get("kind"))]
-        require(len(candidates) == 1, "two_host_remote_action_binding_invalid")
-        return candidates[0].get("intent_sha256")
-    index = int(match.group(1))
-    require(index < len(intents), "two_host_remote_action_binding_invalid")
-    return intents[index].get("intent_sha256")
-
-
 def validate_remote_report(path: Path) -> dict[str, Any]:
     raw, report = read_json(path, "two_host_remote_report")
     require(report.get("schema_version") == EXACT_REPORT_SCHEMA, "two_host_remote_report_invalid")
+    require(
+        report.get("sanitized_projection") is True
+        and report.get("raw_source_or_telemetry_included") is False,
+        "two_host_remote_sanitized_projection_invalid",
+    )
     identity = report.get("identity")
     require(isinstance(identity, dict), "two_host_remote_identity_invalid")
     artifact = identity.get("artifact_sha256")
@@ -192,9 +182,16 @@ def validate_remote_report(path: Path) -> dict[str, Any]:
         "two_host_remote_detonation_binding_invalid",
     )
     plan = report.get("scenario_plan")
-    intents = plan.get("intents") if isinstance(plan, dict) else None
+    require(isinstance(plan, dict), "two_host_remote_scenario_plan_invalid")
+    plan_sha256 = plan.get("plan_sha256")
+    intents = plan.get("intents")
+    intent_count = plan.get("intent_count")
+    if intent_count is None and isinstance(intents, list):
+        intent_count = len(intents)
     require(
-        isinstance(intents, list)
+        valid_sha256(plan_sha256)
+        and isinstance(intent_count, int)
+        and 0 < intent_count <= MAX_INPUTS
         and plan.get("artifact_sha256") == artifact
         and plan.get("manifest_sha256") == manifest,
         "two_host_remote_scenario_plan_invalid",
@@ -214,11 +211,9 @@ def validate_remote_report(path: Path) -> dict[str, Any]:
         declared[action_key] = digest
         seen_digests.add(digest)
     require(declared, "two_host_remote_behavior_bundle_missing")
-    intent_bindings = {
-        action: action_intent_sha256(provider, action, intents) for action in declared
-    }
     require(
-        all(valid_sha256(digest) for digest in intent_bindings.values()),
+        len(declared) == intent_count
+        and all(PHYSICAL_PROVIDERS[provider][1].fullmatch(action) for action in declared),
         "two_host_remote_action_binding_invalid",
     )
     return {
@@ -227,8 +222,9 @@ def validate_remote_report(path: Path) -> dict[str, Any]:
         "report_sha256": sha256_bytes(raw),
         "provider": provider,
         "detonation_status": detonation.get("status"),
+        "scenario_plan_sha256": plan_sha256,
+        "scenario_intent_count": intent_count,
         "declared": declared,
-        "intent_bindings": intent_bindings,
         "safety": {
             "admission_authority": False,
             "observed_clean": False,
@@ -480,7 +476,6 @@ def build_diagnostic(
         findings = observer["findings"] if observer else []
         row = {
             "action_key": action,
-            "scenario_intent_sha256": remote["intent_bindings"][action],
             "bundle_sha256": digest,
             "scenario_id": bundle["scenario_id"],
             "scenario_sha256": bundle["scenario_sha256"],
@@ -519,6 +514,7 @@ def build_diagnostic(
     binding = {
         "artifact_sha256": remote["artifact_sha256"],
         "remote_report_sha256": remote["report_sha256"],
+        "scenario_plan_sha256": remote["scenario_plan_sha256"],
         "bundles": [
             [row["bundle_sha256"], row["observer_result_sha256"]] for row in rows
         ],
@@ -535,6 +531,8 @@ def build_diagnostic(
         "remote_report_sha256": remote["report_sha256"],
         "detonation_provider": remote["provider"],
         "detonation_status": remote["detonation_status"],
+        "scenario_plan_sha256": remote["scenario_plan_sha256"],
+        "scenario_intent_count": remote["scenario_intent_count"],
         "input_binding_sha256": json_sha256(binding),
         "safety": remote["safety"],
         "bundles": rows,
