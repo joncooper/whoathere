@@ -6,12 +6,13 @@
 //! retained process, file, canary, and network records.
 
 use crate::{
-    BoundOptionalEvidenceOutcomeV1, BoundOptionalEvidenceV1, ExactArtifactAdapterRequestV1,
-    ExactArtifactDetonationAdapterV1, ExactArtifactOptionalResultV1, ExactArtifactScenarioKindV1,
-    ExactArtifactScenarioPlanV1, ExactArtifactStageStatusV1, OptionalAdapterErrorV1,
-    PreparedArtifact,
+    project_exact_detonation_behavior_v1, BoundOptionalEvidenceOutcomeV1, BoundOptionalEvidenceV1,
+    ExactArtifactAdapterRequestV1, ExactArtifactDetonationAdapterV1, ExactArtifactOptionalResultV1,
+    ExactArtifactScenarioKindV1, ExactArtifactScenarioPlanV1, ExactArtifactStageStatusV1,
+    ExactDetonationBehaviorProjectionInputV1, OptionalAdapterErrorV1, PreparedArtifact,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::fs::{self, DirBuilder, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
@@ -21,10 +22,18 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use whoathere_artifact::{ArtifactFormat, Sha256Digest};
 use whoathere_cache::VerifiedArtifactLease;
-use whoathere_detonation::{ArtifactScenarioKindV1, NpmEnvironmentProfileV1};
+use whoathere_detonation::{
+    decode_and_validate_artifact_scenario_plan_v1,
+    decode_and_validate_artifact_scenario_template_v1, ArtifactScenarioKindV1,
+    NpmEnvironmentProfileV1, MAX_ARTIFACT_SCENARIO_PLAN_WIRE_BYTES_V1,
+    MAX_ARTIFACT_SCENARIO_TEMPLATE_WIRE_BYTES_V1,
+};
 
 const PROVIDER_ID: &str = "linux_vz_exact_npm_v1";
 const HELPER_RESULT_SCHEMA_V1: &str = "whoathere.linux_vz_package_execution_result.v1";
+const MAX_ROOT_RECEIPT_BYTES: usize = 256 * 1024;
+const MAX_SENSOR_EVIDENCE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_HOST_EXECUTION_RUN_BYTES: usize = 1024 * 1024;
 static RUN_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -136,7 +145,9 @@ impl LinuxVzExactNpmDetonationAdapterV1 {
         run_root: &Path,
         environment: &'static str,
         artifact_bytes: &[u8],
-        artifact_sha256: &str,
+        artifact_sha256: &Sha256Digest,
+        envelope_sha256: &Sha256Digest,
+        manifest_sha256: &Sha256Digest,
     ) -> ProfileRun {
         let profile_root = run_root.join(environment);
         let evidence_directory = profile_root.join("evidence");
@@ -207,7 +218,7 @@ impl LinuxVzExactNpmDetonationAdapterV1 {
         if parsed.environment.as_deref() != Some(environment) {
             limitations.push("environment_binding_not_proven");
         }
-        if parsed.artifact_sha256.as_deref() != Some(artifact_sha256) {
+        if parsed.artifact_sha256.as_deref() != Some(artifact_sha256.as_str()) {
             limitations.push("artifact_binding_not_proven");
         }
         if parsed.public_network_route_present != Some(false) {
@@ -239,10 +250,27 @@ impl LinuxVzExactNpmDetonationAdapterV1 {
         ) {
             limitations.push("helper_terminal_not_supported");
         }
+        let behavior_projection = project_profile_behavior_v1(
+            &evidence_directory,
+            environment,
+            artifact_sha256,
+            envelope_sha256,
+            manifest_sha256,
+            artifact_bytes.len(),
+        );
+        let (behavior_bundle_sha256, behavior_event_count) = match behavior_projection {
+            Ok(projected) => (Some(projected.0), Some(projected.1)),
+            Err(reason) => {
+                limitations.push(reason);
+                (None, None)
+            }
+        };
         ProfileRun {
             environment,
             evidence_captured: limitations.is_empty(),
             limitations,
+            behavior_bundle_sha256,
+            behavior_event_count,
         }
     }
 }
@@ -315,7 +343,26 @@ impl ExactArtifactDetonationAdapterV1 for LinuxVzExactNpmDetonationAdapterV1 {
         prepared: &PreparedArtifact,
         scenarios: &ExactArtifactScenarioPlanV1,
     ) -> Result<BoundOptionalEvidenceV1, OptionalAdapterErrorV1> {
-        let artifact_sha256 = Sha256Digest::from_bytes(artifact.bytes()).to_string();
+        let artifact_digest = Sha256Digest::from_bytes(artifact.bytes());
+        let artifact_sha256 = artifact_digest.to_string();
+        let manifest_digest = match Sha256Digest::parse(request.manifest_sha256.clone()) {
+            Ok(digest) => digest,
+            Err(_) => {
+                return incomplete_result(
+                    &request.request_sha256,
+                    vec!["vm_manifest_binding_invalid".to_string()],
+                )
+            }
+        };
+        let envelope_digest = match Sha256Digest::parse(request.envelope_sha256.clone()) {
+            Ok(digest) => digest,
+            Err(_) => {
+                return incomplete_result(
+                    &request.request_sha256,
+                    vec!["vm_envelope_binding_invalid".to_string()],
+                )
+            }
+        };
         if self.configuration_reason().is_some()
             || artifact_sha256 != request.artifact_sha256
             || artifact_sha256 != prepared.evidence_subject().artifact_sha256()
@@ -339,14 +386,42 @@ impl ExactArtifactDetonationAdapterV1 for LinuxVzExactNpmDetonationAdapterV1 {
                 }
             };
         let runs = [
-            self.run_profile(&run_root, "ci_false", artifact.bytes(), &artifact_sha256),
-            self.run_profile(&run_root, "ci_true", artifact.bytes(), &artifact_sha256),
+            self.run_profile(
+                &run_root,
+                "ci_false",
+                artifact.bytes(),
+                &artifact_digest,
+                &envelope_digest,
+                &manifest_digest,
+            ),
+            self.run_profile(
+                &run_root,
+                "ci_true",
+                artifact.bytes(),
+                &artifact_digest,
+                &envelope_digest,
+                &manifest_digest,
+            ),
         ];
         let mut reasons = vec![
             "vm_evidence_captured_pending_analysis".to_string(),
             "vm_evidence_output_preserved".to_string(),
         ];
         for run in runs {
+            if let Some(digest) = run.behavior_bundle_sha256 {
+                reasons.push(format!(
+                    "vm_{}_behavior_bundle_sha256:{}",
+                    run.environment,
+                    digest.as_str().trim_start_matches("sha256:")
+                ));
+                reasons.push(format!("vm_{}_behavior_bundle_projected", run.environment));
+            }
+            if let Some(event_count) = run.behavior_event_count {
+                reasons.push(format!(
+                    "vm_{}_behavior_event_count:{event_count}",
+                    run.environment
+                ));
+            }
             if !run.evidence_captured {
                 reasons.push(format!("vm_{}_evidence_incomplete", run.environment));
             }
@@ -395,6 +470,8 @@ struct ProfileRun {
     environment: &'static str,
     evidence_captured: bool,
     limitations: Vec<&'static str>,
+    behavior_bundle_sha256: Option<Sha256Digest>,
+    behavior_event_count: Option<usize>,
 }
 
 impl ProfileRun {
@@ -403,8 +480,140 @@ impl ProfileRun {
             environment,
             evidence_captured: false,
             limitations: vec![reason],
+            behavior_bundle_sha256: None,
+            behavior_event_count: None,
         }
     }
+}
+
+fn project_profile_behavior_v1(
+    evidence_directory: &Path,
+    environment: &str,
+    artifact_sha256: &Sha256Digest,
+    envelope_sha256: &Sha256Digest,
+    manifest_sha256: &Sha256Digest,
+    artifact_byte_length: usize,
+) -> Result<(Sha256Digest, usize), &'static str> {
+    let scenario_plan_json = read_bounded_regular_file(
+        &evidence_directory.join("execution-bundle/scenario-plan.json"),
+        MAX_ARTIFACT_SCENARIO_PLAN_WIRE_BYTES_V1,
+    )?;
+    let scenario_template_json = read_bounded_regular_file(
+        &evidence_directory.join("execution-bundle/scenario-template.json"),
+        MAX_ARTIFACT_SCENARIO_TEMPLATE_WIRE_BYTES_V1,
+    )?;
+    let root_receipt_json = read_bounded_regular_file(
+        &evidence_directory.join("action-root-receipt.bin"),
+        MAX_ROOT_RECEIPT_BYTES,
+    )?;
+    let process_evidence_json = read_bounded_regular_file(
+        &evidence_directory.join("action-process-evidence.bin"),
+        MAX_SENSOR_EVIDENCE_BYTES,
+    )?;
+    let file_evidence_json = read_bounded_regular_file(
+        &evidence_directory.join("action-file-evidence.bin"),
+        MAX_SENSOR_EVIDENCE_BYTES,
+    )?;
+    let network_evidence_json = read_bounded_regular_file(
+        &evidence_directory.join("action-network-evidence.bin"),
+        MAX_SENSOR_EVIDENCE_BYTES,
+    )?;
+    let host_execution_run_json = read_bounded_regular_file(
+        &evidence_directory.join("execution-run.json"),
+        MAX_HOST_EXECUTION_RUN_BYTES,
+    )?;
+
+    let plan = decode_and_validate_artifact_scenario_plan_v1(&scenario_plan_json)
+        .map_err(|_| "behavior_projection_scenario_plan_invalid")?;
+    let template = decode_and_validate_artifact_scenario_template_v1(&scenario_template_json)
+        .map_err(|_| "behavior_projection_scenario_template_invalid")?;
+    let expected_environment = match environment {
+        "ci_false" => NpmEnvironmentProfileV1::CiFalse,
+        "ci_true" => NpmEnvironmentProfileV1::CiTrue,
+        _ => return Err("behavior_projection_environment_invalid"),
+    };
+    if plan.artifact_sha256() != artifact_sha256
+        || plan.envelope_sha256() != envelope_sha256
+        || plan.manifest_sha256() != manifest_sha256
+        || template.artifact_sha256() != artifact_sha256
+        || template.envelope_sha256() != envelope_sha256
+        || template.manifest_sha256() != manifest_sha256
+        || template.artifact_byte_length() != artifact_byte_length as u64
+        || template.environment() != expected_environment
+        || !plan.templates().iter().any(|reference| {
+            reference.0 == template.scenario_id()
+                && reference.1 == expected_environment
+                && reference.2 == *template.template_sha256()
+        })
+    {
+        return Err("behavior_projection_scenario_binding_mismatch");
+    }
+
+    let root_value: Value = serde_json::from_slice(&root_receipt_json)
+        .map_err(|_| "behavior_projection_root_receipt_invalid")?;
+    let claims = root_value
+        .get("claims")
+        .and_then(Value::as_object)
+        .ok_or("behavior_projection_root_receipt_invalid")?;
+    let claimed_scenario_sha256 = parse_projection_digest_field(claims, "scenario_plan_sha256")?;
+    if &claimed_scenario_sha256 != plan.plan_sha256() {
+        return Err("behavior_projection_scenario_binding_mismatch");
+    }
+    let process_plan_sha256 = parse_projection_digest_field(claims, "process_plan_sha256")?;
+    let host_execution_run_sha256 = Sha256Digest::from_bytes(&host_execution_run_json);
+    let template_value: Value = serde_json::from_slice(&scenario_template_json)
+        .map_err(|_| "behavior_projection_scenario_template_invalid")?;
+    let run_id = template_value
+        .get("identity")
+        .and_then(Value::as_object)
+        .and_then(|identity| identity.get("run_id"))
+        .and_then(Value::as_str)
+        .ok_or("behavior_projection_scenario_template_invalid")?;
+    let bundle = project_exact_detonation_behavior_v1(ExactDetonationBehaviorProjectionInputV1 {
+        artifact_sha256,
+        manifest_sha256,
+        scenario_id: template.scenario_id(),
+        scenario_sha256: plan.plan_sha256(),
+        process_plan_sha256: &process_plan_sha256,
+        run_id,
+        host_execution_run_sha256: &host_execution_run_sha256,
+        root_receipt_json: &root_receipt_json,
+        process_evidence_json: &process_evidence_json,
+        file_evidence_json: &file_evidence_json,
+        network_evidence_json: &network_evidence_json,
+        host_execution_run_json: &host_execution_run_json,
+    })
+    .map_err(|error| error.reason_code())?;
+    let event_count = bundle.events().len();
+    let bundle_bytes = serde_json::to_vec(&bundle)
+        .map_err(|_| "behavior_projection_bundle_serialization_failed")?;
+    let bundle_sha256 = Sha256Digest::from_bytes(&bundle_bytes);
+    write_new_private_file(
+        &evidence_directory.join("behavior-bundle.json"),
+        &bundle_bytes,
+    )
+    .map_err(|_| "behavior_projection_bundle_write_failed")?;
+    Ok((bundle_sha256, event_count))
+}
+
+fn parse_projection_digest_field(
+    claims: &serde_json::Map<String, Value>,
+    field: &str,
+) -> Result<Sha256Digest, &'static str> {
+    let digest = claims
+        .get(field)
+        .and_then(Value::as_str)
+        .ok_or("behavior_projection_root_receipt_invalid")?;
+    Sha256Digest::parse(digest.to_string()).map_err(|_| "behavior_projection_root_receipt_invalid")
+}
+
+fn read_bounded_regular_file(path: &Path, maximum: usize) -> Result<Vec<u8>, &'static str> {
+    let metadata =
+        fs::symlink_metadata(path).map_err(|_| "behavior_projection_evidence_unavailable")?;
+    if !metadata.file_type().is_file() || metadata.len() == 0 || metadata.len() > maximum as u64 {
+        return Err("behavior_projection_evidence_unavailable");
+    }
+    fs::read(path).map_err(|_| "behavior_projection_evidence_unavailable")
 }
 
 fn incomplete_result(
