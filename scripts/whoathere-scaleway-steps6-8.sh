@@ -28,6 +28,14 @@ LIVE_APPROVED=""
 INCLUDE_EXISTING=""
 INCLUDE_STANDALONE_STEP5=""
 FINALIZE_FAILED_SCORE=""
+EVALUATION_MANIFEST=""
+VERIFIED_EVIDENCE_REGISTRY=""
+VERIFIED_EVIDENCE_PUBLIC_KEY=""
+VERIFIED_EVIDENCE_SIGNATURE=""
+EXPECTED_EVALUATION_MANIFEST_SHA256=""
+EXPECTED_VERIFIER_PUBLIC_KEY_SHA256=""
+LEGACY_SCORE_MAINTENANCE=""
+LEGACY_SCORE_ACKNOWLEDGED=""
 PHASE="score"
 CLEARANCE_ID=""
 CLEARANCE_METHOD="host_rebuild_or_lab_runbook_clearance"
@@ -56,6 +64,14 @@ usage:
     [--clearance-record /Users/m1/whoathere-actual-malware-lab/evidence/clearance/<record>.json] \
     [--clearance-reviewer <safe-ref>] \
     [--include-standalone-step5-results] \
+    [--evaluation-manifest <remote EvaluationManifestV2 path>] \
+    [--verified-evidence-registry <remote independently generated registry path>] \
+    [--verified-evidence-public-key <remote pinned Ed25519 public-key path>] \
+    [--verified-evidence-signature <remote detached raw signature path>] \
+    [--expected-evaluation-manifest-sha256 sha256:<operator-frozen-digest>] \
+    [--expected-verifier-public-key-sha256 sha256:<operator-frozen-digest>] \
+    [--legacy-non-claim-bearing-score-maintenance \
+      --acknowledge-non-claim-bearing-legacy-score] \
     [--finalize-failed-score] \
     --provider-approval-ref <ref> \
     --legal-provider-approval-ref <ref> \
@@ -66,9 +82,12 @@ usage:
     [--live-malware-execution-approved for slice/all]
 
 For --phase clearance, the remote harness runs non-malware preflight checks and writes a clearance
-record. For --phase slice or --phase all, it requires a post-contamination clearance record and
-defaults to one live malware sample per clearance. --phase score and --phase finalize do not execute
-malware.
+record. For --phase slice, it requires a post-contamination clearance record and defaults to one
+live malware sample per clearance. Claim-bearing --phase score requires a frozen v2 manifest plus
+an independently generated, signed verified-evidence registry. The legacy maintenance mode is
+non-claim-bearing and cannot be finalized. --phase all is intentionally unsupported because the
+registry must be produced independently after the slice. --phase score and --phase finalize do not
+execute malware.
 EOF
   exit "$code"
 }
@@ -77,8 +96,24 @@ safe_remote_value() {
   value=$1
   name=$2
   case "$value" in
-    *"'"*|*";"*|*"&"*|*"|"*|*"\\"*|*"\`"*|*'$('*|*"<"*|*">"*|*" "*)
+    *[!A-Za-z0-9_./:@%+=,-]*)
       echo "invalid_${name}=$value" >&2
+      exit 64
+      ;;
+  esac
+}
+
+require_sha256() {
+  value=$1
+  name=$2
+  digest=${value#sha256:}
+  if [ "$digest" = "$value" ] || [ "${#digest}" -ne 64 ]; then
+    echo "invalid_${name}" >&2
+    exit 64
+  fi
+  case "$digest" in
+    *[!0-9a-f]*)
+      echo "invalid_${name}" >&2
       exit 64
       ;;
   esac
@@ -107,6 +142,12 @@ while [ "$#" -gt 0 ]; do
     --limit) [ "$#" -ge 2 ] || usage; LIMIT=$2; shift 2 ;;
     --max-samples-per-clearance) [ "$#" -ge 2 ] || usage; MAX_SAMPLES_PER_CLEARANCE=$2; shift 2 ;;
     --clearance-record) [ "$#" -ge 2 ] || usage; CLEARANCE_RECORD=$2; shift 2 ;;
+    --evaluation-manifest) [ "$#" -ge 2 ] || usage; EVALUATION_MANIFEST=$2; shift 2 ;;
+    --verified-evidence-registry) [ "$#" -ge 2 ] || usage; VERIFIED_EVIDENCE_REGISTRY=$2; shift 2 ;;
+    --verified-evidence-public-key) [ "$#" -ge 2 ] || usage; VERIFIED_EVIDENCE_PUBLIC_KEY=$2; shift 2 ;;
+    --verified-evidence-signature) [ "$#" -ge 2 ] || usage; VERIFIED_EVIDENCE_SIGNATURE=$2; shift 2 ;;
+    --expected-evaluation-manifest-sha256) [ "$#" -ge 2 ] || usage; EXPECTED_EVALUATION_MANIFEST_SHA256=$2; shift 2 ;;
+    --expected-verifier-public-key-sha256) [ "$#" -ge 2 ] || usage; EXPECTED_VERIFIER_PUBLIC_KEY_SHA256=$2; shift 2 ;;
     --provider-approval-ref) [ "$#" -ge 2 ] || usage; PROVIDER_APPROVAL_REF=$2; shift 2 ;;
     --legal-provider-approval-ref) [ "$#" -ge 2 ] || usage; LEGAL_PROVIDER_APPROVAL_REF=$2; shift 2 ;;
     --sinkhole-reference) [ "$#" -ge 2 ] || usage; SINKHOLE_REFERENCE=$2; shift 2 ;;
@@ -124,6 +165,8 @@ while [ "$#" -gt 0 ]; do
     --include-existing-samples) INCLUDE_EXISTING=1; shift ;;
     --include-standalone-step5-results) INCLUDE_STANDALONE_STEP5=1; shift ;;
     --finalize-failed-score) FINALIZE_FAILED_SCORE=1; shift ;;
+    --legacy-non-claim-bearing-score-maintenance) LEGACY_SCORE_MAINTENANCE=1; shift ;;
+    --acknowledge-non-claim-bearing-legacy-score) LEGACY_SCORE_ACKNOWLEDGED=1; shift ;;
     -h|--help) usage 0 ;;
     *) usage ;;
   esac
@@ -131,6 +174,39 @@ done
 
 [ -n "$SSH_HOST" ] || usage
 case "$PHASE" in clearance|slice|score|finalize|all) ;; *) usage ;; esac
+if [ "$PHASE" = "all" ]; then
+  echo "phase_all_incompatible_with_post_run_independent_evidence_verification_use_separate_phases" >&2
+  exit 64
+fi
+
+if [ "$PHASE" = "score" ]; then
+  if [ -n "$LEGACY_SCORE_MAINTENANCE" ]; then
+    if [ -z "$LEGACY_SCORE_ACKNOWLEDGED" ]; then
+      echo "legacy_score_maintenance_requires_explicit_non_claim_bearing_acknowledgement" >&2
+      exit 64
+    fi
+  else
+    if [ -z "$VERIFIED_EVIDENCE_REGISTRY" ]; then
+      echo "verified_evidence_registry_not_generated" >&2
+      exit 64
+    fi
+    [ -n "$EVALUATION_MANIFEST" ] || { echo "evaluation_manifest_v2_required" >&2; exit 64; }
+    [ -n "$VERIFIED_EVIDENCE_PUBLIC_KEY" ] || { echo "verified_evidence_public_key_required" >&2; exit 64; }
+    [ -n "$VERIFIED_EVIDENCE_SIGNATURE" ] || { echo "verified_evidence_signature_required" >&2; exit 64; }
+    [ -n "$EXPECTED_EVALUATION_MANIFEST_SHA256" ] || { echo "expected_evaluation_manifest_sha256_required" >&2; exit 64; }
+    [ -n "$EXPECTED_VERIFIER_PUBLIC_KEY_SHA256" ] || { echo "expected_verifier_public_key_sha256_required" >&2; exit 64; }
+  fi
+fi
+if [ "$PHASE" = "finalize" ]; then
+  [ -n "$EXPECTED_EVALUATION_MANIFEST_SHA256" ] || { echo "expected_evaluation_manifest_sha256_required_for_finalize" >&2; exit 64; }
+  [ -n "$EXPECTED_VERIFIER_PUBLIC_KEY_SHA256" ] || { echo "expected_verifier_public_key_sha256_required_for_finalize" >&2; exit 64; }
+fi
+if [ -n "$LEGACY_SCORE_ACKNOWLEDGED" ] && [ -z "$LEGACY_SCORE_MAINTENANCE" ]; then
+  echo "legacy_score_acknowledgement_requires_legacy_maintenance_mode" >&2
+  exit 64
+fi
+[ -z "$EXPECTED_EVALUATION_MANIFEST_SHA256" ] || require_sha256 "$EXPECTED_EVALUATION_MANIFEST_SHA256" "expected_evaluation_manifest_sha256"
+[ -z "$EXPECTED_VERIFIER_PUBLIC_KEY_SHA256" ] || require_sha256 "$EXPECTED_VERIFIER_PUBLIC_KEY_SHA256" "expected_verifier_public_key_sha256"
 
 if [ "$PHASE" = "clearance" ] || [ "$PHASE" = "slice" ] || [ "$PHASE" = "all" ]; then
   [ -n "$PROVIDER_APPROVAL_REF" ] || usage
@@ -175,6 +251,12 @@ safe_remote_value "$MAX_SAMPLES_PER_CLEARANCE" "max_samples_per_clearance"
 [ -z "$SLICE_ID" ] || safe_remote_value "$SLICE_ID" "slice_id"
 [ -z "$LIMIT" ] || safe_remote_value "$LIMIT" "limit"
 [ -z "$CLEARANCE_RECORD" ] || safe_remote_value "$CLEARANCE_RECORD" "clearance_record"
+[ -z "$EVALUATION_MANIFEST" ] || safe_remote_value "$EVALUATION_MANIFEST" "evaluation_manifest"
+[ -z "$VERIFIED_EVIDENCE_REGISTRY" ] || safe_remote_value "$VERIFIED_EVIDENCE_REGISTRY" "verified_evidence_registry"
+[ -z "$VERIFIED_EVIDENCE_PUBLIC_KEY" ] || safe_remote_value "$VERIFIED_EVIDENCE_PUBLIC_KEY" "verified_evidence_public_key"
+[ -z "$VERIFIED_EVIDENCE_SIGNATURE" ] || safe_remote_value "$VERIFIED_EVIDENCE_SIGNATURE" "verified_evidence_signature"
+[ -z "$EXPECTED_EVALUATION_MANIFEST_SHA256" ] || safe_remote_value "$EXPECTED_EVALUATION_MANIFEST_SHA256" "expected_evaluation_manifest_sha256"
+[ -z "$EXPECTED_VERIFIER_PUBLIC_KEY_SHA256" ] || safe_remote_value "$EXPECTED_VERIFIER_PUBLIC_KEY_SHA256" "expected_verifier_public_key_sha256"
 [ -z "$PROVIDER_APPROVAL_REF" ] || safe_remote_value "$PROVIDER_APPROVAL_REF" "provider_approval_ref"
 [ -z "$LEGAL_PROVIDER_APPROVAL_REF" ] || safe_remote_value "$LEGAL_PROVIDER_APPROVAL_REF" "legal_provider_approval_ref"
 [ -z "$SINKHOLE_REFERENCE" ] || safe_remote_value "$SINKHOLE_REFERENCE" "sinkhole_reference"
@@ -217,6 +299,12 @@ remote_command="WHOATHERE_SCANNER_CACHE_DIR=$remote_tools/scanners PATH=$remote_
 [ -z "$SLICE_ID" ] || remote_command="$remote_command --slice-id $SLICE_ID"
 [ -z "$LIMIT" ] || remote_command="$remote_command --limit $LIMIT"
 [ -z "$CLEARANCE_RECORD" ] || remote_command="$remote_command --clearance-record $CLEARANCE_RECORD"
+[ -z "$EVALUATION_MANIFEST" ] || remote_command="$remote_command --evaluation-manifest $EVALUATION_MANIFEST"
+[ -z "$VERIFIED_EVIDENCE_REGISTRY" ] || remote_command="$remote_command --verified-evidence-registry $VERIFIED_EVIDENCE_REGISTRY"
+[ -z "$VERIFIED_EVIDENCE_PUBLIC_KEY" ] || remote_command="$remote_command --verified-evidence-public-key $VERIFIED_EVIDENCE_PUBLIC_KEY"
+[ -z "$VERIFIED_EVIDENCE_SIGNATURE" ] || remote_command="$remote_command --verified-evidence-signature $VERIFIED_EVIDENCE_SIGNATURE"
+[ -z "$EXPECTED_EVALUATION_MANIFEST_SHA256" ] || remote_command="$remote_command --expected-evaluation-manifest-sha256 $EXPECTED_EVALUATION_MANIFEST_SHA256"
+[ -z "$EXPECTED_VERIFIER_PUBLIC_KEY_SHA256" ] || remote_command="$remote_command --expected-verifier-public-key-sha256 $EXPECTED_VERIFIER_PUBLIC_KEY_SHA256"
 [ -z "$SAMPLE_ARGS" ] || remote_command="$remote_command $SAMPLE_ARGS"
 [ -z "$PROVIDER_APPROVAL_REF" ] || remote_command="$remote_command --provider-approval-ref $PROVIDER_APPROVAL_REF"
 [ -z "$LEGAL_PROVIDER_APPROVAL_REF" ] || remote_command="$remote_command --legal-provider-approval-ref $LEGAL_PROVIDER_APPROVAL_REF"
@@ -233,5 +321,7 @@ remote_command="WHOATHERE_SCANNER_CACHE_DIR=$remote_tools/scanners PATH=$remote_
 [ -z "$INCLUDE_EXISTING" ] || remote_command="$remote_command --include-existing-samples"
 [ -z "$INCLUDE_STANDALONE_STEP5" ] || remote_command="$remote_command --include-standalone-step5-results"
 [ -z "$FINALIZE_FAILED_SCORE" ] || remote_command="$remote_command --finalize-failed-score"
+[ -z "$LEGACY_SCORE_MAINTENANCE" ] || remote_command="$remote_command --legacy-non-claim-bearing-score-maintenance"
+[ -z "$LEGACY_SCORE_ACKNOWLEDGED" ] || remote_command="$remote_command --acknowledge-non-claim-bearing-legacy-score"
 
 ssh_run "$remote_command"
