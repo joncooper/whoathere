@@ -63,14 +63,14 @@ Exact-artifact options:
     --detonation-config <absolute-remote-json> --detonation-config-sha256 sha256:<digest> \
     --codex-client-path <absolute-remote-native-binary> --codex-client-sha256 sha256:<digest> \
     --codex-model <model> --codex-auth-home <absolute-dedicated-home> \
-    --restricted-source-hosted-review-approved --restricted-source-review-approval-ref <ref> \
+    [--restricted-source-hosted-review-approved --restricted-source-review-approval-ref <ref>] \
     --restricted-behavior-hosted-review-approved --restricted-behavior-review-approval-ref <ref> \
     --clearance-consumption-record <absolute-remote-json> \
     --clearance-consumption-record-sha256 sha256:<digest>
 
 The exact-artifact path also requires a measured detonation config and Codex client, a dedicated
-Codex auth home, sinkhole telemetry, and separate explicit approval refs for hosted review of the
-restricted source and restricted behavior telemetry.
+Codex auth home, sinkhole telemetry, and explicit approval for hosted review of restricted behavior
+telemetry. Restricted source review is optional and is enabled only by its approval flag/ref pair.
 
 Runs exactly one approved primary malware sample through WhoaThere's VM-backed no-sync path.
 This script copies tooling to the disposable Scaleway Mac, then all malware unpack/execution happens remotely.
@@ -142,6 +142,14 @@ fi
 if [ -n "$SINKHOLE_ASSERTED" ] && [ -z "$SINKHOLE_REFERENCE" ]; then
   usage
 fi
+if [ -n "$RESTRICTED_SOURCE_APPROVED" ] && [ -z "$RESTRICTED_SOURCE_APPROVAL_REF" ]; then
+  echo "restricted_source_review_approval_flag_and_ref_must_match" >&2
+  exit 64
+fi
+if [ -z "$RESTRICTED_SOURCE_APPROVED" ] && [ -n "$RESTRICTED_SOURCE_APPROVAL_REF" ]; then
+  echo "restricted_source_review_approval_flag_and_ref_must_match" >&2
+  exit 64
+fi
 case "$EXECUTION_PATH" in
   exact_artifact_diagnostic)
     [ -n "$SINKHOLE_ASSERTED" ] || usage
@@ -151,8 +159,6 @@ case "$EXECUTION_PATH" in
     [ -n "$CODEX_CLIENT_SHA256" ] || usage
     [ -n "$CODEX_MODEL" ] || usage
     [ -n "$CODEX_AUTH_HOME" ] || usage
-    [ -n "$RESTRICTED_SOURCE_APPROVED" ] || usage
-    [ -n "$RESTRICTED_SOURCE_APPROVAL_REF" ] || usage
     [ -n "$RESTRICTED_BEHAVIOR_APPROVED" ] || usage
     [ -n "$RESTRICTED_BEHAVIOR_APPROVAL_REF" ] || usage
     [ -n "$CLEARANCE_CONSUMPTION_RECORD" ] || usage
@@ -223,7 +229,10 @@ remote_command="WHOATHERE_SCANNER_CACHE_DIR=$remote_tools/scanners PATH=$remote_
 [ -z "$LULU_REFERENCE" ] || remote_command="$remote_command --lulu-reference $LULU_REFERENCE"
 [ -z "$FORCE" ] || remote_command="$remote_command --force"
 if [ "$EXECUTION_PATH" = "exact_artifact_diagnostic" ]; then
-  remote_command="$remote_command --detonation-config $DETONATION_CONFIG --detonation-config-sha256 $DETONATION_CONFIG_SHA256 --codex-client-path $CODEX_CLIENT_PATH --codex-client-sha256 $CODEX_CLIENT_SHA256 --codex-model $CODEX_MODEL --codex-auth-home $CODEX_AUTH_HOME --codex-timeout-seconds $CODEX_TIMEOUT_SECONDS --product-run-timeout-seconds $PRODUCT_RUN_TIMEOUT_SECONDS --restricted-source-hosted-review-approved --restricted-source-review-approval-ref $RESTRICTED_SOURCE_APPROVAL_REF --restricted-behavior-hosted-review-approved --restricted-behavior-review-approval-ref $RESTRICTED_BEHAVIOR_APPROVAL_REF --clearance-consumption-record $CLEARANCE_CONSUMPTION_RECORD --clearance-consumption-record-sha256 $CLEARANCE_CONSUMPTION_RECORD_SHA256"
+  remote_command="$remote_command --detonation-config $DETONATION_CONFIG --detonation-config-sha256 $DETONATION_CONFIG_SHA256 --codex-client-path $CODEX_CLIENT_PATH --codex-client-sha256 $CODEX_CLIENT_SHA256 --codex-model $CODEX_MODEL --codex-auth-home $CODEX_AUTH_HOME --codex-timeout-seconds $CODEX_TIMEOUT_SECONDS --product-run-timeout-seconds $PRODUCT_RUN_TIMEOUT_SECONDS --restricted-behavior-hosted-review-approved --restricted-behavior-review-approval-ref $RESTRICTED_BEHAVIOR_APPROVAL_REF --clearance-consumption-record $CLEARANCE_CONSUMPTION_RECORD --clearance-consumption-record-sha256 $CLEARANCE_CONSUMPTION_RECORD_SHA256"
+  if [ -n "$RESTRICTED_SOURCE_APPROVED" ]; then
+    remote_command="$remote_command --restricted-source-hosted-review-approved --restricted-source-review-approval-ref $RESTRICTED_SOURCE_APPROVAL_REF"
+  fi
 fi
 
 ssh_run "$remote_command"

@@ -99,11 +99,12 @@ Exact-artifact slice options:
     --detonation-config <absolute-remote-json> --detonation-config-sha256 sha256:<digest> \
     --codex-client-path <absolute-remote-native-binary> --codex-client-sha256 sha256:<digest> \
     --codex-model <model> --codex-auth-home <absolute-dedicated-home> \
-    --restricted-source-hosted-review-approved --restricted-source-review-approval-ref <ref> \
+    [--restricted-source-hosted-review-approved --restricted-source-review-approval-ref <ref>] \
     --restricted-behavior-hosted-review-approved --restricted-behavior-review-approval-ref <ref>
 
 The exact-artifact diagnostic path requires sinkhole telemetry, measured detonation/Codex inputs,
-and separate explicit approval refs for hosted review of restricted source and behavior telemetry.
+and explicit approval for hosted review of restricted behavior telemetry. Restricted source review
+is optional and is enabled only by its approval flag/ref pair.
 
 For --phase clearance, the remote harness runs non-malware preflight checks and writes a clearance
 record. For --phase slice, it requires a post-contamination clearance record and defaults to one
@@ -238,6 +239,14 @@ if [ "$PHASE" = "finalize" ]; then
   [ -n "$EXPECTED_EVALUATION_MANIFEST_SHA256" ] || { echo "expected_evaluation_manifest_sha256_required_for_finalize" >&2; exit 64; }
   [ -n "$EXPECTED_VERIFIER_PUBLIC_KEY_SHA256" ] || { echo "expected_verifier_public_key_sha256_required_for_finalize" >&2; exit 64; }
 fi
+if [ -n "$RESTRICTED_SOURCE_APPROVED" ] && [ -z "$RESTRICTED_SOURCE_APPROVAL_REF" ]; then
+  echo "restricted_source_review_approval_flag_and_ref_must_match" >&2
+  exit 64
+fi
+if [ -z "$RESTRICTED_SOURCE_APPROVED" ] && [ -n "$RESTRICTED_SOURCE_APPROVAL_REF" ]; then
+  echo "restricted_source_review_approval_flag_and_ref_must_match" >&2
+  exit 64
+fi
 if [ -n "$LEGACY_SCORE_ACKNOWLEDGED" ] && [ -z "$LEGACY_SCORE_MAINTENANCE" ]; then
   echo "legacy_score_acknowledgement_requires_legacy_maintenance_mode" >&2
   exit 64
@@ -272,8 +281,6 @@ if [ "$PHASE" = "slice" ]; then
       [ -n "$CODEX_CLIENT_SHA256" ] || usage
       [ -n "$CODEX_MODEL" ] || usage
       [ -n "$CODEX_AUTH_HOME" ] || usage
-      [ -n "$RESTRICTED_SOURCE_APPROVED" ] || usage
-      [ -n "$RESTRICTED_SOURCE_APPROVAL_REF" ] || usage
       [ -n "$RESTRICTED_BEHAVIOR_APPROVED" ] || usage
       [ -n "$RESTRICTED_BEHAVIOR_APPROVAL_REF" ] || usage
       ;;
@@ -392,7 +399,10 @@ remote_command="WHOATHERE_SCANNER_CACHE_DIR=$remote_tools/scanners PATH=$remote_
 [ -z "$LEGACY_SCORE_MAINTENANCE" ] || remote_command="$remote_command --legacy-non-claim-bearing-score-maintenance"
 [ -z "$LEGACY_SCORE_ACKNOWLEDGED" ] || remote_command="$remote_command --acknowledge-non-claim-bearing-legacy-score"
 if [ "$EXECUTION_PATH" = "exact_artifact_diagnostic" ]; then
-  remote_command="$remote_command --detonation-config $DETONATION_CONFIG --detonation-config-sha256 $DETONATION_CONFIG_SHA256 --codex-client-path $CODEX_CLIENT_PATH --codex-client-sha256 $CODEX_CLIENT_SHA256 --codex-model $CODEX_MODEL --codex-auth-home $CODEX_AUTH_HOME --codex-timeout-seconds $CODEX_TIMEOUT_SECONDS --restricted-source-hosted-review-approved --restricted-source-review-approval-ref $RESTRICTED_SOURCE_APPROVAL_REF --restricted-behavior-hosted-review-approved --restricted-behavior-review-approval-ref $RESTRICTED_BEHAVIOR_APPROVAL_REF"
+  remote_command="$remote_command --detonation-config $DETONATION_CONFIG --detonation-config-sha256 $DETONATION_CONFIG_SHA256 --codex-client-path $CODEX_CLIENT_PATH --codex-client-sha256 $CODEX_CLIENT_SHA256 --codex-model $CODEX_MODEL --codex-auth-home $CODEX_AUTH_HOME --codex-timeout-seconds $CODEX_TIMEOUT_SECONDS --restricted-behavior-hosted-review-approved --restricted-behavior-review-approval-ref $RESTRICTED_BEHAVIOR_APPROVAL_REF"
+  if [ -n "$RESTRICTED_SOURCE_APPROVED" ]; then
+    remote_command="$remote_command --restricted-source-hosted-review-approved --restricted-source-review-approval-ref $RESTRICTED_SOURCE_APPROVAL_REF"
+  fi
 fi
 
 ssh_run "$remote_command"

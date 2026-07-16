@@ -635,6 +635,10 @@ def validate_execution_path_args(args: argparse.Namespace, remote_root: Path) ->
 
     if args.execution_path != EXACT_ARTIFACT_EXECUTION_PATH:
         raise Step5Error(f"unsupported_execution_path:{args.execution_path}")
+    source_review_approved = args.restricted_source_hosted_review_approved
+    source_review_ref_present = bool(args.restricted_source_review_approval_ref)
+    if source_review_approved != source_review_ref_present:
+        raise Step5Error("restricted_source_review_approval_flag_and_ref_must_match")
     missing: list[str] = []
     required = (
         ("detonation_config", args.detonation_config),
@@ -643,8 +647,6 @@ def validate_execution_path_args(args: argparse.Namespace, remote_root: Path) ->
         ("codex_client_sha256", args.codex_client_sha256),
         ("codex_model", args.codex_model),
         ("codex_auth_home", args.codex_auth_home),
-        ("restricted_source_hosted_review_approved", args.restricted_source_hosted_review_approved),
-        ("restricted_source_review_approval_ref", args.restricted_source_review_approval_ref),
         ("restricted_behavior_hosted_review_approved", args.restricted_behavior_hosted_review_approved),
         ("restricted_behavior_review_approval_ref", args.restricted_behavior_review_approval_ref),
         ("clearance_consumption_record", args.clearance_consumption_record),
@@ -655,7 +657,11 @@ def validate_execution_path_args(args: argparse.Namespace, remote_root: Path) ->
             missing.append(label)
     if missing:
         raise Step5Error(f"exact_artifact_missing_required_options:{','.join(missing)}")
-    if args.restricted_source_review_approval_ref == args.restricted_behavior_review_approval_ref:
+    if (
+        source_review_approved
+        and args.restricted_source_review_approval_ref
+        == args.restricted_behavior_review_approval_ref
+    ):
         raise Step5Error("restricted_source_and_behavior_review_approval_refs_must_be_distinct")
     if not args.sinkhole_ready_asserted:
         raise Step5Error("exact_artifact_behavior_observation_requires_sinkhole_ready")
@@ -721,8 +727,12 @@ def validate_execution_path_args(args: argparse.Namespace, remote_root: Path) ->
         },
         "restricted_hosted_review_approvals": {
             "source": {
-                "approved": True,
-                "approval_ref": args.restricted_source_review_approval_ref,
+                "approved": source_review_approved,
+                "approval_ref": (
+                    args.restricted_source_review_approval_ref
+                    if source_review_approved
+                    else None
+                ),
             },
             "behavior_telemetry": {
                 "approved": True,
@@ -796,7 +806,11 @@ def verify_live_gate(remote_root: Path, stage_dir: Path, args: argparse.Namespac
             "lulu_reference": args.lulu_reference,
             "live_malware_execution_approved": args.live_malware_execution_approved,
             "restricted_source_hosted_review_approved": args.restricted_source_hosted_review_approved,
-            "restricted_source_review_approval_ref": args.restricted_source_review_approval_ref,
+            "restricted_source_review_approval_ref": (
+                args.restricted_source_review_approval_ref
+                if args.restricted_source_hosted_review_approved
+                else None
+            ),
             "restricted_behavior_hosted_review_approved": args.restricted_behavior_hosted_review_approved,
             "restricted_behavior_review_approval_ref": args.restricted_behavior_review_approval_ref,
         },
@@ -1243,8 +1257,6 @@ def run_exact_artifact(
         prepared["sample"]["ecosystem"],
         "--state-dir",
         str(args.state_dir),
-        "--ai-review",
-        "--approve-hosted-source-review",
         "--behavior-observe",
         "--approve-hosted-behavior-review",
         "--ai-provider",
@@ -1263,20 +1275,26 @@ def run_exact_artifact(
         "--detonation-config",
         str(args.detonation_config),
     ]
+    if args.restricted_source_hosted_review_approved:
+        command.extend(["--ai-review", "--approve-hosted-source-review"])
     command_identity = {
         "operation": "whoathere_artifact_inspect_exact_artifact",
         "artifact_sha256": prepared["exact_artifact"]["sha256"],
         "ecosystem": prepared["sample"]["ecosystem"],
         "detonation": True,
         "detonation_config_sha256": args.detonation_config_sha256,
-        "ai_source_review": True,
+        "ai_source_review": args.restricted_source_hosted_review_approved,
         "ai_behavior_observation": True,
         "ai_provider": "codex",
         "ai_client_sha256": args.codex_client_sha256,
         "ai_model": args.codex_model,
         "ai_auth_mode": "saved_subscription_auth_dedicated_home",
         "ai_timeout_seconds": args.codex_timeout_seconds,
-        "source_review_approval_ref": args.restricted_source_review_approval_ref,
+        "source_review_approval_ref": (
+            args.restricted_source_review_approval_ref
+            if args.restricted_source_hosted_review_approved
+            else None
+        ),
         "behavior_review_approval_ref": args.restricted_behavior_review_approval_ref,
         "sync_back_option_present": False,
     }

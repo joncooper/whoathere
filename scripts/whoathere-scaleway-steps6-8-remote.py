@@ -523,6 +523,10 @@ def validate_slice_execution_args(args: argparse.Namespace) -> None:
         raise Step68Error("exact_artifact_diagnostic_requires_one_sample_per_clearance")
     if len(args.sample_id) != 1:
         raise Step68Error("exact_artifact_diagnostic_requires_one_explicit_sample_id")
+    source_review_approved = args.restricted_source_hosted_review_approved
+    source_review_ref_present = bool(args.restricted_source_review_approval_ref)
+    if source_review_approved != source_review_ref_present:
+        raise Step68Error("restricted_source_review_approval_flag_and_ref_must_match")
     required = (
         ("detonation_config", args.detonation_config),
         ("detonation_config_sha256", args.detonation_config_sha256),
@@ -530,15 +534,17 @@ def validate_slice_execution_args(args: argparse.Namespace) -> None:
         ("codex_client_sha256", args.codex_client_sha256),
         ("codex_model", args.codex_model),
         ("codex_auth_home", args.codex_auth_home),
-        ("restricted_source_hosted_review_approved", args.restricted_source_hosted_review_approved),
-        ("restricted_source_review_approval_ref", args.restricted_source_review_approval_ref),
         ("restricted_behavior_hosted_review_approved", args.restricted_behavior_hosted_review_approved),
         ("restricted_behavior_review_approval_ref", args.restricted_behavior_review_approval_ref),
     )
     missing = [label for label, value in required if value in {None, "", False}]
     if missing:
         raise Step68Error(f"exact_artifact_missing_required_options:{','.join(missing)}")
-    if args.restricted_source_review_approval_ref == args.restricted_behavior_review_approval_ref:
+    if (
+        source_review_approved
+        and args.restricted_source_review_approval_ref
+        == args.restricted_behavior_review_approval_ref
+    ):
         raise Step68Error("restricted_source_and_behavior_review_approval_refs_must_be_distinct")
     if not args.sinkhole_ready_asserted:
         raise Step68Error("exact_artifact_behavior_observation_requires_sinkhole_ready")
@@ -586,7 +592,12 @@ def sanitize_exact_step5_run_record(
             "detonation_config_sha256": args.detonation_config_sha256,
             "codex_client_sha256": args.codex_client_sha256,
             "codex_model": args.codex_model,
-            "source_review_approval_ref_sha256": sha256_text(args.restricted_source_review_approval_ref),
+            "ai_source_review": args.restricted_source_hosted_review_approved,
+            "source_review_approval_ref_sha256": (
+                sha256_text(args.restricted_source_review_approval_ref)
+                if args.restricted_source_hosted_review_approved
+                else None
+            ),
             "behavior_review_approval_ref_sha256": sha256_text(args.restricted_behavior_review_approval_ref),
             "codex_auth_home_path_retained": False,
             "raw_argv_retained": False,
@@ -667,9 +678,6 @@ def run_campaign_slice(remote_root: Path, stage_dir: Path, args: argparse.Namesp
                     str(args.codex_timeout_seconds),
                     "--product-run-timeout-seconds",
                     str(args.run_timeout_seconds - args.timeout_seconds - 30),
-                    "--restricted-source-hosted-review-approved",
-                    "--restricted-source-review-approval-ref",
-                    args.restricted_source_review_approval_ref,
                     "--restricted-behavior-hosted-review-approved",
                     "--restricted-behavior-review-approval-ref",
                     args.restricted_behavior_review_approval_ref,
@@ -679,6 +687,14 @@ def run_campaign_slice(remote_root: Path, stage_dir: Path, args: argparse.Namesp
                     clearance_consumption["sha256"],
                 ]
             )
+            if args.restricted_source_hosted_review_approved:
+                command.extend(
+                    [
+                        "--restricted-source-hosted-review-approved",
+                        "--restricted-source-review-approval-ref",
+                        args.restricted_source_review_approval_ref,
+                    ]
+                )
         if args.sinkhole_ready_asserted:
             command.extend(["--sinkhole-ready-asserted", "--sinkhole-reference", args.sinkhole_reference])
         if args.egress_deny_asserted:
