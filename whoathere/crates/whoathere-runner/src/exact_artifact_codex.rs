@@ -6,9 +6,14 @@
 //! every no-finding result as inconclusive.
 
 use crate::{
-    BoundOptionalEvidenceOutcomeV1, BoundOptionalEvidenceV1, ExactArtifactAdapterRequestV1,
-    ExactArtifactAiAdapterV1, ExactArtifactOptionalResultV1, ExactArtifactScenarioPlanV1,
-    OptionalAdapterErrorV1, PreparedArtifact,
+    behavior_finding_detection_eligible_v1, BehaviorCodexObserverConfigV1, BehaviorCodexObserverV1,
+    BehaviorCodexPanelOutcomeV1, BoundOptionalEvidenceOutcomeV1, BoundOptionalEvidenceV1,
+    ExactArtifactAdapterRequestV1, ExactArtifactAiAdapterV1, ExactArtifactBehaviorObserverV1,
+    ExactArtifactEvidenceReferenceV1, ExactArtifactFindingKindV1,
+    ExactArtifactObservationConfidenceV1, ExactArtifactObservationCoverageV1,
+    ExactArtifactObservationSourceV1, ExactArtifactObservationV1, ExactArtifactOptionalResultV1,
+    ExactArtifactScenarioPlanV1, ExactArtifactThreatClassV1, OptionalAdapterErrorV1,
+    PreparedArtifact,
 };
 use std::path::PathBuf;
 use std::time::Duration;
@@ -24,7 +29,8 @@ use whoathere_detector::{
     ArtifactReviewInferenceSettingsV2, ArtifactReviewModelIdentityV2, ArtifactReviewPassV2,
     ArtifactReviewPrivacyPostureV2, ArtifactReviewPromptIdentityV2, ArtifactReviewRequestV2,
     ArtifactReviewThreatClassV2, ArtifactReviewVerdictV2, ArtifactReviewWorkItemV2,
-    ArtifactStaticAnalysis, SourceLanguage, ARTIFACT_REVIEW_PROMPT_TEMPLATE_ID_V2,
+    ArtifactStaticAnalysis, BehaviorAnalysisBundleV1, BehaviorFindingConfidenceV1,
+    BehaviorThreatClassV1, SourceLanguage, ARTIFACT_REVIEW_PROMPT_TEMPLATE_ID_V2,
     ARTIFACT_REVIEW_PROMPT_TEMPLATE_VERSION_V2,
 };
 
@@ -125,6 +131,7 @@ impl ExactArtifactAiAdapterV1 for ExactArtifactCodexAiAdapterV1 {
                 adapter_request,
                 BoundOptionalEvidenceOutcomeV1::Incomplete,
                 vec!["exact_artifact_codex_no_reviewable_content".to_string()],
+                Vec::new(),
             );
         }
 
@@ -187,6 +194,34 @@ impl ExactArtifactAiAdapterV1 for ExactArtifactCodexAiAdapterV1 {
                 threat_class_reason(finding.threat_class())
             ));
         }
+        let observations = result
+            .findings()
+            .iter()
+            .map(|finding| {
+                ExactArtifactObservationV1::new(
+                    ExactArtifactObservationSourceV1::AiSourceReview,
+                    source_review_threat_class(finding.threat_class()),
+                    ExactArtifactFindingKindV1::AiSourceReview(finding.category()),
+                    ExactArtifactObservationConfidenceV1::Moderate,
+                    prepared.normalized().manifest.artifact_sha256.clone(),
+                    prepared.normalized().manifest.manifest_sha256.clone(),
+                    ExactArtifactEvidenceReferenceV1::AiSourceReview {
+                        finding_id_sha256: finding.finding_id_sha256().clone(),
+                        evidence_sha256: finding.evidence_sha256().clone(),
+                        file_id: finding.file_id().clone(),
+                        file_sha256: finding.file_sha256().clone(),
+                        start_byte: finding.start_byte(),
+                        end_byte: finding.end_byte(),
+                        start_line: finding.start_line(),
+                        end_line: finding.end_line(),
+                        selected_sha256: finding.selected_sha256().clone(),
+                    },
+                    ExactArtifactObservationCoverageV1::Incomplete,
+                    vec!["exact_artifact_codex_coverage_incomplete".to_string()],
+                    false,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
 
         let outcome = match result.verdict() {
             ArtifactReviewVerdictV2::Suspicious => {
@@ -198,7 +233,144 @@ impl ExactArtifactAiAdapterV1 for ExactArtifactCodexAiAdapterV1 {
                 BoundOptionalEvidenceOutcomeV1::Incomplete
             }
         };
-        optional_result(adapter_request, outcome, reasons)
+        optional_result(adapter_request, outcome, reasons, observations)
+    }
+}
+
+impl ExactArtifactBehaviorObserverV1 for ExactArtifactCodexAiAdapterV1 {
+    fn provider_id(&self) -> &str {
+        EXACT_ARTIFACT_CODEX_PROVIDER_ID_V1
+    }
+
+    fn readiness_reason(&self) -> Option<&'static str> {
+        None
+    }
+
+    fn observe_behavior(
+        &self,
+        adapter_request: &ExactArtifactAdapterRequestV1,
+        bundle: &BehaviorAnalysisBundleV1,
+    ) -> Result<BoundOptionalEvidenceV1, OptionalAdapterErrorV1> {
+        let bundle_sha256 = bundle.bundle_sha256();
+        if adapter_request.stage != "behavior_observation"
+            || adapter_request.artifact_sha256 != bundle.artifact_sha256().as_str()
+            || adapter_request.manifest_sha256 != bundle.manifest_sha256().as_str()
+            || adapter_request.behavior_bundle_sha256.as_deref() != Some(bundle_sha256.as_str())
+        {
+            return Err(OptionalAdapterErrorV1::new(
+                "exact_artifact_codex_behavior_binding_invalid",
+            ));
+        }
+
+        let observer = match BehaviorCodexObserverV1::new(BehaviorCodexObserverConfigV1 {
+            client_path: self.config.client_path.clone(),
+            client_sha256: self.config.client_sha256.clone(),
+            model: self.config.model.clone(),
+            authentication_home: self.config.authentication_home.clone(),
+            runtime_root: self.config.runtime_root.join("behavior-observer"),
+            timeout: self.config.timeout,
+        }) {
+            Ok(observer) => observer,
+            Err(error) => {
+                return optional_result(
+                    adapter_request,
+                    BoundOptionalEvidenceOutcomeV1::Incomplete,
+                    vec![
+                        "exact_artifact_codex_behavior_coverage_incomplete".to_string(),
+                        "exact_artifact_codex_behavior_no_admission_authority".to_string(),
+                        error.reason_code().to_string(),
+                    ],
+                    Vec::new(),
+                );
+            }
+        };
+        let panel = match observer.observe_all(bundle) {
+            Ok(panel) => panel,
+            Err(error) => {
+                return optional_result(
+                    adapter_request,
+                    BoundOptionalEvidenceOutcomeV1::Incomplete,
+                    vec![
+                        "exact_artifact_codex_behavior_coverage_incomplete".to_string(),
+                        "exact_artifact_codex_behavior_no_admission_authority".to_string(),
+                        error.reason_code().to_string(),
+                    ],
+                    Vec::new(),
+                );
+            }
+        };
+
+        let mut coverage_gap_codes = panel
+            .correlation_report()
+            .map(|report| report.coverage_gap_codes().to_vec())
+            .unwrap_or_default();
+        if !bundle.is_complete() {
+            coverage_gap_codes
+                .push("exact_artifact_behavior_bundle_coverage_incomplete".to_string());
+        }
+        if !panel.role_failures().is_empty() {
+            coverage_gap_codes.push("exact_artifact_behavior_specialist_failure".to_string());
+            coverage_gap_codes.extend(
+                panel
+                    .role_failures()
+                    .iter()
+                    .map(|failure| failure.reason_code().to_string()),
+            );
+        }
+        coverage_gap_codes.sort();
+        coverage_gap_codes.dedup();
+        let coverage = if coverage_gap_codes.is_empty() {
+            ExactArtifactObservationCoverageV1::Complete
+        } else {
+            ExactArtifactObservationCoverageV1::Incomplete
+        };
+
+        let observations = panel
+            .correlation_report()
+            .into_iter()
+            .flat_map(|report| report.findings())
+            .map(|finding| {
+                let mut events = finding.evidence().to_vec();
+                events.sort();
+                events.dedup();
+                ExactArtifactObservationV1::new(
+                    ExactArtifactObservationSourceV1::AiBehavioral,
+                    behavior_threat_class(finding.threat_class()),
+                    ExactArtifactFindingKindV1::AiBehavioral(finding.kind()),
+                    behavior_confidence(finding.confidence()),
+                    bundle.artifact_sha256().clone(),
+                    bundle.manifest_sha256().clone(),
+                    ExactArtifactEvidenceReferenceV1::AiBehavioral {
+                        bundle_sha256: bundle_sha256.clone(),
+                        finding_sha256: finding.finding_sha256().clone(),
+                        events,
+                    },
+                    coverage,
+                    coverage_gap_codes.clone(),
+                    behavior_finding_detection_eligible_v1(finding.kind()),
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let positive =
+            panel.outcome() == BehaviorCodexPanelOutcomeV1::Positive && !observations.is_empty();
+        let outcome = if positive {
+            if coverage == ExactArtifactObservationCoverageV1::Incomplete {
+                BoundOptionalEvidenceOutcomeV1::FindingsWithIncompleteCoverage
+            } else {
+                BoundOptionalEvidenceOutcomeV1::Findings
+            }
+        } else {
+            BoundOptionalEvidenceOutcomeV1::Incomplete
+        };
+        let mut reasons = vec![
+            panel.reason_code().to_string(),
+            "exact_artifact_codex_behavior_no_admission_authority".to_string(),
+        ];
+        if coverage == ExactArtifactObservationCoverageV1::Incomplete || !positive {
+            reasons.push("exact_artifact_codex_behavior_coverage_incomplete".to_string());
+        }
+        optional_result(adapter_request, outcome, reasons, observations)
     }
 }
 
@@ -282,12 +454,101 @@ fn optional_result(
     adapter_request: &ExactArtifactAdapterRequestV1,
     outcome: BoundOptionalEvidenceOutcomeV1,
     reasons: Vec<String>,
+    observations: Vec<ExactArtifactObservationV1>,
 ) -> Result<BoundOptionalEvidenceV1, OptionalAdapterErrorV1> {
-    ExactArtifactOptionalResultV1::new(adapter_request.request_sha256.clone(), outcome, reasons)
-        .and_then(|result| result.to_canonical_json_bytes())
-        .map(|canonical_result_bytes| BoundOptionalEvidenceV1 {
-            canonical_result_bytes,
-        })
+    ExactArtifactOptionalResultV1::with_evidence(
+        adapter_request.request_sha256.clone(),
+        outcome,
+        reasons,
+        observations,
+        Vec::new(),
+    )
+    .and_then(|result| result.to_canonical_json_bytes())
+    .map(|canonical_result_bytes| BoundOptionalEvidenceV1 {
+        canonical_result_bytes,
+        behavior_bundles: Vec::new(),
+    })
+}
+
+fn source_review_threat_class(
+    threat_class: ArtifactReviewThreatClassV2,
+) -> ExactArtifactThreatClassV1 {
+    match threat_class {
+        ArtifactReviewThreatClassV2::CredentialAndSensitiveFileDiscovery => {
+            ExactArtifactThreatClassV1::CredentialAndSensitiveFileDiscovery
+        }
+        ArtifactReviewThreatClassV2::NetworkExfiltrationAndMetadataAccess => {
+            ExactArtifactThreatClassV1::NetworkAndExfiltration
+        }
+        ArtifactReviewThreatClassV2::SecondStageNativeOrWasmHandoff => {
+            ExactArtifactThreatClassV1::SecondStageNativeOrWasmHandoff
+        }
+        ArtifactReviewThreatClassV2::ProcessShellOrDynamicLoading => {
+            ExactArtifactThreatClassV1::ProcessExecutionAndDynamicLoading
+        }
+        ArtifactReviewThreatClassV2::ObfuscationPackingOrStringConstruction => {
+            ExactArtifactThreatClassV1::ObfuscationAndPacking
+        }
+        ArtifactReviewThreatClassV2::EnvironmentOrDelayedGating => {
+            ExactArtifactThreatClassV1::EnvironmentAndTimeGating
+        }
+        ArtifactReviewThreatClassV2::PersistenceDestructionOrSelfDeletion => {
+            ExactArtifactThreatClassV1::PersistenceDestructionAndSelfDeletion
+        }
+        ArtifactReviewThreatClassV2::RepositoryWorkflowPublicationOrPropagation => {
+            ExactArtifactThreatClassV1::RepositoryPackageAndSelfPropagation
+        }
+        ArtifactReviewThreatClassV2::DependencyIndirectionConfusionOrTransitiveCompromise => {
+            ExactArtifactThreatClassV1::DependencyIndirection
+        }
+        ArtifactReviewThreatClassV2::ImportOrUseTimeTampering => {
+            ExactArtifactThreatClassV1::ImportTimeTampering
+        }
+    }
+}
+
+fn behavior_threat_class(threat_class: BehaviorThreatClassV1) -> ExactArtifactThreatClassV1 {
+    match threat_class {
+        BehaviorThreatClassV1::CredentialAndSensitiveFileDiscovery => {
+            ExactArtifactThreatClassV1::CredentialAndSensitiveFileDiscovery
+        }
+        BehaviorThreatClassV1::NetworkAndExfiltration => {
+            ExactArtifactThreatClassV1::NetworkAndExfiltration
+        }
+        BehaviorThreatClassV1::SecondStageNativeOrWasmHandoff => {
+            ExactArtifactThreatClassV1::SecondStageNativeOrWasmHandoff
+        }
+        BehaviorThreatClassV1::ProcessExecutionAndDynamicLoading => {
+            ExactArtifactThreatClassV1::ProcessExecutionAndDynamicLoading
+        }
+        BehaviorThreatClassV1::ObfuscationAndPacking => {
+            ExactArtifactThreatClassV1::ObfuscationAndPacking
+        }
+        BehaviorThreatClassV1::EnvironmentAndTimeGating => {
+            ExactArtifactThreatClassV1::EnvironmentAndTimeGating
+        }
+        BehaviorThreatClassV1::PersistenceDestructionAndSelfDeletion => {
+            ExactArtifactThreatClassV1::PersistenceDestructionAndSelfDeletion
+        }
+        BehaviorThreatClassV1::RepositoryPackageAndSelfPropagation => {
+            ExactArtifactThreatClassV1::RepositoryPackageAndSelfPropagation
+        }
+        BehaviorThreatClassV1::DependencyIndirection => {
+            ExactArtifactThreatClassV1::DependencyIndirection
+        }
+        BehaviorThreatClassV1::ImportTimeTampering => {
+            ExactArtifactThreatClassV1::ImportTimeTampering
+        }
+    }
+}
+
+fn behavior_confidence(
+    confidence: BehaviorFindingConfidenceV1,
+) -> ExactArtifactObservationConfidenceV1 {
+    match confidence {
+        BehaviorFindingConfidenceV1::Moderate => ExactArtifactObservationConfidenceV1::Moderate,
+        BehaviorFindingConfidenceV1::High => ExactArtifactObservationConfidenceV1::High,
+    }
 }
 
 fn threat_class_reason(threat_class: ArtifactReviewThreatClassV2) -> &'static str {

@@ -6,15 +6,20 @@ use whoathere_artifact::{
     AcquisitionMethod, ArtifactSourceType, Ecosystem, NormalizationLimits, Sha256Digest,
 };
 use whoathere_cache::VerifiedArtifactLease;
-use whoathere_detector::ArtifactStaticAnalysis;
+use whoathere_detector::{
+    ArtifactFindingCategory, ArtifactReviewFindingCategoryV2, ArtifactStaticAnalysis,
+    EvidenceRange, FindingLocation,
+};
 use whoathere_detonation::{ArtifactScenarioKindV1, SdistScenarioKindV1};
 use whoathere_runner::{
     canonical_utc_timestamp_from_unix_seconds_v1, inspect_exact_artifact_v1,
     BoundOptionalEvidenceOutcomeV1, BoundOptionalEvidenceV1, ExactArtifactAdapterRequestV1,
     ExactArtifactAiAdapterV1, ExactArtifactDetonationAdapterV1, ExactArtifactDispositionV1,
-    ExactArtifactInspectionRequestV1, ExactArtifactOptionalResultV1, ExactArtifactScenarioKindV1,
-    ExactArtifactScenarioPlanV1, ExactArtifactStageStatusV1, OptionalAdapterErrorV1,
-    PreparedArtifact,
+    ExactArtifactEvidenceReferenceV1, ExactArtifactFindingKindV1, ExactArtifactInspectionRequestV1,
+    ExactArtifactObservationConfidenceV1, ExactArtifactObservationCoverageV1,
+    ExactArtifactObservationSourceV1, ExactArtifactObservationV1, ExactArtifactOptionalResultV1,
+    ExactArtifactScenarioKindV1, ExactArtifactScenarioPlanV1, ExactArtifactStageStatusV1,
+    ExactArtifactThreatClassV1, OptionalAdapterErrorV1, PreparedArtifact,
 };
 use zip::write::SimpleFileOptions;
 
@@ -88,6 +93,60 @@ fn npm_tgz() -> Vec<u8> {
         &mut archive,
         "package/cli.js",
         b"#!/usr/bin/env node\nprocess.exit(0);\n",
+    );
+    archive
+        .into_inner()
+        .expect("finish tar")
+        .finish()
+        .expect("finish gzip")
+}
+
+const NPM_CAPABILITY_FIXTURE: &[u8] = br#"const fs = require('node:fs');
+const token = process.env.NPM_TOKEN;
+const config = fs.readFileSync(process.env.HOME + '/.npmrc');
+const https = require('node:https');
+https.request({method: 'POST'});
+const child = require('node:child_process');
+child.spawn('printf', [token, config.length]);
+"#;
+
+fn npm_capability_tgz() -> Vec<u8> {
+    let encoder = GzEncoder::new(Vec::new(), Compression::default());
+    let mut archive = tar::Builder::new(encoder);
+    append_tar_file(
+        &mut archive,
+        "package/package.json",
+        br#"{"name":"spine-capability","version":"1.0.0","scripts":{"postinstall":"node boot.js"},"main":"boot.js"}"#,
+    );
+    append_tar_file(
+        &mut archive,
+        "package/boot.js",
+        b"require('./lib/collect');\n",
+    );
+    append_tar_file(
+        &mut archive,
+        "package/lib/collect.js",
+        NPM_CAPABILITY_FIXTURE,
+    );
+    archive
+        .into_inner()
+        .expect("finish tar")
+        .finish()
+        .expect("finish gzip")
+}
+
+fn npm_network_context_tgz() -> Vec<u8> {
+    let encoder = GzEncoder::new(Vec::new(), Compression::default());
+    let mut archive = tar::Builder::new(encoder);
+    append_tar_file(
+        &mut archive,
+        "package/package.json",
+        br#"{"name":"spine-network-context","version":"1.0.0","scripts":{"postinstall":"node index.js"},"main":"index.js"}"#,
+    );
+    append_tar_file(
+        &mut archive,
+        "package/index.js",
+        b"const https = require('node:https');\nhttps.request('https://example.invalid/status');\n",
     );
     archive
         .into_inner()
@@ -324,6 +383,121 @@ fn npm_exact_bytes_bind_static_analysis_and_all_declared_trigger_intents() {
 }
 
 #[test]
+fn deterministic_package_detection_survives_as_an_exact_cited_product_observation() {
+    let root = TempRoot::new("whoathere-exact-spine-deterministic-observation");
+    let bytes = npm_capability_tgz();
+    let report = inspect(
+        &root,
+        "spine-capability-1.0.0.tgz",
+        &bytes,
+        Some(Ecosystem::Npm),
+        (false, false),
+        (None, None),
+    );
+
+    let observation = report
+        .observations
+        .iter()
+        .find(|observation| {
+            observation.finding_kind
+                == ExactArtifactFindingKindV1::DeterministicStatic(
+                    ArtifactFindingCategory::CredentialExfiltrationCapability,
+                )
+        })
+        .expect("credential exfiltration capability must survive product fusion");
+    assert_eq!(
+        observation.source,
+        ExactArtifactObservationSourceV1::DeterministicStatic
+    );
+    assert_eq!(
+        observation.artifact_sha256.as_str(),
+        report.identity.artifact_sha256
+    );
+    assert_eq!(
+        observation.manifest_sha256.as_str(),
+        report.identity.manifest_sha256
+    );
+    assert!(observation.behavior_detection_eligible);
+    let ExactArtifactEvidenceReferenceV1::DeterministicStatic {
+        evidence_sha256,
+        location:
+            FindingLocation::File {
+                file_sha256,
+                range,
+                selected_bytes_sha256,
+                ..
+            },
+    } = &observation.evidence
+    else {
+        panic!("deterministic package detection must retain its exact file citation");
+    };
+    assert_ne!(evidence_sha256, &Sha256Digest::from_bytes(b""));
+    assert_eq!(
+        file_sha256,
+        &Sha256Digest::from_bytes(NPM_CAPABILITY_FIXTURE)
+    );
+    let (start, end) = match range {
+        EvidenceRange::Lines {
+            start_byte,
+            end_byte,
+            ..
+        }
+        | EvidenceRange::Bytes {
+            start_byte,
+            end_byte,
+        } => (*start_byte as usize, *end_byte as usize),
+    };
+    assert!(start < end && end <= NPM_CAPABILITY_FIXTURE.len());
+    assert_eq!(
+        selected_bytes_sha256,
+        &Sha256Digest::from_bytes(&NPM_CAPABILITY_FIXTURE[start..end])
+    );
+    assert_eq!(
+        report.verdict,
+        whoathere_runner::ExactArtifactVerdictV1::Malicious
+    );
+    assert_eq!(report.status, ExactArtifactDispositionV1::Findings);
+    assert!(report.behavior_detection_count > 0);
+    assert!(!report.admission_authority);
+    assert!(!report.observed_clean);
+    assert!(!report.sync_back_enabled);
+}
+
+#[test]
+fn ordinary_static_network_capability_is_preserved_without_a_malware_verdict() {
+    let root = TempRoot::new("whoathere-exact-spine-network-context");
+    let report = inspect(
+        &root,
+        "spine-network-context-1.0.0.tgz",
+        &npm_network_context_tgz(),
+        Some(Ecosystem::Npm),
+        (false, false),
+        (None, None),
+    );
+
+    let observation = report
+        .observations
+        .iter()
+        .find(|observation| {
+            observation.finding_kind
+                == ExactArtifactFindingKindV1::DeterministicStatic(
+                    ArtifactFindingCategory::NetworkCapability,
+                )
+        })
+        .expect("network capability remains visible for review");
+    assert!(!observation.behavior_detection_eligible);
+    assert_eq!(report.status, ExactArtifactDispositionV1::Inconclusive);
+    assert_eq!(
+        report.verdict,
+        whoathere_runner::ExactArtifactVerdictV1::Inconclusive
+    );
+    assert_eq!(report.exit_code, 22);
+    assert_eq!(report.behavior_detection_count, 0);
+    assert!(!report.admission_authority);
+    assert!(!report.observed_clean);
+}
+
+#[test]
 fn ingress_rejects_symlinks_and_oversize_files_before_normalization() {
     use std::os::unix::fs::symlink;
 
@@ -509,6 +683,7 @@ fn optional_result_for_request_sha(
     .expect("canonical optional result");
     BoundOptionalEvidenceV1 {
         canonical_result_bytes,
+        behavior_bundles: Vec::new(),
     }
 }
 
@@ -591,7 +766,7 @@ impl ExactArtifactAiAdapterV1 for NonCanonicalResultAi {
     ) -> Result<BoundOptionalEvidenceV1, OptionalAdapterErrorV1> {
         let mut result = optional_result(
             request,
-            BoundOptionalEvidenceOutcomeV1::Findings,
+            BoundOptionalEvidenceOutcomeV1::Incomplete,
             "mock_finding",
         );
         result.canonical_result_bytes.push(b'\n');
@@ -599,9 +774,9 @@ impl ExactArtifactAiAdapterV1 for NonCanonicalResultAi {
     }
 }
 
-struct FindingsWithIncompleteCoverageAi;
+struct MaliciousLookingReasonOnlyAi;
 
-impl ExactArtifactAiAdapterV1 for FindingsWithIncompleteCoverageAi {
+impl ExactArtifactAiAdapterV1 for MaliciousLookingReasonOnlyAi {
     fn provider_id(&self) -> &str {
         "mock-ai"
     }
@@ -619,9 +794,76 @@ impl ExactArtifactAiAdapterV1 for FindingsWithIncompleteCoverageAi {
     ) -> Result<BoundOptionalEvidenceV1, OptionalAdapterErrorV1> {
         Ok(optional_result(
             request,
-            BoundOptionalEvidenceOutcomeV1::FindingsWithIncompleteCoverage,
-            "mock_finding_with_incomplete_coverage",
+            BoundOptionalEvidenceOutcomeV1::Incomplete,
+            "credential_exfiltration_detected",
         ))
+    }
+}
+
+struct FindingsWithIncompleteCoverageAi;
+
+impl ExactArtifactAiAdapterV1 for FindingsWithIncompleteCoverageAi {
+    fn provider_id(&self) -> &str {
+        "mock-ai"
+    }
+
+    fn readiness_reason(&self) -> Option<&'static str> {
+        None
+    }
+
+    fn analyze(
+        &self,
+        request: &ExactArtifactAdapterRequestV1,
+        prepared: &PreparedArtifact,
+        _deterministic: &ArtifactStaticAnalysis,
+        _scenarios: &ExactArtifactScenarioPlanV1,
+    ) -> Result<BoundOptionalEvidenceV1, OptionalAdapterErrorV1> {
+        let observation = mock_ai_observation(prepared);
+        let result = ExactArtifactOptionalResultV1::with_evidence(
+            request.request_sha256.clone(),
+            BoundOptionalEvidenceOutcomeV1::FindingsWithIncompleteCoverage,
+            vec!["mock_finding_with_incomplete_coverage".to_string()],
+            vec![observation],
+            Vec::new(),
+        )?;
+        Ok(BoundOptionalEvidenceV1 {
+            canonical_result_bytes: result.to_canonical_json_bytes()?,
+            behavior_bundles: Vec::new(),
+        })
+    }
+}
+
+struct ContextOnlyAi;
+
+impl ExactArtifactAiAdapterV1 for ContextOnlyAi {
+    fn provider_id(&self) -> &str {
+        "mock-ai"
+    }
+
+    fn readiness_reason(&self) -> Option<&'static str> {
+        None
+    }
+
+    fn analyze(
+        &self,
+        request: &ExactArtifactAdapterRequestV1,
+        prepared: &PreparedArtifact,
+        _deterministic: &ArtifactStaticAnalysis,
+        _scenarios: &ExactArtifactScenarioPlanV1,
+    ) -> Result<BoundOptionalEvidenceV1, OptionalAdapterErrorV1> {
+        let observation =
+            mock_ai_observation_for(prepared, ArtifactReviewFindingCategoryV2::NetworkCapability);
+        let result = ExactArtifactOptionalResultV1::with_evidence(
+            request.request_sha256.clone(),
+            BoundOptionalEvidenceOutcomeV1::FindingsWithIncompleteCoverage,
+            vec!["mock_context_with_incomplete_coverage".to_string()],
+            vec![observation],
+            Vec::new(),
+        )?;
+        Ok(BoundOptionalEvidenceV1 {
+            canonical_result_bytes: result.to_canonical_json_bytes()?,
+            behavior_bundles: Vec::new(),
+        })
     }
 }
 
@@ -739,13 +981,22 @@ fn optional_result_bytes_must_be_canonical_and_are_hashed_by_the_product() {
         .iter()
         .find(|stage| stage.stage == "ai_review")
         .expect("AI stage");
-    let canonical = ExactArtifactOptionalResultV1::new(
+    let canonical = ExactArtifactOptionalResultV1::with_evidence(
         ai_stage
             .request_sha256
             .clone()
             .expect("bound AI request digest"),
         BoundOptionalEvidenceOutcomeV1::FindingsWithIncompleteCoverage,
         vec!["mock_finding_with_incomplete_coverage".to_string()],
+        accepted
+            .observations
+            .iter()
+            .filter(|observation| {
+                observation.source == ExactArtifactObservationSourceV1::AiSourceReview
+            })
+            .cloned()
+            .collect(),
+        Vec::new(),
     )
     .expect("valid combined result")
     .to_canonical_json_bytes()
@@ -761,8 +1012,121 @@ fn optional_result_bytes_must_be_canonical_and_are_hashed_by_the_product() {
     );
     assert!(ai_stage.request_sha256.is_some());
     assert_eq!(accepted.status, ExactArtifactDispositionV1::Findings);
+    assert_eq!(
+        accepted.verdict,
+        whoathere_runner::ExactArtifactVerdictV1::Malicious
+    );
+    assert_eq!(accepted.exit_code, 20);
+    assert_eq!(accepted.behavior_detection_count, 0);
+    assert!(accepted
+        .observations
+        .iter()
+        .filter(|observation| {
+            observation.source == ExactArtifactObservationSourceV1::AiSourceReview
+        })
+        .all(|observation| !observation.behavior_detection_eligible));
     assert!(!accepted.admission_authority);
     assert!(!accepted.observed_clean);
+}
+
+#[test]
+fn malicious_looking_reason_strings_without_typed_observations_never_drive_a_verdict() {
+    let root = TempRoot::new("whoathere-exact-spine-reason-only");
+    let report = inspect(
+        &root,
+        "spine-inert-1.0.0.tgz",
+        &npm_tgz(),
+        Some(Ecosystem::Npm),
+        (true, false),
+        (Some(&MaliciousLookingReasonOnlyAi), None),
+    );
+
+    assert!(report.observations.is_empty());
+    assert_eq!(report.status, ExactArtifactDispositionV1::Inconclusive);
+    assert_eq!(
+        report.verdict,
+        whoathere_runner::ExactArtifactVerdictV1::Inconclusive
+    );
+    assert_eq!(report.exit_code, 22);
+    assert_eq!(report.behavior_detection_count, 0);
+    assert!(report
+        .reason_codes
+        .contains(&"credential_exfiltration_detected".to_string()));
+    assert!(!report.admission_authority);
+    assert!(!report.observed_clean);
+    assert!(!report.sync_back_enabled);
+}
+
+#[test]
+fn contextual_ai_source_finding_is_preserved_without_a_malware_verdict() {
+    let root = TempRoot::new("whoathere-exact-spine-ai-context");
+    let report = inspect(
+        &root,
+        "spine-inert-1.0.0.tgz",
+        &npm_tgz(),
+        Some(Ecosystem::Npm),
+        (true, false),
+        (Some(&ContextOnlyAi), None),
+    );
+
+    assert!(report.observations.iter().any(|observation| {
+        observation.finding_kind
+            == ExactArtifactFindingKindV1::AiSourceReview(
+                ArtifactReviewFindingCategoryV2::NetworkCapability,
+            )
+    }));
+    assert_eq!(report.status, ExactArtifactDispositionV1::Inconclusive);
+    assert_eq!(
+        report.verdict,
+        whoathere_runner::ExactArtifactVerdictV1::Inconclusive
+    );
+    assert_eq!(report.exit_code, 22);
+    assert_eq!(report.behavior_detection_count, 0);
+    assert!(!report.admission_authority);
+    assert!(!report.observed_clean);
+}
+
+fn mock_ai_observation(prepared: &PreparedArtifact) -> ExactArtifactObservationV1 {
+    mock_ai_observation_for(
+        prepared,
+        ArtifactReviewFindingCategoryV2::CredentialExfiltration,
+    )
+}
+
+fn mock_ai_observation_for(
+    prepared: &PreparedArtifact,
+    category: ArtifactReviewFindingCategoryV2,
+) -> ExactArtifactObservationV1 {
+    let file = prepared
+        .normalized()
+        .files()
+        .find(|file| !file.bytes().is_empty())
+        .expect("mock AI citation target");
+    ExactArtifactObservationV1::new(
+        ExactArtifactObservationSourceV1::AiSourceReview,
+        ExactArtifactThreatClassV1::NetworkAndExfiltration,
+        ExactArtifactFindingKindV1::AiSourceReview(category),
+        ExactArtifactObservationConfidenceV1::Moderate,
+        Sha256Digest::parse(prepared.evidence_subject().artifact_sha256().to_string())
+            .expect("artifact digest"),
+        Sha256Digest::parse(prepared.evidence_subject().manifest_sha256().to_string())
+            .expect("manifest digest"),
+        ExactArtifactEvidenceReferenceV1::AiSourceReview {
+            finding_id_sha256: Sha256Digest::from_bytes(b"mock-ai-finding"),
+            evidence_sha256: Sha256Digest::from_bytes(b"mock-ai-evidence"),
+            file_id: file.file_id.clone(),
+            file_sha256: file.sha256.clone(),
+            start_byte: 0,
+            end_byte: 1,
+            start_line: 1,
+            end_line: 1,
+            selected_sha256: Sha256Digest::from_bytes(&file.bytes()[..1]),
+        },
+        ExactArtifactObservationCoverageV1::Incomplete,
+        vec!["mock_ai_coverage_incomplete".to_string()],
+        false,
+    )
+    .expect("valid mock AI observation")
 }
 
 #[test]

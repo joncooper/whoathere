@@ -19,7 +19,10 @@ use whoathere_artifact::{
 };
 use whoathere_cache::{PersistentQuarantineCas, VerifiedArtifactLease};
 use whoathere_detector::{
-    ArtifactAnalysisCompleteness, ArtifactAnalysisOutcome, ArtifactStaticAnalysis,
+    ArtifactAnalysisCompleteness, ArtifactAnalysisOutcome, ArtifactFindingCategory,
+    ArtifactReviewFindingCategoryV2, ArtifactReviewThreatClassV2, ArtifactStaticAnalysis,
+    BehaviorAnalysisBundleV1, BehaviorEvidenceReferenceV1, BehaviorFindingKindV1,
+    BehaviorThreatClassV1, FindingConfidence, FindingLocation, FindingSpecificity,
 };
 use whoathere_detonation::{
     expected_sdist_scenario_kinds_v1, expected_wheel_scenario_kinds_v1, ArtifactScenarioKindV1,
@@ -35,12 +38,273 @@ pub const EXACT_ARTIFACT_ADAPTER_REQUEST_SCHEMA_V1: &str =
     "whoathere.exact_artifact_adapter_request.v1";
 pub const EXACT_ARTIFACT_OPTIONAL_RESULT_SCHEMA_V1: &str =
     "whoathere.exact_artifact_optional_result.v1";
+pub const EXACT_ARTIFACT_OBSERVATION_SCHEMA_V1: &str = "whoathere.exact_artifact_observation.v1";
 pub const MAX_EXACT_ARTIFACT_OPTIONAL_RESULT_BYTES_V1: usize = 256 * 1024;
+const MAX_EXACT_ARTIFACT_OBSERVATIONS_V1: usize = 4_096;
+const MAX_EXACT_ARTIFACT_BEHAVIOR_BUNDLES_V1: usize = 128;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExactArtifactObservationSourceV1 {
+    DeterministicStatic,
+    AiSourceReview,
+    AiBehavioral,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExactArtifactObservationConfidenceV1 {
+    Moderate,
+    High,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExactArtifactObservationCoverageV1 {
+    Complete,
+    Incomplete,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExactArtifactThreatClassV1 {
+    CredentialAndSensitiveFileDiscovery,
+    NetworkAndExfiltration,
+    SecondStageNativeOrWasmHandoff,
+    ProcessExecutionAndDynamicLoading,
+    ObfuscationAndPacking,
+    EnvironmentAndTimeGating,
+    PersistenceDestructionAndSelfDeletion,
+    RepositoryPackageAndSelfPropagation,
+    DependencyIndirection,
+    ImportTimeTampering,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "source",
+    content = "kind",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum ExactArtifactFindingKindV1 {
+    DeterministicStatic(ArtifactFindingCategory),
+    AiSourceReview(ArtifactReviewFindingCategoryV2),
+    AiBehavioral(BehaviorFindingKindV1),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ExactArtifactEvidenceReferenceV1 {
+    DeterministicStatic {
+        evidence_sha256: Sha256Digest,
+        location: FindingLocation,
+    },
+    AiSourceReview {
+        finding_id_sha256: Sha256Digest,
+        evidence_sha256: Sha256Digest,
+        file_id: Sha256Digest,
+        file_sha256: Sha256Digest,
+        start_byte: u64,
+        end_byte: u64,
+        start_line: u64,
+        end_line: u64,
+        selected_sha256: Sha256Digest,
+    },
+    AiBehavioral {
+        bundle_sha256: Sha256Digest,
+        finding_sha256: Sha256Digest,
+        events: Vec<BehaviorEvidenceReferenceV1>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExactArtifactObservationV1 {
+    pub schema_version: String,
+    pub source: ExactArtifactObservationSourceV1,
+    pub threat_class: ExactArtifactThreatClassV1,
+    pub finding_kind: ExactArtifactFindingKindV1,
+    pub confidence: ExactArtifactObservationConfidenceV1,
+    pub artifact_sha256: Sha256Digest,
+    pub manifest_sha256: Sha256Digest,
+    pub evidence: ExactArtifactEvidenceReferenceV1,
+    pub coverage: ExactArtifactObservationCoverageV1,
+    pub coverage_gap_codes: Vec<String>,
+    pub behavior_detection_eligible: bool,
+    pub observation_sha256: Sha256Digest,
+}
+
+#[derive(Serialize)]
+#[serde(deny_unknown_fields)]
+struct ExactArtifactObservationDigestWireV1<'a> {
+    schema_version: &'static str,
+    source: ExactArtifactObservationSourceV1,
+    threat_class: ExactArtifactThreatClassV1,
+    finding_kind: &'a ExactArtifactFindingKindV1,
+    confidence: ExactArtifactObservationConfidenceV1,
+    artifact_sha256: &'a Sha256Digest,
+    manifest_sha256: &'a Sha256Digest,
+    evidence: &'a ExactArtifactEvidenceReferenceV1,
+    coverage: ExactArtifactObservationCoverageV1,
+    coverage_gap_codes: &'a [String],
+    behavior_detection_eligible: bool,
+}
+
+impl ExactArtifactObservationV1 {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        source: ExactArtifactObservationSourceV1,
+        threat_class: ExactArtifactThreatClassV1,
+        finding_kind: ExactArtifactFindingKindV1,
+        confidence: ExactArtifactObservationConfidenceV1,
+        artifact_sha256: Sha256Digest,
+        manifest_sha256: Sha256Digest,
+        evidence: ExactArtifactEvidenceReferenceV1,
+        coverage: ExactArtifactObservationCoverageV1,
+        coverage_gap_codes: Vec<String>,
+        behavior_detection_eligible: bool,
+    ) -> Result<Self, OptionalAdapterErrorV1> {
+        let coverage_gap_codes = sorted_unique(coverage_gap_codes);
+        let wire = ExactArtifactObservationDigestWireV1 {
+            schema_version: EXACT_ARTIFACT_OBSERVATION_SCHEMA_V1,
+            source,
+            threat_class,
+            finding_kind: &finding_kind,
+            confidence,
+            artifact_sha256: &artifact_sha256,
+            manifest_sha256: &manifest_sha256,
+            evidence: &evidence,
+            coverage,
+            coverage_gap_codes: &coverage_gap_codes,
+            behavior_detection_eligible,
+        };
+        let bytes = serde_json::to_vec(&wire).map_err(|_| {
+            OptionalAdapterErrorV1::new("exact_artifact_observation_serialization_failed")
+        })?;
+        let observation = Self {
+            schema_version: EXACT_ARTIFACT_OBSERVATION_SCHEMA_V1.to_string(),
+            source,
+            threat_class,
+            finding_kind,
+            confidence,
+            artifact_sha256,
+            manifest_sha256,
+            evidence,
+            coverage,
+            coverage_gap_codes,
+            behavior_detection_eligible,
+            observation_sha256: Sha256Digest::from_bytes(&bytes),
+        };
+        observation.validate()?;
+        Ok(observation)
+    }
+
+    fn validate(&self) -> Result<(), OptionalAdapterErrorV1> {
+        let source_matches = matches!(
+            (&self.source, &self.finding_kind, &self.evidence),
+            (
+                ExactArtifactObservationSourceV1::DeterministicStatic,
+                ExactArtifactFindingKindV1::DeterministicStatic(_),
+                ExactArtifactEvidenceReferenceV1::DeterministicStatic { .. }
+            ) | (
+                ExactArtifactObservationSourceV1::AiSourceReview,
+                ExactArtifactFindingKindV1::AiSourceReview(_),
+                ExactArtifactEvidenceReferenceV1::AiSourceReview { .. }
+            ) | (
+                ExactArtifactObservationSourceV1::AiBehavioral,
+                ExactArtifactFindingKindV1::AiBehavioral(_),
+                ExactArtifactEvidenceReferenceV1::AiBehavioral { .. }
+            )
+        );
+        let threat_class_matches = match &self.finding_kind {
+            ExactArtifactFindingKindV1::DeterministicStatic(category) => {
+                self.threat_class == deterministic_threat_class_v1(*category)
+            }
+            ExactArtifactFindingKindV1::AiSourceReview(category) => {
+                self.threat_class == review_threat_class_v1((*category).threat_class())
+            }
+            ExactArtifactFindingKindV1::AiBehavioral(kind) => {
+                self.threat_class == behavior_threat_class_v1((*kind).threat_class())
+            }
+        };
+        let eligibility_valid = match &self.finding_kind {
+            ExactArtifactFindingKindV1::AiSourceReview(_) => !self.behavior_detection_eligible,
+            ExactArtifactFindingKindV1::AiBehavioral(kind) => {
+                self.behavior_detection_eligible == behavior_finding_detection_eligible_v1(*kind)
+            }
+            ExactArtifactFindingKindV1::DeterministicStatic(_) => true,
+        };
+        let coverage_valid = match self.coverage {
+            ExactArtifactObservationCoverageV1::Complete => self.coverage_gap_codes.is_empty(),
+            ExactArtifactObservationCoverageV1::Incomplete => !self.coverage_gap_codes.is_empty(),
+        };
+        let codes_valid = self.coverage_gap_codes.len() <= 128
+            && self.coverage_gap_codes == sorted_unique(self.coverage_gap_codes.clone())
+            && self
+                .coverage_gap_codes
+                .iter()
+                .all(|code| valid_reason_code(code));
+        let evidence_valid = match &self.evidence {
+            ExactArtifactEvidenceReferenceV1::DeterministicStatic { .. } => true,
+            ExactArtifactEvidenceReferenceV1::AiSourceReview {
+                start_byte,
+                end_byte,
+                start_line,
+                end_line,
+                ..
+            } => start_byte < end_byte && *start_line > 0 && start_line <= end_line,
+            ExactArtifactEvidenceReferenceV1::AiBehavioral { events, .. } => {
+                !events.is_empty()
+                    && events.len() <= 128
+                    && events.windows(2).all(|pair| pair[0] < pair[1])
+            }
+        };
+        let wire = ExactArtifactObservationDigestWireV1 {
+            schema_version: EXACT_ARTIFACT_OBSERVATION_SCHEMA_V1,
+            source: self.source,
+            threat_class: self.threat_class,
+            finding_kind: &self.finding_kind,
+            confidence: self.confidence,
+            artifact_sha256: &self.artifact_sha256,
+            manifest_sha256: &self.manifest_sha256,
+            evidence: &self.evidence,
+            coverage: self.coverage,
+            coverage_gap_codes: &self.coverage_gap_codes,
+            behavior_detection_eligible: self.behavior_detection_eligible,
+        };
+        let digest_valid = serde_json::to_vec(&wire)
+            .map(|bytes| Sha256Digest::from_bytes(&bytes) == self.observation_sha256)
+            .unwrap_or(false);
+        if self.schema_version != EXACT_ARTIFACT_OBSERVATION_SCHEMA_V1
+            || !source_matches
+            || !threat_class_matches
+            || !eligibility_valid
+            || !coverage_valid
+            || !codes_valid
+            || !evidence_valid
+            || !digest_valid
+        {
+            return Err(OptionalAdapterErrorV1::new(
+                "exact_artifact_observation_invalid",
+            ));
+        }
+        Ok(())
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExactArtifactDispositionV1 {
     Findings,
+    Inconclusive,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExactArtifactVerdictV1 {
+    Malicious,
     Inconclusive,
     Unsupported,
 }
@@ -68,6 +332,7 @@ pub struct ExactArtifactStageReportV1 {
     pub request_sha256: Option<String>,
     pub result_sha256: Option<String>,
     pub provider: Option<String>,
+    pub observation_count: usize,
     pub reason_codes: Vec<String>,
 }
 
@@ -87,6 +352,7 @@ impl ExactArtifactStageReportV1 {
             request_sha256: None,
             result_sha256,
             provider: None,
+            observation_count: 0,
             reason_codes: sorted_unique(reason_codes),
         }
     }
@@ -265,6 +531,8 @@ pub struct ExactArtifactOptionalResultV1 {
     pub schema_version: String,
     pub request_sha256: String,
     pub outcome: BoundOptionalEvidenceOutcomeV1,
+    pub observations: Vec<ExactArtifactObservationV1>,
+    pub behavior_bundle_sha256s: Vec<Sha256Digest>,
     pub reason_codes: Vec<String>,
 }
 
@@ -278,6 +546,29 @@ impl ExactArtifactOptionalResultV1 {
             schema_version: EXACT_ARTIFACT_OPTIONAL_RESULT_SCHEMA_V1.to_string(),
             request_sha256,
             outcome,
+            observations: Vec::new(),
+            behavior_bundle_sha256s: Vec::new(),
+            reason_codes: sorted_unique(reason_codes),
+        };
+        result.validate()?;
+        Ok(result)
+    }
+
+    pub fn with_evidence(
+        request_sha256: String,
+        outcome: BoundOptionalEvidenceOutcomeV1,
+        reason_codes: Vec<String>,
+        mut observations: Vec<ExactArtifactObservationV1>,
+        mut behavior_bundle_sha256s: Vec<Sha256Digest>,
+    ) -> Result<Self, OptionalAdapterErrorV1> {
+        observations.sort_by(|left, right| left.observation_sha256.cmp(&right.observation_sha256));
+        behavior_bundle_sha256s.sort();
+        let result = Self {
+            schema_version: EXACT_ARTIFACT_OPTIONAL_RESULT_SCHEMA_V1.to_string(),
+            request_sha256,
+            outcome,
+            observations,
+            behavior_bundle_sha256s,
             reason_codes: sorted_unique(reason_codes),
         };
         result.validate()?;
@@ -296,15 +587,36 @@ impl ExactArtifactOptionalResultV1 {
             || Sha256Digest::parse(self.request_sha256.clone()).is_err()
             || self.reason_codes.is_empty()
             || self.reason_codes.len() > 128
+            || self.observations.len() > MAX_EXACT_ARTIFACT_OBSERVATIONS_V1
+            || self.behavior_bundle_sha256s.len() > MAX_EXACT_ARTIFACT_BEHAVIOR_BUNDLES_V1
+            || self
+                .observations
+                .iter()
+                .any(|observation| observation.validate().is_err())
+            || self
+                .observations
+                .windows(2)
+                .any(|pair| pair[0].observation_sha256 >= pair[1].observation_sha256)
+            || self
+                .behavior_bundle_sha256s
+                .windows(2)
+                .any(|pair| pair[0] >= pair[1])
             || self.reason_codes != sorted_unique(self.reason_codes.clone())
-            || self.reason_codes.iter().any(|code| {
-                code.len() > 128
-                    || !code.bytes().all(|byte| {
-                        byte.is_ascii_lowercase()
-                            || byte.is_ascii_digit()
-                            || matches!(byte, b'_' | b'-' | b'.' | b':')
-                    })
-            })
+            || self
+                .reason_codes
+                .iter()
+                .any(|code| !valid_reason_code(code))
+            || (matches!(
+                self.outcome,
+                BoundOptionalEvidenceOutcomeV1::Findings
+                    | BoundOptionalEvidenceOutcomeV1::FindingsWithIncompleteCoverage
+            ) && self.observations.is_empty())
+            || (!self.observations.is_empty()
+                && !matches!(
+                    self.outcome,
+                    BoundOptionalEvidenceOutcomeV1::Findings
+                        | BoundOptionalEvidenceOutcomeV1::FindingsWithIncompleteCoverage
+                ))
         {
             return Err(OptionalAdapterErrorV1::new(
                 "exact_artifact_optional_result_invalid",
@@ -325,6 +637,7 @@ pub struct ExactArtifactAdapterRequestV1 {
     pub manifest_sha256: String,
     pub scenario_plan_sha256: String,
     pub deterministic_analysis_sha256: Option<String>,
+    pub behavior_bundle_sha256: Option<String>,
     pub request_sha256: String,
 }
 
@@ -339,6 +652,7 @@ struct ExactArtifactAdapterRequestDigestWireV1<'a> {
     manifest_sha256: &'a str,
     scenario_plan_sha256: &'a str,
     deterministic_analysis_sha256: Option<&'a str>,
+    behavior_bundle_sha256: Option<&'a str>,
 }
 
 impl ExactArtifactAdapterRequestV1 {
@@ -348,6 +662,7 @@ impl ExactArtifactAdapterRequestV1 {
         prepared: &PreparedArtifact,
         scenarios: &ExactArtifactScenarioPlanV1,
         deterministic_analysis_sha256: Option<&str>,
+        behavior_bundle_sha256: Option<&str>,
     ) -> Result<Self, ExactArtifactInspectionErrorV1> {
         if provider.is_empty()
             || provider.len() > 128
@@ -373,6 +688,7 @@ impl ExactArtifactAdapterRequestV1 {
             manifest_sha256,
             scenario_plan_sha256: &scenarios.plan_sha256,
             deterministic_analysis_sha256,
+            behavior_bundle_sha256,
         };
         let bytes = serde_json::to_vec(&wire).map_err(|_| {
             ExactArtifactInspectionErrorV1::internal(
@@ -388,6 +704,7 @@ impl ExactArtifactAdapterRequestV1 {
             manifest_sha256: manifest_sha256.to_string(),
             scenario_plan_sha256: scenarios.plan_sha256.clone(),
             deterministic_analysis_sha256: deterministic_analysis_sha256.map(ToString::to_string),
+            behavior_bundle_sha256: behavior_bundle_sha256.map(ToString::to_string),
             request_sha256: Sha256Digest::from_bytes(&bytes).to_string(),
         })
     }
@@ -402,6 +719,7 @@ impl ExactArtifactAdapterRequestV1 {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoundOptionalEvidenceV1 {
     pub canonical_result_bytes: Vec<u8>,
+    pub behavior_bundles: Vec<BehaviorAnalysisBundleV1>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -431,6 +749,18 @@ pub trait ExactArtifactAiAdapterV1 {
         prepared: &PreparedArtifact,
         deterministic: &ArtifactStaticAnalysis,
         scenarios: &ExactArtifactScenarioPlanV1,
+    ) -> Result<BoundOptionalEvidenceV1, OptionalAdapterErrorV1>;
+}
+
+/// Observe-only analysis of a validated behavioral bundle returned by a
+/// detonation adapter. Implementations cannot alter execution or admission.
+pub trait ExactArtifactBehaviorObserverV1 {
+    fn provider_id(&self) -> &str;
+    fn readiness_reason(&self) -> Option<&'static str>;
+    fn observe_behavior(
+        &self,
+        request: &ExactArtifactAdapterRequestV1,
+        bundle: &BehaviorAnalysisBundleV1,
     ) -> Result<BoundOptionalEvidenceV1, OptionalAdapterErrorV1>;
 }
 
@@ -494,10 +824,13 @@ pub struct ExactArtifactIdentityV1 {
 pub struct ExactArtifactInspectionReportV1 {
     pub schema_version: String,
     pub status: ExactArtifactDispositionV1,
+    pub verdict: ExactArtifactVerdictV1,
     pub exit_code: i32,
     pub identity: ExactArtifactIdentityV1,
     pub stages: Vec<ExactArtifactStageReportV1>,
     pub scenario_plan: ExactArtifactScenarioPlanV1,
+    pub observations: Vec<ExactArtifactObservationV1>,
+    pub behavior_detection_count: usize,
     pub admission_authority: bool,
     pub observed_clean: bool,
     pub sync_back_enabled: bool,
@@ -582,6 +915,15 @@ pub fn inspect_exact_artifact_v1(
     ai_adapter: Option<&dyn ExactArtifactAiAdapterV1>,
     detonation_adapter: Option<&dyn ExactArtifactDetonationAdapterV1>,
 ) -> Result<ExactArtifactInspectionReportV1, ExactArtifactInspectionErrorV1> {
+    inspect_exact_artifact_with_behavior_v1(request, ai_adapter, detonation_adapter, None)
+}
+
+pub fn inspect_exact_artifact_with_behavior_v1(
+    request: ExactArtifactInspectionRequestV1<'_>,
+    ai_adapter: Option<&dyn ExactArtifactAiAdapterV1>,
+    detonation_adapter: Option<&dyn ExactArtifactDetonationAdapterV1>,
+    behavior_observer: Option<&dyn ExactArtifactBehaviorObserverV1>,
+) -> Result<ExactArtifactInspectionReportV1, ExactArtifactInspectionErrorV1> {
     let filename = checked_filename(request.artifact_path)?;
     let ecosystem = match request.ecosystem {
         Some(value) => value,
@@ -662,6 +1004,9 @@ pub fn inspect_exact_artifact_v1(
         }
     }
 
+    let mut observations = deterministic_observations_v1(&deterministic)?;
+    let mut deterministic_report = deterministic_stage(&prepared, &deterministic)?;
+    deterministic_report.observation_count = observations.len();
     let mut stages = vec![
         ExactArtifactStageReportV1::bound(
             "quarantine",
@@ -671,7 +1016,7 @@ pub fn inspect_exact_artifact_v1(
             vec!["exact_artifact_quarantined_and_reverified".to_string()],
         ),
         normalization_stage(&prepared),
-        deterministic_stage(&prepared, &deterministic)?,
+        deterministic_report,
         ExactArtifactStageReportV1::bound(
             "scenario_compilation",
             scenario_plan.status,
@@ -680,30 +1025,45 @@ pub fn inspect_exact_artifact_v1(
             scenario_plan.reason_codes.clone(),
         ),
     ];
-    stages.push(run_ai_stage(
+    let ai_outcome = run_ai_stage(
         request.ai_requested,
         request.ai_provider,
         ai_adapter,
         &prepared,
         &deterministic,
         &scenario_plan,
-    ));
-    stages.push(run_detonation_stage(
+    );
+    observations.extend(ai_outcome.observations);
+    stages.push(ai_outcome.report);
+    let detonation_outcome = run_detonation_stage(
         request.detonation_requested,
         detonation_adapter,
         &cas,
         &prepared,
         &deterministic,
         &scenario_plan,
-    ));
+    );
+    observations.extend(detonation_outcome.observations);
+    let behavior_bundles = detonation_outcome.behavior_bundles;
+    stages.push(detonation_outcome.report);
+    let behavior_outcomes = run_behavior_observation_stages(
+        request.ai_requested && request.detonation_requested,
+        behavior_observer,
+        &prepared,
+        &deterministic,
+        &scenario_plan,
+        behavior_bundles,
+    );
+    for outcome in behavior_outcomes {
+        observations.extend(outcome.observations);
+        stages.push(outcome.report);
+    }
+    observations.sort_by(|left, right| left.observation_sha256.cmp(&right.observation_sha256));
+    observations.dedup_by(|left, right| left.observation_sha256 == right.observation_sha256);
 
-    let has_findings = stages.iter().any(|stage| {
-        matches!(
-            stage.status,
-            ExactArtifactStageStatusV1::Findings
-                | ExactArtifactStageStatusV1::FindingsWithIncompleteCoverage
-        )
-    });
+    let has_findings = observations
+        .iter()
+        .any(observation_supports_malicious_verdict_v1);
     let unsupported = scenario_plan.status == ExactArtifactStageStatusV1::Unsupported;
     let disposition = if has_findings {
         ExactArtifactDispositionV1::Findings
@@ -716,6 +1076,15 @@ pub fn inspect_exact_artifact_v1(
         ExactArtifactDispositionV1::Findings => 20,
         ExactArtifactDispositionV1::Inconclusive | ExactArtifactDispositionV1::Unsupported => 22,
     };
+    let verdict = match disposition {
+        ExactArtifactDispositionV1::Findings => ExactArtifactVerdictV1::Malicious,
+        ExactArtifactDispositionV1::Inconclusive => ExactArtifactVerdictV1::Inconclusive,
+        ExactArtifactDispositionV1::Unsupported => ExactArtifactVerdictV1::Unsupported,
+    };
+    let behavior_detection_count = observations
+        .iter()
+        .filter(|observation| observation.behavior_detection_eligible)
+        .count();
     let mut reason_codes = stages
         .iter()
         .flat_map(|stage| stage.reason_codes.iter().cloned())
@@ -723,6 +1092,9 @@ pub fn inspect_exact_artifact_v1(
     reason_codes.push("exact_artifact_spine_has_no_admission_authority".to_string());
     reason_codes.push("exact_artifact_missing_evidence_never_observed_clean".to_string());
     reason_codes.push("exact_artifact_legacy_workspace_review_not_used".to_string());
+    if !observations.is_empty() {
+        reason_codes.push("exact_artifact_typed_observations_preserved".to_string());
+    }
     let identity = prepared
         .normalized()
         .manifest
@@ -735,6 +1107,7 @@ pub fn inspect_exact_artifact_v1(
     Ok(ExactArtifactInspectionReportV1 {
         schema_version: EXACT_ARTIFACT_INSPECTION_SCHEMA_V1.to_string(),
         status: disposition,
+        verdict,
         exit_code,
         identity: ExactArtifactIdentityV1 {
             artifact_sha256: prepared.evidence_subject().artifact_sha256().to_string(),
@@ -752,6 +1125,8 @@ pub fn inspect_exact_artifact_v1(
         },
         stages,
         scenario_plan,
+        observations,
+        behavior_detection_count,
         admission_authority: false,
         observed_clean: false,
         sync_back_enabled: false,
@@ -953,6 +1328,226 @@ fn normalization_stage(prepared: &PreparedArtifact) -> ExactArtifactStageReportV
     )
 }
 
+fn deterministic_observations_v1(
+    analysis: &ArtifactStaticAnalysis,
+) -> Result<Vec<ExactArtifactObservationV1>, ExactArtifactInspectionErrorV1> {
+    let (coverage, coverage_gap_codes) = match analysis.coverage.completeness {
+        ArtifactAnalysisCompleteness::Complete => {
+            (ExactArtifactObservationCoverageV1::Complete, Vec::new())
+        }
+        ArtifactAnalysisCompleteness::Incomplete => (
+            ExactArtifactObservationCoverageV1::Incomplete,
+            vec!["deterministic_analysis_coverage_incomplete".to_string()],
+        ),
+    };
+    let mut observations = analysis
+        .findings
+        .iter()
+        .map(|finding| {
+            ExactArtifactObservationV1::new(
+                ExactArtifactObservationSourceV1::DeterministicStatic,
+                deterministic_threat_class_v1(finding.category),
+                ExactArtifactFindingKindV1::DeterministicStatic(finding.category),
+                match finding.confidence {
+                    FindingConfidence::Moderate => ExactArtifactObservationConfidenceV1::Moderate,
+                    FindingConfidence::High => ExactArtifactObservationConfidenceV1::High,
+                },
+                finding.artifact_sha256.clone(),
+                finding.manifest_sha256.clone(),
+                ExactArtifactEvidenceReferenceV1::DeterministicStatic {
+                    evidence_sha256: finding.evidence_digest.clone(),
+                    location: finding.location.clone(),
+                },
+                coverage,
+                coverage_gap_codes.clone(),
+                finding.specificity == FindingSpecificity::PackageSpecific
+                    && deterministic_finding_detection_eligible_v1(finding.category),
+            )
+            .map_err(|_| {
+                ExactArtifactInspectionErrorV1::internal(
+                    "exact_artifact_deterministic_observation_invalid",
+                )
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    observations.sort_by(|left, right| left.observation_sha256.cmp(&right.observation_sha256));
+    Ok(observations)
+}
+
+fn deterministic_threat_class_v1(category: ArtifactFindingCategory) -> ExactArtifactThreatClassV1 {
+    match category {
+        ArtifactFindingCategory::EnvironmentAccess => {
+            ExactArtifactThreatClassV1::EnvironmentAndTimeGating
+        }
+        ArtifactFindingCategory::CredentialAccess
+        | ArtifactFindingCategory::SensitivePathAccess => {
+            ExactArtifactThreatClassV1::CredentialAndSensitiveFileDiscovery
+        }
+        ArtifactFindingCategory::NetworkCapability
+        | ArtifactFindingCategory::EnvironmentExfiltrationCapability
+        | ArtifactFindingCategory::CredentialExfiltrationCapability
+        | ArtifactFindingCategory::SensitiveFileExfiltrationCapability => {
+            ExactArtifactThreatClassV1::NetworkAndExfiltration
+        }
+        ArtifactFindingCategory::DownloadExecuteCapability => {
+            ExactArtifactThreatClassV1::SecondStageNativeOrWasmHandoff
+        }
+        ArtifactFindingCategory::ProcessExecution
+        | ArtifactFindingCategory::EnvironmentToProcessCapability => {
+            ExactArtifactThreatClassV1::ProcessExecutionAndDynamicLoading
+        }
+    }
+}
+
+pub(crate) fn review_threat_class_v1(
+    threat_class: ArtifactReviewThreatClassV2,
+) -> ExactArtifactThreatClassV1 {
+    match threat_class {
+        ArtifactReviewThreatClassV2::CredentialAndSensitiveFileDiscovery => {
+            ExactArtifactThreatClassV1::CredentialAndSensitiveFileDiscovery
+        }
+        ArtifactReviewThreatClassV2::NetworkExfiltrationAndMetadataAccess => {
+            ExactArtifactThreatClassV1::NetworkAndExfiltration
+        }
+        ArtifactReviewThreatClassV2::SecondStageNativeOrWasmHandoff => {
+            ExactArtifactThreatClassV1::SecondStageNativeOrWasmHandoff
+        }
+        ArtifactReviewThreatClassV2::ProcessShellOrDynamicLoading => {
+            ExactArtifactThreatClassV1::ProcessExecutionAndDynamicLoading
+        }
+        ArtifactReviewThreatClassV2::ObfuscationPackingOrStringConstruction => {
+            ExactArtifactThreatClassV1::ObfuscationAndPacking
+        }
+        ArtifactReviewThreatClassV2::EnvironmentOrDelayedGating => {
+            ExactArtifactThreatClassV1::EnvironmentAndTimeGating
+        }
+        ArtifactReviewThreatClassV2::PersistenceDestructionOrSelfDeletion => {
+            ExactArtifactThreatClassV1::PersistenceDestructionAndSelfDeletion
+        }
+        ArtifactReviewThreatClassV2::RepositoryWorkflowPublicationOrPropagation => {
+            ExactArtifactThreatClassV1::RepositoryPackageAndSelfPropagation
+        }
+        ArtifactReviewThreatClassV2::DependencyIndirectionConfusionOrTransitiveCompromise => {
+            ExactArtifactThreatClassV1::DependencyIndirection
+        }
+        ArtifactReviewThreatClassV2::ImportOrUseTimeTampering => {
+            ExactArtifactThreatClassV1::ImportTimeTampering
+        }
+    }
+}
+
+pub(crate) fn behavior_threat_class_v1(
+    threat_class: BehaviorThreatClassV1,
+) -> ExactArtifactThreatClassV1 {
+    match threat_class {
+        BehaviorThreatClassV1::CredentialAndSensitiveFileDiscovery => {
+            ExactArtifactThreatClassV1::CredentialAndSensitiveFileDiscovery
+        }
+        BehaviorThreatClassV1::NetworkAndExfiltration => {
+            ExactArtifactThreatClassV1::NetworkAndExfiltration
+        }
+        BehaviorThreatClassV1::SecondStageNativeOrWasmHandoff => {
+            ExactArtifactThreatClassV1::SecondStageNativeOrWasmHandoff
+        }
+        BehaviorThreatClassV1::ProcessExecutionAndDynamicLoading => {
+            ExactArtifactThreatClassV1::ProcessExecutionAndDynamicLoading
+        }
+        BehaviorThreatClassV1::ObfuscationAndPacking => {
+            ExactArtifactThreatClassV1::ObfuscationAndPacking
+        }
+        BehaviorThreatClassV1::EnvironmentAndTimeGating => {
+            ExactArtifactThreatClassV1::EnvironmentAndTimeGating
+        }
+        BehaviorThreatClassV1::PersistenceDestructionAndSelfDeletion => {
+            ExactArtifactThreatClassV1::PersistenceDestructionAndSelfDeletion
+        }
+        BehaviorThreatClassV1::RepositoryPackageAndSelfPropagation => {
+            ExactArtifactThreatClassV1::RepositoryPackageAndSelfPropagation
+        }
+        BehaviorThreatClassV1::DependencyIndirection => {
+            ExactArtifactThreatClassV1::DependencyIndirection
+        }
+        BehaviorThreatClassV1::ImportTimeTampering => {
+            ExactArtifactThreatClassV1::ImportTimeTampering
+        }
+    }
+}
+
+fn deterministic_finding_detection_eligible_v1(category: ArtifactFindingCategory) -> bool {
+    matches!(
+        category,
+        ArtifactFindingCategory::CredentialAccess
+            | ArtifactFindingCategory::SensitivePathAccess
+            | ArtifactFindingCategory::EnvironmentExfiltrationCapability
+            | ArtifactFindingCategory::CredentialExfiltrationCapability
+            | ArtifactFindingCategory::SensitiveFileExfiltrationCapability
+            | ArtifactFindingCategory::DownloadExecuteCapability
+            | ArtifactFindingCategory::EnvironmentToProcessCapability
+    )
+}
+
+pub(crate) fn behavior_finding_detection_eligible_v1(kind: BehaviorFindingKindV1) -> bool {
+    matches!(
+        kind,
+        BehaviorFindingKindV1::SecondStageHandoff
+            | BehaviorFindingKindV1::SensitiveFileAccess
+            | BehaviorFindingKindV1::CredentialAccess
+            | BehaviorFindingKindV1::CanaryAccess
+            | BehaviorFindingKindV1::CanaryUse
+            | BehaviorFindingKindV1::CredentialExfiltration
+            | BehaviorFindingKindV1::MetadataAccess
+            | BehaviorFindingKindV1::Exfiltration
+            | BehaviorFindingKindV1::SecondStageDownload
+            | BehaviorFindingKindV1::PersistenceModification
+            | BehaviorFindingKindV1::DestructiveFileAction
+            | BehaviorFindingKindV1::SelfDeletion
+            | BehaviorFindingKindV1::RepositoryMutation
+            | BehaviorFindingKindV1::WorkflowMutation
+            | BehaviorFindingKindV1::PackageMutation
+            | BehaviorFindingKindV1::PackagePublishAttempt
+            | BehaviorFindingKindV1::SelfPropagation
+            | BehaviorFindingKindV1::ObfuscationOrPacking
+            | BehaviorFindingKindV1::ImportTimeTampering
+    )
+}
+
+fn observation_supports_malicious_verdict_v1(observation: &ExactArtifactObservationV1) -> bool {
+    match &observation.finding_kind {
+        ExactArtifactFindingKindV1::DeterministicStatic(_)
+        | ExactArtifactFindingKindV1::AiBehavioral(_) => observation.behavior_detection_eligible,
+        ExactArtifactFindingKindV1::AiSourceReview(category) => {
+            source_review_finding_supports_malicious_verdict_v1(*category)
+        }
+    }
+}
+
+fn source_review_finding_supports_malicious_verdict_v1(
+    category: ArtifactReviewFindingCategoryV2,
+) -> bool {
+    matches!(
+        category,
+        ArtifactReviewFindingCategoryV2::CredentialAccess
+            | ArtifactReviewFindingCategoryV2::CredentialExfiltration
+            | ArtifactReviewFindingCategoryV2::SensitivePathAccess
+            | ArtifactReviewFindingCategoryV2::MetadataAccess
+            | ArtifactReviewFindingCategoryV2::Persistence
+            | ArtifactReviewFindingCategoryV2::SecondStageExecution
+            | ArtifactReviewFindingCategoryV2::ReverseShellCapability
+            | ArtifactReviewFindingCategoryV2::DestructiveBehavior
+            | ArtifactReviewFindingCategoryV2::SelfDeletion
+            | ArtifactReviewFindingCategoryV2::RepositoryMutation
+            | ArtifactReviewFindingCategoryV2::WorkflowMutation
+            | ArtifactReviewFindingCategoryV2::PackagePublication
+            | ArtifactReviewFindingCategoryV2::SelfPropagation
+            | ArtifactReviewFindingCategoryV2::DependencyConfusion
+            | ArtifactReviewFindingCategoryV2::TransitiveCompromise
+            | ArtifactReviewFindingCategoryV2::ImportTimeTampering
+            | ArtifactReviewFindingCategoryV2::ApiTampering
+            | ArtifactReviewFindingCategoryV2::DataTampering
+            | ArtifactReviewFindingCategoryV2::CryptographicTampering
+    )
+}
+
 fn deterministic_stage(
     prepared: &PreparedArtifact,
     deterministic: &ArtifactStaticAnalysis,
@@ -1137,6 +1732,22 @@ fn compile_scenario_intents(
     ExactArtifactScenarioPlanV1::new(prepared, status, kinds, reasons)
 }
 
+struct OptionalStageOutcomeV1 {
+    report: ExactArtifactStageReportV1,
+    observations: Vec<ExactArtifactObservationV1>,
+    behavior_bundles: Vec<BehaviorAnalysisBundleV1>,
+}
+
+impl OptionalStageOutcomeV1 {
+    fn report_only(report: ExactArtifactStageReportV1) -> Self {
+        Self {
+            report,
+            observations: Vec::new(),
+            behavior_bundles: Vec::new(),
+        }
+    }
+}
+
 fn run_ai_stage(
     requested: bool,
     requested_provider: Option<&str>,
@@ -1144,15 +1755,15 @@ fn run_ai_stage(
     prepared: &PreparedArtifact,
     deterministic: &ArtifactStaticAnalysis,
     scenarios: &ExactArtifactScenarioPlanV1,
-) -> ExactArtifactStageReportV1 {
+) -> OptionalStageOutcomeV1 {
     if !requested {
-        return ExactArtifactStageReportV1::bound(
+        return OptionalStageOutcomeV1::report_only(ExactArtifactStageReportV1::bound(
             "ai_review",
             ExactArtifactStageStatusV1::NotRequested,
             prepared,
             None,
             vec!["exact_artifact_ai_not_requested".to_string()],
-        );
+        ));
     }
     let Some(adapter) = adapter else {
         let mut report = ExactArtifactStageReportV1::bound(
@@ -1163,7 +1774,7 @@ fn run_ai_stage(
             vec!["exact_artifact_ai_adapter_not_attached".to_string()],
         );
         report.provider = requested_provider.map(ToString::to_string);
-        return report;
+        return OptionalStageOutcomeV1::report_only(report);
     };
     if requested_provider.is_some_and(|provider| provider != adapter.provider_id()) {
         let mut report = ExactArtifactStageReportV1::bound(
@@ -1174,7 +1785,7 @@ fn run_ai_stage(
             vec!["exact_artifact_ai_provider_mismatch".to_string()],
         );
         report.provider = requested_provider.map(ToString::to_string);
-        return report;
+        return OptionalStageOutcomeV1::report_only(report);
     }
     if let Some(reason) = adapter.readiness_reason() {
         let mut report = ExactArtifactStageReportV1::bound(
@@ -1185,7 +1796,7 @@ fn run_ai_stage(
             vec![reason.to_string()],
         );
         report.provider = Some(adapter.provider_id().to_string());
-        return report;
+        return OptionalStageOutcomeV1::report_only(report);
     }
     let deterministic_analysis_sha256 = match deterministic.analysis_sha256() {
         Ok(value) => value,
@@ -1198,7 +1809,7 @@ fn run_ai_stage(
                 vec!["exact_artifact_analysis_digest_failed".to_string()],
             );
             report.provider = Some(adapter.provider_id().to_string());
-            return report;
+            return OptionalStageOutcomeV1::report_only(report);
         }
     };
     let adapter_request = match ExactArtifactAdapterRequestV1::new(
@@ -1207,6 +1818,7 @@ fn run_ai_stage(
         prepared,
         scenarios,
         Some(deterministic_analysis_sha256.as_str()),
+        None,
     ) {
         Ok(value) => value,
         Err(error) => {
@@ -1218,7 +1830,7 @@ fn run_ai_stage(
                 vec![error.reason_code().to_string()],
             );
             report.provider = Some(adapter.provider_id().to_string());
-            return report;
+            return OptionalStageOutcomeV1::report_only(report);
         }
     };
     optional_evidence_stage(
@@ -1228,6 +1840,7 @@ fn run_ai_stage(
         &adapter_request,
         adapter.analyze(&adapter_request, prepared, deterministic, scenarios),
         "exact_artifact_ai_adapter_failed",
+        None,
     )
 }
 
@@ -1238,24 +1851,24 @@ fn run_detonation_stage(
     prepared: &PreparedArtifact,
     deterministic: &ArtifactStaticAnalysis,
     scenarios: &ExactArtifactScenarioPlanV1,
-) -> ExactArtifactStageReportV1 {
+) -> OptionalStageOutcomeV1 {
     if !requested {
-        return ExactArtifactStageReportV1::bound(
+        return OptionalStageOutcomeV1::report_only(ExactArtifactStageReportV1::bound(
             "detonation",
             ExactArtifactStageStatusV1::NotRequested,
             prepared,
             None,
             vec!["exact_artifact_detonation_not_requested".to_string()],
-        );
+        ));
     }
     let Some(adapter) = adapter else {
-        return ExactArtifactStageReportV1::bound(
+        return OptionalStageOutcomeV1::report_only(ExactArtifactStageReportV1::bound(
             "detonation",
             ExactArtifactStageStatusV1::Unavailable,
             prepared,
             None,
             vec!["exact_artifact_detonation_adapter_not_attached".to_string()],
-        );
+        ));
     };
     if scenarios.status != ExactArtifactStageStatusV1::Complete
         || !scenarios.executable
@@ -1272,7 +1885,7 @@ fn run_detonation_stage(
             ],
         );
         report.provider = Some(adapter.provider_id().to_string());
-        return report;
+        return OptionalStageOutcomeV1::report_only(report);
     }
     if let Some(reason) = adapter.readiness_reason() {
         let mut report = ExactArtifactStageReportV1::bound(
@@ -1283,7 +1896,7 @@ fn run_detonation_stage(
             vec![reason.to_string()],
         );
         report.provider = Some(adapter.provider_id().to_string());
-        return report;
+        return OptionalStageOutcomeV1::report_only(report);
     }
     let lease = match prepared.verified_transport_source(cas) {
         Ok(lease) => lease,
@@ -1296,7 +1909,7 @@ fn run_detonation_stage(
                 vec!["exact_artifact_transport_reverification_failed".to_string()],
             );
             report.provider = Some(adapter.provider_id().to_string());
-            return report;
+            return OptionalStageOutcomeV1::report_only(report);
         }
     };
     let deterministic_analysis_sha256 = match deterministic.analysis_sha256() {
@@ -1310,7 +1923,7 @@ fn run_detonation_stage(
                 vec!["exact_artifact_analysis_digest_failed".to_string()],
             );
             report.provider = Some(adapter.provider_id().to_string());
-            return report;
+            return OptionalStageOutcomeV1::report_only(report);
         }
     };
     let adapter_request = match ExactArtifactAdapterRequestV1::new(
@@ -1319,6 +1932,7 @@ fn run_detonation_stage(
         prepared,
         scenarios,
         Some(deterministic_analysis_sha256.as_str()),
+        None,
     ) {
         Ok(value) => value,
         Err(error) => {
@@ -1330,7 +1944,7 @@ fn run_detonation_stage(
                 vec![error.reason_code().to_string()],
             );
             report.provider = Some(adapter.provider_id().to_string());
-            return report;
+            return OptionalStageOutcomeV1::report_only(report);
         }
     };
     optional_evidence_stage(
@@ -1340,7 +1954,113 @@ fn run_detonation_stage(
         &adapter_request,
         adapter.detonate(&adapter_request, &lease, prepared, scenarios),
         "exact_artifact_detonation_adapter_failed",
+        None,
     )
+}
+
+fn run_behavior_observation_stages(
+    requested: bool,
+    observer: Option<&dyn ExactArtifactBehaviorObserverV1>,
+    prepared: &PreparedArtifact,
+    deterministic: &ArtifactStaticAnalysis,
+    scenarios: &ExactArtifactScenarioPlanV1,
+    mut bundles: Vec<BehaviorAnalysisBundleV1>,
+) -> Vec<OptionalStageOutcomeV1> {
+    if !requested {
+        return vec![OptionalStageOutcomeV1::report_only(
+            ExactArtifactStageReportV1::bound(
+                "behavior_observation",
+                ExactArtifactStageStatusV1::NotRequested,
+                prepared,
+                None,
+                vec!["exact_artifact_behavior_observation_not_requested".to_string()],
+            ),
+        )];
+    }
+    let Some(observer) = observer else {
+        return vec![OptionalStageOutcomeV1::report_only(
+            ExactArtifactStageReportV1::bound(
+                "behavior_observation",
+                ExactArtifactStageStatusV1::Unavailable,
+                prepared,
+                None,
+                vec!["exact_artifact_behavior_observer_not_attached".to_string()],
+            ),
+        )];
+    };
+    if let Some(reason) = observer.readiness_reason() {
+        let mut report = ExactArtifactStageReportV1::bound(
+            "behavior_observation",
+            ExactArtifactStageStatusV1::Unavailable,
+            prepared,
+            None,
+            vec![reason.to_string()],
+        );
+        report.provider = Some(observer.provider_id().to_string());
+        return vec![OptionalStageOutcomeV1::report_only(report)];
+    }
+    if bundles.is_empty() {
+        let mut report = ExactArtifactStageReportV1::bound(
+            "behavior_observation",
+            ExactArtifactStageStatusV1::Incomplete,
+            prepared,
+            None,
+            vec!["exact_artifact_behavior_bundle_unavailable".to_string()],
+        );
+        report.provider = Some(observer.provider_id().to_string());
+        return vec![OptionalStageOutcomeV1::report_only(report)];
+    }
+    let deterministic_analysis_sha256 = match deterministic.analysis_sha256() {
+        Ok(value) => value,
+        Err(_) => {
+            let mut report = ExactArtifactStageReportV1::bound(
+                "behavior_observation",
+                ExactArtifactStageStatusV1::Error,
+                prepared,
+                None,
+                vec!["exact_artifact_analysis_digest_failed".to_string()],
+            );
+            report.provider = Some(observer.provider_id().to_string());
+            return vec![OptionalStageOutcomeV1::report_only(report)];
+        }
+    };
+    bundles.sort_by_key(BehaviorAnalysisBundleV1::bundle_sha256);
+    bundles
+        .into_iter()
+        .map(|bundle| {
+            let bundle_sha256 = bundle.bundle_sha256();
+            let adapter_request = match ExactArtifactAdapterRequestV1::new(
+                "behavior_observation",
+                observer.provider_id(),
+                prepared,
+                scenarios,
+                Some(deterministic_analysis_sha256.as_str()),
+                Some(bundle_sha256.as_str()),
+            ) {
+                Ok(value) => value,
+                Err(error) => {
+                    let mut report = ExactArtifactStageReportV1::bound(
+                        "behavior_observation",
+                        ExactArtifactStageStatusV1::Error,
+                        prepared,
+                        None,
+                        vec![error.reason_code().to_string()],
+                    );
+                    report.provider = Some(observer.provider_id().to_string());
+                    return OptionalStageOutcomeV1::report_only(report);
+                }
+            };
+            optional_evidence_stage(
+                "behavior_observation",
+                observer.provider_id(),
+                prepared,
+                &adapter_request,
+                observer.observe_behavior(&adapter_request, &bundle),
+                "exact_artifact_behavior_observer_failed",
+                Some(&bundle),
+            )
+        })
+        .collect()
 }
 
 fn optional_evidence_stage(
@@ -1350,7 +2070,8 @@ fn optional_evidence_stage(
     request: &ExactArtifactAdapterRequestV1,
     result: Result<BoundOptionalEvidenceV1, OptionalAdapterErrorV1>,
     fallback_reason: &'static str,
-) -> ExactArtifactStageReportV1 {
+    expected_behavior_bundle: Option<&BehaviorAnalysisBundleV1>,
+) -> OptionalStageOutcomeV1 {
     let result = match result {
         Ok(result) => result,
         Err(error) => {
@@ -1368,7 +2089,7 @@ fn optional_evidence_stage(
             );
             report.provider = Some(provider.to_string());
             report.request_sha256 = Some(request.request_sha256.clone());
-            return report;
+            return OptionalStageOutcomeV1::report_only(report);
         }
     };
     if result.canonical_result_bytes.is_empty()
@@ -1383,7 +2104,7 @@ fn optional_evidence_stage(
         );
         report.provider = Some(provider.to_string());
         report.request_sha256 = Some(request.request_sha256.clone());
-        return report;
+        return OptionalStageOutcomeV1::report_only(report);
     }
     let canonical_result = match serde_json::from_slice::<ExactArtifactOptionalResultV1>(
         &result.canonical_result_bytes,
@@ -1399,7 +2120,7 @@ fn optional_evidence_stage(
             );
             report.provider = Some(provider.to_string());
             report.request_sha256 = Some(request.request_sha256.clone());
-            return report;
+            return OptionalStageOutcomeV1::report_only(report);
         }
     };
     let reencoded = match canonical_result.to_canonical_json_bytes() {
@@ -1414,7 +2135,7 @@ fn optional_evidence_stage(
             );
             report.provider = Some(provider.to_string());
             report.request_sha256 = Some(request.request_sha256.clone());
-            return report;
+            return OptionalStageOutcomeV1::report_only(report);
         }
     };
     if reencoded != result.canonical_result_bytes {
@@ -1427,7 +2148,7 @@ fn optional_evidence_stage(
         );
         report.provider = Some(provider.to_string());
         report.request_sha256 = Some(request.request_sha256.clone());
-        return report;
+        return OptionalStageOutcomeV1::report_only(report);
     }
     if canonical_result.request_sha256 != request.request_sha256 {
         let mut report = ExactArtifactStageReportV1::bound(
@@ -1439,7 +2160,102 @@ fn optional_evidence_stage(
         );
         report.provider = Some(provider.to_string());
         report.request_sha256 = Some(request.request_sha256.clone());
-        return report;
+        return OptionalStageOutcomeV1::report_only(report);
+    }
+    let mut bundle_sha256s = result
+        .behavior_bundles
+        .iter()
+        .map(BehaviorAnalysisBundleV1::bundle_sha256)
+        .collect::<Vec<_>>();
+    bundle_sha256s.sort();
+    if bundle_sha256s != canonical_result.behavior_bundle_sha256s
+        || result.behavior_bundles.len() > MAX_EXACT_ARTIFACT_BEHAVIOR_BUNDLES_V1
+        || result.behavior_bundles.iter().any(|bundle| {
+            bundle.artifact_sha256().as_str() != request.artifact_sha256
+                || bundle.manifest_sha256().as_str() != request.manifest_sha256
+                || serde_json::to_vec(bundle)
+                    .ok()
+                    .and_then(|bytes| {
+                        whoathere_detector::decode_and_validate_behavior_analysis_bundle_v1(&bytes)
+                            .ok()
+                    })
+                    .is_none()
+        })
+    {
+        return optional_stage_error(
+            stage,
+            provider,
+            prepared,
+            request,
+            "exact_artifact_behavior_bundle_binding_invalid",
+        );
+    }
+    if canonical_result.observations.iter().any(|observation| {
+        observation.artifact_sha256.as_str() != request.artifact_sha256
+            || observation.manifest_sha256.as_str() != request.manifest_sha256
+    }) {
+        return optional_stage_error(
+            stage,
+            provider,
+            prepared,
+            request,
+            "exact_artifact_observation_binding_invalid",
+        );
+    }
+    if canonical_result.observations.iter().any(|observation| {
+        !observation_evidence_resolves_v1(prepared, expected_behavior_bundle, observation)
+    }) {
+        return optional_stage_error(
+            stage,
+            provider,
+            prepared,
+            request,
+            "exact_artifact_observation_evidence_invalid",
+        );
+    }
+    let stage_shape_valid = match stage {
+        "ai_review" => {
+            result.behavior_bundles.is_empty()
+                && canonical_result.observations.iter().all(|observation| {
+                    observation.source == ExactArtifactObservationSourceV1::AiSourceReview
+                        && !observation.behavior_detection_eligible
+                })
+        }
+        "detonation" => canonical_result.observations.is_empty(),
+        "behavior_observation" => {
+            result.behavior_bundles.is_empty()
+                && request
+                    .behavior_bundle_sha256
+                    .as_deref()
+                    .is_some_and(|expected| {
+                        canonical_result.observations.iter().all(|observation| {
+                            observation.source == ExactArtifactObservationSourceV1::AiBehavioral
+                                && matches!(
+                                    &observation.finding_kind,
+                                    ExactArtifactFindingKindV1::AiBehavioral(kind)
+                                        if observation.behavior_detection_eligible
+                                            == behavior_finding_detection_eligible_v1(*kind)
+                                )
+                                && matches!(
+                                    &observation.evidence,
+                                    ExactArtifactEvidenceReferenceV1::AiBehavioral {
+                                        bundle_sha256,
+                                        ..
+                                    } if bundle_sha256.as_str() == expected
+                                )
+                        })
+                    })
+        }
+        _ => false,
+    };
+    if !stage_shape_valid {
+        return optional_stage_error(
+            stage,
+            provider,
+            prepared,
+            request,
+            "exact_artifact_optional_evidence_stage_shape_invalid",
+        );
     }
     let result_sha256 = Sha256Digest::from_bytes(&reencoded).to_string();
     let status = match canonical_result.outcome {
@@ -1459,7 +2275,86 @@ fn optional_evidence_stage(
     );
     report.provider = Some(provider.to_string());
     report.request_sha256 = Some(request.request_sha256.clone());
-    report
+    report.observation_count = canonical_result.observations.len();
+    OptionalStageOutcomeV1 {
+        report,
+        observations: canonical_result.observations,
+        behavior_bundles: result.behavior_bundles,
+    }
+}
+
+fn observation_evidence_resolves_v1(
+    prepared: &PreparedArtifact,
+    expected_behavior_bundle: Option<&BehaviorAnalysisBundleV1>,
+    observation: &ExactArtifactObservationV1,
+) -> bool {
+    match &observation.evidence {
+        ExactArtifactEvidenceReferenceV1::DeterministicStatic { .. } => {
+            observation.source == ExactArtifactObservationSourceV1::DeterministicStatic
+        }
+        ExactArtifactEvidenceReferenceV1::AiSourceReview {
+            file_id,
+            file_sha256,
+            start_byte,
+            end_byte,
+            selected_sha256,
+            ..
+        } => {
+            let Some(file) = prepared.normalized().file(file_id) else {
+                return false;
+            };
+            let Ok(start) = usize::try_from(*start_byte) else {
+                return false;
+            };
+            let Ok(end) = usize::try_from(*end_byte) else {
+                return false;
+            };
+            file.sha256 == *file_sha256
+                && start < end
+                && end <= file.bytes().len()
+                && Sha256Digest::from_bytes(&file.bytes()[start..end]) == *selected_sha256
+        }
+        ExactArtifactEvidenceReferenceV1::AiBehavioral {
+            bundle_sha256,
+            finding_sha256,
+            events,
+        } => {
+            let Some(bundle) = expected_behavior_bundle else {
+                return false;
+            };
+            let ExactArtifactFindingKindV1::AiBehavioral(kind) = &observation.finding_kind else {
+                return false;
+            };
+            let expected_finding_sha256 = serde_json::to_vec(&(*kind, events))
+                .map(|identity| Sha256Digest::from_bytes(&identity));
+            bundle.bundle_sha256() == *bundle_sha256
+                && expected_finding_sha256.is_ok_and(|expected| expected == *finding_sha256)
+                && events.iter().all(|reference| {
+                    bundle
+                        .event(reference.event_id())
+                        .is_some_and(|event| event.event_sha256() == *reference.event_sha256())
+                })
+        }
+    }
+}
+
+fn optional_stage_error(
+    stage: &str,
+    provider: &str,
+    prepared: &PreparedArtifact,
+    request: &ExactArtifactAdapterRequestV1,
+    reason: &str,
+) -> OptionalStageOutcomeV1 {
+    let mut report = ExactArtifactStageReportV1::bound(
+        stage,
+        ExactArtifactStageStatusV1::Error,
+        prepared,
+        None,
+        vec![reason.to_string()],
+    );
+    report.provider = Some(provider.to_string());
+    report.request_sha256 = Some(request.request_sha256.clone());
+    OptionalStageOutcomeV1::report_only(report)
 }
 
 fn sorted_unique(mut values: Vec<String>) -> Vec<String> {
@@ -1467,4 +2362,14 @@ fn sorted_unique(mut values: Vec<String>) -> Vec<String> {
     values.sort();
     values.dedup();
     values
+}
+
+fn valid_reason_code(code: &str) -> bool {
+    !code.is_empty()
+        && code.len() <= 128
+        && code.bytes().all(|byte| {
+            byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || matches!(byte, b'_' | b'-' | b'.' | b':')
+        })
 }

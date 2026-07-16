@@ -84,6 +84,16 @@ macOS-hosted local detection beta. Cloudflare and AWS portability are a separate
   presence/absence contracts pass locally. This is not a physical run, does not yet turn the
   derived wheel into fresh `.pth` and console-entry probes, and remains blocked from authenticated
   physical evidence by BLK-001.
+- The product spine is now connected for the implemented adapters. One `artifact inspect` run
+  preserves typed deterministic and Codex source findings, receives validated in-memory behavior
+  bundles from npm or wheel detonation, and automatically invokes the Codex behavioral panel when
+  AI review and detonation are both selected. Source citations must resolve to the exact normalized
+  file and selected bytes; behavioral citations must resolve to an event ID and event hash in the
+  bound bundle. Reason strings cannot create a verdict. A small high-risk allowlist prevents
+  ordinary lifecycle, DNS, connection, and send context from becoming a malware result by itself.
+  An inert one-call acceptance test carries process, file, canary, and network events through to a
+  cited `canary_access` malicious result while preserving incomplete coverage and zero admission or
+  sync-back authority. This has not bypassed BLK-001 and is not a physical VM evidence claim.
 
 ## 2. Product target and claim boundary
 
@@ -267,6 +277,18 @@ One orchestrator must consume the existing prepared exact artifact and invoke, i
 Each stage receives immutable digest-bound inputs and produces a strict, size-limited result. It may
 not infer success from a reason-string substring. The orchestrator records partial valid evidence
 even when a later stage fails, while the overall completion state remains honest.
+
+The first usable spine is now implemented for exact artifacts and the existing npm and wheel
+detonation adapters. Deterministic observations, Codex source observations, VM behavior bundles,
+and Codex behavioral observations survive into one report with exact artifact and manifest
+bindings. Positive behavioral findings survive an incomplete detonation result or a failing sibling
+AI role. Context-only behavioral findings remain visible but are not malicious or
+behavior-detection eligible. The strict frozen-corpus scorer and an sdist two-pass adapter remain
+separate follow-on slices; this product report does not grant admission authority or claim clean.
+The current npm and wheel adapters each verify their runtime scenario plan before projection. The
+provider-neutral bundle contract does not yet carry an explicit parent inspection-plan digest, so
+supporting a new third-party detonation adapter requires adding that binding rather than trusting a
+new adapter's internal derivation.
 
 ### 4.5 Current vertical-slice implementation checkpoint
 

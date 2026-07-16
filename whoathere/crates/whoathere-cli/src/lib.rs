@@ -43,9 +43,10 @@ use whoathere_policy::{
     NamespaceRule, PolicyDecision, PolicyDocument, SourceKind,
 };
 use whoathere_runner::{
-    canonical_utc_timestamp_from_unix_seconds_v1, execute_readonly, inspect_exact_artifact_v1,
-    plan_protected_execution, BehaviorCodexObserverConfigV1, BehaviorCodexObserverV1,
-    BehaviorCodexPanelOutcomeV1, ExactArtifactAiAdapterV1, ExactArtifactCodexAiAdapterV1,
+    canonical_utc_timestamp_from_unix_seconds_v1, execute_readonly,
+    inspect_exact_artifact_with_behavior_v1, plan_protected_execution,
+    BehaviorCodexObserverConfigV1, BehaviorCodexObserverV1, BehaviorCodexPanelOutcomeV1,
+    ExactArtifactAiAdapterV1, ExactArtifactBehaviorObserverV1, ExactArtifactCodexAiAdapterV1,
     ExactArtifactCodexAiConfigV1, ExactArtifactDetonationAdapterV1, ExactArtifactInspectionErrorV1,
     ExactArtifactInspectionRequestV1, ExecutionDecision, LinuxVzExactNpmDetonationAdapterV1,
     LinuxVzExactNpmDetonationConfigV1, LinuxVzExactWheelDetonationAdapterV1,
@@ -2304,8 +2305,17 @@ fn render_exact_artifact_inspect(args: ExactArtifactInspectArgs<'_>) -> String {
     let ai_adapter = codex_adapter
         .as_ref()
         .map(|adapter| adapter as &dyn ExactArtifactAiAdapterV1);
+    let behavior_observer = codex_adapter
+        .as_ref()
+        .filter(|_| args.ai_review && args.detonation)
+        .map(|adapter| adapter as &dyn ExactArtifactBehaviorObserverV1);
     let detonation_adapter = detonation_adapter.as_deref();
-    match inspect_exact_artifact_v1(request, ai_adapter, detonation_adapter) {
+    match inspect_exact_artifact_with_behavior_v1(
+        request,
+        ai_adapter,
+        detonation_adapter,
+        behavior_observer,
+    ) {
         Ok(report) => report
             .to_pretty_json()
             .unwrap_or_else(|error| error.to_pretty_json()),

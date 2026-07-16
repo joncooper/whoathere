@@ -22,6 +22,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use whoathere_artifact::{ArtifactFormat, Sha256Digest};
 use whoathere_cache::VerifiedArtifactLease;
+use whoathere_detector::BehaviorAnalysisBundleV1;
 use whoathere_detonation::{
     decode_and_validate_wheel_scenario_plan_v1, decode_and_validate_wheel_scenario_template_v1,
     expected_wheel_scenario_kinds_v1, ArtifactRuntimeTargetV1, WheelScenarioKindV1,
@@ -318,19 +319,18 @@ impl LinuxVzExactWheelDetonationAdapterV1 {
             expected_kinds,
             prepared,
         );
-        let (behavior_bundle_sha256, behavior_event_count) = match behavior_projection {
-            Ok(projected) => (Some(projected.0), Some(projected.1)),
+        let behavior_bundle = match behavior_projection {
+            Ok(bundle) => Some(bundle),
             Err(reason) => {
                 limitations.push(reason);
-                (None, None)
+                None
             }
         };
         WheelActionRunV1 {
             scenario_index,
             evidence_captured: limitations.is_empty(),
             limitations,
-            behavior_bundle_sha256,
-            behavior_event_count,
+            behavior_bundle,
         }
     }
 }
@@ -448,8 +448,10 @@ impl ExactArtifactDetonationAdapterV1 for LinuxVzExactWheelDetonationAdapterV1 {
             "vm_wheel_evidence_captured_pending_analysis".to_string(),
             "vm_wheel_evidence_output_preserved".to_string(),
         ];
+        let mut behavior_bundles = Vec::new();
         for run in runs {
-            if let Some(digest) = run.behavior_bundle_sha256 {
+            if let Some(bundle) = run.behavior_bundle.as_ref() {
+                let digest = bundle.bundle_sha256();
                 reasons.push(format!(
                     "vm_wheel_action_{}_behavior_bundle_sha256:{}",
                     run.scenario_index,
@@ -459,11 +461,10 @@ impl ExactArtifactDetonationAdapterV1 for LinuxVzExactWheelDetonationAdapterV1 {
                     "vm_wheel_action_{}_behavior_bundle_projected",
                     run.scenario_index
                 ));
-            }
-            if let Some(event_count) = run.behavior_event_count {
                 reasons.push(format!(
-                    "vm_wheel_action_{}_behavior_event_count:{event_count}",
-                    run.scenario_index
+                    "vm_wheel_action_{}_behavior_event_count:{}",
+                    run.scenario_index,
+                    bundle.events().len()
                 ));
             }
             if !run.evidence_captured {
@@ -477,8 +478,11 @@ impl ExactArtifactDetonationAdapterV1 for LinuxVzExactWheelDetonationAdapterV1 {
                     .into_iter()
                     .map(|reason| format!("vm_wheel_action_{}_{}", run.scenario_index, reason)),
             );
+            if let Some(bundle) = run.behavior_bundle {
+                behavior_bundles.push(bundle);
+            }
         }
-        incomplete_result(&request.request_sha256, reasons)
+        incomplete_result_with_behavior_bundles(&request.request_sha256, reasons, behavior_bundles)
     }
 }
 
@@ -532,8 +536,7 @@ struct WheelActionRunV1 {
     scenario_index: usize,
     evidence_captured: bool,
     limitations: Vec<&'static str>,
-    behavior_bundle_sha256: Option<Sha256Digest>,
-    behavior_event_count: Option<usize>,
+    behavior_bundle: Option<BehaviorAnalysisBundleV1>,
 }
 
 impl WheelActionRunV1 {
@@ -542,8 +545,7 @@ impl WheelActionRunV1 {
             scenario_index,
             evidence_captured: false,
             limitations: vec![reason],
-            behavior_bundle_sha256: None,
-            behavior_event_count: None,
+            behavior_bundle: None,
         }
     }
 }
@@ -559,7 +561,7 @@ fn project_wheel_action_behavior_v1(
     artifact_filename: &str,
     expected_kinds: &[WheelScenarioKindV1],
     prepared: &PreparedArtifact,
-) -> Result<(Sha256Digest, usize), &'static str> {
+) -> Result<BehaviorAnalysisBundleV1, &'static str> {
     let scenario_plan_json = read_bounded_regular_file(
         &evidence_directory.join("execution-bundle/scenario-plan.json"),
         MAX_WHEEL_SCENARIO_PLAN_WIRE_BYTES_V1,
@@ -667,16 +669,14 @@ fn project_wheel_action_behavior_v1(
         host_execution_run_json: &host_execution_run_json,
     })
     .map_err(|error| error.reason_code())?;
-    let event_count = bundle.events().len();
     let bundle_bytes = serde_json::to_vec(&bundle)
         .map_err(|_| "wheel_behavior_projection_bundle_serialization_failed")?;
-    let bundle_sha256 = Sha256Digest::from_bytes(&bundle_bytes);
     write_new_private_file(
         &evidence_directory.join("behavior-bundle.json"),
         &bundle_bytes,
     )
     .map_err(|_| "wheel_behavior_projection_bundle_write_failed")?;
-    Ok((bundle_sha256, event_count))
+    Ok(bundle)
 }
 
 fn parse_projection_digest_field(
@@ -711,6 +711,29 @@ fn incomplete_result(
     )?;
     Ok(BoundOptionalEvidenceV1 {
         canonical_result_bytes: result.to_canonical_json_bytes()?,
+        behavior_bundles: Vec::new(),
+    })
+}
+
+fn incomplete_result_with_behavior_bundles(
+    request_sha256: &str,
+    reason_codes: Vec<String>,
+    behavior_bundles: Vec<BehaviorAnalysisBundleV1>,
+) -> Result<BoundOptionalEvidenceV1, OptionalAdapterErrorV1> {
+    let behavior_bundle_sha256s = behavior_bundles
+        .iter()
+        .map(BehaviorAnalysisBundleV1::bundle_sha256)
+        .collect();
+    let result = ExactArtifactOptionalResultV1::with_evidence(
+        request_sha256.to_string(),
+        BoundOptionalEvidenceOutcomeV1::Incomplete,
+        reason_codes,
+        Vec::new(),
+        behavior_bundle_sha256s,
+    )?;
+    Ok(BoundOptionalEvidenceV1 {
+        canonical_result_bytes: result.to_canonical_json_bytes()?,
+        behavior_bundles,
     })
 }
 
