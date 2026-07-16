@@ -366,7 +366,7 @@ def exercise_sdist(artifact: Path, root: Path, *, active: bool, distribution: st
                 "import sys; sys.path.insert(0, sys.argv[1]); "
                 "import fixture_backend; print(fixture_backend.build_wheel(sys.argv[2]))"
             ),
-            str(project),
+            str(project / "backend"),
             str(wheels),
         ],
         cwd=root,

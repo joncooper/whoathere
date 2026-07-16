@@ -299,7 +299,7 @@
     {
       "artifact_filename": "whoathere_fixture_sdist_canary-1.0.0.tar.gz",
       "artifact_kind": "sdist_tar_gz",
-      "artifact_sha256": "f604947b4a3343bfac3039157dd6ef8a8333c30ad6c224575203b6874af16c80",
+      "artifact_sha256": "3e3160e802294decdbb33129d541ffc402fc8004bed2fbf69e11087132256e07",
       "campaign_id": "canonical-inert-fixture-v1",
       "ecosystem": "pypi",
       "expected_result": "malicious",
@@ -418,7 +418,7 @@
     {
       "artifact_filename": "whoathere_fixture_sdist_neighbor-1.0.0.tar.gz",
       "artifact_kind": "sdist_tar_gz",
-      "artifact_sha256": "5e6b945e58d226e323d73cb5fd5869537302682c1a0f09b2740c9859b3795530",
+      "artifact_sha256": "02578d5abb4cc2d601719771817823bb68daebe5b351456f9c949fcf51f96afc",
       "campaign_id": "canonical-inert-fixture-v1",
       "ecosystem": "pypi",
       "expected_result": "benign",

