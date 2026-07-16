@@ -119,6 +119,105 @@ public final class LockedLinuxVzPackageRuntimeBase {
             try verifyFileIdentity(packageRunner)
             return DisposableLinuxVzPackageRuntimeClone(
                 base: self,
+                baseRootfsSHA256: measurement.rootfsSHA256,
+                rootDescriptor: rootDescriptor,
+                runDescriptor: runDescriptor,
+                runID: runID,
+                runDirectory: layout.runtimeRunsDirectory.appendingPathComponent(
+                    runID, isDirectory: true
+                ),
+                cloneFile: cloneFile,
+                cloneBindingCanonicalJSON: binding
+            )
+        } catch {
+            if runDescriptor >= 0 {
+                _ = "rootfs.ext2".withCString { unlinkat(runDescriptor, $0, 0) }
+                _ = close(runDescriptor)
+            }
+            if !runID.isEmpty {
+                _ = runID.withCString { unlinkat(rootDescriptor, $0, AT_REMOVEDIR) }
+            }
+            _ = close(rootDescriptor)
+            throw error
+        }
+    }
+}
+
+public final class LockedLinuxVzPackageExecutionRuntimeBase {
+    public let layout: LinuxVzPackageRuntimeBaseLayout
+    public let manifest: ParsedLinuxVzPackageExecutionRuntimeManifest
+    public let measurement: LinuxVzPackageRuntimeBaseMeasurement
+
+    private let rootfs: LockedMeasuredFile
+    private let runtimeManifest: LockedMeasuredFile
+    private let packageRunner: LockedMeasuredFile
+
+    fileprivate init(
+        layout: LinuxVzPackageRuntimeBaseLayout,
+        manifest: ParsedLinuxVzPackageExecutionRuntimeManifest,
+        measurement: LinuxVzPackageRuntimeBaseMeasurement,
+        rootfs: LockedMeasuredFile,
+        runtimeManifest: LockedMeasuredFile,
+        packageRunner: LockedMeasuredFile
+    ) {
+        self.layout = layout
+        self.manifest = manifest
+        self.measurement = measurement
+        self.rootfs = rootfs
+        self.runtimeManifest = runtimeManifest
+        self.packageRunner = packageRunner
+    }
+
+    deinit {
+        for descriptor in [rootfs.descriptor, runtimeManifest.descriptor, packageRunner.descriptor] {
+            _ = flock(descriptor, LOCK_UN)
+            _ = close(descriptor)
+        }
+    }
+
+    public func createDisposableClone() throws -> DisposableLinuxVzPackageRuntimeClone {
+        try verifyFileIdentity(rootfs)
+        try verifyFileIdentity(runtimeManifest)
+        try verifyFileIdentity(packageRunner)
+        let rootDescriptor = try openOrCreateSecureDirectory(layout.runtimeRunsDirectory)
+        var runDescriptor: Int32 = -1
+        var runID = ""
+        do {
+            runID = try randomRunID()
+            guard runID.withCString({ mkdirat(rootDescriptor, $0, 0o700) }) == 0 else {
+                throw ArtifactRunLifecycleError.runDirectoryFailed
+            }
+            runDescriptor = runID.withCString {
+                openat(rootDescriptor, $0, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
+            }
+            guard runDescriptor >= 0 else {
+                throw ArtifactRunLifecycleError.runDirectoryFailed
+            }
+            try cloneMeasuredFile(rootfs, into: runDescriptor, name: "rootfs.ext2")
+            guard "rootfs.ext2".withCString({
+                fchmodat(runDescriptor, $0, 0o600, 0)
+            }) == 0 else {
+                throw ArtifactRunLifecycleError.cloneVerificationFailed
+            }
+            let cloneFile = try verifyClone(
+                in: runDescriptor, name: "rootfs.ext2", source: rootfs
+            )
+            let binding = try canonicalJSONData([
+                "base_rootfs_sha256": rootfs.sha256,
+                "clone_file_device": String(cloneFile.device),
+                "clone_file_inode": String(cloneFile.inode),
+                "clone_implementation_sha256":
+                    linuxVzPackageRuntimeCloneImplementationSHA256V1,
+                "initial_rootfs_sha256": cloneFile.sha256,
+                "run_id": runID,
+                "schema_version": linuxVzPackageRuntimeCloneBindingSchemaV1
+            ])
+            try verifyFileIdentity(rootfs)
+            try verifyFileIdentity(runtimeManifest)
+            try verifyFileIdentity(packageRunner)
+            return DisposableLinuxVzPackageRuntimeClone(
+                base: self,
+                baseRootfsSHA256: measurement.rootfsSHA256,
                 rootDescriptor: rootDescriptor,
                 runDescriptor: runDescriptor,
                 runID: runID,
@@ -151,7 +250,8 @@ public final class DisposableLinuxVzPackageRuntimeClone {
     public let cloneBindingCanonicalJSON: Data
     public let cloneBindingSHA256: String
 
-    private let base: LockedLinuxVzPackageRuntimeBase
+    private let base: AnyObject
+    private let baseRootfsSHA256: String
     private let cloneDevice: UInt64
     private let cloneInode: UInt64
     private var rootDescriptor: Int32
@@ -160,7 +260,8 @@ public final class DisposableLinuxVzPackageRuntimeClone {
     private var preserveOnDeinit = false
 
     fileprivate init(
-        base: LockedLinuxVzPackageRuntimeBase,
+        base: AnyObject,
+        baseRootfsSHA256: String,
         rootDescriptor: Int32,
         runDescriptor: Int32,
         runID: String,
@@ -169,6 +270,7 @@ public final class DisposableLinuxVzPackageRuntimeClone {
         cloneBindingCanonicalJSON: Data
     ) {
         self.base = base
+        self.baseRootfsSHA256 = baseRootfsSHA256
         self.rootDescriptor = rootDescriptor
         self.runDescriptor = runDescriptor
         self.runID = runID
@@ -216,7 +318,7 @@ public final class DisposableLinuxVzPackageRuntimeClone {
             descriptor, expectedLength: rootfsByteLength, captureData: false
         )
         guard digest == initialRootfsSHA256,
-              digest == base.measurement.rootfsSHA256 else {
+              digest == baseRootfsSHA256 else {
             throw ArtifactRunLifecycleError.cloneVerificationFailed
         }
     }
@@ -305,6 +407,62 @@ public func verifyAndLockLinuxVzPackageRuntimeBase(
             throw ArtifactRunLifecycleError.baseDigestMismatch
         }
         return LockedLinuxVzPackageRuntimeBase(
+            layout: layout,
+            manifest: manifest,
+            measurement: LinuxVzPackageRuntimeBaseMeasurement(
+                rootfsSHA256: rootfs.sha256,
+                rootfsByteLength: rootfs.byteLength,
+                runtimeManifestSHA256: runtimeManifest.sha256,
+                packageRunnerSHA256: packageRunner.sha256
+            ),
+            rootfs: rootfs,
+            runtimeManifest: runtimeManifest,
+            packageRunner: packageRunner
+        )
+    } catch {
+        for file in files {
+            _ = flock(file.descriptor, LOCK_UN)
+            _ = close(file.descriptor)
+        }
+        throw error
+    }
+}
+
+public func verifyAndLockLinuxVzPackageExecutionRuntimeBase(
+    layout: LinuxVzPackageRuntimeBaseLayout,
+    expectedRootfsSHA256: String,
+    expectedRootfsByteLength: UInt64,
+    expectedRuntimeManifestSHA256: String,
+    expectedPackageRunnerSHA256: String
+) throws -> LockedLinuxVzPackageExecutionRuntimeBase {
+    try requireSecureDirectory(layout.stateDirectory)
+    try requireSecureDirectory(layout.bundleDirectory)
+    var files: [LockedMeasuredFile] = []
+    do {
+        let rootfs = try openLockedMeasuredFile(layout.rootfsURL, dataLimit: nil)
+        files.append(rootfs)
+        let runtimeManifest = try openLockedMeasuredFile(
+            layout.runtimeManifestURL,
+            dataLimit: UInt64(maximumLinuxVzPackageExecutionRuntimeManifestBytesV1)
+        )
+        files.append(runtimeManifest)
+        let packageRunner = try openLockedMeasuredFile(layout.packageRunnerURL, dataLimit: nil)
+        files.append(packageRunner)
+        guard let manifestData = runtimeManifest.boundedData else {
+            throw ArtifactRunLifecycleError.baseFileUnsafe
+        }
+        let manifest = try decodeLinuxVzPackageExecutionRuntimeManifest(manifestData)
+        guard rootfs.sha256 == expectedRootfsSHA256,
+              rootfs.byteLength == expectedRootfsByteLength,
+              runtimeManifest.sha256 == expectedRuntimeManifestSHA256,
+              packageRunner.sha256 == expectedPackageRunnerSHA256,
+              manifest.rootfsSHA256 == rootfs.sha256,
+              manifest.rootfsByteLength == rootfs.byteLength,
+              manifest.manifestSHA256 == runtimeManifest.sha256,
+              manifest.packageRunnerSHA256 == packageRunner.sha256 else {
+            throw ArtifactRunLifecycleError.baseDigestMismatch
+        }
+        return LockedLinuxVzPackageExecutionRuntimeBase(
             layout: layout,
             manifest: manifest,
             measurement: LinuxVzPackageRuntimeBaseMeasurement(

@@ -32,6 +32,10 @@ let package = Package(
         .executable(
             name: "whoathere-linux-vz-runtime-qualification",
             targets: ["WhoaThereLinuxVzRuntimeQualification"]
+        ),
+        .executable(
+            name: "whoathere-linux-vz-package-execution",
+            targets: ["WhoaThereLinuxVzPackageExecution"]
         )
     ],
     targets: [
@@ -61,6 +65,10 @@ let package = Package(
         ),
         .executableTarget(
             name: "WhoaThereLinuxVzRuntimeQualification",
+            dependencies: ["WhoaThereMacosVmHelperCore"]
+        ),
+        .executableTarget(
+            name: "WhoaThereLinuxVzPackageExecution",
             dependencies: ["WhoaThereMacosVmHelperCore"]
         ),
         .testTarget(

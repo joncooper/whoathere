@@ -1,8 +1,6 @@
-use flate2::write::GzEncoder;
-use flate2::Compression;
 use serde::Serialize;
 use std::fs::{self, OpenOptions};
-use std::io::{self, Cursor, Read, Write};
+use std::io::{self, Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -36,6 +34,8 @@ const MAXIMUM_INPUT_BYTES_V1: u64 = 16 * 1024 * 1024;
 
 #[derive(Debug)]
 struct ArgumentsV1 {
+    artifact: PathBuf,
+    environment: NpmEnvironmentProfileV1,
     backend_identity: PathBuf,
     qualified_backend: PathBuf,
     qualification_record: PathBuf,
@@ -145,22 +145,33 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     let clone_binding_sha256 = Sha256Digest::from_bytes(&clone_binding_bytes);
 
-    let artifact_bytes = inert_npm_tgz_v1()?;
+    let artifact_bytes = read_regular_bounded_v1(&arguments.artifact, MAXIMUM_INPUT_BYTES_V1)?;
+    let artifact_sha256 = Sha256Digest::from_bytes(&artifact_bytes);
+    let original_filename = arguments
+        .artifact
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| io::Error::other("artifact filename invalid"))?
+        .to_string();
     let envelope = ArtifactEnvelope::from_original_bytes(
         ArtifactEnvelopeInput {
             ecosystem: Ecosystem::Npm,
-            package_name: Some("whoathere-inert-execution-fixture".to_string()),
-            package_version: Some("1.0.0".to_string()),
-            source_coordinate: "fixture:whoathere-inert-execution-fixture@1.0.0".to_string(),
+            package_name: None,
+            package_version: None,
+            source_coordinate: format!("local-file:{artifact_sha256}"),
             source_type: ArtifactSourceType::LocalFile,
             acquired_at: "2026-07-15T00:00:00Z".to_string(),
-            acquisition_method: AcquisitionMethod::LocalInertFixture,
-            original_filename: "whoathere-inert-execution-fixture-1.0.0.tgz".to_string(),
+            acquisition_method: AcquisitionMethod::LocalFileImport,
+            original_filename,
             declared_format: Some(ArtifactFormat::NpmTarGzip),
-            custody_reference: "purpose-built-inert-linux-vz-execution-gate-v1".to_string(),
+            custody_reference: "caller-supplied-local-artifact-path".to_string(),
             resolver_metadata_sha256: None,
             registry_metadata_sha256: None,
             policy_version: "linux-vz-inert-execution-gate.v1".to_string(),
+            // The v1 npm execution compiler still supports only exact, dependency-free
+            // tarballs. Packages needing an offline closure fail compilation rather than
+            // falling back to a registry.
             requires_external_dependency_resolution: false,
         },
         &artifact_bytes,
@@ -216,10 +227,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let template = plan
         .templates()
         .iter()
-        .find(|template| {
-            template.scenario_kind().environment() == Some(NpmEnvironmentProfileV1::CiTrue)
-        })
-        .ok_or_else(|| io::Error::other("CI=true template unavailable"))?;
+        .find(|template| template.scenario_kind().environment() == Some(arguments.environment))
+        .ok_or_else(|| io::Error::other("requested environment template unavailable"))?;
     let template_bytes = template.canonical_json_v1()?;
 
     let request_challenge = random_nonzero_v1()?;
@@ -327,7 +336,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         clone_binding_sha256: &clone_binding_sha256,
         issued_at_unix_seconds: issued_at.to_string(),
         expires_at_unix_seconds: expires_at.to_string(),
-        environment: NpmEnvironmentProfileV1::CiTrue,
+        environment: arguments.environment,
         execution_authority_issued: true,
         attempt_limit: "1".to_string(),
         public_network_route_present: false,
@@ -353,40 +362,57 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 fn parse_arguments_v1() -> Result<ArgumentsV1, io::Error> {
     let mut arguments = std::env::args_os();
     let _program = arguments.next();
-    let mut parsed = std::collections::BTreeMap::new();
+    let mut paths = std::collections::BTreeMap::new();
+    let mut environment = None;
     while let Some(name) = arguments.next() {
         let name = name
             .into_string()
             .map_err(|_| io::Error::other("argument name invalid"))?;
         let value = arguments
             .next()
-            .map(PathBuf::from)
             .ok_or_else(|| io::Error::other("argument value missing"))?;
-        if !matches!(
-            name.as_str(),
-            "--backend-identity"
-                | "--qualified-backend"
-                | "--qualification-record"
-                | "--guest-public-key"
-                | "--host-public-key"
-                | "--grant-public-key"
-                | "--grant-signing-seed"
-                | "--clone-binding"
-                | "--output-directory"
-        ) || parsed.insert(name, value).is_some()
-        {
-            return Err(io::Error::other("argument invalid"));
+        match name.as_str() {
+            "--environment" => {
+                let value = value
+                    .into_string()
+                    .map_err(|_| io::Error::other("environment invalid"))?;
+                let parsed = match value.as_str() {
+                    "ci_false" => NpmEnvironmentProfileV1::CiFalse,
+                    "ci_true" => NpmEnvironmentProfileV1::CiTrue,
+                    _ => return Err(io::Error::other("environment invalid")),
+                };
+                if environment.replace(parsed).is_some() {
+                    return Err(io::Error::other("argument invalid"));
+                }
+            }
+            "--artifact"
+            | "--backend-identity"
+            | "--qualified-backend"
+            | "--qualification-record"
+            | "--guest-public-key"
+            | "--host-public-key"
+            | "--grant-public-key"
+            | "--grant-signing-seed"
+            | "--clone-binding"
+            | "--output-directory" => {
+                if paths.insert(name, PathBuf::from(value)).is_some() {
+                    return Err(io::Error::other("argument invalid"));
+                }
+            }
+            _ => return Err(io::Error::other("argument invalid")),
         }
     }
-    if parsed.len() != 9 || parsed.values().any(|path| !path.is_absolute()) {
+    if paths.len() != 10 || paths.values().any(|path| !path.is_absolute()) {
         return Err(io::Error::other("absolute arguments required"));
     }
     let mut take = |name: &str| {
-        parsed
+        paths
             .remove(name)
             .ok_or_else(|| io::Error::other("required argument missing"))
     };
     Ok(ArgumentsV1 {
+        artifact: take("--artifact")?,
+        environment: environment.ok_or_else(|| io::Error::other("environment required"))?,
         backend_identity: take("--backend-identity")?,
         qualified_backend: take("--qualified-backend")?,
         qualification_record: take("--qualification-record")?,
@@ -473,32 +499,4 @@ fn valid_run_id_v1(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
-}
-
-fn inert_npm_tgz_v1() -> Result<Vec<u8>, io::Error> {
-    let encoder = GzEncoder::new(Vec::new(), Compression::default());
-    let mut archive = tar::Builder::new(encoder);
-    for (path, bytes) in [
-        (
-            "package/package.json",
-            br#"{"name":"whoathere-inert-execution-fixture","version":"1.0.0","scripts":{"postinstall":"node post.js"}}"#
-                .as_slice(),
-        ),
-        (
-            "package/post.js",
-            br#"require("fs").writeFileSync("whoathere-inert-postinstall-marker","purpose-built-inert-v1\n");"#
-                .as_slice(),
-        ),
-    ] {
-        let mut header = tar::Header::new_gnu();
-        header.set_entry_type(tar::EntryType::Regular);
-        header.set_size(bytes.len() as u64);
-        header.set_mode(0o644);
-        header.set_uid(0);
-        header.set_gid(0);
-        header.set_mtime(0);
-        header.set_cksum();
-        archive.append_data(&mut header, path, Cursor::new(bytes))?;
-    }
-    archive.into_inner()?.finish()
 }
