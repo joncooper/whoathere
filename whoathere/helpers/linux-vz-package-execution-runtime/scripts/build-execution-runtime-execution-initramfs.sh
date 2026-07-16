@@ -167,9 +167,18 @@ case "$bundle_schema" in
             echo "sdist execution bundle contains an npm selector" >&2
             exit 65
         fi
-        build_closure_payload_present=$(jq -er \
-            '.build_closure_payload_present | select(type == "boolean")' \
-            "$bundle_manifest")
+        if ! jq -e \
+            '.build_closure_payload_present | type == "boolean"' \
+            "$bundle_manifest" >/dev/null
+        then
+            echo "sdist build closure presence is invalid" >&2
+            exit 65
+        fi
+        # `jq -e` deliberately returns status 1 for a valid boolean false. Extract the
+        # already type-checked value without `-e` so an absent optional closure remains
+        # a supported sdist bundle rather than tripping this script's `set -e` policy.
+        build_closure_payload_present=$(jq -r \
+            '.build_closure_payload_present' "$bundle_manifest")
         build_closure_payload_byte_length=$(jq -er \
             '.build_closure_payload_byte_length | select(type == "string")' \
             "$bundle_manifest")

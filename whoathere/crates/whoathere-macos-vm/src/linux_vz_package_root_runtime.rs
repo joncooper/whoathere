@@ -62,6 +62,23 @@ const INPUT_HANDOFF_ACK_V1: &[u8; 8] = b"WTPKIA01";
 const RUNNER_FAILURE_EXIT_V1: i32 = 78;
 
 #[cfg(any(target_os = "linux", test))]
+fn build_closure_payload_required_v1(
+    actions: &[crate::MacosLinuxVzPackageExecutionActionV1],
+) -> bool {
+    actions.iter().any(|action| {
+        matches!(
+            action,
+            crate::MacosLinuxVzPackageExecutionActionV1::Internal {
+                action: crate::MacosLinuxVzPackageInternalActionV1::ValidateExactBuildClosure {
+                    build_closure,
+                    ..
+                }
+            } if !build_closure.artifacts().is_empty()
+        )
+    })
+}
+
+#[cfg(any(target_os = "linux", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LinuxVzPackageRootRunnerFailureStageV1 {
     CustodyBoundary,
@@ -848,16 +865,7 @@ mod linux {
         if let Some(closure) = build_closure {
             validate_read_only_input_v1(closure)?;
         }
-        let closure_required = process_plan.actions().iter().any(|action| {
-            matches!(
-                action,
-                crate::MacosLinuxVzPackageExecutionActionV1::Internal {
-                    action: crate::MacosLinuxVzPackageInternalActionV1::ValidateExactBuildClosure {
-                        ..
-                    }
-                }
-            )
-        });
+        let closure_required = build_closure_payload_required_v1(process_plan.actions());
         if closure_required != build_closure.is_some() {
             return Err(LinuxVzPackageRootRuntimeErrorV1::InputDescriptorInvalid);
         }
@@ -1439,6 +1447,44 @@ mod tests {
             ),
             Err(LinuxVzPackageRootRuntimeErrorV1::RequestPreparationFailed)
         ));
+    }
+
+    #[test]
+    fn empty_sdist_closure_does_not_require_a_payload_descriptor() {
+        use whoathere_detonation::{
+            SdistBuildClosureArtifactFormatV1, SdistBuildClosureArtifactV1, SdistBuildClosureV1,
+        };
+
+        let empty = SdistBuildClosureV1::new(&[], Vec::new()).expect("empty closure");
+        let empty_actions = [crate::MacosLinuxVzPackageExecutionActionV1::Internal {
+            action: crate::MacosLinuxVzPackageInternalActionV1::ValidateExactBuildClosure {
+                build_requires_sha256: empty.declaration_set_sha256().clone(),
+                build_closure: empty,
+            },
+        }];
+        assert!(!build_closure_payload_required_v1(&empty_actions));
+
+        let requirements = ["setuptools==75.0.0".to_string()];
+        let populated = SdistBuildClosureV1::new(
+            &requirements,
+            vec![SdistBuildClosureArtifactV1::new(
+                "setuptools",
+                "75.0.0",
+                "setuptools-75.0.0-py3-none-any.whl",
+                SdistBuildClosureArtifactFormatV1::Wheel,
+                digest("setuptools wheel"),
+                1024,
+            )
+            .expect("closure artifact")],
+        )
+        .expect("populated closure");
+        let populated_actions = [crate::MacosLinuxVzPackageExecutionActionV1::Internal {
+            action: crate::MacosLinuxVzPackageInternalActionV1::ValidateExactBuildClosure {
+                build_requires_sha256: populated.declaration_set_sha256().clone(),
+                build_closure: populated,
+            },
+        }];
+        assert!(build_closure_payload_required_v1(&populated_actions));
     }
 
     #[test]

@@ -33,10 +33,10 @@ The four misses are:
 
 The execution and telemetry substrate built since that campaign is substantial. Exact npm artifacts
 now complete physically under both CI profiles, and exact wheels complete both a real-package smoke
-and an eight-scenario trigger-rich matrix with projected behavior bundles. Evidence remains honestly
-authenticated-but-incomplete. The sdist path now reaches its signed execution bundle but is parked
-on a host-side execution-image subprocess failure before VM boot. None of this changed the restricted
-campaign score by itself.
+and an eight-scenario trigger-rich matrix with projected behavior bundles. The base nested-root PEP
+517 sdist path now completes its physical build, derived-wheel inspection, derived-wheel install,
+and import actions with authenticated behavior bundles. Evidence remains honestly
+authenticated-but-incomplete. None of this changed the restricted campaign score by itself.
 
 The strategic correction is therefore:
 
@@ -78,16 +78,22 @@ macOS-hosted local detection beta. Cloudflare and AWS portability are a separate
   send events and retained every coverage gap. `artifact inspect` now exposes behavior observation
   independently through `--behavior-observe` and `--approve-hosted-behavior-review`, so hosted
   telemetry review no longer requires sending package source for hosted review.
-- The exact-sdist adapter and CLI route are implemented. A normalized nested-root PEP 517 fixture
-  reaches a digest-bound signed execution bundle, but repeated cloud-Mac attempts fail closed in the
-  host helper's execution-image subprocess before VM boot even though the exact image builder
-  succeeds when invoked manually. Pure-Python sdists with declared runtime dependencies now retain
-  an exact offline `--no-deps` execution path and an explicit missing-dependency-closure limitation;
-  they can never become clean or admissible on that evidence. BLK-005 records the bounded resume
-  experiment.
+- The exact-sdist adapter and CLI route are implemented. Two empty-closure runtime defects were
+  corrected: valid Boolean `false` no longer trips the initramfs builder's `set -e` policy, and an
+  empty declared closure no longer requires a payload descriptor. The rebuilt runtime was
+  offline-verified and physically requalified. The normalized nested-root PEP 517 fixture then
+  completed build, derived-wheel inspection, derived-wheel install, and import-root actions,
+  producing authenticated behavior bundles with 1, 1, 8, and 1 events respectively. Verified
+  teardown, no public route, and no sync-back held. The remaining
+  `derived_wheel_probe_manifest_required`, `sdist_build_closure_required`, and
+  `dynamic_build_requirements_possible` reasons keep the result explicitly inconclusive. BLK-005 is
+  resolved.
+- Codex consumed the authenticated sdist install-action bundle after the rejected model pin was
+  replaced with the subscription-supported exact model. It returned a receipt-bound no-finding
+  result that remained correctly inconclusive, observe-only, and without admission authority.
 - No restricted malware was rerun. The known-malware detection result therefore remains **7/11**;
-  this checkpoint proves working npm and wheel execution/observation slices, not an improved
-  campaign score.
+  this checkpoint proves working npm, wheel, and base PEP 517 sdist execution/observation slices,
+  not an improved campaign score.
 
 ### July 15 historical checkpoint (superseded by July 16)
 
@@ -320,9 +326,11 @@ detonation adapters. Deterministic observations, Codex source observations, VM b
 and Codex behavioral observations survive into one report with exact artifact and manifest
 bindings. Positive behavioral findings survive an incomplete detonation result or a failing sibling
 AI role. Context-only behavioral findings remain visible but are not malicious or
-behavior-detection eligible. The strict frozen-corpus scorer and a complete physical sdist run
-remain separate follow-on slices; this product report does not grant admission authority or claim
-clean.
+behavior-detection eligible. The base physical PEP 517 sdist run is complete, and standalone Codex
+qualification consumed its authenticated install-action bundle. The strict frozen-corpus scorer,
+authenticated derived-wheel probe-manifest fanout, nonempty build-closure qualification, legacy
+`setup.py`, and ZIP sdists remain separate follow-on slices; this product report does not grant
+admission authority or claim clean.
 The current npm and wheel adapters each verify their runtime scenario plan before projection. The
 provider-neutral bundle contract does not yet carry an explicit parent inspection-plan digest, so
 supporting a new third-party detonation adapter requires adding that binding rather than trusting a
@@ -330,8 +338,8 @@ new adapter's internal derivation.
 
 ### 4.5 Current vertical-slice implementation checkpoint
 
-The existing code is closer to physical wheel and sdist execution than the July campaign result
-alone suggests, but several bridges remain claim-critical:
+The existing code now executes the base physical npm, wheel, and PEP 517 sdist paths, but several
+bridges remain claim-critical:
 
 - **npm:** the exact adapter and shared helper preserve the same verified tarball across both CI
   profiles. Physical `ci_false` and `ci_true` runs now complete, project authenticated process,
@@ -357,14 +365,15 @@ alone suggests, but several bridges remain claim-critical:
   reject closure state. The bundle preserves the outer artifact envelope and manifest, validates
   the framed closure against declared build requirements, and compiles build, derived-wheel
   inspection/install, and source-root import actions. Its nested-root empty-closure fixture passes
-  the Rust, Swift, shell, and C contract gates. On the cloud Mac, the normalized fixture reaches its
-  signed bundle and then fails closed in the helper's execution-image subprocess before VM boot;
-  the exact image builder succeeds when invoked manually. BLK-005 isolates this host-side blocker.
-  The current plan also cannot honestly claim complete
-  trigger coverage: source package-root guesses must not authorize post-build `.pth` or console
-  probes. The next sdist expansion is a two-pass discovery/probe workflow in which an authenticated
-  derived-wheel manifest drives fresh `.pth`, import, and entry-point actions. Legacy `setup.py` and
-  ZIP sdists remain explicit follow-on controls, never clean fallbacks.
+  the Rust, Swift, shell, and C contract gates and now completes all four physical actions, yielding
+  authenticated behavior bundles with 1, 1, 8, and 1 events. The rebuilt exact runtime was
+  physically requalified, and verified teardown, no public route, and no sync-back held. BLK-005 is
+  resolved. Codex consumed the install-action bundle and correctly retained a no-finding result as
+  inconclusive. The current plan still cannot honestly claim complete trigger coverage: source
+  package-root guesses must not authorize post-build `.pth` or console probes. The next sdist
+  expansion is a two-pass discovery/probe workflow in which an authenticated derived-wheel manifest
+  drives fresh `.pth`, import, and entry-point actions. Nonempty sealed build-closure qualification,
+  legacy `setup.py`, and ZIP sdists remain explicit follow-on controls, never clean fallbacks.
 - **canaries:** the current root-runtime workspace classifies sensitive paths but does not yet seed
   fake npm, PyPI, GitHub, or repository/workflow credentials. Initial inert artifact runs therefore
   qualify trigger and evidence plumbing only. Credential and propagation claims begin only after a
@@ -751,6 +760,10 @@ effect; unsupported/dependency cases remain explicitly non-clean.
 
 Exit evidence: each inert sdist trigger is reached with exact source-to-derived-wheel provenance and
 no network fallback.
+
+Current progress: nested-root normalization and the base four-action physical PEP 517 path are
+complete. The exit gate remains open for a nonempty sealed build closure, authenticated
+derived-wheel-manifest-driven `.pth` and entry-point fanout, legacy `setup.py`, and ZIP sdists.
 
 ### Slice 4: Claude/Codex and specialists
 

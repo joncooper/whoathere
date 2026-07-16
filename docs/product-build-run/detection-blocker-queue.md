@@ -129,38 +129,50 @@ The deterministic analyzer produced behavior findings, but the measured subscrip
 invocation returned no finding. The result remained correctly inconclusive and had no admission
 authority.
 
-Do not spend the current working-solution slice tuning prompts around this one fixture. First feed
-Codex the actual bounded process, file, network, and canary observations from a disposable-VM run.
-Revisit static prompt/pass design afterward using multiple hidden positive and benign controls.
+Do not spend the current working-solution slice tuning prompts around this one fixture. Codex has
+now consumed bounded physical process, file, network, and canary observations from disposable-VM
+runs. Revisit static prompt/pass design afterward using multiple hidden positive and benign
+controls.
 
-## BLK-005: sdist helper fails in the execution-image subprocess before VM boot
+## BLK-005: resolved -- empty-closure sdist runtime failed before VM boot
 
-Status: parked after repeated physical reproduction on July 16, 2026. npm and wheel work proceeds
-independently; this is the only current blocker to the first physical PEP 517 sdist run.
+Status: resolved on July 16, 2026. The base physical PEP 517 sdist path is no longer blocked.
 
-Confirmed:
+The failure had two demonstrated causes:
 
-- the exact-sdist adapter and CLI dispatch are implemented;
-- the nested-root PEP 517 fixture normalizes and reaches its digest-bound signed execution bundle;
-- the host helper repeatedly fails closed while launching the execution-image subprocess, before
-  the disposable VM boots or package code executes;
-- the exact execution-image builder succeeds when invoked manually on the cloud Mac;
-- no sdist behavior bundle was accepted, no sync-back occurred, and this is not a physical sdist
-  detection claim.
+- the initramfs builder used `jq -er` to extract a valid
+  `build_closure_payload_present: false` value, so `jq` status semantics combined with `set -e`
+  terminated the builder;
+- the root runtime required a build-closure payload for every `ValidateExactBuildClosure` action,
+  even when the declared closure contained no artifacts.
 
-Not established:
+The builder now type-checks the field before extracting it without `-e`, and the root runtime now
+requires a payload descriptor only for a nonempty closure artifact list. A regression test covers
+both empty and populated closures. The rebuilt runtime was offline-verified and physically
+requalified before reuse.
 
-- the relevant difference between the helper-launched subprocess and the successful manual image
-  build has not been isolated.
+The exact nested-root PEP 517 inert sdist then completed all four physical actions in fresh,
+disposable guests:
 
-Smallest resume experiment:
+- build: behavior bundle
+  `sha256:a40f43ec34fc8ae61460f35c3be70976b18d13ddf2906bdd86e69af20c387ab7`
+  with one event;
+- derived-wheel inspection:
+  `sha256:8927046deb0ac6a0981c226b2fef49b92180b52d0179e6488a5a2b36d2161095`
+  with one event;
+- derived-wheel install:
+  `sha256:4835b554a6d824e0d0a91828d47c6e24bb0e91ec40f45d9c4cdbb549b16d238c`
+  with eight events;
+- import root:
+  `sha256:d37032e43d196729fc3a71d686adc513b8cecd7b571a74becbb30670da9c222b`
+  with one event.
 
-1. Capture a bounded, sanitized record of the helper's builder executable identity, arguments,
-   working directory, environment allowlist, exit status or signal, and stderr.
-2. Replay that exact invocation manually under the same cloud-Mac user and working directory, then
-   compare it with the already successful manual build.
-3. Correct only the first demonstrated launch, environment, path, or I/O difference; rebuild and
-   sign the helper once.
-4. Rerun the same fixture and require VM boot plus authenticated build, derived-wheel inspection,
-   install, and import action bundles, while retaining incomplete coverage, verified teardown, no
-   public route, and no sync-back.
+Verified teardown, no public route, and no sync-back held. Codex subsequently consumed the
+authenticated install-action bundle and returned a receipt-bound no-finding result that remained
+correctly inconclusive and had no admission authority.
+
+This result proves the base four-action physical PEP 517 path, not complete sdist trigger coverage,
+clean admission, legacy or ZIP support, or malware detection. The product still reports
+`derived_wheel_probe_manifest_required`, `sdist_build_closure_required`, and
+`dynamic_build_requirements_possible`. Preserve this fixture as a regression; no BLK-005 resume
+experiment remains.
