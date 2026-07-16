@@ -80,12 +80,18 @@ output=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --artifact) artifact="$2" ;;
+    --artifact-envelope) artifact_envelope="$2" ;;
+    --artifact-manifest) artifact_manifest="$2" ;;
+    --artifact-kind) artifact_kind="$2" ;;
     --environment) environment="$2" ;;
     --output-directory) output="$2" ;;
   esac
   shift 2
 done
 cp "$artifact" "$output/seen-artifact.bin"
+cp "$artifact_envelope" "$output/seen-artifact-envelope.json"
+cp "$artifact_manifest" "$output/seen-artifact-manifest.json"
+printf '%s\n' "$artifact_kind" > "$output/seen-artifact-kind.txt"
 printf '%s\n' "$environment" > "$output/seen-environment.txt"
 printf '{{"schema_version":"whoathere.linux_vz_package_execution_result.v1","status":"package_process_complete_evidence_pending_host_composition","environment":"%s","artifact_sha256":"{artifact_sha256}","authoritative_verdict_permitted":false,"public_network_route_present":false,"vm_started":true,"vm_stopped":true,"clone_destroyed":true,"image_identity_stable":true,"package_execution":true,"sync_back":false}}\n' "$environment"
 "#
@@ -149,7 +155,7 @@ fn exact_npm_adapter_runs_both_ci_profiles_with_the_verified_artifact_bytes() {
             artifact_path: &artifact_path,
             quarantine_root: &root.path().join("cas"),
             ecosystem: None,
-            acquired_at: "2026-07-15T00:00:00Z",
+            acquired_at: "2026-07-15T12:34:56Z",
             ai_requested: false,
             ai_provider: None,
             detonation_requested: true,
@@ -197,10 +203,31 @@ fn exact_npm_adapter_runs_both_ci_profiles_with_the_verified_artifact_bytes() {
             format!("{environment}\n")
         );
         assert_eq!(
+            std::fs::read_to_string(evidence.join("seen-artifact-kind.txt"))
+                .expect("mock saw artifact kind"),
+            "npm_tgz\n"
+        );
+        assert_eq!(
             std::fs::read(run_roots[0].join(environment).join("artifact.tgz"))
                 .expect("retained materialized artifact"),
             artifact
         );
+        let envelope: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(evidence.join("seen-artifact-envelope.json"))
+                .expect("mock saw artifact envelope"),
+        )
+        .expect("artifact envelope JSON");
+        assert_eq!(envelope["acquired_at"], "2026-07-15T12:34:56Z");
+        assert!(envelope["custody_reference"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("quarantine-cas:")));
+        assert_eq!(envelope["policy_version"], "exact-artifact-inspection-v1");
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(evidence.join("seen-artifact-manifest.json"))
+                .expect("mock saw artifact manifest"),
+        )
+        .expect("artifact manifest JSON");
+        assert_eq!(manifest["artifact_sha256"], artifact_sha256);
     }
     assert!(!report.observed_clean);
     assert!(!report.admission_authority);

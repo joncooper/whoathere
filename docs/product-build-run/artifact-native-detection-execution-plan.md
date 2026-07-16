@@ -70,6 +70,12 @@ macOS-hosted local detection beta. Cloudflare and AWS portability are a separate
   under both `ci_false` and `ci_true`, including a read-only canary fixture, then reproduced
   BLK-001 before authenticated evidence sealing. The observer is ready to consume the first
   completed physical bundle; the sensor pairing redesign remains a separate bounded blocker.
+- The exact-wheel outer spine now exists: one verified pure-Python wheel is normalized once, its
+  install, `.pth`, import-root, console-help, and console-no-argument triggers are enumerated, and
+  each trigger is passed through the generic `artifact.bin` Linux VZ bundle with a fresh scenario
+  binding. The complete five-action mock fixture passes. Physical evidence sealing is not claimed;
+  a wheel VM campaign is intentionally not repeated while the shared runtime path remains blocked
+  by BLK-001.
 
 ## 2. Product target and claim boundary
 
@@ -259,19 +265,21 @@ even when a later stage fails, while the overall completion state remains honest
 The existing code is closer to physical wheel and sdist execution than the July campaign result
 alone suggests, but several bridges remain claim-critical:
 
-- **npm:** the physical harness remains the leading path, and per-frame `SCM_CREDENTIALS` now bind
-  sensor control traffic to the measured runner PID while `SO_PEERCRED` remains structural channel
-  evidence. The runtime-v11 CI=true decision run nevertheless stopped on an authenticated orphan
-  `sendto` exit with no pending entry. Safety and teardown held, but no package result was accepted;
-  CI=false remains unrun. Further stream-protocol patching is paused in favor of the bounded signed
-  end-of-action journal described in blocker `BLK-001`.
-- **wheel:** metadata-driven install, `.pth`, import-root, and console-entry-point scenario compilers
-  and fixed offline process plans already exist. The missing work is an explicit runtime-binding
-  fanout bridge, generic physical `artifact.bin` packaging, multi-action evidence, independent
-  verification of every root receipt, and an authenticated zero-frame network observation. The
-  first wheel fixture must exercise more than one import root and console entry point. The runtime
-  must also verify the installed `.pth` surfaces it intended to exercise and define whether console
-  coverage means callable activation or execution of the generated wrapper.
+- **npm:** the exact adapter and shared helper now select npm explicitly and preserve the same
+  verified tarball across both CI profiles. Physical `ci_false` and `ci_true` runs both reached the
+  qualified runtime and then stopped on the same authenticated orphan `sendto` exit with no pending
+  entry. Safety and teardown held, but no package result was accepted. Further stream-protocol
+  patching is paused in favor of the bounded signed end-of-action journal described in blocker
+  `BLK-001`.
+- **wheel:** metadata-driven install, `.pth`, import-root, and console-entry-point scenario
+  compilers, fixed offline process plans, the runtime-binding fanout bridge, generic physical
+  `artifact.bin` packaging, shared Mac helper selection, and the exact-artifact adapter now exist.
+  The adapter passes the outer inspection's canonical envelope and manifest into the builder,
+  re-normalizes the same verified bytes there, and runs every derived trigger with a fresh action
+  binding. A pure-Python fixture passes all five mock actions, including generated-wrapper help and
+  no-argument probes. Missing evidence remains explicitly inconclusive. The remaining acceptance
+  gate is physical authenticated evidence and independent receipt verification, currently blocked
+  by the shared `BLK-001` runtime fault rather than missing wheel orchestration.
 - **sdist:** nested-root normalization, exact wheel-only build closure, fixed build plans, and
   exactly-one-derived-wheel sealing already exist in code, but have not run physically. Source
   package-root guesses must not authorize post-build probes. The sdist identity must survive into

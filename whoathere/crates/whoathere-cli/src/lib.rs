@@ -48,7 +48,8 @@ use whoathere_runner::{
     BehaviorCodexPanelOutcomeV1, ExactArtifactAiAdapterV1, ExactArtifactCodexAiAdapterV1,
     ExactArtifactCodexAiConfigV1, ExactArtifactDetonationAdapterV1, ExactArtifactInspectionErrorV1,
     ExactArtifactInspectionRequestV1, ExecutionDecision, LinuxVzExactNpmDetonationAdapterV1,
-    LinuxVzExactNpmDetonationConfigV1,
+    LinuxVzExactNpmDetonationConfigV1, LinuxVzExactWheelDetonationAdapterV1,
+    LinuxVzExactWheelDetonationConfigV1,
 };
 use whoathere_sandbox::{
     admit_linux_active_probe_receipt, admit_linux_active_probe_receipt_with_replay_decision,
@@ -2110,7 +2111,10 @@ fn render_exact_artifact_inspect(args: ExactArtifactInspectArgs<'_>) -> String {
         }
     };
     let quarantine_root = state_root.join("quarantine-cas-v1");
-    let detonation_adapter = match (args.detonation, args.detonation_config) {
+    let detonation_adapter: Option<Box<dyn ExactArtifactDetonationAdapterV1>> = match (
+        args.detonation,
+        args.detonation_config,
+    ) {
         (false, None) => None,
         (false, Some(_)) => {
             return ExactArtifactInspectionErrorV1::invalid_request(
@@ -2158,20 +2162,71 @@ fn render_exact_artifact_inspect(args: ExactArtifactInspectArgs<'_>) -> String {
                     .to_pretty_json()
                 }
             };
-            let config = match serde_json::from_slice::<LinuxVzExactNpmDetonationConfigV1>(&bytes) {
-                Ok(value) => value,
+            let config_value = match serde_json::from_slice::<serde_json::Value>(&bytes) {
+                Ok(value) if value.is_object() => value,
                 Err(_) => {
                     return ExactArtifactInspectionErrorV1::invalid_request(
                         "exact_artifact_detonation_config_invalid",
                     )
                     .to_pretty_json()
                 }
+                Ok(_) => {
+                    return ExactArtifactInspectionErrorV1::invalid_request(
+                        "exact_artifact_detonation_config_invalid",
+                    )
+                    .to_pretty_json()
+                }
             };
-            match LinuxVzExactNpmDetonationAdapterV1::new(config) {
-                Ok(value) => Some(value),
-                Err(error) => {
-                    return ExactArtifactInspectionErrorV1::invalid_request(error.reason_code())
-                        .to_pretty_json()
+            match config_value.get("artifact_kind") {
+                Some(serde_json::Value::String(kind)) if kind == "pypi_wheel" => {
+                    let config = match serde_json::from_value::<LinuxVzExactWheelDetonationConfigV1>(
+                        config_value,
+                    ) {
+                        Ok(value) => value,
+                        Err(_) => {
+                            return ExactArtifactInspectionErrorV1::invalid_request(
+                                "exact_artifact_detonation_config_invalid",
+                            )
+                            .to_pretty_json()
+                        }
+                    };
+                    match LinuxVzExactWheelDetonationAdapterV1::new(config) {
+                        Ok(value) => Some(Box::new(value)),
+                        Err(error) => {
+                            return ExactArtifactInspectionErrorV1::invalid_request(
+                                error.reason_code(),
+                            )
+                            .to_pretty_json()
+                        }
+                    }
+                }
+                None => {
+                    let config = match serde_json::from_value::<LinuxVzExactNpmDetonationConfigV1>(
+                        config_value,
+                    ) {
+                        Ok(value) => value,
+                        Err(_) => {
+                            return ExactArtifactInspectionErrorV1::invalid_request(
+                                "exact_artifact_detonation_config_invalid",
+                            )
+                            .to_pretty_json()
+                        }
+                    };
+                    match LinuxVzExactNpmDetonationAdapterV1::new(config) {
+                        Ok(value) => Some(Box::new(value)),
+                        Err(error) => {
+                            return ExactArtifactInspectionErrorV1::invalid_request(
+                                error.reason_code(),
+                            )
+                            .to_pretty_json()
+                        }
+                    }
+                }
+                Some(_) => {
+                    return ExactArtifactInspectionErrorV1::invalid_request(
+                        "exact_artifact_detonation_config_invalid",
+                    )
+                    .to_pretty_json()
                 }
             }
         }
@@ -2249,9 +2304,7 @@ fn render_exact_artifact_inspect(args: ExactArtifactInspectArgs<'_>) -> String {
     let ai_adapter = codex_adapter
         .as_ref()
         .map(|adapter| adapter as &dyn ExactArtifactAiAdapterV1);
-    let detonation_adapter = detonation_adapter
-        .as_ref()
-        .map(|adapter| adapter as &dyn ExactArtifactDetonationAdapterV1);
+    let detonation_adapter = detonation_adapter.as_deref();
     match inspect_exact_artifact_v1(request, ai_adapter, detonation_adapter) {
         Ok(report) => report
             .to_pretty_json()
@@ -18843,6 +18896,64 @@ mod tests {
                 serde_json::from_str(&result.output).expect("detonation option error is JSON");
             assert_eq!(json["reason_codes"][0], reason);
         }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn exact_artifact_detonation_routes_wheel_configs_by_artifact_kind() {
+        let root = temp_root("whoathere-cli-exact-wheel-detonation-config");
+        let missing_input = root.join("missing-input");
+        let config_path = root.join("wheel-detonation.json");
+        let config = serde_json::json!({
+            "artifact_kind": "pypi_wheel",
+            "helper_path": missing_input,
+            "kernel_path": missing_input,
+            "base_initramfs_path": missing_input,
+            "runtime_directory": missing_input,
+            "bundle_builder_path": missing_input,
+            "image_builder_path": missing_input,
+            "backend_identity_path": missing_input,
+            "qualified_backend_path": missing_input,
+            "qualification_record_path": missing_input,
+            "guest_public_key_path": missing_input,
+            "host_public_key_path": missing_input,
+            "grant_public_key_path": missing_input,
+            "grant_signing_seed_path": missing_input,
+            "guest_signing_seed_path": missing_input,
+            "output_root": root.join("output"),
+            "timeout_seconds": 60,
+            "helper_sha256": null
+        });
+        std::fs::write(
+            &config_path,
+            serde_json::to_vec(&config).expect("serialize wheel config"),
+        )
+        .expect("write wheel config");
+
+        let result = evaluate_command(Command::ArtifactInspect {
+            path: root.join("missing.whl").display().to_string(),
+            ecosystem: Some("pypi".to_string()),
+            state_dir: Some(root.join("state").display().to_string()),
+            acquired_at: Some("2026-07-15T00:00:00Z".to_string()),
+            ai_review: false,
+            ai_provider: None,
+            ai_client_path: None,
+            ai_client_sha256: None,
+            ai_model: None,
+            ai_auth_home: None,
+            ai_timeout_seconds: None,
+            approve_hosted_source_review: false,
+            detonation: true,
+            detonation_config: Some(config_path.display().to_string()),
+        });
+        let json: serde_json::Value =
+            serde_json::from_str(&result.output).expect("wheel config error is JSON");
+        assert_eq!(
+            json["reason_codes"][0],
+            "linux_vz_exact_wheel_input_invalid"
+        );
+        assert_eq!(json["admission_authority"], false);
+        assert_eq!(json["observed_clean"], false);
         let _ = std::fs::remove_dir_all(root);
     }
 

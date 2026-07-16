@@ -1,9 +1,9 @@
-//! Minimal exact npm artifact bridge to the macOS Linux VZ package helper.
+//! Minimal exact pure-Python wheel bridge to the macOS Linux VZ package helper.
 //!
-//! The helper remains responsible for VM containment and evidence production.
-//! This adapter binds the verified quarantine bytes to two lifecycle runs and
-//! returns incomplete evidence until a later analysis stage interprets the
-//! retained process, file, canary, and network records.
+//! The helper remains responsible for VM containment and authenticated evidence
+//! production. This adapter runs one fresh helper action for every normalized
+//! wheel trigger and validates the helper-produced wheel plan and selected
+//! template before projecting typed behavior evidence.
 
 use crate::{
     project_exact_detonation_behavior_v1, BoundOptionalEvidenceOutcomeV1, BoundOptionalEvidenceV1,
@@ -23,13 +23,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use whoathere_artifact::{ArtifactFormat, Sha256Digest};
 use whoathere_cache::VerifiedArtifactLease;
 use whoathere_detonation::{
-    decode_and_validate_artifact_scenario_plan_v1,
-    decode_and_validate_artifact_scenario_template_v1, ArtifactScenarioKindV1,
-    NpmEnvironmentProfileV1, MAX_ARTIFACT_SCENARIO_PLAN_WIRE_BYTES_V1,
-    MAX_ARTIFACT_SCENARIO_TEMPLATE_WIRE_BYTES_V1,
+    decode_and_validate_wheel_scenario_plan_v1, decode_and_validate_wheel_scenario_template_v1,
+    expected_wheel_scenario_kinds_v1, ArtifactRuntimeTargetV1, WheelScenarioKindV1,
+    MAX_WHEEL_SCENARIO_PLAN_WIRE_BYTES_V1, MAX_WHEEL_SCENARIO_TEMPLATE_WIRE_BYTES_V1,
 };
 
-const PROVIDER_ID: &str = "linux_vz_exact_npm_v1";
+const PROVIDER_ID: &str = "linux_vz_exact_wheel_v1";
+const CONFIG_ARTIFACT_KIND: &str = "pypi_wheel";
+const HELPER_ARTIFACT_KIND: &str = "wheel";
 const HELPER_RESULT_SCHEMA_V1: &str = "whoathere.linux_vz_package_execution_result.v1";
 const MAX_ROOT_RECEIPT_BYTES: usize = 256 * 1024;
 const MAX_SENSOR_EVIDENCE_BYTES: usize = 16 * 1024 * 1024;
@@ -38,7 +39,10 @@ static RUN_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct LinuxVzExactNpmDetonationConfigV1 {
+pub struct LinuxVzExactWheelDetonationConfigV1 {
+    /// Required serialized discriminator. The helper CLI uses the shorter
+    /// `wheel` spelling, while retained package contracts use `pypi_wheel`.
+    pub artifact_kind: String,
     pub helper_path: PathBuf,
     pub kernel_path: PathBuf,
     pub base_initramfs_path: PathBuf,
@@ -59,12 +63,14 @@ pub struct LinuxVzExactNpmDetonationConfigV1 {
 }
 
 #[derive(Debug, Clone)]
-pub struct LinuxVzExactNpmDetonationAdapterV1 {
-    config: LinuxVzExactNpmDetonationConfigV1,
+pub struct LinuxVzExactWheelDetonationAdapterV1 {
+    config: LinuxVzExactWheelDetonationConfigV1,
 }
 
-impl LinuxVzExactNpmDetonationAdapterV1 {
-    pub fn new(config: LinuxVzExactNpmDetonationConfigV1) -> Result<Self, OptionalAdapterErrorV1> {
+impl LinuxVzExactWheelDetonationAdapterV1 {
+    pub fn new(
+        config: LinuxVzExactWheelDetonationConfigV1,
+    ) -> Result<Self, OptionalAdapterErrorV1> {
         let adapter = Self { config };
         if let Some(reason) = adapter.configuration_reason() {
             return Err(OptionalAdapterErrorV1::new(reason));
@@ -72,13 +78,16 @@ impl LinuxVzExactNpmDetonationAdapterV1 {
         Ok(adapter)
     }
 
-    pub fn config(&self) -> &LinuxVzExactNpmDetonationConfigV1 {
+    pub fn config(&self) -> &LinuxVzExactWheelDetonationConfigV1 {
         &self.config
     }
 
     fn configuration_reason(&self) -> Option<&'static str> {
+        if self.config.artifact_kind != CONFIG_ARTIFACT_KIND {
+            return Some("linux_vz_exact_wheel_artifact_kind_invalid");
+        }
         if !(30..=600).contains(&self.config.timeout_seconds) {
-            return Some("linux_vz_exact_npm_timeout_invalid");
+            return Some("linux_vz_exact_wheel_timeout_invalid");
         }
         let file_paths = [
             &self.config.helper_path,
@@ -102,89 +111,99 @@ impl LinuxVzExactNpmDetonationAdapterV1 {
             || !is_directory_non_symlink(&self.config.runtime_directory)
             || !self.config.output_root.is_absolute()
         {
-            return Some("linux_vz_exact_npm_input_invalid");
+            return Some("linux_vz_exact_wheel_input_invalid");
         }
         let helper_mode = match fs::symlink_metadata(&self.config.helper_path) {
             Ok(metadata) => metadata.permissions().mode(),
-            Err(_) => return Some("linux_vz_exact_npm_helper_unreadable"),
+            Err(_) => return Some("linux_vz_exact_wheel_helper_unreadable"),
         };
         if helper_mode & 0o111 == 0 {
-            return Some("linux_vz_exact_npm_helper_not_executable");
+            return Some("linux_vz_exact_wheel_helper_not_executable");
         }
         if let Some(expected) = &self.config.helper_sha256 {
             if Sha256Digest::parse(expected.clone()).is_err() {
-                return Some("linux_vz_exact_npm_helper_digest_invalid");
+                return Some("linux_vz_exact_wheel_helper_digest_invalid");
             }
             let bytes = match fs::read(&self.config.helper_path) {
                 Ok(bytes) => bytes,
-                Err(_) => return Some("linux_vz_exact_npm_helper_unreadable"),
+                Err(_) => return Some("linux_vz_exact_wheel_helper_unreadable"),
             };
             if Sha256Digest::from_bytes(&bytes).as_str() != expected {
-                return Some("linux_vz_exact_npm_helper_digest_mismatch");
+                return Some("linux_vz_exact_wheel_helper_digest_mismatch");
             }
         }
         match fs::symlink_metadata(&self.config.output_root) {
             Ok(metadata)
                 if metadata.file_type().is_dir() && metadata.permissions().mode() & 0o077 == 0 => {}
-            Ok(_) => return Some("linux_vz_exact_npm_output_root_invalid"),
+            Ok(_) => return Some("linux_vz_exact_wheel_output_root_invalid"),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 let Some(parent) = self.config.output_root.parent() else {
-                    return Some("linux_vz_exact_npm_output_root_invalid");
+                    return Some("linux_vz_exact_wheel_output_root_invalid");
                 };
                 if !is_directory_non_symlink(parent) {
-                    return Some("linux_vz_exact_npm_output_root_invalid");
+                    return Some("linux_vz_exact_wheel_output_root_invalid");
                 }
             }
-            Err(_) => return Some("linux_vz_exact_npm_output_root_invalid"),
+            Err(_) => return Some("linux_vz_exact_wheel_output_root_invalid"),
         }
         None
     }
 
-    fn run_profile(
+    #[allow(clippy::too_many_arguments)]
+    fn run_action(
         &self,
         run_root: &Path,
-        environment: &'static str,
+        scenario_index: usize,
+        artifact_filename: &str,
         artifact_bytes: &[u8],
         artifact_sha256: &Sha256Digest,
+        envelope_sha256: &Sha256Digest,
+        manifest_sha256: &Sha256Digest,
+        expected_kinds: &[WheelScenarioKindV1],
         prepared: &PreparedArtifact,
-    ) -> ProfileRun {
-        let profile_root = run_root.join(environment);
-        let evidence_directory = profile_root.join("evidence");
-        if create_private_directory(&profile_root).is_err()
+    ) -> WheelActionRunV1 {
+        let action_root = run_root.join(format!("action-{scenario_index:04}"));
+        let evidence_directory = action_root.join("evidence");
+        if create_private_directory(&action_root).is_err()
             || create_private_directory(&evidence_directory).is_err()
         {
-            return ProfileRun::incomplete(environment, "output_directory_creation_failed");
+            return WheelActionRunV1::incomplete(
+                scenario_index,
+                "output_directory_creation_failed",
+            );
         }
-        let artifact_path = profile_root.join("artifact.tgz");
+        let artifact_path = action_root.join(artifact_filename);
         if write_new_private_file(&artifact_path, artifact_bytes).is_err() {
-            return ProfileRun::incomplete(environment, "artifact_materialization_failed");
+            return WheelActionRunV1::incomplete(scenario_index, "artifact_materialization_failed");
         }
-        let artifact_envelope_path = profile_root.join("artifact-envelope.json");
-        let artifact_manifest_path = profile_root.join("artifact-manifest.json");
+        let artifact_envelope_path = action_root.join("artifact-envelope.json");
+        let artifact_manifest_path = action_root.join("artifact-manifest.json");
         let artifact_envelope_bytes = match prepared.envelope().canonical_json() {
             Ok(bytes) => bytes,
             Err(_) => {
-                return ProfileRun::incomplete(environment, "artifact_binding_serialization_failed")
+                return WheelActionRunV1::incomplete(
+                    scenario_index,
+                    "artifact_binding_serialization_failed",
+                )
             }
         };
         let artifact_manifest_bytes = match serde_json::to_vec(&prepared.normalized().manifest) {
             Ok(bytes) => bytes,
             Err(_) => {
-                return ProfileRun::incomplete(environment, "artifact_binding_serialization_failed")
+                return WheelActionRunV1::incomplete(
+                    scenario_index,
+                    "artifact_binding_serialization_failed",
+                )
             }
         };
         if write_new_private_file(&artifact_envelope_path, &artifact_envelope_bytes).is_err()
             || write_new_private_file(&artifact_manifest_path, &artifact_manifest_bytes).is_err()
         {
-            return ProfileRun::incomplete(environment, "artifact_binding_materialization_failed");
+            return WheelActionRunV1::incomplete(
+                scenario_index,
+                "artifact_binding_materialization_failed",
+            );
         }
-        let envelope_sha256 = match prepared.envelope().envelope_sha256() {
-            Ok(digest) => digest,
-            Err(_) => {
-                return ProfileRun::incomplete(environment, "artifact_binding_serialization_failed")
-            }
-        };
-        let manifest_sha256 = &prepared.normalized().manifest.manifest_sha256;
 
         let output = Command::new(&self.config.helper_path)
             .arg("--artifact")
@@ -194,9 +213,9 @@ impl LinuxVzExactNpmDetonationAdapterV1 {
             .arg("--artifact-manifest")
             .arg(&artifact_manifest_path)
             .arg("--artifact-kind")
-            .arg("npm_tgz")
-            .arg("--environment")
-            .arg(environment)
+            .arg(HELPER_ARTIFACT_KIND)
+            .arg("--scenario-index")
+            .arg(scenario_index.to_string())
             .arg("--kernel")
             .arg(&self.config.kernel_path)
             .arg("--base-initramfs")
@@ -233,11 +252,13 @@ impl LinuxVzExactNpmDetonationAdapterV1 {
             .output();
         let output = match output {
             Ok(output) => output,
-            Err(_) => return ProfileRun::incomplete(environment, "helper_invocation_failed"),
+            Err(_) => {
+                return WheelActionRunV1::incomplete(scenario_index, "helper_invocation_failed")
+            }
         };
-        let parsed = match serde_json::from_slice::<PhysicalHelperResultV1>(&output.stdout) {
+        let parsed = match serde_json::from_slice::<PhysicalWheelHelperResultV1>(&output.stdout) {
             Ok(parsed) => parsed,
-            Err(_) => return ProfileRun::incomplete(environment, "helper_output_invalid"),
+            Err(_) => return WheelActionRunV1::incomplete(scenario_index, "helper_output_invalid"),
         };
         let mut limitations = Vec::new();
         if !output.status.success() {
@@ -246,8 +267,12 @@ impl LinuxVzExactNpmDetonationAdapterV1 {
         if parsed.schema_version != HELPER_RESULT_SCHEMA_V1 {
             limitations.push("helper_schema_invalid");
         }
-        if parsed.environment.as_deref() != Some(environment) {
-            limitations.push("environment_binding_not_proven");
+        if parsed.artifact_kind.as_deref() != Some(HELPER_ARTIFACT_KIND) {
+            limitations.push("artifact_kind_binding_not_proven");
+        }
+        let expected_scenario_index = scenario_index.to_string();
+        if parsed.scenario_index.as_deref() != Some(expected_scenario_index.as_str()) {
+            limitations.push("scenario_index_binding_not_proven");
         }
         if parsed.artifact_sha256.as_deref() != Some(artifact_sha256.as_str()) {
             limitations.push("artifact_binding_not_proven");
@@ -281,13 +306,17 @@ impl LinuxVzExactNpmDetonationAdapterV1 {
         ) {
             limitations.push("helper_terminal_not_supported");
         }
-        let behavior_projection = project_profile_behavior_v1(
+
+        let behavior_projection = project_wheel_action_behavior_v1(
             &evidence_directory,
-            environment,
+            scenario_index,
             artifact_sha256,
-            &envelope_sha256,
+            envelope_sha256,
             manifest_sha256,
             artifact_bytes.len(),
+            artifact_filename,
+            expected_kinds,
+            prepared,
         );
         let (behavior_bundle_sha256, behavior_event_count) = match behavior_projection {
             Ok(projected) => (Some(projected.0), Some(projected.1)),
@@ -296,8 +325,8 @@ impl LinuxVzExactNpmDetonationAdapterV1 {
                 (None, None)
             }
         };
-        ProfileRun {
-            environment,
+        WheelActionRunV1 {
+            scenario_index,
             evidence_captured: limitations.is_empty(),
             limitations,
             behavior_bundle_sha256,
@@ -306,7 +335,7 @@ impl LinuxVzExactNpmDetonationAdapterV1 {
     }
 }
 
-impl ExactArtifactDetonationAdapterV1 for LinuxVzExactNpmDetonationAdapterV1 {
+impl ExactArtifactDetonationAdapterV1 for LinuxVzExactWheelDetonationAdapterV1 {
     fn provider_id(&self) -> &str {
         PROVIDER_ID
     }
@@ -320,51 +349,10 @@ impl ExactArtifactDetonationAdapterV1 for LinuxVzExactNpmDetonationAdapterV1 {
         prepared: &PreparedArtifact,
         scenarios: &ExactArtifactScenarioPlanV1,
     ) -> bool {
-        if scenarios.status != ExactArtifactStageStatusV1::Complete
-            || scenarios.executable
-            || scenarios.runtime_binding_status != "not_bound"
-            || prepared.normalized().manifest.magic_detected_format != ArtifactFormat::NpmTarGzip
-            || prepared.envelope().requires_external_dependency_resolution
-        {
-            return false;
-        }
-        let manifest = &prepared.normalized().manifest;
-        let Some(npm) = &manifest.metadata.npm else {
-            return false;
-        };
-        if npm.requires_offline_closure
-            || !npm.dependency_declarations.is_empty()
-            || npm.implicit_node_gyp_rebuild
-            || !manifest.native_binary_file_ids.is_empty()
-            || scenarios.intents.len() != 2
-            || scenarios.intents.iter().any(|intent| {
-                !matches!(
-                    intent.kind,
-                    ExactArtifactScenarioKindV1::Npm(
-                        ArtifactScenarioKindV1::NpmLocalTarballInstall { .. }
-                    )
-                )
-            })
-        {
-            return false;
-        }
-        let has_ci_false = scenarios.intents.iter().any(|intent| {
-            matches!(
-                intent.kind,
-                ExactArtifactScenarioKindV1::Npm(ArtifactScenarioKindV1::NpmLocalTarballInstall {
-                    environment: NpmEnvironmentProfileV1::CiFalse
-                })
-            )
-        });
-        let has_ci_true = scenarios.intents.iter().any(|intent| {
-            matches!(
-                intent.kind,
-                ExactArtifactScenarioKindV1::Npm(ArtifactScenarioKindV1::NpmLocalTarballInstall {
-                    environment: NpmEnvironmentProfileV1::CiTrue
-                })
-            )
-        });
-        has_ci_false && has_ci_true
+        scenarios.status == ExactArtifactStageStatusV1::Complete
+            && !scenarios.executable
+            && scenarios.runtime_binding_status == "not_bound"
+            && supported_wheel_plan_v1(prepared, scenarios)
     }
 
     fn detonate(
@@ -381,7 +369,7 @@ impl ExactArtifactDetonationAdapterV1 for LinuxVzExactNpmDetonationAdapterV1 {
             Err(_) => {
                 return incomplete_result(
                     &request.request_sha256,
-                    vec!["vm_manifest_binding_invalid".to_string()],
+                    vec!["vm_wheel_manifest_binding_invalid".to_string()],
                 )
             }
         };
@@ -390,7 +378,7 @@ impl ExactArtifactDetonationAdapterV1 for LinuxVzExactNpmDetonationAdapterV1 {
             Err(_) => {
                 return incomplete_result(
                     &request.request_sha256,
-                    vec!["vm_envelope_binding_invalid".to_string()],
+                    vec!["vm_wheel_envelope_binding_invalid".to_string()],
                 )
             }
         };
@@ -399,7 +387,7 @@ impl ExactArtifactDetonationAdapterV1 for LinuxVzExactNpmDetonationAdapterV1 {
             Err(_) => {
                 return incomplete_result(
                     &request.request_sha256,
-                    vec!["vm_envelope_binding_invalid".to_string()],
+                    vec!["vm_wheel_envelope_binding_invalid".to_string()],
                 )
             }
         };
@@ -408,93 +396,127 @@ impl ExactArtifactDetonationAdapterV1 for LinuxVzExactNpmDetonationAdapterV1 {
             || artifact_sha256 != prepared.evidence_subject().artifact_sha256()
             || envelope_digest != prepared_envelope_digest
             || manifest_digest != prepared.normalized().manifest.manifest_sha256
+            || scenarios.status != ExactArtifactStageStatusV1::Complete
             || scenarios.runtime_binding_status != "verified"
             || !scenarios.executable
-            || !self.supports_bound_npm_plan(scenarios)
+            || !supported_wheel_plan_v1(prepared, scenarios)
         {
             return incomplete_result(
                 &request.request_sha256,
-                vec!["vm_runtime_or_artifact_binding_invalid".to_string()],
+                vec!["vm_wheel_runtime_or_artifact_binding_invalid".to_string()],
             );
         }
+        let expected_kinds = match wheel_kinds_from_plan_v1(scenarios) {
+            Some(kinds) => kinds,
+            None => {
+                return incomplete_result(
+                    &request.request_sha256,
+                    vec!["vm_wheel_scenario_plan_invalid".to_string()],
+                )
+            }
+        };
         let run_root =
             match create_fresh_run_root(&self.config.output_root, &request.request_sha256) {
                 Ok(path) => path,
                 Err(_) => {
                     return incomplete_result(
                         &request.request_sha256,
-                        vec!["vm_output_directory_creation_failed".to_string()],
+                        vec!["vm_wheel_output_directory_creation_failed".to_string()],
                     )
                 }
             };
-        let runs = [
-            self.run_profile(
-                &run_root,
-                "ci_false",
-                artifact.bytes(),
-                &artifact_digest,
-                prepared,
-            ),
-            self.run_profile(
-                &run_root,
-                "ci_true",
-                artifact.bytes(),
-                &artifact_digest,
-                prepared,
-            ),
-        ];
+        let artifact_filename = prepared.envelope().original_filename.as_str();
+        let runs = expected_kinds
+            .iter()
+            .enumerate()
+            .map(|(scenario_index, _)| {
+                self.run_action(
+                    &run_root,
+                    scenario_index,
+                    artifact_filename,
+                    artifact.bytes(),
+                    &artifact_digest,
+                    &envelope_digest,
+                    &manifest_digest,
+                    &expected_kinds,
+                    prepared,
+                )
+            })
+            .collect::<Vec<_>>();
+
         let mut reasons = vec![
-            "vm_evidence_captured_pending_analysis".to_string(),
-            "vm_evidence_output_preserved".to_string(),
+            "vm_wheel_evidence_captured_pending_analysis".to_string(),
+            "vm_wheel_evidence_output_preserved".to_string(),
         ];
         for run in runs {
             if let Some(digest) = run.behavior_bundle_sha256 {
                 reasons.push(format!(
-                    "vm_{}_behavior_bundle_sha256:{}",
-                    run.environment,
+                    "vm_wheel_action_{}_behavior_bundle_sha256:{}",
+                    run.scenario_index,
                     digest.as_str().trim_start_matches("sha256:")
                 ));
-                reasons.push(format!("vm_{}_behavior_bundle_projected", run.environment));
+                reasons.push(format!(
+                    "vm_wheel_action_{}_behavior_bundle_projected",
+                    run.scenario_index
+                ));
             }
             if let Some(event_count) = run.behavior_event_count {
                 reasons.push(format!(
-                    "vm_{}_behavior_event_count:{event_count}",
-                    run.environment
+                    "vm_wheel_action_{}_behavior_event_count:{event_count}",
+                    run.scenario_index
                 ));
             }
             if !run.evidence_captured {
-                reasons.push(format!("vm_{}_evidence_incomplete", run.environment));
+                reasons.push(format!(
+                    "vm_wheel_action_{}_evidence_incomplete",
+                    run.scenario_index
+                ));
             }
             reasons.extend(
                 run.limitations
                     .into_iter()
-                    .map(|reason| format!("vm_{}_{}", run.environment, reason)),
+                    .map(|reason| format!("vm_wheel_action_{}_{}", run.scenario_index, reason)),
             );
         }
         incomplete_result(&request.request_sha256, reasons)
     }
 }
 
-impl LinuxVzExactNpmDetonationAdapterV1 {
-    fn supports_bound_npm_plan(&self, scenarios: &ExactArtifactScenarioPlanV1) -> bool {
-        scenarios.status == ExactArtifactStageStatusV1::Complete
-            && scenarios.intents.len() == 2
-            && scenarios.intents.iter().all(|intent| {
-                matches!(
-                    intent.kind,
-                    ExactArtifactScenarioKindV1::Npm(
-                        ArtifactScenarioKindV1::NpmLocalTarballInstall { .. }
-                    )
-                )
-            })
+fn supported_wheel_plan_v1(
+    prepared: &PreparedArtifact,
+    scenarios: &ExactArtifactScenarioPlanV1,
+) -> bool {
+    if prepared.normalized().manifest.magic_detected_format != ArtifactFormat::WheelZip
+        || prepared.envelope().requires_external_dependency_resolution
+    {
+        return false;
     }
+    let expected = match expected_wheel_scenario_kinds_v1(&prepared.normalized().manifest) {
+        Ok(expected) => expected,
+        Err(_) => return false,
+    };
+    wheel_kinds_from_plan_v1(scenarios).is_some_and(|actual| actual == expected)
+}
+
+fn wheel_kinds_from_plan_v1(
+    scenarios: &ExactArtifactScenarioPlanV1,
+) -> Option<Vec<WheelScenarioKindV1>> {
+    scenarios
+        .intents
+        .iter()
+        .map(|intent| match &intent.kind {
+            ExactArtifactScenarioKindV1::Wheel(kind) => Some(kind.clone()),
+            ExactArtifactScenarioKindV1::Npm(_) | ExactArtifactScenarioKindV1::Sdist(_) => None,
+        })
+        .collect()
 }
 
 #[derive(Debug, Deserialize)]
-struct PhysicalHelperResultV1 {
+struct PhysicalWheelHelperResultV1 {
     schema_version: String,
     status: String,
-    environment: Option<String>,
+    artifact_kind: Option<String>,
+    scenario_index: Option<String>,
     artifact_sha256: Option<String>,
     authoritative_verdict_permitted: Option<bool>,
     public_network_route_present: Option<bool>,
@@ -506,18 +528,18 @@ struct PhysicalHelperResultV1 {
     sync_back: Option<bool>,
 }
 
-struct ProfileRun {
-    environment: &'static str,
+struct WheelActionRunV1 {
+    scenario_index: usize,
     evidence_captured: bool,
     limitations: Vec<&'static str>,
     behavior_bundle_sha256: Option<Sha256Digest>,
     behavior_event_count: Option<usize>,
 }
 
-impl ProfileRun {
-    fn incomplete(environment: &'static str, reason: &'static str) -> Self {
+impl WheelActionRunV1 {
+    fn incomplete(scenario_index: usize, reason: &'static str) -> Self {
         Self {
-            environment,
+            scenario_index,
             evidence_captured: false,
             limitations: vec![reason],
             behavior_bundle_sha256: None,
@@ -526,21 +548,25 @@ impl ProfileRun {
     }
 }
 
-fn project_profile_behavior_v1(
+#[allow(clippy::too_many_arguments)]
+fn project_wheel_action_behavior_v1(
     evidence_directory: &Path,
-    environment: &str,
+    scenario_index: usize,
     artifact_sha256: &Sha256Digest,
     envelope_sha256: &Sha256Digest,
     manifest_sha256: &Sha256Digest,
     artifact_byte_length: usize,
+    artifact_filename: &str,
+    expected_kinds: &[WheelScenarioKindV1],
+    prepared: &PreparedArtifact,
 ) -> Result<(Sha256Digest, usize), &'static str> {
     let scenario_plan_json = read_bounded_regular_file(
         &evidence_directory.join("execution-bundle/scenario-plan.json"),
-        MAX_ARTIFACT_SCENARIO_PLAN_WIRE_BYTES_V1,
+        MAX_WHEEL_SCENARIO_PLAN_WIRE_BYTES_V1,
     )?;
     let scenario_template_json = read_bounded_regular_file(
         &evidence_directory.join("execution-bundle/scenario-template.json"),
-        MAX_ARTIFACT_SCENARIO_TEMPLATE_WIRE_BYTES_V1,
+        MAX_WHEEL_SCENARIO_TEMPLATE_WIRE_BYTES_V1,
     )?;
     let root_receipt_json = read_bounded_regular_file(
         &evidence_directory.join("action-root-receipt.bin"),
@@ -563,52 +589,69 @@ fn project_profile_behavior_v1(
         MAX_HOST_EXECUTION_RUN_BYTES,
     )?;
 
-    let plan = decode_and_validate_artifact_scenario_plan_v1(&scenario_plan_json)
-        .map_err(|_| "behavior_projection_scenario_plan_invalid")?;
-    let template = decode_and_validate_artifact_scenario_template_v1(&scenario_template_json)
-        .map_err(|_| "behavior_projection_scenario_template_invalid")?;
-    let expected_environment = match environment {
-        "ci_false" => NpmEnvironmentProfileV1::CiFalse,
-        "ci_true" => NpmEnvironmentProfileV1::CiTrue,
-        _ => return Err("behavior_projection_environment_invalid"),
-    };
+    let plan = decode_and_validate_wheel_scenario_plan_v1(&scenario_plan_json)
+        .map_err(|_| "wheel_behavior_projection_scenario_plan_invalid")?;
+    let template = decode_and_validate_wheel_scenario_template_v1(&scenario_template_json)
+        .map_err(|_| "wheel_behavior_projection_scenario_template_invalid")?;
+    let expected_kind = expected_kinds
+        .get(scenario_index)
+        .ok_or("wheel_behavior_projection_scenario_index_invalid")?;
+    let selected_reference = plan
+        .templates()
+        .get(scenario_index)
+        .ok_or("wheel_behavior_projection_scenario_index_invalid")?;
+    let manifest_identity = prepared
+        .normalized()
+        .manifest
+        .identity
+        .as_ref()
+        .ok_or("wheel_behavior_projection_manifest_identity_invalid")?;
     if plan.artifact_sha256() != artifact_sha256
         || plan.envelope_sha256() != envelope_sha256
         || plan.manifest_sha256() != manifest_sha256
+        || plan.policy_sha256() != template.policy_sha256()
+        || plan.templates().len() != expected_kinds.len()
+        || plan
+            .templates()
+            .iter()
+            .map(|reference| &reference.1)
+            .ne(expected_kinds.iter())
         || template.artifact_sha256() != artifact_sha256
         || template.envelope_sha256() != envelope_sha256
         || template.manifest_sha256() != manifest_sha256
         || template.artifact_byte_length() != artifact_byte_length as u64
-        || template.environment() != expected_environment
-        || !plan.templates().iter().any(|reference| {
-            reference.0 == template.scenario_id()
-                && reference.1 == expected_environment
-                && reference.2 == *template.template_sha256()
-        })
+        || template.artifact_filename() != artifact_filename
+        || template.package_normalized_name() != manifest_identity.normalized_name
+        || template.package_version() != manifest_identity.version
+        || template.runtime_target() != ArtifactRuntimeTargetV1::LinuxArm64
+        || template.scenario_id() != selected_reference.0
+        || template.scenario_kind() != expected_kind
+        || template.scenario_kind() != &selected_reference.1
+        || template.template_sha256() != &selected_reference.2
     {
-        return Err("behavior_projection_scenario_binding_mismatch");
+        return Err("wheel_behavior_projection_scenario_binding_mismatch");
     }
 
     let root_value: Value = serde_json::from_slice(&root_receipt_json)
-        .map_err(|_| "behavior_projection_root_receipt_invalid")?;
+        .map_err(|_| "wheel_behavior_projection_root_receipt_invalid")?;
     let claims = root_value
         .get("claims")
         .and_then(Value::as_object)
-        .ok_or("behavior_projection_root_receipt_invalid")?;
+        .ok_or("wheel_behavior_projection_root_receipt_invalid")?;
     let claimed_scenario_sha256 = parse_projection_digest_field(claims, "scenario_plan_sha256")?;
     if &claimed_scenario_sha256 != plan.plan_sha256() {
-        return Err("behavior_projection_scenario_binding_mismatch");
+        return Err("wheel_behavior_projection_scenario_binding_mismatch");
     }
     let process_plan_sha256 = parse_projection_digest_field(claims, "process_plan_sha256")?;
     let host_execution_run_sha256 = Sha256Digest::from_bytes(&host_execution_run_json);
     let template_value: Value = serde_json::from_slice(&scenario_template_json)
-        .map_err(|_| "behavior_projection_scenario_template_invalid")?;
+        .map_err(|_| "wheel_behavior_projection_scenario_template_invalid")?;
     let run_id = template_value
         .get("identity")
         .and_then(Value::as_object)
         .and_then(|identity| identity.get("run_id"))
         .and_then(Value::as_str)
-        .ok_or("behavior_projection_scenario_template_invalid")?;
+        .ok_or("wheel_behavior_projection_scenario_template_invalid")?;
     let bundle = project_exact_detonation_behavior_v1(ExactDetonationBehaviorProjectionInputV1 {
         artifact_sha256,
         manifest_sha256,
@@ -626,13 +669,13 @@ fn project_profile_behavior_v1(
     .map_err(|error| error.reason_code())?;
     let event_count = bundle.events().len();
     let bundle_bytes = serde_json::to_vec(&bundle)
-        .map_err(|_| "behavior_projection_bundle_serialization_failed")?;
+        .map_err(|_| "wheel_behavior_projection_bundle_serialization_failed")?;
     let bundle_sha256 = Sha256Digest::from_bytes(&bundle_bytes);
     write_new_private_file(
         &evidence_directory.join("behavior-bundle.json"),
         &bundle_bytes,
     )
-    .map_err(|_| "behavior_projection_bundle_write_failed")?;
+    .map_err(|_| "wheel_behavior_projection_bundle_write_failed")?;
     Ok((bundle_sha256, event_count))
 }
 
@@ -643,17 +686,18 @@ fn parse_projection_digest_field(
     let digest = claims
         .get(field)
         .and_then(Value::as_str)
-        .ok_or("behavior_projection_root_receipt_invalid")?;
-    Sha256Digest::parse(digest.to_string()).map_err(|_| "behavior_projection_root_receipt_invalid")
+        .ok_or("wheel_behavior_projection_root_receipt_invalid")?;
+    Sha256Digest::parse(digest.to_string())
+        .map_err(|_| "wheel_behavior_projection_root_receipt_invalid")
 }
 
 fn read_bounded_regular_file(path: &Path, maximum: usize) -> Result<Vec<u8>, &'static str> {
     let metadata =
-        fs::symlink_metadata(path).map_err(|_| "behavior_projection_evidence_unavailable")?;
+        fs::symlink_metadata(path).map_err(|_| "wheel_behavior_projection_evidence_unavailable")?;
     if !metadata.file_type().is_file() || metadata.len() == 0 || metadata.len() > maximum as u64 {
-        return Err("behavior_projection_evidence_unavailable");
+        return Err("wheel_behavior_projection_evidence_unavailable");
     }
-    fs::read(path).map_err(|_| "behavior_projection_evidence_unavailable")
+    fs::read(path).map_err(|_| "wheel_behavior_projection_evidence_unavailable")
 }
 
 fn incomplete_result(
@@ -727,7 +771,7 @@ fn create_fresh_run_root(output_root: &Path, request_sha256: &str) -> std::io::R
     }
     Err(std::io::Error::new(
         std::io::ErrorKind::AlreadyExists,
-        "unable to allocate a fresh run directory",
+        "unable to allocate fresh run root",
     ))
 }
 
@@ -742,7 +786,6 @@ fn write_new_private_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         .write(true)
         .create_new(true)
         .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(path)?;
     file.write_all(bytes)?;
     file.sync_all()

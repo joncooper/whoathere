@@ -143,7 +143,7 @@ int main(int argument_count, char **arguments) {
         "whoathere/inputs/qualified-backend.json",
         "whoathere/inputs/package-authority-request.json",
         "whoathere/inputs/execution-grant.json",
-        "whoathere/inputs/artifact.tgz",
+        "whoathere/inputs/artifact.bin",
         "whoathere/inputs/scenario-plan.json",
         "whoathere/inputs/scenario-template.json",
         "whoathere/inputs/guest-ed25519-public-key.bin",

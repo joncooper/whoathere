@@ -60,7 +60,7 @@ backend_identity="$bundle_dir/backend-identity.json"
 qualified_backend="$bundle_dir/qualified-backend.json"
 authority_request="$bundle_dir/package-authority-request.json"
 execution_grant="$bundle_dir/execution-grant.json"
-artifact="$bundle_dir/artifact.tgz"
+artifact="$bundle_dir/artifact.bin"
 scenario_plan="$bundle_dir/scenario-plan.json"
 scenario_template="$bundle_dir/scenario-template.json"
 guest_public_key="$bundle_dir/guest-ed25519-public-key.bin"
@@ -124,14 +124,40 @@ then
     echo "execution runtime manifest policy is invalid" >&2
     exit 65
 fi
-bundle_environment=$(jq -er '.environment' "$bundle_manifest")
-case "$bundle_environment" in
-    ci_false|ci_true) ;;
-    *) echo "execution bundle environment is invalid" >&2; exit 65 ;;
+bundle_schema=$(jq -er '.schema_version | select(type == "string")' "$bundle_manifest")
+case "$bundle_schema" in
+    whoathere.linux_vz_inert_npm_execution_bundle.v1)
+        bundle_environment=$(jq -er '.environment | select(type == "string")' \
+            "$bundle_manifest")
+        case "$bundle_environment" in
+            ci_false|ci_true) ;;
+            *) echo "execution bundle environment is invalid" >&2; exit 65 ;;
+        esac
+        if jq -e 'has("scenario_index")' "$bundle_manifest" >/dev/null; then
+            echo "npm execution bundle contains a wheel selector" >&2
+            exit 65
+        fi
+        expected_artifact_kind=npm_tarball
+        ;;
+    whoathere.linux_vz_inert_wheel_execution_bundle.v1)
+        bundle_scenario_index=$(jq -er \
+            '.scenario_index | select(type == "string")' "$bundle_manifest")
+        if ! printf '%s\n' "$bundle_scenario_index" | grep -Eq '^(0|[1-9][0-9]*)$'; then
+            echo "execution bundle scenario index is invalid" >&2
+            exit 65
+        fi
+        if jq -e 'has("environment")' "$bundle_manifest" >/dev/null; then
+            echo "wheel execution bundle contains an npm selector" >&2
+            exit 65
+        fi
+        expected_artifact_kind=pypi_wheel
+        ;;
+    *)
+        echo "execution bundle schema is invalid" >&2
+        exit 65
+        ;;
 esac
-if [ "$(jq -er '.schema_version' "$bundle_manifest")" != \
-     whoathere.linux_vz_inert_npm_execution_bundle.v1 ] || \
-   [ "$(jq -er '.execution_authority_issued' "$bundle_manifest")" != true ] || \
+if [ "$(jq -er '.execution_authority_issued' "$bundle_manifest")" != true ] || \
    [ "$(jq -er '.attempt_limit' "$bundle_manifest")" != 1 ] || \
    [ "$(jq -er '.public_network_route_present' "$bundle_manifest")" != false ] || \
    [ "$(jq -er '.sync_back' "$bundle_manifest")" != false ]
@@ -208,6 +234,7 @@ require_digest "$clone_binding" "$(jq -er '.clone_binding_sha256' "$bundle_manif
 require_digest "$backend_identity" "$(jq -er '.backend_identity_sha256' "$authority_request")"
 
 if [ "$(jq -er '.artifact_sha256' "$authority_request")" != "$artifact_sha256" ] || \
+   [ "$(jq -er '.artifact_kind' "$authority_request")" != "$expected_artifact_kind" ] || \
    [ "$(jq -er '.scenario_plan_sha256' "$authority_request")" != "$scenario_plan_sha256" ] || \
    [ "$(jq -er '.scenario_template_sha256' "$authority_request")" != "$scenario_template_sha256" ] || \
    [ "$(jq -er '.candidate_runtime_rootfs_sha256' "$authority_request")" != "$rootfs_sha256" ] || \
@@ -304,7 +331,7 @@ cp "$backend_identity" "$work_output/overlay/whoathere/inputs/backend-identity.j
 cp "$qualified_backend" "$work_output/overlay/whoathere/inputs/qualified-backend.json"
 cp "$authority_request" "$work_output/overlay/whoathere/inputs/package-authority-request.json"
 cp "$execution_grant" "$work_output/overlay/whoathere/inputs/execution-grant.json"
-cp "$artifact" "$work_output/overlay/whoathere/inputs/artifact.tgz"
+cp "$artifact" "$work_output/overlay/whoathere/inputs/artifact.bin"
 cp "$scenario_plan" "$work_output/overlay/whoathere/inputs/scenario-plan.json"
 cp "$scenario_template" "$work_output/overlay/whoathere/inputs/scenario-template.json"
 cp "$guest_public_key" "$work_output/overlay/whoathere/inputs/guest-ed25519-public-key.bin"
@@ -337,7 +364,7 @@ overlay="$work_output/whoathere-package-execution-overlay.cpio"
     "$work_output/overlay/whoathere/inputs/qualified-backend.json" \
     "$work_output/overlay/whoathere/inputs/package-authority-request.json" \
     "$work_output/overlay/whoathere/inputs/execution-grant.json" \
-    "$work_output/overlay/whoathere/inputs/artifact.tgz" \
+    "$work_output/overlay/whoathere/inputs/artifact.bin" \
     "$work_output/overlay/whoathere/inputs/scenario-plan.json" \
     "$work_output/overlay/whoathere/inputs/scenario-template.json" \
     "$work_output/overlay/whoathere/inputs/guest-ed25519-public-key.bin" \

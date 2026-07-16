@@ -166,7 +166,10 @@ private func linuxVzPackageAuthorityValidScenarioKind(
             && linuxVzPackageAuthorityValidText(value["module"] as? String)
             && linuxVzPackageAuthorityValidText(value["callable"] as? String)
             && linuxVzPackageAuthorityValidDigest(value["target_sha256"] as? String)
-            && value["argument_profile"] as? String == "help_only"
+            && [
+                "installed_generated_wrapper_help",
+                "installed_generated_wrapper_no_arguments"
+            ].contains(value["argument_profile"] as? String)
     case ("pypi_sdist", "build_exact_sdist"):
         guard Set(value.keys) == Set([
             "kind", "build_mode", "build_backend", "backend_paths", "build_requires_sha256"

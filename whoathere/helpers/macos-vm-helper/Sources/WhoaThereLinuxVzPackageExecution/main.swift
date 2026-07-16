@@ -33,11 +33,63 @@ private final class ExecutionProgress {
     var vmStopped = false
     var runtimeTerminal: String?
     var rawFrameEvidenceSHA256: String?
+    var artifactKind: String?
+    var scenarioSelectorKind: String?
+    var scenarioSelectorValue: String?
+}
+
+private enum PackageArtifactKind: String {
+    case npmTgz = "npm_tgz"
+    case wheel
+
+    var authorityArtifactKind: String {
+        switch self {
+        case .npmTgz: return "npm_tarball"
+        case .wheel: return "pypi_wheel"
+        }
+    }
 }
 
 private enum NpmEnvironment: String {
     case ciTrue = "ci_true"
     case ciFalse = "ci_false"
+}
+
+private enum ScenarioSelector {
+    case npmEnvironment(NpmEnvironment)
+    case wheelScenarioIndex(Int)
+
+    var builderArguments: [String] {
+        switch self {
+        case .npmEnvironment(let environment):
+            return ["--environment", environment.rawValue]
+        case .wheelScenarioIndex(let index):
+            return ["--scenario-index", String(index)]
+        }
+    }
+
+    var resultKind: String {
+        switch self {
+        case .npmEnvironment: return "environment"
+        case .wheelScenarioIndex: return "scenario_index"
+        }
+    }
+
+    var resultValue: String {
+        switch self {
+        case .npmEnvironment(let environment): return environment.rawValue
+        case .wheelScenarioIndex(let index): return String(index)
+        }
+    }
+
+    func addSpecificResultField(to result: inout [String: Any]) {
+        switch self {
+        case .npmEnvironment(let environment):
+            result["environment"] = environment.rawValue
+        case .wheelScenarioIndex(let index):
+            result["scenario_index"] = String(index)
+        }
+    }
 }
 
 private enum PackageExecutionHarnessError: Error, CustomStringConvertible {
@@ -66,7 +118,10 @@ private enum PackageExecutionHarnessError: Error, CustomStringConvertible {
 
 private struct Options {
     let artifact: URL
-    let environment: NpmEnvironment
+    let artifactEnvelope: URL?
+    let artifactManifest: URL?
+    let artifactKind: PackageArtifactKind
+    let scenarioSelector: ScenarioSelector
     let kernel: URL
     let baseInitramfs: URL
     let runtimeDirectory: URL
@@ -85,7 +140,9 @@ private struct Options {
 
     init(arguments: [String]) throws {
         let accepted = Set([
-            "--artifact", "--environment", "--kernel", "--base-initramfs",
+            "--artifact", "--artifact-envelope", "--artifact-manifest",
+            "--artifact-kind", "--environment", "--scenario-index",
+            "--kernel", "--base-initramfs",
             "--runtime-directory", "--bundle-builder",
             "--image-builder", "--backend-identity", "--qualified-backend",
             "--qualification-record", "--guest-public-key", "--host-public-key",
@@ -102,15 +159,54 @@ private struct Options {
             values[key] = arguments[index + 1]
             index += 2
         }
-        let pathArguments = accepted.subtracting(["--environment", "--timeout-seconds"])
+        let pathArguments = accepted.subtracting([
+            "--artifact-envelope", "--artifact-manifest", "--artifact-kind",
+            "--environment", "--scenario-index", "--timeout-seconds",
+        ])
         guard pathArguments.allSatisfy({ values[$0]?.hasPrefix("/") == true }),
-              let environment = values["--environment"].flatMap(NpmEnvironment.init(rawValue:)),
+              let artifactKind = values["--artifact-kind"].flatMap(
+                  PackageArtifactKind.init(rawValue:)
+              ),
               let timeout = Int(values["--timeout-seconds"] ?? "180"),
               timeout >= 30, timeout <= 600 else {
             throw PackageExecutionHarnessError.usage
         }
+        let envelopeAndManifest: (URL?, URL?)
+        switch (values["--artifact-envelope"], values["--artifact-manifest"]) {
+        case (nil, nil):
+            envelopeAndManifest = (nil, nil)
+        case (let envelope?, let manifest?)
+            where envelope.hasPrefix("/") && manifest.hasPrefix("/"):
+            envelopeAndManifest = (
+                URL(fileURLWithPath: envelope),
+                URL(fileURLWithPath: manifest)
+            )
+        default:
+            throw PackageExecutionHarnessError.usage
+        }
+        let selector: ScenarioSelector
+        switch artifactKind {
+        case .npmTgz:
+            guard values["--scenario-index"] == nil,
+                  let environment = values["--environment"].flatMap(
+                      NpmEnvironment.init(rawValue:)
+                  ) else {
+                throw PackageExecutionHarnessError.usage
+            }
+            selector = .npmEnvironment(environment)
+        case .wheel:
+            guard values["--environment"] == nil,
+                  let rawIndex = values["--scenario-index"],
+                  let index = canonicalNonnegativeInteger(rawIndex) else {
+                throw PackageExecutionHarnessError.usage
+            }
+            selector = .wheelScenarioIndex(index)
+        }
         artifact = URL(fileURLWithPath: values["--artifact"]!)
-        self.environment = environment
+        artifactEnvelope = envelopeAndManifest.0
+        artifactManifest = envelopeAndManifest.1
+        self.artifactKind = artifactKind
+        scenarioSelector = selector
         kernel = URL(fileURLWithPath: values["--kernel"]!)
         baseInitramfs = URL(fileURLWithPath: values["--base-initramfs"]!)
         runtimeDirectory = URL(
@@ -158,12 +254,15 @@ private enum PackageExecutionMain {
         let progress = ExecutionProgress()
         do {
             let options = try Options(arguments: CommandLine.arguments)
+            progress.artifactKind = options.artifactKind.rawValue
+            progress.scenarioSelectorKind = options.scenarioSelector.resultKind
+            progress.scenarioSelectorValue = options.scenarioSelector.resultValue
             let result = try run(options, progress: progress)
             emitJSON(result)
             exit(0)
         } catch PackageExecutionHarnessError.usage {
             fputs(
-                "usage: whoathere-linux-vz-package-execution --artifact PATH --environment ci_true|ci_false --kernel PATH --base-initramfs PATH --runtime-directory PATH --bundle-builder PATH --image-builder PATH --backend-identity PATH --qualified-backend PATH --qualification-record PATH --guest-public-key PATH --host-public-key PATH --grant-public-key PATH --grant-signing-seed PATH --guest-signing-seed PATH --output-directory PATH [--timeout-seconds 180]\n",
+                "usage: whoathere-linux-vz-package-execution --artifact PATH [--artifact-envelope PATH --artifact-manifest PATH] --artifact-kind npm_tgz|wheel (--environment ci_true|ci_false | --scenario-index INDEX) --kernel PATH --base-initramfs PATH --runtime-directory PATH --bundle-builder PATH --image-builder PATH --backend-identity PATH --qualified-backend PATH --qualification-record PATH --guest-public-key PATH --host-public-key PATH --grant-public-key PATH --grant-signing-seed PATH --guest-signing-seed PATH --output-directory PATH [--timeout-seconds 180]\n",
                 stderr
             )
             emitFailure(reason: "usage", exitCode: 64, progress: progress)
@@ -195,6 +294,14 @@ private enum PackageExecutionMain {
             ("guest_signing_seed", options.guestSigningSeed),
         ] where !(try regularNonSymlink(url)) {
             throw PackageExecutionHarnessError.invalidInput(name)
+        }
+        for (name, url) in [
+            ("artifact_envelope", options.artifactEnvelope),
+            ("artifact_manifest", options.artifactManifest),
+        ] {
+            if let url, !(try regularNonSymlink(url)) {
+                throw PackageExecutionHarnessError.invalidInput(name)
+            }
         }
 
         let qualifiedData = try readBoundedRegularFile(
@@ -259,21 +366,31 @@ private enum PackageExecutionMain {
             "execution-bundle", isDirectory: true
         )
         try createPrivateDirectory(bundleDirectory)
+        var bundleBuilderArguments = [
+            "--backend-identity", options.backendIdentity.path,
+            "--qualified-backend", options.qualifiedBackend.path,
+            "--qualification-record", options.qualificationRecord.path,
+            "--guest-public-key", options.guestPublicKey.path,
+            "--host-public-key", options.hostPublicKey.path,
+            "--grant-public-key", options.grantPublicKey.path,
+            "--grant-signing-seed", options.grantSigningSeed.path,
+            "--clone-binding", cloneBinding.path,
+            "--artifact", options.artifact.path,
+        ]
+        if let artifactEnvelope = options.artifactEnvelope,
+           let artifactManifest = options.artifactManifest {
+            bundleBuilderArguments.append(contentsOf: [
+                "--artifact-envelope", artifactEnvelope.path,
+                "--artifact-manifest", artifactManifest.path,
+            ])
+        }
+        bundleBuilderArguments.append(contentsOf: options.scenarioSelector.builderArguments)
+        bundleBuilderArguments.append(contentsOf: [
+            "--output-directory", bundleDirectory.path,
+        ])
         try invoke(
             options.bundleBuilder,
-            arguments: [
-                "--backend-identity", options.backendIdentity.path,
-                "--qualified-backend", options.qualifiedBackend.path,
-                "--qualification-record", options.qualificationRecord.path,
-                "--guest-public-key", options.guestPublicKey.path,
-                "--host-public-key", options.hostPublicKey.path,
-                "--grant-public-key", options.grantPublicKey.path,
-                "--grant-signing-seed", options.grantSigningSeed.path,
-                "--clone-binding", cloneBinding.path,
-                "--artifact", options.artifact.path,
-                "--environment", options.environment.rawValue,
-                "--output-directory", bundleDirectory.path,
-            ],
+            arguments: bundleBuilderArguments,
             name: "execution_bundle"
         )
         let authorityData = try readBoundedRegularFile(
@@ -284,11 +401,11 @@ private enum PackageExecutionMain {
         let grantURL = bundleDirectory.appendingPathComponent("execution-grant.json")
         let grantSHA256 = try fileSHA256(grantURL)
         let artifactSHA256 = try fileSHA256(
-            bundleDirectory.appendingPathComponent("artifact.tgz")
+            bundleDirectory.appendingPathComponent("artifact.bin")
         )
         let inputArtifactSHA256 = try fileSHA256(options.artifact)
         guard authority.cloneBindingSHA256 == clone.cloneBindingSHA256,
-              authority.artifactKind == "npm_tarball",
+              authority.artifactKind == options.artifactKind.authorityArtifactKind,
               authority.artifactSHA256 == artifactSHA256,
               artifactSHA256 == inputArtifactSHA256,
               !authority.packageExecutionAuthorityPermitted,
@@ -484,7 +601,9 @@ private enum PackageExecutionMain {
         var result: [String: Any] = [
             "schema_version": "whoathere.linux_vz_package_execution_result.v1",
             "status": runStatus,
-            "environment": options.environment.rawValue,
+            "artifact_kind": options.artifactKind.rawValue,
+            "scenario_selector_kind": options.scenarioSelector.resultKind,
+            "scenario_selector_value": options.scenarioSelector.resultValue,
             "artifact_sha256": artifactSHA256,
             "authority_request_sha256": authority.requestSHA256,
             "execution_grant_sha256": grantSHA256,
@@ -521,6 +640,7 @@ private enum PackageExecutionMain {
             "guest_execution_complete": serialEvidence.guestExecutionComplete,
             "sync_back": false,
         ]
+        options.scenarioSelector.addSpecificResultField(to: &result)
         if let reason = serialEvidence.guestFailureReason {
             result["guest_failure_reason"] = reason
         }
@@ -901,6 +1021,15 @@ private enum PackageExecutionMain {
         if let digest = progress.rawFrameEvidenceSHA256 {
             result["host_raw_frame_observation_sha256"] = digest
         }
+        if let artifactKind = progress.artifactKind {
+            result["artifact_kind"] = artifactKind
+        }
+        if let kind = progress.scenarioSelectorKind,
+           let value = progress.scenarioSelectorValue {
+            result["scenario_selector_kind"] = kind
+            result["scenario_selector_value"] = value
+            result[kind] = value
+        }
         emitJSON(result)
     }
 
@@ -910,6 +1039,16 @@ private enum PackageExecutionMain {
         ) else { return }
         print(String(decoding: data, as: UTF8.self))
     }
+}
+
+private func canonicalNonnegativeInteger(_ value: String) -> Int? {
+    guard !value.isEmpty,
+          value.utf8.allSatisfy({ $0 >= 48 && $0 <= 57 }),
+          value == "0" || !value.hasPrefix("0"),
+          let parsed = Int(value), parsed >= 0 else {
+        return nil
+    }
+    return parsed
 }
 
 private func validSHA256(_ value: String?) -> Bool {

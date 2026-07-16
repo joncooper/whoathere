@@ -66,7 +66,13 @@ import Testing
             "kind": "console_entry_point", "command_name": "wheel-tool",
             "module": "wheel_fixture.cli", "callable": "main",
             "target_sha256": sha256(Data("wheel_fixture.cli:main".utf8)),
-            "argument_profile": "help_only"
+            "argument_profile": "installed_generated_wrapper_help"
+        ],
+        [
+            "kind": "console_entry_point", "command_name": "wheel-tool",
+            "module": "wheel_fixture.cli", "callable": "main",
+            "target_sha256": sha256(Data("wheel_fixture.cli:main".utf8)),
+            "argument_profile": "installed_generated_wrapper_no_arguments"
         ],
         ["kind": "import_root", "module": "wheel_fixture"]
     ]

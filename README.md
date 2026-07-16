@@ -89,10 +89,11 @@ Avoid claims such as:
 
 Next gates before a detection-credible beta:
 
-- Add first-class PyPI wheel metadata handling and wheel detonation routing.
-- Normalize nested PyPI sdist roots before package-risk and VM planning.
-- Add package-artifact detonation for npm lifecycle hooks, including CI-gated behavior.
-- Rerun the four `safe_block` malware cases and reach at least 85% behavior-specific evidence.
+- Seal authenticated physical evidence for the existing exact npm and pure-Python wheel routes;
+  the shared VM sensor fault is recorded as `BLK-001` rather than being tuned in the current slice.
+- Complete nested PyPI sdist build-closure, derived-wheel, and trigger execution.
+- Feed completed process, file, canary, and network bundles to the observe-only Codex specialists.
+- Rerun the four prior misses, then require 11/11 behavior-specific known-regression detections.
 - Run benign controls and report hard-deny/manual-review rates.
 - Preserve the safety invariants: no host execution, no sync-back, no live C2, and no redaction
   leaks.

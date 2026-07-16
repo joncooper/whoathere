@@ -1,4 +1,5 @@
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
@@ -10,28 +11,34 @@ use whoathere_artifact::{
     NormalizationLimits, NormalizedArtifact, Sha256Digest,
 };
 use whoathere_detonation::{
-    compile_artifact_scenarios_v1, ArtifactProtectedTelemetryRequirementsV1,
-    ArtifactRuntimeTargetV1, ArtifactScenarioCompilationRequestV1,
-    ArtifactScenarioExecutionIdentityV1, ArtifactScenarioIdentitySetV1, ArtifactScenarioPolicyV1,
-    NpmEnvironmentProfileV1, NpmRuntimeProfileV1,
+    compile_wheel_scenarios_v1, expected_wheel_scenario_kinds_v1,
+    ArtifactProtectedTelemetryRequirementsV1, ArtifactRuntimeTargetV1,
+    ArtifactScenarioExecutionIdentityV1, WheelRuntimeProfileV1, WheelScenarioCompilationRequestV1,
+    WheelScenarioIdentitySetV1, WheelScenarioKindV1, WheelScenarioPolicyV1,
+    MAX_ARTIFACT_SCENARIO_BYTES_V1, MAX_EXECUTION_BUNDLE_ACTIONS_V2,
 };
 use whoathere_evidence::v2::{canonical_cas_object_key_for_artifact, ArtifactEvidenceSubjectV2};
 use whoathere_macos_vm::{
     build_macos_linux_vz_package_authority_request_v1,
+    compile_macos_linux_vz_wheel_execution_fanout_v1,
     decode_qualified_macos_linux_vz_telemetry_backend_v1,
     decode_unqualified_macos_linux_vz_telemetry_backend_identity_v1,
     sign_macos_linux_vz_package_execution_grant_v1,
     verify_macos_linux_vz_package_execution_runtime_qualification_record_v1,
     MacosLinuxVzCandidatePackageRuntimeV1, MacosLinuxVzPackageArtifactKindV1,
-    MacosLinuxVzPackageExecutionGrantContextV1,
+    MacosLinuxVzPackageExecutionGrantContextV1, MacosLinuxVzWheelExecutionFanoutRequestV1,
     MAX_MACOS_LINUX_VZ_PACKAGE_EXECUTION_RUNTIME_QUALIFICATION_RECORD_BYTES_V1,
     MAX_MACOS_LINUX_VZ_TELEMETRY_BACKEND_IDENTITY_BYTES_V1,
     MAX_MACOS_LINUX_VZ_TELEMETRY_CONFORMANCE_EVIDENCE_BYTES_V1,
 };
 use zeroize::Zeroize;
 
+const BUNDLE_SCHEMA_V1: &str = "whoathere.linux_vz_inert_wheel_execution_bundle.v1";
+const BUILD_RESULT_SCHEMA_V1: &str =
+    "whoathere.linux_vz_inert_wheel_execution_bundle_build_result.v1";
+const ARTIFACT_FILE_NAME_V1: &str = "artifact.bin";
 const GRANT_LIFETIME_SECONDS_V1: u64 = 10 * 60;
-const MAXIMUM_INPUT_BYTES_V1: u64 = 16 * 1024 * 1024;
+const MAXIMUM_INPUT_BYTES_V1: u64 = MAX_ARTIFACT_SCENARIO_BYTES_V1;
 const MAXIMUM_ARTIFACT_ENVELOPE_BYTES_V1: u64 = 1024 * 1024;
 
 #[derive(Debug)]
@@ -39,7 +46,7 @@ struct ArgumentsV1 {
     artifact: PathBuf,
     artifact_envelope: Option<PathBuf>,
     artifact_manifest: Option<PathBuf>,
-    environment: NpmEnvironmentProfileV1,
+    scenario_index: usize,
     backend_identity: PathBuf,
     qualified_backend: PathBuf,
     qualification_record: PathBuf,
@@ -67,8 +74,17 @@ struct RuntimeCloneBindingWireV1 {
 #[serde(deny_unknown_fields)]
 struct BundleManifestV1<'a> {
     schema_version: &'static str,
+    artifact_file_name: &'static str,
+    artifact_kind: MacosLinuxVzPackageArtifactKindV1,
     artifact_sha256: &'a Sha256Digest,
     artifact_byte_length: String,
+    expected_scenario_count: String,
+    scenario_index: String,
+    selected_scenario_id: &'a str,
+    selected_scenario_kind: &'a WheelScenarioKindV1,
+    selected_scenario_kind_sha256: &'a Sha256Digest,
+    expected_process_action_count: String,
+    wheel_fanout_sha256: &'a Sha256Digest,
     scenario_plan_sha256: &'a Sha256Digest,
     scenario_template_sha256: &'a Sha256Digest,
     package_authority_request_sha256: &'a Sha256Digest,
@@ -81,16 +97,33 @@ struct BundleManifestV1<'a> {
     clone_binding_sha256: &'a Sha256Digest,
     issued_at_unix_seconds: String,
     expires_at_unix_seconds: String,
-    environment: NpmEnvironmentProfileV1,
     execution_authority_issued: bool,
     attempt_limit: String,
     public_network_route_present: bool,
     sync_back: bool,
 }
 
+#[derive(Serialize)]
+#[serde(deny_unknown_fields)]
+struct BuildResultV1<'a> {
+    schema_version: &'static str,
+    artifact_file_name: &'static str,
+    artifact_kind: MacosLinuxVzPackageArtifactKindV1,
+    artifact_sha256: &'a Sha256Digest,
+    scenario_index: String,
+    selected_scenario_id: &'a str,
+    execution_authority_issued: bool,
+    execution_grant_sha256: &'a Sha256Digest,
+    execution_runtime_qualification_record_sha256: &'a Sha256Digest,
+    expires_at_unix_seconds: String,
+    package_authority_request_sha256: &'a Sha256Digest,
+    public_network_route_present: bool,
+    sync_back: bool,
+}
+
 fn main() {
     if let Err(error) = run() {
-        eprintln!("whoathere_linux_vz_inert_npm_execution_bundle_failed:{error}");
+        eprintln!("whoathere_linux_vz_inert_wheel_execution_bundle_failed:{error}");
         std::process::exit(70);
     }
 }
@@ -98,6 +131,7 @@ fn main() {
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let arguments = parse_arguments_v1()?;
     validate_empty_private_directory_v1(&arguments.output_directory)?;
+
     let requirements = ArtifactProtectedTelemetryRequirementsV1::linux_vz_bulk_v1();
     let backend_identity_bytes = read_regular_bounded_v1(
         &arguments.backend_identity,
@@ -134,6 +168,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         MacosLinuxVzCandidatePackageRuntimeV1::from_verified_execution_runtime_qualification_v1(
             &qualification,
         )?;
+
     let clone_binding_bytes = read_regular_bounded_v1(&arguments.clone_binding, 64 * 1024)?;
     let clone_binding: RuntimeCloneBindingWireV1 = serde_json::from_slice(&clone_binding_bytes)?;
     let canonical_clone_binding = serde_json_canonicalizer::to_vec(&clone_binding)?;
@@ -150,14 +185,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let clone_binding_sha256 = Sha256Digest::from_bytes(&clone_binding_bytes);
 
     let artifact_bytes = read_regular_bounded_v1(&arguments.artifact, MAXIMUM_INPUT_BYTES_V1)?;
+    let normalization_limits = NormalizationLimits::default();
     let bindings = load_artifact_bindings_v1(
         &arguments.artifact,
         arguments.artifact_envelope.as_deref(),
         arguments.artifact_manifest.as_deref(),
         &artifact_bytes,
+        normalization_limits,
     )?;
     let envelope = bindings.envelope;
     let normalized = bindings.normalized;
+    require_dependency_free_pure_wheel_v1(&normalized.manifest)?;
+
     let cas_key =
         canonical_cas_object_key_for_artifact(normalized.manifest.artifact_sha256.as_str())
             .map_err(|_| io::Error::other("artifact CAS key invalid"))?;
@@ -168,59 +207,95 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         cas_key,
     )
     .map_err(|_| io::Error::other("artifact evidence subject invalid"))?;
-    let runtime = NpmRuntimeProfileV1::new_for_target(
+    let runtime = WheelRuntimeProfileV1::new_for_target(
         ArtifactRuntimeTargetV1::LinuxArm64,
-        "linux-arm64-node24-npm11-qualified-runtime-v1",
-        qualification.node_version(),
-        qualification.node_executable_sha256().clone(),
-        qualification.npm_version(),
-        qualification.npm_cli_sha256().clone(),
+        "linux-arm64-python314-pip26-qualified-runtime-v1",
+        qualification.python_version(),
+        qualification.python_executable_sha256().clone(),
+        qualification.pip_version(),
+        qualification.pip_entrypoint_sha256().clone(),
     )?;
-    let policy = ArtifactScenarioPolicyV1::inert_qualification_only(
-        envelope.original_sha256.clone(),
-        runtime,
+    let policy =
+        WheelScenarioPolicyV1::inert_qualification_only(envelope.original_sha256.clone(), runtime)?;
+    let scenario_kinds = expected_wheel_scenario_kinds_v1(&normalized.manifest)?;
+    let expected_scenario_count = u32::try_from(scenario_kinds.len())
+        .map_err(|_| io::Error::other("wheel scenario count invalid"))?;
+    if expected_scenario_count == 0
+        || expected_scenario_count > MAX_EXECUTION_BUNDLE_ACTIONS_V2
+        || arguments.scenario_index >= scenario_kinds.len()
+    {
+        return Err(io::Error::other("wheel scenario index unavailable").into());
+    }
+    let identity_map = scenario_kinds
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(index, kind)| {
+            let ordinal = index + 1;
+            let identity = ArtifactScenarioExecutionIdentityV1::new(
+                format!("linux-vz-inert-wheel-job-{ordinal}-v1"),
+                format!("linux-vz-inert-wheel-run-{ordinal}-v1"),
+                format!("linux-vz-inert-wheel-evidence-{ordinal}-v1"),
+                format!("linux-vz-inert-wheel-scenario-{ordinal}-v1"),
+            )?;
+            Ok((kind, identity))
+        })
+        .collect::<Result<BTreeMap<_, _>, whoathere_detonation::ArtifactScenarioCompileErrorV1>>(
+        )?;
+    let identities = WheelScenarioIdentitySetV1::new(
+        "linux-vz-inert-wheel-execution-gate-plan-v1",
+        identity_map,
     )?;
-    let identities = ArtifactScenarioIdentitySetV1::new(
-        "linux-vz-inert-execution-gate-plan-v1",
-        ArtifactScenarioExecutionIdentityV1::new(
-            "linux-vz-inert-execution-gate-job-ci-false-v1",
-            "linux-vz-inert-execution-gate-run-ci-false-v1",
-            "linux-vz-inert-execution-gate-evidence-ci-false-v1",
-            "linux-vz-inert-execution-gate-scenario-ci-false-v1",
-        )?,
-        ArtifactScenarioExecutionIdentityV1::new(
-            "linux-vz-inert-execution-gate-job-ci-true-v1",
-            "linux-vz-inert-execution-gate-run-ci-true-v1",
-            "linux-vz-inert-execution-gate-evidence-ci-true-v1",
-            "linux-vz-inert-execution-gate-scenario-ci-true-v1",
-        )?,
-    )?;
-    let plan = compile_artifact_scenarios_v1(ArtifactScenarioCompilationRequestV1 {
+    let plan = compile_wheel_scenarios_v1(WheelScenarioCompilationRequestV1 {
         envelope: &envelope,
         manifest: &normalized.manifest,
         subject: &subject,
         policy: &policy,
         identities: &identities,
     })?;
+    let fanout = compile_macos_linux_vz_wheel_execution_fanout_v1(
+        MacosLinuxVzWheelExecutionFanoutRequestV1 {
+            envelope: &envelope,
+            artifact_bytes: &artifact_bytes,
+            manifest: &normalized.manifest,
+            scenario_plan: &plan,
+            expected_scenario_count,
+            normalization_limits,
+        },
+    )?;
+    let selected_action = fanout
+        .actions()
+        .get(arguments.scenario_index)
+        .ok_or_else(|| io::Error::other("wheel scenario action unavailable"))?;
+    if selected_action.scenario_kind() != &scenario_kinds[arguments.scenario_index]
+        || selected_action.action_index() as usize != arguments.scenario_index
+        || selected_action.execution_authority_issued()
+        || selected_action.public_network_route_present()
+        || selected_action.sync_back_permitted()
+    {
+        return Err(io::Error::other("wheel scenario fanout binding invalid").into());
+    }
     let plan_bytes = plan.canonical_json_v1()?;
-    let template = plan
-        .templates()
-        .iter()
-        .find(|template| template.scenario_kind().environment() == Some(arguments.environment))
-        .ok_or_else(|| io::Error::other("requested environment template unavailable"))?;
-    let template_bytes = template.canonical_json_v1()?;
+    let template_bytes = selected_action.scenario_template_canonical_json_v1();
 
     let request_challenge = random_nonzero_v1()?;
     let authority_request = build_macos_linux_vz_package_authority_request_v1(
         &qualified_backend,
-        MacosLinuxVzPackageArtifactKindV1::NpmTarball,
+        MacosLinuxVzPackageArtifactKindV1::PypiWheel,
         &artifact_bytes,
         &plan_bytes,
-        &template_bytes,
+        template_bytes,
         &candidate_runtime,
         request_challenge,
         clone_binding_sha256.clone(),
     )?;
+    if authority_request.scenario_id() != selected_action.scenario_id()
+        || authority_request.scenario_template_sha256()
+            != selected_action.scenario_template_sha256()
+    {
+        return Err(io::Error::other("wheel authority scenario binding invalid").into());
+    }
+
     let issued_at = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
     let grant_challenge = random_nonzero_v1()?;
     let attempt_binding = Sha256Digest::from_bytes(&random_nonzero_v1()?);
@@ -239,7 +314,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let expires_at = issued_at + GRANT_LIFETIME_SECONDS_V1;
 
     write_new_private_v1(
-        &arguments.output_directory.join("artifact.bin"),
+        &arguments.output_directory.join(ARTIFACT_FILE_NAME_V1),
         &artifact_bytes,
     )?;
     write_new_private_v1(
@@ -248,7 +323,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     write_new_private_v1(
         &arguments.output_directory.join("scenario-template.json"),
-        &template_bytes,
+        template_bytes,
     )?;
     write_new_private_v1(
         &arguments
@@ -298,10 +373,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .join("grant-issuer-ed25519-public-key.bin"),
         &grant_public_key,
     )?;
+
     let manifest = BundleManifestV1 {
-        schema_version: "whoathere.linux_vz_inert_npm_execution_bundle.v1",
+        schema_version: BUNDLE_SCHEMA_V1,
+        artifact_file_name: ARTIFACT_FILE_NAME_V1,
+        artifact_kind: MacosLinuxVzPackageArtifactKindV1::PypiWheel,
         artifact_sha256: authority_request.artifact_sha256(),
         artifact_byte_length: authority_request.artifact_byte_length().to_string(),
+        expected_scenario_count: expected_scenario_count.to_string(),
+        scenario_index: arguments.scenario_index.to_string(),
+        selected_scenario_id: authority_request.scenario_id(),
+        selected_scenario_kind: selected_action.scenario_kind(),
+        selected_scenario_kind_sha256: authority_request.scenario_kind_sha256(),
+        expected_process_action_count: selected_action.expected_process_action_count().to_string(),
+        wheel_fanout_sha256: fanout.fanout_sha256(),
         scenario_plan_sha256: authority_request.scenario_plan_sha256(),
         scenario_template_sha256: authority_request.scenario_template_sha256(),
         package_authority_request_sha256: authority_request.request_sha256(),
@@ -315,7 +400,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         clone_binding_sha256: &clone_binding_sha256,
         issued_at_unix_seconds: issued_at.to_string(),
         expires_at_unix_seconds: expires_at.to_string(),
-        environment: arguments.environment,
         execution_authority_issued: true,
         attempt_limit: "1".to_string(),
         public_network_route_present: false,
@@ -327,14 +411,26 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         &manifest_bytes,
     )?;
 
-    println!(
-        "{{\"artifact_sha256\":\"{}\",\"execution_authority_issued\":true,\"execution_grant_sha256\":\"{}\",\"execution_runtime_qualification_record_sha256\":\"{}\",\"expires_at_unix_seconds\":\"{}\",\"package_authority_request_sha256\":\"{}\",\"public_network_route_present\":false,\"schema_version\":\"whoathere.linux_vz_inert_npm_execution_bundle_build_result.v1\",\"sync_back\":false}}",
-        authority_request.artifact_sha256(),
-        execution_grant_sha256,
-        qualification.qualification_record_sha256(),
-        expires_at,
-        authority_request.request_sha256(),
-    );
+    let result = BuildResultV1 {
+        schema_version: BUILD_RESULT_SCHEMA_V1,
+        artifact_file_name: ARTIFACT_FILE_NAME_V1,
+        artifact_kind: MacosLinuxVzPackageArtifactKindV1::PypiWheel,
+        artifact_sha256: authority_request.artifact_sha256(),
+        scenario_index: arguments.scenario_index.to_string(),
+        selected_scenario_id: authority_request.scenario_id(),
+        execution_authority_issued: true,
+        execution_grant_sha256: &execution_grant_sha256,
+        execution_runtime_qualification_record_sha256: qualification.qualification_record_sha256(),
+        expires_at_unix_seconds: expires_at.to_string(),
+        package_authority_request_sha256: authority_request.request_sha256(),
+        public_network_route_present: false,
+        sync_back: false,
+    };
+    let result_bytes = serde_json_canonicalizer::to_vec(&result)?;
+    let mut stdout = io::stdout().lock();
+    stdout.write_all(&result_bytes)?;
+    stdout.write_all(b"\n")?;
+    stdout.flush()?;
     Ok(())
 }
 
@@ -348,13 +444,19 @@ fn load_artifact_bindings_v1(
     envelope_path: Option<&Path>,
     manifest_path: Option<&Path>,
     artifact_bytes: &[u8],
+    normalization_limits: NormalizationLimits,
 ) -> Result<ArtifactBindingsV1, io::Error> {
     match (envelope_path, manifest_path) {
         (Some(envelope_path), Some(manifest_path)) => {
             let envelope_bytes =
                 read_regular_bounded_v1(envelope_path, MAXIMUM_ARTIFACT_ENVELOPE_BYTES_V1)?;
             let manifest_bytes = read_regular_bounded_v1(manifest_path, MAXIMUM_INPUT_BYTES_V1)?;
-            validate_outer_artifact_bindings_v1(artifact_bytes, &envelope_bytes, &manifest_bytes)
+            validate_outer_artifact_bindings_v1(
+                artifact_bytes,
+                &envelope_bytes,
+                &manifest_bytes,
+                normalization_limits,
+            )
         }
         (None, None) => {
             let artifact_sha256 = Sha256Digest::from_bytes(artifact_bytes);
@@ -366,7 +468,7 @@ fn load_artifact_bindings_v1(
                 .to_string();
             let envelope = ArtifactEnvelope::from_original_bytes(
                 ArtifactEnvelopeInput {
-                    ecosystem: Ecosystem::Npm,
+                    ecosystem: Ecosystem::Pypi,
                     package_name: None,
                     package_version: None,
                     source_coordinate: format!("local-file:{artifact_sha256}"),
@@ -374,21 +476,18 @@ fn load_artifact_bindings_v1(
                     acquired_at: "2026-07-15T00:00:00Z".to_string(),
                     acquisition_method: AcquisitionMethod::LocalFileImport,
                     original_filename,
-                    declared_format: Some(ArtifactFormat::NpmTarGzip),
-                    custody_reference: "caller-supplied-local-artifact-path".to_string(),
+                    declared_format: Some(ArtifactFormat::WheelZip),
+                    custody_reference: "caller-supplied-local-wheel-path".to_string(),
                     resolver_metadata_sha256: None,
                     registry_metadata_sha256: None,
-                    policy_version: "linux-vz-inert-execution-gate.v1".to_string(),
-                    // The v1 npm execution compiler still supports only exact,
-                    // dependency-free tarballs.
+                    policy_version: "linux-vz-inert-wheel-execution-gate.v1".to_string(),
                     requires_external_dependency_resolution: false,
                 },
                 artifact_bytes,
-                ArtifactFormat::NpmTarGzip,
+                ArtifactFormat::WheelZip,
             );
-            let normalized =
-                normalize_artifact(&envelope, artifact_bytes, NormalizationLimits::default())
-                    .map_err(|_| io::Error::other("artifact normalization failed"))?;
+            let normalized = normalize_artifact(&envelope, artifact_bytes, normalization_limits)
+                .map_err(|_| io::Error::other("artifact normalization failed"))?;
             Ok(ArtifactBindingsV1 {
                 envelope,
                 normalized,
@@ -404,6 +503,7 @@ fn validate_outer_artifact_bindings_v1(
     artifact_bytes: &[u8],
     envelope_bytes: &[u8],
     manifest_bytes: &[u8],
+    normalization_limits: NormalizationLimits,
 ) -> Result<ArtifactBindingsV1, io::Error> {
     let envelope: ArtifactEnvelope = serde_json::from_slice(envelope_bytes)
         .map_err(|_| io::Error::other("artifact envelope invalid"))?;
@@ -411,8 +511,8 @@ fn validate_outer_artifact_bindings_v1(
         .canonical_json()
         .map_err(|_| io::Error::other("artifact envelope invalid"))?;
     if canonical_envelope != envelope_bytes
-        || envelope.ecosystem != Ecosystem::Npm
-        || envelope.magic_detected_format != ArtifactFormat::NpmTarGzip
+        || envelope.ecosystem != Ecosystem::Pypi
+        || envelope.magic_detected_format != ArtifactFormat::WheelZip
         || !envelope.matches_original_bytes(artifact_bytes)
     {
         return Err(io::Error::other("artifact envelope binding invalid"));
@@ -423,13 +523,13 @@ fn validate_outer_artifact_bindings_v1(
         artifact_bytes,
     )
     .map_err(|_| io::Error::other("artifact format invalid"))?;
-    if detected != ArtifactFormat::NpmTarGzip || !envelope.verify_magic_format(detected) {
+    if detected != ArtifactFormat::WheelZip || !envelope.verify_magic_format(detected) {
         return Err(io::Error::other("artifact format binding invalid"));
     }
 
     let supplied_manifest: ArtifactManifest = serde_json::from_slice(manifest_bytes)
         .map_err(|_| io::Error::other("artifact manifest invalid"))?;
-    let normalized = normalize_artifact(&envelope, artifact_bytes, NormalizationLimits::default())
+    let normalized = normalize_artifact(&envelope, artifact_bytes, normalization_limits)
         .map_err(|_| io::Error::other("artifact normalization failed"))?;
     if supplied_manifest != normalized.manifest {
         return Err(io::Error::other("artifact manifest binding invalid"));
@@ -440,11 +540,37 @@ fn validate_outer_artifact_bindings_v1(
     })
 }
 
+fn require_dependency_free_pure_wheel_v1(
+    manifest: &whoathere_artifact::ArtifactManifest,
+) -> Result<(), io::Error> {
+    if manifest.magic_detected_format != ArtifactFormat::WheelZip {
+        return Err(io::Error::other("artifact is not a wheel"));
+    }
+    let wheel = manifest
+        .metadata
+        .wheel
+        .as_ref()
+        .ok_or_else(|| io::Error::other("wheel metadata unavailable"))?;
+    if wheel.root_is_purelib != Some(true)
+        || wheel.tags.is_empty()
+        || wheel.tags.iter().any(|tag| !tag.ends_with("-none-any"))
+        || !wheel.native_tags.is_empty()
+        || !manifest.native_binary_file_ids.is_empty()
+        || !wheel.requires_dist.is_empty()
+        || !wheel.script_file_ids.is_empty()
+    {
+        return Err(io::Error::other(
+            "wheel requires dependencies, native execution, or an unsupported script surface",
+        ));
+    }
+    Ok(())
+}
+
 fn parse_arguments_v1() -> Result<ArgumentsV1, io::Error> {
     let mut arguments = std::env::args_os();
     let _program = arguments.next();
-    let mut paths = std::collections::BTreeMap::new();
-    let mut environment = None;
+    let mut paths = BTreeMap::new();
+    let mut scenario_index = None;
     while let Some(name) = arguments.next() {
         let name = name
             .into_string()
@@ -453,16 +579,12 @@ fn parse_arguments_v1() -> Result<ArgumentsV1, io::Error> {
             .next()
             .ok_or_else(|| io::Error::other("argument value missing"))?;
         match name.as_str() {
-            "--environment" => {
+            "--scenario-index" => {
                 let value = value
                     .into_string()
-                    .map_err(|_| io::Error::other("environment invalid"))?;
-                let parsed = match value.as_str() {
-                    "ci_false" => NpmEnvironmentProfileV1::CiFalse,
-                    "ci_true" => NpmEnvironmentProfileV1::CiTrue,
-                    _ => return Err(io::Error::other("environment invalid")),
-                };
-                if environment.replace(parsed).is_some() {
+                    .map_err(|_| io::Error::other("scenario index invalid"))?;
+                let parsed = parse_scenario_index_v1(&value)?;
+                if scenario_index.replace(parsed).is_some() {
                     return Err(io::Error::other("argument invalid"));
                 }
             }
@@ -507,7 +629,8 @@ fn parse_arguments_v1() -> Result<ArgumentsV1, io::Error> {
         artifact: take("--artifact")?,
         artifact_envelope,
         artifact_manifest,
-        environment: environment.ok_or_else(|| io::Error::other("environment required"))?,
+        scenario_index: scenario_index
+            .ok_or_else(|| io::Error::other("scenario index required"))?,
         backend_identity: take("--backend-identity")?,
         qualified_backend: take("--qualified-backend")?,
         qualification_record: take("--qualification-record")?,
@@ -518,6 +641,22 @@ fn parse_arguments_v1() -> Result<ArgumentsV1, io::Error> {
         clone_binding: take("--clone-binding")?,
         output_directory: take("--output-directory")?,
     })
+}
+
+fn parse_scenario_index_v1(value: &str) -> Result<usize, io::Error> {
+    if value.is_empty()
+        || (value.len() > 1 && value.starts_with('0'))
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err(io::Error::other("scenario index invalid"));
+    }
+    let parsed = value
+        .parse::<u32>()
+        .map_err(|_| io::Error::other("scenario index invalid"))?;
+    if parsed >= MAX_EXECUTION_BUNDLE_ACTIONS_V2 {
+        return Err(io::Error::other("scenario index invalid"));
+    }
+    Ok(parsed as usize)
 }
 
 fn validate_empty_private_directory_v1(path: &Path) -> Result<(), io::Error> {
@@ -598,78 +737,61 @@ fn valid_run_id_v1(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_outer_artifact_bindings_v1;
-    use flate2::write::GzEncoder;
-    use flate2::Compression;
-    use std::io::Cursor;
+    use super::{parse_scenario_index_v1, validate_outer_artifact_bindings_v1};
+    use std::io::{Cursor, Write};
     use whoathere_artifact::{
         normalize_artifact, AcquisitionMethod, ArtifactEnvelope, ArtifactEnvelopeInput,
         ArtifactFormat, ArtifactSourceType, Ecosystem, NormalizationLimits, Sha256Digest,
     };
+    use zip::write::SimpleFileOptions;
 
-    fn npm_tgz() -> Vec<u8> {
-        let encoder = GzEncoder::new(Vec::new(), Compression::default());
-        let mut archive = tar::Builder::new(encoder);
-        for (path, bytes) in [
-            (
-                "package/package.json",
-                br#"{"name":"outer-bound-fixture","version":"4.2.1","scripts":{"postinstall":"node post.js"}}"#.as_slice(),
-            ),
-            ("package/post.js", b"process.exit(0)".as_slice()),
-        ] {
-            let mut header = tar::Header::new_gnu();
-            header.set_entry_type(tar::EntryType::Regular);
-            header.set_size(bytes.len() as u64);
-            header.set_mode(0o644);
-            header.set_uid(0);
-            header.set_gid(0);
-            header.set_mtime(0);
-            header.set_cksum();
-            archive
-                .append_data(&mut header, path, Cursor::new(bytes))
-                .expect("append inert npm member");
+    #[test]
+    fn scenario_index_is_canonical_and_bounded() {
+        assert_eq!(parse_scenario_index_v1("0").expect("zero index"), 0);
+        assert_eq!(parse_scenario_index_v1("255").expect("last v2 index"), 255);
+        for invalid in ["", "00", "01", "-1", "256", "999999999999999999999"] {
+            assert!(parse_scenario_index_v1(invalid).is_err(), "{invalid}");
         }
-        archive
-            .into_inner()
-            .expect("finish inert npm tar")
-            .finish()
-            .expect("finish inert npm gzip")
     }
 
     #[test]
     fn supplied_outer_envelope_and_manifest_identities_are_preserved() {
-        let artifact_bytes = npm_tgz();
+        let artifact_bytes = wheel_zip();
         let resolver_metadata_sha256 = Sha256Digest::from_bytes(b"non-default resolver metadata");
         let registry_metadata_sha256 = Sha256Digest::from_bytes(b"non-default registry metadata");
         let envelope = ArtifactEnvelope::from_original_bytes(
             ArtifactEnvelopeInput {
-                ecosystem: Ecosystem::Npm,
-                package_name: Some("outer-bound-fixture".to_string()),
+                ecosystem: Ecosystem::Pypi,
+                package_name: Some("outer-wheel-fixture".to_string()),
                 package_version: Some("4.2.1".to_string()),
-                source_coordinate: "npm:outer-bound-fixture@4.2.1".to_string(),
+                source_coordinate: "pypi:outer-wheel-fixture==4.2.1".to_string(),
                 source_type: ArtifactSourceType::Registry,
                 acquired_at: "2026-07-16T12:34:56Z".to_string(),
                 acquisition_method: AcquisitionMethod::RegistryDownload,
-                original_filename: "outer-bound-fixture-4.2.1.tgz".to_string(),
-                declared_format: Some(ArtifactFormat::NpmTarGzip),
-                custody_reference: "outer-custody:registry-download:77".to_string(),
+                original_filename: "outer_wheel_fixture-4.2.1-py3-none-any.whl".to_string(),
+                declared_format: Some(ArtifactFormat::WheelZip),
+                custody_reference: "outer-custody:registry-download:88".to_string(),
                 resolver_metadata_sha256: Some(resolver_metadata_sha256.clone()),
                 registry_metadata_sha256: Some(registry_metadata_sha256.clone()),
                 policy_version: "outer-admission-policy.v9".to_string(),
                 requires_external_dependency_resolution: false,
             },
             &artifact_bytes,
-            ArtifactFormat::NpmTarGzip,
+            ArtifactFormat::WheelZip,
         );
-        let normalized =
-            normalize_artifact(&envelope, &artifact_bytes, NormalizationLimits::default())
-                .expect("normalize outer-bound npm fixture");
+        let normalization_limits = NormalizationLimits::default();
+        let normalized = normalize_artifact(&envelope, &artifact_bytes, normalization_limits)
+            .expect("normalize outer-bound wheel fixture");
         let envelope_bytes = envelope.canonical_json().expect("canonical envelope");
         let manifest_bytes = serde_json::to_vec(&normalized.manifest).expect("serialize manifest");
 
-        let bindings =
-            validate_outer_artifact_bindings_v1(&artifact_bytes, &envelope_bytes, &manifest_bytes)
-                .expect("validate supplied outer bindings");
+        let bindings = validate_outer_artifact_bindings_v1(
+            &artifact_bytes,
+            &envelope_bytes,
+            &manifest_bytes,
+            normalization_limits,
+        )
+        .expect("validate supplied outer bindings");
 
         assert_eq!(bindings.envelope, envelope);
         assert_eq!(
@@ -690,5 +812,89 @@ mod tests {
             Some(registry_metadata_sha256)
         );
         assert_eq!(bindings.normalized.manifest, normalized.manifest);
+    }
+
+    fn wheel_zip() -> Vec<u8> {
+        const DIST_INFO: &str = "outer_wheel_fixture-4.2.1.dist-info";
+        let members = vec![
+            (
+                format!("{DIST_INFO}/METADATA"),
+                b"Metadata-Version: 2.1\nName: outer-wheel-fixture\nVersion: 4.2.1\n\n"
+                    .to_vec(),
+            ),
+            (
+                format!("{DIST_INFO}/WHEEL"),
+                b"Wheel-Version: 1.0\nGenerator: whoathere-inert\nRoot-Is-Purelib: true\nTag: py3-none-any\n"
+                    .to_vec(),
+            ),
+            (
+                "outer_wheel_fixture/__init__.py".to_string(),
+                b"VALUE = 1\n".to_vec(),
+            ),
+        ];
+        let record_path = format!("{DIST_INFO}/RECORD");
+        let mut record = String::new();
+        for (path, bytes) in &members {
+            record.push_str(path);
+            record.push(',');
+            record.push_str(&wheel_record_hash(bytes));
+            record.push(',');
+            record.push_str(&bytes.len().to_string());
+            record.push('\n');
+        }
+        record.push_str(&record_path);
+        record.push_str(",,\n");
+
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        for (path, bytes) in members {
+            writer
+                .start_file(path, SimpleFileOptions::default())
+                .expect("start inert wheel member");
+            writer.write_all(&bytes).expect("write inert wheel member");
+        }
+        writer
+            .start_file(record_path, SimpleFileOptions::default())
+            .expect("start inert wheel RECORD");
+        writer
+            .write_all(record.as_bytes())
+            .expect("write inert wheel RECORD");
+        writer.finish().expect("finish inert wheel").into_inner()
+    }
+
+    fn wheel_record_hash(bytes: &[u8]) -> String {
+        let digest = Sha256Digest::from_bytes(bytes);
+        let digest_hex = digest
+            .as_str()
+            .strip_prefix("sha256:")
+            .expect("digest prefix");
+        let digest_bytes = digest_hex
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| {
+                u8::from_str_radix(std::str::from_utf8(pair).expect("hex utf8"), 16)
+                    .expect("hex byte")
+            })
+            .collect::<Vec<_>>();
+        format!("sha256={}", base64_url_no_pad(&digest_bytes))
+    }
+
+    fn base64_url_no_pad(bytes: &[u8]) -> String {
+        const ALPHABET: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        let mut output = String::new();
+        for chunk in bytes.chunks(3) {
+            let first = chunk[0];
+            let second = chunk.get(1).copied().unwrap_or(0);
+            let third = chunk.get(2).copied().unwrap_or(0);
+            output.push(ALPHABET[(first >> 2) as usize] as char);
+            output.push(ALPHABET[(((first & 0x03) << 4) | (second >> 4)) as usize] as char);
+            if chunk.len() > 1 {
+                output.push(ALPHABET[(((second & 0x0f) << 2) | (third >> 6)) as usize] as char);
+            }
+            if chunk.len() > 2 {
+                output.push(ALPHABET[(third & 0x3f) as usize] as char);
+            }
+        }
+        output
     }
 }

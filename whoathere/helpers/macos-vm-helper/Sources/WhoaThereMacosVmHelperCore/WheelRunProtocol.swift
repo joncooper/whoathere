@@ -538,7 +538,12 @@ private func validateWheelScenario(_ value: [String: Any]) throws -> String {
         let callable = try wheelString(value, "callable", error: .templateInvalid)
         guard wheelValidConsoleName(commandName), wheelValidPythonTarget(module),
               wheelValidPythonTarget(callable),
-              try wheelString(value, "argument_profile", error: .templateInvalid) == "help_only",
+              [
+                  "installed_generated_wrapper_help",
+                  "installed_generated_wrapper_no_arguments"
+              ].contains(
+                  try wheelString(value, "argument_profile", error: .templateInvalid)
+              ),
               try wheelDigest(value, "target_sha256", error: .templateInvalid)
                 == sha256(Data("\(module):\(callable)".utf8)) else {
             throw ArtifactRunProtocolError.templateInvalid
