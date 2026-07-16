@@ -14,11 +14,16 @@ Status: resolved on July 16, 2026. It no longer blocks npm or wheel execution.
 Resolution evidence:
 
 - the diagnostic runtime and host helper changes were rebuilt, re-signed, and requalified;
-- exact inert npm runs completed physically under both `ci_false` and `ci_true`;
-- authenticated process, file, canary, and network evidence reached typed projection;
+- the same exact inert npm tarball completed physically under both `ci_false` and `ci_true`;
+- `ci_false` did not activate protected-canary or network behavior by design, while `ci_true`
+  produced authenticated protected npm-token open/read observations and a fixed loopback TCP
+  connect that reached typed projection;
 - the physical `packaging` wheel and all eight actions of the trigger-rich wheel also completed,
   demonstrating that the former fault no longer blocks the shared npm/wheel execution path;
 - verified VM stop, clone destruction, no public route, and no sync-back held.
+
+Evidence coverage remained honestly incomplete. Resolving BLK-001 did not establish independent
+guest-root or host-composite completeness, clean eligibility, or admission eligibility.
 
 No resume experiment is required. Preserve the completed inert npm and wheel runs as regression
 fixtures; reopen this entry only if the same sensor-control failure recurs on those pinned inputs.
@@ -58,6 +63,11 @@ Required v2 boundary:
   complete projection set bidirectionally with `RunResultV2`;
 - any missing action, receipt, stream, frame, event, projection, denominator commitment, or identity
   match prevents registry generation.
+
+The July 16 npm run does not close this blocker. Authenticated positive events can be projected and
+reviewed, but the physical bundle still lacks a complete independently verified event denominator
+and complete modality coverage. Such observations remain useful for manual review; they cannot
+make an incomplete row detection-recall eligible or support clean admission.
 
 Smallest resume experiment:
 
@@ -133,6 +143,11 @@ Do not spend the current working-solution slice tuning prompts around this one f
 now consumed bounded physical process, file, network, and canary observations from disposable-VM
 runs. Revisit static prompt/pass design afterward using multiple hidden positive and benign
 controls.
+
+On July 16, the observe-only dynamic Codex panel cited authenticated protected npm-token reads and
+a loopback TCP connect from a physical behavior bundle while correctly refusing to infer
+exfiltration. This proves the dynamic telemetry-review path; it does not resolve the static-review
+miss or the evidence-completion blocker.
 
 ## BLK-005: resolved -- empty-closure sdist runtime failed before VM boot
 

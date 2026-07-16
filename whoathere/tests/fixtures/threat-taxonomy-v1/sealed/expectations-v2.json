@@ -3,7 +3,7 @@
     {
       "artifact_filename": "whoathere-fixture-npm-ci-canary-1.0.0.tgz",
       "artifact_kind": "npm_tgz",
-      "artifact_sha256": "1f164d9453c53781cac18cace8cb6be890a2d2726f1d95ec58eda542a367705c",
+      "artifact_sha256": "6d487f71d980a0ab8dc4aab303f99f9576e3d335d7cef3ab88463e87e41168ff",
       "campaign_id": "canonical-inert-fixture-v1",
       "ecosystem": "npm",
       "expected_result": "malicious",
@@ -68,7 +68,7 @@
     {
       "artifact_filename": "whoathere-fixture-npm-ci-neighbor-1.0.0.tgz",
       "artifact_kind": "npm_tgz",
-      "artifact_sha256": "6f49db0d6ec8c4ff1a189a7d65ee697e6fc2bfa20e27a2ac654da43a8c79dacb",
+      "artifact_sha256": "5fba847faa1a9e0e0764a17f3eb2afca5d21f2488e0d59ffd4eb2d6663fab8bf",
       "campaign_id": "canonical-inert-fixture-v1",
       "ecosystem": "npm",
       "expected_result": "benign",

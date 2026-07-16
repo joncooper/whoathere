@@ -4,7 +4,7 @@
 This builder deliberately emits package artifacts only. Ground-truth labels live
 in the sibling sealed/ directory and must never be copied into scanner inputs.
 The active fixtures can read only an explicitly armed fake-canary file and send
-only a constant marker to a fixed loopback UDP sinkhole.
+only a constant marker to a fixed loopback sinkhole.
 """
 
 from __future__ import annotations
@@ -105,17 +105,30 @@ def deterministic_wheel(
 def node_probe_source(active: bool) -> bytes:
     if active:
         probe_body = r'''
-  const credentialPath = path.resolve(process.env.WHOATHERE_FAKE_CREDENTIAL_PATH || "");
-  if (path.basename(credentialPath) !== "whoathere-fake-credential.txt" ||
-      !credentialPath.split(path.sep).some((part) => part.startsWith("whoathere-fixture-"))) {
-    throw new Error("fixture_fake_credential_path_refused");
+  const credentialPath = runtimeFixture
+    ? path.resolve("/run/whoathere/home/.whoathere-canaries/npm-token")
+    : path.resolve(process.env.WHOATHERE_FAKE_CREDENTIAL_PATH || "");
+  if (runtimeFixture) {
+    if (credentialPath !== "/run/whoathere/home/.whoathere-canaries/npm-token") {
+      throw new Error("fixture_runtime_canary_path_refused");
+    }
+  } else if (path.basename(credentialPath) !== "whoathere-fake-credential.txt" ||
+             !credentialPath.split(path.sep).some((part) => part.startsWith("whoathere-fixture-"))) {
+      throw new Error("fixture_fake_credential_path_refused");
   }
   const fakeCredential = fs.readFileSync(credentialPath, "utf8");
-  if (!fakeCredential.startsWith("WHOATHERE_FAKE_CANARY_V1:")) {
+  const expectedSentinel = runtimeFixture
+    ? "whoathere_fake_npm_token_v1_"
+    : "WHOATHERE_FAKE_CANARY_V1:";
+  if (!fakeCredential.startsWith(expectedSentinel)) {
     throw new Error("fixture_fake_credential_sentinel_missing");
   }
   writeMarker(outputDir, "npm_lifecycle_ci_true", true);
 '''
+        runtime_fixture_expression = (
+            'process.env.WHOATHERE_FIXTURE_ARMED === undefined && '
+            'process.env.HOME === "/run/whoathere/home"'
+        )
     else:
         probe_body = r'''
   const publicData = fs.readFileSync(path.join(__dirname, "fixture-public.txt"), "utf8");
@@ -124,12 +137,21 @@ def node_probe_source(active: bool) -> bytes:
   }
   writeMarker(outputDir, "npm_lifecycle_ci_true", false);
 '''
+        runtime_fixture_expression = "false"
     source = rf'''"use strict";
 const fs = require("fs");
 const path = require("path");
-const dgram = require("dgram");
+const net = require("net");
 
-function outputDirectory() {{
+function outputDirectory(runtimeFixture) {{
+  if (runtimeFixture) {{
+    const resolved = path.resolve(process.cwd(), ".whoathere-fixture-output");
+    if (!resolved.startsWith("/run/whoathere/work/npm/")) {{
+      throw new Error("fixture_runtime_output_path_refused");
+    }}
+    fs.mkdirSync(resolved, {{ recursive: true }});
+    return resolved;
+  }}
   const raw = process.env.WHOATHERE_FIXTURE_OUTPUT_DIR || "";
   const resolved = path.resolve(raw);
   if (!resolved.split(path.sep).some((part) => part.startsWith("whoathere-fixture-"))) {{
@@ -144,21 +166,23 @@ function writeMarker(directory, trigger, canaryTouched) {{
     schema_version: "whoathere.inert_fixture_marker.v1",
     trigger,
     canary_touched: canaryTouched,
-    network_intent: "local_sinkhole_udp",
+    network_intent: "local_sinkhole_tcp",
     destination: "127.0.0.1:48739"
   }};
   fs.writeFileSync(path.join(directory, `${{trigger}}.json`), JSON.stringify(marker) + "\n", {{ mode: 0o600 }});
 }}
 
-if (process.env.WHOATHERE_FIXTURE_ARMED === "1") {{
-  const outputDir = outputDirectory();
+const runtimeFixture = {runtime_fixture_expression};
+const fixtureArmed = process.env.WHOATHERE_FIXTURE_ARMED === "1" || runtimeFixture;
+if (fixtureArmed) {{
+  const outputDir = outputDirectory(runtimeFixture);
   if (process.env.CI !== "true") {{
     writeMarker(outputDir, "npm_lifecycle_ci_false", false);
   }} else {{
 {probe_body}
-    const socket = dgram.createSocket("udp4");
-    socket.on("error", () => socket.close());
-    socket.send(Buffer.from("WHOATHERE_INERT_SINKHOLE_INTENT_V1"), 48739, "127.0.0.1", () => socket.close());
+    const socket = net.createConnection({{ host: "127.0.0.1", port: 48739 }});
+    socket.once("connect", () => socket.end(Buffer.from("WHOATHERE_INERT_SINKHOLE_INTENT_V1")));
+    socket.once("error", () => socket.destroy());
   }}
 }}
 '''

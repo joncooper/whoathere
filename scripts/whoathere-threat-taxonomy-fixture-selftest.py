@@ -191,6 +191,35 @@ def archive_members(path: Path) -> list[str]:
     return names
 
 
+def validate_npm_physical_fixture_contract(path: Path, *, active: bool) -> None:
+    with tarfile.open(path, "r:gz") as archive:
+        source_file = archive.extractfile("package/postinstall.js")
+        require(source_file is not None, f"npm_postinstall_missing:{path.name}")
+        source = source_file.read().decode("utf-8")
+    if active:
+        require(
+            'process.env.HOME === "/run/whoathere/home"' in source,
+            "npm_physical_fixture_home_binding_missing",
+        )
+        require(
+            "/run/whoathere/home/.whoathere-canaries/npm-token" in source,
+            "npm_physical_fixture_canary_binding_missing",
+        )
+        require(
+            'resolved.startsWith("/run/whoathere/work/npm/")' in source,
+            "npm_physical_fixture_output_binding_missing",
+        )
+        require(
+            "whoathere_fake_npm_token_v1_" in source,
+            "npm_physical_fixture_canary_sentinel_missing",
+        )
+    else:
+        require(
+            "const runtimeFixture = false;" in source,
+            "npm_benign_neighbor_must_not_auto_arm",
+        )
+
+
 def minimal_environment(root: Path, *, armed: bool, ci: str = "true", fake_path: Path | None = None) -> dict[str, str]:
     home = root / "home"
     temp = root / "tmp"
@@ -240,14 +269,23 @@ def run(command: list[str], *, cwd: Path, env: dict[str, str], timeout: int = 90
     return result
 
 
-def read_marker(path: Path, expected_trigger: str, expected_canary_touched: bool) -> dict[str, Any]:
+def read_marker(
+    path: Path,
+    expected_trigger: str,
+    expected_canary_touched: bool,
+    *,
+    expected_network_intent: str = "local_sinkhole_udp",
+) -> dict[str, Any]:
     require(path.is_file(), f"marker_missing:{path.name}")
     raw = path.read_bytes()
     require(FAKE_CANARY.encode() not in raw, f"fake_canary_leaked:{path.name}")
     marker = json.loads(raw)
     require(marker.get("trigger") == expected_trigger, f"marker_trigger_invalid:{path.name}")
     require(marker.get("canary_touched") is expected_canary_touched, f"marker_canary_state_invalid:{path.name}")
-    require(marker.get("network_intent") == "local_sinkhole_udp", f"marker_network_intent_invalid:{path.name}")
+    require(
+        marker.get("network_intent") == expected_network_intent,
+        f"marker_network_intent_invalid:{path.name}",
+    )
     require(marker.get("destination") == "127.0.0.1:48739", f"marker_destination_invalid:{path.name}")
     return marker
 
@@ -275,7 +313,12 @@ def run_npm_case(artifact: Path, root: Path, *, active: bool, ci: str, fake_path
         env=env,
     )
     marker_name = "npm_lifecycle_ci_true.json" if ci == "true" else "npm_lifecycle_ci_false.json"
-    read_marker(root / "markers" / marker_name, marker_name.removesuffix(".json"), active and ci == "true")
+    read_marker(
+        root / "markers" / marker_name,
+        marker_name.removesuffix(".json"),
+        active and ci == "true",
+        expected_network_intent="local_sinkhole_tcp",
+    )
 
 
 def extract_wheel(artifact: Path, destination: Path) -> Path:
@@ -400,6 +443,11 @@ def main() -> int:
             require(artifact_a.read_bytes() == artifact_b.read_bytes(), f"fixture_bytes_not_deterministic:{filename}")
             require(item["sha256"] == expected_by_filename[filename]["artifact_sha256"], f"sealed_digest_mismatch:{filename}")
             archive_members(artifact_a)
+            if filename.startswith("whoathere-fixture-npm-ci-"):
+                validate_npm_physical_fixture_contract(
+                    artifact_a,
+                    active="-canary-" in filename,
+                )
 
         fake_root = temp / "whoathere-fixture-fake-canary"
         fake_root.mkdir()

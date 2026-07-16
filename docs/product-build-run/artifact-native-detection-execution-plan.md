@@ -54,10 +54,17 @@ macOS-hosted local detection beta. Cloudflare and AWS portability are a separate
 
 ### July 16 working checkpoint
 
-- Exact inert npm artifacts completed physically under both `CI=false` and `CI=true`. The runs used
-  the exact local tarball with lifecycle scripts enabled and produced projected process, file,
-  canary, and network evidence while preserving verified VM stop, clone destruction, no public
-  route, and no sync-back. BLK-001 is resolved and no longer blocks npm or wheel execution.
+- One exact canonical inert npm tarball completed physically under both `CI=false` and `CI=true`,
+  with lifecycle scripts enabled and no registry fallback. `CI=false` followed the expected
+  lifecycle path without canary or network activation; `CI=true` produced authenticated protected
+  `npm_token` open/read observations and a loopback TCP-connect intent to the fixed local sinkhole.
+  Both profiles preserved verified VM stop, clone destruction, stable image identity, no public
+  route, and no sync-back. Evidence coverage remains incomplete and cannot support
+  `observed_clean` or admission. BLK-001 is resolved and no longer blocks npm or wheel execution.
+- The observe-only Codex panel consumed the sanitized, digest-bound `CI=true` behavior bundle,
+  cited the canary-read and TCP-connect events, retained every coverage gap, and did not infer token
+  exfiltration or egressed content. Codex had no guest-control, containment, sync-back, or admission
+  authority.
 - A physical exact `packaging` wheel completed its install and import actions. A separate
   trigger-rich wheel normalized to eight install, `.pth`, import-root, and console-entry scenarios;
   all eight fresh-VM actions completed and produced projected behavior bundles with honest
@@ -253,7 +260,8 @@ must not delay or redefine local correctness.
 3. Rerun one purpose-built inert npm tarball under both `CI=false` and `CI=true`.
 4. Install the exact local tarball into a clean consumer project with lifecycle scripts enabled and
    no registry fallback.
-5. Require authenticated process, file, canary, and available network evidence for each profile.
+5. Require authenticated process and file evidence plus honest canary and network coverage for each
+   profile; require canary and network events only when the selected fixture branch triggers them.
 6. Require the expected inert marker only inside the disposable workspace.
 7. Require a stopped VM, destroyed clone, stable immutable images, no public route, and no
    sync-back.
@@ -331,6 +339,12 @@ qualification consumed its authenticated install-action bundle. The strict froze
 authenticated derived-wheel probe-manifest fanout, nonempty build-closure qualification, legacy
 `setup.py`, and ZIP sdists remain separate follow-on slices; this product report does not grant
 admission authority or claim clean.
+
+This is a connected observation path, not complete evidence verification. The physical npm bundle
+still reports independent guest-root receipt verification and host-composition completeness as
+unmet, and modality coverage remains incomplete. Positive evidence stays visible, but the bundle
+cannot produce a complete detection row, `observed_clean`, or admission.
+
 The current npm and wheel adapters each verify their runtime scenario plan before projection. The
 provider-neutral bundle contract does not yet carry an explicit parent inspection-plan digest, so
 supporting a new third-party detonation adapter requires adding that binding rather than trusting a
@@ -342,10 +356,11 @@ The existing code now executes the base physical npm, wheel, and PEP 517 sdist p
 bridges remain claim-critical:
 
 - **npm:** the exact adapter and shared helper preserve the same verified tarball across both CI
-  profiles. Physical `ci_false` and `ci_true` runs now complete, project authenticated process,
-  file, canary, and network evidence, and preserve verified stop, clone destruction, no public
-  route, and no sync-back. Evidence coverage remains incomplete and therefore cannot authorize an
-  `observed_clean` result.
+  profiles. The physical `ci_false` run completed without activating the canary or network branch;
+  `ci_true` generated authenticated protected `npm_token` open/read observations and fixed
+  loopback TCP-connect intent. Both preserved verified stop, clone destruction, stable image
+  identity, no public route, and no sync-back. Positive observations are available for review, but
+  broad evidence coverage remains incomplete and cannot authorize `observed_clean` or admission.
 - **wheel:** metadata-driven install, `.pth`, import-root, and console-entry-point scenario
   compilers, fixed offline process plans, the runtime-binding fanout bridge, generic physical
   `artifact.bin` packaging, shared Mac helper selection, and the exact-artifact adapter now exist.
@@ -374,10 +389,11 @@ bridges remain claim-critical:
   expansion is a two-pass discovery/probe workflow in which an authenticated derived-wheel manifest
   drives fresh `.pth`, import, and entry-point actions. Nonempty sealed build-closure qualification,
   legacy `setup.py`, and ZIP sdists remain explicit follow-on controls, never clean fallbacks.
-- **canaries:** the current root-runtime workspace classifies sensitive paths but does not yet seed
-  fake npm, PyPI, GitHub, or repository/workflow credentials. Initial inert artifact runs therefore
-  qualify trigger and evidence plumbing only. Credential and propagation claims begin only after a
-  typed canary-seeding contract and local sinkhole/shim controls are present.
+- **canaries:** the canonical npm CI fixture now uses the protected fake npm-token path inside the
+  VZ guest. The `ci_true` physical run generated authenticated open/read observations and fixed
+  loopback TCP-connect intent; `ci_false` activated neither. This proves npm canary-access and local
+  network-intent observation only. General PyPI, GitHub, repository, and workflow canary seeding,
+  proof of canary use or exfiltration, and propagation sinkhole/shim controls remain future work.
 
 These are detection-bearing gaps, so they take precedence over additional transport or protocol
 hardening unless a failing gate demonstrates a new prerequisite.
