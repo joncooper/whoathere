@@ -11,12 +11,18 @@ use crate::linux_vz_package_sensor_event_stream::LinuxVzPackageKernelEventKindV1
 use crate::linux_vz_package_sensor_process_stream::LinuxVzPackageProcessEventCorrelatorV1;
 use crate::linux_vz_package_sensor_process_stream::{
     LinuxVzPackageCorrelatedProcessObservationV1, LinuxVzPackageCorrelatedProcessStreamV1,
+    LinuxVzPackageProcessStreamErrorV1,
 };
 use crate::LinuxVzPackageProcessCompletionV1;
 use std::collections::BTreeMap;
 use std::fmt;
 #[cfg(target_os = "linux")]
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
+#[cfg(target_os = "linux")]
+use std::sync::{
+    atomic::{AtomicU8, Ordering},
+    Arc,
+};
 #[cfg(target_os = "linux")]
 use std::thread::JoinHandle;
 #[cfg(target_os = "linux")]
@@ -44,7 +50,7 @@ pub(crate) enum LinuxVzPackageRootProcessCollectorErrorV1 {
     Producer,
     ProcessProducer(LinuxVzPackageSensorBpfErrorV1),
     EgressProducer(LinuxVzPackageSensorBpfErrorV1),
-    ProcessStream,
+    ProcessStream(LinuxVzPackageProcessStreamErrorV1),
     PreReleaseEvent,
     LeaderLifecycle,
     TerminalMismatch,
@@ -68,7 +74,7 @@ impl LinuxVzPackageRootProcessCollectorErrorV1 {
             Self::EgressProducer(_) => {
                 "linux_vz_package_root_process_collector_egress_producer_failed"
             }
-            Self::ProcessStream => "linux_vz_package_root_process_collector_stream_invalid",
+            Self::ProcessStream(error) => error.reason_code(),
             Self::PreReleaseEvent => {
                 "linux_vz_package_root_process_collector_prerelease_event_rejected"
             }
@@ -85,6 +91,61 @@ impl LinuxVzPackageRootProcessCollectorErrorV1 {
         match self {
             Self::ProcessProducer(error) => Some(("process", error)),
             Self::EgressProducer(error) => Some(("egress", error)),
+            _ => None,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    const fn fault_code_v1(self) -> u8 {
+        match self {
+            Self::UnsupportedPlatform => 1,
+            Self::InvalidConfiguration => 2,
+            Self::InvalidState => 3,
+            Self::Worker => 4,
+            Self::Producer => 5,
+            Self::ProcessProducer(_) => 6,
+            Self::EgressProducer(_) => 7,
+            Self::ProcessStream(error) => match error {
+                LinuxVzPackageProcessStreamErrorV1::InvalidConfiguration => 8,
+                LinuxVzPackageProcessStreamErrorV1::InvalidState => 9,
+                LinuxVzPackageProcessStreamErrorV1::InvalidBinding => 10,
+                LinuxVzPackageProcessStreamErrorV1::InvalidSequence => 11,
+                LinuxVzPackageProcessStreamErrorV1::InvalidTimestamp => 12,
+                LinuxVzPackageProcessStreamErrorV1::InvalidPair => 13,
+                LinuxVzPackageProcessStreamErrorV1::IncompletePair => 14,
+                LinuxVzPackageProcessStreamErrorV1::UnconsumedDetail => 15,
+                LinuxVzPackageProcessStreamErrorV1::LossDetected => 16,
+                LinuxVzPackageProcessStreamErrorV1::LimitExceeded => 17,
+            },
+            Self::PreReleaseEvent => 18,
+            Self::LeaderLifecycle => 19,
+            Self::TerminalMismatch => 20,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    const fn reason_code_from_fault_code_v1(code: u8) -> Option<&'static str> {
+        match code {
+            1 => Some("linux_vz_package_root_process_collector_platform_unsupported"),
+            2 => Some("linux_vz_package_root_process_collector_configuration_invalid"),
+            3 => Some("linux_vz_package_root_process_collector_state_invalid"),
+            4 => Some("linux_vz_package_root_process_collector_worker_failed"),
+            5 => Some("linux_vz_package_root_process_collector_producer_failed"),
+            6 => Some("linux_vz_package_root_process_collector_process_producer_failed"),
+            7 => Some("linux_vz_package_root_process_collector_egress_producer_failed"),
+            8 => Some("linux_vz_package_process_stream_configuration_invalid"),
+            9 => Some("linux_vz_package_process_stream_state_invalid"),
+            10 => Some("linux_vz_package_process_stream_binding_invalid"),
+            11 => Some("linux_vz_package_process_stream_sequence_invalid"),
+            12 => Some("linux_vz_package_process_stream_timestamp_invalid"),
+            13 => Some("linux_vz_package_process_stream_syscall_pair_invalid"),
+            14 => Some("linux_vz_package_process_stream_syscall_pair_incomplete"),
+            15 => Some("linux_vz_package_process_stream_unconsumed_detail_rejected"),
+            16 => Some("linux_vz_package_process_stream_loss_detected"),
+            17 => Some("linux_vz_package_process_stream_limit_exceeded"),
+            18 => Some("linux_vz_package_root_process_collector_prerelease_event_rejected"),
+            19 => Some("linux_vz_package_root_process_collector_leader_lifecycle_invalid"),
+            20 => Some("linux_vz_package_root_process_collector_terminal_mismatch"),
             _ => None,
         }
     }
@@ -318,6 +379,7 @@ struct LinuxVzPackageRootProcessWorkerV1 {
     egress_producer: LinuxVzPackageEgressBpfProducerV1,
     correlator: LinuxVzPackageProcessEventCorrelatorV1,
     fault_signal_write: OwnedFd,
+    fault_code: Arc<AtomicU8>,
     leader_pid: Option<u32>,
     fault: Option<LinuxVzPackageRootProcessCollectorErrorV1>,
     ingested_source_event_count: u64,
@@ -337,6 +399,7 @@ pub(crate) struct LinuxVzPackageRootProcessCollectorV1 {
     online_cpus: Vec<u32>,
     attachment_cpu: u32,
     fault_signal_read: OwnedFd,
+    fault_code: Arc<AtomicU8>,
     command_sender: Option<SyncSender<LinuxVzPackageRootProcessWorkerCommandV1>>,
     worker: Option<JoinHandle<()>>,
 }
@@ -377,6 +440,8 @@ impl LinuxVzPackageRootProcessCollectorV1 {
         let (command_sender, command_receiver) = mpsc::sync_channel(1);
         let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
         let (fault_signal_read, fault_signal_write) = create_fault_signal_pipe_v1()?;
+        let fault_code = Arc::new(AtomicU8::new(0));
+        let worker_fault_code = Arc::clone(&fault_code);
         let worker = std::thread::Builder::new()
             .name("whoathere-root-process-sensor-v1".to_string())
             .spawn(move || {
@@ -386,6 +451,7 @@ impl LinuxVzPackageRootProcessCollectorV1 {
                     ring_buffer_capacity,
                     maximum_source_events,
                     fault_signal_write,
+                    worker_fault_code,
                     ready_sender,
                     command_receiver,
                 );
@@ -409,6 +475,7 @@ impl LinuxVzPackageRootProcessCollectorV1 {
             online_cpus: ready.online_cpus,
             attachment_cpu: ready.attachment_cpu,
             fault_signal_read,
+            fault_code,
             command_sender: Some(command_sender),
             worker: Some(worker),
         })
@@ -504,6 +571,15 @@ impl LinuxVzPackageRootProcessCollectorV1 {
         }
     }
 
+    pub(crate) fn fault_reason_code_v1(
+        &self,
+    ) -> Result<&'static str, LinuxVzPackageRootProcessCollectorErrorV1> {
+        LinuxVzPackageRootProcessCollectorErrorV1::reason_code_from_fault_code_v1(
+            self.fault_code.load(Ordering::Acquire),
+        )
+        .ok_or(LinuxVzPackageRootProcessCollectorErrorV1::Worker)
+    }
+
     /// Finalizes only after the protected caller has proved the cgroup empty and reaped the leader.
     pub(crate) fn finish_after_empty_cgroup_v1(
         &mut self,
@@ -588,6 +664,7 @@ fn run_linux_vz_package_root_process_worker_v1(
     ring_buffer_capacity: usize,
     maximum_source_events: usize,
     fault_signal_write: OwnedFd,
+    fault_code: Arc<AtomicU8>,
     ready_sender: SyncSender<
         Result<LinuxVzPackageRootProcessWorkerReadyV1, LinuxVzPackageRootProcessCollectorErrorV1>,
     >,
@@ -622,9 +699,9 @@ fn run_linux_vz_package_root_process_worker_v1(
         maximum_source_events,
     ) {
         Ok(correlator) => correlator,
-        Err(_) => {
+        Err(error) => {
             let _ = ready_sender.send(Err(
-                LinuxVzPackageRootProcessCollectorErrorV1::ProcessStream,
+                LinuxVzPackageRootProcessCollectorErrorV1::ProcessStream(error),
             ));
             return;
         }
@@ -641,6 +718,7 @@ fn run_linux_vz_package_root_process_worker_v1(
         egress_producer,
         correlator,
         fault_signal_write,
+        fault_code,
         leader_pid: None,
         fault: None,
         ingested_source_event_count: 0,
@@ -792,7 +870,7 @@ impl LinuxVzPackageRootProcessWorkerV1 {
             for event in events {
                 self.correlator
                     .ingest_v1(event)
-                    .map_err(|_| LinuxVzPackageRootProcessCollectorErrorV1::ProcessStream)?;
+                    .map_err(LinuxVzPackageRootProcessCollectorErrorV1::ProcessStream)?;
                 drained = drained
                     .checked_add(1)
                     .ok_or(LinuxVzPackageRootProcessCollectorErrorV1::Worker)?;
@@ -807,7 +885,9 @@ impl LinuxVzPackageRootProcessWorkerV1 {
             .dropped_event_count_v1()
             .map_err(|_| LinuxVzPackageRootProcessCollectorErrorV1::Producer)?;
         if dropped != 0 || self.producer.discarded_record_count_v1() != 0 {
-            return Err(LinuxVzPackageRootProcessCollectorErrorV1::ProcessStream);
+            return Err(LinuxVzPackageRootProcessCollectorErrorV1::ProcessStream(
+                LinuxVzPackageProcessStreamErrorV1::LossDetected,
+            ));
         }
         loop {
             let events = self
@@ -828,7 +908,9 @@ impl LinuxVzPackageRootProcessWorkerV1 {
                 .checked_add(events.len())
                 .is_none_or(|count| count > self.maximum_source_events)
             {
-                return Err(LinuxVzPackageRootProcessCollectorErrorV1::ProcessStream);
+                return Err(LinuxVzPackageRootProcessCollectorErrorV1::ProcessStream(
+                    LinuxVzPackageProcessStreamErrorV1::LimitExceeded,
+                ));
             }
             self.egress_events.extend(events);
         }
@@ -837,7 +919,9 @@ impl LinuxVzPackageRootProcessWorkerV1 {
             .dropped_event_count_v1()
             .map_err(|_| LinuxVzPackageRootProcessCollectorErrorV1::Producer)?;
         if egress_dropped != 0 || self.egress_producer.discarded_record_count_v1() != 0 {
-            return Err(LinuxVzPackageRootProcessCollectorErrorV1::ProcessStream);
+            return Err(LinuxVzPackageRootProcessCollectorErrorV1::ProcessStream(
+                LinuxVzPackageProcessStreamErrorV1::LossDetected,
+            ));
         }
         Ok(drained)
     }
@@ -867,6 +951,8 @@ impl LinuxVzPackageRootProcessWorkerV1 {
             return;
         }
         self.fault = Some(error);
+        self.fault_code
+            .store(error.fault_code_v1(), Ordering::Release);
         let marker = [1_u8];
         loop {
             let written = unsafe {
@@ -937,7 +1023,9 @@ impl LinuxVzPackageRootProcessWorkerV1 {
                 .filter(|count| *count == self.egress_events.len())
                 .is_none()
         {
-            return Err(LinuxVzPackageRootProcessCollectorErrorV1::ProcessStream);
+            return Err(LinuxVzPackageRootProcessCollectorErrorV1::ProcessStream(
+                LinuxVzPackageProcessStreamErrorV1::LossDetected,
+            ));
         }
         let stream = self
             .correlator
@@ -946,14 +1034,16 @@ impl LinuxVzPackageRootProcessWorkerV1 {
                 discarded_record_count,
                 producer_last_source_sequence,
             )
-            .map_err(|_| LinuxVzPackageRootProcessCollectorErrorV1::ProcessStream)?;
+            .map_err(LinuxVzPackageRootProcessCollectorErrorV1::ProcessStream)?;
         if stream.source_event_count_v1() != self.ingested_source_event_count
             || stream.source_event_count_v1()
                 != source_event_count_before_finish
                     .checked_add(finish_drain_event_count)
                     .ok_or(LinuxVzPackageRootProcessCollectorErrorV1::Worker)?
         {
-            return Err(LinuxVzPackageRootProcessCollectorErrorV1::ProcessStream);
+            return Err(LinuxVzPackageRootProcessCollectorErrorV1::ProcessStream(
+                LinuxVzPackageProcessStreamErrorV1::InvalidSequence,
+            ));
         }
         let terminal = validate_leader_terminal_v1(&stream, leader_pid, completion)?;
         Ok(LinuxVzPackageRootProcessCollectionV1 {
@@ -1235,7 +1325,9 @@ mod tests {
             LinuxVzPackageRootProcessCollectorErrorV1::EgressProducer(
                 LinuxVzPackageSensorBpfErrorV1::Attach,
             ),
-            LinuxVzPackageRootProcessCollectorErrorV1::ProcessStream,
+            LinuxVzPackageRootProcessCollectorErrorV1::ProcessStream(
+                LinuxVzPackageProcessStreamErrorV1::InvalidState,
+            ),
             LinuxVzPackageRootProcessCollectorErrorV1::PreReleaseEvent,
             LinuxVzPackageRootProcessCollectorErrorV1::LeaderLifecycle,
             LinuxVzPackageRootProcessCollectorErrorV1::TerminalMismatch,
@@ -1244,6 +1336,13 @@ mod tests {
         for error in errors {
             assert!(codes.insert(error.reason_code()));
             assert_eq!(error.to_string(), error.reason_code());
+            #[cfg(target_os = "linux")]
+            assert_eq!(
+                LinuxVzPackageRootProcessCollectorErrorV1::reason_code_from_fault_code_v1(
+                    error.fault_code_v1()
+                ),
+                Some(error.reason_code())
+            );
         }
         assert_eq!(
             errors[5].producer_diagnostic_v1(),

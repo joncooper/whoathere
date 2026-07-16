@@ -169,6 +169,16 @@ pub enum LinuxVzPackageSensorControlErrorV1 {
     InvalidDescriptor,
     InvalidState,
     EntropyUnavailable,
+    ProcessSensorArmFailed,
+    ProcessSensorHealthFailed,
+    ProcessSensorLeaderFailed,
+    ProcessSensorFinishFailed,
+    ProcessSensorRuntimeFault,
+    FileSensorArmFailed,
+    FileSensorHealthFailed,
+    FileSensorLeaderFailed,
+    FileSensorFinishFailed,
+    FileSensorRuntimeFault,
     SensorFault,
     Io,
 }
@@ -191,6 +201,34 @@ impl LinuxVzPackageSensorControlErrorV1 {
             Self::InvalidDescriptor => "linux_vz_package_sensor_control_descriptor_invalid",
             Self::InvalidState => "linux_vz_package_sensor_control_state_invalid",
             Self::EntropyUnavailable => "linux_vz_package_sensor_control_entropy_unavailable",
+            Self::ProcessSensorArmFailed => {
+                "linux_vz_package_sensor_control_process_sensor_arm_failed"
+            }
+            Self::ProcessSensorHealthFailed => {
+                "linux_vz_package_sensor_control_process_sensor_health_failed"
+            }
+            Self::ProcessSensorLeaderFailed => {
+                "linux_vz_package_sensor_control_process_sensor_leader_failed"
+            }
+            Self::ProcessSensorFinishFailed => {
+                "linux_vz_package_sensor_control_process_sensor_finish_failed"
+            }
+            Self::ProcessSensorRuntimeFault => {
+                "linux_vz_package_sensor_control_process_sensor_runtime_fault"
+            }
+            Self::FileSensorArmFailed => "linux_vz_package_sensor_control_file_sensor_arm_failed",
+            Self::FileSensorHealthFailed => {
+                "linux_vz_package_sensor_control_file_sensor_health_failed"
+            }
+            Self::FileSensorLeaderFailed => {
+                "linux_vz_package_sensor_control_file_sensor_leader_failed"
+            }
+            Self::FileSensorFinishFailed => {
+                "linux_vz_package_sensor_control_file_sensor_finish_failed"
+            }
+            Self::FileSensorRuntimeFault => {
+                "linux_vz_package_sensor_control_file_sensor_runtime_fault"
+            }
             Self::SensorFault => "linux_vz_package_sensor_control_sensor_fault",
             Self::Io => "linux_vz_package_sensor_control_io_failed",
         }
@@ -1122,6 +1160,9 @@ trait LinuxVzPackageRootSensorServiceCollectorV1 {
     /// when their protected collectors fault or exit unexpectedly while an action is active.
     fn fault_signal_fds_v1(&self) -> Result<Vec<RawFd>, LinuxVzPackageSensorControlErrorV1>;
 
+    /// Returns an allowlisted reason for the fault signal at the corresponding descriptor index.
+    fn fault_reason_code_v1(&self, descriptor_index: usize) -> Option<&'static str>;
+
     fn finish_v1(
         &mut self,
         context: &RootSensorServiceActionContextV1,
@@ -1227,10 +1268,23 @@ impl LinuxVzPackageRootSensorServiceCollectorV1 for LinuxVzPackageRootProcessSer
             self.ring_buffer_capacity,
             self.maximum_source_events,
         )
-        .map_err(|_| LinuxVzPackageSensorControlErrorV1::SensorFault)?;
+        .map_err(|error| {
+            if let Some((component, producer_error)) = error.producer_diagnostic_v1() {
+                eprintln!(
+                    "WHOATHERE_PACKAGE_SENSOR_FAILED stage=process_arm component={component} reason={}",
+                    producer_error.reason_code()
+                );
+            } else {
+                eprintln!(
+                    "WHOATHERE_PACKAGE_SENSOR_FAILED stage=process_arm component=collector reason={}",
+                    error.reason_code()
+                );
+            }
+            LinuxVzPackageSensorControlErrorV1::ProcessSensorArmFailed
+        })?;
         process
             .require_healthy_v1()
-            .map_err(|_| LinuxVzPackageSensorControlErrorV1::SensorFault)?;
+            .map_err(|_| LinuxVzPackageSensorControlErrorV1::ProcessSensorHealthFailed)?;
         let file = match LinuxVzPackageRootFileCollectorV1::arm_v1(
             context.cgroup_id,
             cgroup_directory,
@@ -1238,14 +1292,18 @@ impl LinuxVzPackageRootSensorServiceCollectorV1 for LinuxVzPackageRootProcessSer
             self.maximum_source_events,
         ) {
             Ok(file) => file,
-            Err(_) => {
+            Err(error) => {
+                eprintln!(
+                    "WHOATHERE_PACKAGE_SENSOR_FAILED stage=file_arm component=collector reason={}",
+                    error.reason_code()
+                );
                 process.abort_v1();
-                return Err(LinuxVzPackageSensorControlErrorV1::SensorFault);
+                return Err(LinuxVzPackageSensorControlErrorV1::FileSensorArmFailed);
             }
         };
         if file.require_healthy_v1().is_err() {
             process.abort_v1();
-            return Err(LinuxVzPackageSensorControlErrorV1::SensorFault);
+            return Err(LinuxVzPackageSensorControlErrorV1::FileSensorHealthFailed);
         }
         self.process = Some(process);
         self.file = Some(file);
@@ -1279,19 +1337,19 @@ impl LinuxVzPackageRootSensorServiceCollectorV1 for LinuxVzPackageRootProcessSer
             .as_mut()
             .ok_or(LinuxVzPackageSensorControlErrorV1::InvalidState)?;
         file.leader_attached_before_release_v1(leader_pid)
-            .map_err(|_| LinuxVzPackageSensorControlErrorV1::SensorFault)?;
+            .map_err(|_| LinuxVzPackageSensorControlErrorV1::FileSensorLeaderFailed)?;
         file.require_healthy_v1()
-            .map_err(|_| LinuxVzPackageSensorControlErrorV1::SensorFault)?;
+            .map_err(|_| LinuxVzPackageSensorControlErrorV1::FileSensorHealthFailed)?;
         let process = self
             .process
             .as_mut()
             .ok_or(LinuxVzPackageSensorControlErrorV1::InvalidState)?;
         process
             .leader_attached_before_release_v1(leader_pid)
-            .map_err(|_| LinuxVzPackageSensorControlErrorV1::SensorFault)?;
+            .map_err(|_| LinuxVzPackageSensorControlErrorV1::ProcessSensorLeaderFailed)?;
         process
             .require_healthy_v1()
-            .map_err(|_| LinuxVzPackageSensorControlErrorV1::SensorFault)?;
+            .map_err(|_| LinuxVzPackageSensorControlErrorV1::ProcessSensorHealthFailed)?;
         self.state = RootProcessServiceCollectorStateV1::LeaderAttached;
         Ok(RootSensorServiceLeaderStatusV1 {
             bpf_drop_count: 0,
@@ -1315,17 +1373,24 @@ impl LinuxVzPackageRootSensorServiceCollectorV1 for LinuxVzPackageRootProcessSer
             .as_ref()
             .ok_or(LinuxVzPackageSensorControlErrorV1::InvalidState)?
             .fault_signal_fd_v1()
-            .map_err(|_| LinuxVzPackageSensorControlErrorV1::SensorFault)?;
+            .map_err(|_| LinuxVzPackageSensorControlErrorV1::ProcessSensorHealthFailed)?;
         let file = self
             .file
             .as_ref()
             .ok_or(LinuxVzPackageSensorControlErrorV1::InvalidState)?
             .fault_signal_fd_v1()
-            .map_err(|_| LinuxVzPackageSensorControlErrorV1::SensorFault)?;
+            .map_err(|_| LinuxVzPackageSensorControlErrorV1::FileSensorHealthFailed)?;
         if process == file {
             return Err(LinuxVzPackageSensorControlErrorV1::InvalidDescriptor);
         }
         Ok(vec![process, file])
+    }
+
+    fn fault_reason_code_v1(&self, descriptor_index: usize) -> Option<&'static str> {
+        match descriptor_index {
+            0 => self.process.as_ref()?.fault_reason_code_v1().ok(),
+            _ => None,
+        }
     }
 
     fn finish_v1(
@@ -1348,7 +1413,7 @@ impl LinuxVzPackageRootSensorServiceCollectorV1 for LinuxVzPackageRootProcessSer
             .as_mut()
             .ok_or(LinuxVzPackageSensorControlErrorV1::InvalidState)?
             .finish_after_empty_cgroup_v1(leader_pid, completion)
-            .map_err(|_| LinuxVzPackageSensorControlErrorV1::SensorFault)?;
+            .map_err(|_| LinuxVzPackageSensorControlErrorV1::ProcessSensorFinishFailed)?;
         self.process.take();
         let file_collection = self
             .file
@@ -1358,7 +1423,7 @@ impl LinuxVzPackageRootSensorServiceCollectorV1 for LinuxVzPackageRootProcessSer
                 leader_pid,
                 completion.process_ended_monotonic_nanoseconds(),
             )
-            .map_err(|_| LinuxVzPackageSensorControlErrorV1::SensorFault)?;
+            .map_err(|_| LinuxVzPackageSensorControlErrorV1::FileSensorFinishFailed)?;
         self.file.take();
         let expected = LinuxVzPackageExpectedRootProcessEvidenceV1::from_action_v1(
             context.sensor_session_challenge_sha256.clone(),
@@ -1506,6 +1571,7 @@ impl Drop for RootSensorServiceSessionV1<'_, '_> {
 #[cfg(target_os = "linux")]
 pub fn run_linux_vz_package_root_sensor_service_v1<'execution>(
     control_fd: OwnedFd,
+    expected_root_runner_pid: u32,
     mut signing_authority: LinuxVzPackageRootEvidenceSigningAuthorityV1<'execution>,
     backend: &QualifiedMacosLinuxVzTelemetryBackendV1,
 ) -> Result<(), LinuxVzPackageSensorControlErrorV1> {
@@ -1516,6 +1582,7 @@ pub fn run_linux_vz_package_root_sensor_service_v1<'execution>(
     );
     serve_linux_vz_package_root_sensor_control_session_v1(
         control_fd,
+        expected_root_runner_pid,
         &mut signing_authority,
         identity,
         &mut collector,
@@ -1529,6 +1596,7 @@ pub fn run_linux_vz_package_root_sensor_service_v1<'execution>(
 #[cfg(target_os = "linux")]
 fn serve_linux_vz_package_root_sensor_control_session_v1<'execution>(
     control_fd: OwnedFd,
+    expected_root_runner_pid: u32,
     signing_authority: &mut LinuxVzPackageRootEvidenceSigningAuthorityV1<'execution>,
     identity: LinuxVzPackageRootSensorIdentityV1,
     collector: &mut dyn LinuxVzPackageRootSensorServiceCollectorV1,
@@ -1539,10 +1607,7 @@ fn serve_linux_vz_package_root_sensor_control_session_v1<'execution>(
         return Err(LinuxVzPackageSensorControlErrorV1::InvalidIdentity);
     }
     let stream = UnixStream::from(control_fd);
-    let root_runner_pid = validate_root_sensor_stream_v1(&stream)?;
-    if root_runner_pid <= 1 {
-        return Err(LinuxVzPackageSensorControlErrorV1::InvalidPeer);
-    }
+    validate_root_sensor_service_stream_v1(&stream, expected_root_runner_pid)?;
     stream
         .set_read_timeout(Some(Duration::from_secs(CONTROL_TIMEOUT_SECONDS_V1)))
         .and_then(|()| {
@@ -1556,7 +1621,7 @@ fn serve_linux_vz_package_root_sensor_control_session_v1<'execution>(
     RootSensorServiceSessionV1 {
         stream,
         identity,
-        root_runner_pid,
+        root_runner_pid: expected_root_runner_pid,
         session: None,
         next_control_sequence: 1,
         state: RootSensorServiceStateV1::AwaitingOpen,
@@ -2197,6 +2262,7 @@ impl RootSensorServiceSessionV1<'_, '_> {
         let (frame, descriptor) = receive_control_frame_with_descriptor_v1(
             &mut self.stream,
             MAX_LINUX_VZ_PACKAGE_SENSOR_CONTROL_MESSAGE_BYTES_V1,
+            self.root_runner_pid,
         )?;
         if frame.sequence() != self.next_control_sequence {
             return Err(LinuxVzPackageSensorControlErrorV1::InvalidSequence);
@@ -2253,11 +2319,34 @@ impl RootSensorServiceSessionV1<'_, '_> {
                 }
                 return Err(LinuxVzPackageSensorControlErrorV1::Io);
             }
-            if descriptors[1..]
+            let sensor_fault = descriptors[1..]
                 .iter()
-                .any(|descriptor| descriptor.revents != 0)
-            {
-                return self.handle_sensor_fault_v1();
+                .any(|descriptor| descriptor.revents != 0);
+            if sensor_fault {
+                for (index, descriptor) in descriptors[1..].iter().enumerate() {
+                    if descriptor.revents != 0 {
+                        let modality = if index == 0 { "process" } else { "file" };
+                        let reason = self
+                            .collector
+                            .fault_reason_code_v1(index)
+                            .unwrap_or("linux_vz_package_sensor_fault_reason_unavailable");
+                        eprintln!(
+                            "WHOATHERE_PACKAGE_SENSOR_FAILED stage=runtime component={modality} reason={reason}"
+                        );
+                    }
+                }
+                let error = if fault_signal_fds.len() == 2 {
+                    match (descriptors[1].revents != 0, descriptors[2].revents != 0) {
+                        (true, false) => {
+                            LinuxVzPackageSensorControlErrorV1::ProcessSensorRuntimeFault
+                        }
+                        (false, true) => LinuxVzPackageSensorControlErrorV1::FileSensorRuntimeFault,
+                        _ => LinuxVzPackageSensorControlErrorV1::SensorFault,
+                    }
+                } else {
+                    LinuxVzPackageSensorControlErrorV1::SensorFault
+                };
+                return self.handle_sensor_fault_v1(error);
             }
             if descriptors[0].revents & libc::POLLIN != 0 {
                 return self.receive_request_v1();
@@ -2268,7 +2357,10 @@ impl RootSensorServiceSessionV1<'_, '_> {
         }
     }
 
-    fn handle_sensor_fault_v1<T>(&mut self) -> Result<T, LinuxVzPackageSensorControlErrorV1> {
+    fn handle_sensor_fault_v1<T>(
+        &mut self,
+        error: LinuxVzPackageSensorControlErrorV1,
+    ) -> Result<T, LinuxVzPackageSensorControlErrorV1> {
         if let Some(active) = self.active.as_ref() {
             let _ = kill_cgroup_from_descriptor_v1(active.cgroup_directory.as_raw_fd());
         }
@@ -2281,7 +2373,7 @@ impl RootSensorServiceSessionV1<'_, '_> {
         self.active.take();
         self.state = RootSensorServiceStateV1::Aborted;
         let _ = self.stream.shutdown(std::net::Shutdown::Both);
-        Err(LinuxVzPackageSensorControlErrorV1::SensorFault)
+        Err(error)
     }
 
     fn send_json_v1<T: Serialize>(
@@ -3477,6 +3569,7 @@ fn read_virtual_file_bounded_v1(
 fn receive_control_frame_with_descriptor_v1(
     stream: &mut UnixStream,
     maximum_payload_bytes: usize,
+    expected_sender_pid: u32,
 ) -> Result<(LinuxVzPackageSensorControlFrameV1, Option<OwnedFd>), LinuxVzPackageSensorControlErrorV1>
 {
     let mut header = [0_u8; LINUX_VZ_PACKAGE_SENSOR_CONTROL_HEADER_BYTES_V1];
@@ -3506,7 +3599,7 @@ fn receive_control_frame_with_descriptor_v1(
     if received == 0 || received > header.len() {
         return Err(LinuxVzPackageSensorControlErrorV1::Io);
     }
-    let (received_descriptors, unknown_control_message) =
+    let (received_descriptors, sender_pid, unknown_control_message) =
         collect_received_descriptors_v1(&message)?;
     let invalid_control = message.msg_flags & (libc::MSG_CTRUNC | libc::MSG_TRUNC) != 0
         || unknown_control_message
@@ -3514,6 +3607,10 @@ fn receive_control_frame_with_descriptor_v1(
     if invalid_control {
         close_raw_descriptors_v1(&received_descriptors);
         return Err(LinuxVzPackageSensorControlErrorV1::InvalidDescriptor);
+    }
+    if expected_sender_pid <= 1 || sender_pid != Some(expected_sender_pid) {
+        close_raw_descriptors_v1(&received_descriptors);
+        return Err(LinuxVzPackageSensorControlErrorV1::InvalidPeer);
     }
     let descriptor = if let Some(descriptor) = received_descriptors.first().copied() {
         let flags = unsafe { libc::fcntl(descriptor, libc::F_GETFD) };
@@ -3545,8 +3642,9 @@ fn receive_control_frame_with_descriptor_v1(
 #[cfg(target_os = "linux")]
 fn collect_received_descriptors_v1(
     message: &libc::msghdr,
-) -> Result<(Vec<RawFd>, bool), LinuxVzPackageSensorControlErrorV1> {
+) -> Result<(Vec<RawFd>, Option<u32>, bool), LinuxVzPackageSensorControlErrorV1> {
     let mut descriptors = Vec::new();
+    let mut sender_pid = None;
     let mut unknown_control_message = false;
     let mut header = unsafe { libc::CMSG_FIRSTHDR(message) };
     while !header.is_null() {
@@ -3580,12 +3678,32 @@ fn collect_received_descriptors_v1(
                 }
                 descriptors.push(descriptor);
             }
+        } else if control_header.cmsg_level == libc::SOL_SOCKET
+            && control_header.cmsg_type == libc::SCM_CREDENTIALS
+        {
+            if sender_pid.is_some()
+                || control_length
+                    != unsafe { libc::CMSG_LEN(size_of::<libc::ucred>() as u32) } as usize
+            {
+                close_raw_descriptors_v1(&descriptors);
+                return Err(LinuxVzPackageSensorControlErrorV1::InvalidPeer);
+            }
+            let credentials =
+                unsafe { std::ptr::read_unaligned(libc::CMSG_DATA(header).cast::<libc::ucred>()) };
+            if credentials.uid != 0 || credentials.gid != 0 || credentials.pid <= 1 {
+                close_raw_descriptors_v1(&descriptors);
+                return Err(LinuxVzPackageSensorControlErrorV1::InvalidPeer);
+            }
+            sender_pid = Some(
+                u32::try_from(credentials.pid)
+                    .map_err(|_| LinuxVzPackageSensorControlErrorV1::InvalidPeer)?,
+            );
         } else {
             unknown_control_message = true;
         }
         header = unsafe { libc::CMSG_NXTHDR(message, header) };
     }
-    Ok((descriptors, unknown_control_message))
+    Ok((descriptors, sender_pid, unknown_control_message))
 }
 
 #[cfg(target_os = "linux")]
@@ -3597,6 +3715,52 @@ fn close_raw_descriptors_v1(descriptors: &[RawFd]) {
 
 #[cfg(target_os = "linux")]
 fn validate_root_sensor_stream_v1(
+    stream: &UnixStream,
+) -> Result<u32, LinuxVzPackageSensorControlErrorV1> {
+    let peer_pid = validate_root_sensor_stream_creator_v1(stream)?;
+    let current_pid = u32::try_from(unsafe { libc::getpid() })
+        .map_err(|_| LinuxVzPackageSensorControlErrorV1::InvalidPeer)?;
+    if peer_pid == current_pid {
+        return Err(LinuxVzPackageSensorControlErrorV1::InvalidPeer);
+    }
+    Ok(peer_pid)
+}
+
+#[cfg(target_os = "linux")]
+fn validate_root_sensor_service_stream_v1(
+    stream: &UnixStream,
+    expected_sender_pid: u32,
+) -> Result<(), LinuxVzPackageSensorControlErrorV1> {
+    let current_pid = u32::try_from(unsafe { libc::getpid() })
+        .map_err(|_| LinuxVzPackageSensorControlErrorV1::InvalidPeer)?;
+    if expected_sender_pid <= 1 || expected_sender_pid == current_pid {
+        return Err(LinuxVzPackageSensorControlErrorV1::InvalidPeer);
+    }
+    let creator_pid = validate_root_sensor_stream_creator_v1(stream)?;
+    if creator_pid != current_pid && creator_pid != expected_sender_pid {
+        return Err(LinuxVzPackageSensorControlErrorV1::InvalidPeer);
+    }
+    let mut pass_credentials: libc::c_int = 0;
+    let mut pass_credentials_length = size_of::<libc::c_int>() as libc::socklen_t;
+    if unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PASSCRED,
+            (&mut pass_credentials as *mut libc::c_int).cast(),
+            &mut pass_credentials_length,
+        )
+    } != 0
+        || pass_credentials != 1
+        || pass_credentials_length as usize != size_of::<libc::c_int>()
+    {
+        return Err(LinuxVzPackageSensorControlErrorV1::InvalidPeer);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn validate_root_sensor_stream_creator_v1(
     stream: &UnixStream,
 ) -> Result<u32, LinuxVzPackageSensorControlErrorV1> {
     let mut real_uid: libc::uid_t = 0;
@@ -3677,12 +3841,7 @@ fn validate_root_sensor_stream_v1(
         return Err(LinuxVzPackageSensorControlErrorV1::InvalidPeer);
     }
     let credentials = unsafe { credentials.assume_init() };
-    let current_pid = unsafe { libc::getpid() };
-    if credentials.uid != 0
-        || credentials.gid != 0
-        || credentials.pid <= 1
-        || credentials.pid == current_pid
-    {
+    if credentials.uid != 0 || credentials.gid != 0 || credentials.pid <= 1 {
         return Err(LinuxVzPackageSensorControlErrorV1::InvalidPeer);
     }
     u32::try_from(credentials.pid).map_err(|_| LinuxVzPackageSensorControlErrorV1::InvalidPeer)
@@ -4411,6 +4570,19 @@ mod tests {
     #[test]
     fn descriptor_receiver_preserves_frame_and_sets_close_on_exec() {
         let (mut sender, mut receiver) = UnixStream::pair().expect("socket pair");
+        let enabled: libc::c_int = 1;
+        assert_eq!(
+            unsafe {
+                libc::setsockopt(
+                    receiver.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_PASSCRED,
+                    (&enabled as *const libc::c_int).cast(),
+                    std::mem::size_of_val(&enabled) as libc::socklen_t,
+                )
+            },
+            0
+        );
         let source = File::open("/dev/null").expect("source descriptor");
         let payload = br#"{"alpha":"one","beta":"two"}"#;
         let encoded = encode_linux_vz_package_sensor_control_frame_v1(
@@ -4422,8 +4594,10 @@ mod tests {
         .expect("frame");
         send_frame_with_descriptor_v1(&mut sender, &encoded, source.as_raw_fd())
             .expect("send frame with descriptor");
+        let expected_sender_pid = u32::try_from(unsafe { libc::getpid() }).expect("sender pid");
         let (decoded, received) =
-            receive_control_frame_with_descriptor_v1(&mut receiver, 1024).expect("receive");
+            receive_control_frame_with_descriptor_v1(&mut receiver, 1024, expected_sender_pid)
+                .expect("receive");
         let received = received.expect("received descriptor");
         assert_eq!(decoded.kind(), LinuxVzPackageSensorControlFrameKindV1::Arm);
         assert_eq!(decoded.sequence(), 3);
@@ -4432,6 +4606,74 @@ mod tests {
         let flags = unsafe { libc::fcntl(received.as_raw_fd(), libc::F_GETFD) };
         assert!(flags >= 0);
         assert_ne!(flags & libc::FD_CLOEXEC, 0);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn prefork_socketpair_peer_credentials_remain_bound_to_the_creator() {
+        let (service, _runner) = UnixStream::pair().expect("socket pair");
+        let creator_pid = unsafe { libc::getpid() };
+        let child_pid = unsafe { libc::fork() };
+        assert!(child_pid >= 0);
+        if child_pid == 0 {
+            unsafe { libc::_exit(0) }
+        }
+        let mut credentials = MaybeUninit::<libc::ucred>::uninit();
+        let mut credentials_length = size_of::<libc::ucred>() as libc::socklen_t;
+        assert_eq!(
+            unsafe {
+                libc::getsockopt(
+                    service.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_PEERCRED,
+                    credentials.as_mut_ptr().cast(),
+                    &mut credentials_length,
+                )
+            },
+            0
+        );
+        let credentials = unsafe { credentials.assume_init() };
+        assert_eq!(credentials.pid, creator_pid);
+        assert_ne!(credentials.pid, child_pid);
+        let mut status = 0;
+        assert_eq!(
+            unsafe { libc::waitpid(child_pid, &mut status, 0) },
+            child_pid
+        );
+        assert!(libc::WIFEXITED(status));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn credential_bound_receiver_rejects_the_wrong_sender_pid() {
+        let (mut sender, mut receiver) = UnixStream::pair().expect("socket pair");
+        let enabled: libc::c_int = 1;
+        assert_eq!(
+            unsafe {
+                libc::setsockopt(
+                    receiver.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_PASSCRED,
+                    (&enabled as *const libc::c_int).cast(),
+                    std::mem::size_of_val(&enabled) as libc::socklen_t,
+                )
+            },
+            0
+        );
+        let encoded = encode_linux_vz_package_sensor_control_frame_v1(
+            LinuxVzPackageSensorControlFrameKindV1::OpenSession,
+            1,
+            br#"{"schema_version":"wrong-sender-fixture"}"#,
+            1024,
+        )
+        .expect("frame");
+        sender.write_all(&encoded).expect("send frame");
+        let actual_sender_pid = u32::try_from(unsafe { libc::getpid() }).expect("sender pid");
+        let wrong_sender_pid = actual_sender_pid.checked_add(1).expect("wrong sender pid");
+        assert!(matches!(
+            receive_control_frame_with_descriptor_v1(&mut receiver, 1024, wrong_sender_pid),
+            Err(LinuxVzPackageSensorControlErrorV1::InvalidPeer)
+        ));
     }
 
     #[cfg(target_os = "linux")]

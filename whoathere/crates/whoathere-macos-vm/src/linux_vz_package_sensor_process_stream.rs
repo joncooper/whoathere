@@ -348,12 +348,18 @@ impl LinuxVzPackageProcessEventCorrelatorV1 {
         let key = (event.tgid(), event.pid());
         match event.kind() {
             LinuxVzPackageKernelEventKindV1::SyscallEnter => {
-                if self.pending_syscalls.contains_key(&key) {
-                    return Err(LinuxVzPackageProcessStreamErrorV1::InvalidPair);
-                }
                 let syscall = event
                     .selected_syscall_v1()
-                    .map_err(|_| LinuxVzPackageProcessStreamErrorV1::InvalidPair)?;
+                    .map_err(|_| invalid_syscall_pair_v1("enter_syscall_invalid"))?;
+                if let Some(pending) = self.pending_syscalls.get(&key) {
+                    eprintln!(
+                        "WHOATHERE_PACKAGE_PROCESS_STREAM_FAILED stage=syscall_pair reason=duplicate_enter existing_syscall={} observed_syscall={} pending_count={}",
+                        pending.syscall.name_v1(),
+                        syscall.name_v1(),
+                        self.pending_syscalls.len()
+                    );
+                    return Err(LinuxVzPackageProcessStreamErrorV1::InvalidPair);
+                }
                 self.pending_syscalls.insert(
                     key,
                     PendingSyscallV1 {
@@ -370,13 +376,17 @@ impl LinuxVzPackageProcessEventCorrelatorV1 {
                 );
             }
             LinuxVzPackageKernelEventKindV1::SyscallExit => {
-                let pending = self
-                    .pending_syscalls
-                    .get(&key)
-                    .ok_or(LinuxVzPackageProcessStreamErrorV1::InvalidPair)?;
                 let syscall = event
                     .selected_syscall_v1()
-                    .map_err(|_| LinuxVzPackageProcessStreamErrorV1::InvalidPair)?;
+                    .map_err(|_| invalid_syscall_pair_v1("exit_syscall_invalid"))?;
+                let Some(pending) = self.pending_syscalls.get(&key) else {
+                    eprintln!(
+                        "WHOATHERE_PACKAGE_PROCESS_STREAM_FAILED stage=syscall_pair reason=exit_without_enter observed_syscall={} pending_count={}",
+                        syscall.name_v1(),
+                        self.pending_syscalls.len()
+                    );
+                    return Err(LinuxVzPackageProcessStreamErrorV1::InvalidPair);
+                };
                 if pending.syscall != syscall
                     || pending.cgroup_id != event.cgroup_id()
                     || pending.pid != event.pid()
@@ -384,15 +394,32 @@ impl LinuxVzPackageProcessEventCorrelatorV1 {
                     || pending.enter_source_sequence >= event.source_sequence()
                     || pending.enter_timestamp_nanoseconds >= event.timestamp_nanoseconds()
                 {
+                    eprintln!(
+                        "WHOATHERE_PACKAGE_PROCESS_STREAM_FAILED stage=syscall_pair reason=exit_binding_mismatch existing_syscall={} observed_syscall={} pending_count={} sequence_ordered={} timestamp_ordered={}",
+                        pending.syscall.name_v1(),
+                        syscall.name_v1(),
+                        self.pending_syscalls.len(),
+                        pending.enter_source_sequence < event.source_sequence(),
+                        pending.enter_timestamp_nanoseconds < event.timestamp_nanoseconds()
+                    );
                     return Err(LinuxVzPackageProcessStreamErrorV1::InvalidPair);
                 }
-                let result = event
-                    .result()
-                    .ok_or(LinuxVzPackageProcessStreamErrorV1::InvalidPair)?;
-                let pending = self
-                    .pending_syscalls
-                    .remove(&key)
-                    .ok_or(LinuxVzPackageProcessStreamErrorV1::InvalidPair)?;
+                let Some(result) = event.result() else {
+                    eprintln!(
+                        "WHOATHERE_PACKAGE_PROCESS_STREAM_FAILED stage=syscall_pair reason=exit_result_missing observed_syscall={} pending_count={}",
+                        syscall.name_v1(),
+                        self.pending_syscalls.len()
+                    );
+                    return Err(LinuxVzPackageProcessStreamErrorV1::InvalidPair);
+                };
+                let Some(pending) = self.pending_syscalls.remove(&key) else {
+                    eprintln!(
+                        "WHOATHERE_PACKAGE_PROCESS_STREAM_FAILED stage=syscall_pair reason=pending_remove_failed observed_syscall={} pending_count={}",
+                        syscall.name_v1(),
+                        self.pending_syscalls.len()
+                    );
+                    return Err(LinuxVzPackageProcessStreamErrorV1::InvalidPair);
+                };
                 self.observations
                     .push(LinuxVzPackageCorrelatedProcessObservationV1::Syscall(
                         LinuxVzPackageCorrelatedSyscallV1 {
@@ -481,6 +508,11 @@ impl LinuxVzPackageProcessEventCorrelatorV1 {
             observations: self.observations,
         })
     }
+}
+
+fn invalid_syscall_pair_v1(reason: &'static str) -> LinuxVzPackageProcessStreamErrorV1 {
+    eprintln!("WHOATHERE_PACKAGE_PROCESS_STREAM_FAILED stage=syscall_pair reason={reason}");
+    LinuxVzPackageProcessStreamErrorV1::InvalidPair
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

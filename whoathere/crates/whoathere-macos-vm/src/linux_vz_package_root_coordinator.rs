@@ -778,6 +778,21 @@ mod linux {
         {
             return Err(LinuxVzPackageRootCoordinatorErrorV1::ControlChannelFailed);
         }
+        let enabled: libc::c_int = 1;
+        if unsafe {
+            libc::setsockopt(
+                descriptors[0],
+                libc::SOL_SOCKET,
+                libc::SO_PASSCRED,
+                (&enabled as *const libc::c_int).cast(),
+                std::mem::size_of_val(&enabled) as libc::socklen_t,
+            )
+        } != 0
+        {
+            close_raw_v1(descriptors[0]);
+            close_raw_v1(descriptors[1]);
+            return Err(LinuxVzPackageRootCoordinatorErrorV1::ControlChannelFailed);
+        }
         Ok((descriptors[0], descriptors[1]))
     }
 

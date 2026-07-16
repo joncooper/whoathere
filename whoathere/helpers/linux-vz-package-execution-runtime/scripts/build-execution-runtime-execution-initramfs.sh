@@ -247,6 +247,9 @@ output_parent=$(CDPATH= cd -- "$output_parent" && pwd -P)
 final_output="$output_parent/$output_name"
 work_output=$(mktemp -d "$output_parent/.${output_name}.tmp.XXXXXX")
 build_root=$(mktemp -d "${TMPDIR:-/tmp}/whoathere-execution-runtime-image.XXXXXX")
+ZIG_GLOBAL_CACHE_DIR="$build_root/zig-global-cache"
+ZIG_LOCAL_CACHE_DIR="$build_root/zig-local-cache"
+export ZIG_GLOBAL_CACHE_DIR ZIG_LOCAL_CACHE_DIR
 cleanup() {
     rm -rf "$build_root"
     if [ -n "$work_output" ]; then

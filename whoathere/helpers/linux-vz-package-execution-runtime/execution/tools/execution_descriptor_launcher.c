@@ -233,12 +233,13 @@ int main(void) {
         close(log_pipe[0]);
         close(result_output);
         close(log_output);
-        for (int index = 0; index < INPUT_COUNT; index++) {
-            duplicate_for_exec(retained[index], FIRST_INPUT_FD + index);
-        }
+        /* Preserve low-numbered pipe writers before input destinations 3..14 can replace them. */
         duplicate_for_exec(result_pipe[1], RESULT_FD);
         duplicate_for_exec(log_pipe[1], STDOUT_FILENO);
         duplicate_for_exec(log_pipe[1], STDERR_FILENO);
+        for (int index = 0; index < INPUT_COUNT; index++) {
+            duplicate_for_exec(retained[index], FIRST_INPUT_FD + index);
+        }
         close_private_descriptors();
         if (chroot("/runtime") != 0 || chdir("/") != 0) {
             fail("chroot_failed");

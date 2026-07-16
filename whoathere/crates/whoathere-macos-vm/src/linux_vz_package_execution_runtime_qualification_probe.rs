@@ -176,7 +176,9 @@ pub enum LinuxVzPackageExecutionRuntimeQualificationProbeErrorV1 {
     CoordinatorFailed,
     RunnerBoundaryInvalid,
     ControlFailed,
-    SigningSeedInvalid,
+    SigningSeedReadFailed,
+    SigningSeedWeak,
+    SigningSeedPublicKeyMismatch,
     RunnerFailed,
     Empty,
     LimitExceeded,
@@ -199,8 +201,12 @@ impl LinuxVzPackageExecutionRuntimeQualificationProbeErrorV1 {
                 "linux_vz_package_execution_runtime_probe_runner_boundary_invalid"
             }
             Self::ControlFailed => "linux_vz_package_execution_runtime_probe_control_failed",
-            Self::SigningSeedInvalid => {
-                "linux_vz_package_execution_runtime_probe_signing_seed_invalid"
+            Self::SigningSeedReadFailed => {
+                "linux_vz_package_execution_runtime_probe_signing_seed_read_failed"
+            }
+            Self::SigningSeedWeak => "linux_vz_package_execution_runtime_probe_signing_seed_weak",
+            Self::SigningSeedPublicKeyMismatch => {
+                "linux_vz_package_execution_runtime_probe_signing_seed_public_key_mismatch"
             }
             Self::RunnerFailed => "linux_vz_package_execution_runtime_probe_runner_failed",
             Self::Empty => "linux_vz_package_execution_runtime_probe_empty",
@@ -443,18 +449,20 @@ fn run_service_probe_v1(
     if read_bounded_to_eof_v1(&mut control, 128)? != RUNNER_PROOF_V1 {
         return Err(LinuxVzPackageExecutionRuntimeQualificationProbeErrorV1::ControlFailed);
     }
-    let signing_seed = signing_seed
-        .read_once_v1()
-        .map_err(|_| LinuxVzPackageExecutionRuntimeQualificationProbeErrorV1::SigningSeedInvalid)?;
+    let signing_seed = signing_seed.read_once_v1().map_err(|_| {
+        LinuxVzPackageExecutionRuntimeQualificationProbeErrorV1::SigningSeedReadFailed
+    })?;
     let signing_key = ed25519_dalek::SigningKey::from_bytes(&signing_seed);
     if signing_key.verifying_key().is_weak() {
-        return Err(LinuxVzPackageExecutionRuntimeQualificationProbeErrorV1::SigningSeedInvalid);
+        return Err(LinuxVzPackageExecutionRuntimeQualificationProbeErrorV1::SigningSeedWeak);
     }
     let public_key_sha256 = Sha256Digest::from_bytes(signing_key.verifying_key().as_bytes());
     drop(signing_key);
     drop(signing_seed);
     if public_key_sha256 != *expected_public_key_sha256 {
-        return Err(LinuxVzPackageExecutionRuntimeQualificationProbeErrorV1::SigningSeedInvalid);
+        return Err(
+            LinuxVzPackageExecutionRuntimeQualificationProbeErrorV1::SigningSeedPublicKeyMismatch,
+        );
     }
     control
         .write_all(SERVICE_SEED_READ_ACK_V1)
@@ -698,5 +706,16 @@ mod tests {
                 Err(LinuxVzPackageExecutionRuntimeQualificationProbeErrorV1::UnsupportedPlatform)
             );
         }
+    }
+
+    #[test]
+    fn signing_seed_failures_have_distinct_reason_codes() {
+        let read = LinuxVzPackageExecutionRuntimeQualificationProbeErrorV1::SigningSeedReadFailed;
+        let weak = LinuxVzPackageExecutionRuntimeQualificationProbeErrorV1::SigningSeedWeak;
+        let mismatch =
+            LinuxVzPackageExecutionRuntimeQualificationProbeErrorV1::SigningSeedPublicKeyMismatch;
+        assert_ne!(read.reason_code(), weak.reason_code());
+        assert_ne!(read.reason_code(), mismatch.reason_code());
+        assert_ne!(weak.reason_code(), mismatch.reason_code());
     }
 }

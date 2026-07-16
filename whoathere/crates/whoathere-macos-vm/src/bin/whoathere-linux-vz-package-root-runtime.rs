@@ -35,6 +35,7 @@ mod linux {
         run_linux_vz_package_root_runtime_execution_v1,
         structurally_decode_macos_linux_vz_package_authority_request_v1,
         write_linux_vz_package_root_runtime_result_v1,
+        LinuxVzPackageExecutionRuntimeQualificationProbeErrorV1, LinuxVzPackageRootRuntimeErrorV1,
         MacosLinuxVzPackageExecutionRuntimeGrantBindingsV1,
         MacosLinuxVzPackageExecutionRuntimeGrantVerifierV1,
         MAX_MACOS_LINUX_VZ_PACKAGE_AUTHORITY_REQUEST_BYTES_V1,
@@ -74,10 +75,10 @@ mod linux {
         BackendInvalid,
         AuthorityRequestInvalid,
         RuntimeIdentityInvalid,
-        QualificationFailed,
+        QualificationFailed(LinuxVzPackageExecutionRuntimeQualificationProbeErrorV1),
         GrantInvalid,
         PreparationFailed,
-        ExecutionFailed,
+        ExecutionFailed(LinuxVzPackageRootRuntimeErrorV1),
         ResultFailed,
         OutputFailed,
     }
@@ -98,10 +99,10 @@ mod linux {
                     "linux_vz_package_root_runtime_authority_request_invalid"
                 }
                 Self::RuntimeIdentityInvalid => "linux_vz_package_root_runtime_identity_invalid",
-                Self::QualificationFailed => "linux_vz_package_root_runtime_qualification_failed",
+                Self::QualificationFailed(error) => error.reason_code(),
                 Self::GrantInvalid => "linux_vz_package_root_runtime_grant_invalid",
                 Self::PreparationFailed => "linux_vz_package_root_runtime_preparation_failed",
-                Self::ExecutionFailed => "linux_vz_package_root_runtime_execution_failed",
+                Self::ExecutionFailed(error) => error.reason_code(),
                 Self::ResultFailed => "linux_vz_package_root_runtime_result_failed",
                 Self::OutputFailed => "linux_vz_package_root_runtime_output_failed",
             }
@@ -114,11 +115,11 @@ mod linux {
                 | Self::BackendInvalid
                 | Self::AuthorityRequestInvalid
                 | Self::RuntimeIdentityInvalid
-                | Self::QualificationFailed
+                | Self::QualificationFailed(_)
                 | Self::GrantInvalid
                 | Self::PreparationFailed => 65,
                 Self::PrivilegeBoundary | Self::DescriptorBoundary => 77,
-                Self::ExecutionFailed => 70,
+                Self::ExecutionFailed(_) => 70,
                 Self::ResultFailed | Self::OutputFailed => 74,
             }
         }
@@ -263,7 +264,7 @@ mod linux {
             artifact,
             build_closure,
         )
-        .map_err(|_| RuntimeEntrypointErrorV1::ExecutionFailed)?;
+        .map_err(RuntimeEntrypointErrorV1::ExecutionFailed)?;
         write_linux_vz_package_root_runtime_result_v1(&mut result_output, &result)
             .map_err(|_| RuntimeEntrypointErrorV1::ResultFailed)?;
         let mut serial = std::io::stdout().lock();
@@ -303,7 +304,7 @@ mod linux {
             runtime_sha256,
             &expected_public_key_sha256,
         )
-        .map_err(|_| RuntimeEntrypointErrorV1::QualificationFailed)?;
+        .map_err(RuntimeEntrypointErrorV1::QualificationFailed)?;
         let mut stdout = std::io::stdout().lock();
         stdout
             .write_all(b"WHOATHERE_PACKAGE_EXECUTION_RUNTIME_QUALIFICATION_EVIDENCE ")

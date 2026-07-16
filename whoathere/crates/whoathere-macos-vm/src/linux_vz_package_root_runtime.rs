@@ -10,9 +10,10 @@ use crate::{
     derive_macos_linux_vz_package_execution_process_plan_v1,
     derive_macos_linux_vz_package_execution_program_v1,
     structurally_decode_macos_linux_vz_package_execution_request_v1,
-    LinuxVzPackageExecutionSequenceTerminalV1, MacosLinuxVzPackageAuthorityRequestV1,
-    MacosLinuxVzPackageExecutionGrantObservationV1, MacosLinuxVzPackageExecutionProcessPlanV1,
-    MacosLinuxVzPackageExecutionRequestAuthorizerV1, MacosLinuxVzPackageExecutionRequestV1,
+    LinuxVzPackageExecutionSequenceTerminalV1, LinuxVzPackageSensorControlErrorV1,
+    MacosLinuxVzPackageAuthorityRequestV1, MacosLinuxVzPackageExecutionGrantObservationV1,
+    MacosLinuxVzPackageExecutionProcessPlanV1, MacosLinuxVzPackageExecutionRequestAuthorizerV1,
+    MacosLinuxVzPackageExecutionRequestV1,
 };
 #[cfg(any(target_os = "linux", test))]
 use crate::{
@@ -71,7 +72,7 @@ pub enum LinuxVzPackageRootRuntimeErrorV1 {
     CustodyBoundaryInvalid,
     SigningAuthorityFailed,
     InputHandoffFailed,
-    SensorServiceFailed,
+    SensorServiceFailed(LinuxVzPackageSensorControlErrorV1),
     SensorObserverFailed,
     SequenceFailed,
     ResultInvalid,
@@ -100,7 +101,7 @@ impl LinuxVzPackageRootRuntimeErrorV1 {
                 "linux_vz_package_root_runtime_signing_authority_failed"
             }
             Self::InputHandoffFailed => "linux_vz_package_root_runtime_input_handoff_failed",
-            Self::SensorServiceFailed => "linux_vz_package_root_runtime_sensor_service_failed",
+            Self::SensorServiceFailed(error) => error.reason_code(),
             Self::SensorObserverFailed => "linux_vz_package_root_runtime_sensor_observer_failed",
             Self::SequenceFailed => "linux_vz_package_root_runtime_sequence_failed",
             Self::ResultInvalid => "linux_vz_package_root_runtime_result_invalid",
@@ -658,9 +659,11 @@ mod linux {
             return Err(LinuxVzPackageRootRuntimeErrorV1::InputHandoffFailed);
         }
         let control_fd = control.into();
-        if run_linux_vz_package_root_sensor_service_v1(control_fd, authority, backend).is_err() {
+        if let Err(error) =
+            run_linux_vz_package_root_sensor_service_v1(control_fd, runner_pid, authority, backend)
+        {
             terminate_and_reap_v1(runner_pid);
-            return Err(LinuxVzPackageRootRuntimeErrorV1::SensorServiceFailed);
+            return Err(LinuxVzPackageRootRuntimeErrorV1::SensorServiceFailed(error));
         }
         let mut result_reader = File::from(result_reader);
         let result = read_execution_result_v1(&mut result_reader, &prepared);
