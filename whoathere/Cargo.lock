@@ -561,7 +561,11 @@ dependencies = [
 name = "whoathere-cli"
 version = "0.1.0"
 dependencies = [
+ "flate2",
+ "serde_json",
+ "tar",
  "whoathere-admission",
+ "whoathere-artifact",
  "whoathere-audit",
  "whoathere-cache",
  "whoathere-core",
@@ -678,12 +682,17 @@ name = "whoathere-runner"
 version = "0.1.0"
 dependencies = [
  "flate2",
+ "libc",
+ "serde",
+ "serde_json",
  "tar",
  "whoathere-artifact",
  "whoathere-cache",
  "whoathere-detector",
+ "whoathere-detonation",
  "whoathere-evidence",
  "whoathere-hash",
+ "zip",
 ]
 
 [[package]]

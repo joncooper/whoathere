@@ -96,6 +96,7 @@ pub enum ArtifactSourceType {
 pub enum AcquisitionMethod {
     RegistryDownload,
     ApprovedCustodyImport,
+    LocalFileImport,
     LocalInertFixture,
 }
 
@@ -319,6 +320,9 @@ impl ArtifactEnvelope {
                 AcquisitionMethod::ApprovedCustodyImport
             ) | (
                 ArtifactSourceType::LocalFile,
+                AcquisitionMethod::LocalFileImport
+            ) | (
+                ArtifactSourceType::LocalFile,
                 AcquisitionMethod::LocalInertFixture
             )
         );
@@ -326,6 +330,15 @@ impl ArtifactEnvelope {
             return Err(ArtifactModelError::InvalidContract(
                 "artifact source type and acquisition method disagree".to_string(),
             ));
+        }
+        if self.acquisition_method == AcquisitionMethod::LocalFileImport {
+            let expected = format!("local-file:{}", self.original_sha256);
+            if self.source_coordinate != expected {
+                return Err(ArtifactModelError::InvalidContract(
+                    "local file import coordinate must bind the original artifact digest"
+                        .to_string(),
+                ));
+            }
         }
         if self.original_byte_length == 0 {
             return Err(ArtifactModelError::InvalidContract(
@@ -1165,6 +1178,48 @@ mod tests {
                 serde_json::Value::String("declared_mismatch".to_string()),
             );
         assert!(serde_json::from_value::<ArtifactEnvelope>(forged_corroboration).is_err());
+    }
+
+    #[test]
+    fn generic_local_file_import_does_not_claim_inert_or_approved_custody() {
+        let mut local = input();
+        local.source_coordinate = format!(
+            "local-file:{}",
+            Sha256Digest::from_bytes(b"arbitrary local package")
+        );
+        local.acquisition_method = AcquisitionMethod::LocalFileImport;
+        let envelope = ArtifactEnvelope::from_original_bytes(
+            local,
+            b"arbitrary local package",
+            ArtifactFormat::NpmTarGzip,
+        );
+        assert!(envelope.validate().is_ok());
+        assert_eq!(envelope.source_type, ArtifactSourceType::LocalFile);
+        assert_eq!(
+            envelope.acquisition_method,
+            AcquisitionMethod::LocalFileImport
+        );
+
+        let mut forged = envelope.clone();
+        forged.source_type = ArtifactSourceType::ApprovedCustody;
+        assert!(forged.validate().is_err());
+
+        let mut wrong_digest = envelope.clone();
+        wrong_digest.source_coordinate = format!(
+            "local-file:{}",
+            Sha256Digest::from_bytes(b"different local package")
+        );
+        assert!(wrong_digest.validate().is_err());
+        let wrong_digest_wire =
+            serde_json::to_value(&wrong_digest).expect("serialize wrong-digest local import");
+        assert!(serde_json::from_value::<ArtifactEnvelope>(wrong_digest_wire).is_err());
+
+        let mut registry_like = envelope;
+        registry_like.source_coordinate = "npm:trusted@1.0.0".to_string();
+        assert!(registry_like.validate().is_err());
+        let registry_like_wire =
+            serde_json::to_value(&registry_like).expect("serialize registry-like local import");
+        assert!(serde_json::from_value::<ArtifactEnvelope>(registry_like_wire).is_err());
     }
 
     #[test]

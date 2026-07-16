@@ -1,3 +1,7 @@
+mod exact_artifact;
+
+pub use exact_artifact::*;
+
 use whoathere_artifact::{
     detect_artifact_format, normalize_artifact, ArtifactEnvelope, ArtifactEnvelopeInput,
     NormalizationError, NormalizationLimits, NormalizedArtifact,

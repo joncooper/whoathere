@@ -41,7 +41,11 @@ use whoathere_policy::{
     evaluate_source_policy, outage_decision, parse_policy_document, NamespaceOwnership,
     NamespaceRule, PolicyDecision, PolicyDocument, SourceKind,
 };
-use whoathere_runner::{execute_readonly, plan_protected_execution, ExecutionDecision};
+use whoathere_runner::{
+    canonical_utc_timestamp_from_unix_seconds_v1, execute_readonly, inspect_exact_artifact_v1,
+    plan_protected_execution, ExactArtifactInspectionErrorV1, ExactArtifactInspectionRequestV1,
+    ExecutionDecision,
+};
 use whoathere_sandbox::{
     admit_linux_active_probe_receipt, admit_linux_active_probe_receipt_with_replay_decision,
     evaluate_configured_vault_egress, linux_active_probe_fixture_evidence,
@@ -80,6 +84,19 @@ pub struct CommandResult {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
+    ArtifactInspectMissingPath,
+    ArtifactInspectInvalidOptions {
+        reason_code: &'static str,
+    },
+    ArtifactInspect {
+        path: String,
+        ecosystem: Option<String>,
+        state_dir: Option<String>,
+        acquired_at: Option<String>,
+        ai_review: bool,
+        ai_provider: Option<String>,
+        detonation: bool,
+    },
     Doctor {
         json: bool,
         state_dir: Option<String>,
@@ -517,9 +534,106 @@ fn set_executable(_path: &std::path::Path) -> std::io::Result<()> {
     Ok(())
 }
 
+fn parse_exact_artifact_inspect(args: &[String]) -> Command {
+    let Some(path) = args.first() else {
+        return Command::ArtifactInspectMissingPath;
+    };
+    if path.is_empty() || path.starts_with("--") {
+        return Command::ArtifactInspectMissingPath;
+    }
+
+    let mut ecosystem = None;
+    let mut state_dir = None;
+    let mut acquired_at = None;
+    let mut ai_provider = None;
+    let mut ai_review = false;
+    let mut detonation = false;
+    let mut seen = std::collections::BTreeSet::new();
+    let mut index = 1;
+    while index < args.len() {
+        let argument = args[index].as_str();
+        let (flag, inline_value) = match argument.split_once('=') {
+            Some((flag, value)) => (flag, Some(value)),
+            None => (argument, None),
+        };
+        match flag {
+            "--ai-review" | "--detonation" => {
+                if inline_value.is_some() {
+                    return Command::ArtifactInspectInvalidOptions {
+                        reason_code: "exact_artifact_option_malformed",
+                    };
+                }
+                if !seen.insert(flag) {
+                    return Command::ArtifactInspectInvalidOptions {
+                        reason_code: "exact_artifact_option_duplicate",
+                    };
+                }
+                if flag == "--ai-review" {
+                    ai_review = true;
+                } else {
+                    detonation = true;
+                }
+                index += 1;
+            }
+            "--ecosystem" | "--state-dir" | "--acquired-at" | "--ai-provider" => {
+                if !seen.insert(flag) {
+                    return Command::ArtifactInspectInvalidOptions {
+                        reason_code: "exact_artifact_option_duplicate",
+                    };
+                }
+                let value = match inline_value {
+                    Some(value) if !value.is_empty() => value.to_string(),
+                    Some(_) => {
+                        return Command::ArtifactInspectInvalidOptions {
+                            reason_code: "exact_artifact_option_value_required",
+                        }
+                    }
+                    None => match args.get(index + 1) {
+                        Some(value) if !value.is_empty() && !value.starts_with("--") => {
+                            index += 1;
+                            value.clone()
+                        }
+                        _ => {
+                            return Command::ArtifactInspectInvalidOptions {
+                                reason_code: "exact_artifact_option_value_required",
+                            }
+                        }
+                    },
+                };
+                match flag {
+                    "--ecosystem" => ecosystem = Some(value),
+                    "--state-dir" => state_dir = Some(value),
+                    "--acquired-at" => acquired_at = Some(value),
+                    "--ai-provider" => ai_provider = Some(value),
+                    _ => unreachable!("matched exact artifact value option"),
+                }
+                index += 1;
+            }
+            _ => {
+                return Command::ArtifactInspectInvalidOptions {
+                    reason_code: "exact_artifact_option_unknown",
+                }
+            }
+        }
+    }
+
+    Command::ArtifactInspect {
+        path: path.clone(),
+        ecosystem,
+        state_dir,
+        acquired_at,
+        ai_review,
+        ai_provider,
+        detonation,
+    }
+}
+
 pub fn parse_command(args: &[String]) -> Command {
     match args {
         [] => Command::Help,
+        [cmd, sub, rest @ ..] if cmd == "artifact" && sub == "inspect" => {
+            parse_exact_artifact_inspect(rest)
+        }
         [cmd, rest @ ..] if cmd == "doctor" => Command::Doctor {
             json: rest.iter().any(|arg| arg == "--json"),
             state_dir: parse_flag_value(rest, "--state-dir"),
@@ -797,6 +911,30 @@ pub fn evaluate_command(command: Command) -> CommandResult {
 
 fn render_command_text(command: Command) -> String {
     match command {
+        Command::ArtifactInspectMissingPath => {
+            ExactArtifactInspectionErrorV1::invalid_request("exact_artifact_path_required")
+                .to_pretty_json()
+        }
+        Command::ArtifactInspectInvalidOptions { reason_code } => {
+            ExactArtifactInspectionErrorV1::invalid_request(reason_code).to_pretty_json()
+        }
+        Command::ArtifactInspect {
+            path,
+            ecosystem,
+            state_dir,
+            acquired_at,
+            ai_review,
+            ai_provider,
+            detonation,
+        } => render_exact_artifact_inspect(ExactArtifactInspectArgs {
+            path: &path,
+            ecosystem: ecosystem.as_deref(),
+            state_dir: state_dir.as_deref(),
+            acquired_at: acquired_at.as_deref(),
+            ai_review,
+            ai_provider: ai_provider.as_deref(),
+            detonation,
+        }),
         Command::Doctor {
             json,
             state_dir,
@@ -1417,6 +1555,7 @@ fn render_command_text(command: Command) -> String {
 fn command_help() -> String {
     concat!(
         "whoathere <",
+        "artifact inspect <npm.tgz|package.whl|package.tar.gz|package.zip> [--ecosystem auto|npm|pypi] [--state-dir <dir>] [--acquired-at <YYYY-MM-DDTHH:MM:SSZ>] [--ai-review --ai-provider claude|codex] [--detonation]|",
         "doctor [--json] [--state-dir <dir>] [--helper <path>]",
         "|status",
         "|config check <path>",
@@ -1444,7 +1583,7 @@ fn command_help() -> String {
         "|scanners bootstrap-plan [--json]",
         "|scanners run --workspace <path> [--ecosystem auto|npm|pypi] [--state-dir <dir>] [--timeout-seconds <n>] [--execute] [--json]",
         "|intake assess --workspace <path> [--ecosystem auto|npm|pypi|uv] [--state-dir <dir>] [--helper <path>] [--scanner-receipt <path>] [--no-ai-review|--ai-review --ai-provider ollama --ai-model <model> --ai-timeout-seconds <n>] [--timeout-seconds <n>] [--execute] [--json] npm|pip|uv -- <args>",
-        "|package-risk assess --workspace <path> [--ecosystem auto|npm|pypi|uv] [--state-dir <dir>] [--scanner-receipt <path>] [--ai-review --ai-provider ollama --ai-model <model> --ai-timeout-seconds <n>] [--json]",
+        "|package-risk assess --workspace <path> [--ecosystem auto|npm|pypi|uv] [--state-dir <dir>] [--scanner-receipt <path>] [--ai-review --ai-provider ollama --ai-model <model> --ai-timeout-seconds <n>] [--json] (legacy loose-workspace path; not exact-artifact inspection)",
         "|package-risk history --package <name> --ecosystem <npm|pypi|uv> [--state-dir <dir>] [--json]",
         "|package-risk approve --receipt <path> --reason <text> [--state-dir <dir>] [--json]",
         "|source scan <kind> <path> --vault-origin <url>",
@@ -1469,7 +1608,133 @@ fn command_help() -> String {
     .to_string()
 }
 
+struct ExactArtifactInspectArgs<'a> {
+    path: &'a str,
+    ecosystem: Option<&'a str>,
+    state_dir: Option<&'a str>,
+    acquired_at: Option<&'a str>,
+    ai_review: bool,
+    ai_provider: Option<&'a str>,
+    detonation: bool,
+}
+
+fn render_exact_artifact_inspect(args: ExactArtifactInspectArgs<'_>) -> String {
+    let ecosystem = match args.ecosystem {
+        None | Some("auto") => None,
+        Some("npm") => Some(whoathere_artifact::Ecosystem::Npm),
+        Some("pypi") | Some("pip") | Some("python") => Some(whoathere_artifact::Ecosystem::Pypi),
+        Some(_) => {
+            return ExactArtifactInspectionErrorV1::invalid_request(
+                "exact_artifact_ecosystem_invalid",
+            )
+            .to_pretty_json()
+        }
+    };
+    let ai_provider = match (args.ai_review, args.ai_provider) {
+        (false, None) => None,
+        (false, Some(_)) => {
+            return ExactArtifactInspectionErrorV1::invalid_request(
+                "exact_artifact_ai_review_flag_required",
+            )
+            .to_pretty_json()
+        }
+        (true, Some(provider @ ("claude" | "codex"))) => Some(provider),
+        (true, None) => {
+            return ExactArtifactInspectionErrorV1::invalid_request(
+                "exact_artifact_ai_provider_required",
+            )
+            .to_pretty_json()
+        }
+        (true, Some(_)) => {
+            return ExactArtifactInspectionErrorV1::invalid_request(
+                "exact_artifact_ai_provider_invalid",
+            )
+            .to_pretty_json()
+        }
+    };
+    let current_timestamp;
+    let acquired_at = match args.acquired_at {
+        Some(value) if looks_like_canonical_utc_seconds(value) => value,
+        Some(_) => {
+            return ExactArtifactInspectionErrorV1::invalid_request(
+                "exact_artifact_acquired_at_invalid",
+            )
+            .to_pretty_json()
+        }
+        None => {
+            let unix_seconds = match SystemTime::now().duration_since(UNIX_EPOCH) {
+                Ok(duration) => duration.as_secs(),
+                Err(_) => {
+                    return ExactArtifactInspectionErrorV1::invalid_request(
+                        "exact_artifact_system_time_invalid",
+                    )
+                    .to_pretty_json()
+                }
+            };
+            current_timestamp = match canonical_utc_timestamp_from_unix_seconds_v1(unix_seconds) {
+                Ok(value) => value,
+                Err(error) => return error.to_pretty_json(),
+            };
+            current_timestamp.as_str()
+        }
+    };
+    let state_root = args
+        .state_dir
+        .map(PathBuf::from)
+        .unwrap_or_else(|| default_state_dir().with_file_name("artifact-inspection"));
+    if std::fs::create_dir_all(&state_root).is_err() {
+        return ExactArtifactInspectionErrorV1::invalid_request(
+            "exact_artifact_state_dir_unavailable",
+        )
+        .to_pretty_json();
+    }
+    let quarantine_root = state_root.join("quarantine-cas-v1");
+    let request = ExactArtifactInspectionRequestV1 {
+        artifact_path: Path::new(args.path),
+        quarantine_root: &quarantine_root,
+        ecosystem,
+        acquired_at,
+        ai_requested: args.ai_review,
+        ai_provider,
+        detonation_requested: args.detonation,
+        normalization_limits: whoathere_artifact::NormalizationLimits::default(),
+    };
+    match inspect_exact_artifact_v1(request, None, None) {
+        Ok(report) => report
+            .to_pretty_json()
+            .unwrap_or_else(|error| error.to_pretty_json()),
+        Err(error) => error.to_pretty_json(),
+    }
+}
+
+fn looks_like_canonical_utc_seconds(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 20
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && bytes[10] == b'T'
+        && bytes[13] == b':'
+        && bytes[16] == b':'
+        && bytes[19] == b'Z'
+        && bytes.iter().enumerate().all(|(index, byte)| {
+            matches!(index, 4 | 7 | 10 | 13 | 16 | 19) || byte.is_ascii_digit()
+        })
+}
+
 fn infer_exit_code(output: &str) -> i32 {
+    // Machine-readable commands may emit either compact or pretty JSON. Parse
+    // that contract structurally before considering legacy line-oriented
+    // output so an error cannot accidentally become a successful process exit
+    // merely because serialization whitespace changed.
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(output) {
+        if let Some(code) = value
+            .get("exit_code")
+            .and_then(serde_json::Value::as_i64)
+            .and_then(|value| i32::try_from(value).ok())
+        {
+            return code;
+        }
+    }
     for line in output.lines() {
         if let Some(value) = line.strip_prefix("final_exit_code=") {
             if let Ok(code) = value.parse::<i32>() {
@@ -17769,6 +18034,284 @@ mod tests {
     use super::*;
 
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn parses_exact_artifact_inspection_options() {
+        let args = vec![
+            "artifact".to_string(),
+            "inspect".to_string(),
+            "/tmp/inert.tgz".to_string(),
+            "--ecosystem".to_string(),
+            "npm".to_string(),
+            "--state-dir=/tmp/whoathere-exact".to_string(),
+            "--acquired-at".to_string(),
+            "2026-07-15T00:00:00Z".to_string(),
+            "--ai-review".to_string(),
+            "--ai-provider".to_string(),
+            "claude".to_string(),
+            "--detonation".to_string(),
+        ];
+        assert_eq!(
+            parse_command(&args),
+            Command::ArtifactInspect {
+                path: "/tmp/inert.tgz".to_string(),
+                ecosystem: Some("npm".to_string()),
+                state_dir: Some("/tmp/whoathere-exact".to_string()),
+                acquired_at: Some("2026-07-15T00:00:00Z".to_string()),
+                ai_review: true,
+                ai_provider: Some("claude".to_string()),
+                detonation: true,
+            }
+        );
+    }
+
+    #[test]
+    fn exact_artifact_inspection_rejects_unknown_dangling_duplicate_and_malformed_options() {
+        let cases = [
+            (
+                vec!["/tmp/inert.tgz", "--detonatoin"],
+                "exact_artifact_option_unknown",
+            ),
+            (
+                vec!["/tmp/inert.tgz", "unexpected-positional"],
+                "exact_artifact_option_unknown",
+            ),
+            (
+                vec!["/tmp/inert.tgz", "--ecosystem"],
+                "exact_artifact_option_value_required",
+            ),
+            (
+                vec!["/tmp/inert.tgz", "--ecosystem", "npm", "--ecosystem=pypi"],
+                "exact_artifact_option_duplicate",
+            ),
+            (
+                vec!["/tmp/inert.tgz", "--detonation", "--detonation"],
+                "exact_artifact_option_duplicate",
+            ),
+            (
+                vec!["/tmp/inert.tgz", "--detonation=true"],
+                "exact_artifact_option_malformed",
+            ),
+            (
+                vec!["/tmp/inert.tgz", "--ai-review=false"],
+                "exact_artifact_option_malformed",
+            ),
+            (
+                vec!["/tmp/inert.tgz", "--state-dir="],
+                "exact_artifact_option_value_required",
+            ),
+        ];
+
+        for (arguments, expected_reason) in cases {
+            let mut args = vec!["artifact".to_string(), "inspect".to_string()];
+            args.extend(arguments.into_iter().map(ToString::to_string));
+            let result = evaluate_command(parse_command(&args));
+            assert_eq!(result.exit_code, 64, "arguments: {args:?}");
+            let json: serde_json::Value =
+                serde_json::from_str(&result.output).expect("invalid option output is JSON");
+            assert_eq!(json["status"], "error");
+            assert_eq!(json["exit_code"], 64);
+            assert_eq!(json["admission_authority"], false);
+            assert_eq!(json["observed_clean"], false);
+            assert_eq!(json["reason_codes"][0], expected_reason);
+        }
+    }
+
+    #[test]
+    fn exact_artifact_inspection_requires_path_before_options() {
+        let command = parse_command(&[
+            "artifact".to_string(),
+            "inspect".to_string(),
+            "--ecosystem".to_string(),
+            "npm".to_string(),
+        ]);
+        assert_eq!(command, Command::ArtifactInspectMissingPath);
+        let result = evaluate_command(command);
+        assert_eq!(result.exit_code, 64);
+        let json: serde_json::Value =
+            serde_json::from_str(&result.output).expect("missing-path output is JSON");
+        assert_eq!(json["reason_codes"][0], "exact_artifact_path_required");
+    }
+
+    #[test]
+    fn exact_artifact_inspection_without_path_fails_closed() {
+        let command = parse_command(&["artifact".to_string(), "inspect".to_string()]);
+        assert_eq!(command, Command::ArtifactInspectMissingPath);
+
+        let result = evaluate_command(command);
+        assert_eq!(result.exit_code, 64);
+        let json: serde_json::Value =
+            serde_json::from_str(&result.output).expect("missing-path error output is JSON");
+        assert_eq!(json["status"], "error");
+        assert_eq!(json["exit_code"], 64);
+        assert_eq!(json["admission_authority"], false);
+        assert_eq!(json["observed_clean"], false);
+        assert_eq!(json["reason_codes"][0], "exact_artifact_path_required");
+    }
+
+    #[test]
+    fn exact_artifact_command_emits_bound_json_and_never_observed_clean() {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        use std::io::Cursor;
+
+        let root = temp_root("whoathere-cli-exact-artifact");
+        let artifact = root.join("inert-1.0.0.tgz");
+        let state = root.join("state");
+        let encoder = GzEncoder::new(Vec::new(), Compression::default());
+        let mut archive = tar::Builder::new(encoder);
+        for (path, bytes) in [
+            (
+                "package/package.json",
+                br#"{"name":"inert","version":"1.0.0","main":"index.js"}"#.as_slice(),
+            ),
+            ("package/index.js", b"module.exports = 1;\n".as_slice()),
+        ] {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(bytes.len() as u64);
+            header.set_mode(0o644);
+            header.set_mtime(0);
+            header.set_cksum();
+            archive
+                .append_data(&mut header, path, Cursor::new(bytes))
+                .expect("append inert package member");
+        }
+        let bytes = archive
+            .into_inner()
+            .expect("finish tar")
+            .finish()
+            .expect("finish gzip");
+        std::fs::write(&artifact, &bytes).expect("write inert tgz");
+
+        let result = evaluate_command(Command::ArtifactInspect {
+            path: artifact.display().to_string(),
+            ecosystem: Some("npm".to_string()),
+            state_dir: Some(state.display().to_string()),
+            acquired_at: Some("2026-07-15T00:00:00Z".to_string()),
+            ai_review: false,
+            ai_provider: None,
+            detonation: false,
+        });
+
+        assert_eq!(result.exit_code, ExitCode::ManualReview.code());
+        assert!(result
+            .output
+            .contains("whoathere.exact_artifact_inspection.v1"));
+        assert!(result.output.contains(&sha256_digest(&bytes)));
+        assert!(result.output.contains("npm_local_tarball_install"));
+        assert!(result.output.contains("npm_main_or_export_probe"));
+        assert!(result.output.contains("ci_false"));
+        assert!(result.output.contains("ci_true"));
+        assert!(result.output.contains("\"admission_authority\": false"));
+        assert!(result.output.contains("\"observed_clean\": false"));
+        assert!(result.output.contains("\"sync_back_enabled\": false"));
+        assert!(result.output.contains("\"source_type\": \"local_file\""));
+        assert!(result
+            .output
+            .contains("\"acquisition_method\": \"local_file_import\""));
+        assert!(result
+            .output
+            .contains("\"source_coordinate\": \"local-file:sha256:"));
+        assert!(!result.output.contains("approved_custody"));
+        assert!(!result.output.contains("approved-custody"));
+        assert!(!result.output.contains(&artifact.display().to_string()));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn exact_artifact_error_json_always_controls_process_exit() {
+        let root = temp_root("whoathere-cli-exact-artifact-errors");
+        let missing = root.join("missing.tgz");
+        let state_parent_file = root.join("state-is-a-file");
+        std::fs::write(&state_parent_file, b"not a directory").expect("write state blocker");
+
+        let cases = [
+            Command::ArtifactInspect {
+                path: missing.display().to_string(),
+                ecosystem: Some("invalid".to_string()),
+                state_dir: Some(root.join("invalid-ecosystem-state").display().to_string()),
+                acquired_at: Some("2026-07-15T00:00:00Z".to_string()),
+                ai_review: false,
+                ai_provider: None,
+                detonation: false,
+            },
+            Command::ArtifactInspect {
+                path: missing.display().to_string(),
+                ecosystem: Some("npm".to_string()),
+                state_dir: Some(root.join("provider-flag-state").display().to_string()),
+                acquired_at: Some("2026-07-15T00:00:00Z".to_string()),
+                ai_review: false,
+                ai_provider: Some("claude".to_string()),
+                detonation: false,
+            },
+            Command::ArtifactInspect {
+                path: missing.display().to_string(),
+                ecosystem: Some("npm".to_string()),
+                state_dir: Some(root.join("provider-required-state").display().to_string()),
+                acquired_at: Some("2026-07-15T00:00:00Z".to_string()),
+                ai_review: true,
+                ai_provider: None,
+                detonation: false,
+            },
+            Command::ArtifactInspect {
+                path: missing.display().to_string(),
+                ecosystem: Some("npm".to_string()),
+                state_dir: Some(root.join("provider-invalid-state").display().to_string()),
+                acquired_at: Some("2026-07-15T00:00:00Z".to_string()),
+                ai_review: true,
+                ai_provider: Some("other".to_string()),
+                detonation: false,
+            },
+            Command::ArtifactInspect {
+                path: missing.display().to_string(),
+                ecosystem: Some("npm".to_string()),
+                state_dir: Some(root.join("timestamp-state").display().to_string()),
+                acquired_at: Some("not-a-timestamp".to_string()),
+                ai_review: false,
+                ai_provider: None,
+                detonation: false,
+            },
+            Command::ArtifactInspect {
+                path: missing.display().to_string(),
+                ecosystem: Some("npm".to_string()),
+                state_dir: Some(state_parent_file.join("child").display().to_string()),
+                acquired_at: Some("2026-07-15T00:00:00Z".to_string()),
+                ai_review: false,
+                ai_provider: None,
+                detonation: false,
+            },
+            Command::ArtifactInspect {
+                path: missing.display().to_string(),
+                ecosystem: Some("npm".to_string()),
+                state_dir: Some(root.join("missing-path-state").display().to_string()),
+                acquired_at: Some("2026-07-15T00:00:00Z".to_string()),
+                ai_review: false,
+                ai_provider: None,
+                detonation: false,
+            },
+        ];
+
+        for command in cases {
+            let result = evaluate_command(command);
+            let json: serde_json::Value =
+                serde_json::from_str(&result.output).expect("error output is JSON");
+            let encoded = json
+                .get("exit_code")
+                .and_then(serde_json::Value::as_i64)
+                .expect("error JSON exit code") as i32;
+            assert_ne!(encoded, 0);
+            assert_eq!(result.exit_code, encoded);
+            assert_eq!(json["admission_authority"], false);
+            assert_eq!(json["observed_clean"], false);
+        }
+
+        assert_eq!(
+            infer_exit_code(r#"{"schema_version":"test","status":"error","exit_code":64}"#),
+            64
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     fn with_reprovision_env<T>(vars: &[(&str, String)], action: impl FnOnce() -> T) -> T {
         let _guard = ENV_LOCK.lock().expect("env lock");

@@ -5,9 +5,11 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+serde_json = "=1.0.150"
 whoathere-core = { path = "../whoathere-core" }
 whoathere-admission = { path = "../whoathere-admission" }
 whoathere-audit = { path = "../whoathere-audit" }
+whoathere-artifact = { path = "../whoathere-artifact" }
 whoathere-cache = { path = "../whoathere-cache" }
 whoathere-detector = { path = "../whoathere-detector" }
 whoathere-evidence = { path = "../whoathere-evidence" }
@@ -27,3 +29,7 @@ path = "src/main.rs"
 
 [lib]
 path = "src/lib.rs"
+
+[dev-dependencies]
+flate2 = { version = "1.1.9", default-features = false, features = ["miniz_oxide"] }
+tar = { version = "0.4.46", default-features = false }
