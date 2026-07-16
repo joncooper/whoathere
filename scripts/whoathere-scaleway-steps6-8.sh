@@ -10,6 +10,7 @@ REMOTE_ROOT="/Users/m1/whoathere-actual-malware-lab"
 STAGE_DIR=""
 STATE_DIR="/Users/m1/.whoathere/macos-vm-validation-ff1bb24"
 WHOATHERE_BIN="/Users/m1/.whoathere/bin/whoathere"
+EXECUTION_PATH=""
 CAMPAIGN_ID="whoathere-actual-malware-2026-07-01"
 SLICE_ID=""
 SAMPLE_ARGS=""
@@ -44,6 +45,18 @@ HOST_FIREWALL_ASSERTED=""
 PREVIOUS_CONTAMINATION_RESOLVED=""
 HOST_REBUILT_OR_CLEARED=""
 VM_REBUILT_OR_PRUNED=""
+DETONATION_CONFIG=""
+DETONATION_CONFIG_SHA256=""
+CODEX_CLIENT_PATH=""
+CODEX_CLIENT_SHA256=""
+CODEX_MODEL=""
+CODEX_AUTH_HOME=""
+CODEX_TIMEOUT_SECONDS="300"
+RUN_TIMEOUT_SECONDS="900"
+RESTRICTED_SOURCE_APPROVED=""
+RESTRICTED_SOURCE_APPROVAL_REF=""
+RESTRICTED_BEHAVIOR_APPROVED=""
+RESTRICTED_BEHAVIOR_APPROVAL_REF=""
 
 usage() {
   code=${1:-64}
@@ -58,6 +71,7 @@ usage:
     [--whoathere-bin /Users/m1/.whoathere/bin/whoathere] \
     [--campaign-id whoathere-actual-malware-2026-07-01] \
     [--phase clearance|slice|score|finalize|all] \
+    [--execution-path exact_artifact_diagnostic|legacy_workspace_non_claim_bearing for slice] \
     [--sample-id <sample-id>]... \
     [--limit <n>] \
     [--max-samples-per-clearance 1] \
@@ -80,6 +94,16 @@ usage:
     (--sinkhole-ready-asserted --sinkhole-reference <ref> | --egress-deny-asserted) \
     --lulu-enabled-asserted [--lulu-reference <ref>] \
     [--live-malware-execution-approved for slice/all]
+
+Exact-artifact slice options:
+    --detonation-config <absolute-remote-json> --detonation-config-sha256 sha256:<digest> \
+    --codex-client-path <absolute-remote-native-binary> --codex-client-sha256 sha256:<digest> \
+    --codex-model <model> --codex-auth-home <absolute-dedicated-home> \
+    --restricted-source-hosted-review-approved --restricted-source-review-approval-ref <ref> \
+    --restricted-behavior-hosted-review-approved --restricted-behavior-review-approval-ref <ref>
+
+The exact-artifact diagnostic path requires sinkhole telemetry, measured detonation/Codex inputs,
+and separate explicit approval refs for hosted review of restricted source and behavior telemetry.
 
 For --phase clearance, the remote harness runs non-malware preflight checks and writes a clearance
 record. For --phase slice, it requires a post-contamination clearance record and defaults to one
@@ -133,6 +157,7 @@ while [ "$#" -gt 0 ]; do
     --stage-dir) [ "$#" -ge 2 ] || usage; STAGE_DIR=$2; shift 2 ;;
     --state-dir) [ "$#" -ge 2 ] || usage; STATE_DIR=$2; shift 2 ;;
     --whoathere-bin) [ "$#" -ge 2 ] || usage; WHOATHERE_BIN=$2; shift 2 ;;
+    --execution-path) [ "$#" -ge 2 ] || usage; EXECUTION_PATH=$2; shift 2 ;;
     --campaign-id) [ "$#" -ge 2 ] || usage; CAMPAIGN_ID=$2; shift 2 ;;
     --clearance-id) [ "$#" -ge 2 ] || usage; CLEARANCE_ID=$2; shift 2 ;;
     --clearance-method) [ "$#" -ge 2 ] || usage; CLEARANCE_METHOD=$2; shift 2 ;;
@@ -162,6 +187,18 @@ while [ "$#" -gt 0 ]; do
     --egress-deny-asserted) EGRESS_DENY_ASSERTED=1; shift ;;
     --lulu-enabled-asserted) LULU_ASSERTED=1; shift ;;
     --live-malware-execution-approved) LIVE_APPROVED=1; shift ;;
+    --detonation-config) [ "$#" -ge 2 ] || usage; DETONATION_CONFIG=$2; shift 2 ;;
+    --detonation-config-sha256) [ "$#" -ge 2 ] || usage; DETONATION_CONFIG_SHA256=$2; shift 2 ;;
+    --codex-client-path) [ "$#" -ge 2 ] || usage; CODEX_CLIENT_PATH=$2; shift 2 ;;
+    --codex-client-sha256) [ "$#" -ge 2 ] || usage; CODEX_CLIENT_SHA256=$2; shift 2 ;;
+    --codex-model) [ "$#" -ge 2 ] || usage; CODEX_MODEL=$2; shift 2 ;;
+    --codex-auth-home) [ "$#" -ge 2 ] || usage; CODEX_AUTH_HOME=$2; shift 2 ;;
+    --codex-timeout-seconds) [ "$#" -ge 2 ] || usage; CODEX_TIMEOUT_SECONDS=$2; shift 2 ;;
+    --run-timeout-seconds) [ "$#" -ge 2 ] || usage; RUN_TIMEOUT_SECONDS=$2; shift 2 ;;
+    --restricted-source-hosted-review-approved) RESTRICTED_SOURCE_APPROVED=1; shift ;;
+    --restricted-source-review-approval-ref) [ "$#" -ge 2 ] || usage; RESTRICTED_SOURCE_APPROVAL_REF=$2; shift 2 ;;
+    --restricted-behavior-hosted-review-approved) RESTRICTED_BEHAVIOR_APPROVED=1; shift ;;
+    --restricted-behavior-review-approval-ref) [ "$#" -ge 2 ] || usage; RESTRICTED_BEHAVIOR_APPROVAL_REF=$2; shift 2 ;;
     --include-existing-samples) INCLUDE_EXISTING=1; shift ;;
     --include-standalone-step5-results) INCLUDE_STANDALONE_STEP5=1; shift ;;
     --finalize-failed-score) FINALIZE_FAILED_SCORE=1; shift ;;
@@ -224,6 +261,25 @@ fi
 if [ "$PHASE" = "slice" ]; then
   [ -n "$LIVE_APPROVED" ] || usage
   [ -n "$CLEARANCE_RECORD" ] || usage
+  [ -n "$EXECUTION_PATH" ] || usage
+  case "$EXECUTION_PATH" in
+    exact_artifact_diagnostic)
+      [ "$MAX_SAMPLES_PER_CLEARANCE" = "1" ] || usage
+      [ -n "$SINKHOLE_ASSERTED" ] || usage
+      [ -n "$DETONATION_CONFIG" ] || usage
+      [ -n "$DETONATION_CONFIG_SHA256" ] || usage
+      [ -n "$CODEX_CLIENT_PATH" ] || usage
+      [ -n "$CODEX_CLIENT_SHA256" ] || usage
+      [ -n "$CODEX_MODEL" ] || usage
+      [ -n "$CODEX_AUTH_HOME" ] || usage
+      [ -n "$RESTRICTED_SOURCE_APPROVED" ] || usage
+      [ -n "$RESTRICTED_SOURCE_APPROVAL_REF" ] || usage
+      [ -n "$RESTRICTED_BEHAVIOR_APPROVED" ] || usage
+      [ -n "$RESTRICTED_BEHAVIOR_APPROVAL_REF" ] || usage
+      ;;
+    legacy_workspace_non_claim_bearing) ;;
+    *) usage ;;
+  esac
 fi
 if [ "$PHASE" = "all" ]; then
   [ -n "$LIVE_APPROVED" ] || usage
@@ -242,6 +298,7 @@ fi
 safe_remote_value "$REMOTE_ROOT" "remote_root"
 safe_remote_value "$STATE_DIR" "state_dir"
 safe_remote_value "$WHOATHERE_BIN" "whoathere_bin"
+[ -z "$EXECUTION_PATH" ] || safe_remote_value "$EXECUTION_PATH" "execution_path"
 safe_remote_value "$CAMPAIGN_ID" "campaign_id"
 safe_remote_value "$CLEARANCE_METHOD" "clearance_method"
 safe_remote_value "$CLEARANCE_REVIEWER" "clearance_reviewer"
@@ -261,6 +318,16 @@ safe_remote_value "$MAX_SAMPLES_PER_CLEARANCE" "max_samples_per_clearance"
 [ -z "$LEGAL_PROVIDER_APPROVAL_REF" ] || safe_remote_value "$LEGAL_PROVIDER_APPROVAL_REF" "legal_provider_approval_ref"
 [ -z "$SINKHOLE_REFERENCE" ] || safe_remote_value "$SINKHOLE_REFERENCE" "sinkhole_reference"
 [ -z "$LULU_REFERENCE" ] || safe_remote_value "$LULU_REFERENCE" "lulu_reference"
+[ -z "$DETONATION_CONFIG" ] || safe_remote_value "$DETONATION_CONFIG" "detonation_config"
+[ -z "$DETONATION_CONFIG_SHA256" ] || { require_sha256 "$DETONATION_CONFIG_SHA256" "detonation_config_sha256"; safe_remote_value "$DETONATION_CONFIG_SHA256" "detonation_config_sha256"; }
+[ -z "$CODEX_CLIENT_PATH" ] || safe_remote_value "$CODEX_CLIENT_PATH" "codex_client_path"
+[ -z "$CODEX_CLIENT_SHA256" ] || { require_sha256 "$CODEX_CLIENT_SHA256" "codex_client_sha256"; safe_remote_value "$CODEX_CLIENT_SHA256" "codex_client_sha256"; }
+[ -z "$CODEX_MODEL" ] || safe_remote_value "$CODEX_MODEL" "codex_model"
+[ -z "$CODEX_AUTH_HOME" ] || safe_remote_value "$CODEX_AUTH_HOME" "codex_auth_home"
+safe_remote_value "$CODEX_TIMEOUT_SECONDS" "codex_timeout_seconds"
+safe_remote_value "$RUN_TIMEOUT_SECONDS" "run_timeout_seconds"
+[ -z "$RESTRICTED_SOURCE_APPROVAL_REF" ] || safe_remote_value "$RESTRICTED_SOURCE_APPROVAL_REF" "restricted_source_approval_ref"
+[ -z "$RESTRICTED_BEHAVIOR_APPROVAL_REF" ] || safe_remote_value "$RESTRICTED_BEHAVIOR_APPROVAL_REF" "restricted_behavior_approval_ref"
 
 ssh_run() {
   if [ -n "$SSH_CONFIG" ]; then
@@ -293,7 +360,8 @@ scp_to_remote "$REPO_ROOT/scripts/whoathere-scaleway-step5-remote.py" "$remote_s
 scp_to_remote "$REPO_ROOT/scripts/whoathere-scaleway-steps6-8-remote.py" "$remote_steps68"
 ssh_run "chmod 700 $remote_tools && chmod 500 $remote_evaluator $remote_step5 $remote_steps68"
 
-remote_command="WHOATHERE_SCANNER_CACHE_DIR=$remote_tools/scanners PATH=$remote_scanner_bin:\$PATH python3 $remote_steps68 --phase $PHASE --remote-root $REMOTE_ROOT --state-dir $STATE_DIR --whoathere-bin $WHOATHERE_BIN --evaluator-script $remote_evaluator --step5-script $remote_step5 --campaign-id $CAMPAIGN_ID --clearance-method $CLEARANCE_METHOD --clearance-reviewer $CLEARANCE_REVIEWER --max-samples-per-clearance $MAX_SAMPLES_PER_CLEARANCE"
+remote_command="WHOATHERE_SCANNER_CACHE_DIR=$remote_tools/scanners PATH=$remote_scanner_bin:\$PATH python3 $remote_steps68 --phase $PHASE --remote-root $REMOTE_ROOT --state-dir $STATE_DIR --whoathere-bin $WHOATHERE_BIN --evaluator-script $remote_evaluator --step5-script $remote_step5 --campaign-id $CAMPAIGN_ID --clearance-method $CLEARANCE_METHOD --clearance-reviewer $CLEARANCE_REVIEWER --max-samples-per-clearance $MAX_SAMPLES_PER_CLEARANCE --run-timeout-seconds $RUN_TIMEOUT_SECONDS"
+[ -z "$EXECUTION_PATH" ] || remote_command="$remote_command --execution-path $EXECUTION_PATH"
 [ -z "$STAGE_DIR" ] || remote_command="$remote_command --stage-dir $STAGE_DIR"
 [ -z "$CLEARANCE_ID" ] || remote_command="$remote_command --clearance-id $CLEARANCE_ID"
 [ -z "$SLICE_ID" ] || remote_command="$remote_command --slice-id $SLICE_ID"
@@ -323,5 +391,8 @@ remote_command="WHOATHERE_SCANNER_CACHE_DIR=$remote_tools/scanners PATH=$remote_
 [ -z "$FINALIZE_FAILED_SCORE" ] || remote_command="$remote_command --finalize-failed-score"
 [ -z "$LEGACY_SCORE_MAINTENANCE" ] || remote_command="$remote_command --legacy-non-claim-bearing-score-maintenance"
 [ -z "$LEGACY_SCORE_ACKNOWLEDGED" ] || remote_command="$remote_command --acknowledge-non-claim-bearing-legacy-score"
+if [ "$EXECUTION_PATH" = "exact_artifact_diagnostic" ]; then
+  remote_command="$remote_command --detonation-config $DETONATION_CONFIG --detonation-config-sha256 $DETONATION_CONFIG_SHA256 --codex-client-path $CODEX_CLIENT_PATH --codex-client-sha256 $CODEX_CLIENT_SHA256 --codex-model $CODEX_MODEL --codex-auth-home $CODEX_AUTH_HOME --codex-timeout-seconds $CODEX_TIMEOUT_SECONDS --restricted-source-hosted-review-approved --restricted-source-review-approval-ref $RESTRICTED_SOURCE_APPROVAL_REF --restricted-behavior-hosted-review-approved --restricted-behavior-review-approval-ref $RESTRICTED_BEHAVIOR_APPROVAL_REF"
+fi
 
 ssh_run "$remote_command"

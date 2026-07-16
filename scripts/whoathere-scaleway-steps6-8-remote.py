@@ -32,6 +32,8 @@ RUN_RESULT_V2_SCHEMA = "whoathere.actual_malware.run_result.v2"
 SCORE_REPORT_V1_SCHEMA = "whoathere.actual_malware.score_report.v1"
 SCORE_REPORT_V2_SCHEMA = "whoathere.actual_malware.score_report.v2"
 SCORER_V2_ID = "whoathere-actual-malware-evaluation.py:score-results-v2"
+LEGACY_EXECUTION_PATH = "legacy_workspace_non_claim_bearing"
+EXACT_ARTIFACT_EXECUTION_PATH = "exact_artifact_diagnostic"
 
 
 class Step68Error(Exception):
@@ -74,6 +76,22 @@ def sha256_text(value: str) -> str:
 
 def valid_sha256(value: Any) -> bool:
     return isinstance(value, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", value) is not None
+
+
+def regular_non_symlink(path: Path) -> bool:
+    try:
+        metadata = path.lstat()
+    except OSError:
+        return False
+    return path.is_file() and not path.is_symlink() and metadata.st_size > 0
+
+
+def directory_non_symlink(path: Path) -> bool:
+    try:
+        path.lstat()
+    except OSError:
+        return False
+    return path.is_dir() and not path.is_symlink()
 
 
 def require_json_object(path: Path, label: str) -> dict[str, Any]:
@@ -190,28 +208,45 @@ def run_capture(argv: list[str], out_path: Path, timeout_seconds: int = 120) -> 
 
 def existing_successful_live_runs(remote_root: Path) -> list[dict[str, Any]]:
     runs: list[dict[str, Any]] = []
-    for result_path in sorted((remote_root / "evidence" / "step5").glob("*/*/whoathere-run/run_result.json")):
+    for summary_path in sorted((remote_root / "evidence" / "step5").glob("*/*/step5-summary.json")):
         try:
-            result = read_json(result_path)
+            step5_summary = read_json(summary_path)
         except Exception:
             continue
-        summary_path = result_path.parents[1] / "step5-summary.json"
-        step5_summary = read_json(summary_path) if summary_path.is_file() else {}
+        result_path: Path | None = None
+        declared_result_path = step5_summary.get("result_path")
+        if isinstance(declared_result_path, str):
+            candidate = require_under(Path(declared_result_path), remote_root, "prior_step5_result")
+            if candidate.is_file():
+                result_path = candidate
+        if result_path is None:
+            for candidate in (
+                summary_path.parent / "whoathere-run" / "diagnostic_result.json",
+                summary_path.parent / "whoathere-run" / "run_result.json",
+            ):
+                if candidate.is_file():
+                    result_path = candidate
+                    break
+        try:
+            result = read_json(result_path) if result_path is not None else {}
+        except Exception:
+            result = {}
         evidence_failures: list[str] = []
-        if not summary_path.is_file():
-            evidence_failures.append("step5_summary_missing")
+        if result_path is None:
+            evidence_failures.append("step5_result_missing")
         if not step5_summary.get("host_contamination_status"):
             evidence_failures.append("host_contamination_status_missing")
         if not step5_summary.get("vm_state_status"):
             evidence_failures.append("vm_state_status_missing")
         runs.append(
             {
-                "sample_id": result.get("sample_id"),
-                "result_path": str(result_path),
-                "result_sha256": sha256_file(result_path),
-                "run_dir": str(result_path.parents[1]),
+                "sample_id": result.get("sample_id") or step5_summary.get("sample_id"),
+                "result_path": str(result_path) if result_path is not None else None,
+                "result_sha256": sha256_file(result_path) if result_path is not None else None,
+                "run_dir": str(summary_path.parent),
                 "created_at_utc": result.get("created_at_utc") or step5_summary.get("created_at_utc"),
                 "verdict_class": result.get("verdict_class"),
+                "execution_path": step5_summary.get("execution_path"),
                 "safety_passed": step5_summary.get("safety_passed"),
                 "host_contamination_status": step5_summary.get("host_contamination_status"),
                 "vm_state_status": step5_summary.get("vm_state_status"),
@@ -263,6 +298,11 @@ def validate_clearance(remote_root: Path, args: argparse.Namespace, runs: list[d
         failures.append("sinkhole_or_egress_deny_not_verified")
     if clearance.get("sinkhole_ready_verified") is True and not clearance.get("sinkhole_reference"):
         failures.append("sinkhole_reference_missing")
+    if args.execution_path == EXACT_ARTIFACT_EXECUTION_PATH:
+        if clearance.get("sinkhole_ready_verified") is not True:
+            failures.append("exact_artifact_clearance_sinkhole_not_verified")
+        if clearance.get("sinkhole_reference") != args.sinkhole_reference:
+            failures.append("exact_artifact_clearance_sinkhole_reference_mismatch")
     for key in ("provider_approval_ref", "legal_provider_approval_ref", "clearance_method", "reviewer"):
         if not isinstance(clearance.get(key), str) or not clearance.get(key):
             failures.append(f"{key}_missing")
@@ -472,8 +512,91 @@ def eligible_matrix_samples(stage_dir: Path, requested: list[str], include_exist
     return selected
 
 
+def validate_slice_execution_args(args: argparse.Namespace) -> None:
+    if args.execution_path == LEGACY_EXECUTION_PATH:
+        if args.restricted_source_hosted_review_approved or args.restricted_behavior_hosted_review_approved:
+            raise Step68Error("legacy_execution_path_rejects_hosted_restricted_review_approvals")
+        return
+    if args.execution_path != EXACT_ARTIFACT_EXECUTION_PATH:
+        raise Step68Error("slice_requires_explicit_execution_path")
+    if args.max_samples_per_clearance != 1:
+        raise Step68Error("exact_artifact_diagnostic_requires_one_sample_per_clearance")
+    if len(args.sample_id) != 1:
+        raise Step68Error("exact_artifact_diagnostic_requires_one_explicit_sample_id")
+    required = (
+        ("detonation_config", args.detonation_config),
+        ("detonation_config_sha256", args.detonation_config_sha256),
+        ("codex_client_path", args.codex_client_path),
+        ("codex_client_sha256", args.codex_client_sha256),
+        ("codex_model", args.codex_model),
+        ("codex_auth_home", args.codex_auth_home),
+        ("restricted_source_hosted_review_approved", args.restricted_source_hosted_review_approved),
+        ("restricted_source_review_approval_ref", args.restricted_source_review_approval_ref),
+        ("restricted_behavior_hosted_review_approved", args.restricted_behavior_hosted_review_approved),
+        ("restricted_behavior_review_approval_ref", args.restricted_behavior_review_approval_ref),
+    )
+    missing = [label for label, value in required if value in {None, "", False}]
+    if missing:
+        raise Step68Error(f"exact_artifact_missing_required_options:{','.join(missing)}")
+    if args.restricted_source_review_approval_ref == args.restricted_behavior_review_approval_ref:
+        raise Step68Error("restricted_source_and_behavior_review_approval_refs_must_be_distinct")
+    if not args.sinkhole_ready_asserted:
+        raise Step68Error("exact_artifact_behavior_observation_requires_sinkhole_ready")
+    if not valid_sha256(args.detonation_config_sha256):
+        raise Step68Error("detonation_config_sha256_invalid")
+    if not valid_sha256(args.codex_client_sha256):
+        raise Step68Error("codex_client_sha256_invalid")
+    if not args.detonation_config.is_absolute() or not regular_non_symlink(args.detonation_config):
+        raise Step68Error("detonation_config_must_be_absolute_regular_non_symlink")
+    if sha256_file(args.detonation_config) != args.detonation_config_sha256:
+        raise Step68Error("detonation_config_sha256_mismatch")
+    if not args.codex_client_path.is_absolute() or not regular_non_symlink(args.codex_client_path):
+        raise Step68Error("codex_client_must_be_absolute_regular_non_symlink")
+    if not os.access(args.codex_client_path, os.X_OK):
+        raise Step68Error("codex_client_not_executable")
+    if sha256_file(args.codex_client_path) != args.codex_client_sha256:
+        raise Step68Error("codex_client_sha256_mismatch")
+    if not args.codex_auth_home.is_absolute() or not directory_non_symlink(args.codex_auth_home):
+        raise Step68Error("codex_auth_home_must_be_absolute_directory_non_symlink")
+    if not 1 <= args.codex_timeout_seconds <= 600:
+        raise Step68Error("codex_timeout_seconds_out_of_range")
+    if args.run_timeout_seconds <= args.codex_timeout_seconds + args.timeout_seconds + 30:
+        raise Step68Error("run_timeout_too_short_for_codex_plus_post_run_sealing")
+
+
+def sanitize_exact_step5_run_record(
+    record: dict[str, Any],
+    args: argparse.Namespace,
+    sample_id: str,
+) -> dict[str, Any]:
+    return {
+        key: record.get(key)
+        for key in (
+            "exit_code",
+            "timed_out",
+            "started_at_utc",
+            "finished_at_utc",
+            "output_path",
+            "stderr_path",
+        )
+    } | {
+        "command_identity": {
+            "operation": "step5_exact_artifact_diagnostic",
+            "sample_id": sample_id,
+            "detonation_config_sha256": args.detonation_config_sha256,
+            "codex_client_sha256": args.codex_client_sha256,
+            "codex_model": args.codex_model,
+            "source_review_approval_ref_sha256": sha256_text(args.restricted_source_review_approval_ref),
+            "behavior_review_approval_ref_sha256": sha256_text(args.restricted_behavior_review_approval_ref),
+            "codex_auth_home_path_retained": False,
+            "raw_argv_retained": False,
+        }
+    }
+
+
 def run_campaign_slice(remote_root: Path, stage_dir: Path, args: argparse.Namespace) -> dict[str, Any]:
     require_safe_segment(args.campaign_id, "campaign_id")
+    validate_slice_execution_args(args)
     runs_before = existing_successful_live_runs(remote_root)
     clearance = validate_clearance(remote_root, args, runs_before)
     selected = eligible_matrix_samples(stage_dir, args.sample_id, args.include_existing_samples, remote_root)
@@ -509,6 +632,8 @@ def run_campaign_slice(remote_root: Path, stage_dir: Path, args: argparse.Namesp
             str(args.whoathere_bin),
             "--evaluator-script",
             str(args.evaluator_script),
+            "--execution-path",
+            args.execution_path,
             "--sample-id",
             sample_id,
             "--run-id",
@@ -523,6 +648,37 @@ def run_campaign_slice(remote_root: Path, stage_dir: Path, args: argparse.Namesp
             "--timeout-seconds",
             str(args.timeout_seconds),
         ]
+        if args.execution_path == EXACT_ARTIFACT_EXECUTION_PATH:
+            command.extend(
+                [
+                    "--detonation-config",
+                    str(args.detonation_config),
+                    "--detonation-config-sha256",
+                    args.detonation_config_sha256,
+                    "--codex-client-path",
+                    str(args.codex_client_path),
+                    "--codex-client-sha256",
+                    args.codex_client_sha256,
+                    "--codex-model",
+                    args.codex_model,
+                    "--codex-auth-home",
+                    str(args.codex_auth_home),
+                    "--codex-timeout-seconds",
+                    str(args.codex_timeout_seconds),
+                    "--product-run-timeout-seconds",
+                    str(args.run_timeout_seconds - args.timeout_seconds - 30),
+                    "--restricted-source-hosted-review-approved",
+                    "--restricted-source-review-approval-ref",
+                    args.restricted_source_review_approval_ref,
+                    "--restricted-behavior-hosted-review-approved",
+                    "--restricted-behavior-review-approval-ref",
+                    args.restricted_behavior_review_approval_ref,
+                    "--clearance-consumption-record",
+                    clearance_consumption["path"],
+                    "--clearance-consumption-record-sha256",
+                    clearance_consumption["sha256"],
+                ]
+            )
         if args.sinkhole_ready_asserted:
             command.extend(["--sinkhole-ready-asserted", "--sinkhole-reference", args.sinkhole_reference])
         if args.egress_deny_asserted:
@@ -530,10 +686,18 @@ def run_campaign_slice(remote_root: Path, stage_dir: Path, args: argparse.Namesp
         if args.lulu_reference:
             command.extend(["--lulu-reference", args.lulu_reference])
         run_record = run_capture(command, slice_dir / f"{sample_id}.step5.stdout", args.run_timeout_seconds)
-        result_path = remote_root / "evidence" / "step5" / sample_id / run_id / "whoathere-run" / "run_result.json"
+        if args.execution_path == EXACT_ARTIFACT_EXECUTION_PATH:
+            run_record = sanitize_exact_step5_run_record(run_record, args, sample_id)
         summary_path = remote_root / "evidence" / "step5" / sample_id / run_id / "step5-summary.json"
-        result = read_json(result_path) if result_path.is_file() else {}
         summary = read_json(summary_path) if summary_path.is_file() else {}
+        declared_result_path = summary.get("result_path")
+        if isinstance(declared_result_path, str):
+            result_path = require_under(Path(declared_result_path), remote_root, "step6_result")
+        elif args.execution_path == EXACT_ARTIFACT_EXECUTION_PATH:
+            result_path = remote_root / "evidence" / "step5" / sample_id / run_id / "whoathere-run" / "diagnostic_result.json"
+        else:
+            result_path = remote_root / "evidence" / "step5" / sample_id / run_id / "whoathere-run" / "run_result.json"
+        result = read_json(result_path) if result_path.is_file() else {}
         sample_runs.append(
             {
                 "sample_id": sample_id,
@@ -544,6 +708,18 @@ def run_campaign_slice(remote_root: Path, stage_dir: Path, args: argparse.Namesp
                 "summary_path": str(summary_path),
                 "summary_sha256": sha256_file(summary_path) if summary_path.is_file() else None,
                 "verdict_class": result.get("verdict_class"),
+                "execution_path": args.execution_path,
+                "claim_bearing": False,
+                "diagnostic_completed": summary.get("diagnostic_completed"),
+                "diagnostic_detection_observed": summary.get("diagnostic_detection_observed"),
+                "codex_behavior_detected": summary.get("codex_behavior_detected"),
+                "codex_observed_detonation_gate_passed": summary.get(
+                    "codex_observed_detonation_gate_passed"
+                ),
+                "physical_detonation_evidence_completed": summary.get(
+                    "physical_detonation_evidence_completed"
+                ),
+                "physical_safety_proven": summary.get("physical_safety_proven"),
                 "safety_passed": summary.get("safety_passed"),
                 "safety_failures": summary.get("safety_failures"),
             }
@@ -554,13 +730,28 @@ def run_campaign_slice(remote_root: Path, stage_dir: Path, args: argparse.Namesp
     unsafe = [
         run
         for run in sample_runs
-        if run["command"]["exit_code"] != 0 or run.get("safety_passed") is not True or run.get("verdict_class") in {"miss", "unsafe_allow"}
+        if run.get("safety_passed") is not True or run.get("verdict_class") == "unsafe_allow"
+    ]
+    incomplete = [
+        run
+        for run in sample_runs
+        if run["command"]["exit_code"] != 0 or run.get("diagnostic_completed") is not True
+    ]
+    diagnostic_misses = [
+        run
+        for run in sample_runs
+        if run.get("diagnostic_completed") is True
+        and run.get("diagnostic_detection_observed") is not True
     ]
     slice_summary = {
         "schema": f"{SCHEMA_PREFIX}.campaign_slice.v1",
         "created_at_utc": now_utc(),
         "campaign_id": args.campaign_id,
         "slice_id": slice_id,
+        "execution_path": args.execution_path,
+        "claim_bearing": False,
+        "scorable": False,
+        "finalizable": False,
         "stage_dir": str(stage_dir),
         "clearance": clearance,
         "clearance_consumption": clearance_consumption,
@@ -572,10 +763,15 @@ def run_campaign_slice(remote_root: Path, stage_dir: Path, args: argparse.Namesp
         ),
         "sample_runs": sample_runs,
         "safety_passed": not unsafe,
+        "diagnostic_completed": not incomplete,
+        "diagnostic_detection_observed": not incomplete and not diagnostic_misses,
+        "diagnostic_gate_passed": not unsafe and not incomplete and not diagnostic_misses,
         "stop_required_before_next_live_sample": True,
         "host_contamination_status": "contaminated_rebuild_or_clear_before_next_live_run",
         "vm_state_status": "suspend_requested_rebuild_or_prune_before_next_live_run",
         "unsafe_or_failed_runs": unsafe,
+        "incomplete_runs": incomplete,
+        "diagnostic_misses": diagnostic_misses,
     }
     write_json(slice_dir / "step6-slice-summary.json", slice_summary)
     print(json.dumps(slice_summary, indent=2, sort_keys=True))
@@ -1765,6 +1961,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--whoathere-bin", type=Path, required=True)
     parser.add_argument("--evaluator-script", type=Path, required=True)
     parser.add_argument("--step5-script", type=Path, required=True)
+    parser.add_argument(
+        "--execution-path",
+        choices=[LEGACY_EXECUTION_PATH, EXACT_ARTIFACT_EXECUTION_PATH],
+    )
     parser.add_argument("--campaign-id", default="whoathere-actual-malware-2026-07-01")
     parser.add_argument("--clearance-id")
     parser.add_argument("--clearance-method", default="host_rebuild_or_lab_runbook_clearance")
@@ -1797,6 +1997,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lulu-enabled-asserted", action="store_true")
     parser.add_argument("--lulu-reference", default="")
     parser.add_argument("--live-malware-execution-approved", action="store_true")
+    parser.add_argument("--detonation-config", type=Path)
+    parser.add_argument("--detonation-config-sha256")
+    parser.add_argument("--codex-client-path", type=Path)
+    parser.add_argument("--codex-client-sha256")
+    parser.add_argument("--codex-model")
+    parser.add_argument("--codex-auth-home", type=Path)
+    parser.add_argument("--codex-timeout-seconds", type=int, default=300)
+    parser.add_argument("--restricted-source-hosted-review-approved", action="store_true")
+    parser.add_argument("--restricted-source-review-approval-ref", default="")
+    parser.add_argument("--restricted-behavior-hosted-review-approved", action="store_true")
+    parser.add_argument("--restricted-behavior-review-approval-ref", default="")
     parser.add_argument("--finalize-failed-score", action="store_true")
     parser.add_argument("--timeout-seconds", type=int, default=120)
     parser.add_argument("--run-timeout-seconds", type=int, default=900)
@@ -1838,6 +2049,8 @@ def main() -> int:
             raise Step68Error("limit_must_be_positive")
         if args.max_samples_per_clearance <= 0:
             raise Step68Error("max_samples_per_clearance_must_be_positive")
+        if args.phase in {"slice", "all"}:
+            validate_slice_execution_args(args)
         if args.phase in {"clearance", "slice", "all"}:
             missing = [
                 name
@@ -1883,6 +2096,12 @@ def main() -> int:
         if args.phase in {"slice", "all"}:
             result["slice"] = run_campaign_slice(remote_root, stage_dir, args)
             if result["slice"].get("safety_passed") is not True:
+                write_json(remote_root / "evidence" / "step6" / args.campaign_id / "last-run-failed.json", result)
+                return 20
+            if (
+                args.execution_path == EXACT_ARTIFACT_EXECUTION_PATH
+                and result["slice"].get("diagnostic_gate_passed") is not True
+            ):
                 write_json(remote_root / "evidence" / "step6" / args.campaign_id / "last-run-failed.json", result)
                 return 20
         if args.phase in {"score", "all"}:

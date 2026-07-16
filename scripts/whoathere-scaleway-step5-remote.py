@@ -26,6 +26,16 @@ from typing import Any
 
 SCHEMA_PREFIX = "whoathere.actual_malware.scaleway_step5"
 MB_ZIP_PASSWORD = b"infected"
+LEGACY_EXECUTION_PATH = "legacy_workspace_non_claim_bearing"
+EXACT_ARTIFACT_EXECUTION_PATH = "exact_artifact_diagnostic"
+EXACT_ARTIFACT_REPORT_SCHEMA = "whoathere.exact_artifact_inspection.v1"
+EXACT_ARTIFACT_DIAGNOSTIC_SCHEMA = "whoathere.actual_malware.exact_artifact_diagnostic_result.v1"
+PHYSICAL_DETONATION_PROVIDERS = {
+    "linux_vz_exact_npm_v1",
+    "linux_vz_exact_wheel_v1",
+    "linux_vz_exact_sdist_v1",
+}
+CODEX_BEHAVIOR_PROVIDER = "codex-subscription-behavior-observer-v1"
 
 
 class Step5Error(Exception):
@@ -67,6 +77,28 @@ def sha256_text(value: str) -> str:
     return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def valid_sha256(value: Any) -> bool:
+    return isinstance(value, str) and len(value) == 71 and value.startswith("sha256:") and all(
+        character in "0123456789abcdef" for character in value[7:]
+    )
+
+
+def regular_non_symlink(path: Path) -> bool:
+    try:
+        metadata = path.lstat()
+    except OSError:
+        return False
+    return path.is_file() and not path.is_symlink() and metadata.st_size > 0
+
+
+def directory_non_symlink(path: Path) -> bool:
+    try:
+        path.lstat()
+    except OSError:
+        return False
+    return path.is_dir() and not path.is_symlink()
+
+
 def run_capture(argv: list[str], out_path: Path, timeout_seconds: int = 120) -> dict[str, Any]:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     started = now_utc()
@@ -100,6 +132,61 @@ def run_capture(argv: list[str], out_path: Path, timeout_seconds: int = 120) -> 
         "output_path": str(out_path),
         "stderr_path": str(stderr_path),
     }
+
+
+def run_capture_restricted(
+    argv: list[str],
+    stdout_path: Path,
+    stderr_path: Path,
+    timeout_seconds: int,
+    command_identity: dict[str, Any],
+) -> tuple[dict[str, Any], str]:
+    """Run a command while retaining raw output only in the restricted workspace.
+
+    Exact-artifact inspection can invoke a hosted reviewer. Even though the product contract emits
+    bounded JSON, malformed output and provider diagnostics are not eligible for the sanitized
+    evidence directory. The public record therefore contains only measurements and timestamps.
+    """
+
+    stdout_path.parent.mkdir(parents=True, exist_ok=True)
+    stderr_path.parent.mkdir(parents=True, exist_ok=True)
+    started = now_utc()
+    try:
+        completed = subprocess.run(
+            argv,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+        stdout = completed.stdout
+        stderr = completed.stderr
+        exit_code = completed.returncode
+        timed_out = False
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout if isinstance(exc.stdout, str) else ""
+        stderr = exc.stderr if isinstance(exc.stderr, str) else ""
+        exit_code = 124
+        timed_out = True
+    stdout_path.write_text(stdout, encoding="utf-8")
+    stderr_path.write_text(stderr, encoding="utf-8")
+    return (
+        {
+            "command_identity": command_identity,
+            "exit_code": exit_code,
+            "timed_out": timed_out,
+            "started_at_utc": started,
+            "finished_at_utc": now_utc(),
+            "stdout_sha256": sha256_file(stdout_path),
+            "stdout_bytes": stdout_path.stat().st_size,
+            "stderr_sha256": sha256_file(stderr_path),
+            "stderr_bytes": stderr_path.stat().st_size,
+            "raw_output_retained_in_restricted_workspace": True,
+            "raw_argv_retained_in_sanitized_evidence": False,
+        },
+        stdout,
+    )
 
 
 def require_under(path: Path, root: Path, label: str) -> Path:
@@ -200,9 +287,13 @@ def step5_paths(remote_root: Path, sample_id: str, run_id: str) -> dict[str, Pat
         "workspace_root": workspace_root,
         "raw_extract": workspace_root / "raw-malwarebazaar-extract",
         "artifact_extract": workspace_root / "artifact-extract",
+        "exact_artifact": workspace_root / "exact-artifact",
+        "restricted_command_output": workspace_root / "restricted-command-output",
         "prepared_manifest": evidence_dir / "prepared-workspace.json",
         "live_gate": evidence_dir / "live-gate.json",
         "run_dir": evidence_dir / "whoathere-run",
+        "exact_artifact_report": evidence_dir / "whoathere-run" / "exact-artifact-inspection-sanitized.json",
+        "diagnostic_result": evidence_dir / "whoathere-run" / "diagnostic_result.json",
         "summary": evidence_dir / "step5-summary.json",
         "seal": evidence_dir / "step5-evidence-seal.json",
     }
@@ -322,7 +413,13 @@ def safe_extract_wheel(wheel_path: Path, out_dir: Path) -> None:
                 shutil.copyfileobj(source, dest)
 
 
-def prepare_sample(remote_root: Path, stage_dir: Path, sample_id: str, run_id: str, force: bool) -> dict[str, Any]:
+def prepare_legacy_workspace_sample(
+    remote_root: Path,
+    stage_dir: Path,
+    sample_id: str,
+    run_id: str,
+    force: bool,
+) -> dict[str, Any]:
     sample, matrix_row = sample_and_matrix(stage_dir, sample_id)
     validate_sample_for_step5(sample)
     paths = step5_paths(remote_root, sample_id, run_id)
@@ -367,6 +464,8 @@ def prepare_sample(remote_root: Path, stage_dir: Path, sample_id: str, run_id: s
     manifest = {
         "schema": f"{SCHEMA_PREFIX}.prepared_workspace.v1",
         "created_at_utc": now_utc(),
+        "execution_path": LEGACY_EXECUTION_PATH,
+        "claim_bearing": False,
         "sample_id": sample_id,
         "run_id": run_id,
         "sample": {
@@ -406,6 +505,235 @@ def prepare_sample(remote_root: Path, stage_dir: Path, sample_id: str, run_id: s
     }
     write_json(paths["prepared_manifest"], manifest)
     return manifest
+
+
+def prepare_exact_artifact_sample(
+    remote_root: Path,
+    stage_dir: Path,
+    sample_id: str,
+    run_id: str,
+    force: bool,
+) -> dict[str, Any]:
+    sample, matrix_row = sample_and_matrix(stage_dir, sample_id)
+    validate_sample_for_step5(sample)
+    paths = step5_paths(remote_root, sample_id, run_id)
+    if paths["workspace_root"].exists():
+        if not force:
+            raise Step5Error(f"workspace_root_exists:{paths['workspace_root']}")
+        shutil.rmtree(paths["workspace_root"])
+    paths["workspace_root"].mkdir(parents=True)
+    paths["evidence_dir"].mkdir(parents=True, exist_ok=True)
+
+    archive, sidecar, custody = archive_paths(stage_dir, sample)
+    extracted = safe_extract_zip(archive, paths["raw_extract"])
+    extracted_artifact = extracted[0]
+    artifact_hash = sha256_file(extracted_artifact)
+    if artifact_hash != sample["artifact_sha256"]:
+        raise Step5Error(
+            f"artifact_sha256_mismatch expected={sample['artifact_sha256']} actual={artifact_hash}"
+        )
+
+    artifact_name = sample.get("artifact_filename")
+    if not isinstance(artifact_name, str) or not artifact_name or Path(artifact_name).name != artifact_name:
+        raise Step5Error("exact_artifact_filename_not_safe_basename")
+    supported = (
+        sample.get("ecosystem") == "npm" and artifact_name.endswith((".tgz", ".tar.gz"))
+    ) or (
+        sample.get("ecosystem") == "pypi"
+        and artifact_name.endswith((".whl", ".tar.gz", ".tgz", ".zip"))
+    )
+    if not supported:
+        raise Step5Error(f"unsupported_exact_artifact:{sample.get('ecosystem')}:{artifact_name}")
+    paths["exact_artifact"].mkdir(parents=True)
+    artifact = paths["exact_artifact"] / artifact_name
+    require_under(artifact, paths["workspace_root"], "exact_artifact")
+    extracted_artifact.replace(artifact)
+    if sha256_file(artifact) != sample["artifact_sha256"]:
+        raise Step5Error("exact_artifact_sha256_changed_after_materialization")
+
+    manifest = {
+        "schema": f"{SCHEMA_PREFIX}.prepared_exact_artifact.v1",
+        "created_at_utc": now_utc(),
+        "execution_path": EXACT_ARTIFACT_EXECUTION_PATH,
+        "claim_bearing": False,
+        "sample_id": sample_id,
+        "run_id": run_id,
+        "sample": {
+            "ecosystem": sample["ecosystem"],
+            "package_name": sample["package_name"],
+            "package_version": sample["package_version"],
+            "artifact_filename": artifact_name,
+            "artifact_sha256": sample["artifact_sha256"],
+            "behavior_labels": sample.get("behavior_labels", []),
+            "trigger_phases": sample.get("trigger_phases", []),
+        },
+        "source_archive": {
+            "path": str(archive),
+            "sha256": sha256_file(archive),
+            "sidecar_path": str(sidecar),
+            "custody_path": str(custody),
+            "custody_sha256": sha256_file(custody),
+        },
+        "exact_artifact": {
+            "path": str(artifact),
+            "sha256": artifact_hash,
+            "size": artifact.stat().st_size,
+        },
+        "mode": matrix_row["mode"],
+        "timeout_seconds": int(matrix_row["timeout_seconds"]),
+        "network_policy": "sinkhole_only",
+        "live_c2_allowed": False,
+        "second_stage_live_fetch_allowed": False,
+        "sync_back_allowed": False,
+        "outer_custody_zip_unpacked_on_cloud_mac": True,
+        "package_artifact_unpacked_by_harness": False,
+        "local_developer_host_touched": False,
+        "restricted_workspace_root": str(paths["workspace_root"]),
+    }
+    write_json(paths["prepared_manifest"], manifest)
+    return manifest
+
+
+def prepare_sample(
+    remote_root: Path,
+    stage_dir: Path,
+    sample_id: str,
+    run_id: str,
+    force: bool,
+    execution_path: str,
+) -> dict[str, Any]:
+    if execution_path == EXACT_ARTIFACT_EXECUTION_PATH:
+        return prepare_exact_artifact_sample(remote_root, stage_dir, sample_id, run_id, force)
+    if execution_path == LEGACY_EXECUTION_PATH:
+        return prepare_legacy_workspace_sample(remote_root, stage_dir, sample_id, run_id, force)
+    raise Step5Error(f"unsupported_execution_path:{execution_path}")
+
+
+def validate_execution_path_args(args: argparse.Namespace, remote_root: Path) -> dict[str, Any]:
+    if args.execution_path == LEGACY_EXECUTION_PATH:
+        exact_values = (
+            args.detonation_config,
+            args.detonation_config_sha256,
+            args.codex_client_path,
+            args.codex_client_sha256,
+            args.codex_model,
+            args.codex_auth_home,
+            args.restricted_source_review_approval_ref,
+            args.restricted_behavior_review_approval_ref,
+            args.clearance_consumption_record,
+            args.clearance_consumption_record_sha256,
+        )
+        if args.restricted_source_hosted_review_approved or args.restricted_behavior_hosted_review_approved:
+            raise Step5Error("legacy_execution_path_rejects_hosted_restricted_review_approvals")
+        if any(value not in {None, ""} for value in exact_values):
+            raise Step5Error("legacy_execution_path_rejects_exact_artifact_options")
+        return {
+            "execution_path": LEGACY_EXECUTION_PATH,
+            "claim_bearing": False,
+            "description": "legacy loose-workspace evaluator; retained for maintenance only",
+        }
+
+    if args.execution_path != EXACT_ARTIFACT_EXECUTION_PATH:
+        raise Step5Error(f"unsupported_execution_path:{args.execution_path}")
+    missing: list[str] = []
+    required = (
+        ("detonation_config", args.detonation_config),
+        ("detonation_config_sha256", args.detonation_config_sha256),
+        ("codex_client_path", args.codex_client_path),
+        ("codex_client_sha256", args.codex_client_sha256),
+        ("codex_model", args.codex_model),
+        ("codex_auth_home", args.codex_auth_home),
+        ("restricted_source_hosted_review_approved", args.restricted_source_hosted_review_approved),
+        ("restricted_source_review_approval_ref", args.restricted_source_review_approval_ref),
+        ("restricted_behavior_hosted_review_approved", args.restricted_behavior_hosted_review_approved),
+        ("restricted_behavior_review_approval_ref", args.restricted_behavior_review_approval_ref),
+        ("clearance_consumption_record", args.clearance_consumption_record),
+        ("clearance_consumption_record_sha256", args.clearance_consumption_record_sha256),
+    )
+    for label, value in required:
+        if value in {None, "", False}:
+            missing.append(label)
+    if missing:
+        raise Step5Error(f"exact_artifact_missing_required_options:{','.join(missing)}")
+    if args.restricted_source_review_approval_ref == args.restricted_behavior_review_approval_ref:
+        raise Step5Error("restricted_source_and_behavior_review_approval_refs_must_be_distinct")
+    if not args.sinkhole_ready_asserted:
+        raise Step5Error("exact_artifact_behavior_observation_requires_sinkhole_ready")
+    if not valid_sha256(args.detonation_config_sha256):
+        raise Step5Error("detonation_config_sha256_invalid")
+    if not valid_sha256(args.codex_client_sha256):
+        raise Step5Error("codex_client_sha256_invalid")
+    if not valid_sha256(args.clearance_consumption_record_sha256):
+        raise Step5Error("clearance_consumption_record_sha256_invalid")
+    if not 1 <= args.codex_timeout_seconds <= 600:
+        raise Step5Error("codex_timeout_seconds_out_of_range")
+    if args.product_run_timeout_seconds <= args.codex_timeout_seconds:
+        raise Step5Error("product_run_timeout_must_exceed_codex_timeout")
+
+    detonation_config = args.detonation_config
+    codex_client = args.codex_client_path
+    codex_auth_home = args.codex_auth_home
+    if not detonation_config.is_absolute() or not regular_non_symlink(detonation_config):
+        raise Step5Error("detonation_config_must_be_absolute_regular_non_symlink")
+    if sha256_file(detonation_config) != args.detonation_config_sha256:
+        raise Step5Error("detonation_config_sha256_mismatch")
+    if not codex_client.is_absolute() or not regular_non_symlink(codex_client):
+        raise Step5Error("codex_client_must_be_absolute_regular_non_symlink")
+    if not os.access(codex_client, os.X_OK):
+        raise Step5Error("codex_client_not_executable")
+    if sha256_file(codex_client) != args.codex_client_sha256:
+        raise Step5Error("codex_client_sha256_mismatch")
+    if not codex_auth_home.is_absolute() or not directory_non_symlink(codex_auth_home):
+        raise Step5Error("codex_auth_home_must_be_absolute_directory_non_symlink")
+    clearance_consumption_path = require_under(
+        args.clearance_consumption_record,
+        remote_root,
+        "clearance_consumption_record",
+    )
+    if not regular_non_symlink(clearance_consumption_path):
+        raise Step5Error("clearance_consumption_record_missing")
+    if sha256_file(clearance_consumption_path) != args.clearance_consumption_record_sha256:
+        raise Step5Error("clearance_consumption_record_sha256_mismatch")
+    clearance_consumption = read_json(clearance_consumption_path)
+    if (
+        clearance_consumption.get("schema")
+        != "whoathere.actual_malware.scaleway_steps6_8.clearance_consumption.v1"
+        or clearance_consumption.get("sample_ids") != [args.sample_id]
+        or clearance_consumption.get("max_samples_per_clearance") != 1
+        or clearance_consumption.get("status") != "reserved_before_live_execution"
+    ):
+        raise Step5Error("clearance_consumption_record_invalid_for_exact_sample")
+
+    return {
+        "execution_path": EXACT_ARTIFACT_EXECUTION_PATH,
+        "claim_bearing": False,
+        "detonation": {
+            "config_sha256": args.detonation_config_sha256,
+            "config_path_retained": False,
+        },
+        "codex": {
+            "provider": "codex",
+            "client_sha256": args.codex_client_sha256,
+            "model": args.codex_model,
+            "auth_mode": "saved_subscription_auth_dedicated_home",
+            "auth_home_path_retained": False,
+            "timeout_seconds": args.codex_timeout_seconds,
+        },
+        "restricted_hosted_review_approvals": {
+            "source": {
+                "approved": True,
+                "approval_ref": args.restricted_source_review_approval_ref,
+            },
+            "behavior_telemetry": {
+                "approved": True,
+                "approval_ref": args.restricted_behavior_review_approval_ref,
+            },
+        },
+        "clearance_consumption": {
+            "sha256": args.clearance_consumption_record_sha256,
+            "sample_count": 1,
+        },
+    }
 
 
 def verify_live_gate(remote_root: Path, stage_dir: Path, args: argparse.Namespace, sample_id: str, run_id: str) -> dict[str, Any]:
@@ -451,6 +779,7 @@ def verify_live_gate(remote_root: Path, stage_dir: Path, args: argparse.Namespac
         "created_at_utc": now_utc(),
         "sample_id": sample_id,
         "run_id": run_id,
+        "execution_path": args.execution_path,
         "phase1_state_lock_path": str(phase1_state),
         "phase1_state_lock_sha256": sha256_file(phase1_state),
         "phase1_guardrails_path": str(phase1_guardrails),
@@ -466,6 +795,10 @@ def verify_live_gate(remote_root: Path, stage_dir: Path, args: argparse.Namespac
             "lulu_enabled_asserted": args.lulu_enabled_asserted,
             "lulu_reference": args.lulu_reference,
             "live_malware_execution_approved": args.live_malware_execution_approved,
+            "restricted_source_hosted_review_approved": args.restricted_source_hosted_review_approved,
+            "restricted_source_review_approval_ref": args.restricted_source_review_approval_ref,
+            "restricted_behavior_hosted_review_approved": args.restricted_behavior_hosted_review_approved,
+            "restricted_behavior_review_approval_ref": args.restricted_behavior_review_approval_ref,
         },
         "network_policy": "sinkhole_only" if args.sinkhole_ready_asserted else "egress_denied_no_live_c2",
         "claim_boundary": (
@@ -498,14 +831,348 @@ def assert_no_unsafe_result(result: dict[str, Any]) -> list[str]:
     return failures
 
 
-def run_step5(remote_root: Path, stage_dir: Path, args: argparse.Namespace) -> dict[str, Any]:
-    sample_id = args.sample_id
-    run_id = args.run_id or dt.datetime.now(dt.timezone.utc).strftime("run-%Y%m%dT%H%M%SZ")
-    paths = step5_paths(remote_root, sample_id, run_id)
-    paths["evidence_dir"].mkdir(parents=True, exist_ok=True)
-    live_gate = verify_live_gate(remote_root, stage_dir, args, sample_id, run_id)
-    prepared = prepare_sample(remote_root, stage_dir, sample_id, run_id, args.force)
-    paths["run_dir"].mkdir(parents=True, exist_ok=True)
+def validate_exact_artifact_report(
+    report: dict[str, Any],
+    process_exit_code: int,
+    expected_artifact_sha256: str,
+) -> dict[str, Any]:
+    failures: list[str] = []
+    if report.get("schema_version") != EXACT_ARTIFACT_REPORT_SCHEMA:
+        failures.append("exact_artifact_report_schema_invalid")
+    if report.get("exit_code") != process_exit_code:
+        failures.append("exact_artifact_report_exit_code_mismatch")
+    expected_outcomes = {
+        20: ("findings", "malicious"),
+        22: (None, None),
+    }
+    if process_exit_code not in expected_outcomes:
+        failures.append(f"exact_artifact_product_exit_unsupported:{process_exit_code}")
+    elif process_exit_code == 20:
+        if report.get("status") != "findings" or report.get("verdict") != "malicious":
+            failures.append("exact_artifact_detection_exit_report_disagreement")
+    elif report.get("status") not in {"inconclusive", "unsupported"} or report.get("verdict") not in {
+        "inconclusive",
+        "unsupported",
+    }:
+        failures.append("exact_artifact_inconclusive_exit_report_disagreement")
+    identity = report.get("identity")
+    if not isinstance(identity, dict) or identity.get("artifact_sha256") != expected_artifact_sha256:
+        failures.append("exact_artifact_report_identity_mismatch")
+    if report.get("admission_authority") is not False:
+        failures.append("exact_artifact_report_admission_authority_not_false")
+    if report.get("observed_clean") is not False:
+        failures.append("exact_artifact_report_observed_clean_not_false")
+    if report.get("sync_back_enabled") is not False:
+        failures.append("exact_artifact_report_sync_back_enabled_not_false")
+
+    observations = report.get("observations")
+    if not isinstance(observations, list):
+        failures.append("exact_artifact_report_observations_not_array")
+        observations = []
+    elif any(
+        not isinstance(observation, dict)
+        or observation.get("artifact_sha256") != expected_artifact_sha256
+        for observation in observations
+    ):
+        failures.append("exact_artifact_observation_identity_mismatch")
+    eligible_count = sum(
+        1
+        for observation in observations
+        if isinstance(observation, dict) and observation.get("behavior_detection_eligible") is True
+    )
+    if report.get("behavior_detection_count") != eligible_count:
+        failures.append("exact_artifact_behavior_detection_count_mismatch")
+    codex_source_finding_count = sum(
+        1 for observation in observations if isinstance(observation, dict) and observation.get("source") == "ai_source_review"
+    )
+    codex_behavior_finding_count = sum(
+        1 for observation in observations if isinstance(observation, dict) and observation.get("source") == "ai_behavioral"
+    )
+    codex_behavior_detection_count = sum(
+        1
+        for observation in observations
+        if isinstance(observation, dict)
+        and observation.get("source") == "ai_behavioral"
+        and observation.get("behavior_detection_eligible") is True
+    )
+    return {
+        "valid": not failures,
+        "failures": failures,
+        "finding_observed": not failures and process_exit_code == 20,
+        "behavior_detection_count": eligible_count,
+        "codex_source_finding_count": codex_source_finding_count,
+        "codex_behavior_finding_count": codex_behavior_finding_count,
+        "codex_behavior_detection_count": codex_behavior_detection_count,
+        "codex_behavior_detected": codex_behavior_detection_count > 0,
+    }
+
+
+def assess_codex_observed_physical_detonation(
+    report: dict[str, Any],
+    expected_artifact_sha256: str,
+) -> dict[str, Any]:
+    stages = report.get("stages") if isinstance(report.get("stages"), list) else []
+    scenario_plan = report.get("scenario_plan") if isinstance(report.get("scenario_plan"), dict) else {}
+    intents = scenario_plan.get("intents") if isinstance(scenario_plan.get("intents"), list) else []
+    expected_action_count = len(intents)
+    failures: list[str] = []
+
+    detonation_stages = [
+        stage for stage in stages if isinstance(stage, dict) and stage.get("stage") == "detonation"
+    ]
+    detonation_reasons: list[str] = []
+    projected_bundle_count = 0
+    physical_evidence_completed = False
+    if len(detonation_stages) != 1:
+        failures.append("physical_detonation_stage_missing_or_duplicate")
+    else:
+        detonation = detonation_stages[0]
+        detonation_reasons = (
+            detonation.get("reason_codes") if isinstance(detonation.get("reason_codes"), list) else []
+        )
+        projected_bundle_count = sum(
+            1
+            for reason in detonation_reasons
+            if isinstance(reason, str) and reason.endswith("_behavior_bundle_projected")
+        )
+        bundle_digest_count = sum(
+            1
+            for reason in detonation_reasons
+            if isinstance(reason, str) and "_behavior_bundle_sha256:" in reason
+        )
+        event_count_record_count = sum(
+            1
+            for reason in detonation_reasons
+            if isinstance(reason, str) and "_behavior_event_count:" in reason
+        )
+        bindings_valid = (
+            detonation.get("artifact_sha256") == expected_artifact_sha256
+            and valid_sha256(detonation.get("request_sha256"))
+            and valid_sha256(detonation.get("result_sha256"))
+            and detonation.get("observation_count") == 0
+        )
+        receipt_projection_complete = (
+            expected_action_count > 0
+            and projected_bundle_count == expected_action_count
+            and bundle_digest_count == expected_action_count
+            and event_count_record_count == expected_action_count
+            and any(
+                isinstance(reason, str) and reason.endswith("_evidence_captured_pending_analysis")
+                for reason in detonation_reasons
+            )
+            and any(
+                isinstance(reason, str) and reason.endswith("_evidence_output_preserved")
+                for reason in detonation_reasons
+            )
+            and not any(
+                isinstance(reason, str) and reason.endswith("_evidence_incomplete")
+                for reason in detonation_reasons
+            )
+        )
+        physical_evidence_completed = (
+            detonation.get("provider") in PHYSICAL_DETONATION_PROVIDERS
+            and detonation.get("status") in {"complete", "incomplete"}
+            and bindings_valid
+            and receipt_projection_complete
+        )
+        if detonation.get("provider") not in PHYSICAL_DETONATION_PROVIDERS:
+            failures.append("physical_detonation_provider_not_qualified")
+        if not bindings_valid:
+            failures.append("physical_detonation_stage_binding_invalid")
+        if not receipt_projection_complete:
+            failures.append("physical_detonation_receipt_projection_incomplete")
+        if detonation.get("status") not in {"complete", "incomplete"}:
+            failures.append("physical_detonation_stage_not_terminal")
+
+    behavioral_observations = [
+        observation
+        for observation in report.get("observations", [])
+        if isinstance(observation, dict) and observation.get("source") == "ai_behavioral"
+    ] if isinstance(report.get("observations"), list) else []
+    eligible_behavioral_observations = [
+        observation
+        for observation in behavioral_observations
+        if observation.get("behavior_detection_eligible") is True
+    ]
+    behavior_stages = [
+        stage
+        for stage in stages
+        if isinstance(stage, dict) and stage.get("stage") == "behavior_observation"
+    ]
+    behavior_stage_bindings_valid = bool(behavior_stages) and all(
+        stage.get("provider") == CODEX_BEHAVIOR_PROVIDER
+        and stage.get("artifact_sha256") == expected_artifact_sha256
+        and valid_sha256(stage.get("request_sha256"))
+        and valid_sha256(stage.get("result_sha256"))
+        and stage.get("status")
+        in {"complete", "findings", "findings_with_incomplete_coverage", "incomplete"}
+        and isinstance(stage.get("observation_count"), int)
+        and stage.get("observation_count") >= 0
+        for stage in behavior_stages
+    )
+    behavior_stage_observation_count = sum(
+        int(stage.get("observation_count", 0)) for stage in behavior_stages if isinstance(stage, dict)
+    )
+    behavior_stage_positive = any(
+        stage.get("status") in {"findings", "findings_with_incomplete_coverage"}
+        and int(stage.get("observation_count", 0)) > 0
+        for stage in behavior_stages
+        if isinstance(stage, dict)
+    )
+    codex_behavior_stage_proven = (
+        projected_bundle_count > 0
+        and len(behavior_stages) == projected_bundle_count
+        and behavior_stage_bindings_valid
+        and behavior_stage_observation_count == len(behavioral_observations)
+        and behavior_stage_positive
+        and bool(eligible_behavioral_observations)
+    )
+    if not eligible_behavioral_observations:
+        failures.append("eligible_codex_behavioral_observation_missing")
+    if not codex_behavior_stage_proven:
+        failures.append("codex_behavior_observation_stage_not_proven")
+
+    physical_safety_proven = physical_evidence_completed
+    codex_observed_detonation_gate_passed = physical_evidence_completed and codex_behavior_stage_proven
+    return {
+        "physical_detonation_evidence_completed": physical_evidence_completed,
+        "physical_safety_proven": physical_safety_proven,
+        "expected_action_count": expected_action_count,
+        "projected_behavior_bundle_count": projected_bundle_count,
+        "codex_behavior_stage_proven": codex_behavior_stage_proven,
+        "eligible_codex_behavioral_observation_count": len(eligible_behavioral_observations),
+        "codex_observed_detonation_gate_passed": codex_observed_detonation_gate_passed,
+        "failures": failures,
+    }
+
+
+def sanitized_reason_codes(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [
+        item
+        for item in value
+        if isinstance(item, str)
+        and 0 < len(item) <= 160
+        and all(
+            character.isascii()
+            and (character.islower() or character.isdigit() or character in "_-.:")
+            for character in item
+        )
+    ][:128]
+
+
+def safe_report_scalar(value: Any, maximum_length: int = 256) -> str | int | bool | None:
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and len(value) <= maximum_length and "\n" not in value and "\r" not in value:
+        return value
+    return None
+
+
+def sanitize_exact_artifact_report(report: dict[str, Any]) -> dict[str, Any]:
+    """Project the trusted report schema without copying source, telemetry, or unknown fields."""
+
+    identity = report.get("identity") if isinstance(report.get("identity"), dict) else {}
+    scenario_plan = report.get("scenario_plan") if isinstance(report.get("scenario_plan"), dict) else {}
+    stages: list[dict[str, Any]] = []
+    for stage in report.get("stages", []) if isinstance(report.get("stages"), list) else []:
+        if not isinstance(stage, dict):
+            continue
+        stages.append(
+            {
+                key: safe_report_scalar(stage.get(key))
+                for key in (
+                    "stage",
+                    "status",
+                    "artifact_sha256",
+                    "manifest_sha256",
+                    "request_sha256",
+                    "result_sha256",
+                    "provider",
+                    "observation_count",
+                )
+            }
+            | {"reason_codes": sanitized_reason_codes(stage.get("reason_codes"))}
+        )
+    observations: list[dict[str, Any]] = []
+    for observation in report.get("observations", []) if isinstance(report.get("observations"), list) else []:
+        if not isinstance(observation, dict):
+            continue
+        observations.append(
+            {
+                key: safe_report_scalar(observation.get(key))
+                for key in (
+                    "schema_version",
+                    "source",
+                    "threat_class",
+                    "confidence",
+                    "artifact_sha256",
+                    "manifest_sha256",
+                    "coverage",
+                    "behavior_detection_eligible",
+                    "observation_sha256",
+                )
+            }
+            | {"coverage_gap_codes": sanitized_reason_codes(observation.get("coverage_gap_codes"))}
+        )
+    return {
+        "schema_version": safe_report_scalar(report.get("schema_version")),
+        "status": safe_report_scalar(report.get("status")),
+        "verdict": safe_report_scalar(report.get("verdict")),
+        "exit_code": safe_report_scalar(report.get("exit_code")),
+        "identity": {
+            key: safe_report_scalar(identity.get(key))
+            for key in (
+                "artifact_sha256",
+                "envelope_sha256",
+                "manifest_sha256",
+                "byte_length",
+                "ecosystem",
+                "artifact_format",
+                "source_type",
+                "acquisition_method",
+            )
+        },
+        "stages": stages,
+        "scenario_plan": {
+            key: safe_report_scalar(scenario_plan.get(key))
+            for key in (
+                "schema_version",
+                "artifact_sha256",
+                "manifest_sha256",
+                "status",
+                "plan_sha256",
+                "runtime_binding_required",
+                "runtime_binding_status",
+                "executable",
+            )
+        }
+        | {
+            "intent_count": len(scenario_plan.get("intents", []))
+            if isinstance(scenario_plan.get("intents"), list)
+            else 0,
+            "reason_codes": sanitized_reason_codes(scenario_plan.get("reason_codes")),
+        },
+        "observations": observations,
+        "behavior_detection_count": safe_report_scalar(report.get("behavior_detection_count")),
+        "admission_authority": safe_report_scalar(report.get("admission_authority")),
+        "observed_clean": safe_report_scalar(report.get("observed_clean")),
+        "sync_back_enabled": safe_report_scalar(report.get("sync_back_enabled")),
+        "reason_codes": sanitized_reason_codes(report.get("reason_codes")),
+        "sanitized_projection": True,
+        "raw_source_or_telemetry_included": False,
+    }
+
+
+def run_legacy_workspace(
+    stage_dir: Path,
+    args: argparse.Namespace,
+    prepared: dict[str, Any],
+    paths: dict[str, Path],
+) -> dict[str, Any]:
     command = [
         sys.executable,
         str(args.evaluator_script),
@@ -513,7 +1180,7 @@ def run_step5(remote_root: Path, stage_dir: Path, args: argparse.Namespace) -> d
         "--corpus",
         str(stage_dir / "metadata" / "corpus_manifest.jsonl"),
         "--sample-id",
-        sample_id,
+        args.sample_id,
         "--workspace",
         prepared["workspace"],
         "--state-dir",
@@ -541,27 +1208,232 @@ def run_step5(remote_root: Path, stage_dir: Path, args: argparse.Namespace) -> d
         paths["evidence_dir"] / "post-run-vm-suspend.out",
         args.timeout_seconds,
     )
-    summary = {
-        "schema": f"{SCHEMA_PREFIX}.summary.v1",
-        "created_at_utc": now_utc(),
-        "sample_id": sample_id,
-        "run_id": run_id,
-        "live_gate": live_gate,
-        "prepared_manifest_path": str(paths["prepared_manifest"]),
-        "prepared_manifest_sha256": sha256_file(paths["prepared_manifest"]),
+    return {
+        "execution_path": LEGACY_EXECUTION_PATH,
+        "claim_bearing": False,
+        "scorable": False,
+        "finalizable": False,
         "run_record": run_record,
         "result_path": str(result_path),
         "result_sha256": sha256_file(result_path) if result_path.is_file() else None,
         "verdict_class": result.get("verdict_class"),
-        "summary": result.get("summary", {}),
+        "producer_summary": result.get("summary", {}),
+        "diagnostic_completed": run_record["exit_code"] == 0 and bool(result),
+        "diagnostic_detection_observed": result.get("verdict_class") not in {None, "miss", "unsafe_allow"},
         "safety_failures": safety_failures,
         "safety_passed": not safety_failures,
+        "vm_state_status": "suspend_requested_rebuild_or_prune_before_next_live_run",
+        "post_run_vm_suspend": suspend_record,
+    }
+
+
+def run_exact_artifact(
+    args: argparse.Namespace,
+    prepared: dict[str, Any],
+    paths: dict[str, Path],
+    execution_config: dict[str, Any],
+) -> dict[str, Any]:
+    artifact = Path(prepared["exact_artifact"]["path"])
+    command = [
+        str(args.whoathere_bin),
+        "artifact",
+        "inspect",
+        str(artifact),
+        "--ecosystem",
+        prepared["sample"]["ecosystem"],
+        "--state-dir",
+        str(args.state_dir),
+        "--ai-review",
+        "--approve-hosted-source-review",
+        "--behavior-observe",
+        "--approve-hosted-behavior-review",
+        "--ai-provider",
+        "codex",
+        "--ai-client-path",
+        str(args.codex_client_path),
+        "--ai-client-sha256",
+        args.codex_client_sha256,
+        "--ai-model",
+        args.codex_model,
+        "--ai-auth-home",
+        str(args.codex_auth_home),
+        "--ai-timeout-seconds",
+        str(args.codex_timeout_seconds),
+        "--detonation",
+        "--detonation-config",
+        str(args.detonation_config),
+    ]
+    command_identity = {
+        "operation": "whoathere_artifact_inspect_exact_artifact",
+        "artifact_sha256": prepared["exact_artifact"]["sha256"],
+        "ecosystem": prepared["sample"]["ecosystem"],
+        "detonation": True,
+        "detonation_config_sha256": args.detonation_config_sha256,
+        "ai_source_review": True,
+        "ai_behavior_observation": True,
+        "ai_provider": "codex",
+        "ai_client_sha256": args.codex_client_sha256,
+        "ai_model": args.codex_model,
+        "ai_auth_mode": "saved_subscription_auth_dedicated_home",
+        "ai_timeout_seconds": args.codex_timeout_seconds,
+        "source_review_approval_ref": args.restricted_source_review_approval_ref,
+        "behavior_review_approval_ref": args.restricted_behavior_review_approval_ref,
+        "sync_back_option_present": False,
+    }
+    run_record, raw_stdout = run_capture_restricted(
+        command,
+        paths["restricted_command_output"] / "exact-artifact-inspection.stdout",
+        paths["restricted_command_output"] / "exact-artifact-inspection.stderr",
+        args.product_run_timeout_seconds,
+        command_identity,
+    )
+    try:
+        parsed = json.loads(raw_stdout)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        parsed = None
+    report = parsed if isinstance(parsed, dict) else {}
+    validation = validate_exact_artifact_report(
+        report,
+        run_record["exit_code"],
+        prepared["exact_artifact"]["sha256"],
+    )
+    if run_record["timed_out"]:
+        validation["failures"].append("exact_artifact_product_timed_out")
+        validation["valid"] = False
+        validation["finding_observed"] = False
+    if validation["valid"]:
+        write_json(paths["exact_artifact_report"], sanitize_exact_artifact_report(report))
+    physical_assessment = assess_codex_observed_physical_detonation(
+        report,
+        prepared["exact_artifact"]["sha256"],
+    )
+    diagnostic_completed = validation["valid"] and run_record["exit_code"] in {20, 22}
+    product_finding_observed = diagnostic_completed and run_record["exit_code"] == 20
+    codex_observed_detonation = (
+        product_finding_observed
+        and physical_assessment["codex_observed_detonation_gate_passed"]
+    )
+    safety_failures = [
+        failure
+        for failure in validation["failures"]
+        if failure
+        in {
+            "exact_artifact_report_admission_authority_not_false",
+            "exact_artifact_report_observed_clean_not_false",
+            "exact_artifact_report_sync_back_enabled_not_false",
+        }
+    ]
+    if not physical_assessment["physical_safety_proven"]:
+        safety_failures.append("physical_detonation_safety_not_proven")
+    result = {
+        "schema": EXACT_ARTIFACT_DIAGNOSTIC_SCHEMA,
+        "created_at_utc": now_utc(),
+        "sample_id": prepared["sample_id"],
+        "run_id": prepared["run_id"],
+        "execution_path": EXACT_ARTIFACT_EXECUTION_PATH,
+        "claim_bearing": False,
+        "scorable": False,
+        "finalizable": False,
+        "artifact": {
+            "ecosystem": prepared["sample"]["ecosystem"],
+            "filename": prepared["sample"]["artifact_filename"],
+            "sha256": prepared["exact_artifact"]["sha256"],
+            "size": prepared["exact_artifact"]["size"],
+        },
+        "execution_config": execution_config,
+        "product": {
+            "report_path": str(paths["exact_artifact_report"]) if paths["exact_artifact_report"].is_file() else None,
+            "report_sha256": sha256_file(paths["exact_artifact_report"])
+            if paths["exact_artifact_report"].is_file()
+            else None,
+            "raw_report_sha256": run_record["stdout_sha256"],
+            "raw_report_retained_in_restricted_workspace": True,
+            "exit_code": run_record["exit_code"],
+            "status": report.get("status"),
+            "verdict": report.get("verdict"),
+            "report_validation": validation,
+        },
+        "diagnostic_completed": diagnostic_completed,
+        "product_finding_observed": product_finding_observed,
+        "diagnostic_detection_observed": codex_observed_detonation,
+        "codex_observed_detonation_gate_passed": codex_observed_detonation,
+        "physical_detonation": physical_assessment,
+        "verdict_class": "diagnostic_detection" if codex_observed_detonation else "diagnostic_miss",
+        "behavior_detection_count": validation["behavior_detection_count"],
+        "codex_source_finding_count": validation["codex_source_finding_count"],
+        "codex_behavior_finding_count": validation["codex_behavior_finding_count"],
+        "codex_behavior_detection_count": validation["codex_behavior_detection_count"],
+        "codex_behavior_detected": validation["codex_behavior_detected"],
+        "safety": {
+            "network_policy": "sinkhole_only",
+            "sync_back_allowed": False,
+            "live_c2_allowed": False,
+            "live_second_stage_fetch_allowed": False,
+            "product_sync_back_enabled": report.get("sync_back_enabled"),
+            "product_admission_authority": report.get("admission_authority"),
+        },
+        "safety_failures": safety_failures,
+        "safety_passed": not safety_failures,
+        "run_record": run_record,
+    }
+    write_json(paths["diagnostic_result"], result)
+    return {
+        "execution_path": EXACT_ARTIFACT_EXECUTION_PATH,
+        "claim_bearing": False,
+        "scorable": False,
+        "finalizable": False,
+        "run_record": run_record,
+        "result_path": str(paths["diagnostic_result"]),
+        "result_sha256": sha256_file(paths["diagnostic_result"]),
+        "product_report_path": result["product"]["report_path"],
+        "product_report_sha256": result["product"]["report_sha256"],
+        "verdict_class": result["verdict_class"],
+        "diagnostic_completed": diagnostic_completed,
+        "product_finding_observed": product_finding_observed,
+        "diagnostic_detection_observed": codex_observed_detonation,
+        "codex_observed_detonation_gate_passed": codex_observed_detonation,
+        "physical_detonation_evidence_completed": physical_assessment[
+            "physical_detonation_evidence_completed"
+        ],
+        "physical_safety_proven": physical_assessment["physical_safety_proven"],
+        "codex_behavior_detected": validation["codex_behavior_detected"],
+        "safety_failures": safety_failures,
+        "safety_passed": not safety_failures,
+        "vm_state_status": "exact_artifact_product_detonation_adapter_completed_or_reported_incomplete",
+        "post_run_vm_suspend": None,
+    }
+
+
+def run_step5(remote_root: Path, stage_dir: Path, args: argparse.Namespace) -> dict[str, Any]:
+    sample_id = args.sample_id
+    run_id = args.run_id or dt.datetime.now(dt.timezone.utc).strftime("run-%Y%m%dT%H%M%SZ")
+    paths = step5_paths(remote_root, sample_id, run_id)
+    paths["evidence_dir"].mkdir(parents=True, exist_ok=True)
+    execution_config = validate_execution_path_args(args, remote_root)
+    live_gate = verify_live_gate(remote_root, stage_dir, args, sample_id, run_id)
+    prepared = prepare_sample(remote_root, stage_dir, sample_id, run_id, args.force, args.execution_path)
+    paths["run_dir"].mkdir(parents=True, exist_ok=True)
+    if args.execution_path == EXACT_ARTIFACT_EXECUTION_PATH:
+        execution = run_exact_artifact(args, prepared, paths, execution_config)
+    else:
+        execution = run_legacy_workspace(stage_dir, args, prepared, paths)
+    summary = {
+        "schema": f"{SCHEMA_PREFIX}.summary.v2",
+        "created_at_utc": now_utc(),
+        "sample_id": sample_id,
+        "run_id": run_id,
+        "execution_path": args.execution_path,
+        "claim_bearing": False,
+        "scorable": False,
+        "finalizable": False,
+        "live_gate": live_gate,
+        "prepared_manifest_path": str(paths["prepared_manifest"]),
+        "prepared_manifest_sha256": sha256_file(paths["prepared_manifest"]),
+        **execution,
         "sync_back_allowed": False,
         "live_c2_allowed": False,
         "second_stage_live_fetch_allowed": False,
         "host_contamination_status": "contaminated_rebuild_or_clear_before_next_live_run",
-        "vm_state_status": "suspend_requested_rebuild_or_prune_before_next_live_run",
-        "post_run_vm_suspend": suspend_record,
     }
     write_json(paths["summary"], summary)
     seal_record = run_capture(
@@ -592,6 +1464,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--state-dir", type=Path, required=True)
     parser.add_argument("--whoathere-bin", type=Path, required=True)
     parser.add_argument("--evaluator-script", type=Path, required=True)
+    parser.add_argument(
+        "--execution-path",
+        choices=[LEGACY_EXECUTION_PATH, EXACT_ARTIFACT_EXECUTION_PATH],
+        required=True,
+    )
     parser.add_argument("--sample-id", required=True)
     parser.add_argument("--run-id")
     parser.add_argument("--provider-approval-ref", required=True)
@@ -603,9 +1480,36 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lulu-enabled-asserted", action="store_true")
     parser.add_argument("--lulu-reference", default="")
     parser.add_argument("--live-malware-execution-approved", action="store_true")
+    parser.add_argument("--detonation-config", type=Path)
+    parser.add_argument("--detonation-config-sha256")
+    parser.add_argument("--codex-client-path", type=Path)
+    parser.add_argument("--codex-client-sha256")
+    parser.add_argument("--codex-model")
+    parser.add_argument("--codex-auth-home", type=Path)
+    parser.add_argument("--codex-timeout-seconds", type=int, default=300)
+    parser.add_argument("--product-run-timeout-seconds", type=int, default=840)
+    parser.add_argument("--restricted-source-hosted-review-approved", action="store_true")
+    parser.add_argument("--restricted-source-review-approval-ref", default="")
+    parser.add_argument("--restricted-behavior-hosted-review-approved", action="store_true")
+    parser.add_argument("--restricted-behavior-review-approval-ref", default="")
+    parser.add_argument("--clearance-consumption-record", type=Path)
+    parser.add_argument("--clearance-consumption-record-sha256")
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--timeout-seconds", type=int, default=120)
     return parser
+
+
+def step5_exit_code(result: dict[str, Any], execution_path: str) -> int:
+    if result.get("safety_passed") is not True:
+        return 20
+    if result.get("diagnostic_completed") is not True:
+        return 70
+    if (
+        execution_path == EXACT_ARTIFACT_EXECUTION_PATH
+        and result.get("codex_observed_detonation_gate_passed") is not True
+    ):
+        return 20
+    return 0
 
 
 def main() -> int:
@@ -621,9 +1525,7 @@ def main() -> int:
             raise Step5Error(f"missing_evaluator_script:{args.evaluator_script}")
         result = run_step5(remote_root, stage_dir, args)
         print(json.dumps(result, indent=2, sort_keys=True))
-        if not result.get("safety_passed"):
-            return 20
-        return 0
+        return step5_exit_code(result, args.execution_path)
     except Step5Error as exc:
         print(f"step5_error={exc}", file=sys.stderr)
         return 64
