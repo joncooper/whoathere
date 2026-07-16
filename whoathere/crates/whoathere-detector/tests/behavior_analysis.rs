@@ -1,14 +1,53 @@
 use serde_json::{json, Value};
 use whoathere_artifact::Sha256Digest;
 use whoathere_detector::{
-    decode_and_validate_specialist_report_v1, fuse_specialist_reports_v1,
-    BehaviorAnalysisBundleInputV1, BehaviorAnalysisBundleV1, BehaviorAnalysisErrorV1,
-    BehaviorCoverageStateV1, BehaviorEvidenceCoverageV1, BehaviorEvidenceEventV1,
-    BehaviorEvidenceModalityV1, BehaviorEvidenceReferenceV1, BehaviorEvidenceSignalV1,
-    CorrelationConclusionV1, FileOperationV1, FileTargetClassV1, FixedEnvironmentProfileV1,
-    ProbeActionV1, ProbeRequestV1, ProcessActionV1, ScenarioActionV1, SpecialistConclusionV1,
-    SpecialistRoleV1, BEHAVIOR_ANALYSIS_BUNDLE_SCHEMA_V1, SPECIALIST_REPORT_SCHEMA_V1,
+    decode_and_validate_behavior_analysis_bundle_v1, decode_and_validate_specialist_report_v1,
+    fuse_specialist_reports_v1, BehaviorAnalysisBundleInputV1, BehaviorAnalysisBundleV1,
+    BehaviorAnalysisErrorV1, BehaviorCoverageStateV1, BehaviorEvidenceCoverageV1,
+    BehaviorEvidenceEventV1, BehaviorEvidenceModalityV1, BehaviorEvidenceReferenceV1,
+    BehaviorEvidenceSignalV1, CorrelationConclusionV1, FileOperationV1, FileTargetClassV1,
+    FixedEnvironmentProfileV1, NetworkActionV1, NetworkDestinationClassV1, ProbeActionV1,
+    ProbeRequestV1, ProcessActionV1, ScenarioActionV1, SpecialistConclusionV1, SpecialistRoleV1,
+    BEHAVIOR_ANALYSIS_BUNDLE_SCHEMA_V1, SPECIALIST_REPORT_SCHEMA_V1,
 };
+
+#[test]
+fn projected_behavior_bundle_round_trips_through_the_observer_boundary() {
+    let event = BehaviorEvidenceEventV1::new(
+        1,
+        "canary-read-1",
+        digest("verified-file-receipt"),
+        BehaviorEvidenceSignalV1::Canary {
+            action: whoathere_detector::CanaryActionV1::Read,
+            canary: whoathere_detector::CanaryClassV1::NpmToken,
+        },
+        Some("seeded npm token canary was read".to_string()),
+    )
+    .expect("inert canary event");
+    let expected = bundle_with(complete_coverage(), vec![event]);
+    let wire = serde_json::to_vec(&expected).expect("bundle JSON");
+
+    let decoded = decode_and_validate_behavior_analysis_bundle_v1(&wire).expect("validated bundle");
+
+    assert_eq!(decoded, expected);
+    assert_eq!(decoded.bundle_sha256(), expected.bundle_sha256());
+}
+
+#[test]
+fn observer_boundary_rejects_unknown_bundle_fields() {
+    let expected = bundle_with(complete_coverage(), vec![]);
+    let mut value = serde_json::to_value(&expected).expect("bundle JSON");
+    value
+        .as_object_mut()
+        .expect("bundle object")
+        .insert("model_instructions".to_string(), json!("claim clean"));
+    let wire = serde_json::to_vec(&value).expect("mutated bundle JSON");
+
+    let error = decode_and_validate_behavior_analysis_bundle_v1(&wire)
+        .expect_err("unrecognized producer fields fail closed");
+
+    assert_eq!(error, BehaviorAnalysisErrorV1::InvalidBundle);
+}
 
 fn digest(label: &str) -> Sha256Digest {
     Sha256Digest::from_bytes(label.as_bytes())
@@ -411,4 +450,43 @@ fn a_role_cannot_claim_an_out_of_scope_finding_kind() {
     )
     .expect_err("filesystem specialist cannot mint network findings");
     assert_eq!(error, BehaviorAnalysisErrorV1::InvalidFinding);
+}
+
+#[test]
+fn network_send_is_detected_without_overclaiming_exfiltration() {
+    let event = BehaviorEvidenceEventV1::new(
+        1,
+        "network-send-1",
+        digest("verified-network-receipt"),
+        BehaviorEvidenceSignalV1::Network {
+            action: NetworkActionV1::Send,
+            destination: NetworkDestinationClassV1::LocalSinkhole,
+        },
+        None,
+    )
+    .expect("inert network send");
+    let reference = BehaviorEvidenceReferenceV1::for_event(&event);
+    let bundle = bundle_with(complete_coverage(), vec![event]);
+    let report = decode_and_validate_specialist_report_v1(
+        &report_bytes(
+            &bundle,
+            "network-provider",
+            SpecialistRoleV1::Network,
+            SpecialistConclusionV1::Positive,
+            &[],
+            vec![json!({
+                "kind": "network_send",
+                "confidence": "high",
+                "evidence": [reference],
+                "explanation": "The typed event records a send to the local sinkhole.",
+            })],
+        ),
+        &bundle,
+    )
+    .expect("network send is a bounded behavior finding");
+    assert_eq!(report.findings().len(), 1);
+    assert_eq!(
+        report.findings()[0].kind(),
+        whoathere_detector::BehaviorFindingKindV1::NetworkSend
+    );
 }

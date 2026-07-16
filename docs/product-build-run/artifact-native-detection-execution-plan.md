@@ -52,6 +52,25 @@ Do not pursue IPv6, GSO, full TLS interception, or general protocol expansion un
 detection gate shows that it is necessary. The current goal ends at a credible, usable,
 macOS-hosted local detection beta. Cloudflare and AWS portability are a separate follow-on goal.
 
+### July 15 working checkpoint
+
+- The exact npm adapter now validates exported process, file, canary, and network evidence and
+  writes a sanitized, digest-bound `behavior-bundle.json` for each completed VM profile.
+- `whoathere behavior observe` structurally reloads that bundle, requires its digest to match the
+  upstream adapter-reported digest, and invokes the measured native Codex client with saved
+  subscription authentication, an empty read-only workspace, no tools or web access, and a strict
+  findings-only schema.
+- A native inert smoke ran every applicable process, filesystem, credential-and-canary, and network
+  specialist. The fused report preserved behavior-specific `lifecycle_trigger_execution`,
+  `credential_access`, `canary_access`, and `network_send` findings with exact event-hash citations.
+  Unsupported sibling claims were rejected without erasing valid positives. Provider failure, AI
+  no-finding, and invalid citations remain inconclusive and can never produce `observed_clean` or
+  admission authority.
+- The cloud Mac runtime and fresh execution image qualified physically. Exact inert npm execution
+  under both `ci_false` and `ci_true`, including a read-only canary fixture, then reproduced
+  BLK-001 before authenticated evidence sealing. The observer is ready to consume the first
+  completed physical bundle; the sensor pairing redesign remains a separate bounded blocker.
+
 ## 2. Product target and claim boundary
 
 The down-the-middle product workflow is:

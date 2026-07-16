@@ -16,6 +16,7 @@ pub const SPECIALIST_REPORT_SCHEMA_V1: &str = "whoathere.specialist_report.v1";
 pub const CORRELATION_REPORT_SCHEMA_V1: &str = "whoathere.correlation_report.v1";
 
 const MAX_EVENTS: usize = 50_000;
+const MAX_BUNDLE_WIRE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_UNTRUSTED_DETAIL_BYTES: usize = 4_096;
 const MAX_SPECIALIST_OUTPUT_BYTES: usize = 512 * 1024;
 const MAX_FINDINGS_PER_REPORT: usize = 128;
@@ -293,7 +294,8 @@ impl BehaviorEvidenceSignalV1 {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BehaviorEvidenceEventV1 {
     sequence: u64,
     event_id: String,
@@ -368,7 +370,8 @@ pub struct BehaviorAnalysisBundleInputV1 {
     pub host_receipt_sha256: Sha256Digest,
 }
 
-#[derive(Clone, PartialEq, Eq, Serialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BehaviorAnalysisBundleV1 {
     schema_version: String,
     artifact_sha256: Sha256Digest,
@@ -507,6 +510,25 @@ impl BehaviorAnalysisBundleV1 {
     }
 }
 
+/// Loads a projected behavior bundle at the observe-only AI boundary.
+///
+/// The decoder revalidates every event, coverage row, receipt binding, and
+/// ordering invariant before any hosted provider can receive the bundle.
+pub fn decode_and_validate_behavior_analysis_bundle_v1(
+    bytes: &[u8],
+) -> Result<BehaviorAnalysisBundleV1, BehaviorAnalysisErrorV1> {
+    if bytes.is_empty()
+        || bytes.len() > MAX_BUNDLE_WIRE_BYTES
+        || std::str::from_utf8(bytes).is_err()
+    {
+        return Err(BehaviorAnalysisErrorV1::InvalidBundle);
+    }
+    let bundle: BehaviorAnalysisBundleV1 =
+        serde_json::from_slice(bytes).map_err(|_| BehaviorAnalysisErrorV1::InvalidBundle)?;
+    bundle.validate()?;
+    Ok(bundle)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BehaviorEvidenceReferenceV1 {
@@ -616,6 +638,7 @@ pub enum BehaviorFindingKindV1 {
     CredentialExfiltration,
     DnsLookup,
     OutboundConnection,
+    NetworkSend,
     MetadataAccess,
     Exfiltration,
     SecondStageDownload,
@@ -644,6 +667,7 @@ impl BehaviorFindingKindV1 {
             | Finding::CanaryUse => BehaviorThreatClassV1::CredentialAndSensitiveFileDiscovery,
             Finding::DnsLookup
             | Finding::OutboundConnection
+            | Finding::NetworkSend
             | Finding::MetadataAccess
             | Finding::Exfiltration
             | Finding::CredentialExfiltration => BehaviorThreatClassV1::NetworkAndExfiltration,
@@ -706,6 +730,7 @@ impl BehaviorFindingKindV1 {
                 self,
                 Finding::DnsLookup
                     | Finding::OutboundConnection
+                    | Finding::NetworkSend
                     | Finding::MetadataAccess
                     | Finding::Exfiltration
                     | Finding::CredentialExfiltration
@@ -1440,6 +1465,15 @@ fn finding_has_typed_support(
                 signal,
                 Signal::Network {
                     action: NetworkActionV1::Connect,
+                    ..
+                }
+            )
+        }),
+        Finding::NetworkSend => any(|signal| {
+            matches!(
+                signal,
+                Signal::Network {
+                    action: NetworkActionV1::Send,
                     ..
                 }
             )

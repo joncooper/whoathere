@@ -7,19 +7,23 @@ An entry must distinguish confirmed evidence from inference, preserve the safety
 the smallest decision or experiment needed to resume it. Mainline work moves to another
 detection-bearing slice instead of continuing an unbounded patch loop.
 
-## BLK-001: npm CI=true process evidence stops on an orphan `sendto` exit
+## BLK-001: npm package execution stops on an orphan `sendto` exit
 
-Status: paused after the runtime-v11 decision run; no runtime-v12 work authorized.
+Status: paused after physical reproduction under both npm CI profiles; no runtime-v12 work
+authorized in the working-solution slice.
 
 Confirmed:
 
-- deterministic runtime qualification passed twice and the signed qualification record verified;
-- the exact inert npm artifact and sealed CI=true template failed closed before an accepted package
-  result;
+- deterministic runtime qualification passed twice, a fresh cloud-Mac physical qualification
+  passed, and the signed qualification record verified;
+- the exact inert network/canary npm artifact failed closed under both `ci_false` and `ci_true`
+  before an accepted package result;
+- a second inert package that only read the seeded canary reproduced the same fault under both
+  profiles, so package-authored networking is not required to trigger it;
 - the bounded child reason was `exit_without_enter`, observed syscall `sendto`, pending count zero;
 - the failure propagated as process-stream pairing invalid, then process-sensor runtime fault;
 - the VM stopped, the disposable clone was destroyed, no public route or sync-back existed, and
-  CI=false was not run.
+  no authenticated behavior bundle was sealed.
 
 Not established:
 
@@ -46,9 +50,10 @@ First experiment on resume:
    positive observations preserved.
 3. Prove that omitted gaps, forged completeness, count changes, or bundle tampering fail
    verification.
-4. Rebuild deterministically, requalify twice, and rerun only the same CI=true inert artifact.
-5. Keep CI=false held until the CI=true result has authenticated guest evidence, independently
-   verified host composition, honest incomplete/non-clean status, and complete teardown.
+4. Rebuild deterministically, requalify twice, and rerun the read-only canary fixture under
+   `ci_false` first, then `ci_true`.
+5. Require authenticated guest evidence, independently verified host composition, honest
+   incomplete/non-clean status, and complete teardown before reconnecting the Codex observer.
 
 Alternatives considered:
 

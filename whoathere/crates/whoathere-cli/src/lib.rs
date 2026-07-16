@@ -16,10 +16,11 @@ use whoathere_core::{
     WorkflowRisk,
 };
 use whoathere_detector::{
-    external_scanner_specs, plan_external_scanner_run, run_external_scanners,
-    scan_npm_package_json, scan_pyproject_toml, scanner_bootstrap_receipt_path, scanner_inventory,
-    scanner_workspace_digest, ExternalScannerInventoryItem, ExternalScannerRunRecord,
-    ExternalScannerRunSummary, ScannerEcosystem, ScannerExecutionRole, EXTERNAL_SCANNER_RUN_SCHEMA,
+    decode_and_validate_behavior_analysis_bundle_v1, external_scanner_specs,
+    plan_external_scanner_run, run_external_scanners, scan_npm_package_json, scan_pyproject_toml,
+    scanner_bootstrap_receipt_path, scanner_inventory, scanner_workspace_digest,
+    ExternalScannerInventoryItem, ExternalScannerRunRecord, ExternalScannerRunSummary,
+    ScannerEcosystem, ScannerExecutionRole, EXTERNAL_SCANNER_RUN_SCHEMA,
 };
 use whoathere_evidence::{
     minimum_profiles, EvidenceBundle, EvidenceJobBinding, EvidenceJobResult, EvidenceProfile,
@@ -43,7 +44,8 @@ use whoathere_policy::{
 };
 use whoathere_runner::{
     canonical_utc_timestamp_from_unix_seconds_v1, execute_readonly, inspect_exact_artifact_v1,
-    plan_protected_execution, ExactArtifactAiAdapterV1, ExactArtifactCodexAiAdapterV1,
+    plan_protected_execution, BehaviorCodexObserverConfigV1, BehaviorCodexObserverV1,
+    BehaviorCodexPanelOutcomeV1, ExactArtifactAiAdapterV1, ExactArtifactCodexAiAdapterV1,
     ExactArtifactCodexAiConfigV1, ExactArtifactDetonationAdapterV1, ExactArtifactInspectionErrorV1,
     ExactArtifactInspectionRequestV1, ExecutionDecision, LinuxVzExactNpmDetonationAdapterV1,
     LinuxVzExactNpmDetonationConfigV1,
@@ -86,6 +88,22 @@ pub struct CommandResult {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
+    BehaviorObserveMissingBundle,
+    BehaviorObserveInvalidOptions {
+        reason_code: &'static str,
+    },
+    BehaviorObserve {
+        bundle_path: String,
+        bundle_sha256: Option<String>,
+        ai_provider: Option<String>,
+        ai_client_path: Option<String>,
+        ai_client_sha256: Option<String>,
+        ai_model: Option<String>,
+        ai_auth_home: Option<String>,
+        state_dir: Option<String>,
+        ai_timeout_seconds: Option<u64>,
+        approve_hosted_behavior_review: bool,
+    },
     ArtifactInspectMissingPath,
     ArtifactInspectInvalidOptions {
         reason_code: &'static str,
@@ -677,9 +695,128 @@ fn parse_exact_artifact_inspect(args: &[String]) -> Command {
     }
 }
 
+fn parse_behavior_observe(args: &[String]) -> Command {
+    let Some(bundle_path) = args.first() else {
+        return Command::BehaviorObserveMissingBundle;
+    };
+    if bundle_path.is_empty() || bundle_path.starts_with("--") {
+        return Command::BehaviorObserveMissingBundle;
+    }
+
+    let mut ai_provider = None;
+    let mut bundle_sha256 = None;
+    let mut ai_client_path = None;
+    let mut ai_client_sha256 = None;
+    let mut ai_model = None;
+    let mut ai_auth_home = None;
+    let mut state_dir = None;
+    let mut ai_timeout_seconds = None;
+    let mut approve_hosted_behavior_review = false;
+    let mut seen = std::collections::BTreeSet::new();
+    let mut index = 1;
+    while index < args.len() {
+        let argument = args[index].as_str();
+        let (flag, inline_value) = match argument.split_once('=') {
+            Some((flag, value)) => (flag, Some(value)),
+            None => (argument, None),
+        };
+        match flag {
+            "--approve-hosted-behavior-review" => {
+                if inline_value.is_some() {
+                    return Command::BehaviorObserveInvalidOptions {
+                        reason_code: "behavior_observe_option_malformed",
+                    };
+                }
+                if !seen.insert(flag) {
+                    return Command::BehaviorObserveInvalidOptions {
+                        reason_code: "behavior_observe_option_duplicate",
+                    };
+                }
+                approve_hosted_behavior_review = true;
+                index += 1;
+            }
+            "--bundle-sha256"
+            | "--ai-provider"
+            | "--ai-client-path"
+            | "--ai-client-sha256"
+            | "--ai-model"
+            | "--ai-auth-home"
+            | "--state-dir"
+            | "--ai-timeout-seconds" => {
+                if !seen.insert(flag) {
+                    return Command::BehaviorObserveInvalidOptions {
+                        reason_code: "behavior_observe_option_duplicate",
+                    };
+                }
+                let value = match inline_value {
+                    Some(value) if !value.is_empty() => value.to_string(),
+                    Some(_) => {
+                        return Command::BehaviorObserveInvalidOptions {
+                            reason_code: "behavior_observe_option_value_required",
+                        };
+                    }
+                    None => match args.get(index + 1) {
+                        Some(value) if !value.is_empty() && !value.starts_with("--") => {
+                            index += 1;
+                            value.clone()
+                        }
+                        _ => {
+                            return Command::BehaviorObserveInvalidOptions {
+                                reason_code: "behavior_observe_option_value_required",
+                            };
+                        }
+                    },
+                };
+                match flag {
+                    "--bundle-sha256" => bundle_sha256 = Some(value),
+                    "--ai-provider" => ai_provider = Some(value),
+                    "--ai-client-path" => ai_client_path = Some(value),
+                    "--ai-client-sha256" => ai_client_sha256 = Some(value),
+                    "--ai-model" => ai_model = Some(value),
+                    "--ai-auth-home" => ai_auth_home = Some(value),
+                    "--state-dir" => state_dir = Some(value),
+                    "--ai-timeout-seconds" => {
+                        ai_timeout_seconds = match value.parse::<u64>() {
+                            Ok(value) => Some(value),
+                            Err(_) => {
+                                return Command::BehaviorObserveInvalidOptions {
+                                    reason_code: "behavior_observe_option_value_invalid",
+                                };
+                            }
+                        }
+                    }
+                    _ => unreachable!("matched behavior observe value option"),
+                }
+                index += 1;
+            }
+            _ => {
+                return Command::BehaviorObserveInvalidOptions {
+                    reason_code: "behavior_observe_option_unknown",
+                };
+            }
+        }
+    }
+
+    Command::BehaviorObserve {
+        bundle_path: bundle_path.clone(),
+        bundle_sha256,
+        ai_provider,
+        ai_client_path,
+        ai_client_sha256,
+        ai_model,
+        ai_auth_home,
+        state_dir,
+        ai_timeout_seconds,
+        approve_hosted_behavior_review,
+    }
+}
+
 pub fn parse_command(args: &[String]) -> Command {
     match args {
         [] => Command::Help,
+        [cmd, sub, rest @ ..] if cmd == "behavior" && sub == "observe" => {
+            parse_behavior_observe(rest)
+        }
         [cmd, sub, rest @ ..] if cmd == "artifact" && sub == "inspect" => {
             parse_exact_artifact_inspect(rest)
         }
@@ -960,6 +1097,35 @@ pub fn evaluate_command(command: Command) -> CommandResult {
 
 fn render_command_text(command: Command) -> String {
     match command {
+        Command::BehaviorObserveMissingBundle => {
+            render_behavior_observe_error("behavior_observe_bundle_path_required", 64)
+        }
+        Command::BehaviorObserveInvalidOptions { reason_code } => {
+            render_behavior_observe_error(reason_code, 64)
+        }
+        Command::BehaviorObserve {
+            bundle_path,
+            bundle_sha256,
+            ai_provider,
+            ai_client_path,
+            ai_client_sha256,
+            ai_model,
+            ai_auth_home,
+            state_dir,
+            ai_timeout_seconds,
+            approve_hosted_behavior_review,
+        } => render_behavior_observe(BehaviorObserveArgs {
+            bundle_path: &bundle_path,
+            bundle_sha256: bundle_sha256.as_deref(),
+            ai_provider: ai_provider.as_deref(),
+            ai_client_path: ai_client_path.as_deref(),
+            ai_client_sha256: ai_client_sha256.as_deref(),
+            ai_model: ai_model.as_deref(),
+            ai_auth_home: ai_auth_home.as_deref(),
+            state_dir: state_dir.as_deref(),
+            ai_timeout_seconds,
+            approve_hosted_behavior_review,
+        }),
         Command::ArtifactInspectMissingPath => {
             ExactArtifactInspectionErrorV1::invalid_request("exact_artifact_path_required")
                 .to_pretty_json()
@@ -1619,6 +1785,7 @@ fn command_help() -> String {
     concat!(
         "whoathere <",
         "artifact inspect <npm.tgz|package.whl|package.tar.gz|package.zip> [--ecosystem auto|npm|pypi] [--state-dir <dir>] [--acquired-at <YYYY-MM-DDTHH:MM:SSZ>] [--ai-review --ai-provider codex --ai-client-path <absolute-native-binary> --ai-client-sha256 <sha256:...> --ai-model <exact-model> --ai-auth-home <dedicated-auth-home> --approve-hosted-source-review [--ai-timeout-seconds <1..600>]] [--detonation --detonation-config <absolute-json>]|",
+        "behavior observe <behavior-bundle.json> --bundle-sha256 <sha256:...> --ai-provider codex --ai-client-path <absolute-native-binary> --ai-client-sha256 <sha256:...> --ai-model <exact-model> --ai-auth-home <dedicated-auth-home> --approve-hosted-behavior-review [--state-dir <dir>] [--ai-timeout-seconds <1..600>]|",
         "doctor [--json] [--state-dir <dir>] [--helper <path>]",
         "|status",
         "|config check <path>",
@@ -1686,6 +1853,174 @@ struct ExactArtifactInspectArgs<'a> {
     approve_hosted_source_review: bool,
     detonation: bool,
     detonation_config: Option<&'a str>,
+}
+
+struct BehaviorObserveArgs<'a> {
+    bundle_path: &'a str,
+    bundle_sha256: Option<&'a str>,
+    ai_provider: Option<&'a str>,
+    ai_client_path: Option<&'a str>,
+    ai_client_sha256: Option<&'a str>,
+    ai_model: Option<&'a str>,
+    ai_auth_home: Option<&'a str>,
+    state_dir: Option<&'a str>,
+    ai_timeout_seconds: Option<u64>,
+    approve_hosted_behavior_review: bool,
+}
+
+fn render_behavior_observe_error(reason_code: &str, exit_code: i32) -> String {
+    serde_json::to_string_pretty(&serde_json::json!({
+        "schema_version": "whoathere.behavior_observe.v1",
+        "status": "error",
+        "exit_code": exit_code,
+        "provider": "codex",
+        "reason_codes": [reason_code],
+        "observe_only": true,
+        "admission_authority": false,
+        "observed_clean": false,
+    }))
+    .expect("static behavior observe error serializes")
+}
+
+fn render_behavior_observe_inconclusive(reason_code: &str) -> String {
+    serde_json::to_string_pretty(&serde_json::json!({
+        "schema_version": "whoathere.behavior_observe.v1",
+        "status": "inconclusive",
+        "exit_code": 22,
+        "provider": "codex",
+        "reason_codes": [reason_code],
+        "observe_only": true,
+        "admission_authority": false,
+        "observed_clean": false,
+    }))
+    .expect("static behavior observe inconclusive result serializes")
+}
+
+fn render_behavior_observe(args: BehaviorObserveArgs<'_>) -> String {
+    if args.ai_provider != Some("codex") {
+        return render_behavior_observe_error("behavior_observe_codex_provider_required", 64);
+    }
+    if !args.approve_hosted_behavior_review {
+        return render_behavior_observe_error(
+            "behavior_observe_hosted_review_approval_required",
+            64,
+        );
+    }
+    if args.ai_client_path.is_none()
+        || args.ai_client_sha256.is_none()
+        || args.ai_model.is_none()
+        || args.ai_auth_home.is_none()
+    {
+        return render_behavior_observe_error("behavior_observe_codex_config_required", 64);
+    }
+    if args
+        .ai_timeout_seconds
+        .is_some_and(|timeout| timeout == 0 || timeout > 600)
+    {
+        return render_behavior_observe_error("behavior_observe_timeout_invalid", 64);
+    }
+    let bundle_path = Path::new(args.bundle_path);
+    let metadata = match std::fs::symlink_metadata(bundle_path) {
+        Ok(metadata)
+            if metadata.file_type().is_file()
+                && !metadata.file_type().is_symlink()
+                && metadata.len() > 0
+                && metadata.len() <= 16 * 1024 * 1024 =>
+        {
+            metadata
+        }
+        _ => {
+            return render_behavior_observe_error("behavior_observe_bundle_unavailable", 64);
+        }
+    };
+    let _ = metadata;
+    let bundle_bytes = match std::fs::read(bundle_path) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return render_behavior_observe_error("behavior_observe_bundle_unavailable", 64);
+        }
+    };
+    let bundle = match decode_and_validate_behavior_analysis_bundle_v1(&bundle_bytes) {
+        Ok(bundle) => bundle,
+        Err(error) => return render_behavior_observe_error(error.reason_code(), 64),
+    };
+    let expected_bundle_sha256 = match args.bundle_sha256 {
+        Some(value) => match whoathere_artifact::Sha256Digest::parse(value.to_string()) {
+            Ok(digest) => digest,
+            Err(_) => {
+                return render_behavior_observe_error("behavior_observe_bundle_sha256_invalid", 64);
+            }
+        },
+        None => {
+            return render_behavior_observe_error("behavior_observe_bundle_sha256_required", 64);
+        }
+    };
+    if expected_bundle_sha256 != bundle.bundle_sha256() {
+        return render_behavior_observe_error("behavior_observe_bundle_digest_mismatch", 64);
+    }
+    let client_sha256 = match whoathere_artifact::Sha256Digest::parse(
+        args.ai_client_sha256
+            .expect("required Codex config checked")
+            .to_string(),
+    ) {
+        Ok(digest) => digest,
+        Err(_) => {
+            return render_behavior_observe_error("behavior_observe_ai_client_sha256_invalid", 64);
+        }
+    };
+    let state_root_candidate = args
+        .state_dir
+        .map(PathBuf::from)
+        .unwrap_or_else(|| default_state_dir().with_file_name("behavior-observer"));
+    if std::fs::create_dir_all(&state_root_candidate).is_err() {
+        return render_behavior_observe_error("behavior_observe_state_dir_unavailable", 64);
+    }
+    let state_root = match std::fs::canonicalize(&state_root_candidate) {
+        Ok(path) => path,
+        Err(_) => {
+            return render_behavior_observe_error("behavior_observe_state_dir_unavailable", 64);
+        }
+    };
+    let observer = match BehaviorCodexObserverV1::new(BehaviorCodexObserverConfigV1 {
+        client_path: PathBuf::from(args.ai_client_path.expect("required Codex config checked")),
+        client_sha256,
+        model: args
+            .ai_model
+            .expect("required Codex config checked")
+            .to_string(),
+        authentication_home: PathBuf::from(
+            args.ai_auth_home.expect("required Codex config checked"),
+        ),
+        runtime_root: state_root.join("codex-runs"),
+        timeout: Duration::from_secs(args.ai_timeout_seconds.unwrap_or(120)),
+    }) {
+        Ok(observer) => observer,
+        Err(error) => return render_behavior_observe_error(error.reason_code(), 64),
+    };
+    let panel = match observer.observe_all(&bundle) {
+        Ok(panel) => panel,
+        Err(error) => return render_behavior_observe_inconclusive(error.reason_code()),
+    };
+    let (status, exit_code) = match panel.outcome() {
+        BehaviorCodexPanelOutcomeV1::Positive => ("behavior_detected", 20),
+        BehaviorCodexPanelOutcomeV1::Uncertain => ("inconclusive", 22),
+    };
+    serde_json::to_string_pretty(&serde_json::json!({
+        "schema_version": "whoathere.behavior_observe.v1",
+        "status": status,
+        "exit_code": exit_code,
+        "provider": "codex",
+        "artifact_sha256": bundle.artifact_sha256(),
+        "bundle_sha256": bundle.bundle_sha256(),
+        "reason_codes": [panel.reason_code()],
+        "panel": panel,
+        "observe_only": true,
+        "admission_authority": false,
+        "observed_clean": false,
+    }))
+    .unwrap_or_else(|_| {
+        render_behavior_observe_error("behavior_observe_output_serialization_failed", 70)
+    })
 }
 
 fn render_exact_artifact_inspect(args: ExactArtifactInspectArgs<'_>) -> String {
@@ -18252,6 +18587,89 @@ mod tests {
     use super::*;
 
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn parses_behavior_observe_options() {
+        let args = vec![
+            "behavior".to_string(),
+            "observe".to_string(),
+            "/tmp/behavior-bundle.json".to_string(),
+            "--bundle-sha256".to_string(),
+            "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+            "--ai-provider".to_string(),
+            "codex".to_string(),
+            "--ai-client-path".to_string(),
+            "/opt/whoathere/codex".to_string(),
+            "--ai-client-sha256".to_string(),
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+            "--ai-model".to_string(),
+            "gpt-inert-opaque-2026-07-15".to_string(),
+            "--ai-auth-home".to_string(),
+            "/tmp/whoathere-codex-auth".to_string(),
+            "--state-dir".to_string(),
+            "/tmp/whoathere-behavior-state".to_string(),
+            "--ai-timeout-seconds=45".to_string(),
+            "--approve-hosted-behavior-review".to_string(),
+        ];
+        assert_eq!(
+            parse_command(&args),
+            Command::BehaviorObserve {
+                bundle_path: "/tmp/behavior-bundle.json".to_string(),
+                bundle_sha256: Some(
+                    "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                        .to_string(),
+                ),
+                ai_provider: Some("codex".to_string()),
+                ai_client_path: Some("/opt/whoathere/codex".to_string()),
+                ai_client_sha256: Some(
+                    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        .to_string(),
+                ),
+                ai_model: Some("gpt-inert-opaque-2026-07-15".to_string()),
+                ai_auth_home: Some("/tmp/whoathere-codex-auth".to_string()),
+                state_dir: Some("/tmp/whoathere-behavior-state".to_string()),
+                ai_timeout_seconds: Some(45),
+                approve_hosted_behavior_review: true,
+            }
+        );
+    }
+
+    #[test]
+    fn behavior_observe_rejects_bad_options_and_never_returns_clean() {
+        for (arguments, expected_reason) in [
+            (
+                vec!["/tmp/bundle.json", "--ai-providre", "codex"],
+                "behavior_observe_option_unknown",
+            ),
+            (
+                vec!["/tmp/bundle.json", "--ai-provider"],
+                "behavior_observe_option_value_required",
+            ),
+            (
+                vec![
+                    "/tmp/bundle.json",
+                    "--ai-provider",
+                    "codex",
+                    "--ai-provider=codex",
+                ],
+                "behavior_observe_option_duplicate",
+            ),
+            (
+                vec!["/tmp/bundle.json", "--approve-hosted-behavior-review=true"],
+                "behavior_observe_option_malformed",
+            ),
+        ] {
+            let mut args = vec!["behavior".to_string(), "observe".to_string()];
+            args.extend(arguments.into_iter().map(ToString::to_string));
+            let result = evaluate_command(parse_command(&args));
+            assert_eq!(result.exit_code, 64);
+            let value: serde_json::Value =
+                serde_json::from_str(&result.output).expect("behavior error JSON");
+            assert_eq!(value["reason_codes"][0], expected_reason);
+            assert_eq!(value["admission_authority"], false);
+            assert_eq!(value["observed_clean"], false);
+        }
+    }
 
     #[test]
     fn parses_exact_artifact_inspection_options() {
