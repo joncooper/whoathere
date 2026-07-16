@@ -1487,15 +1487,27 @@ fn finding_has_typed_support(
                 }
             )
         }),
-        Finding::Exfiltration => any(|signal| {
-            matches!(
-                signal,
-                Signal::Network {
-                    action: NetworkActionV1::Send,
-                    ..
-                }
-            )
-        }),
+        Finding::Exfiltration => {
+            let canary_sent = any(|signal| {
+                matches!(
+                    signal,
+                    Signal::Canary {
+                        action: CanaryActionV1::SentToNetwork,
+                        ..
+                    }
+                )
+            });
+            let network_send = any(|signal| {
+                matches!(
+                    signal,
+                    Signal::Network {
+                        action: NetworkActionV1::Send,
+                        ..
+                    }
+                )
+            });
+            canary_sent && network_send
+        }
         Finding::SecondStageDownload => any(|signal| {
             matches!(
                 signal,

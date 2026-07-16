@@ -489,4 +489,23 @@ fn network_send_is_detected_without_overclaiming_exfiltration() {
         report.findings()[0].kind(),
         whoathere_detector::BehaviorFindingKindV1::NetworkSend
     );
+
+    let error = decode_and_validate_specialist_report_v1(
+        &report_bytes(
+            &bundle,
+            "network-provider",
+            SpecialistRoleV1::Network,
+            SpecialistConclusionV1::Positive,
+            &[],
+            vec![json!({
+                "kind": "exfiltration",
+                "confidence": "high",
+                "evidence": [reference],
+                "explanation": "A plain send does not establish that data was exfiltrated.",
+            })],
+        ),
+        &bundle,
+    )
+    .expect_err("plain network send cannot support exfiltration");
+    assert_eq!(error, BehaviorAnalysisErrorV1::InvalidFindingEvidence);
 }
