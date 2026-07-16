@@ -65,10 +65,13 @@ macOS-hosted local detection beta. Cloudflare and AWS portability are a separate
   cited the canary-read and TCP-connect events, retained every coverage gap, and did not infer token
   exfiltration or egressed content. Codex had no guest-control, containment, sync-back, or admission
   authority.
-- A physical exact `packaging` wheel completed its install and import actions. A separate
-  trigger-rich wheel normalized to eight install, `.pth`, import-root, and console-entry scenarios;
-  all eight fresh-VM actions completed and produced projected behavior bundles with honest
-  incomplete coverage.
+- The current signed Mac helper,
+  `sha256:d2a0785c6c6a37988e7c61a1870a5152e3a9e3e9b295986a734f0e1eab4123a1`, restores the
+  `selected_process_stage_name` binding needed by typed projection. With that helper, one exact
+  inert canary wheel completed all eight install, `.pth`, import-root, and console-entry scenarios.
+  Applicable actions projected authenticated PyPI-token canary access and fixed local-sinkhole
+  network intent. Codex cited the physical events as lifecycle, canary-access, and network findings
+  while retaining incomplete coverage and refusing to infer that canary bytes were exfiltrated.
 - A real benign wheel with declared dependencies completed its offline install and import
   scenarios with `pip --no-index --no-deps`. Both actions produced projected behavior bundles while
   the product retained `vm_wheel_dependency_closure_not_installed`, an inconclusive verdict, no
@@ -98,6 +101,13 @@ macOS-hosted local detection beta. Cloudflare and AWS portability are a separate
 - Codex consumed the authenticated sdist install-action bundle after the rejected model pin was
   replaced with the subscription-supported exact model. It returned a receipt-bound no-finding
   result that remained correctly inconclusive, observe-only, and without admission authority.
+- A separate exact canary-bearing sdist run exercised the build path with the current signed helper.
+  Actions 0 through 2 completed in the guest and reached typed projection. Action 0 projected
+  build-backend activation, protected PyPI-token canary access, and fixed local-sinkhole network
+  intent; Codex detected all three from the bound bundle without claiming exfiltration. Action 3
+  completed in the guest, but the host failed before projecting its 5,945,958-byte runtime result.
+  That bounded host-result problem is parked in BLK-006. This run remains incomplete and grants
+  neither `observed_clean` nor admission.
 - No restricted malware was rerun. The known-malware detection result therefore remains **7/11**;
   this checkpoint proves working npm, wheel, and base PEP 517 sdist execution/observation slices,
   not an improved campaign score.
@@ -340,10 +350,11 @@ authenticated derived-wheel probe-manifest fanout, nonempty build-closure qualif
 `setup.py`, and ZIP sdists remain separate follow-on slices; this product report does not grant
 admission authority or claim clean.
 
-This is a connected observation path, not complete evidence verification. The physical npm bundle
-still reports independent guest-root receipt verification and host-composition completeness as
-unmet, and modality coverage remains incomplete. Positive evidence stays visible, but the bundle
-cannot produce a complete detection row, `observed_clean`, or admission.
+This is a connected observation path, not complete evidence verification. The current physical
+npm, wheel, and sdist bundles still report independent guest-root receipt verification and
+host-composition completeness as unmet, and modality coverage remains incomplete. Positive
+evidence stays visible, but no such bundle can produce a complete detection row, `observed_clean`,
+or admission.
 
 The current npm and wheel adapters each verify their runtime scenario plan before projection. The
 provider-neutral bundle contract does not yet carry an explicit parent inspection-plan digest, so
@@ -366,12 +377,14 @@ bridges remain claim-critical:
   `artifact.bin` packaging, shared Mac helper selection, and the exact-artifact adapter now exist.
   The adapter passes the outer inspection's canonical envelope and manifest into the builder,
   re-normalizes the same verified bytes there, and runs every derived trigger with a fresh action
-  binding. A physical `packaging` wheel completed install and import, and a trigger-rich fixture
-  completed all eight fresh-VM install, `.pth`, import-root, and console-entry actions with projected
-  behavior bundles. A standalone Codex observer cited the physical `wheel_pth` event and correctly
-  kept it context-only under incomplete coverage. A real benign dependency-bearing wheel also
-  completed physical offline install and import with `--no-deps`; its missing closure remained an
-  explicit inconclusive limitation. Missing evidence remains explicitly inconclusive.
+  binding. A physical `packaging` wheel completed install and import. With the current signed helper
+  restoring `selected_process_stage_name`, an exact canary-bearing wheel completed all eight
+  fresh-VM install, `.pth`, import-root, and console-entry actions with typed behavior bundles.
+  Applicable actions projected authenticated PyPI-token canary access and fixed local-sinkhole
+  network intent, and Codex detected lifecycle, canary-access, and network behavior without
+  inferring exfiltration. A real benign dependency-bearing wheel also completed physical offline
+  install and import with `--no-deps`; its missing closure remained an explicit inconclusive
+  limitation. Root/host composition and modality coverage remain incomplete.
 - **sdist:** nested-root normalization, exact wheel-only build closure, fixed build plans, and
   exactly-one-derived-wheel sealing now reach an exact PEP 517 execution bundle. The product
   adapter and CLI route are implemented. The Mac helper,
@@ -388,12 +401,15 @@ bridges remain claim-critical:
   package-root guesses must not authorize post-build `.pth` or console probes. The next sdist
   expansion is a two-pass discovery/probe workflow in which an authenticated derived-wheel manifest
   drives fresh `.pth`, import, and entry-point actions. Nonempty sealed build-closure qualification,
-  legacy `setup.py`, and ZIP sdists remain explicit follow-on controls, never clean fallbacks.
-- **canaries:** the canonical npm CI fixture now uses the protected fake npm-token path inside the
-  VZ guest. The `ci_true` physical run generated authenticated open/read observations and fixed
-  loopback TCP-connect intent; `ci_false` activated neither. This proves npm canary-access and local
-  network-intent observation only. General PyPI, GitHub, repository, and workflow canary seeding,
-  proof of canary use or exfiltration, and propagation sinkhole/shim controls remain future work.
+  legacy `setup.py`, and ZIP sdists remain explicit follow-on controls, never clean fallbacks. A
+  separate canary-bearing exact sdist run projected actions 0 through 2; Codex detected
+  build-backend, PyPI-canary, and local-network behavior from action 0. Action 3 completed in the
+  guest but failed on the host before projection of its 5,945,958-byte runtime result, so that case
+  is parked in BLK-006 rather than being polished in the current slice.
+- **canaries:** the canonical npm fixture and the exact PyPI wheel and sdist fixtures now exercise
+  protected fake-token paths inside the VZ guest plus fixed local-sinkhole intent. These runs prove
+  typed canary access and network intent, not that canary bytes were used or egressed. GitHub,
+  repository, and workflow canaries plus propagation sinkhole/shim controls remain future work.
 
 These are detection-bearing gaps, so they take precedence over additional transport or protocol
 hardening unless a failing gate demonstrates a new prerequisite.

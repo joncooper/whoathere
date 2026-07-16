@@ -64,10 +64,10 @@ Required v2 boundary:
 - any missing action, receipt, stream, frame, event, projection, denominator commitment, or identity
   match prevents registry generation.
 
-The July 16 npm run does not close this blocker. Authenticated positive events can be projected and
-reviewed, but the physical bundle still lacks a complete independently verified event denominator
-and complete modality coverage. Such observations remain useful for manual review; they cannot
-make an incomplete row detection-recall eligible or support clean admission.
+The July 16 npm, wheel, and sdist runs do not close this blocker. Authenticated positive events can
+be projected and reviewed, but the physical bundles still lack a complete independently verified
+event denominator and complete modality coverage. Such observations remain useful for manual
+review; they cannot make an incomplete row detection-recall eligible or support clean admission.
 
 Smallest resume experiment:
 
@@ -191,3 +191,36 @@ clean admission, legacy or ZIP support, or malware detection. The product still 
 `derived_wheel_probe_manifest_required`, `sdist_build_closure_required`, and
 `dynamic_build_requirements_possible`. Preserve this fixture as a regression; no BLK-005 resume
 experiment remains.
+
+The separate canary-bearing sdist run recorded under BLK-006 does not reopen the resolved
+empty-closure defect.
+
+## BLK-006: canary-bearing sdist action 3 completed in the guest but did not project
+
+Status: parked on July 16, 2026. It does not block the completed wheel proof or the projected sdist
+build-backend evidence from actions 0 through 2.
+
+Confirmed:
+
+- the current signed helper,
+  `sha256:d2a0785c6c6a37988e7c61a1870a5152e3a9e3e9b295986a734f0e1eab4123a1`, restores
+  `selected_process_stage_name` and was used for this run;
+- one exact inert canary-bearing sdist completed guest actions 0 through 2 and projected typed
+  behavior bundles;
+- action 0 projected build-backend activation, protected PyPI-token canary access, and fixed
+  local-sinkhole network intent; observe-only Codex detected all three while preserving incomplete
+  coverage and making no canary-exfiltration claim;
+- action 3 completed in the guest, but the host failed before projecting the 5,945,958-byte runtime
+  result;
+- independent guest-root and host-composition completeness remain unmet, so no result is
+  `observed_clean`, admission-eligible, or complete for detection recall.
+
+Smallest resume experiment:
+
+1. Reproduce only action 3 with the same pinned inert artifact, helper, runtime, and scenario.
+2. Identify the single bounded host consumption or projection limit reached by the retained
+   5,945,958-byte result.
+3. Correct that limit narrowly and require typed projection plus the existing safety invariants.
+
+Until this bounded experiment is resumed, preserve actions 0 through 2 as valid positive evidence
+and report the full sdist run as incomplete.
