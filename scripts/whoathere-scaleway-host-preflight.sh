@@ -48,6 +48,7 @@ import hashlib
 import pathlib
 import posixpath
 import re
+import stat
 import sys
 import tarfile
 
@@ -62,6 +63,8 @@ with bundle.open("rb") as handle:
 actual_hash = "sha256:" + hasher.hexdigest()
 if actual_hash != expected_hash:
     raise SystemExit(f"local_bundle_sha256_mismatch expected={expected_hash} actual={actual_hash}")
+if stat.S_IMODE(bundle.stat().st_mode) & 0o077:
+    raise SystemExit("local_bundle_permissions_not_private")
 with tarfile.open(bundle, "r:gz") as tar:
     members = tar.getmembers()
     if not members:
@@ -77,6 +80,8 @@ with tarfile.open(bundle, "r:gz") as tar:
             raise SystemExit(f"unsafe_tar_link={name}")
         if not (member.isfile() or member.isdir()):
             raise SystemExit(f"unsupported_tar_member={name}")
+        if member.mode & 0o077:
+            raise SystemExit(f"tar_member_permissions_not_private={name}")
         if top is None:
             top = parts[0]
         elif parts[0] != top:
@@ -152,10 +157,11 @@ if [ -n "$STAGE_BUNDLE" ]; then
 fi
 
 ssh_run() {
+  command="umask 077; $1"
   if [ -n "$SSH_CONFIG" ]; then
-    ssh -F "$SSH_CONFIG" "$SSH_HOST" "$1"
+    ssh -F "$SSH_CONFIG" "$SSH_HOST" "$command"
   else
-    ssh "$SSH_HOST" "$1"
+    ssh "$SSH_HOST" "$command"
   fi
 }
 
@@ -183,7 +189,7 @@ run_remote_capture() {
   return "$status"
 }
 
-ssh_run "mkdir -p $REMOTE_ROOT/incoming $REMOTE_ROOT/staged $REMOTE_ROOT/evidence/preflight $REMOTE_ROOT/quarantine"
+ssh_run "umask 077; mkdir -p $REMOTE_ROOT/incoming $REMOTE_ROOT/staged $REMOTE_ROOT/evidence/preflight $REMOTE_ROOT/quarantine; chmod 700 $REMOTE_ROOT $REMOTE_ROOT/incoming $REMOTE_ROOT/staged $REMOTE_ROOT/evidence $REMOTE_ROOT/evidence/preflight $REMOTE_ROOT/quarantine"
 
 if [ -n "$STAGE_BUNDLE" ]; then
   bundle_top=$(validate_bundle_tar)
@@ -194,6 +200,7 @@ if [ -n "$STAGE_BUNDLE" ]; then
   if [ -f "$BUNDLE.manifest.json" ]; then
     scp_to_remote "$BUNDLE.manifest.json" "$remote_bundle.manifest.json"
   fi
+  ssh_run "chmod 600 $remote_bundle; test ! -e $remote_bundle.manifest.json || chmod 600 $remote_bundle.manifest.json"
   ssh_run "printf '%s  scaleway-staging-bundle.tar.gz\n' '$BUNDLE_SHA256' >$remote_bundle.sha256"
   remote_hash=$(ssh_run "shasum -a 256 $remote_bundle | awk '{print \"sha256:\" \$1}'")
   if [ "$remote_hash" != "$BUNDLE_SHA256" ]; then
@@ -203,7 +210,8 @@ if [ -n "$STAGE_BUNDLE" ]; then
   ssh_run "test ! -e $remote_stage_dir"
   ssh_run "tar -tzf $remote_bundle >$REMOTE_ROOT/evidence/preflight/staging-bundle-list.txt"
   ssh_run "tar -xzf $remote_bundle -C $REMOTE_ROOT/staged"
-  ssh_run "python3 -c 'import json,pathlib,sys; p=pathlib.Path(\"$remote_stage_dir/metadata/staging-manifest.json\"); m=json.loads(p.read_text()); ok=(m.get(\"no_unpack_during_staging\") is True and m.get(\"sync_back_allowed\") is False and m.get(\"live_c2_allowed\") is False and m.get(\"second_stage_live_fetch_allowed\") is False and m.get(\"sample_count\") == 20); print(json.dumps({\"staging_manifest\": str(p), \"valid\": ok, \"sample_count\": m.get(\"sample_count\")})); sys.exit(0 if ok else 1)' >$REMOTE_ROOT/evidence/preflight/staging-manifest-check.json"
+  ssh_run "chmod -R go-rwx $remote_stage_dir"
+  ssh_run "python3 -c 'import json,pathlib,sys; d=pathlib.Path(\"$remote_stage_dir\"); p=d/\"metadata/staging-manifest.json\"; a=d/\"metadata/custody-review-approval.json\"; m=json.loads(p.read_text()); approval=json.loads(a.read_text()); count=m.get(\"sample_count\"); samples=m.get(\"samples\"); approved=approval.get(\"samples\"); manifest_hashes={row.get(\"sample_sha256\") for row in samples} if isinstance(samples,list) else set(); approval_hashes={row.get(\"sample_sha256\") for row in approved} if isinstance(approved,list) else set(); ok=(m.get(\"no_unpack_during_staging\") is True and m.get(\"sync_back_allowed\") is False and m.get(\"live_c2_allowed\") is False and m.get(\"second_stage_live_fetch_allowed\") is False and isinstance(count,int) and not isinstance(count,bool) and count > 0 and isinstance(samples,list) and len(samples) == count and len(manifest_hashes) == count and isinstance(approved,list) and len(approved) == count and len(approval_hashes) == count and manifest_hashes == approval_hashes and approval.get(\"scope\",{}).get(\"sample_count\") == count); print(json.dumps({\"staging_manifest\": str(p), \"valid\": ok, \"sample_count\": count, \"approval_sample_count\": len(approved) if isinstance(approved,list) else None})); sys.exit(0 if ok else 1)' >$REMOTE_ROOT/evidence/preflight/staging-manifest-check.json"
 fi
 
 overall=0

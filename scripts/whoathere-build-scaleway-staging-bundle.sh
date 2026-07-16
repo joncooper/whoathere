@@ -9,6 +9,7 @@ OUT_ROOT="$REPO_ROOT/.whoathere/corpus-lab/scaleway-staging"
 SECURITY_LAB_OWNER=""
 EVALUATION_OWNER=""
 LEGAL_PROVIDER_APPROVAL_REF=""
+CUSTODY_REVIEW_APPROVAL=""
 FORCE=""
 
 usage() {
@@ -19,6 +20,7 @@ usage:
     --security-lab-owner <name-or-approval-ref> \
     --evaluation-owner <name-or-approval-ref> \
     --legal-provider-approval-ref <approval-ref> \
+    [--custody-review-approval <additive-approval.json>] \
     [--case-id whoathere-actual-malware-2026-07-01] \
     [--quarantine-root .whoathere/corpus-lab/quarantine] \
     [--out-root .whoathere/corpus-lab/scaleway-staging] \
@@ -63,6 +65,11 @@ while [ "$#" -gt 0 ]; do
       LEGAL_PROVIDER_APPROVAL_REF=$2
       shift 2
       ;;
+    --custody-review-approval)
+      [ "$#" -ge 2 ] || usage
+      CUSTODY_REVIEW_APPROVAL=$2
+      shift 2
+      ;;
     --force)
       FORCE=1
       shift
@@ -80,7 +87,7 @@ done
 [ -n "$EVALUATION_OWNER" ] || usage
 [ -n "$LEGAL_PROVIDER_APPROVAL_REF" ] || usage
 
-python3 -B - "$REPO_ROOT" "$CASE_ID" "$QUARANTINE_ROOT" "$OUT_ROOT" "$SECURITY_LAB_OWNER" "$EVALUATION_OWNER" "$LEGAL_PROVIDER_APPROVAL_REF" "$FORCE" <<'PY'
+python3 -B - "$REPO_ROOT" "$CASE_ID" "$QUARANTINE_ROOT" "$OUT_ROOT" "$CUSTODY_REVIEW_APPROVAL" "$SECURITY_LAB_OWNER" "$EVALUATION_OWNER" "$LEGAL_PROVIDER_APPROVAL_REF" "$FORCE" <<'PY'
 import datetime as dt
 import hashlib
 import json
@@ -95,17 +102,20 @@ repo_root = Path(sys.argv[1]).resolve()
 case_id = sys.argv[2]
 quarantine_root = Path(sys.argv[3]).expanduser()
 out_root = Path(sys.argv[4]).expanduser()
-security_lab_owner = sys.argv[5]
-evaluation_owner = sys.argv[6]
-legal_provider_approval_ref = sys.argv[7]
-force = bool(sys.argv[8])
+approval_arg = sys.argv[5]
+security_lab_owner = sys.argv[6]
+evaluation_owner = sys.argv[7]
+legal_provider_approval_ref = sys.argv[8]
+force = bool(sys.argv[9])
+
+os.umask(0o077)
 
 if not all(part and part.replace("-", "").replace("_", "").replace(".", "").isalnum() for part in [case_id]):
     raise SystemExit(f"invalid_case_id={case_id}")
 
 fixture_path = repo_root / "docs/product-build-run/actual-malware-malwarebazaar-fixture.jsonl.sample"
 case_root = quarantine_root / case_id / "malwarebazaar"
-approval_path = case_root / "custody-review-approval.json"
+approval_path = Path(approval_arg).expanduser() if approval_arg else case_root / "custody-review-approval.json"
 summary_path = case_root / "bulk-acquisition-summary.json"
 results_path = case_root / "bulk-acquisition-results.jsonl"
 validator = repo_root / "scripts/whoathere-actual-malware-evaluation.py"
@@ -113,6 +123,27 @@ validator = repo_root / "scripts/whoathere-actual-malware-evaluation.py"
 for required in (fixture_path, approval_path, summary_path, results_path, validator):
     if not required.is_file():
         raise SystemExit(f"missing_required_file={required}")
+
+def harden_private_tree(root: Path) -> None:
+    for path in (root, *root.rglob("*")):
+        if path.is_symlink():
+            raise SystemExit(f"unsafe_quarantine_symlink={path}")
+        if path.is_dir():
+            path.chmod(0o700)
+        elif path.is_file():
+            path.chmod(0o600)
+        else:
+            raise SystemExit(f"unsafe_quarantine_entry={path}")
+
+def ensure_private_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    path.chmod(0o700)
+
+harden_private_tree(case_root)
+if not approval_path.is_relative_to(case_root):
+    if approval_path.is_symlink():
+        raise SystemExit(f"unsafe_approval_symlink={approval_path}")
+    approval_path.chmod(0o600)
 
 def sha256_file(path: Path) -> str:
     hasher = hashlib.sha256()
@@ -122,8 +153,9 @@ def sha256_file(path: Path) -> str:
     return "sha256:" + hasher.hexdigest()
 
 def copy_file(src: Path, dst: Path) -> None:
-    dst.parent.mkdir(parents=True, exist_ok=True)
+    ensure_private_dir(dst.parent)
     shutil.copy2(src, dst)
+    dst.chmod(0o600)
 
 def read_json(path: Path):
     return json.loads(path.read_text(encoding="utf-8"))
@@ -134,8 +166,44 @@ if approval.get("schema") != "whoathere.actual_malware.custody_review_approval.v
     raise SystemExit("approval_schema_invalid")
 if approval.get("review_decision") != "approved_for_corpus_promotion_and_controlled_staging":
     raise SystemExit("approval_decision_not_controlled_staging")
-if summary.get("status_counts") != {"acquired": 20}:
-    raise SystemExit(f"summary_status_counts_invalid={summary.get('status_counts')}")
+result_rows = []
+with results_path.open(encoding="utf-8") as handle:
+    for line_number, line in enumerate(handle, start=1):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            row = json.loads(stripped)
+        except json.JSONDecodeError as exc:
+            raise SystemExit(f"bulk_results_json_invalid_line={line_number}") from exc
+        result_rows.append(row)
+
+allowed_acquisition_statuses = {"acquired", "skipped_existing"}
+computed_status_counts: dict[str, int] = {}
+result_by_sha: dict[str, dict] = {}
+for row in result_rows:
+    status = row.get("status")
+    if status not in allowed_acquisition_statuses:
+        raise SystemExit(f"bulk_result_status_not_stageable={status}")
+    computed_status_counts[status] = computed_status_counts.get(status, 0) + 1
+    digest = str(row.get("sample_sha256", "")).removeprefix("sha256:")
+    if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+        raise SystemExit("bulk_result_sample_sha256_invalid")
+    if digest in result_by_sha:
+        raise SystemExit(f"bulk_result_sample_duplicate={digest}")
+    result_by_sha[digest] = row
+if summary.get("status_counts") != computed_status_counts:
+    raise SystemExit(
+        f"summary_status_counts_invalid={summary.get('status_counts')} computed={computed_status_counts}"
+    )
+if summary.get("requested_count") != len(result_rows):
+    raise SystemExit("summary_requested_count_mismatch")
+if summary.get("fixture_row_count") != len(result_rows):
+    raise SystemExit("summary_fixture_row_count_mismatch")
+if summary.get("fixture_sha256") != sha256_file(fixture_path):
+    raise SystemExit("summary_fixture_sha256_mismatch")
+if summary.get("case_id") != case_id:
+    raise SystemExit("summary_case_id_mismatch")
 scope = approval.get("scope", {})
 expected_scope_hashes = {
     "fixture_sha256": fixture_path,
@@ -145,8 +213,24 @@ expected_scope_hashes = {
 for key, path in expected_scope_hashes.items():
     if scope.get(key) != sha256_file(path):
         raise SystemExit(f"approval_scope_hash_mismatch={key}")
-if scope.get("sample_count") != len(approval.get("samples", [])):
+approval_samples = approval.get("samples", [])
+if not isinstance(approval_samples, list) or not approval_samples:
+    raise SystemExit("approval_samples_empty")
+if scope.get("sample_count") != len(approval_samples):
     raise SystemExit("approval_scope_sample_count_mismatch")
+
+approved_digests: set[str] = set()
+for sample in approval_samples:
+    if not isinstance(sample, dict):
+        raise SystemExit("approval_sample_invalid")
+    digest = str(sample.get("sample_sha256", "")).removeprefix("sha256:")
+    if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+        raise SystemExit("approval_sample_sha256_invalid")
+    if digest in approved_digests:
+        raise SystemExit(f"approval_sample_duplicate={digest}")
+    if digest not in result_by_sha:
+        raise SystemExit(f"approval_sample_missing_from_acquisition={digest}")
+    approved_digests.add(digest)
 
 timestamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 stage_root = out_root / case_id / f"stage-{timestamp}"
@@ -156,8 +240,8 @@ if stage_root.exists():
     shutil.rmtree(stage_root)
 metadata_dir = stage_root / "metadata"
 samples_dir = stage_root / "samples" / "malwarebazaar"
-metadata_dir.mkdir(parents=True)
-samples_dir.mkdir(parents=True)
+ensure_private_dir(metadata_dir)
+ensure_private_dir(samples_dir)
 
 copy_file(fixture_path, metadata_dir / "actual-malware-malwarebazaar-fixture.jsonl.sample")
 copy_file(approval_path, metadata_dir / "custody-review-approval.json")
@@ -175,7 +259,7 @@ with fixture_path.open(encoding="utf-8") as handle:
 corpus_rows: list[dict] = []
 supporting_payload_rows: list[dict] = []
 copied_samples: list[dict] = []
-for sample in sorted(approval.get("samples", []), key=lambda item: item["sample_sha256"]):
+for sample in sorted(approval_samples, key=lambda item: item["sample_sha256"]):
     digest = sample["sample_sha256"].removeprefix("sha256:")
     source_dir = case_root / digest
     archive = source_dir / f"{digest}.malwarebazaar.zip"
@@ -214,7 +298,9 @@ for sample in sorted(approval.get("samples", []), key=lambda item: item["sample_
     if not mb_data or not isinstance(mb_data[0], dict):
         raise SystemExit(f"malwarebazaar_info_missing={digest}")
     mb_info = mb_data[0]
-    fixture_row = fixture_by_sha.get(digest) or custody_data.get("malwarebazaar_fixture_row", {})
+    fixture_row = fixture_by_sha.get(digest)
+    if fixture_row is None:
+        raise SystemExit(f"approval_sample_missing_from_fixture={digest}")
     artifact_size = int(mb_info.get("file_size") or 0)
     if artifact_size <= 0:
         raise SystemExit(f"artifact_size_missing={digest}")
@@ -382,13 +468,17 @@ manifest = {
     ).hexdigest(),
 }
 (metadata_dir / "staging-manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+(metadata_dir / "staging-manifest.json").chmod(0o600)
+
+harden_private_tree(stage_root)
 
 bundle_path = out_root / case_id / f"{stage_root.name}.tar.gz"
-bundle_path.parent.mkdir(parents=True, exist_ok=True)
+ensure_private_dir(bundle_path.parent)
 if bundle_path.exists() and not force:
     raise SystemExit(f"bundle_exists={bundle_path}")
 with tarfile.open(bundle_path, "w:gz") as tar:
     tar.add(stage_root, arcname=stage_root.name, recursive=True)
+bundle_path.chmod(0o600)
 
 bundle_record = {
     "schema": "whoathere.actual_malware.scaleway_staging_bundle.v1",
@@ -406,10 +496,12 @@ bundle_record = {
 }
 bundle_record_path = bundle_path.with_name(bundle_path.name + ".manifest.json")
 bundle_record_path.write_text(json.dumps(bundle_record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+bundle_record_path.chmod(0o600)
 (bundle_path.with_name(bundle_path.name + ".sha256")).write_text(
     f"{bundle_record['bundle_sha256']}  {bundle_path.name}\n",
     encoding="utf-8",
 )
+(bundle_path.with_name(bundle_path.name + ".sha256")).chmod(0o600)
 
 print(json.dumps(bundle_record, indent=2, sort_keys=True))
 PY
