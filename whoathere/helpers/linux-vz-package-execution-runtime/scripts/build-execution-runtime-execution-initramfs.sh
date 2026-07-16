@@ -124,9 +124,13 @@ then
     echo "execution runtime manifest policy is invalid" >&2
     exit 65
 fi
+bundle_environment=$(jq -er '.environment' "$bundle_manifest")
+case "$bundle_environment" in
+    ci_false|ci_true) ;;
+    *) echo "execution bundle environment is invalid" >&2; exit 65 ;;
+esac
 if [ "$(jq -er '.schema_version' "$bundle_manifest")" != \
      whoathere.linux_vz_inert_npm_execution_bundle.v1 ] || \
-   [ "$(jq -er '.environment' "$bundle_manifest")" != ci_true ] || \
    [ "$(jq -er '.execution_authority_issued' "$bundle_manifest")" != true ] || \
    [ "$(jq -er '.attempt_limit' "$bundle_manifest")" != 1 ] || \
    [ "$(jq -er '.public_network_route_present' "$bundle_manifest")" != false ] || \
