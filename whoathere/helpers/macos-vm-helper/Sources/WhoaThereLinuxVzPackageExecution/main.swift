@@ -430,6 +430,20 @@ private enum PackageExecutionMain {
               !runtimeResult.syncBackPermitted else {
             throw PackageExecutionHarnessError.verification("runtime_result_binding")
         }
+        let action = runtimeResult.actions[0]
+        let actionEvidenceFiles: [(name: String, data: Data)] = [
+            ("action-supervisor.bin", action.supervisor),
+            ("action-root-receipt.bin", action.rootReceipt),
+            ("action-process-evidence.bin", action.process),
+            ("action-file-evidence.bin", action.file),
+            ("action-network-evidence.bin", action.network),
+        ]
+        for evidence in actionEvidenceFiles {
+            try writeNewPrivateFile(
+                options.outputDirectory.appendingPathComponent(evidence.name),
+                data: evidence.data
+            )
+        }
         try writeNewPrivateFile(
             options.outputDirectory.appendingPathComponent("runtime-result.bin"),
             data: serialEvidence.result
@@ -459,7 +473,6 @@ private enum PackageExecutionMain {
         cloneDestroyed = true
         progress.cloneDestroyed = true
 
-        let action = runtimeResult.actions[0]
         let runStatus: String
         if runtimeResult.terminal == "process_failed" {
             runStatus = "package_process_failed_evidence_preserved"
@@ -479,10 +492,16 @@ private enum PackageExecutionMain {
             "execution_initramfs_sha256": image.initramfsSHA256,
             "runtime_result_sha256": serialEvidence.resultSHA256,
             "transcript_sha256": runtimeResult.transcriptSHA256,
+            "supervisor_evidence_sha256": dataSHA256(action.supervisor),
+            "supervisor_evidence_byte_length": String(action.supervisor.count),
             "root_receipt_sha256": dataSHA256(action.rootReceipt),
+            "root_receipt_byte_length": String(action.rootReceipt.count),
             "process_evidence_sha256": dataSHA256(action.process),
+            "process_evidence_byte_length": String(action.process.count),
             "file_evidence_sha256": dataSHA256(action.file),
+            "file_evidence_byte_length": String(action.file.count),
             "network_evidence_sha256": dataSHA256(action.network),
+            "network_evidence_byte_length": String(action.network.count),
             "serial_log_sha256": dataSHA256(serialData),
             "host_raw_frame_observation_sha256": rawFrameEvidenceSHA256,
             "raw_frame_count": String(collection.ingressFrameCount),
