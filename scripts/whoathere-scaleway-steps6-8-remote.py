@@ -514,7 +514,11 @@ def eligible_matrix_samples(stage_dir: Path, requested: list[str], include_exist
 
 def validate_slice_execution_args(args: argparse.Namespace) -> None:
     if args.execution_path == LEGACY_EXECUTION_PATH:
-        if args.restricted_source_hosted_review_approved or args.restricted_behavior_hosted_review_approved:
+        if (
+            args.restricted_source_hosted_review_approved
+            or args.restricted_behavior_hosted_review_approved
+            or args.split_local_behavior_finalization
+        ):
             raise Step68Error("legacy_execution_path_rejects_hosted_restricted_review_approvals")
         return
     if args.execution_path != EXACT_ARTIFACT_EXECUTION_PATH:
@@ -527,16 +531,40 @@ def validate_slice_execution_args(args: argparse.Namespace) -> None:
     source_review_ref_present = bool(args.restricted_source_review_approval_ref)
     if source_review_approved != source_review_ref_present:
         raise Step68Error("restricted_source_review_approval_flag_and_ref_must_match")
-    required = (
+    split_local = args.split_local_behavior_finalization
+    required = [
         ("detonation_config", args.detonation_config),
         ("detonation_config_sha256", args.detonation_config_sha256),
-        ("codex_client_path", args.codex_client_path),
-        ("codex_client_sha256", args.codex_client_sha256),
-        ("codex_model", args.codex_model),
-        ("codex_auth_home", args.codex_auth_home),
         ("restricted_behavior_hosted_review_approved", args.restricted_behavior_hosted_review_approved),
         ("restricted_behavior_review_approval_ref", args.restricted_behavior_review_approval_ref),
-    )
+    ]
+    if split_local:
+        forbidden = [
+            label
+            for label, value in (
+                ("codex_client_path", args.codex_client_path),
+                ("codex_client_sha256", args.codex_client_sha256),
+                ("codex_model", args.codex_model),
+                ("codex_auth_home", args.codex_auth_home),
+                ("restricted_source_hosted_review_approved", source_review_approved),
+                ("restricted_source_review_approval_ref", args.restricted_source_review_approval_ref),
+            )
+            if value not in {None, "", False}
+        ]
+        if forbidden:
+            raise Step68Error(
+                "split_local_behavior_finalization_rejects_remote_codex_and_source_review_inputs:"
+                + ",".join(forbidden)
+            )
+    else:
+        required.extend(
+            [
+                ("codex_client_path", args.codex_client_path),
+                ("codex_client_sha256", args.codex_client_sha256),
+                ("codex_model", args.codex_model),
+                ("codex_auth_home", args.codex_auth_home),
+            ]
+        )
     missing = [label for label, value in required if value in {None, "", False}]
     if missing:
         raise Step68Error(f"exact_artifact_missing_required_options:{','.join(missing)}")
@@ -550,24 +578,27 @@ def validate_slice_execution_args(args: argparse.Namespace) -> None:
         raise Step68Error("exact_artifact_behavior_observation_requires_sinkhole_ready")
     if not valid_sha256(args.detonation_config_sha256):
         raise Step68Error("detonation_config_sha256_invalid")
-    if not valid_sha256(args.codex_client_sha256):
+    if not split_local and not valid_sha256(args.codex_client_sha256):
         raise Step68Error("codex_client_sha256_invalid")
     if not args.detonation_config.is_absolute() or not regular_non_symlink(args.detonation_config):
         raise Step68Error("detonation_config_must_be_absolute_regular_non_symlink")
     if sha256_file(args.detonation_config) != args.detonation_config_sha256:
         raise Step68Error("detonation_config_sha256_mismatch")
-    if not args.codex_client_path.is_absolute() or not regular_non_symlink(args.codex_client_path):
-        raise Step68Error("codex_client_must_be_absolute_regular_non_symlink")
-    if not os.access(args.codex_client_path, os.X_OK):
-        raise Step68Error("codex_client_not_executable")
-    if sha256_file(args.codex_client_path) != args.codex_client_sha256:
-        raise Step68Error("codex_client_sha256_mismatch")
-    if not args.codex_auth_home.is_absolute() or not directory_non_symlink(args.codex_auth_home):
-        raise Step68Error("codex_auth_home_must_be_absolute_directory_non_symlink")
-    if not 1 <= args.codex_timeout_seconds <= 600:
-        raise Step68Error("codex_timeout_seconds_out_of_range")
-    if args.run_timeout_seconds <= args.codex_timeout_seconds + args.timeout_seconds + 30:
-        raise Step68Error("run_timeout_too_short_for_codex_plus_post_run_sealing")
+    if not split_local:
+        if not args.codex_client_path.is_absolute() or not regular_non_symlink(args.codex_client_path):
+            raise Step68Error("codex_client_must_be_absolute_regular_non_symlink")
+        if not os.access(args.codex_client_path, os.X_OK):
+            raise Step68Error("codex_client_not_executable")
+        if sha256_file(args.codex_client_path) != args.codex_client_sha256:
+            raise Step68Error("codex_client_sha256_mismatch")
+        if not args.codex_auth_home.is_absolute() or not directory_non_symlink(args.codex_auth_home):
+            raise Step68Error("codex_auth_home_must_be_absolute_directory_non_symlink")
+        if not 1 <= args.codex_timeout_seconds <= 600:
+            raise Step68Error("codex_timeout_seconds_out_of_range")
+        if args.run_timeout_seconds <= args.codex_timeout_seconds + args.timeout_seconds + 30:
+            raise Step68Error("run_timeout_too_short_for_codex_plus_post_run_sealing")
+    elif args.run_timeout_seconds <= args.timeout_seconds + 30:
+        raise Step68Error("run_timeout_too_short_for_detonation_plus_post_run_sealing")
 
 
 def sanitize_exact_step5_run_record(
@@ -590,12 +621,23 @@ def sanitize_exact_step5_run_record(
             "operation": "step5_exact_artifact_diagnostic",
             "sample_id": sample_id,
             "detonation_config_sha256": args.detonation_config_sha256,
-            "codex_client_sha256": args.codex_client_sha256,
-            "codex_model": args.codex_model,
-            "ai_source_review": args.restricted_source_hosted_review_approved,
+            "behavior_observation_mode": (
+                "split_local_pending" if args.split_local_behavior_finalization else "remote_codex"
+            ),
+            "codex_client_sha256": (
+                None if args.split_local_behavior_finalization else args.codex_client_sha256
+            ),
+            "codex_model": None if args.split_local_behavior_finalization else args.codex_model,
+            "ai_source_review": (
+                False
+                if args.split_local_behavior_finalization
+                else args.restricted_source_hosted_review_approved
+            ),
+            "ai_behavior_observation": not args.split_local_behavior_finalization,
             "source_review_approval_ref_sha256": (
                 sha256_text(args.restricted_source_review_approval_ref)
                 if args.restricted_source_hosted_review_approved
+                and not args.split_local_behavior_finalization
                 else None
             ),
             "behavior_review_approval_ref_sha256": sha256_text(args.restricted_behavior_review_approval_ref),
@@ -666,16 +708,6 @@ def run_campaign_slice(remote_root: Path, stage_dir: Path, args: argparse.Namesp
                     str(args.detonation_config),
                     "--detonation-config-sha256",
                     args.detonation_config_sha256,
-                    "--codex-client-path",
-                    str(args.codex_client_path),
-                    "--codex-client-sha256",
-                    args.codex_client_sha256,
-                    "--codex-model",
-                    args.codex_model,
-                    "--codex-auth-home",
-                    str(args.codex_auth_home),
-                    "--codex-timeout-seconds",
-                    str(args.codex_timeout_seconds),
                     "--product-run-timeout-seconds",
                     str(args.run_timeout_seconds - args.timeout_seconds - 30),
                     "--restricted-behavior-hosted-review-approved",
@@ -687,14 +719,31 @@ def run_campaign_slice(remote_root: Path, stage_dir: Path, args: argparse.Namesp
                     clearance_consumption["sha256"],
                 ]
             )
-            if args.restricted_source_hosted_review_approved:
+            if args.split_local_behavior_finalization:
+                command.append("--split-local-behavior-finalization")
+            else:
                 command.extend(
                     [
-                        "--restricted-source-hosted-review-approved",
-                        "--restricted-source-review-approval-ref",
-                        args.restricted_source_review_approval_ref,
+                        "--codex-client-path",
+                        str(args.codex_client_path),
+                        "--codex-client-sha256",
+                        args.codex_client_sha256,
+                        "--codex-model",
+                        args.codex_model,
+                        "--codex-auth-home",
+                        str(args.codex_auth_home),
+                        "--codex-timeout-seconds",
+                        str(args.codex_timeout_seconds),
                     ]
                 )
+                if args.restricted_source_hosted_review_approved:
+                    command.extend(
+                        [
+                            "--restricted-source-hosted-review-approved",
+                            "--restricted-source-review-approval-ref",
+                            args.restricted_source_review_approval_ref,
+                        ]
+                    )
         if args.sinkhole_ready_asserted:
             command.extend(["--sinkhole-ready-asserted", "--sinkhole-reference", args.sinkhole_reference])
         if args.egress_deny_asserted:
@@ -728,6 +777,10 @@ def run_campaign_slice(remote_root: Path, stage_dir: Path, args: argparse.Namesp
                 "claim_bearing": False,
                 "diagnostic_completed": summary.get("diagnostic_completed"),
                 "diagnostic_detection_observed": summary.get("diagnostic_detection_observed"),
+                "behavior_observation_mode": summary.get("behavior_observation_mode"),
+                "pending_local_behavior_finalization": summary.get(
+                    "pending_local_behavior_finalization"
+                ),
                 "codex_behavior_detected": summary.get("codex_behavior_detected"),
                 "codex_observed_detonation_gate_passed": summary.get(
                     "codex_observed_detonation_gate_passed"
@@ -758,7 +811,19 @@ def run_campaign_slice(remote_root: Path, stage_dir: Path, args: argparse.Namesp
         for run in sample_runs
         if run.get("diagnostic_completed") is True
         and run.get("diagnostic_detection_observed") is not True
+        and run.get("pending_local_behavior_finalization") is not True
     ]
+    pending_local_runs = [
+        run
+        for run in sample_runs
+        if run.get("pending_local_behavior_finalization") is True
+    ]
+    split_pending_completed = (
+        args.split_local_behavior_finalization
+        and len(pending_local_runs) == len(sample_runs)
+        and not incomplete
+        and not unsafe
+    )
     slice_summary = {
         "schema": f"{SCHEMA_PREFIX}.campaign_slice.v1",
         "created_at_utc": now_utc(),
@@ -780,14 +845,29 @@ def run_campaign_slice(remote_root: Path, stage_dir: Path, args: argparse.Namesp
         "sample_runs": sample_runs,
         "safety_passed": not unsafe,
         "diagnostic_completed": not incomplete,
-        "diagnostic_detection_observed": not incomplete and not diagnostic_misses,
-        "diagnostic_gate_passed": not unsafe and not incomplete and not diagnostic_misses,
+        "diagnostic_detection_observed": (
+            not args.split_local_behavior_finalization
+            and not incomplete
+            and not diagnostic_misses
+        ),
+        "diagnostic_gate_passed": (
+            not args.split_local_behavior_finalization
+            and not unsafe
+            and not incomplete
+            and not diagnostic_misses
+        ),
+        "behavior_observation_mode": (
+            "split_local_pending" if args.split_local_behavior_finalization else "remote_codex"
+        ),
+        "pending_local_behavior_finalization": split_pending_completed,
+        "physical_pending_gate_passed": split_pending_completed,
         "stop_required_before_next_live_sample": True,
         "host_contamination_status": "contaminated_rebuild_or_clear_before_next_live_run",
         "vm_state_status": "suspend_requested_rebuild_or_prune_before_next_live_run",
         "unsafe_or_failed_runs": unsafe,
         "incomplete_runs": incomplete,
         "diagnostic_misses": diagnostic_misses,
+        "pending_local_runs": pending_local_runs,
     }
     write_json(slice_dir / "step6-slice-summary.json", slice_summary)
     print(json.dumps(slice_summary, indent=2, sort_keys=True))
@@ -2024,6 +2104,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--restricted-source-review-approval-ref", default="")
     parser.add_argument("--restricted-behavior-hosted-review-approved", action="store_true")
     parser.add_argument("--restricted-behavior-review-approval-ref", default="")
+    parser.add_argument("--split-local-behavior-finalization", action="store_true")
     parser.add_argument("--finalize-failed-score", action="store_true")
     parser.add_argument("--timeout-seconds", type=int, default=120)
     parser.add_argument("--run-timeout-seconds", type=int, default=900)
@@ -2116,7 +2197,11 @@ def main() -> int:
                 return 20
             if (
                 args.execution_path == EXACT_ARTIFACT_EXECUTION_PATH
-                and result["slice"].get("diagnostic_gate_passed") is not True
+                and (
+                    result["slice"].get("physical_pending_gate_passed") is not True
+                    if args.split_local_behavior_finalization
+                    else result["slice"].get("diagnostic_gate_passed") is not True
+                )
             ):
                 write_json(remote_root / "evidence" / "step6" / args.campaign_id / "last-run-failed.json", result)
                 return 20

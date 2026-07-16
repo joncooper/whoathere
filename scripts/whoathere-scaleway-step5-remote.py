@@ -623,7 +623,11 @@ def validate_execution_path_args(args: argparse.Namespace, remote_root: Path) ->
             args.clearance_consumption_record,
             args.clearance_consumption_record_sha256,
         )
-        if args.restricted_source_hosted_review_approved or args.restricted_behavior_hosted_review_approved:
+        if (
+            args.restricted_source_hosted_review_approved
+            or args.restricted_behavior_hosted_review_approved
+            or args.split_local_behavior_finalization
+        ):
             raise Step5Error("legacy_execution_path_rejects_hosted_restricted_review_approvals")
         if any(value not in {None, ""} for value in exact_values):
             raise Step5Error("legacy_execution_path_rejects_exact_artifact_options")
@@ -639,19 +643,43 @@ def validate_execution_path_args(args: argparse.Namespace, remote_root: Path) ->
     source_review_ref_present = bool(args.restricted_source_review_approval_ref)
     if source_review_approved != source_review_ref_present:
         raise Step5Error("restricted_source_review_approval_flag_and_ref_must_match")
+    split_local = args.split_local_behavior_finalization
     missing: list[str] = []
-    required = (
+    required = [
         ("detonation_config", args.detonation_config),
         ("detonation_config_sha256", args.detonation_config_sha256),
-        ("codex_client_path", args.codex_client_path),
-        ("codex_client_sha256", args.codex_client_sha256),
-        ("codex_model", args.codex_model),
-        ("codex_auth_home", args.codex_auth_home),
         ("restricted_behavior_hosted_review_approved", args.restricted_behavior_hosted_review_approved),
         ("restricted_behavior_review_approval_ref", args.restricted_behavior_review_approval_ref),
         ("clearance_consumption_record", args.clearance_consumption_record),
         ("clearance_consumption_record_sha256", args.clearance_consumption_record_sha256),
-    )
+    ]
+    if split_local:
+        forbidden = [
+            label
+            for label, value in (
+                ("codex_client_path", args.codex_client_path),
+                ("codex_client_sha256", args.codex_client_sha256),
+                ("codex_model", args.codex_model),
+                ("codex_auth_home", args.codex_auth_home),
+                ("restricted_source_hosted_review_approved", source_review_approved),
+                ("restricted_source_review_approval_ref", args.restricted_source_review_approval_ref),
+            )
+            if value not in {None, "", False}
+        ]
+        if forbidden:
+            raise Step5Error(
+                "split_local_behavior_finalization_rejects_remote_codex_and_source_review_inputs:"
+                + ",".join(forbidden)
+            )
+    else:
+        required.extend(
+            [
+                ("codex_client_path", args.codex_client_path),
+                ("codex_client_sha256", args.codex_client_sha256),
+                ("codex_model", args.codex_model),
+                ("codex_auth_home", args.codex_auth_home),
+            ]
+        )
     for label, value in required:
         if value in {None, "", False}:
             missing.append(label)
@@ -667,14 +695,15 @@ def validate_execution_path_args(args: argparse.Namespace, remote_root: Path) ->
         raise Step5Error("exact_artifact_behavior_observation_requires_sinkhole_ready")
     if not valid_sha256(args.detonation_config_sha256):
         raise Step5Error("detonation_config_sha256_invalid")
-    if not valid_sha256(args.codex_client_sha256):
+    if not split_local and not valid_sha256(args.codex_client_sha256):
         raise Step5Error("codex_client_sha256_invalid")
     if not valid_sha256(args.clearance_consumption_record_sha256):
         raise Step5Error("clearance_consumption_record_sha256_invalid")
-    if not 1 <= args.codex_timeout_seconds <= 600:
-        raise Step5Error("codex_timeout_seconds_out_of_range")
-    if args.product_run_timeout_seconds <= args.codex_timeout_seconds:
-        raise Step5Error("product_run_timeout_must_exceed_codex_timeout")
+    if not split_local:
+        if not 1 <= args.codex_timeout_seconds <= 600:
+            raise Step5Error("codex_timeout_seconds_out_of_range")
+        if args.product_run_timeout_seconds <= args.codex_timeout_seconds:
+            raise Step5Error("product_run_timeout_must_exceed_codex_timeout")
 
     detonation_config = args.detonation_config
     codex_client = args.codex_client_path
@@ -683,14 +712,15 @@ def validate_execution_path_args(args: argparse.Namespace, remote_root: Path) ->
         raise Step5Error("detonation_config_must_be_absolute_regular_non_symlink")
     if sha256_file(detonation_config) != args.detonation_config_sha256:
         raise Step5Error("detonation_config_sha256_mismatch")
-    if not codex_client.is_absolute() or not regular_non_symlink(codex_client):
-        raise Step5Error("codex_client_must_be_absolute_regular_non_symlink")
-    if not os.access(codex_client, os.X_OK):
-        raise Step5Error("codex_client_not_executable")
-    if sha256_file(codex_client) != args.codex_client_sha256:
-        raise Step5Error("codex_client_sha256_mismatch")
-    if not codex_auth_home.is_absolute() or not directory_non_symlink(codex_auth_home):
-        raise Step5Error("codex_auth_home_must_be_absolute_directory_non_symlink")
+    if not split_local:
+        if not codex_client.is_absolute() or not regular_non_symlink(codex_client):
+            raise Step5Error("codex_client_must_be_absolute_regular_non_symlink")
+        if not os.access(codex_client, os.X_OK):
+            raise Step5Error("codex_client_not_executable")
+        if sha256_file(codex_client) != args.codex_client_sha256:
+            raise Step5Error("codex_client_sha256_mismatch")
+        if not codex_auth_home.is_absolute() or not directory_non_symlink(codex_auth_home):
+            raise Step5Error("codex_auth_home_must_be_absolute_directory_non_symlink")
     clearance_consumption_path = require_under(
         args.clearance_consumption_record,
         remote_root,
@@ -713,18 +743,31 @@ def validate_execution_path_args(args: argparse.Namespace, remote_root: Path) ->
     return {
         "execution_path": EXACT_ARTIFACT_EXECUTION_PATH,
         "claim_bearing": False,
+        "behavior_observation_mode": (
+            "split_local_pending" if split_local else "remote_codex"
+        ),
         "detonation": {
             "config_sha256": args.detonation_config_sha256,
             "config_path_retained": False,
         },
-        "codex": {
-            "provider": "codex",
-            "client_sha256": args.codex_client_sha256,
-            "model": args.codex_model,
-            "auth_mode": "saved_subscription_auth_dedicated_home",
-            "auth_home_path_retained": False,
-            "timeout_seconds": args.codex_timeout_seconds,
-        },
+        "codex": (
+            {
+                "provider": "codex",
+                "remote_invocation": False,
+                "status": "pending_local_behavior_finalization",
+                "auth_material_transferred_to_remote": False,
+            }
+            if split_local
+            else {
+                "provider": "codex",
+                "remote_invocation": True,
+                "client_sha256": args.codex_client_sha256,
+                "model": args.codex_model,
+                "auth_mode": "saved_subscription_auth_dedicated_home",
+                "auth_home_path_retained": False,
+                "timeout_seconds": args.codex_timeout_seconds,
+            }
+        ),
         "restricted_hosted_review_approvals": {
             "source": {
                 "approved": source_review_approved,
@@ -845,10 +888,32 @@ def assert_no_unsafe_result(result: dict[str, Any]) -> list[str]:
     return failures
 
 
+def normal_not_requested_stage(
+    stage: Any,
+    stage_name: str,
+    reason_code: str,
+    expected_artifact_sha256: str,
+    expected_manifest_sha256: str,
+) -> bool:
+    return (
+        isinstance(stage, dict)
+        and stage.get("stage") == stage_name
+        and stage.get("status") == "not_requested"
+        and stage.get("artifact_sha256") == expected_artifact_sha256
+        and stage.get("manifest_sha256") == expected_manifest_sha256
+        and stage.get("provider") is None
+        and stage.get("request_sha256") is None
+        and stage.get("result_sha256") is None
+        and stage.get("observation_count") == 0
+        and stage.get("reason_codes") == [reason_code]
+    )
+
+
 def validate_exact_artifact_report(
     report: dict[str, Any],
     process_exit_code: int,
     expected_artifact_sha256: str,
+    behavior_observation_mode: str = "remote_codex",
 ) -> dict[str, Any]:
     failures: list[str] = []
     if report.get("schema_version") != EXACT_ARTIFACT_REPORT_SCHEMA:
@@ -870,7 +935,14 @@ def validate_exact_artifact_report(
     }:
         failures.append("exact_artifact_inconclusive_exit_report_disagreement")
     identity = report.get("identity")
-    if not isinstance(identity, dict) or identity.get("artifact_sha256") != expected_artifact_sha256:
+    expected_manifest_sha256 = (
+        identity.get("manifest_sha256") if isinstance(identity, dict) else None
+    )
+    if (
+        not isinstance(identity, dict)
+        or identity.get("artifact_sha256") != expected_artifact_sha256
+        or not valid_sha256(expected_manifest_sha256)
+    ):
         failures.append("exact_artifact_report_identity_mismatch")
     if report.get("admission_authority") is not False:
         failures.append("exact_artifact_report_admission_authority_not_false")
@@ -909,6 +981,36 @@ def validate_exact_artifact_report(
         and observation.get("source") == "ai_behavioral"
         and observation.get("behavior_detection_eligible") is True
     )
+    if behavior_observation_mode == "split_local_pending":
+        stages = report.get("stages") if isinstance(report.get("stages"), list) else []
+        ai_review_stages = [
+            stage for stage in stages if isinstance(stage, dict) and stage.get("stage") == "ai_review"
+        ]
+        behavior_stages = [
+            stage
+            for stage in stages
+            if isinstance(stage, dict) and stage.get("stage") == "behavior_observation"
+        ]
+        normal_placeholders = (
+            len(ai_review_stages) == 1
+            and normal_not_requested_stage(
+                ai_review_stages[0],
+                "ai_review",
+                "exact_artifact_ai_not_requested",
+                expected_artifact_sha256,
+                expected_manifest_sha256,
+            )
+            and len(behavior_stages) == 1
+            and normal_not_requested_stage(
+                behavior_stages[0],
+                "behavior_observation",
+                "exact_artifact_behavior_observation_not_requested",
+                expected_artifact_sha256,
+                expected_manifest_sha256,
+            )
+        )
+        if codex_source_finding_count or codex_behavior_finding_count or not normal_placeholders:
+            failures.append("split_local_remote_ai_evidence_present")
     return {
         "valid": not failures,
         "failures": failures,
@@ -924,8 +1026,11 @@ def validate_exact_artifact_report(
 def assess_codex_observed_physical_detonation(
     report: dict[str, Any],
     expected_artifact_sha256: str,
+    behavior_observation_mode: str = "remote_codex",
 ) -> dict[str, Any]:
     stages = report.get("stages") if isinstance(report.get("stages"), list) else []
+    identity = report.get("identity") if isinstance(report.get("identity"), dict) else {}
+    expected_manifest_sha256 = identity.get("manifest_sha256")
     scenario_plan = report.get("scenario_plan") if isinstance(report.get("scenario_plan"), dict) else {}
     intents = scenario_plan.get("intents") if isinstance(scenario_plan.get("intents"), list) else []
     expected_action_count = len(intents)
@@ -936,6 +1041,7 @@ def assess_codex_observed_physical_detonation(
     ]
     detonation_reasons: list[str] = []
     projected_bundle_count = 0
+    projected_behavior_bundles: list[dict[str, str]] = []
     physical_evidence_completed = False
     if len(detonation_stages) != 1:
         failures.append("physical_detonation_stage_missing_or_duplicate")
@@ -949,18 +1055,40 @@ def assess_codex_observed_physical_detonation(
             for reason in detonation_reasons
             if isinstance(reason, str) and reason.endswith("_behavior_bundle_projected")
         )
-        bundle_digest_count = sum(
-            1
+        projected_actions = {
+            reason.removesuffix("_behavior_bundle_projected")
             for reason in detonation_reasons
-            if isinstance(reason, str) and "_behavior_bundle_sha256:" in reason
-        )
-        event_count_record_count = sum(
-            1
+            if isinstance(reason, str) and reason.endswith("_behavior_bundle_projected")
+        }
+        digest_by_action: dict[str, str] = {}
+        malformed_bundle_digest = False
+        for reason in detonation_reasons:
+            if not isinstance(reason, str) or "_behavior_bundle_sha256:" not in reason:
+                continue
+            action, separator, digest = reason.partition("_behavior_bundle_sha256:")
+            if (
+                not separator
+                or not action
+                or len(digest) != 64
+                or any(character not in "0123456789abcdef" for character in digest)
+                or action in digest_by_action
+            ):
+                malformed_bundle_digest = True
+                continue
+            digest_by_action[action] = "sha256:" + digest
+        event_actions = {
+            reason.partition("_behavior_event_count:")[0]
             for reason in detonation_reasons
             if isinstance(reason, str) and "_behavior_event_count:" in reason
-        )
+        }
+        projected_behavior_bundles = [
+            {"action_id": action, "bundle_sha256": digest_by_action[action]}
+            for action in sorted(digest_by_action)
+        ]
         bindings_valid = (
             detonation.get("artifact_sha256") == expected_artifact_sha256
+            and valid_sha256(expected_manifest_sha256)
+            and detonation.get("manifest_sha256") == expected_manifest_sha256
             and valid_sha256(detonation.get("request_sha256"))
             and valid_sha256(detonation.get("result_sha256"))
             and detonation.get("observation_count") == 0
@@ -968,8 +1096,10 @@ def assess_codex_observed_physical_detonation(
         receipt_projection_complete = (
             expected_action_count > 0
             and projected_bundle_count == expected_action_count
-            and bundle_digest_count == expected_action_count
-            and event_count_record_count == expected_action_count
+            and len(digest_by_action) == expected_action_count
+            and len(event_actions) == expected_action_count
+            and not malformed_bundle_digest
+            and projected_actions == set(digest_by_action) == event_actions
             and any(
                 isinstance(reason, str) and reason.endswith("_evidence_captured_pending_analysis")
                 for reason in detonation_reasons
@@ -995,6 +1125,8 @@ def assess_codex_observed_physical_detonation(
             failures.append("physical_detonation_stage_binding_invalid")
         if not receipt_projection_complete:
             failures.append("physical_detonation_receipt_projection_incomplete")
+        if malformed_bundle_digest:
+            failures.append("physical_detonation_behavior_bundle_digest_invalid")
         if detonation.get("status") not in {"complete", "incomplete"}:
             failures.append("physical_detonation_stage_not_terminal")
 
@@ -1008,10 +1140,16 @@ def assess_codex_observed_physical_detonation(
         for observation in behavioral_observations
         if observation.get("behavior_detection_eligible") is True
     ]
-    behavior_stages = [
+    all_behavior_stages = [
         stage
         for stage in stages
         if isinstance(stage, dict) and stage.get("stage") == "behavior_observation"
+    ]
+    behavior_not_requested_stages = [
+        stage for stage in all_behavior_stages if stage.get("status") == "not_requested"
+    ]
+    behavior_stages = [
+        stage for stage in all_behavior_stages if stage.get("status") != "not_requested"
     ]
     behavior_stage_bindings_valid = bool(behavior_stages) and all(
         stage.get("provider") == CODEX_BEHAVIOR_PROVIDER
@@ -1041,10 +1179,26 @@ def assess_codex_observed_physical_detonation(
         and behavior_stage_positive
         and bool(eligible_behavioral_observations)
     )
-    if not eligible_behavioral_observations:
-        failures.append("eligible_codex_behavioral_observation_missing")
-    if not codex_behavior_stage_proven:
-        failures.append("codex_behavior_observation_stage_not_proven")
+    if behavior_observation_mode == "remote_codex":
+        if not eligible_behavioral_observations:
+            failures.append("eligible_codex_behavioral_observation_missing")
+        if not codex_behavior_stage_proven:
+            failures.append("codex_behavior_observation_stage_not_proven")
+    elif behavior_observation_mode == "split_local_pending":
+        placeholder_valid = (
+            len(behavior_not_requested_stages) == 1
+            and normal_not_requested_stage(
+                behavior_not_requested_stages[0],
+                "behavior_observation",
+                "exact_artifact_behavior_observation_not_requested",
+                expected_artifact_sha256,
+                expected_manifest_sha256,
+            )
+        )
+        if behavior_stages or behavioral_observations or not placeholder_valid:
+            failures.append("split_local_remote_behavior_observation_present")
+    else:
+        failures.append("behavior_observation_mode_invalid")
 
     physical_safety_proven = physical_evidence_completed
     codex_observed_detonation_gate_passed = physical_evidence_completed and codex_behavior_stage_proven
@@ -1053,6 +1207,11 @@ def assess_codex_observed_physical_detonation(
         "physical_safety_proven": physical_safety_proven,
         "expected_action_count": expected_action_count,
         "projected_behavior_bundle_count": projected_bundle_count,
+        "projected_behavior_bundles": projected_behavior_bundles,
+        "behavior_observation_mode": behavior_observation_mode,
+        "pending_local_behavior_finalization": (
+            behavior_observation_mode == "split_local_pending" and physical_evidence_completed
+        ),
         "codex_behavior_stage_proven": codex_behavior_stage_proven,
         "eligible_codex_behavioral_observation_count": len(eligible_behavioral_observations),
         "codex_observed_detonation_gate_passed": codex_observed_detonation_gate_passed,
@@ -1248,6 +1407,8 @@ def run_exact_artifact(
     execution_config: dict[str, Any],
 ) -> dict[str, Any]:
     artifact = Path(prepared["exact_artifact"]["path"])
+    split_local = args.split_local_behavior_finalization
+    behavior_observation_mode = "split_local_pending" if split_local else "remote_codex"
     command = [
         str(args.whoathere_bin),
         "artifact",
@@ -1257,42 +1418,48 @@ def run_exact_artifact(
         prepared["sample"]["ecosystem"],
         "--state-dir",
         str(args.state_dir),
-        "--behavior-observe",
-        "--approve-hosted-behavior-review",
-        "--ai-provider",
-        "codex",
-        "--ai-client-path",
-        str(args.codex_client_path),
-        "--ai-client-sha256",
-        args.codex_client_sha256,
-        "--ai-model",
-        args.codex_model,
-        "--ai-auth-home",
-        str(args.codex_auth_home),
-        "--ai-timeout-seconds",
-        str(args.codex_timeout_seconds),
         "--detonation",
         "--detonation-config",
         str(args.detonation_config),
     ]
-    if args.restricted_source_hosted_review_approved:
-        command.extend(["--ai-review", "--approve-hosted-source-review"])
+    if not split_local:
+        command.extend(
+            [
+                "--behavior-observe",
+                "--approve-hosted-behavior-review",
+                "--ai-provider",
+                "codex",
+                "--ai-client-path",
+                str(args.codex_client_path),
+                "--ai-client-sha256",
+                args.codex_client_sha256,
+                "--ai-model",
+                args.codex_model,
+                "--ai-auth-home",
+                str(args.codex_auth_home),
+                "--ai-timeout-seconds",
+                str(args.codex_timeout_seconds),
+            ]
+        )
+        if args.restricted_source_hosted_review_approved:
+            command.extend(["--ai-review", "--approve-hosted-source-review"])
     command_identity = {
         "operation": "whoathere_artifact_inspect_exact_artifact",
         "artifact_sha256": prepared["exact_artifact"]["sha256"],
         "ecosystem": prepared["sample"]["ecosystem"],
         "detonation": True,
         "detonation_config_sha256": args.detonation_config_sha256,
-        "ai_source_review": args.restricted_source_hosted_review_approved,
-        "ai_behavior_observation": True,
-        "ai_provider": "codex",
-        "ai_client_sha256": args.codex_client_sha256,
-        "ai_model": args.codex_model,
-        "ai_auth_mode": "saved_subscription_auth_dedicated_home",
-        "ai_timeout_seconds": args.codex_timeout_seconds,
+        "behavior_observation_mode": behavior_observation_mode,
+        "ai_source_review": False if split_local else args.restricted_source_hosted_review_approved,
+        "ai_behavior_observation": not split_local,
+        "ai_provider": None if split_local else "codex",
+        "ai_client_sha256": None if split_local else args.codex_client_sha256,
+        "ai_model": None if split_local else args.codex_model,
+        "ai_auth_mode": None if split_local else "saved_subscription_auth_dedicated_home",
+        "ai_timeout_seconds": None if split_local else args.codex_timeout_seconds,
         "source_review_approval_ref": (
             args.restricted_source_review_approval_ref
-            if args.restricted_source_hosted_review_approved
+            if args.restricted_source_hosted_review_approved and not split_local
             else None
         ),
         "behavior_review_approval_ref": args.restricted_behavior_review_approval_ref,
@@ -1314,6 +1481,7 @@ def run_exact_artifact(
         report,
         run_record["exit_code"],
         prepared["exact_artifact"]["sha256"],
+        behavior_observation_mode,
     )
     if run_record["timed_out"]:
         validation["failures"].append("exact_artifact_product_timed_out")
@@ -1324,9 +1492,16 @@ def run_exact_artifact(
     physical_assessment = assess_codex_observed_physical_detonation(
         report,
         prepared["exact_artifact"]["sha256"],
+        behavior_observation_mode,
     )
-    diagnostic_completed = validation["valid"] and run_record["exit_code"] in {20, 22}
-    product_finding_observed = diagnostic_completed and run_record["exit_code"] == 20
+    diagnostic_completed = (
+        validation["valid"]
+        and run_record["exit_code"] in {20, 22}
+        and (not split_local or physical_assessment["physical_detonation_evidence_completed"])
+    )
+    product_finding_observed = (
+        diagnostic_completed and run_record["exit_code"] == 20 and not split_local
+    )
     codex_observed_detonation = (
         product_finding_observed
         and physical_assessment["codex_observed_detonation_gate_passed"]
@@ -1343,6 +1518,9 @@ def run_exact_artifact(
     ]
     if not physical_assessment["physical_safety_proven"]:
         safety_failures.append("physical_detonation_safety_not_proven")
+    pending_local_behavior_finalization = (
+        split_local and diagnostic_completed and not safety_failures
+    )
     result = {
         "schema": EXACT_ARTIFACT_DIAGNOSTIC_SCHEMA,
         "created_at_utc": now_utc(),
@@ -1352,6 +1530,8 @@ def run_exact_artifact(
         "claim_bearing": False,
         "scorable": False,
         "finalizable": False,
+        "behavior_observation_mode": behavior_observation_mode,
+        "pending_local_behavior_finalization": pending_local_behavior_finalization,
         "artifact": {
             "ecosystem": prepared["sample"]["ecosystem"],
             "filename": prepared["sample"]["artifact_filename"],
@@ -1376,12 +1556,18 @@ def run_exact_artifact(
         "diagnostic_detection_observed": codex_observed_detonation,
         "codex_observed_detonation_gate_passed": codex_observed_detonation,
         "physical_detonation": physical_assessment,
-        "verdict_class": "diagnostic_detection" if codex_observed_detonation else "diagnostic_miss",
-        "behavior_detection_count": validation["behavior_detection_count"],
-        "codex_source_finding_count": validation["codex_source_finding_count"],
-        "codex_behavior_finding_count": validation["codex_behavior_finding_count"],
-        "codex_behavior_detection_count": validation["codex_behavior_detection_count"],
-        "codex_behavior_detected": validation["codex_behavior_detected"],
+        "verdict_class": (
+            "diagnostic_pending_local_behavior_finalization"
+            if pending_local_behavior_finalization
+            else "diagnostic_incomplete"
+            if split_local
+            else ("diagnostic_detection" if codex_observed_detonation else "diagnostic_miss")
+        ),
+        "behavior_detection_count": 0 if split_local else validation["behavior_detection_count"],
+        "codex_source_finding_count": 0 if split_local else validation["codex_source_finding_count"],
+        "codex_behavior_finding_count": 0 if split_local else validation["codex_behavior_finding_count"],
+        "codex_behavior_detection_count": 0 if split_local else validation["codex_behavior_detection_count"],
+        "codex_behavior_detected": False if split_local else validation["codex_behavior_detected"],
         "safety": {
             "network_policy": "sinkhole_only",
             "sync_back_allowed": False,
@@ -1400,6 +1586,8 @@ def run_exact_artifact(
         "claim_bearing": False,
         "scorable": False,
         "finalizable": False,
+        "behavior_observation_mode": behavior_observation_mode,
+        "pending_local_behavior_finalization": pending_local_behavior_finalization,
         "run_record": run_record,
         "result_path": str(paths["diagnostic_result"]),
         "result_sha256": sha256_file(paths["diagnostic_result"]),
@@ -1414,7 +1602,7 @@ def run_exact_artifact(
             "physical_detonation_evidence_completed"
         ],
         "physical_safety_proven": physical_assessment["physical_safety_proven"],
-        "codex_behavior_detected": validation["codex_behavior_detected"],
+        "codex_behavior_detected": False if split_local else validation["codex_behavior_detected"],
         "safety_failures": safety_failures,
         "safety_passed": not safety_failures,
         "vm_state_status": "exact_artifact_product_detonation_adapter_completed_or_reported_incomplete",
@@ -1510,6 +1698,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--restricted-source-review-approval-ref", default="")
     parser.add_argument("--restricted-behavior-hosted-review-approved", action="store_true")
     parser.add_argument("--restricted-behavior-review-approval-ref", default="")
+    parser.add_argument("--split-local-behavior-finalization", action="store_true")
     parser.add_argument("--clearance-consumption-record", type=Path)
     parser.add_argument("--clearance-consumption-record-sha256")
     parser.add_argument("--force", action="store_true")
@@ -1522,6 +1711,8 @@ def step5_exit_code(result: dict[str, Any], execution_path: str) -> int:
         return 20
     if result.get("diagnostic_completed") is not True:
         return 70
+    if result.get("pending_local_behavior_finalization") is True:
+        return 0
     if (
         execution_path == EXACT_ARTIFACT_EXECUTION_PATH
         and result.get("codex_observed_detonation_gate_passed") is not True

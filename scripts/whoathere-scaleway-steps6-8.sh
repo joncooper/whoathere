@@ -57,6 +57,7 @@ RESTRICTED_SOURCE_APPROVED=""
 RESTRICTED_SOURCE_APPROVAL_REF=""
 RESTRICTED_BEHAVIOR_APPROVED=""
 RESTRICTED_BEHAVIOR_APPROVAL_REF=""
+SPLIT_LOCAL_BEHAVIOR_FINALIZATION=""
 
 usage() {
   code=${1:-64}
@@ -97,14 +98,16 @@ usage:
 
 Exact-artifact slice options:
     --detonation-config <absolute-remote-json> --detonation-config-sha256 sha256:<digest> \
-    --codex-client-path <absolute-remote-native-binary> --codex-client-sha256 sha256:<digest> \
-    --codex-model <model> --codex-auth-home <absolute-dedicated-home> \
+    [--split-local-behavior-finalization | \
+      --codex-client-path <absolute-remote-native-binary> --codex-client-sha256 sha256:<digest> \
+      --codex-model <model> --codex-auth-home <absolute-dedicated-home>] \
     [--restricted-source-hosted-review-approved --restricted-source-review-approval-ref <ref>] \
     --restricted-behavior-hosted-review-approved --restricted-behavior-review-approval-ref <ref>
 
-The exact-artifact diagnostic path requires sinkhole telemetry, measured detonation/Codex inputs,
-and explicit approval for hosted review of restricted behavior telemetry. Restricted source review
-is optional and is enabled only by its approval flag/ref pair.
+The exact-artifact diagnostic path requires sinkhole telemetry, measured detonation inputs, and
+explicit approval for hosted review of restricted behavior telemetry. Split mode leaves Codex
+observation pending on the local authenticated Mac and forbids remote Codex/source-review inputs.
+Restricted source review is optional only in the existing remote-Codex mode.
 
 For --phase clearance, the remote harness runs non-malware preflight checks and writes a clearance
 record. For --phase slice, it requires a post-contamination clearance record and defaults to one
@@ -200,6 +203,7 @@ while [ "$#" -gt 0 ]; do
     --restricted-source-review-approval-ref) [ "$#" -ge 2 ] || usage; RESTRICTED_SOURCE_APPROVAL_REF=$2; shift 2 ;;
     --restricted-behavior-hosted-review-approved) RESTRICTED_BEHAVIOR_APPROVED=1; shift ;;
     --restricted-behavior-review-approval-ref) [ "$#" -ge 2 ] || usage; RESTRICTED_BEHAVIOR_APPROVAL_REF=$2; shift 2 ;;
+    --split-local-behavior-finalization) SPLIT_LOCAL_BEHAVIOR_FINALIZATION=1; shift ;;
     --include-existing-samples) INCLUDE_EXISTING=1; shift ;;
     --include-standalone-step5-results) INCLUDE_STANDALONE_STEP5=1; shift ;;
     --finalize-failed-score) FINALIZE_FAILED_SCORE=1; shift ;;
@@ -214,6 +218,10 @@ done
 case "$PHASE" in clearance|slice|score|finalize|all) ;; *) usage ;; esac
 if [ "$PHASE" = "all" ]; then
   echo "phase_all_incompatible_with_post_run_independent_evidence_verification_use_separate_phases" >&2
+  exit 64
+fi
+if [ -n "$SPLIT_LOCAL_BEHAVIOR_FINALIZATION" ] && { [ "$PHASE" != "slice" ] || [ "$EXECUTION_PATH" != "exact_artifact_diagnostic" ]; }; then
+  echo "split_local_behavior_finalization_requires_exact_artifact_slice" >&2
   exit 64
 fi
 
@@ -277,12 +285,19 @@ if [ "$PHASE" = "slice" ]; then
       [ -n "$SINKHOLE_ASSERTED" ] || usage
       [ -n "$DETONATION_CONFIG" ] || usage
       [ -n "$DETONATION_CONFIG_SHA256" ] || usage
-      [ -n "$CODEX_CLIENT_PATH" ] || usage
-      [ -n "$CODEX_CLIENT_SHA256" ] || usage
-      [ -n "$CODEX_MODEL" ] || usage
-      [ -n "$CODEX_AUTH_HOME" ] || usage
       [ -n "$RESTRICTED_BEHAVIOR_APPROVED" ] || usage
       [ -n "$RESTRICTED_BEHAVIOR_APPROVAL_REF" ] || usage
+      if [ -n "$SPLIT_LOCAL_BEHAVIOR_FINALIZATION" ]; then
+        if [ -n "$CODEX_CLIENT_PATH$CODEX_CLIENT_SHA256$CODEX_MODEL$CODEX_AUTH_HOME$RESTRICTED_SOURCE_APPROVED$RESTRICTED_SOURCE_APPROVAL_REF" ]; then
+          echo "split_local_behavior_finalization_rejects_remote_codex_and_source_review_inputs" >&2
+          exit 64
+        fi
+      else
+        [ -n "$CODEX_CLIENT_PATH" ] || usage
+        [ -n "$CODEX_CLIENT_SHA256" ] || usage
+        [ -n "$CODEX_MODEL" ] || usage
+        [ -n "$CODEX_AUTH_HOME" ] || usage
+      fi
       ;;
     legacy_workspace_non_claim_bearing) ;;
     *) usage ;;
@@ -399,9 +414,14 @@ remote_command="WHOATHERE_SCANNER_CACHE_DIR=$remote_tools/scanners PATH=$remote_
 [ -z "$LEGACY_SCORE_MAINTENANCE" ] || remote_command="$remote_command --legacy-non-claim-bearing-score-maintenance"
 [ -z "$LEGACY_SCORE_ACKNOWLEDGED" ] || remote_command="$remote_command --acknowledge-non-claim-bearing-legacy-score"
 if [ "$EXECUTION_PATH" = "exact_artifact_diagnostic" ]; then
-  remote_command="$remote_command --detonation-config $DETONATION_CONFIG --detonation-config-sha256 $DETONATION_CONFIG_SHA256 --codex-client-path $CODEX_CLIENT_PATH --codex-client-sha256 $CODEX_CLIENT_SHA256 --codex-model $CODEX_MODEL --codex-auth-home $CODEX_AUTH_HOME --codex-timeout-seconds $CODEX_TIMEOUT_SECONDS --restricted-behavior-hosted-review-approved --restricted-behavior-review-approval-ref $RESTRICTED_BEHAVIOR_APPROVAL_REF"
-  if [ -n "$RESTRICTED_SOURCE_APPROVED" ]; then
-    remote_command="$remote_command --restricted-source-hosted-review-approved --restricted-source-review-approval-ref $RESTRICTED_SOURCE_APPROVAL_REF"
+  remote_command="$remote_command --detonation-config $DETONATION_CONFIG --detonation-config-sha256 $DETONATION_CONFIG_SHA256 --restricted-behavior-hosted-review-approved --restricted-behavior-review-approval-ref $RESTRICTED_BEHAVIOR_APPROVAL_REF"
+  if [ -n "$SPLIT_LOCAL_BEHAVIOR_FINALIZATION" ]; then
+    remote_command="$remote_command --split-local-behavior-finalization"
+  else
+    remote_command="$remote_command --codex-client-path $CODEX_CLIENT_PATH --codex-client-sha256 $CODEX_CLIENT_SHA256 --codex-model $CODEX_MODEL --codex-auth-home $CODEX_AUTH_HOME --codex-timeout-seconds $CODEX_TIMEOUT_SECONDS"
+    if [ -n "$RESTRICTED_SOURCE_APPROVED" ]; then
+      remote_command="$remote_command --restricted-source-hosted-review-approved --restricted-source-review-approval-ref $RESTRICTED_SOURCE_APPROVAL_REF"
+    fi
   fi
 fi
 

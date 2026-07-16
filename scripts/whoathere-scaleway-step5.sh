@@ -35,6 +35,7 @@ RESTRICTED_SOURCE_APPROVED=""
 RESTRICTED_SOURCE_APPROVAL_REF=""
 RESTRICTED_BEHAVIOR_APPROVED=""
 RESTRICTED_BEHAVIOR_APPROVAL_REF=""
+SPLIT_LOCAL_BEHAVIOR_FINALIZATION=""
 CLEARANCE_CONSUMPTION_RECORD=""
 CLEARANCE_CONSUMPTION_RECORD_SHA256=""
 
@@ -61,16 +62,19 @@ usage:
 
 Exact-artifact options:
     --detonation-config <absolute-remote-json> --detonation-config-sha256 sha256:<digest> \
-    --codex-client-path <absolute-remote-native-binary> --codex-client-sha256 sha256:<digest> \
-    --codex-model <model> --codex-auth-home <absolute-dedicated-home> \
+    [--split-local-behavior-finalization | \
+      --codex-client-path <absolute-remote-native-binary> --codex-client-sha256 sha256:<digest> \
+      --codex-model <model> --codex-auth-home <absolute-dedicated-home>] \
     [--restricted-source-hosted-review-approved --restricted-source-review-approval-ref <ref>] \
     --restricted-behavior-hosted-review-approved --restricted-behavior-review-approval-ref <ref> \
     --clearance-consumption-record <absolute-remote-json> \
     --clearance-consumption-record-sha256 sha256:<digest>
 
-The exact-artifact path also requires a measured detonation config and Codex client, a dedicated
-Codex auth home, sinkhole telemetry, and explicit approval for hosted review of restricted behavior
-telemetry. Restricted source review is optional and is enabled only by its approval flag/ref pair.
+The exact-artifact path requires a measured detonation config, sinkhole telemetry, and explicit
+approval for hosted review of restricted behavior telemetry. Split mode detonates remotely and
+leaves Codex behavior observation pending on the local authenticated Mac; it forbids remote Codex
+and restricted-source-review inputs. Otherwise a remote Codex client and dedicated auth home are
+required. Restricted source review is optional only in that existing remote-Codex mode.
 
 Runs exactly one approved primary malware sample through WhoaThere's VM-backed no-sync path.
 This script copies tooling to the disposable Scaleway Mac, then all malware unpack/execution happens remotely.
@@ -121,6 +125,7 @@ while [ "$#" -gt 0 ]; do
     --restricted-source-review-approval-ref) [ "$#" -ge 2 ] || usage; RESTRICTED_SOURCE_APPROVAL_REF=$2; shift 2 ;;
     --restricted-behavior-hosted-review-approved) RESTRICTED_BEHAVIOR_APPROVED=1; shift ;;
     --restricted-behavior-review-approval-ref) [ "$#" -ge 2 ] || usage; RESTRICTED_BEHAVIOR_APPROVAL_REF=$2; shift 2 ;;
+    --split-local-behavior-finalization) SPLIT_LOCAL_BEHAVIOR_FINALIZATION=1; shift ;;
     --clearance-consumption-record) [ "$#" -ge 2 ] || usage; CLEARANCE_CONSUMPTION_RECORD=$2; shift 2 ;;
     --clearance-consumption-record-sha256) [ "$#" -ge 2 ] || usage; CLEARANCE_CONSUMPTION_RECORD_SHA256=$2; shift 2 ;;
     --force) FORCE=1; shift ;;
@@ -155,18 +160,29 @@ case "$EXECUTION_PATH" in
     [ -n "$SINKHOLE_ASSERTED" ] || usage
     [ -n "$DETONATION_CONFIG" ] || usage
     [ -n "$DETONATION_CONFIG_SHA256" ] || usage
-    [ -n "$CODEX_CLIENT_PATH" ] || usage
-    [ -n "$CODEX_CLIENT_SHA256" ] || usage
-    [ -n "$CODEX_MODEL" ] || usage
-    [ -n "$CODEX_AUTH_HOME" ] || usage
     [ -n "$RESTRICTED_BEHAVIOR_APPROVED" ] || usage
     [ -n "$RESTRICTED_BEHAVIOR_APPROVAL_REF" ] || usage
     [ -n "$CLEARANCE_CONSUMPTION_RECORD" ] || usage
     [ -n "$CLEARANCE_CONSUMPTION_RECORD_SHA256" ] || usage
+    if [ -n "$SPLIT_LOCAL_BEHAVIOR_FINALIZATION" ]; then
+      if [ -n "$CODEX_CLIENT_PATH$CODEX_CLIENT_SHA256$CODEX_MODEL$CODEX_AUTH_HOME$RESTRICTED_SOURCE_APPROVED$RESTRICTED_SOURCE_APPROVAL_REF" ]; then
+        echo "split_local_behavior_finalization_rejects_remote_codex_and_source_review_inputs" >&2
+        exit 64
+      fi
+    else
+      [ -n "$CODEX_CLIENT_PATH" ] || usage
+      [ -n "$CODEX_CLIENT_SHA256" ] || usage
+      [ -n "$CODEX_MODEL" ] || usage
+      [ -n "$CODEX_AUTH_HOME" ] || usage
+    fi
     ;;
   legacy_workspace_non_claim_bearing) ;;
   *) usage ;;
 esac
+if [ -n "$SPLIT_LOCAL_BEHAVIOR_FINALIZATION" ] && [ "$EXECUTION_PATH" != "exact_artifact_diagnostic" ]; then
+  echo "split_local_behavior_finalization_requires_exact_artifact_diagnostic" >&2
+  exit 64
+fi
 
 safe_remote_value "$REMOTE_ROOT" "remote_root"
 safe_remote_value "$STATE_DIR" "state_dir"
@@ -229,9 +245,14 @@ remote_command="WHOATHERE_SCANNER_CACHE_DIR=$remote_tools/scanners PATH=$remote_
 [ -z "$LULU_REFERENCE" ] || remote_command="$remote_command --lulu-reference $LULU_REFERENCE"
 [ -z "$FORCE" ] || remote_command="$remote_command --force"
 if [ "$EXECUTION_PATH" = "exact_artifact_diagnostic" ]; then
-  remote_command="$remote_command --detonation-config $DETONATION_CONFIG --detonation-config-sha256 $DETONATION_CONFIG_SHA256 --codex-client-path $CODEX_CLIENT_PATH --codex-client-sha256 $CODEX_CLIENT_SHA256 --codex-model $CODEX_MODEL --codex-auth-home $CODEX_AUTH_HOME --codex-timeout-seconds $CODEX_TIMEOUT_SECONDS --product-run-timeout-seconds $PRODUCT_RUN_TIMEOUT_SECONDS --restricted-behavior-hosted-review-approved --restricted-behavior-review-approval-ref $RESTRICTED_BEHAVIOR_APPROVAL_REF --clearance-consumption-record $CLEARANCE_CONSUMPTION_RECORD --clearance-consumption-record-sha256 $CLEARANCE_CONSUMPTION_RECORD_SHA256"
-  if [ -n "$RESTRICTED_SOURCE_APPROVED" ]; then
-    remote_command="$remote_command --restricted-source-hosted-review-approved --restricted-source-review-approval-ref $RESTRICTED_SOURCE_APPROVAL_REF"
+  remote_command="$remote_command --detonation-config $DETONATION_CONFIG --detonation-config-sha256 $DETONATION_CONFIG_SHA256 --product-run-timeout-seconds $PRODUCT_RUN_TIMEOUT_SECONDS --restricted-behavior-hosted-review-approved --restricted-behavior-review-approval-ref $RESTRICTED_BEHAVIOR_APPROVAL_REF --clearance-consumption-record $CLEARANCE_CONSUMPTION_RECORD --clearance-consumption-record-sha256 $CLEARANCE_CONSUMPTION_RECORD_SHA256"
+  if [ -n "$SPLIT_LOCAL_BEHAVIOR_FINALIZATION" ]; then
+    remote_command="$remote_command --split-local-behavior-finalization"
+  else
+    remote_command="$remote_command --codex-client-path $CODEX_CLIENT_PATH --codex-client-sha256 $CODEX_CLIENT_SHA256 --codex-model $CODEX_MODEL --codex-auth-home $CODEX_AUTH_HOME --codex-timeout-seconds $CODEX_TIMEOUT_SECONDS"
+    if [ -n "$RESTRICTED_SOURCE_APPROVED" ]; then
+      remote_command="$remote_command --restricted-source-hosted-review-approved --restricted-source-review-approval-ref $RESTRICTED_SOURCE_APPROVAL_REF"
+    fi
   fi
 fi
 

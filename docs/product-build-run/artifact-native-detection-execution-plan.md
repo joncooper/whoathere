@@ -136,6 +136,25 @@ macOS-hosted local detection beta. Cloudflare and AWS portability are a separate
   completed in the guest, but the host failed before projecting its 5,945,958-byte runtime result.
   That bounded host-result problem is parked in BLK-006. This run remains incomplete and grants
   neither `observed_clean` nor admission.
+- The physical VZ host and the subscription-authenticated Codex host can now be separate. A
+  diagnostic-only bridge requires the sanitized cloud report's complete declared bundle-digest
+  set, the copied sanitized bundles, and the local `behavior observe` results to reconcile
+  exactly. It preserves cited positive findings but never produces `observed_clean`, admission
+  authority, or a claim-bearing result. The live inert wheel rehearsal reconciled all eight
+  actions: seven canary-bearing actions produced behavior detections, one process-only action
+  remained inconclusive, and eight behavior-specific findings survived the cross-host binding.
+- The paired benign wheel's same eight physical bundles were then reviewed with the identical local
+  Codex adapter. Seven actions produced context-only `behavior_observed` results, one remained
+  inconclusive, and **zero of eight** produced a behavior detection. Every result retained
+  `observed_clean: false`, no admission authority, and no provider-role failures. This is a small
+  development control, not the frozen benign qualification set.
+- Restricted-lab hosted review now supports behavior telemetry without hosted package-source
+  review. The user's current approval covers the two previously missed Telnyx wheel detonations in
+  fresh cloud-Mac guests and hosted review of only separately sanitized, digest-bound behavioral
+  telemetry. It does not approve hosted source review. The current cloud host does not contain the
+  two exact custody artifacts, and the current local environment has neither the prior staged
+  custody bundle nor a configured MalwareBazaar acquisition key; restoring one of those inputs is
+  the remaining external prerequisite for the two real-wheel runs.
 - No restricted malware was rerun. The known-malware detection result therefore remains **7/11**;
   this checkpoint proves working npm, wheel, and base PEP 517 sdist execution/observation slices,
   not an improved campaign score.
