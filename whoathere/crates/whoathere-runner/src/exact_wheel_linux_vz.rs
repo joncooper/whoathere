@@ -24,7 +24,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
-use whoathere_artifact::{ArtifactFormat, Sha256Digest};
+use whoathere_artifact::{
+    detect_artifact_format, normalize_artifact, ArtifactEnvelope, ArtifactFormat, ArtifactManifest,
+    Ecosystem, NormalizationLimits, Sha256Digest,
+};
 use whoathere_cache::VerifiedArtifactLease;
 use whoathere_detector::{BehaviorAnalysisBundleV1, PackageTriggerV1};
 use whoathere_detonation::{
@@ -40,7 +43,173 @@ const HELPER_RESULT_SCHEMA_V1: &str = "whoathere.linux_vz_package_execution_resu
 const MAX_ROOT_RECEIPT_BYTES: usize = 256 * 1024;
 const MAX_SENSOR_EVIDENCE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_HOST_EXECUTION_RUN_BYTES: usize = 1024 * 1024;
+const MAX_ARTIFACT_ENVELOPE_BYTES: usize = 1024 * 1024;
 static RUN_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+/// Inputs for projecting one already-produced exact-wheel helper action.
+///
+/// This path does not execute the artifact or invoke the VM helper. It
+/// re-normalizes the exact wheel, verifies the retained outer bindings, and
+/// feeds the existing signed/digest-bound helper evidence into the same
+/// behavior projector used by live detonation.
+#[derive(Debug, Clone, Copy)]
+pub struct OfflineExactWheelBehaviorProjectionRequestV1<'a> {
+    pub artifact_path: &'a Path,
+    pub artifact_envelope_path: &'a Path,
+    pub artifact_manifest_path: &'a Path,
+    pub evidence_directory: &'a Path,
+    pub scenario_index: usize,
+    pub normalization_limits: NormalizationLimits,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OfflineExactWheelBehaviorProjectionErrorV1 {
+    reason_code: &'static str,
+}
+
+impl OfflineExactWheelBehaviorProjectionErrorV1 {
+    fn new(reason_code: &'static str) -> Self {
+        Self { reason_code }
+    }
+
+    pub const fn reason_code(self) -> &'static str {
+        self.reason_code
+    }
+}
+
+impl std::fmt::Display for OfflineExactWheelBehaviorProjectionErrorV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.reason_code)
+    }
+}
+
+impl std::error::Error for OfflineExactWheelBehaviorProjectionErrorV1 {}
+
+/// Project a retained exact-wheel helper action without rerunning package code.
+///
+/// The output remains observe-only. In particular, the existing projector
+/// carries the helper's `guest_root_receipt_independently_verified=false` and
+/// `host_composition_complete=false` flags into incomplete bundle coverage; it
+/// never upgrades missing host composition to clean evidence.
+pub fn project_offline_exact_wheel_behavior_v1(
+    request: OfflineExactWheelBehaviorProjectionRequestV1<'_>,
+) -> Result<BehaviorAnalysisBundleV1, OfflineExactWheelBehaviorProjectionErrorV1> {
+    if !is_directory_non_symlink(request.evidence_directory) {
+        return Err(OfflineExactWheelBehaviorProjectionErrorV1::new(
+            "wheel_behavior_projection_evidence_directory_unavailable",
+        ));
+    }
+    let maximum_artifact_bytes =
+        usize::try_from(request.normalization_limits.max_original_bytes).unwrap_or(usize::MAX);
+    let artifact_bytes = read_offline_projection_file(
+        request.artifact_path,
+        maximum_artifact_bytes,
+        "wheel_behavior_projection_artifact_unavailable",
+    )?;
+    let envelope_bytes = read_offline_projection_file(
+        request.artifact_envelope_path,
+        MAX_ARTIFACT_ENVELOPE_BYTES,
+        "wheel_behavior_projection_artifact_envelope_unavailable",
+    )?;
+    let manifest_bytes = read_offline_projection_file(
+        request.artifact_manifest_path,
+        maximum_artifact_bytes,
+        "wheel_behavior_projection_artifact_manifest_unavailable",
+    )?;
+
+    let envelope: ArtifactEnvelope = serde_json::from_slice(&envelope_bytes).map_err(|_| {
+        OfflineExactWheelBehaviorProjectionErrorV1::new(
+            "wheel_behavior_projection_artifact_envelope_invalid",
+        )
+    })?;
+    let canonical_envelope = envelope.canonical_json().map_err(|_| {
+        OfflineExactWheelBehaviorProjectionErrorV1::new(
+            "wheel_behavior_projection_artifact_envelope_invalid",
+        )
+    })?;
+    if canonical_envelope != envelope_bytes
+        || envelope.ecosystem != Ecosystem::Pypi
+        || envelope.magic_detected_format != ArtifactFormat::WheelZip
+        || !envelope.matches_original_bytes(&artifact_bytes)
+    {
+        return Err(OfflineExactWheelBehaviorProjectionErrorV1::new(
+            "wheel_behavior_projection_artifact_envelope_binding_mismatch",
+        ));
+    }
+    let detected_format = detect_artifact_format(
+        envelope.ecosystem,
+        &envelope.original_filename,
+        &artifact_bytes,
+    )
+    .map_err(|_| {
+        OfflineExactWheelBehaviorProjectionErrorV1::new(
+            "wheel_behavior_projection_artifact_format_invalid",
+        )
+    })?;
+    if detected_format != ArtifactFormat::WheelZip || !envelope.verify_magic_format(detected_format)
+    {
+        return Err(OfflineExactWheelBehaviorProjectionErrorV1::new(
+            "wheel_behavior_projection_artifact_format_binding_mismatch",
+        ));
+    }
+
+    let supplied_manifest: ArtifactManifest =
+        serde_json::from_slice(&manifest_bytes).map_err(|_| {
+            OfflineExactWheelBehaviorProjectionErrorV1::new(
+                "wheel_behavior_projection_artifact_manifest_invalid",
+            )
+        })?;
+    let canonical_manifest = serde_json::to_vec(&supplied_manifest).map_err(|_| {
+        OfflineExactWheelBehaviorProjectionErrorV1::new(
+            "wheel_behavior_projection_artifact_manifest_invalid",
+        )
+    })?;
+    if canonical_manifest != manifest_bytes {
+        return Err(OfflineExactWheelBehaviorProjectionErrorV1::new(
+            "wheel_behavior_projection_artifact_manifest_noncanonical",
+        ));
+    }
+    let normalized = normalize_artifact(&envelope, &artifact_bytes, request.normalization_limits)
+        .map_err(|_| {
+        OfflineExactWheelBehaviorProjectionErrorV1::new(
+            "wheel_behavior_projection_artifact_normalization_failed",
+        )
+    })?;
+    if supplied_manifest != normalized.manifest {
+        return Err(OfflineExactWheelBehaviorProjectionErrorV1::new(
+            "wheel_behavior_projection_artifact_manifest_binding_mismatch",
+        ));
+    }
+    let expected_kinds = expected_wheel_scenario_kinds_v1(&normalized.manifest).map_err(|_| {
+        OfflineExactWheelBehaviorProjectionErrorV1::new(
+            "wheel_behavior_projection_expected_scenarios_invalid",
+        )
+    })?;
+    if request.scenario_index >= expected_kinds.len() {
+        return Err(OfflineExactWheelBehaviorProjectionErrorV1::new(
+            "wheel_behavior_projection_scenario_index_invalid",
+        ));
+    }
+
+    let artifact_sha256 = Sha256Digest::from_bytes(&artifact_bytes);
+    let envelope_sha256 = envelope.envelope_sha256().map_err(|_| {
+        OfflineExactWheelBehaviorProjectionErrorV1::new(
+            "wheel_behavior_projection_artifact_envelope_invalid",
+        )
+    })?;
+    project_wheel_action_behavior_v1(
+        request.evidence_directory,
+        request.scenario_index,
+        &artifact_sha256,
+        &envelope_sha256,
+        &normalized.manifest.manifest_sha256,
+        artifact_bytes.len(),
+        &envelope.original_filename,
+        &expected_kinds,
+        &normalized.manifest,
+    )
+    .map_err(OfflineExactWheelBehaviorProjectionErrorV1::new)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -325,10 +494,26 @@ impl LinuxVzExactWheelDetonationAdapterV1 {
             artifact_bytes.len(),
             artifact_filename,
             expected_kinds,
-            prepared,
+            &prepared.normalized().manifest,
         );
         let behavior_bundle = match behavior_projection {
-            Ok(bundle) => Some(bundle),
+            Ok(bundle) => match serde_json::to_vec(&bundle) {
+                Err(_) => {
+                    limitations.push("wheel_behavior_projection_bundle_serialization_failed");
+                    None
+                }
+                Ok(bundle_bytes)
+                    if write_new_private_file(
+                        &evidence_directory.join("behavior-bundle.json"),
+                        &bundle_bytes,
+                    )
+                    .is_err() =>
+                {
+                    limitations.push("wheel_behavior_projection_bundle_write_failed");
+                    None
+                }
+                Ok(_) => Some(bundle),
+            },
             Err(reason) => {
                 limitations.push(reason);
                 None
@@ -590,7 +775,7 @@ fn project_wheel_action_behavior_v1(
     artifact_byte_length: usize,
     artifact_filename: &str,
     expected_kinds: &[WheelScenarioKindV1],
-    prepared: &PreparedArtifact,
+    manifest: &ArtifactManifest,
 ) -> Result<BehaviorAnalysisBundleV1, &'static str> {
     let scenario_plan_json = read_bounded_regular_file(
         &evidence_directory.join("execution-bundle/scenario-plan.json"),
@@ -632,9 +817,7 @@ fn project_wheel_action_behavior_v1(
         .templates()
         .get(scenario_index)
         .ok_or("wheel_behavior_projection_scenario_index_invalid")?;
-    let manifest_identity = prepared
-        .normalized()
-        .manifest
+    let manifest_identity = manifest
         .identity
         .as_ref()
         .ok_or("wheel_behavior_projection_manifest_identity_invalid")?;
@@ -734,13 +917,6 @@ fn project_wheel_action_behavior_v1(
         host_execution_run_json: &host_execution_run_json,
     })
     .map_err(|error| error.reason_code())?;
-    let bundle_bytes = serde_json::to_vec(&bundle)
-        .map_err(|_| "wheel_behavior_projection_bundle_serialization_failed")?;
-    write_new_private_file(
-        &evidence_directory.join("behavior-bundle.json"),
-        &bundle_bytes,
-    )
-    .map_err(|_| "wheel_behavior_projection_bundle_write_failed")?;
     Ok(bundle)
 }
 
@@ -763,6 +939,19 @@ fn read_bounded_regular_file(path: &Path, maximum: usize) -> Result<Vec<u8>, &'s
         return Err("wheel_behavior_projection_evidence_unavailable");
     }
     fs::read(path).map_err(|_| "wheel_behavior_projection_evidence_unavailable")
+}
+
+fn read_offline_projection_file(
+    path: &Path,
+    maximum: usize,
+    reason_code: &'static str,
+) -> Result<Vec<u8>, OfflineExactWheelBehaviorProjectionErrorV1> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|_| OfflineExactWheelBehaviorProjectionErrorV1::new(reason_code))?;
+    if !metadata.file_type().is_file() || metadata.len() == 0 || metadata.len() > maximum as u64 {
+        return Err(OfflineExactWheelBehaviorProjectionErrorV1::new(reason_code));
+    }
+    fs::read(path).map_err(|_| OfflineExactWheelBehaviorProjectionErrorV1::new(reason_code))
 }
 
 fn incomplete_result(

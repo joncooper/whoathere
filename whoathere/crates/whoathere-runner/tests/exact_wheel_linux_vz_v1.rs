@@ -3,9 +3,10 @@ use std::os::unix::fs::PermissionsExt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use whoathere_artifact::{NormalizationLimits, Sha256Digest};
 use whoathere_runner::{
-    inspect_exact_artifact_v1, ExactArtifactDispositionV1, ExactArtifactInspectionRequestV1,
-    ExactArtifactStageStatusV1, LinuxVzExactWheelDetonationAdapterV1,
-    LinuxVzExactWheelDetonationConfigV1,
+    inspect_exact_artifact_v1, project_offline_exact_wheel_behavior_v1, ExactArtifactDispositionV1,
+    ExactArtifactInspectionRequestV1, ExactArtifactStageStatusV1,
+    LinuxVzExactWheelDetonationAdapterV1, LinuxVzExactWheelDetonationConfigV1,
+    OfflineExactWheelBehaviorProjectionRequestV1,
 };
 use zip::write::SimpleFileOptions;
 
@@ -314,6 +315,41 @@ fn exact_wheel_adapter_runs_every_intent_with_the_verified_artifact_bytes() {
             "vm_wheel_action_{scenario_index}_evidence_incomplete"
         )));
     }
+    let retained_action = run_roots[0].join("action-0000/evidence");
+    let projection_error =
+        project_offline_exact_wheel_behavior_v1(OfflineExactWheelBehaviorProjectionRequestV1 {
+            artifact_path: &retained_action.join("seen-artifact.bin"),
+            artifact_envelope_path: &retained_action.join("seen-artifact-envelope.json"),
+            artifact_manifest_path: &retained_action.join("seen-artifact-manifest.json"),
+            evidence_directory: &retained_action,
+            scenario_index: 0,
+            normalization_limits: NormalizationLimits::default(),
+        })
+        .expect_err("mock helper omitted signed evidence");
+    assert_eq!(
+        projection_error.reason_code(),
+        "wheel_behavior_projection_evidence_unavailable",
+        "offline projection accepted and re-normalized all exact outer bindings before reaching the shared evidence projector"
+    );
+
+    let substituted_artifact = root.path().join("substituted.whl");
+    let mut substituted_bytes = artifact.clone();
+    substituted_bytes.push(0);
+    std::fs::write(&substituted_artifact, substituted_bytes).expect("write substituted artifact");
+    let substitution_error =
+        project_offline_exact_wheel_behavior_v1(OfflineExactWheelBehaviorProjectionRequestV1 {
+            artifact_path: &substituted_artifact,
+            artifact_envelope_path: &retained_action.join("seen-artifact-envelope.json"),
+            artifact_manifest_path: &retained_action.join("seen-artifact-manifest.json"),
+            evidence_directory: &retained_action,
+            scenario_index: 0,
+            normalization_limits: NormalizationLimits::default(),
+        })
+        .expect_err("artifact substitution must fail before evidence projection");
+    assert_eq!(
+        substitution_error.reason_code(),
+        "wheel_behavior_projection_artifact_envelope_binding_mismatch"
+    );
     assert!(!report.observed_clean);
     assert!(!report.admission_authority);
     assert!(!report.sync_back_enabled);

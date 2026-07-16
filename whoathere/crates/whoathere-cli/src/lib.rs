@@ -45,13 +45,14 @@ use whoathere_policy::{
 use whoathere_runner::{
     behavior_finding_detection_eligible_v1, canonical_utc_timestamp_from_unix_seconds_v1,
     execute_readonly, inspect_exact_artifact_with_behavior_v1, plan_protected_execution,
-    BehaviorCodexObserverConfigV1, BehaviorCodexObserverV1, BehaviorCodexPanelOutcomeV1,
-    ExactArtifactAiAdapterV1, ExactArtifactBehaviorObserverV1, ExactArtifactCodexAiAdapterV1,
-    ExactArtifactCodexAiConfigV1, ExactArtifactDetonationAdapterV1, ExactArtifactInspectionErrorV1,
+    project_offline_exact_wheel_behavior_v1, BehaviorCodexObserverConfigV1,
+    BehaviorCodexObserverV1, BehaviorCodexPanelOutcomeV1, ExactArtifactAiAdapterV1,
+    ExactArtifactBehaviorObserverV1, ExactArtifactCodexAiAdapterV1, ExactArtifactCodexAiConfigV1,
+    ExactArtifactDetonationAdapterV1, ExactArtifactInspectionErrorV1,
     ExactArtifactInspectionRequestV1, ExecutionDecision, LinuxVzExactNpmDetonationAdapterV1,
     LinuxVzExactNpmDetonationConfigV1, LinuxVzExactSdistDetonationAdapterV1,
     LinuxVzExactSdistDetonationConfigV1, LinuxVzExactWheelDetonationAdapterV1,
-    LinuxVzExactWheelDetonationConfigV1,
+    LinuxVzExactWheelDetonationConfigV1, OfflineExactWheelBehaviorProjectionRequestV1,
 };
 use whoathere_sandbox::{
     admit_linux_active_probe_receipt, admit_linux_active_probe_receipt_with_replay_decision,
@@ -91,6 +92,17 @@ pub struct CommandResult {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
+    BehaviorProjectWheelInvalidOptions {
+        reason_code: &'static str,
+    },
+    BehaviorProjectWheel {
+        artifact_path: String,
+        artifact_envelope_path: String,
+        artifact_manifest_path: String,
+        evidence_directory: String,
+        scenario_index: usize,
+        output_path: String,
+    },
     BehaviorObserveMissingBundle,
     BehaviorObserveInvalidOptions {
         reason_code: &'static str,
@@ -828,9 +840,110 @@ fn parse_behavior_observe(args: &[String]) -> Command {
     }
 }
 
+fn parse_behavior_project_wheel(args: &[String]) -> Command {
+    const ALLOWED: [&str; 6] = [
+        "--artifact",
+        "--artifact-envelope",
+        "--artifact-manifest",
+        "--evidence-directory",
+        "--scenario-index",
+        "--output",
+    ];
+    let mut values = std::collections::BTreeMap::new();
+    let mut index = 0;
+    while index < args.len() {
+        let argument = args[index].as_str();
+        let (flag, inline_value) = match argument.split_once('=') {
+            Some((flag, value)) => (flag, Some(value)),
+            None => (argument, None),
+        };
+        if !ALLOWED.contains(&flag) {
+            return Command::BehaviorProjectWheelInvalidOptions {
+                reason_code: "behavior_project_wheel_option_unknown",
+            };
+        }
+        if values.contains_key(flag) {
+            return Command::BehaviorProjectWheelInvalidOptions {
+                reason_code: "behavior_project_wheel_option_duplicate",
+            };
+        }
+        let value = match inline_value {
+            Some(value) if !value.is_empty() => value.to_string(),
+            Some(_) => {
+                return Command::BehaviorProjectWheelInvalidOptions {
+                    reason_code: "behavior_project_wheel_option_value_required",
+                };
+            }
+            None => match args.get(index + 1) {
+                Some(value) if !value.is_empty() && !value.starts_with("--") => {
+                    index += 1;
+                    value.clone()
+                }
+                _ => {
+                    return Command::BehaviorProjectWheelInvalidOptions {
+                        reason_code: "behavior_project_wheel_option_value_required",
+                    };
+                }
+            },
+        };
+        values.insert(flag, value);
+        index += 1;
+    }
+
+    let Some(artifact_path) = values.remove("--artifact") else {
+        return Command::BehaviorProjectWheelInvalidOptions {
+            reason_code: "behavior_project_wheel_required_option_missing",
+        };
+    };
+    let Some(artifact_envelope_path) = values.remove("--artifact-envelope") else {
+        return Command::BehaviorProjectWheelInvalidOptions {
+            reason_code: "behavior_project_wheel_required_option_missing",
+        };
+    };
+    let Some(artifact_manifest_path) = values.remove("--artifact-manifest") else {
+        return Command::BehaviorProjectWheelInvalidOptions {
+            reason_code: "behavior_project_wheel_required_option_missing",
+        };
+    };
+    let Some(evidence_directory) = values.remove("--evidence-directory") else {
+        return Command::BehaviorProjectWheelInvalidOptions {
+            reason_code: "behavior_project_wheel_required_option_missing",
+        };
+    };
+    let Some(raw_scenario_index) = values.remove("--scenario-index") else {
+        return Command::BehaviorProjectWheelInvalidOptions {
+            reason_code: "behavior_project_wheel_required_option_missing",
+        };
+    };
+    let scenario_index = match raw_scenario_index.parse::<usize>() {
+        Ok(value) if raw_scenario_index == value.to_string() => value,
+        _ => {
+            return Command::BehaviorProjectWheelInvalidOptions {
+                reason_code: "behavior_project_wheel_scenario_index_invalid",
+            };
+        }
+    };
+    let Some(output_path) = values.remove("--output") else {
+        return Command::BehaviorProjectWheelInvalidOptions {
+            reason_code: "behavior_project_wheel_required_option_missing",
+        };
+    };
+    Command::BehaviorProjectWheel {
+        artifact_path,
+        artifact_envelope_path,
+        artifact_manifest_path,
+        evidence_directory,
+        scenario_index,
+        output_path,
+    }
+}
+
 pub fn parse_command(args: &[String]) -> Command {
     match args {
         [] => Command::Help,
+        [cmd, sub, kind, rest @ ..] if cmd == "behavior" && sub == "project" && kind == "wheel" => {
+            parse_behavior_project_wheel(rest)
+        }
         [cmd, sub, rest @ ..] if cmd == "behavior" && sub == "observe" => {
             parse_behavior_observe(rest)
         }
@@ -1114,6 +1227,24 @@ pub fn evaluate_command(command: Command) -> CommandResult {
 
 fn render_command_text(command: Command) -> String {
     match command {
+        Command::BehaviorProjectWheelInvalidOptions { reason_code } => {
+            render_behavior_project_wheel_error(reason_code, 64)
+        }
+        Command::BehaviorProjectWheel {
+            artifact_path,
+            artifact_envelope_path,
+            artifact_manifest_path,
+            evidence_directory,
+            scenario_index,
+            output_path,
+        } => render_behavior_project_wheel(BehaviorProjectWheelArgs {
+            artifact_path: &artifact_path,
+            artifact_envelope_path: &artifact_envelope_path,
+            artifact_manifest_path: &artifact_manifest_path,
+            evidence_directory: &evidence_directory,
+            scenario_index,
+            output_path: &output_path,
+        }),
         Command::BehaviorObserveMissingBundle => {
             render_behavior_observe_error("behavior_observe_bundle_path_required", 64)
         }
@@ -1806,6 +1937,7 @@ fn command_help() -> String {
     concat!(
         "whoathere <",
         "artifact inspect <npm.tgz|package.whl|package.tar.gz|package.zip> [--ecosystem auto|npm|pypi] [--state-dir <dir>] [--acquired-at <YYYY-MM-DDTHH:MM:SSZ>] [--ai-review --approve-hosted-source-review] [--behavior-observe --approve-hosted-behavior-review] [--ai-provider codex --ai-client-path <absolute-native-binary> --ai-client-sha256 <sha256:...> --ai-model <exact-model> --ai-auth-home <dedicated-auth-home> [--ai-timeout-seconds <1..600>]] [--detonation --detonation-config <absolute-json>]|",
+        "behavior project wheel --artifact <package.whl> --artifact-envelope <artifact-envelope.json> --artifact-manifest <artifact-manifest.json> --evidence-directory <helper-evidence-dir> --scenario-index <index> --output <behavior-bundle.json>|",
         "behavior observe <behavior-bundle.json> --bundle-sha256 <sha256:...> --ai-provider codex --ai-client-path <absolute-native-binary> --ai-client-sha256 <sha256:...> --ai-model <exact-model> --ai-auth-home <dedicated-auth-home> --approve-hosted-behavior-review [--state-dir <dir>] [--ai-timeout-seconds <1..600>]|",
         "doctor [--json] [--state-dir <dir>] [--helper <path>]",
         "|status",
@@ -1878,6 +2010,15 @@ struct ExactArtifactInspectArgs<'a> {
     detonation_config: Option<&'a str>,
 }
 
+struct BehaviorProjectWheelArgs<'a> {
+    artifact_path: &'a str,
+    artifact_envelope_path: &'a str,
+    artifact_manifest_path: &'a str,
+    evidence_directory: &'a str,
+    scenario_index: usize,
+    output_path: &'a str,
+}
+
 struct BehaviorObserveArgs<'a> {
     bundle_path: &'a str,
     bundle_sha256: Option<&'a str>,
@@ -1889,6 +2030,68 @@ struct BehaviorObserveArgs<'a> {
     state_dir: Option<&'a str>,
     ai_timeout_seconds: Option<u64>,
     approve_hosted_behavior_review: bool,
+}
+
+fn render_behavior_project_wheel_error(reason_code: &str, exit_code: i32) -> String {
+    serde_json::to_string_pretty(&serde_json::json!({
+        "status": "error",
+        "exit_code": exit_code,
+        "reason_codes": [reason_code],
+        "observe_only": true,
+        "admission_authority": false,
+        "observed_clean": false,
+    }))
+    .expect("static behavior projection error serializes")
+}
+
+fn render_behavior_project_wheel(args: BehaviorProjectWheelArgs<'_>) -> String {
+    let bundle = match project_offline_exact_wheel_behavior_v1(
+        OfflineExactWheelBehaviorProjectionRequestV1 {
+            artifact_path: Path::new(args.artifact_path),
+            artifact_envelope_path: Path::new(args.artifact_envelope_path),
+            artifact_manifest_path: Path::new(args.artifact_manifest_path),
+            evidence_directory: Path::new(args.evidence_directory),
+            scenario_index: args.scenario_index,
+            normalization_limits: whoathere_artifact::NormalizationLimits::default(),
+        },
+    ) {
+        Ok(bundle) => bundle,
+        Err(error) => return render_behavior_project_wheel_error(error.reason_code(), 64),
+    };
+    let bundle_bytes = match serde_json::to_vec(&bundle) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return render_behavior_project_wheel_error(
+                "behavior_project_wheel_bundle_serialization_failed",
+                70,
+            );
+        }
+    };
+    if write_new_private_behavior_bundle(Path::new(args.output_path), &bundle_bytes).is_err() {
+        return render_behavior_project_wheel_error(
+            "behavior_project_wheel_output_unavailable",
+            64,
+        );
+    }
+    String::from_utf8(bundle_bytes).unwrap_or_else(|_| {
+        render_behavior_project_wheel_error(
+            "behavior_project_wheel_bundle_serialization_failed",
+            70,
+        )
+    })
+}
+
+fn write_new_private_behavior_bundle(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()
 }
 
 fn render_behavior_observe_error(reason_code: &str, exit_code: i32) -> String {
@@ -18748,6 +18951,86 @@ mod tests {
     use super::*;
 
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn parses_offline_wheel_behavior_projection_options() {
+        let args = vec![
+            "behavior".to_string(),
+            "project".to_string(),
+            "wheel".to_string(),
+            "--artifact".to_string(),
+            "/tmp/exact.whl".to_string(),
+            "--artifact-envelope=/tmp/artifact-envelope.json".to_string(),
+            "--artifact-manifest".to_string(),
+            "/tmp/artifact-manifest.json".to_string(),
+            "--evidence-directory".to_string(),
+            "/tmp/evidence".to_string(),
+            "--scenario-index=1".to_string(),
+            "--output".to_string(),
+            "/tmp/behavior-bundle.json".to_string(),
+        ];
+        assert_eq!(
+            parse_command(&args),
+            Command::BehaviorProjectWheel {
+                artifact_path: "/tmp/exact.whl".to_string(),
+                artifact_envelope_path: "/tmp/artifact-envelope.json".to_string(),
+                artifact_manifest_path: "/tmp/artifact-manifest.json".to_string(),
+                evidence_directory: "/tmp/evidence".to_string(),
+                scenario_index: 1,
+                output_path: "/tmp/behavior-bundle.json".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn offline_wheel_behavior_projection_rejects_ambiguous_options() {
+        for (arguments, expected_reason) in [
+            (
+                vec![
+                    "--artifact",
+                    "/tmp/exact.whl",
+                    "--artifact",
+                    "/tmp/other.whl",
+                ],
+                "behavior_project_wheel_option_duplicate",
+            ),
+            (
+                vec![
+                    "--artifact",
+                    "/tmp/exact.whl",
+                    "--artifact-envelope",
+                    "/tmp/envelope.json",
+                    "--artifact-manifest",
+                    "/tmp/manifest.json",
+                    "--evidence-directory",
+                    "/tmp/evidence",
+                    "--scenario-index",
+                    "01",
+                    "--output",
+                    "/tmp/bundle.json",
+                ],
+                "behavior_project_wheel_scenario_index_invalid",
+            ),
+            (
+                vec!["--artifact", "/tmp/exact.whl"],
+                "behavior_project_wheel_required_option_missing",
+            ),
+        ] {
+            let mut args = vec![
+                "behavior".to_string(),
+                "project".to_string(),
+                "wheel".to_string(),
+            ];
+            args.extend(arguments.into_iter().map(ToString::to_string));
+            let result = evaluate_command(parse_command(&args));
+            assert_eq!(result.exit_code, 64);
+            let value: serde_json::Value =
+                serde_json::from_str(&result.output).expect("projection error JSON");
+            assert_eq!(value["reason_codes"][0], expected_reason);
+            assert_eq!(value["admission_authority"], false);
+            assert_eq!(value["observed_clean"], false);
+        }
+    }
 
     #[test]
     fn parses_behavior_observe_options() {
