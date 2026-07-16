@@ -402,9 +402,9 @@ pub fn verify_ollama_terminal_frame_v1(
         || &frame.provider_input_sha256 != input.provider_input_sha256()
         || frame.requested_model != input.model().model_id
         || frame.response_model != input.model().model_id
-        || frame.expected_model_content_sha256 != input.model().model_content_sha256
-        || frame.pre_model_content_sha256 != input.model().model_content_sha256
-        || frame.post_model_content_sha256 != input.model().model_content_sha256
+        || Some(&frame.expected_model_content_sha256) != input.model().measured_content_sha256()
+        || Some(&frame.pre_model_content_sha256) != input.model().measured_content_sha256()
+        || Some(&frame.post_model_content_sha256) != input.model().measured_content_sha256()
         || &frame.system_message_sha256 != prepared.system_message_sha256()
         || &frame.user_message_sha256 != prepared.user_message_sha256()
         || &frame.role_mapping_contract_sha256 != prepared.role_mapping_contract_sha256()

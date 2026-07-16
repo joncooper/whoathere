@@ -153,3 +153,17 @@ Smallest resume experiment:
    omitted frames, and receipt rebindings.
 5. Only after these inert cases pass may the physical helper be attached to real-package
    acceptance; this does not resume BLK-001's online syscall-pair redesign.
+
+## BLK-004: one static Codex specialist still misses an inert credential-exfiltration flow
+
+Status: parked so it does not delay the dynamic vertical.
+
+On July 15, 2026, the exact-artifact adapter selected the `CredentialFilesystem` specialist for
+reachable npm postinstall JavaScript that reads `HOME/.npmrc`, encodes it, and attempts a DNS lookup.
+The deterministic analyzer produced behavior findings, but the measured subscription-backed Codex
+invocation returned no finding. The result remained correctly inconclusive and had no admission
+authority.
+
+Do not spend the current working-solution slice tuning prompts around this one fixture. First feed
+Codex the actual bounded process, file, network, and canary observations from a disposable-VM run.
+Revisit static prompt/pass design afterward using multiple hidden positive and benign controls.

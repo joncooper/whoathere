@@ -11,7 +11,7 @@ use whoathere_artifact::Sha256Digest;
 use whoathere_artifact_review_runtime::LocalProviderEvidenceExecutionBindingV2;
 
 pub const ARTIFACT_REVIEW_EVIDENCE_STATEMENT_SCHEMA_V2: &str =
-    "whoathere.artifact_review_evidence_statement.v2";
+    "whoathere.artifact_review_evidence_statement.v3";
 pub const ARTIFACT_REVIEW_EVIDENCE_CANONICALIZATION_V2: &str = "rfc8785.jcs.no_numbers.v1";
 pub const ARTIFACT_REVIEW_EVIDENCE_SIGNATURE_PROFILE_V2: &str = "ed25519.direct.expected_body.v1";
 pub const MAX_ARTIFACT_REVIEW_EVIDENCE_STATEMENT_BYTES_V2: usize = 256 * 1024;
@@ -32,6 +32,13 @@ pub enum ArtifactReviewEvidenceCompletenessV2 {
     Incomplete,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactReviewEvidenceModelIdentityPostureV2 {
+    MeasuredLocalContent,
+    ProviderHostedOpaqueVersion,
+}
+
 #[derive(Debug, Clone)]
 pub struct ArtifactReviewEvidenceStatementDraftV2 {
     pub challenge: ArtifactReviewChallengeV2,
@@ -44,7 +51,8 @@ pub struct ArtifactReviewEvidenceStatementDraftV2 {
     pub deterministic_analysis_sha256: Sha256Digest,
     pub coverage_manifest_sha256: Sha256Digest,
     pub provider_adapter_sha256: Sha256Digest,
-    pub model_content_sha256: Sha256Digest,
+    pub model_identity_sha256: Sha256Digest,
+    pub model_identity_posture: ArtifactReviewEvidenceModelIdentityPostureV2,
     pub prompt_template_sha256: Sha256Digest,
     pub model_output_schema_sha256: Sha256Digest,
     pub adapter_result_schema_sha256: Sha256Digest,
@@ -87,7 +95,8 @@ pub struct ArtifactReviewEvidenceStatementV2 {
     deterministic_analysis_sha256: Sha256Digest,
     coverage_manifest_sha256: Sha256Digest,
     provider_adapter_sha256: Sha256Digest,
-    model_content_sha256: Sha256Digest,
+    model_identity_sha256: Sha256Digest,
+    model_identity_posture: ArtifactReviewEvidenceModelIdentityPostureV2,
     prompt_template_sha256: Sha256Digest,
     model_output_schema_sha256: Sha256Digest,
     adapter_result_schema_sha256: Sha256Digest,
@@ -138,7 +147,8 @@ impl ArtifactReviewEvidenceStatementV2 {
             deterministic_analysis_sha256: draft.deterministic_analysis_sha256,
             coverage_manifest_sha256: draft.coverage_manifest_sha256,
             provider_adapter_sha256: draft.provider_adapter_sha256,
-            model_content_sha256: draft.model_content_sha256,
+            model_identity_sha256: draft.model_identity_sha256,
+            model_identity_posture: draft.model_identity_posture,
             prompt_template_sha256: draft.prompt_template_sha256,
             model_output_schema_sha256: draft.model_output_schema_sha256,
             adapter_result_schema_sha256: draft.adapter_result_schema_sha256,
@@ -162,18 +172,30 @@ impl ArtifactReviewEvidenceStatementV2 {
     pub fn validate(&self) -> Result<(), ArtifactReviewAuthErrorV2> {
         self.subject.validate()?;
         self.key_identity.validate()?;
-        let runtime_binding = LocalProviderEvidenceExecutionBindingV2::new(
-            self.challenge_id.clone(),
-            self.evidence_id.clone(),
-            self.run_id.clone(),
-            self.challenge_binding_sha256.clone(),
-        )
-        .map_err(|_| ArtifactReviewAuthErrorV2::InvalidStatement)?;
-        let expected_runtime_binding_sha256 =
-            crate::local_provider_evidence_execution_binding_sha256_v2(
-                &self.authority_id,
-                &runtime_binding,
-            )?;
+        let expected_runtime_binding_sha256 = match self.model_identity_posture {
+            ArtifactReviewEvidenceModelIdentityPostureV2::MeasuredLocalContent => {
+                let runtime_binding = LocalProviderEvidenceExecutionBindingV2::new(
+                    self.challenge_id.clone(),
+                    self.evidence_id.clone(),
+                    self.run_id.clone(),
+                    self.challenge_binding_sha256.clone(),
+                )
+                .map_err(|_| ArtifactReviewAuthErrorV2::InvalidStatement)?;
+                crate::local_provider_evidence_execution_binding_sha256_v2(
+                    &self.authority_id,
+                    &runtime_binding,
+                )?
+            }
+            ArtifactReviewEvidenceModelIdentityPostureV2::ProviderHostedOpaqueVersion => {
+                crate::hosted_provider_evidence_execution_binding_sha256_v2(
+                    &self.authority_id,
+                    &self.challenge_id,
+                    &self.evidence_id,
+                    &self.run_id,
+                    &self.challenge_binding_sha256,
+                )?
+            }
+        };
         if !valid_identity_component_v2(&self.evidence_id)
             || !valid_identity_component_v2(&self.run_id)
             || !valid_identity_component_v2(&self.lineage_scope)
@@ -277,6 +299,34 @@ impl ArtifactReviewEvidenceStatementV2 {
         &self.request_sha256
     }
 
+    pub fn coverage_manifest_sha256(&self) -> &Sha256Digest {
+        &self.coverage_manifest_sha256
+    }
+
+    pub fn provider_adapter_sha256(&self) -> &Sha256Digest {
+        &self.provider_adapter_sha256
+    }
+
+    pub fn model_identity_sha256(&self) -> &Sha256Digest {
+        &self.model_identity_sha256
+    }
+
+    pub fn model_identity_posture(&self) -> ArtifactReviewEvidenceModelIdentityPostureV2 {
+        self.model_identity_posture
+    }
+
+    pub fn runtime_contract_sha256(&self) -> &Sha256Digest {
+        &self.runtime_contract_sha256
+    }
+
+    pub fn normalizer_contract_sha256(&self) -> &Sha256Digest {
+        &self.normalizer_contract_sha256
+    }
+
+    pub fn execution_claims_sha256(&self) -> &Sha256Digest {
+        &self.execution_claims_sha256
+    }
+
     pub fn aggregate_manifest_sha256(&self) -> &Sha256Digest {
         &self.aggregate_manifest_sha256
     }
@@ -345,7 +395,8 @@ impl ArtifactReviewEvidenceStatementV2 {
             deterministic_analysis_sha256: self.deterministic_analysis_sha256.as_str(),
             coverage_manifest_sha256: self.coverage_manifest_sha256.as_str(),
             provider_adapter_sha256: self.provider_adapter_sha256.as_str(),
-            model_content_sha256: self.model_content_sha256.as_str(),
+            model_identity_sha256: self.model_identity_sha256.as_str(),
+            model_identity_posture: self.model_identity_posture,
             prompt_template_sha256: self.prompt_template_sha256.as_str(),
             model_output_schema_sha256: self.model_output_schema_sha256.as_str(),
             adapter_result_schema_sha256: self.adapter_result_schema_sha256.as_str(),
@@ -411,7 +462,8 @@ struct EvidenceStatementWireV2<'a> {
     deterministic_analysis_sha256: &'a str,
     coverage_manifest_sha256: &'a str,
     provider_adapter_sha256: &'a str,
-    model_content_sha256: &'a str,
+    model_identity_sha256: &'a str,
+    model_identity_posture: ArtifactReviewEvidenceModelIdentityPostureV2,
     prompt_template_sha256: &'a str,
     model_output_schema_sha256: &'a str,
     adapter_result_schema_sha256: &'a str,
@@ -727,7 +779,9 @@ mod tests {
             deterministic_analysis_sha256: digest("wire-test-analysis"),
             coverage_manifest_sha256: digest("wire-test-coverage"),
             provider_adapter_sha256: digest("wire-test-provider"),
-            model_content_sha256: digest("wire-test-model"),
+            model_identity_sha256: digest("wire-test-model"),
+            model_identity_posture:
+                ArtifactReviewEvidenceModelIdentityPostureV2::MeasuredLocalContent,
             prompt_template_sha256: digest("wire-test-prompt"),
             model_output_schema_sha256: digest("wire-test-model-schema"),
             adapter_result_schema_sha256: digest("wire-test-adapter-schema"),
@@ -752,6 +806,10 @@ mod tests {
         let statement = statement("wire-test-normalized");
         let body = statement.canonical_json_v2().expect("body");
         let value: serde_json::Value = serde_json::from_slice(&body).expect("JSON");
+        assert_eq!(
+            value["schema_version"],
+            "whoathere.artifact_review_evidence_statement.v3"
+        );
         fn assert_profile(value: &serde_json::Value) {
             match value {
                 serde_json::Value::Null | serde_json::Value::Number(_) => {
@@ -781,6 +839,56 @@ mod tests {
         .expect("verify");
         assert_eq!(verified.statement(), &statement);
         assert_eq!(verified.evidence_sha256(), &signed.evidence_sha256());
+    }
+
+    #[test]
+    fn signed_statement_v3_rejects_legacy_v2_identifier_and_layout() {
+        assert_eq!(
+            ARTIFACT_REVIEW_EVIDENCE_STATEMENT_SCHEMA_V2,
+            "whoathere.artifact_review_evidence_statement.v3"
+        );
+        let expected = statement("wire-test-v3-schema-discrimination");
+        let current_body = expected.canonical_json_v2().expect("current body");
+        let current: serde_json::Value =
+            serde_json::from_slice(&current_body).expect("current JSON");
+        let signer = signer();
+        let registry =
+            ArtifactReviewKeyRegistryV2::new([signer.verification_record()]).expect("registry");
+
+        let mut legacy_identifier = current.clone();
+        legacy_identifier["schema_version"] =
+            serde_json::json!("whoathere.artifact_review_evidence_statement.v2");
+
+        let mut legacy_layout = current;
+        let fields = legacy_layout.as_object_mut().expect("statement object");
+        fields.insert(
+            "schema_version".to_string(),
+            serde_json::json!("whoathere.artifact_review_evidence_statement.v2"),
+        );
+        let model_identity = fields
+            .remove("model_identity_sha256")
+            .expect("current model identity");
+        fields.remove("model_identity_posture");
+        fields.insert("model_content_sha256".to_string(), model_identity);
+
+        for legacy in [legacy_identifier, legacy_layout] {
+            let legacy_body =
+                serde_json_canonicalizer::to_vec(&legacy).expect("legacy canonical body");
+            let mut transport = signature_input_prefix_v2(&legacy_body).expect("signature input");
+            let signature = signer.sign(&transport);
+            transport.extend_from_slice(&signature);
+            let signed = SignedArtifactReviewStatementV2::from_transport_bytes(transport)
+                .expect("legacy signed transport shape");
+            assert!(matches!(
+                verify_artifact_review_statement_signature_v2(
+                    &signed,
+                    expected.clone(),
+                    &registry,
+                    1_004,
+                ),
+                Err(ArtifactReviewAuthErrorV2::InvalidStatement)
+            ));
+        }
     }
 
     #[test]

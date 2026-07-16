@@ -47,7 +47,7 @@ fn tar_gzip(entries: &[(&str, &[u8], u32)]) -> Vec<u8> {
         .expect("finish gzip")
 }
 
-fn fixture_artifact() -> NormalizedArtifact {
+fn fixture_artifact_with_index(index_bytes: &[u8]) -> NormalizedArtifact {
     let bytes = tar_gzip(&[
         (
             "package/package.json",
@@ -56,7 +56,7 @@ fn fixture_artifact() -> NormalizedArtifact {
         ),
         (
             "package/index.js",
-            "const ordinary = 1;\nconst unicode = 'snowman ☃';\nconst credential = process.env.DEMO_TOKEN;\nconsole.log(ordinary, credential);\n".as_bytes(),
+            index_bytes,
             0o644,
         ),
     ]);
@@ -84,6 +84,12 @@ fn fixture_artifact() -> NormalizedArtifact {
         .expect("normalize inert npm fixture")
 }
 
+fn fixture_artifact() -> NormalizedArtifact {
+    fixture_artifact_with_index(
+        "const ordinary = 1;\nconst unicode = 'snowman ☃';\nconst credential = process.env.DEMO_TOKEN;\nconsole.log(ordinary, credential);\n".as_bytes(),
+    )
+}
+
 fn subject(artifact: &NormalizedArtifact) -> ArtifactEvidenceSubjectV2 {
     let artifact_digest = artifact.manifest.artifact_sha256.as_str();
     ArtifactEvidenceSubjectV2::new(
@@ -103,11 +109,11 @@ fn config() -> ArtifactReviewConfigV2 {
             adapter_version: "2.0.0".to_string(),
             adapter_sha256: Sha256Digest::from_bytes(b"inert normalizer adapter"),
         },
-        model: ArtifactReviewModelIdentityV2 {
-            model_id: "inert-review-model".to_string(),
-            model_version: "2026-07-09".to_string(),
-            model_content_sha256: Sha256Digest::from_bytes(b"immutable inert model"),
-        },
+        model: ArtifactReviewModelIdentityV2::measured_local(
+            "inert-review-model",
+            "2026-07-09",
+            Sha256Digest::from_bytes(b"immutable inert model"),
+        ),
         prompt: ArtifactReviewPromptIdentityV2 {
             template_id: ARTIFACT_REVIEW_PROMPT_TEMPLATE_ID_V2.to_string(),
             template_version: ARTIFACT_REVIEW_PROMPT_TEMPLATE_VERSION_V2.to_string(),
@@ -242,6 +248,18 @@ fn normalizer_resolves_chunk_relative_finding_to_exact_artifact_evidence() {
         invocation.untrusted().start_byte() + relative_start as u64
     );
     assert_eq!(finding.explanation(), explanation);
+    assert!(!finding.behavior_gate_eligible());
+    let adapter_wire: serde_json::Value =
+        serde_json::from_slice(normalized.adapter_normalized_output())
+            .expect("strict adapter result JSON");
+    assert_eq!(
+        adapter_wire["findings"][0]["behavior_gate_eligible"],
+        serde_json::json!(false)
+    );
+    assert_eq!(
+        adapter_wire["findings"][0]["finding_id_sha256"],
+        serde_json::json!(finding.finding_id_sha256())
+    );
     assert_eq!(normalized.outcomes().len(), 1);
     assert_eq!(
         normalized.outcomes()[0].status(),
@@ -267,6 +285,7 @@ fn normalizer_resolves_chunk_relative_finding_to_exact_artifact_evidence() {
         .missing_work_item_ids()
         .iter()
         .any(|missing| missing == item.work_item_id()));
+    assert!(!normalized.coverage_complete());
     assert!(!format!("{normalized:?}").contains(explanation));
 
     let independently_validated = decode_and_structurally_validate_artifact_review_result_v2(
@@ -284,7 +303,7 @@ fn normalizer_resolves_chunk_relative_finding_to_exact_artifact_evidence() {
 }
 
 #[test]
-fn output_order_is_canonical_and_truncated_or_failed_items_never_contribute_findings() {
+fn output_order_is_canonical_and_malformed_truncated_items_fail_closed() {
     let (artifact, analysis, subject, request) = fixture();
     let first = request.work_items()[0].work_item_id().clone();
     let second = request.work_items()[1].work_item_id().clone();
@@ -422,10 +441,279 @@ fn malformed_items_fail_individually_while_a_valid_positive_is_preserved() {
             .work_item_claims()
             .iter()
             .find(|claim| claim.work_item_id() == items[1].work_item_id())
-            .expect("failed claim")
+            .expect("captured claim")
             .status(),
+        ArtifactReviewWorkItemStatusV2::Completed
+    );
+    let malformed_outcome = normalized
+        .outcomes()
+        .iter()
+        .find(|outcome| outcome.work_item_id() == items[1].work_item_id())
+        .expect("malformed outcome");
+    assert!(!malformed_outcome.coverage_complete());
+    assert_eq!(
+        malformed_outcome.rejection_reasons(),
+        &[ArtifactReviewWorkItemNormalizationStatusV2::InvalidModelOutputWire]
+    );
+}
+
+#[test]
+fn invalid_finding_sibling_marks_partial_coverage_without_erasing_a_valid_positive() {
+    let (artifact, analysis, subject, request) = fixture();
+    let file = artifact
+        .files()
+        .find(|file| file.normalized_path == "index.js")
+        .expect("index.js");
+    let item = request
+        .work_items()
+        .iter()
+        .find(|item| item.file_id() == &file.file_id)
+        .expect("index work item");
+    let invocation = request
+        .invocation(&artifact, item.work_item_id())
+        .expect("invocation");
+    let context = &invocation.untrusted().contexts()[0];
+    let token = b"process.env";
+    let relative_start = invocation
+        .untrusted()
+        .bytes()
+        .windows(token.len())
+        .position(|window| window == token)
+        .expect("token");
+    let findings = serde_json::json!([
+        {
+            "category": "credential_access",
+            "severity": "high",
+            "context_id": context.context_id(),
+            "context_kind": context.kind(),
+            "chunk_relative_start_byte": relative_start,
+            "chunk_relative_end_byte": relative_start + token.len(),
+            "explanation": "This structurally valid positive must survive its malformed sibling."
+        },
+        {
+            "category": "not_a_real_category",
+            "severity": "high"
+        }
+    ]);
+    let normalized = normalize_artifact_review_provider_outputs_v2(
+        &subject,
+        &artifact,
+        &analysis,
+        &request,
+        &[complete_output(
+            item.work_item_id(),
+            model_output(&request, item.work_item_id(), "no_finding", findings),
+        )],
+    )
+    .expect("valid sibling is salvaged");
+
+    assert_eq!(
+        normalized.structurally_validated_result().findings().len(),
+        1
+    );
+    assert_eq!(
+        normalized.structurally_validated_result().verdict(),
+        ArtifactReviewVerdictV2::Suspicious
+    );
+    let outcome = &normalized.outcomes()[0];
+    assert_eq!(
+        outcome.status(),
+        ArtifactReviewWorkItemNormalizationStatusV2::PartiallyNormalized
+    );
+    assert_eq!(outcome.declared_finding_count(), 2);
+    assert_eq!(outcome.structurally_valid_finding_count(), 1);
+    assert_eq!(outcome.retained_finding_count(), 1);
+    assert_eq!(outcome.rejected_finding_count(), 1);
+    assert_eq!(
+        outcome.rejection_reasons(),
+        &[ArtifactReviewWorkItemNormalizationStatusV2::InvalidFindingWire]
+    );
+    assert!(!outcome.coverage_complete());
+    assert!(!normalized.coverage_complete());
+}
+
+#[test]
+fn complete_json_marked_failed_or_truncated_keeps_positive_but_not_complete_coverage() {
+    let (artifact, analysis, subject, request) = fixture();
+    let file = artifact
+        .files()
+        .find(|file| file.normalized_path == "index.js")
+        .expect("index.js");
+    let item = request
+        .work_items()
+        .iter()
+        .find(|item| item.file_id() == &file.file_id)
+        .expect("index work item");
+    let invocation = request
+        .invocation(&artifact, item.work_item_id())
+        .expect("invocation");
+    let context = &invocation.untrusted().contexts()[0];
+    let raw = model_output(
+        &request,
+        item.work_item_id(),
+        "suspicious",
+        serde_json::json!([{
+            "category": "environment_gating",
+            "severity": "high",
+            "context_id": context.context_id(),
+            "context_kind": context.kind(),
+            "chunk_relative_start_byte": 0,
+            "chunk_relative_end_byte": 1,
+            "explanation": "A valid citation remains evidence even when later coverage truncated."
+        }]),
+    );
+    let output = ArtifactReviewProviderOutputV2::new_truncated_capture(
+        item.work_item_id().clone(),
+        raw.clone(),
+        ArtifactReviewChannelIsolationV2::SeparateTrustedAndUntrusted,
+    )
+    .expect("bounded capture");
+    let normalized = normalize_artifact_review_provider_outputs_v2(
+        &subject,
+        &artifact,
+        &analysis,
+        &request,
+        &[output],
+    )
+    .expect("positive survives truncated coverage");
+
+    assert_eq!(
+        normalized.structurally_validated_result().findings().len(),
+        1
+    );
+    assert_eq!(
+        normalized.outcomes()[0].status(),
+        ArtifactReviewWorkItemNormalizationStatusV2::PartiallyNormalized
+    );
+    assert_eq!(
+        normalized.outcomes()[0].rejection_reasons(),
+        &[ArtifactReviewWorkItemNormalizationStatusV2::Truncated]
+    );
+    assert_eq!(
+        normalized.execution_report().work_item_claims()[0].status(),
+        ArtifactReviewWorkItemStatusV2::Truncated
+    );
+    assert!(!normalized.coverage_complete());
+
+    let failed_output = ArtifactReviewProviderOutputV2::new_failed_capture(
+        item.work_item_id().clone(),
+        raw,
+        ArtifactReviewChannelIsolationV2::SeparateTrustedAndUntrusted,
+        true,
+    )
+    .expect("bounded failed capture");
+    let failed = normalize_artifact_review_provider_outputs_v2(
+        &subject,
+        &artifact,
+        &analysis,
+        &request,
+        &[failed_output],
+    )
+    .expect("positive survives provider failure status");
+    assert_eq!(failed.structurally_validated_result().findings().len(), 1);
+    assert_eq!(
+        failed.outcomes()[0].status(),
+        ArtifactReviewWorkItemNormalizationStatusV2::PartiallyNormalized
+    );
+    assert_eq!(
+        failed.outcomes()[0].rejection_reasons(),
+        &[ArtifactReviewWorkItemNormalizationStatusV2::ProviderFailed]
+    );
+    assert_eq!(
+        failed.execution_report().work_item_claims()[0].status(),
         ArtifactReviewWorkItemStatusV2::Failed
     );
+    assert!(!failed.coverage_complete());
+}
+
+#[test]
+fn structural_finding_identity_is_stable_across_rewording_but_evidence_digest_is_not() {
+    let (artifact, analysis, subject, request) = fixture();
+    let file = artifact
+        .files()
+        .find(|file| file.normalized_path == "index.js")
+        .expect("index.js");
+    let item = request
+        .work_items()
+        .iter()
+        .find(|item| item.file_id() == &file.file_id)
+        .expect("index work item");
+    let invocation = request
+        .invocation(&artifact, item.work_item_id())
+        .expect("invocation");
+    let context = &invocation.untrusted().contexts()[0];
+    let normalize_with_explanation = |explanation: &str| {
+        normalize_artifact_review_provider_outputs_v2(
+            &subject,
+            &artifact,
+            &analysis,
+            &request,
+            &[complete_output(
+                item.work_item_id(),
+                model_output(
+                    &request,
+                    item.work_item_id(),
+                    "suspicious",
+                    serde_json::json!([{
+                        "category": "obfuscation",
+                        "severity": "medium",
+                        "context_id": context.context_id(),
+                        "context_kind": context.kind(),
+                        "chunk_relative_start_byte": 0,
+                        "chunk_relative_end_byte": 1,
+                        "explanation": explanation
+                    }]),
+                ),
+            )],
+        )
+        .expect("normalize reworded citation")
+    };
+    let first = normalize_with_explanation("First bounded explanation of the same exact range.");
+    let second = normalize_with_explanation("Different prose, identical structural citation.");
+    let first_finding = &first.structurally_validated_result().findings()[0];
+    let second_finding = &second.structurally_validated_result().findings()[0];
+
+    assert_eq!(
+        first_finding.finding_id_sha256(),
+        second_finding.finding_id_sha256()
+    );
+    assert_ne!(
+        first_finding.evidence_sha256(),
+        second_finding.evidence_sha256()
+    );
+    assert!(!first_finding.behavior_gate_eligible());
+    assert!(!second_finding.behavior_gate_eligible());
+}
+
+#[test]
+fn complete_ai_no_finding_outputs_remain_uncertain_and_cannot_authorize_allow() {
+    let (artifact, analysis, subject, request) = fixture();
+    let outputs = request
+        .work_items()
+        .iter()
+        .map(|item| {
+            complete_output(
+                item.work_item_id(),
+                model_output(
+                    &request,
+                    item.work_item_id(),
+                    "no_finding",
+                    serde_json::json!([]),
+                ),
+            )
+        })
+        .collect::<Vec<_>>();
+    let normalized = normalize_artifact_review_provider_outputs_v2(
+        &subject, &artifact, &analysis, &request, &outputs,
+    )
+    .expect("complete empty review graph");
+    let result = normalized.structurally_validated_result();
+
+    assert!(normalized.coverage_complete());
+    assert_eq!(result.verdict(), ArtifactReviewVerdictV2::Uncertain);
+    assert!(result.findings().is_empty());
+    assert!(!result.is_authenticated());
+    assert!(!result.can_authorize_allow());
 }
 
 #[test]
@@ -522,7 +810,7 @@ fn duplicate_unknown_and_oversized_outputs_fail_or_downgrade_without_salvage() {
 }
 
 #[test]
-fn aggregate_finding_overflow_preserves_the_already_bounded_suspicious_set() {
+fn reworded_structural_duplicates_cannot_crowd_a_later_threat_class() {
     let (artifact, analysis, subject, request) = fixture();
     let first = &request.work_items()[0];
     let second = &request.work_items()[1];
@@ -582,11 +870,16 @@ fn aggregate_finding_overflow_preserves_the_already_bounded_suspicious_set() {
             ),
         ],
     )
-    .expect("overflow is an explicit failed item, not a batch failure");
+    .expect("structural duplicates do not consume the aggregate ceiling");
     assert_eq!(
         normalized.structurally_validated_result().findings().len(),
-        256
+        2
     );
+    assert!(normalized
+        .structurally_validated_result()
+        .findings()
+        .iter()
+        .any(|finding| finding.category() == ArtifactReviewFindingCategoryV2::ProcessExecution));
     assert_eq!(
         normalized.structurally_validated_result().verdict(),
         ArtifactReviewVerdictV2::Suspicious
@@ -596,9 +889,9 @@ fn aggregate_finding_overflow_preserves_the_already_bounded_suspicious_set() {
             .outcomes()
             .iter()
             .find(|outcome| outcome.work_item_id() == second.work_item_id())
-            .expect("overflow outcome")
+            .expect("later-class outcome")
             .status(),
-        ArtifactReviewWorkItemNormalizationStatusV2::AggregateFindingLimitExceeded
+        ArtifactReviewWorkItemNormalizationStatusV2::Normalized
     );
     assert_eq!(
         normalized
@@ -606,14 +899,124 @@ fn aggregate_finding_overflow_preserves_the_already_bounded_suspicious_set() {
             .work_item_claims()
             .iter()
             .find(|claim| claim.work_item_id() == second.work_item_id())
-            .expect("overflow claim")
+            .expect("later-class claim")
             .status(),
-        ArtifactReviewWorkItemStatusV2::Failed
+        ArtifactReviewWorkItemStatusV2::Completed
     );
+    let duplicate_outcome = normalized
+        .outcomes()
+        .iter()
+        .find(|outcome| outcome.work_item_id() == first.work_item_id())
+        .expect("duplicate outcome");
+    assert_eq!(duplicate_outcome.retained_finding_count(), 1);
+    assert_eq!(duplicate_outcome.deduplicated_finding_count(), 255);
+    assert_eq!(duplicate_outcome.rejected_finding_count(), 0);
+    assert!(duplicate_outcome.coverage_complete());
 }
 
 #[test]
-fn invalid_context_range_and_trailing_or_unknown_json_are_atomic_item_failures() {
+fn aggregate_cap_is_deterministic_and_fair_across_threat_classes() {
+    let large_source = vec![b'a'; 700];
+    let artifact = fixture_artifact_with_index(&large_source);
+    let analysis = analyze_normalized_artifact(&artifact).expect("static analysis");
+    let subject = subject(&artifact);
+    let request = build_artifact_review_request_v2(&subject, &artifact, &analysis, config())
+        .expect("large fixture review request");
+    let file = artifact
+        .files()
+        .find(|file| file.normalized_path == "index.js")
+        .expect("index.js");
+    let item = request
+        .work_items()
+        .iter()
+        .find(|item| item.file_id() == &file.file_id)
+        .expect("large index work item");
+    let invocation = request
+        .invocation(&artifact, item.work_item_id())
+        .expect("invocation");
+    assert!(invocation.untrusted().bytes().len() > 300);
+    let context = &invocation.untrusted().contexts()[0];
+    let mut findings = (0..256)
+        .map(|index| {
+            serde_json::json!({
+                "category": "obfuscation",
+                "severity": "medium",
+                "context_id": context.context_id(),
+                "context_kind": context.kind(),
+                "chunk_relative_start_byte": index,
+                "chunk_relative_end_byte": index + 1,
+                "explanation": format!("Distinct inert range {index:03} exercises the cap.")
+            })
+        })
+        .collect::<Vec<_>>();
+    findings.push(serde_json::json!({
+        "category": "process_execution",
+        "severity": "high",
+        "context_id": context.context_id(),
+        "context_kind": context.kind(),
+        "chunk_relative_start_byte": 300,
+        "chunk_relative_end_byte": 301,
+        "explanation": "A later threat class must receive a fair aggregate slot."
+    }));
+    let normalize = || {
+        normalize_artifact_review_provider_outputs_v2(
+            &subject,
+            &artifact,
+            &analysis,
+            &request,
+            &[complete_output(
+                item.work_item_id(),
+                model_output(
+                    &request,
+                    item.work_item_id(),
+                    "suspicious",
+                    serde_json::Value::Array(findings.clone()),
+                ),
+            )],
+        )
+        .expect("fairly cap valid findings")
+    };
+    let first = normalize();
+    let second = normalize();
+
+    assert_eq!(
+        first.adapter_normalized_output(),
+        second.adapter_normalized_output(),
+        "fair selection is deterministic"
+    );
+    let retained = first.structurally_validated_result().findings();
+    assert_eq!(retained.len(), 256);
+    assert_eq!(
+        retained
+            .iter()
+            .filter(|finding| {
+                finding.category() == ArtifactReviewFindingCategoryV2::ProcessExecution
+            })
+            .count(),
+        1,
+        "the later threat class cannot be crowded out"
+    );
+    let outcome = &first.outcomes()[0];
+    assert_eq!(
+        outcome.status(),
+        ArtifactReviewWorkItemNormalizationStatusV2::PartiallyNormalized
+    );
+    assert_eq!(outcome.declared_finding_count(), 257);
+    assert_eq!(outcome.structurally_valid_finding_count(), 257);
+    assert_eq!(outcome.retained_finding_count(), 256);
+    assert_eq!(outcome.rejected_finding_count(), 1);
+    assert_eq!(
+        outcome.rejection_reasons(),
+        &[
+            ArtifactReviewWorkItemNormalizationStatusV2::TooManyFindings,
+            ArtifactReviewWorkItemNormalizationStatusV2::AggregateFindingLimitExceeded,
+        ]
+    );
+    assert!(!first.coverage_complete());
+}
+
+#[test]
+fn invalid_context_range_and_invalid_top_level_json_fail_closed() {
     let (artifact, analysis, subject, request) = fixture();
     let index_file = artifact
         .files()
@@ -744,7 +1147,7 @@ fn invalid_context_range_and_trailing_or_unknown_json_are_atomic_item_failures()
         assert_eq!(normalized.outcomes()[0].status(), expected);
         assert_eq!(
             normalized.execution_report().work_item_claims()[0].status(),
-            ArtifactReviewWorkItemStatusV2::Failed
+            ArtifactReviewWorkItemStatusV2::Completed
         );
         assert!(normalized
             .structurally_validated_result()
@@ -920,7 +1323,7 @@ fn raw_model_output_cannot_be_replayed_across_request_or_model_settings() {
     );
     assert_eq!(
         normalized.execution_report().work_item_claims()[0].status(),
-        ArtifactReviewWorkItemStatusV2::Failed
+        ArtifactReviewWorkItemStatusV2::Completed
     );
     assert!(normalized
         .structurally_validated_result()

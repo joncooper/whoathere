@@ -1,6 +1,8 @@
 mod exact_artifact;
+mod exact_artifact_codex;
 
 pub use exact_artifact::*;
+pub use exact_artifact_codex::*;
 
 use whoathere_artifact::{
     detect_artifact_format, normalize_artifact, ArtifactEnvelope, ArtifactEnvelopeInput,

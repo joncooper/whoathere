@@ -180,15 +180,12 @@ fn fixture_with_policy(
         adapter_version: INERT_PROVIDER_ADAPTER_VERSION_V2.to_string(),
         adapter_sha256: Sha256Digest::from_bytes(&executable_bytes),
     };
-    let model = ArtifactReviewModelIdentityV2 {
-        model_id: model_id.to_string(),
-        model_version: INERT_PROVIDER_MODEL_VERSION_V2.to_string(),
-        model_content_sha256: inert_fixture_model_content_sha256_v2(
-            &provider.adapter_sha256,
-            model_id,
-        )
-        .expect("synthetic behavior identity bound to provider executable"),
-    };
+    let model = ArtifactReviewModelIdentityV2::measured_local(
+        model_id,
+        INERT_PROVIDER_MODEL_VERSION_V2,
+        inert_fixture_model_content_sha256_v2(&provider.adapter_sha256, model_id)
+            .expect("synthetic behavior identity bound to provider executable"),
+    );
     let artifact = fixture_artifact();
     let analysis = analyze_normalized_artifact(&artifact).expect("static analysis");
     let subject = subject(&artifact);
@@ -250,11 +247,11 @@ fn ollama_protocol_fixture_with_model(model_id: &str) -> Fixture {
         adapter_version: OLLAMA_ADAPTER_VERSION_V1.to_string(),
         adapter_sha256: Sha256Digest::from_bytes(&executable_bytes),
     };
-    let model = ArtifactReviewModelIdentityV2 {
-        model_id: model_id.to_string(),
-        model_version: "manifest-2026-07-10".to_string(),
-        model_content_sha256: Sha256Digest::from_bytes(b"inert pinned Ollama model manifest"),
-    };
+    let model = ArtifactReviewModelIdentityV2::measured_local(
+        model_id,
+        "manifest-2026-07-10",
+        Sha256Digest::from_bytes(b"inert pinned Ollama model manifest"),
+    );
     let artifact = fixture_artifact();
     let analysis = analyze_normalized_artifact(&artifact).expect("static analysis");
     let subject = subject(&artifact);
@@ -1290,9 +1287,11 @@ fn executable_and_authorization_substitution_fail_before_provider_execution() {
         Err(LocalProviderRuntimeErrorV2::InvalidAuthorization)
     ));
 
-    let mut caller_asserted_model = fixture.request.model().clone();
-    caller_asserted_model.model_content_sha256 =
-        Sha256Digest::from_bytes(b"caller-asserted model digest is not accepted");
+    let caller_asserted_model = ArtifactReviewModelIdentityV2::measured_local(
+        fixture.request.model().model_id.clone(),
+        fixture.request.model().model_version.clone(),
+        Sha256Digest::from_bytes(b"caller-asserted model digest is not accepted"),
+    );
     let caller_asserted_request = build_artifact_review_request_v2(
         &fixture.subject,
         &fixture.artifact,
@@ -1397,12 +1396,15 @@ fn executable_and_authorization_substitution_fail_before_provider_execution() {
 
     let mut wrong_digest_provider = fixture.request.provider().clone();
     wrong_digest_provider.adapter_sha256 = Sha256Digest::from_bytes(b"wrong provider digest");
-    let mut wrong_digest_model = fixture.request.model().clone();
-    wrong_digest_model.model_content_sha256 = inert_fixture_model_content_sha256_v2(
-        &wrong_digest_provider.adapter_sha256,
-        &wrong_digest_model.model_id,
-    )
-    .expect("synthetic model follows substituted adapter digest");
+    let wrong_digest_model = ArtifactReviewModelIdentityV2::measured_local(
+        fixture.request.model().model_id.clone(),
+        fixture.request.model().model_version.clone(),
+        inert_fixture_model_content_sha256_v2(
+            &wrong_digest_provider.adapter_sha256,
+            &fixture.request.model().model_id,
+        )
+        .expect("synthetic model follows substituted adapter digest"),
+    );
     let wrong_digest_request = build_artifact_review_request_v2(
         &fixture.subject,
         &fixture.artifact,
@@ -1437,15 +1439,15 @@ fn executable_and_authorization_substitution_fail_before_provider_execution() {
         LocalProviderRuntimeErrorV2::ExecutableDigestMismatch,
     );
 
-    let alternate_model = ArtifactReviewModelIdentityV2 {
-        model_id: "whoathere-inert-fixture-stderr".to_string(),
-        model_version: INERT_PROVIDER_MODEL_VERSION_V2.to_string(),
-        model_content_sha256: inert_fixture_model_content_sha256_v2(
+    let alternate_model = ArtifactReviewModelIdentityV2::measured_local(
+        "whoathere-inert-fixture-stderr",
+        INERT_PROVIDER_MODEL_VERSION_V2,
+        inert_fixture_model_content_sha256_v2(
             &fixture.request.provider().adapter_sha256,
             "whoathere-inert-fixture-stderr",
         )
         .expect("alternate synthetic model binding"),
-    };
+    );
     let alternate_request = build_artifact_review_request_v2(
         &fixture.subject,
         &fixture.artifact,

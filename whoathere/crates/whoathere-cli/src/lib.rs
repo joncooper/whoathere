@@ -43,7 +43,8 @@ use whoathere_policy::{
 };
 use whoathere_runner::{
     canonical_utc_timestamp_from_unix_seconds_v1, execute_readonly, inspect_exact_artifact_v1,
-    plan_protected_execution, ExactArtifactInspectionErrorV1, ExactArtifactInspectionRequestV1,
+    plan_protected_execution, ExactArtifactAiAdapterV1, ExactArtifactCodexAiAdapterV1,
+    ExactArtifactCodexAiConfigV1, ExactArtifactInspectionErrorV1, ExactArtifactInspectionRequestV1,
     ExecutionDecision,
 };
 use whoathere_sandbox::{
@@ -95,6 +96,12 @@ pub enum Command {
         acquired_at: Option<String>,
         ai_review: bool,
         ai_provider: Option<String>,
+        ai_client_path: Option<String>,
+        ai_client_sha256: Option<String>,
+        ai_model: Option<String>,
+        ai_auth_home: Option<String>,
+        ai_timeout_seconds: Option<u64>,
+        approve_hosted_source_review: bool,
         detonation: bool,
     },
     Doctor {
@@ -546,7 +553,13 @@ fn parse_exact_artifact_inspect(args: &[String]) -> Command {
     let mut state_dir = None;
     let mut acquired_at = None;
     let mut ai_provider = None;
+    let mut ai_client_path = None;
+    let mut ai_client_sha256 = None;
+    let mut ai_model = None;
+    let mut ai_auth_home = None;
+    let mut ai_timeout_seconds = None;
     let mut ai_review = false;
+    let mut approve_hosted_source_review = false;
     let mut detonation = false;
     let mut seen = std::collections::BTreeSet::new();
     let mut index = 1;
@@ -557,7 +570,7 @@ fn parse_exact_artifact_inspect(args: &[String]) -> Command {
             None => (argument, None),
         };
         match flag {
-            "--ai-review" | "--detonation" => {
+            "--ai-review" | "--approve-hosted-source-review" | "--detonation" => {
                 if inline_value.is_some() {
                     return Command::ArtifactInspectInvalidOptions {
                         reason_code: "exact_artifact_option_malformed",
@@ -570,12 +583,22 @@ fn parse_exact_artifact_inspect(args: &[String]) -> Command {
                 }
                 if flag == "--ai-review" {
                     ai_review = true;
+                } else if flag == "--approve-hosted-source-review" {
+                    approve_hosted_source_review = true;
                 } else {
                     detonation = true;
                 }
                 index += 1;
             }
-            "--ecosystem" | "--state-dir" | "--acquired-at" | "--ai-provider" => {
+            "--ecosystem"
+            | "--state-dir"
+            | "--acquired-at"
+            | "--ai-provider"
+            | "--ai-client-path"
+            | "--ai-client-sha256"
+            | "--ai-model"
+            | "--ai-auth-home"
+            | "--ai-timeout-seconds" => {
                 if !seen.insert(flag) {
                     return Command::ArtifactInspectInvalidOptions {
                         reason_code: "exact_artifact_option_duplicate",
@@ -605,6 +628,20 @@ fn parse_exact_artifact_inspect(args: &[String]) -> Command {
                     "--state-dir" => state_dir = Some(value),
                     "--acquired-at" => acquired_at = Some(value),
                     "--ai-provider" => ai_provider = Some(value),
+                    "--ai-client-path" => ai_client_path = Some(value),
+                    "--ai-client-sha256" => ai_client_sha256 = Some(value),
+                    "--ai-model" => ai_model = Some(value),
+                    "--ai-auth-home" => ai_auth_home = Some(value),
+                    "--ai-timeout-seconds" => {
+                        ai_timeout_seconds = match value.parse::<u64>() {
+                            Ok(value) => Some(value),
+                            Err(_) => {
+                                return Command::ArtifactInspectInvalidOptions {
+                                    reason_code: "exact_artifact_option_value_invalid",
+                                }
+                            }
+                        }
+                    }
                     _ => unreachable!("matched exact artifact value option"),
                 }
                 index += 1;
@@ -624,6 +661,12 @@ fn parse_exact_artifact_inspect(args: &[String]) -> Command {
         acquired_at,
         ai_review,
         ai_provider,
+        ai_client_path,
+        ai_client_sha256,
+        ai_model,
+        ai_auth_home,
+        ai_timeout_seconds,
+        approve_hosted_source_review,
         detonation,
     }
 }
@@ -925,6 +968,12 @@ fn render_command_text(command: Command) -> String {
             acquired_at,
             ai_review,
             ai_provider,
+            ai_client_path,
+            ai_client_sha256,
+            ai_model,
+            ai_auth_home,
+            ai_timeout_seconds,
+            approve_hosted_source_review,
             detonation,
         } => render_exact_artifact_inspect(ExactArtifactInspectArgs {
             path: &path,
@@ -933,6 +982,12 @@ fn render_command_text(command: Command) -> String {
             acquired_at: acquired_at.as_deref(),
             ai_review,
             ai_provider: ai_provider.as_deref(),
+            ai_client_path: ai_client_path.as_deref(),
+            ai_client_sha256: ai_client_sha256.as_deref(),
+            ai_model: ai_model.as_deref(),
+            ai_auth_home: ai_auth_home.as_deref(),
+            ai_timeout_seconds,
+            approve_hosted_source_review,
             detonation,
         }),
         Command::Doctor {
@@ -1555,7 +1610,7 @@ fn render_command_text(command: Command) -> String {
 fn command_help() -> String {
     concat!(
         "whoathere <",
-        "artifact inspect <npm.tgz|package.whl|package.tar.gz|package.zip> [--ecosystem auto|npm|pypi] [--state-dir <dir>] [--acquired-at <YYYY-MM-DDTHH:MM:SSZ>] [--ai-review --ai-provider claude|codex] [--detonation]|",
+        "artifact inspect <npm.tgz|package.whl|package.tar.gz|package.zip> [--ecosystem auto|npm|pypi] [--state-dir <dir>] [--acquired-at <YYYY-MM-DDTHH:MM:SSZ>] [--ai-review --ai-provider codex --ai-client-path <absolute-native-binary> --ai-client-sha256 <sha256:...> --ai-model <exact-model> --ai-auth-home <dedicated-auth-home> --approve-hosted-source-review [--ai-timeout-seconds <1..600>]] [--detonation]|",
         "doctor [--json] [--state-dir <dir>] [--helper <path>]",
         "|status",
         "|config check <path>",
@@ -1615,6 +1670,12 @@ struct ExactArtifactInspectArgs<'a> {
     acquired_at: Option<&'a str>,
     ai_review: bool,
     ai_provider: Option<&'a str>,
+    ai_client_path: Option<&'a str>,
+    ai_client_sha256: Option<&'a str>,
+    ai_model: Option<&'a str>,
+    ai_auth_home: Option<&'a str>,
+    ai_timeout_seconds: Option<u64>,
+    approve_hosted_source_review: bool,
     detonation: bool,
 }
 
@@ -1630,22 +1691,29 @@ fn render_exact_artifact_inspect(args: ExactArtifactInspectArgs<'_>) -> String {
             .to_pretty_json()
         }
     };
-    let ai_provider = match (args.ai_review, args.ai_provider) {
-        (false, None) => None,
-        (false, Some(_)) => {
+    let has_ai_configuration = args.ai_provider.is_some()
+        || args.ai_client_path.is_some()
+        || args.ai_client_sha256.is_some()
+        || args.ai_model.is_some()
+        || args.ai_auth_home.is_some()
+        || args.ai_timeout_seconds.is_some()
+        || args.approve_hosted_source_review;
+    let ai_provider = match (args.ai_review, args.ai_provider, has_ai_configuration) {
+        (false, None, false) => None,
+        (false, _, _) => {
             return ExactArtifactInspectionErrorV1::invalid_request(
                 "exact_artifact_ai_review_flag_required",
             )
             .to_pretty_json()
         }
-        (true, Some(provider @ ("claude" | "codex"))) => Some(provider),
-        (true, None) => {
+        (true, Some(provider @ "codex"), _) => Some(provider),
+        (true, None, _) => {
             return ExactArtifactInspectionErrorV1::invalid_request(
                 "exact_artifact_ai_provider_required",
             )
             .to_pretty_json()
         }
-        (true, Some(_)) => {
+        (true, Some(_), _) => {
             return ExactArtifactInspectionErrorV1::invalid_request(
                 "exact_artifact_ai_provider_invalid",
             )
@@ -1678,17 +1746,86 @@ fn render_exact_artifact_inspect(args: ExactArtifactInspectArgs<'_>) -> String {
             current_timestamp.as_str()
         }
     };
-    let state_root = args
+    let state_root_candidate = args
         .state_dir
         .map(PathBuf::from)
         .unwrap_or_else(|| default_state_dir().with_file_name("artifact-inspection"));
-    if std::fs::create_dir_all(&state_root).is_err() {
+    if std::fs::create_dir_all(&state_root_candidate).is_err() {
         return ExactArtifactInspectionErrorV1::invalid_request(
             "exact_artifact_state_dir_unavailable",
         )
         .to_pretty_json();
     }
+    let state_root = match std::fs::canonicalize(&state_root_candidate) {
+        Ok(value) => value,
+        Err(_) => {
+            return ExactArtifactInspectionErrorV1::invalid_request(
+                "exact_artifact_state_dir_unavailable",
+            )
+            .to_pretty_json()
+        }
+    };
     let quarantine_root = state_root.join("quarantine-cas-v1");
+    let codex_adapter = if args.ai_review {
+        if !args.approve_hosted_source_review {
+            return ExactArtifactInspectionErrorV1::invalid_request(
+                "exact_artifact_hosted_source_review_approval_required",
+            )
+            .to_pretty_json();
+        }
+        let Some(client_path) = args.ai_client_path else {
+            return ExactArtifactInspectionErrorV1::invalid_request(
+                "exact_artifact_ai_client_path_required",
+            )
+            .to_pretty_json();
+        };
+        let Some(client_sha256) = args.ai_client_sha256 else {
+            return ExactArtifactInspectionErrorV1::invalid_request(
+                "exact_artifact_ai_client_sha256_required",
+            )
+            .to_pretty_json();
+        };
+        let client_sha256 = match whoathere_artifact::Sha256Digest::parse(client_sha256.to_string())
+        {
+            Ok(value) => value,
+            Err(_) => {
+                return ExactArtifactInspectionErrorV1::invalid_request(
+                    "exact_artifact_ai_client_sha256_invalid",
+                )
+                .to_pretty_json()
+            }
+        };
+        let Some(model) = args.ai_model else {
+            return ExactArtifactInspectionErrorV1::invalid_request(
+                "exact_artifact_ai_model_required",
+            )
+            .to_pretty_json();
+        };
+        let Some(authentication_home) = args.ai_auth_home else {
+            return ExactArtifactInspectionErrorV1::invalid_request(
+                "exact_artifact_ai_auth_home_required",
+            )
+            .to_pretty_json();
+        };
+        let timeout_seconds = args.ai_timeout_seconds.unwrap_or(120);
+        let config = ExactArtifactCodexAiConfigV1 {
+            client_path: PathBuf::from(client_path),
+            client_sha256,
+            model: model.to_string(),
+            authentication_home: PathBuf::from(authentication_home),
+            runtime_root: state_root.join("codex-runtime-v1"),
+            timeout: Duration::from_secs(timeout_seconds),
+        };
+        match ExactArtifactCodexAiAdapterV1::new(config) {
+            Ok(value) => Some(value),
+            Err(error) => {
+                return ExactArtifactInspectionErrorV1::invalid_request(error.reason_code())
+                    .to_pretty_json()
+            }
+        }
+    } else {
+        None
+    };
     let request = ExactArtifactInspectionRequestV1 {
         artifact_path: Path::new(args.path),
         quarantine_root: &quarantine_root,
@@ -1699,7 +1836,10 @@ fn render_exact_artifact_inspect(args: ExactArtifactInspectArgs<'_>) -> String {
         detonation_requested: args.detonation,
         normalization_limits: whoathere_artifact::NormalizationLimits::default(),
     };
-    match inspect_exact_artifact_v1(request, None, None) {
+    let ai_adapter = codex_adapter
+        .as_ref()
+        .map(|adapter| adapter as &dyn ExactArtifactAiAdapterV1);
+    match inspect_exact_artifact_v1(request, ai_adapter, None) {
         Ok(report) => report
             .to_pretty_json()
             .unwrap_or_else(|error| error.to_pretty_json()),
@@ -18048,7 +18188,18 @@ mod tests {
             "2026-07-15T00:00:00Z".to_string(),
             "--ai-review".to_string(),
             "--ai-provider".to_string(),
-            "claude".to_string(),
+            "codex".to_string(),
+            "--ai-client-path".to_string(),
+            "/opt/whoathere/codex".to_string(),
+            "--ai-client-sha256".to_string(),
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+            "--ai-model".to_string(),
+            "gpt-inert-opaque-2026-07-15".to_string(),
+            "--ai-auth-home".to_string(),
+            "/tmp/whoathere-codex-auth".to_string(),
+            "--ai-timeout-seconds".to_string(),
+            "45".to_string(),
+            "--approve-hosted-source-review".to_string(),
             "--detonation".to_string(),
         ];
         assert_eq!(
@@ -18059,7 +18210,16 @@ mod tests {
                 state_dir: Some("/tmp/whoathere-exact".to_string()),
                 acquired_at: Some("2026-07-15T00:00:00Z".to_string()),
                 ai_review: true,
-                ai_provider: Some("claude".to_string()),
+                ai_provider: Some("codex".to_string()),
+                ai_client_path: Some("/opt/whoathere/codex".to_string()),
+                ai_client_sha256: Some(
+                    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        .to_string(),
+                ),
+                ai_model: Some("gpt-inert-opaque-2026-07-15".to_string()),
+                ai_auth_home: Some("/tmp/whoathere-codex-auth".to_string()),
+                ai_timeout_seconds: Some(45),
+                approve_hosted_source_review: true,
                 detonation: true,
             }
         );
@@ -18190,6 +18350,12 @@ mod tests {
             acquired_at: Some("2026-07-15T00:00:00Z".to_string()),
             ai_review: false,
             ai_provider: None,
+            ai_client_path: None,
+            ai_client_sha256: None,
+            ai_model: None,
+            ai_auth_home: None,
+            ai_timeout_seconds: None,
+            approve_hosted_source_review: false,
             detonation: false,
         });
 
@@ -18234,6 +18400,12 @@ mod tests {
                 acquired_at: Some("2026-07-15T00:00:00Z".to_string()),
                 ai_review: false,
                 ai_provider: None,
+                ai_client_path: None,
+                ai_client_sha256: None,
+                ai_model: None,
+                ai_auth_home: None,
+                ai_timeout_seconds: None,
+                approve_hosted_source_review: false,
                 detonation: false,
             },
             Command::ArtifactInspect {
@@ -18243,6 +18415,12 @@ mod tests {
                 acquired_at: Some("2026-07-15T00:00:00Z".to_string()),
                 ai_review: false,
                 ai_provider: Some("claude".to_string()),
+                ai_client_path: None,
+                ai_client_sha256: None,
+                ai_model: None,
+                ai_auth_home: None,
+                ai_timeout_seconds: None,
+                approve_hosted_source_review: false,
                 detonation: false,
             },
             Command::ArtifactInspect {
@@ -18252,6 +18430,12 @@ mod tests {
                 acquired_at: Some("2026-07-15T00:00:00Z".to_string()),
                 ai_review: true,
                 ai_provider: None,
+                ai_client_path: None,
+                ai_client_sha256: None,
+                ai_model: None,
+                ai_auth_home: None,
+                ai_timeout_seconds: None,
+                approve_hosted_source_review: false,
                 detonation: false,
             },
             Command::ArtifactInspect {
@@ -18261,6 +18445,12 @@ mod tests {
                 acquired_at: Some("2026-07-15T00:00:00Z".to_string()),
                 ai_review: true,
                 ai_provider: Some("other".to_string()),
+                ai_client_path: None,
+                ai_client_sha256: None,
+                ai_model: None,
+                ai_auth_home: None,
+                ai_timeout_seconds: None,
+                approve_hosted_source_review: false,
                 detonation: false,
             },
             Command::ArtifactInspect {
@@ -18270,6 +18460,12 @@ mod tests {
                 acquired_at: Some("not-a-timestamp".to_string()),
                 ai_review: false,
                 ai_provider: None,
+                ai_client_path: None,
+                ai_client_sha256: None,
+                ai_model: None,
+                ai_auth_home: None,
+                ai_timeout_seconds: None,
+                approve_hosted_source_review: false,
                 detonation: false,
             },
             Command::ArtifactInspect {
@@ -18279,6 +18475,12 @@ mod tests {
                 acquired_at: Some("2026-07-15T00:00:00Z".to_string()),
                 ai_review: false,
                 ai_provider: None,
+                ai_client_path: None,
+                ai_client_sha256: None,
+                ai_model: None,
+                ai_auth_home: None,
+                ai_timeout_seconds: None,
+                approve_hosted_source_review: false,
                 detonation: false,
             },
             Command::ArtifactInspect {
@@ -18288,6 +18490,12 @@ mod tests {
                 acquired_at: Some("2026-07-15T00:00:00Z".to_string()),
                 ai_review: false,
                 ai_provider: None,
+                ai_client_path: None,
+                ai_client_sha256: None,
+                ai_model: None,
+                ai_auth_home: None,
+                ai_timeout_seconds: None,
+                approve_hosted_source_review: false,
                 detonation: false,
             },
         ];

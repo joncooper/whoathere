@@ -35,6 +35,10 @@ use whoathere_detector::{
 };
 use whoathere_evidence::v2::ArtifactEvidenceSubjectV2;
 
+mod hosted;
+
+pub use hosted::*;
+
 pub const INERT_PROVIDER_ADAPTER_ID_V2: &str = "whoathere-inert-artifact-review-provider";
 pub const INERT_PROVIDER_ADAPTER_VERSION_V2: &str = "1.0.0";
 pub const INERT_PROVIDER_MODEL_ID_PREFIX_V2: &str = "whoathere-inert-fixture-";
@@ -84,7 +88,10 @@ impl std::fmt::Debug for AuthorizedLocalProviderV2 {
             .debug_struct("AuthorizedLocalProviderV2")
             .field("request_sha256", &self.request_sha256)
             .field("provider_adapter_sha256", &self.provider.adapter_sha256)
-            .field("model_content_sha256", &self.model.model_content_sha256)
+            .field(
+                "model_content_sha256",
+                &self.model.measured_content_sha256(),
+            )
             .field("protocol", &self.protocol)
             .field("executable_path", &"<redacted>")
             .finish()
@@ -106,8 +113,11 @@ impl AuthorizedLocalProviderV2 {
         {
             return Err(LocalProviderRuntimeErrorV2::InvalidAuthorization);
         }
-        if model.model_content_sha256
-            != inert_fixture_model_content_sha256_v2(&provider.adapter_sha256, &model.model_id)?
+        if model.measured_content_sha256()
+            != Some(&inert_fixture_model_content_sha256_v2(
+                &provider.adapter_sha256,
+                &model.model_id,
+            )?)
         {
             return Err(LocalProviderRuntimeErrorV2::InvalidAuthorization);
         }
@@ -1739,7 +1749,11 @@ pub fn run_local_provider_v2(
             invocation_sha256: prepared_invocation.invocation_sha256.clone(),
             work_item_id: prepared_invocation.work_item_id.clone(),
             provider_adapter_sha256: authorization.provider.adapter_sha256.clone(),
-            model_content_sha256: authorization.model.model_content_sha256.clone(),
+            model_content_sha256: authorization
+                .model
+                .measured_content_sha256()
+                .ok_or(LocalProviderRuntimeErrorV2::InvalidAuthorization)?
+                .clone(),
             provider_input_sha256,
             provider_input_byte_len: prepared_invocation.provider_input.len() as u64,
             stdout_capture_sha256,

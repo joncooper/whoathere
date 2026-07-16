@@ -110,7 +110,11 @@ fn execute_ollama_chat_at_v1(
     let pre_tags: OllamaTagsResponseV1 =
         get_json(address, "/api/tags", MAX_OLLAMA_METADATA_RESPONSE_BYTES_V1)?;
     let pre_digest = exact_model_digest(&pre_tags, &input.model().model_id)?;
-    if &pre_digest != input.binding().model_content_sha256() {
+    let expected_model_content_sha256 = input
+        .model()
+        .measured_content_sha256()
+        .ok_or(OllamaAdapterErrorV1::ModelDigestMismatch)?;
+    if &pre_digest != expected_model_content_sha256 {
         return Err(OllamaAdapterErrorV1::ModelDigestMismatch);
     }
 
@@ -134,7 +138,7 @@ fn execute_ollama_chat_at_v1(
     if pre_version.version != post_version.version || pre_digest != post_digest {
         return Err(OllamaAdapterErrorV1::ModelIdentityDrift);
     }
-    if post_digest != *input.binding().model_content_sha256() {
+    if post_digest != *expected_model_content_sha256 {
         return Err(OllamaAdapterErrorV1::ModelDigestMismatch);
     }
 
@@ -153,7 +157,7 @@ fn execute_ollama_chat_at_v1(
         server_version: post_version.version,
         requested_model: input.model().model_id.clone(),
         response_model: chat.model,
-        expected_model_content_sha256: input.binding().model_content_sha256().clone(),
+        expected_model_content_sha256: expected_model_content_sha256.clone(),
         pre_model_content_sha256: pre_digest,
         post_model_content_sha256: post_digest,
         system_message_sha256: prepared.system_message_sha256().clone(),
@@ -625,7 +629,8 @@ mod tests {
     ) -> Vec<FakeResponse> {
         let digest = input
             .model()
-            .model_content_sha256
+            .measured_content_sha256()
+            .expect("measured local fixture model")
             .as_str()
             .strip_prefix("sha256:")
             .expect("canonical digest");

@@ -14,6 +14,10 @@ path = "../whoathere-artifact-review-runtime/src/bin/inert_provider.rs"
 name = "whoathere-auth-inert-ollama-protocol-provider"
 path = "../whoathere-artifact-review-runtime/src/bin/inert_ollama_protocol_provider.rs"
 
+[[bin]]
+name = "whoathere-auth-inert-hosted-subscription-cli"
+path = "../whoathere-artifact-review-runtime/src/bin/inert_hosted_subscription_cli.rs"
+
 [dependencies]
 ed25519-dalek = { version = "=3.0.0", default-features = false, features = ["fast", "zeroize"] }
 getrandom = { version = "=0.4.3", default-features = false }

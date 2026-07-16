@@ -395,7 +395,7 @@ fn wheel_compiles_install_pth_import_and_console_intents() {
         report.scenario_plan.status,
         ExactArtifactStageStatusV1::Complete
     );
-    assert_eq!(report.scenario_plan.intents.len(), 4);
+    assert_eq!(report.scenario_plan.intents.len(), 5);
     assert!(report
         .scenario_plan
         .intents

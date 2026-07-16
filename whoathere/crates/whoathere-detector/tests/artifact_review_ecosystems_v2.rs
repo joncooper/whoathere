@@ -71,11 +71,11 @@ fn config() -> ArtifactReviewConfigV2 {
             adapter_version: "2.0.0".to_string(),
             adapter_sha256: Sha256Digest::from_bytes(b"inert provider adapter"),
         },
-        model: ArtifactReviewModelIdentityV2 {
-            model_id: "inert-review-model".to_string(),
-            model_version: "2026-07-09".to_string(),
-            model_content_sha256: Sha256Digest::from_bytes(b"immutable inert model content"),
-        },
+        model: ArtifactReviewModelIdentityV2::measured_local(
+            "inert-review-model",
+            "2026-07-09",
+            Sha256Digest::from_bytes(b"immutable inert model content"),
+        ),
         prompt: ArtifactReviewPromptIdentityV2 {
             template_id: ARTIFACT_REVIEW_PROMPT_TEMPLATE_ID_V2.to_string(),
             template_version: ARTIFACT_REVIEW_PROMPT_TEMPLATE_VERSION_V2.to_string(),
@@ -349,7 +349,7 @@ fn result_json(request: &ArtifactReviewRequestV2, verdict: &str) -> Vec<u8> {
         "request_sha256": request.request_sha256().expect("request digest"),
         "coverage_manifest_sha256": request.coverage_manifest_sha256(),
         "provider_adapter_sha256": request.provider().adapter_sha256,
-        "model_content_sha256": request.model().model_content_sha256,
+        "model_identity_sha256": request.model().identity_sha256(),
         "prompt_template_sha256": request.prompt().template_sha256,
         "model_output_schema_sha256": request.model_output_schema_sha256(),
         "adapter_result_schema_sha256": request.adapter_result_schema_sha256(),

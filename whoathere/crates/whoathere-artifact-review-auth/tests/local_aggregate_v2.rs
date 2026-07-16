@@ -176,15 +176,12 @@ fn fixture(label: &str) -> Fixture {
         adapter_sha256: Sha256Digest::from_bytes(&executable_bytes),
     };
     let model_id = "whoathere-inert-fixture-echo";
-    let model = ArtifactReviewModelIdentityV2 {
-        model_id: model_id.to_string(),
-        model_version: INERT_PROVIDER_MODEL_VERSION_V2.to_string(),
-        model_content_sha256: inert_fixture_model_content_sha256_v2(
-            &provider.adapter_sha256,
-            model_id,
-        )
-        .expect("model behavior digest"),
-    };
+    let model = ArtifactReviewModelIdentityV2::measured_local(
+        model_id,
+        INERT_PROVIDER_MODEL_VERSION_V2,
+        inert_fixture_model_content_sha256_v2(&provider.adapter_sha256, model_id)
+            .expect("model behavior digest"),
+    );
     let artifact = normalized_artifact();
     let analysis = analyze_normalized_artifact(&artifact).expect("analysis");
     let subject = evidence_subject(&artifact);
@@ -242,11 +239,11 @@ fn ollama_fixture(label: &str) -> Fixture {
         adapter_version: OLLAMA_ADAPTER_VERSION_V1.to_string(),
         adapter_sha256: Sha256Digest::from_bytes(&executable_bytes),
     };
-    let model = ArtifactReviewModelIdentityV2 {
-        model_id: "qwen3:8b-inert-auth".to_string(),
-        model_version: "manifest-2026-07-10".to_string(),
-        model_content_sha256: Sha256Digest::from_bytes(b"auth inert pinned Ollama manifest"),
-    };
+    let model = ArtifactReviewModelIdentityV2::measured_local(
+        "qwen3:8b-inert-auth",
+        "manifest-2026-07-10",
+        Sha256Digest::from_bytes(b"auth inert pinned Ollama manifest"),
+    );
     let artifact = normalized_artifact();
     let analysis = analyze_normalized_artifact(&artifact).expect("analysis");
     let subject = evidence_subject(&artifact);
@@ -442,7 +439,7 @@ fn ollama_terminal_observation_is_reparsed_authenticated_and_never_allows() {
         serde_json::from_slice(restricted.aggregate_manifest_bytes()).expect("aggregate JSON");
     assert_eq!(
         aggregate["schema_version"],
-        "whoathere.artifact_review_authenticated_aggregate_manifest.v3"
+        "whoathere.artifact_review_authenticated_aggregate_manifest.v4"
     );
     assert_eq!(
         aggregate["invocations"][0]["provider_observation"]["kind"],

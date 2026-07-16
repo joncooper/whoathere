@@ -6,10 +6,11 @@ use crate::{
     ArtifactReviewAuthErrorV2, ArtifactReviewChallengeAcceptanceCommitReceiptV2,
     ArtifactReviewChallengeAcceptanceV2, ArtifactReviewChallengeAuthorityIdV2,
     ArtifactReviewChallengeAuthorityV2, ArtifactReviewChallengeV2,
-    ArtifactReviewEvidenceCompletenessV2, ArtifactReviewEvidenceStatementDraftV2,
-    ArtifactReviewEvidenceStatementV2, ArtifactReviewKeyRegistryV2, ArtifactReviewSigningKeyV2,
-    SignedArtifactReviewStatementV2, MAX_ARTIFACT_REVIEW_AGGREGATE_MANIFEST_BYTES_V2,
-    MAX_ARTIFACT_REVIEW_EVIDENCE_TTL_SECONDS_V2, MAX_JCS_SAFE_INTEGER_V2,
+    ArtifactReviewEvidenceCompletenessV2, ArtifactReviewEvidenceModelIdentityPostureV2,
+    ArtifactReviewEvidenceStatementDraftV2, ArtifactReviewEvidenceStatementV2,
+    ArtifactReviewKeyRegistryV2, ArtifactReviewSigningKeyV2, SignedArtifactReviewStatementV2,
+    MAX_ARTIFACT_REVIEW_AGGREGATE_MANIFEST_BYTES_V2, MAX_ARTIFACT_REVIEW_EVIDENCE_TTL_SECONDS_V2,
+    MAX_JCS_SAFE_INTEGER_V2,
 };
 use serde::Serialize;
 use std::collections::BTreeSet;
@@ -35,19 +36,19 @@ use whoathere_detector::{
     decode_and_validate_artifact_review_provider_input_v2,
     normalize_artifact_review_provider_outputs_v2, ArtifactReviewAdapterNormalizationV2,
     ArtifactReviewChannelIsolationV2, ArtifactReviewCoverageCompletenessV2,
-    ArtifactReviewPrivacyPostureV2, ArtifactReviewProviderOutputV2, ArtifactReviewRequestV2,
-    ArtifactReviewVerdictV2, ArtifactReviewWorkItemNormalizationStatusV2,
-    ArtifactReviewWorkItemStatusV2, ArtifactStaticAnalysis,
-    StructurallyValidatedArtifactReviewResultV2, ARTIFACT_REVIEW_ADAPTER_RESULT_SCHEMA_ID_V2,
-    ARTIFACT_REVIEW_MODEL_OUTPUT_SCHEMA_ID_V2, ARTIFACT_REVIEW_PROMPT_TEMPLATE_ID_V2,
-    ARTIFACT_REVIEW_PROMPT_TEMPLATE_VERSION_V2, ARTIFACT_REVIEW_RESULT_SCHEMA_V2,
-    MAX_ARTIFACT_REVIEW_PROVIDER_INPUT_BYTES_V2, MAX_ARTIFACT_REVIEW_RESULT_BYTES_V2,
-    MAX_ARTIFACT_REVIEW_TOTAL_PROVIDER_OUTPUT_BYTES_V2,
+    ArtifactReviewModelIdentityPostureV2, ArtifactReviewPrivacyPostureV2,
+    ArtifactReviewProviderOutputV2, ArtifactReviewRequestV2, ArtifactReviewVerdictV2,
+    ArtifactReviewWorkItemNormalizationStatusV2, ArtifactReviewWorkItemStatusV2,
+    ArtifactStaticAnalysis, StructurallyValidatedArtifactReviewResultV2,
+    ARTIFACT_REVIEW_ADAPTER_RESULT_SCHEMA_ID_V2, ARTIFACT_REVIEW_MODEL_OUTPUT_SCHEMA_ID_V2,
+    ARTIFACT_REVIEW_PROMPT_TEMPLATE_ID_V2, ARTIFACT_REVIEW_PROMPT_TEMPLATE_VERSION_V2,
+    ARTIFACT_REVIEW_RESULT_SCHEMA_V2, MAX_ARTIFACT_REVIEW_PROVIDER_INPUT_BYTES_V2,
+    MAX_ARTIFACT_REVIEW_RESULT_BYTES_V2, MAX_ARTIFACT_REVIEW_TOTAL_PROVIDER_OUTPUT_BYTES_V2,
 };
 use whoathere_evidence::v2::ArtifactEvidenceSubjectV2;
 
 pub const ARTIFACT_REVIEW_AGGREGATE_MANIFEST_SCHEMA_V2: &str =
-    "whoathere.artifact_review_authenticated_aggregate_manifest.v3";
+    "whoathere.artifact_review_authenticated_aggregate_manifest.v4";
 pub const ARTIFACT_REVIEW_EXPECTED_WORK_SET_SCHEMA_V2: &str =
     "whoathere.artifact_review_expected_work_set.v2";
 pub const LOCAL_ARTIFACT_REVIEW_NORMALIZER_CONTRACT_ID_V2: &str =
@@ -97,7 +98,7 @@ impl ArtifactReviewEvidenceRunContextV2 {
         self.evidence_ttl_seconds
     }
 
-    fn validate_bindings(
+    pub(crate) fn validate_bindings(
         &self,
         subject: &ArtifactEvidenceSubjectV2,
         artifact: &NormalizedArtifact,
@@ -206,7 +207,7 @@ fn trusted_evidence_times_v2(
     Ok((issued_at, expires_at))
 }
 
-fn trusted_system_unix_seconds_v2() -> Result<u64, ArtifactReviewAuthErrorV2> {
+pub(crate) fn trusted_system_unix_seconds_v2() -> Result<u64, ArtifactReviewAuthErrorV2> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| ArtifactReviewAuthErrorV2::FreshnessInvalid)?
@@ -687,7 +688,7 @@ fn reconstruct_local_evidence_v2(
             || capture.work_item_id != *expected_recorded_id
             || record.request_sha256() != &request_sha256
             || record.provider_adapter_sha256() != &request.provider().adapter_sha256
-            || record.model_content_sha256() != &request.model().model_content_sha256
+            || Some(record.model_content_sha256()) != request.model().measured_content_sha256()
             || record.invocation_sha256()
                 != &request
                     .invocation_sha256(expected_recorded_id)
@@ -795,7 +796,7 @@ fn reconstruct_local_evidence_v2(
         .structurally_validated_result()
         .findings()
         .iter()
-        .map(|finding| finding.evidence_sha256().clone())
+        .map(|finding| finding.finding_id_sha256().clone())
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
@@ -974,11 +975,14 @@ fn derive_limitations_v2(
         if outcome.status() != ArtifactReviewWorkItemNormalizationStatusV2::Normalized {
             limitations.insert(outcome.status().reason_code().to_string());
         }
+        for reason in outcome.rejection_reasons() {
+            limitations.insert(reason.reason_code().to_string());
+        }
     }
     limitations.into_iter().collect()
 }
 
-fn cumulative_findings_for_statement_v2(
+pub(crate) fn cumulative_findings_for_statement_v2(
     context: &ArtifactReviewEvidenceRunContextV2,
     current: &[Sha256Digest],
     authority: &ArtifactReviewChallengeAuthorityV2,
@@ -1020,7 +1024,15 @@ fn build_statement_v2(
         deterministic_analysis_sha256: request.deterministic_analysis_sha256().clone(),
         coverage_manifest_sha256: request.coverage_manifest_sha256().clone(),
         provider_adapter_sha256: request.provider().adapter_sha256.clone(),
-        model_content_sha256: request.model().model_content_sha256.clone(),
+        model_identity_sha256: request.model().identity_sha256(),
+        model_identity_posture: match request.model().identity_posture() {
+            ArtifactReviewModelIdentityPostureV2::MeasuredLocalContent { .. } => {
+                ArtifactReviewEvidenceModelIdentityPostureV2::MeasuredLocalContent
+            }
+            ArtifactReviewModelIdentityPostureV2::ProviderHostedOpaqueVersion => {
+                ArtifactReviewEvidenceModelIdentityPostureV2::ProviderHostedOpaqueVersion
+            }
+        },
         prompt_template_sha256: request.prompt().template_sha256.clone(),
         model_output_schema_sha256: request.model_output_schema_sha256().clone(),
         adapter_result_schema_sha256: request.adapter_result_schema_sha256().clone(),
@@ -1072,6 +1084,18 @@ fn build_aggregate_manifest_v2(
                 .provider_output_capture_byte_len()
                 .to_string(),
             status: outcome.status().reason_code().to_string(),
+            declared_finding_count: outcome.declared_finding_count().to_string(),
+            structurally_valid_finding_count: outcome
+                .structurally_valid_finding_count()
+                .to_string(),
+            retained_finding_count: outcome.retained_finding_count().to_string(),
+            deduplicated_finding_count: outcome.deduplicated_finding_count().to_string(),
+            rejected_finding_count: outcome.rejected_finding_count().to_string(),
+            rejection_reasons: outcome
+                .rejection_reasons()
+                .iter()
+                .map(|reason| reason.reason_code().to_string())
+                .collect(),
         })
         .collect();
     let terminal = &material.terminal_state;
@@ -1295,6 +1319,12 @@ struct NormalizationOutcomeWireV2 {
     provider_output_capture_sha256: String,
     provider_output_capture_byte_len: String,
     status: String,
+    declared_finding_count: String,
+    structurally_valid_finding_count: String,
+    retained_finding_count: String,
+    deduplicated_finding_count: String,
+    rejected_finding_count: String,
+    rejection_reasons: Vec<String>,
 }
 
 #[derive(Serialize)]

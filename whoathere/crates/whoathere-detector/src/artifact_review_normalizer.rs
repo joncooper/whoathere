@@ -4,10 +4,11 @@
 //! schema into the exact adapter-result schema using trusted artifact bytes.
 
 use crate::{
-    artifact_review_finding_evidence_sha256_v2,
+    artifact_review_finding_evidence_sha256_v2, artifact_review_finding_identity_sha256_v2,
     decode_and_structurally_validate_artifact_review_result_v2, ArtifactReviewChannelIsolationV2,
     ArtifactReviewContextKindV2, ArtifactReviewExecutionReportV2, ArtifactReviewFindingCategoryV2,
-    ArtifactReviewFindingEvidenceInputV2, ArtifactReviewFindingSeverityV2, ArtifactReviewRequestV2,
+    ArtifactReviewFindingEvidenceInputV2, ArtifactReviewFindingIdentityInputV2,
+    ArtifactReviewFindingSeverityV2, ArtifactReviewRequestV2, ArtifactReviewThreatClassV2,
     ArtifactReviewVerdictV2, ArtifactReviewWorkItemStatusV2, ArtifactStaticAnalysis,
     StructurallyValidatedArtifactReviewResultV2, ARTIFACT_REVIEW_MODEL_OUTPUT_SCHEMA_V2,
     ARTIFACT_REVIEW_RESULT_SCHEMA_V2, MAX_ARTIFACT_REVIEW_EXPLANATION_CHARS_V2,
@@ -15,7 +16,7 @@ use crate::{
     MAX_ARTIFACT_REVIEW_RESULT_BYTES_V2, MAX_ARTIFACT_REVIEW_WORK_ITEMS_V2,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fmt;
 use whoathere_artifact::{NormalizedArtifact, Sha256Digest};
 use whoathere_evidence::v2::ArtifactEvidenceSubjectV2;
@@ -146,9 +147,12 @@ impl ArtifactReviewProviderOutputV2 {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ArtifactReviewWorkItemNormalizationStatusV2 {
     Normalized,
+    /// One or more valid positives were retained, but this work item's
+    /// provider or finding coverage was not complete.
+    PartiallyNormalized,
     ProviderFailed,
     Truncated,
     OutputLimitExceeded,
@@ -156,6 +160,7 @@ pub enum ArtifactReviewWorkItemNormalizationStatusV2 {
     ModelOutputBindingMismatch,
     TooManyFindings,
     AggregateFindingLimitExceeded,
+    InvalidFindingWire,
     InvalidFindingReference,
     InvalidFindingEvidence,
 }
@@ -164,6 +169,7 @@ impl ArtifactReviewWorkItemNormalizationStatusV2 {
     pub const fn reason_code(self) -> &'static str {
         match self {
             Self::Normalized => "artifact_review_v2_work_item_normalized",
+            Self::PartiallyNormalized => "artifact_review_v2_work_item_partially_normalized",
             Self::ProviderFailed => "artifact_review_v2_work_item_provider_failed",
             Self::Truncated => "artifact_review_v2_work_item_truncated",
             Self::OutputLimitExceeded => "artifact_review_v2_work_item_output_limit_exceeded",
@@ -175,6 +181,7 @@ impl ArtifactReviewWorkItemNormalizationStatusV2 {
             Self::AggregateFindingLimitExceeded => {
                 "artifact_review_v2_work_item_aggregate_finding_limit_exceeded"
             }
+            Self::InvalidFindingWire => "artifact_review_v2_work_item_finding_wire_invalid",
             Self::InvalidFindingReference => {
                 "artifact_review_v2_work_item_finding_reference_invalid"
             }
@@ -189,6 +196,12 @@ pub struct ArtifactReviewWorkItemNormalizationOutcomeV2 {
     provider_output_capture_sha256: Sha256Digest,
     provider_output_capture_byte_len: u64,
     status: ArtifactReviewWorkItemNormalizationStatusV2,
+    declared_finding_count: u64,
+    structurally_valid_finding_count: u64,
+    retained_finding_count: u64,
+    deduplicated_finding_count: u64,
+    rejected_finding_count: u64,
+    rejection_reasons: Vec<ArtifactReviewWorkItemNormalizationStatusV2>,
 }
 
 impl ArtifactReviewWorkItemNormalizationOutcomeV2 {
@@ -206,6 +219,37 @@ impl ArtifactReviewWorkItemNormalizationOutcomeV2 {
 
     pub fn status(&self) -> ArtifactReviewWorkItemNormalizationStatusV2 {
         self.status
+    }
+
+    pub fn declared_finding_count(&self) -> u64 {
+        self.declared_finding_count
+    }
+
+    pub fn structurally_valid_finding_count(&self) -> u64 {
+        self.structurally_valid_finding_count
+    }
+
+    pub fn retained_finding_count(&self) -> u64 {
+        self.retained_finding_count
+    }
+
+    pub fn deduplicated_finding_count(&self) -> u64 {
+        self.deduplicated_finding_count
+    }
+
+    pub fn rejected_finding_count(&self) -> u64 {
+        self.rejected_finding_count
+    }
+
+    /// Exact, sorted fail-closed reasons that made this work-item coverage
+    /// incomplete. Structural duplicates are counted separately and are not a
+    /// coverage failure.
+    pub fn rejection_reasons(&self) -> &[ArtifactReviewWorkItemNormalizationStatusV2] {
+        &self.rejection_reasons
+    }
+
+    pub fn coverage_complete(&self) -> bool {
+        self.rejection_reasons.is_empty()
     }
 }
 
@@ -263,6 +307,14 @@ impl ArtifactReviewAdapterNormalizationV2 {
         &self.missing_work_item_ids
     }
 
+    pub fn coverage_complete(&self) -> bool {
+        self.missing_work_item_ids.is_empty()
+            && self
+                .outcomes
+                .iter()
+                .all(ArtifactReviewWorkItemNormalizationOutcomeV2::coverage_complete)
+    }
+
     pub fn into_parts(
         self,
     ) -> (
@@ -284,12 +336,12 @@ impl ArtifactReviewAdapterNormalizationV2 {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ModelOutputWireV2 {
+struct ModelOutputEnvelopeWireV2 {
     schema_version: String,
     work_item_id: Sha256Digest,
     invocation_sha256: Sha256Digest,
     verdict: ArtifactReviewVerdictV2,
-    findings: Vec<ModelFindingWireV2>,
+    findings: Vec<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -313,7 +365,7 @@ struct AdapterResultWireV2 {
     request_sha256: Sha256Digest,
     coverage_manifest_sha256: Sha256Digest,
     provider_adapter_sha256: Sha256Digest,
-    model_content_sha256: Sha256Digest,
+    model_identity_sha256: Sha256Digest,
     prompt_template_sha256: Sha256Digest,
     model_output_schema_sha256: Sha256Digest,
     adapter_result_schema_sha256: Sha256Digest,
@@ -321,7 +373,7 @@ struct AdapterResultWireV2 {
     findings: Vec<AdapterFindingWireV2>,
 }
 
-#[derive(Serialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct AdapterFindingWireV2 {
     category: ArtifactReviewFindingCategoryV2,
@@ -337,8 +389,87 @@ struct AdapterFindingWireV2 {
     start_line: u64,
     end_line: u64,
     selected_sha256: Sha256Digest,
+    finding_id_sha256: Sha256Digest,
     evidence_sha256: Sha256Digest,
+    behavior_gate_eligible: bool,
     explanation: String,
+}
+
+#[derive(Clone)]
+struct NormalizedFindingCandidateV2 {
+    wire: AdapterFindingWireV2,
+    source_work_item_id: Sha256Digest,
+    model_finding_index: usize,
+}
+
+struct FindingCandidateGroupV2 {
+    threat_class: ArtifactReviewThreatClassV2,
+    representative: NormalizedFindingCandidateV2,
+    canonical_lane_work_item_id: Sha256Digest,
+    canonical_lane_finding_index: usize,
+    occurrences: Vec<NormalizedFindingCandidateV2>,
+}
+
+struct WorkItemParseResultV2 {
+    declared_finding_count: usize,
+    candidates: Vec<NormalizedFindingCandidateV2>,
+    rejected_finding_count: usize,
+    rejection_reasons: Vec<ArtifactReviewWorkItemNormalizationStatusV2>,
+}
+
+struct WorkItemOutcomeBuilderV2 {
+    work_item_id: Sha256Digest,
+    provider_output_capture_sha256: Sha256Digest,
+    provider_output_capture_byte_len: u64,
+    declared_finding_count: usize,
+    structurally_valid_finding_count: usize,
+    retained_finding_count: usize,
+    deduplicated_finding_count: usize,
+    rejected_finding_count: usize,
+    rejection_reasons: Vec<ArtifactReviewWorkItemNormalizationStatusV2>,
+}
+
+impl WorkItemOutcomeBuilderV2 {
+    fn push_rejection_reason(&mut self, reason: ArtifactReviewWorkItemNormalizationStatusV2) {
+        if reason != ArtifactReviewWorkItemNormalizationStatusV2::Normalized
+            && reason != ArtifactReviewWorkItemNormalizationStatusV2::PartiallyNormalized
+            && !self.rejection_reasons.contains(&reason)
+        {
+            self.rejection_reasons.push(reason);
+        }
+    }
+
+    fn finish(
+        mut self,
+    ) -> Result<ArtifactReviewWorkItemNormalizationOutcomeV2, ArtifactReviewNormalizationErrorV2>
+    {
+        self.rejection_reasons.sort_unstable();
+        self.rejection_reasons.dedup();
+        let status = if self.rejection_reasons.is_empty() {
+            ArtifactReviewWorkItemNormalizationStatusV2::Normalized
+        } else if self.retained_finding_count > 0 || self.deduplicated_finding_count > 0 {
+            ArtifactReviewWorkItemNormalizationStatusV2::PartiallyNormalized
+        } else {
+            self.rejection_reasons[0]
+        };
+        Ok(ArtifactReviewWorkItemNormalizationOutcomeV2 {
+            work_item_id: self.work_item_id,
+            provider_output_capture_sha256: self.provider_output_capture_sha256,
+            provider_output_capture_byte_len: self.provider_output_capture_byte_len,
+            status,
+            declared_finding_count: u64::try_from(self.declared_finding_count)
+                .map_err(|_| ArtifactReviewNormalizationErrorV2::Serialization)?,
+            structurally_valid_finding_count: u64::try_from(self.structurally_valid_finding_count)
+                .map_err(|_| ArtifactReviewNormalizationErrorV2::Serialization)?,
+            retained_finding_count: u64::try_from(self.retained_finding_count)
+                .map_err(|_| ArtifactReviewNormalizationErrorV2::Serialization)?,
+            deduplicated_finding_count: u64::try_from(self.deduplicated_finding_count)
+                .map_err(|_| ArtifactReviewNormalizationErrorV2::Serialization)?,
+            rejected_finding_count: u64::try_from(self.rejected_finding_count)
+                .map_err(|_| ArtifactReviewNormalizationErrorV2::Serialization)?,
+            rejection_reasons: self.rejection_reasons,
+        })
+    }
 }
 
 pub fn normalize_artifact_review_provider_outputs_v2(
@@ -391,8 +522,8 @@ pub fn normalize_artifact_review_provider_outputs_v2(
     let mut ordered_outputs = outputs.iter().collect::<Vec<_>>();
     ordered_outputs.sort_by(|left, right| left.work_item_id.cmp(&right.work_item_id));
     let mut claims = Vec::with_capacity(ordered_outputs.len());
-    let mut outcomes = Vec::with_capacity(ordered_outputs.len());
-    let mut findings_by_evidence = BTreeMap::<Sha256Digest, AdapterFindingWireV2>::new();
+    let mut outcome_builders = BTreeMap::<Sha256Digest, WorkItemOutcomeBuilderV2>::new();
+    let mut finding_candidates = Vec::<NormalizedFindingCandidateV2>::new();
     let mut normalized_provider_output_bytes = 0usize;
 
     for output in ordered_outputs {
@@ -414,73 +545,60 @@ pub fn normalize_artifact_review_provider_outputs_v2(
         if output_fits_budget {
             normalized_provider_output_bytes += output.captured_output.len();
         }
-        let (mut claim_status, claim_no_truncation, mut outcome_status, mut normalized_findings) =
-            if !output_fits_budget {
-                (
-                    ArtifactReviewWorkItemStatusV2::Failed,
-                    output.no_truncation_verified,
-                    ArtifactReviewWorkItemNormalizationStatusV2::OutputLimitExceeded,
-                    Vec::new(),
-                )
-            } else if output.status == ArtifactReviewWorkItemStatusV2::Truncated
-                || (output.status == ArtifactReviewWorkItemStatusV2::Completed
-                    && !output.no_truncation_verified)
-            {
-                (
-                    ArtifactReviewWorkItemStatusV2::Truncated,
-                    false,
-                    ArtifactReviewWorkItemNormalizationStatusV2::Truncated,
-                    Vec::new(),
-                )
-            } else if output.status == ArtifactReviewWorkItemStatusV2::Failed {
-                (
-                    ArtifactReviewWorkItemStatusV2::Failed,
-                    output.no_truncation_verified,
-                    ArtifactReviewWorkItemNormalizationStatusV2::ProviderFailed,
-                    Vec::new(),
-                )
-            } else {
-                match normalize_completed_work_item_output(
-                    output,
-                    work_item,
-                    &coverage_files,
-                    artifact,
-                    &request_sha256,
-                    &expected_invocation_sha256,
-                ) {
-                    Ok(findings) => (
-                        ArtifactReviewWorkItemStatusV2::Completed,
-                        true,
-                        ArtifactReviewWorkItemNormalizationStatusV2::Normalized,
-                        findings,
-                    ),
-                    Err(status) => (
-                        ArtifactReviewWorkItemStatusV2::Failed,
-                        true,
-                        status,
-                        Vec::new(),
-                    ),
-                }
-            };
-        let mut new_finding_ids = HashSet::new();
-        for finding in &normalized_findings {
-            if let Some(existing) = findings_by_evidence.get(&finding.evidence_sha256) {
-                if existing != finding {
-                    return Err(ArtifactReviewNormalizationErrorV2::FindingDigestCollision);
-                }
-            } else {
-                new_finding_ids.insert(finding.evidence_sha256.clone());
-            }
-        }
-        if findings_by_evidence
-            .len()
-            .checked_add(new_finding_ids.len())
-            .is_none_or(|count| count > MAX_ARTIFACT_REVIEW_FINDINGS_V2)
+        let claim_status = if output.status == ArtifactReviewWorkItemStatusV2::Completed
+            && !output.no_truncation_verified
         {
-            claim_status = ArtifactReviewWorkItemStatusV2::Failed;
-            outcome_status =
-                ArtifactReviewWorkItemNormalizationStatusV2::AggregateFindingLimitExceeded;
-            normalized_findings.clear();
+            ArtifactReviewWorkItemStatusV2::Truncated
+        } else {
+            output.status
+        };
+        let claim_no_truncation = claim_status != ArtifactReviewWorkItemStatusV2::Truncated
+            && output.no_truncation_verified;
+        let mut outcome_builder = WorkItemOutcomeBuilderV2 {
+            work_item_id: output.work_item_id.clone(),
+            provider_output_capture_sha256: provider_output_capture_sha256.clone(),
+            provider_output_capture_byte_len,
+            declared_finding_count: 0,
+            structurally_valid_finding_count: 0,
+            retained_finding_count: 0,
+            deduplicated_finding_count: 0,
+            rejected_finding_count: 0,
+            rejection_reasons: Vec::new(),
+        };
+        match claim_status {
+            ArtifactReviewWorkItemStatusV2::Completed => {}
+            ArtifactReviewWorkItemStatusV2::Failed => outcome_builder
+                .push_rejection_reason(ArtifactReviewWorkItemNormalizationStatusV2::ProviderFailed),
+            ArtifactReviewWorkItemStatusV2::Truncated => outcome_builder
+                .push_rejection_reason(ArtifactReviewWorkItemNormalizationStatusV2::Truncated),
+        }
+        if !output.no_truncation_verified
+            && claim_status != ArtifactReviewWorkItemStatusV2::Truncated
+        {
+            outcome_builder
+                .push_rejection_reason(ArtifactReviewWorkItemNormalizationStatusV2::Truncated);
+        }
+        if !output_fits_budget {
+            outcome_builder.push_rejection_reason(
+                ArtifactReviewWorkItemNormalizationStatusV2::OutputLimitExceeded,
+            );
+        } else {
+            let parsed = normalize_work_item_output(
+                output,
+                work_item,
+                &coverage_files,
+                artifact,
+                request.artifact_sha256(),
+                &request_sha256,
+                &expected_invocation_sha256,
+            );
+            outcome_builder.declared_finding_count = parsed.declared_finding_count;
+            outcome_builder.structurally_valid_finding_count = parsed.candidates.len();
+            outcome_builder.rejected_finding_count = parsed.rejected_finding_count;
+            for reason in parsed.rejection_reasons {
+                outcome_builder.push_rejection_reason(reason);
+            }
+            finding_candidates.extend(parsed.candidates);
         }
         claims.push(
             claim_builder
@@ -494,20 +612,56 @@ pub fn normalize_artifact_review_provider_outputs_v2(
                 )
                 .map_err(|_| ArtifactReviewNormalizationErrorV2::InvalidExecutionClaim)?,
         );
-        outcomes.push(ArtifactReviewWorkItemNormalizationOutcomeV2 {
-            work_item_id: output.work_item_id.clone(),
-            provider_output_capture_sha256,
-            provider_output_capture_byte_len,
-            status: outcome_status,
-        });
-        for finding in normalized_findings {
-            if !findings_by_evidence.contains_key(&finding.evidence_sha256) {
-                findings_by_evidence.insert(finding.evidence_sha256.clone(), finding);
+        outcome_builders.insert(output.work_item_id.clone(), outcome_builder);
+    }
+
+    let finding_groups = group_finding_candidates(finding_candidates)?;
+    let selected_finding_ids = fairly_select_finding_groups(&finding_groups);
+    let mut findings = Vec::with_capacity(selected_finding_ids.len());
+    for (finding_id, group) in finding_groups {
+        if selected_finding_ids.contains(&finding_id) {
+            let representative_source = (
+                group.representative.source_work_item_id.clone(),
+                group.representative.model_finding_index,
+                group.representative.wire.evidence_sha256.clone(),
+            );
+            for occurrence in &group.occurrences {
+                let occurrence_source = (
+                    occurrence.source_work_item_id.clone(),
+                    occurrence.model_finding_index,
+                    occurrence.wire.evidence_sha256.clone(),
+                );
+                let builder = outcome_builders
+                    .get_mut(&occurrence.source_work_item_id)
+                    .ok_or(ArtifactReviewNormalizationErrorV2::UnknownWorkItem)?;
+                if occurrence_source == representative_source {
+                    builder.retained_finding_count += 1;
+                } else {
+                    builder.deduplicated_finding_count += 1;
+                }
+            }
+            findings.push(group.representative.wire);
+        } else {
+            for occurrence in group.occurrences {
+                let builder = outcome_builders
+                    .get_mut(&occurrence.source_work_item_id)
+                    .ok_or(ArtifactReviewNormalizationErrorV2::UnknownWorkItem)?;
+                builder.rejected_finding_count += 1;
+                builder.push_rejection_reason(
+                    ArtifactReviewWorkItemNormalizationStatusV2::AggregateFindingLimitExceeded,
+                );
             }
         }
     }
-
-    let findings = findings_by_evidence.into_values().collect::<Vec<_>>();
+    findings.sort_by(|left, right| {
+        left.finding_id_sha256
+            .cmp(&right.finding_id_sha256)
+            .then_with(|| left.evidence_sha256.cmp(&right.evidence_sha256))
+    });
+    let outcomes = outcome_builders
+        .into_values()
+        .map(WorkItemOutcomeBuilderV2::finish)
+        .collect::<Result<Vec<_>, _>>()?;
     let verdict = if findings.is_empty() {
         ArtifactReviewVerdictV2::Uncertain
     } else {
@@ -520,7 +674,7 @@ pub fn normalize_artifact_review_provider_outputs_v2(
         request_sha256,
         coverage_manifest_sha256: request.coverage_manifest_sha256().clone(),
         provider_adapter_sha256: request.provider().adapter_sha256.clone(),
-        model_content_sha256: request.model().model_content_sha256.clone(),
+        model_identity_sha256: request.model().identity_sha256(),
         prompt_template_sha256: request.prompt().template_sha256.clone(),
         model_output_schema_sha256: request.model_output_schema_sha256().clone(),
         adapter_result_schema_sha256: request.adapter_result_schema_sha256().clone(),
@@ -555,37 +709,106 @@ pub fn normalize_artifact_review_provider_outputs_v2(
     })
 }
 
-fn normalize_completed_work_item_output(
+fn normalize_work_item_output(
     output: &ArtifactReviewProviderOutputV2,
     work_item: &crate::ArtifactReviewWorkItemV2,
     coverage_files: &HashMap<&Sha256Digest, &crate::ArtifactReviewFileCoverageV2>,
     artifact: &NormalizedArtifact,
+    artifact_sha256: &Sha256Digest,
     request_sha256: &Sha256Digest,
     expected_invocation_sha256: &Sha256Digest,
-) -> Result<Vec<AdapterFindingWireV2>, ArtifactReviewWorkItemNormalizationStatusV2> {
+) -> WorkItemParseResultV2 {
+    let mut result = WorkItemParseResultV2 {
+        declared_finding_count: 0,
+        candidates: Vec::new(),
+        rejected_finding_count: 0,
+        rejection_reasons: Vec::new(),
+    };
     if output.captured_output.is_empty() || std::str::from_utf8(&output.captured_output).is_err() {
-        return Err(ArtifactReviewWorkItemNormalizationStatusV2::InvalidModelOutputWire);
+        result
+            .rejection_reasons
+            .push(ArtifactReviewWorkItemNormalizationStatusV2::InvalidModelOutputWire);
+        return result;
     }
     let mut deserializer = serde_json::Deserializer::from_slice(&output.captured_output);
-    let wire = ModelOutputWireV2::deserialize(&mut deserializer)
-        .map_err(|_| ArtifactReviewWorkItemNormalizationStatusV2::InvalidModelOutputWire)?;
-    deserializer
-        .end()
-        .map_err(|_| ArtifactReviewWorkItemNormalizationStatusV2::InvalidModelOutputWire)?;
+    let wire = match ModelOutputEnvelopeWireV2::deserialize(&mut deserializer) {
+        Ok(wire) if deserializer.end().is_ok() => wire,
+        _ => {
+            result
+                .rejection_reasons
+                .push(ArtifactReviewWorkItemNormalizationStatusV2::InvalidModelOutputWire);
+            return result;
+        }
+    };
     if wire.schema_version != ARTIFACT_REVIEW_MODEL_OUTPUT_SCHEMA_V2
         || wire.work_item_id != output.work_item_id
         || &wire.invocation_sha256 != expected_invocation_sha256
     {
-        return Err(ArtifactReviewWorkItemNormalizationStatusV2::ModelOutputBindingMismatch);
+        result
+            .rejection_reasons
+            .push(ArtifactReviewWorkItemNormalizationStatusV2::ModelOutputBindingMismatch);
+        return result;
     }
+    result.declared_finding_count = wire.findings.len();
     if wire.findings.len() > MAX_ARTIFACT_REVIEW_FINDINGS_V2 {
-        return Err(ArtifactReviewWorkItemNormalizationStatusV2::TooManyFindings);
+        result
+            .rejection_reasons
+            .push(ArtifactReviewWorkItemNormalizationStatusV2::TooManyFindings);
     }
     // The declaration is intentionally advisory. Exact resolved findings win
     // asymmetrically; an unsupported suspicion without a range contributes no
     // finding and can never become a clean result.
     let _declared_verdict = wire.verdict;
 
+    for (model_finding_index, finding_value) in wire.findings.into_iter().enumerate() {
+        let model_finding = match serde_json::from_value::<ModelFindingWireV2>(finding_value) {
+            Ok(finding) => finding,
+            Err(_) => {
+                result.rejected_finding_count += 1;
+                if !result
+                    .rejection_reasons
+                    .contains(&ArtifactReviewWorkItemNormalizationStatusV2::InvalidFindingWire)
+                {
+                    result
+                        .rejection_reasons
+                        .push(ArtifactReviewWorkItemNormalizationStatusV2::InvalidFindingWire);
+                }
+                continue;
+            }
+        };
+        match normalize_model_finding(
+            output,
+            work_item,
+            coverage_files,
+            artifact,
+            artifact_sha256,
+            request_sha256,
+            model_finding_index,
+            model_finding,
+        ) {
+            Ok(candidate) => result.candidates.push(candidate),
+            Err(reason) => {
+                result.rejected_finding_count += 1;
+                if !result.rejection_reasons.contains(&reason) {
+                    result.rejection_reasons.push(reason);
+                }
+            }
+        }
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn normalize_model_finding(
+    output: &ArtifactReviewProviderOutputV2,
+    work_item: &crate::ArtifactReviewWorkItemV2,
+    coverage_files: &HashMap<&Sha256Digest, &crate::ArtifactReviewFileCoverageV2>,
+    artifact: &NormalizedArtifact,
+    artifact_sha256: &Sha256Digest,
+    request_sha256: &Sha256Digest,
+    model_finding_index: usize,
+    model_finding: ModelFindingWireV2,
+) -> Result<NormalizedFindingCandidateV2, ArtifactReviewWorkItemNormalizationStatusV2> {
     let file_coverage = coverage_files
         .get(work_item.file_id())
         .copied()
@@ -603,72 +826,84 @@ fn normalize_completed_work_item_output(
         .checked_sub(chunk.start_byte())
         .ok_or(ArtifactReviewWorkItemNormalizationStatusV2::InvalidFindingEvidence)?;
 
-    let mut findings = Vec::with_capacity(wire.findings.len());
-    for model_finding in wire.findings {
-        if !context_is_allowed(
-            file_coverage.contexts(),
-            &model_finding.context_id,
-            model_finding.context_kind,
-        ) {
-            return Err(ArtifactReviewWorkItemNormalizationStatusV2::InvalidFindingReference);
-        }
-        if model_finding.chunk_relative_start_byte >= model_finding.chunk_relative_end_byte
-            || model_finding.chunk_relative_end_byte > chunk_len
-            || model_finding.explanation.is_empty()
-            || model_finding.explanation.chars().count() > MAX_ARTIFACT_REVIEW_EXPLANATION_CHARS_V2
-            || model_finding.explanation.chars().any(char::is_control)
-        {
-            return Err(ArtifactReviewWorkItemNormalizationStatusV2::InvalidFindingEvidence);
-        }
-        let start_byte = chunk
-            .start_byte()
-            .checked_add(model_finding.chunk_relative_start_byte)
-            .ok_or(ArtifactReviewWorkItemNormalizationStatusV2::InvalidFindingEvidence)?;
-        let end_byte = chunk
-            .start_byte()
-            .checked_add(model_finding.chunk_relative_end_byte)
-            .ok_or(ArtifactReviewWorkItemNormalizationStatusV2::InvalidFindingEvidence)?;
-        let start = usize::try_from(start_byte)
-            .map_err(|_| ArtifactReviewWorkItemNormalizationStatusV2::InvalidFindingEvidence)?;
-        let end = usize::try_from(end_byte)
-            .map_err(|_| ArtifactReviewWorkItemNormalizationStatusV2::InvalidFindingEvidence)?;
-        if !is_utf8_char_boundary(file.bytes(), start) || !is_utf8_char_boundary(file.bytes(), end)
-        {
-            return Err(ArtifactReviewWorkItemNormalizationStatusV2::InvalidFindingEvidence);
-        }
-        let selected = file
-            .bytes()
-            .get(start..end)
-            .ok_or(ArtifactReviewWorkItemNormalizationStatusV2::InvalidFindingEvidence)?;
-        let selected_sha256 = Sha256Digest::from_bytes(selected);
-        let start_line =
-            line_number_within_chunk(file.bytes(), chunk.start_byte(), chunk.start_line(), start)
-                .map_err(|_| ArtifactReviewWorkItemNormalizationStatusV2::InvalidFindingEvidence)?;
-        let end_line = line_number_within_chunk(
-            file.bytes(),
-            chunk.start_byte(),
-            chunk.start_line(),
-            end.saturating_sub(1),
-        )
+    if !context_is_allowed(
+        file_coverage.contexts(),
+        &model_finding.context_id,
+        model_finding.context_kind,
+    ) {
+        return Err(ArtifactReviewWorkItemNormalizationStatusV2::InvalidFindingReference);
+    }
+    if model_finding.chunk_relative_start_byte >= model_finding.chunk_relative_end_byte
+        || model_finding.chunk_relative_end_byte > chunk_len
+        || model_finding.explanation.is_empty()
+        || model_finding.explanation.chars().count() > MAX_ARTIFACT_REVIEW_EXPLANATION_CHARS_V2
+        || model_finding.explanation.chars().any(char::is_control)
+    {
+        return Err(ArtifactReviewWorkItemNormalizationStatusV2::InvalidFindingEvidence);
+    }
+    let start_byte = chunk
+        .start_byte()
+        .checked_add(model_finding.chunk_relative_start_byte)
+        .ok_or(ArtifactReviewWorkItemNormalizationStatusV2::InvalidFindingEvidence)?;
+    let end_byte = chunk
+        .start_byte()
+        .checked_add(model_finding.chunk_relative_end_byte)
+        .ok_or(ArtifactReviewWorkItemNormalizationStatusV2::InvalidFindingEvidence)?;
+    let start = usize::try_from(start_byte)
         .map_err(|_| ArtifactReviewWorkItemNormalizationStatusV2::InvalidFindingEvidence)?;
-        let evidence_sha256 =
-            artifact_review_finding_evidence_sha256_v2(ArtifactReviewFindingEvidenceInputV2 {
-                request_sha256,
-                work_item_id: &output.work_item_id,
-                category: model_finding.category,
-                severity: model_finding.severity,
-                file_id: work_item.file_id(),
-                chunk_id: work_item.chunk_id(),
-                context_id: &model_finding.context_id,
-                context_kind: model_finding.context_kind,
-                start_byte,
-                end_byte,
-                start_line,
-                end_line,
-                selected_sha256: &selected_sha256,
-                explanation: &model_finding.explanation,
-            });
-        findings.push(AdapterFindingWireV2 {
+    let end = usize::try_from(end_byte)
+        .map_err(|_| ArtifactReviewWorkItemNormalizationStatusV2::InvalidFindingEvidence)?;
+    if !is_utf8_char_boundary(file.bytes(), start) || !is_utf8_char_boundary(file.bytes(), end) {
+        return Err(ArtifactReviewWorkItemNormalizationStatusV2::InvalidFindingEvidence);
+    }
+    let selected = file
+        .bytes()
+        .get(start..end)
+        .ok_or(ArtifactReviewWorkItemNormalizationStatusV2::InvalidFindingEvidence)?;
+    let selected_sha256 = Sha256Digest::from_bytes(selected);
+    let start_line =
+        line_number_within_chunk(file.bytes(), chunk.start_byte(), chunk.start_line(), start)
+            .map_err(|_| ArtifactReviewWorkItemNormalizationStatusV2::InvalidFindingEvidence)?;
+    let end_line = line_number_within_chunk(
+        file.bytes(),
+        chunk.start_byte(),
+        chunk.start_line(),
+        end.saturating_sub(1),
+    )
+    .map_err(|_| ArtifactReviewWorkItemNormalizationStatusV2::InvalidFindingEvidence)?;
+    let evidence_sha256 =
+        artifact_review_finding_evidence_sha256_v2(ArtifactReviewFindingEvidenceInputV2 {
+            request_sha256,
+            work_item_id: &output.work_item_id,
+            category: model_finding.category,
+            severity: model_finding.severity,
+            file_id: work_item.file_id(),
+            chunk_id: work_item.chunk_id(),
+            context_id: &model_finding.context_id,
+            context_kind: model_finding.context_kind,
+            start_byte,
+            end_byte,
+            start_line,
+            end_line,
+            selected_sha256: &selected_sha256,
+            explanation: &model_finding.explanation,
+        });
+    let finding_id_sha256 =
+        artifact_review_finding_identity_sha256_v2(ArtifactReviewFindingIdentityInputV2 {
+            artifact_sha256,
+            category: model_finding.category,
+            file_id: work_item.file_id(),
+            file_sha256: &file.sha256,
+            context_id: &model_finding.context_id,
+            context_kind: model_finding.context_kind,
+            start_byte,
+            end_byte,
+            selected_sha256: &selected_sha256,
+        });
+    Ok(NormalizedFindingCandidateV2 {
+        source_work_item_id: output.work_item_id.clone(),
+        model_finding_index,
+        wire: AdapterFindingWireV2 {
             category: model_finding.category,
             severity: model_finding.severity,
             work_item_id: output.work_item_id.clone(),
@@ -682,11 +917,163 @@ fn normalize_completed_work_item_output(
             start_line,
             end_line,
             selected_sha256,
+            finding_id_sha256,
             evidence_sha256,
+            behavior_gate_eligible: false,
             explanation: model_finding.explanation,
-        });
+        },
+    })
+}
+
+fn group_finding_candidates(
+    candidates: Vec<NormalizedFindingCandidateV2>,
+) -> Result<BTreeMap<Sha256Digest, FindingCandidateGroupV2>, ArtifactReviewNormalizationErrorV2> {
+    let mut groups = BTreeMap::<Sha256Digest, FindingCandidateGroupV2>::new();
+    for candidate in candidates {
+        let finding_id = candidate.wire.finding_id_sha256.clone();
+        if let Some(group) = groups.get_mut(&finding_id) {
+            if group.threat_class != candidate.wire.category.threat_class()
+                || !same_structural_finding(&group.representative.wire, &candidate.wire)
+            {
+                return Err(ArtifactReviewNormalizationErrorV2::FindingDigestCollision);
+            }
+            let lane = (
+                candidate.source_work_item_id.clone(),
+                candidate.model_finding_index,
+            );
+            let current_lane = (
+                group.canonical_lane_work_item_id.clone(),
+                group.canonical_lane_finding_index,
+            );
+            if lane < current_lane {
+                group.canonical_lane_work_item_id = lane.0;
+                group.canonical_lane_finding_index = lane.1;
+            }
+            if candidate_is_better_representative(&candidate, &group.representative) {
+                group.representative = candidate.clone();
+            }
+            group.occurrences.push(candidate);
+        } else {
+            groups.insert(
+                finding_id.clone(),
+                FindingCandidateGroupV2 {
+                    threat_class: candidate.wire.category.threat_class(),
+                    representative: candidate.clone(),
+                    canonical_lane_work_item_id: candidate.source_work_item_id.clone(),
+                    canonical_lane_finding_index: candidate.model_finding_index,
+                    occurrences: vec![candidate],
+                },
+            );
+        }
     }
-    Ok(findings)
+    Ok(groups)
+}
+
+fn same_structural_finding(left: &AdapterFindingWireV2, right: &AdapterFindingWireV2) -> bool {
+    left.category == right.category
+        && left.file_id == right.file_id
+        && left.file_sha256 == right.file_sha256
+        && left.context_id == right.context_id
+        && left.context_kind == right.context_kind
+        && left.start_byte == right.start_byte
+        && left.end_byte == right.end_byte
+        && left.selected_sha256 == right.selected_sha256
+}
+
+fn candidate_is_better_representative(
+    candidate: &NormalizedFindingCandidateV2,
+    current: &NormalizedFindingCandidateV2,
+) -> bool {
+    finding_severity_rank(candidate.wire.severity)
+        .cmp(&finding_severity_rank(current.wire.severity))
+        .then_with(|| {
+            current
+                .wire
+                .evidence_sha256
+                .cmp(&candidate.wire.evidence_sha256)
+        })
+        .then_with(|| {
+            current
+                .source_work_item_id
+                .cmp(&candidate.source_work_item_id)
+        })
+        .then_with(|| {
+            current
+                .model_finding_index
+                .cmp(&candidate.model_finding_index)
+        })
+        .is_gt()
+}
+
+fn finding_severity_rank(severity: ArtifactReviewFindingSeverityV2) -> u8 {
+    match severity {
+        ArtifactReviewFindingSeverityV2::Low => 0,
+        ArtifactReviewFindingSeverityV2::Medium => 1,
+        ArtifactReviewFindingSeverityV2::High => 2,
+        ArtifactReviewFindingSeverityV2::Critical => 3,
+    }
+}
+
+struct FairClassQueuesV2 {
+    lane_ids: Vec<Sha256Digest>,
+    queues: BTreeMap<Sha256Digest, VecDeque<Sha256Digest>>,
+    next_lane: usize,
+}
+
+fn fairly_select_finding_groups(
+    groups: &BTreeMap<Sha256Digest, FindingCandidateGroupV2>,
+) -> HashSet<Sha256Digest> {
+    if groups.len() <= MAX_ARTIFACT_REVIEW_FINDINGS_V2 {
+        return groups.keys().cloned().collect();
+    }
+    let mut class_queues = BTreeMap::<ArtifactReviewThreatClassV2, FairClassQueuesV2>::new();
+    for (finding_id, group) in groups {
+        let class = class_queues
+            .entry(group.threat_class)
+            .or_insert_with(|| FairClassQueuesV2 {
+                lane_ids: Vec::new(),
+                queues: BTreeMap::new(),
+                next_lane: 0,
+            });
+        class
+            .queues
+            .entry(group.canonical_lane_work_item_id.clone())
+            .or_default()
+            .push_back(finding_id.clone());
+    }
+    for class in class_queues.values_mut() {
+        class.lane_ids = class.queues.keys().cloned().collect();
+    }
+
+    let mut selected = HashSet::with_capacity(MAX_ARTIFACT_REVIEW_FINDINGS_V2);
+    while selected.len() < MAX_ARTIFACT_REVIEW_FINDINGS_V2 {
+        let mut made_progress = false;
+        for class in class_queues.values_mut() {
+            if selected.len() == MAX_ARTIFACT_REVIEW_FINDINGS_V2 {
+                break;
+            }
+            let lane_count = class.lane_ids.len();
+            if lane_count == 0 {
+                continue;
+            }
+            for _ in 0..lane_count {
+                let lane_index = class.next_lane % lane_count;
+                class.next_lane = (class.next_lane + 1) % lane_count;
+                let lane_id = &class.lane_ids[lane_index];
+                if let Some(finding_id) =
+                    class.queues.get_mut(lane_id).and_then(VecDeque::pop_front)
+                {
+                    selected.insert(finding_id);
+                    made_progress = true;
+                    break;
+                }
+            }
+        }
+        if !made_progress {
+            break;
+        }
+    }
+    selected
 }
 
 fn context_is_allowed(

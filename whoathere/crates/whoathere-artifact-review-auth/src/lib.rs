@@ -8,11 +8,13 @@
 mod aggregate;
 mod challenge;
 mod error;
+mod hosted_evidence;
 mod identity;
 mod wire;
 
 pub use aggregate::*;
 pub use challenge::*;
 pub use error::*;
+pub use hosted_evidence::*;
 pub use identity::*;
 pub use wire::*;

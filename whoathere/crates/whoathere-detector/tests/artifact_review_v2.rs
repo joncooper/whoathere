@@ -7,23 +7,25 @@ use whoathere_artifact::{
     ArtifactSourceType, Ecosystem, NormalizationLimits, Sha256Digest,
 };
 use whoathere_detector::{
-    analyze_normalized_artifact, artifact_review_adapter_result_schema_sha256_v2,
-    artifact_review_finding_evidence_sha256_v2, artifact_review_model_output_schema_sha256_v2,
+    analyze_normalized_artifact, artifact_review_adapter_result_schema_json_v2,
+    artifact_review_adapter_result_schema_sha256_v2, artifact_review_finding_evidence_sha256_v2,
+    artifact_review_finding_identity_sha256_v2, artifact_review_model_output_schema_sha256_v2,
     artifact_review_prompt_template_sha256_v2, build_artifact_review_request_v2,
     decode_and_structurally_validate_artifact_review_result_v2, ArtifactReviewChannelIsolationV2,
     ArtifactReviewConfigV2, ArtifactReviewContextKindV2, ArtifactReviewCoverageCompletenessV2,
     ArtifactReviewErrorV2, ArtifactReviewExecutionReportV2, ArtifactReviewFileDispositionV2,
     ArtifactReviewFindingCategoryV2, ArtifactReviewFindingEvidenceInputV2,
-    ArtifactReviewFindingSeverityV2, ArtifactReviewInferenceSettingsV2,
-    ArtifactReviewModelIdentityV2, ArtifactReviewPrivacyPostureV2, ArtifactReviewPromptIdentityV2,
+    ArtifactReviewFindingIdentityInputV2, ArtifactReviewFindingSeverityV2,
+    ArtifactReviewInferenceSettingsV2, ArtifactReviewModelIdentityV2,
+    ArtifactReviewPrivacyPostureV2, ArtifactReviewPromptIdentityV2,
     ArtifactReviewProviderIdentityV2, ArtifactReviewRequestV2, ArtifactReviewVerdictV2,
     ArtifactReviewWorkItemStatusV2, ARTIFACT_REVIEW_ADAPTER_RESULT_SCHEMA_ID_V2,
-    ARTIFACT_REVIEW_PROMPT_TEMPLATE_ID_V2, ARTIFACT_REVIEW_PROMPT_TEMPLATE_VERSION_V2,
-    ARTIFACT_REVIEW_PROVIDER_INPUT_SCHEMA_V2, ARTIFACT_REVIEW_RESULT_SCHEMA_V2,
-    MAX_ARTIFACT_REVIEW_CHUNK_BYTES_V2, MAX_ARTIFACT_REVIEW_CONTEXT_TOKENS_V2,
-    MAX_ARTIFACT_REVIEW_INVOCATION_SOURCE_BYTES_V2, MAX_ARTIFACT_REVIEW_OUTPUT_TOKENS_V2,
-    MAX_ARTIFACT_REVIEW_PROVIDER_INPUT_BYTES_V2, MAX_ARTIFACT_REVIEW_RESULT_BYTES_V2,
-    MAX_ARTIFACT_REVIEW_WORK_ITEMS_V2,
+    ARTIFACT_REVIEW_MODEL_OUTPUT_SCHEMA_V2, ARTIFACT_REVIEW_PROMPT_TEMPLATE_ID_V2,
+    ARTIFACT_REVIEW_PROMPT_TEMPLATE_VERSION_V2, ARTIFACT_REVIEW_PROVIDER_INPUT_SCHEMA_V2,
+    ARTIFACT_REVIEW_RESULT_SCHEMA_V2, MAX_ARTIFACT_REVIEW_CHUNK_BYTES_V2,
+    MAX_ARTIFACT_REVIEW_CONTEXT_TOKENS_V2, MAX_ARTIFACT_REVIEW_INVOCATION_SOURCE_BYTES_V2,
+    MAX_ARTIFACT_REVIEW_OUTPUT_TOKENS_V2, MAX_ARTIFACT_REVIEW_PROVIDER_INPUT_BYTES_V2,
+    MAX_ARTIFACT_REVIEW_RESULT_BYTES_V2, MAX_ARTIFACT_REVIEW_WORK_ITEMS_V2,
 };
 use whoathere_evidence::v2::{canonical_cas_object_key_for_artifact, ArtifactEvidenceSubjectV2};
 
@@ -95,11 +97,11 @@ fn config() -> ArtifactReviewConfigV2 {
             adapter_version: "2.0.0".to_string(),
             adapter_sha256: Sha256Digest::from_bytes(b"provider adapter"),
         },
-        model: ArtifactReviewModelIdentityV2 {
-            model_id: "review-model".to_string(),
-            model_version: "2026-07-09".to_string(),
-            model_content_sha256: Sha256Digest::from_bytes(b"immutable model content"),
-        },
+        model: ArtifactReviewModelIdentityV2::measured_local(
+            "review-model",
+            "2026-07-09",
+            Sha256Digest::from_bytes(b"immutable model content"),
+        ),
         prompt: ArtifactReviewPromptIdentityV2 {
             template_id: ARTIFACT_REVIEW_PROMPT_TEMPLATE_ID_V2.to_string(),
             template_version: ARTIFACT_REVIEW_PROMPT_TEMPLATE_VERSION_V2.to_string(),
@@ -144,7 +146,7 @@ fn result_json(
         "request_sha256": request.request_sha256().expect("request digest"),
         "coverage_manifest_sha256": request.coverage_manifest_sha256(),
         "provider_adapter_sha256": request.provider().adapter_sha256,
-        "model_content_sha256": request.model().model_content_sha256,
+        "model_identity_sha256": request.model().identity_sha256(),
         "prompt_template_sha256": request.prompt().template_sha256,
         "model_output_schema_sha256": request.model_output_schema_sha256(),
         "adapter_result_schema_sha256": request.adapter_result_schema_sha256(),
@@ -195,6 +197,113 @@ fn line_number_at(bytes: &[u8], offset: usize) -> u64 {
         .filter(|byte| **byte == b'\n')
         .count() as u64
         + 1
+}
+
+#[test]
+fn adapter_result_wire_v3_is_emitted_accepted_and_legacy_v2_is_rejected() {
+    assert_eq!(
+        ARTIFACT_REVIEW_RESULT_SCHEMA_V2,
+        "whoathere.artifact_review_result.v3"
+    );
+    assert_eq!(
+        ARTIFACT_REVIEW_ADAPTER_RESULT_SCHEMA_ID_V2,
+        "whoathere.artifact_review_adapter_result.strict_json.v3"
+    );
+    assert_eq!(
+        ARTIFACT_REVIEW_MODEL_OUTPUT_SCHEMA_V2,
+        "whoathere.artifact_review_model_output.v2"
+    );
+    let adapter_schema: serde_json::Value =
+        serde_json::from_str(artifact_review_adapter_result_schema_json_v2())
+            .expect("adapter-result schema JSON");
+    assert_eq!(
+        adapter_schema["$id"],
+        "whoathere.artifact_review_adapter_result.strict_json.v3"
+    );
+    assert_eq!(
+        adapter_schema["properties"]["schema_version"]["const"],
+        "whoathere.artifact_review_result.v3"
+    );
+
+    let artifact = ordinary_artifact();
+    let analysis = analyze_normalized_artifact(&artifact).expect("static analysis");
+    let request =
+        build_artifact_review_request_v2(&subject(&artifact), &artifact, &analysis, config())
+            .expect("request");
+    let emitted = result_json(&request, "uncertain", serde_json::json!([]));
+    let emitted_wire: serde_json::Value =
+        serde_json::from_slice(&emitted).expect("emitted adapter result");
+    assert_eq!(
+        emitted_wire["schema_version"],
+        "whoathere.artifact_review_result.v3"
+    );
+    let emitted_execution = execution_report(
+        &request,
+        all_work_item_ids(&request),
+        &emitted,
+        ArtifactReviewChannelIsolationV2::SeparateTrustedAndUntrusted,
+        true,
+    )
+    .expect("execution report");
+    decode_and_structurally_validate_artifact_review_result_v2(
+        &emitted,
+        &request,
+        &artifact,
+        &analysis,
+        &emitted_execution,
+    )
+    .expect("v3 adapter result accepted");
+
+    let mut legacy_identifier = emitted_wire.clone();
+    legacy_identifier["schema_version"] = serde_json::json!("whoathere.artifact_review_result.v2");
+    let legacy_identifier = serde_json::to_vec(&legacy_identifier).expect("legacy identifier");
+    let legacy_identifier_execution = execution_report(
+        &request,
+        all_work_item_ids(&request),
+        &legacy_identifier,
+        ArtifactReviewChannelIsolationV2::SeparateTrustedAndUntrusted,
+        true,
+    )
+    .expect("legacy execution report");
+    assert!(matches!(
+        decode_and_structurally_validate_artifact_review_result_v2(
+            &legacy_identifier,
+            &request,
+            &artifact,
+            &analysis,
+            &legacy_identifier_execution,
+        ),
+        Err(ArtifactReviewErrorV2::ResultBindingMismatch)
+    ));
+
+    let mut legacy_layout = emitted_wire;
+    let fields = legacy_layout
+        .as_object_mut()
+        .expect("adapter result object");
+    fields.remove("model_identity_sha256");
+    fields.insert(
+        "model_content_sha256".to_string(),
+        serde_json::json!(Sha256Digest::from_bytes(b"legacy measured model content")),
+    );
+    let legacy_layout = serde_json::to_vec(&legacy_layout).expect("legacy layout");
+    let legacy_layout_execution = execution_report(
+        &request,
+        all_work_item_ids(&request),
+        &legacy_layout,
+        ArtifactReviewChannelIsolationV2::SeparateTrustedAndUntrusted,
+        true,
+    )
+    .expect("legacy layout execution report");
+    assert!(matches!(
+        decode_and_structurally_validate_artifact_review_result_v2(
+            &legacy_layout,
+            &request,
+            &artifact,
+            &analysis,
+            &legacy_layout_execution,
+        ),
+        Err(ArtifactReviewErrorV2::InvalidResultWire)
+    ));
 }
 
 #[test]
@@ -437,8 +546,11 @@ fn provider_input_identity_and_digest_follow_request_bound_model_selection() {
     let mut alternate_config = config();
     alternate_config.model.model_id = "review-model-alternate".to_string();
     alternate_config.model.model_version = "2026-07-09-alternate".to_string();
-    alternate_config.model.model_content_sha256 =
-        Sha256Digest::from_bytes(b"alternate immutable model content");
+    alternate_config.model = ArtifactReviewModelIdentityV2::measured_local(
+        "review-model-alternate",
+        "2026-07-09-alternate",
+        Sha256Digest::from_bytes(b"alternate immutable model content"),
+    );
     let alternate_request =
         build_artifact_review_request_v2(&subject, &artifact, &analysis, alternate_config)
             .expect("alternate request");
@@ -465,8 +577,12 @@ fn provider_input_identity_and_digest_follow_request_bound_model_selection() {
         "review-model-alternate"
     );
     assert_eq!(
-        alternate_wire["trusted"]["model"]["model_content_sha256"],
-        alternate_request.model().model_content_sha256.as_str()
+        alternate_wire["trusted"]["model"]["identity"]["content_sha256"],
+        alternate_request
+            .model()
+            .measured_content_sha256()
+            .expect("measured model")
+            .as_str()
     );
     assert_ne!(first.invocation_sha256(), alternate.invocation_sha256());
     assert_ne!(
@@ -515,7 +631,7 @@ fn request_and_coverage_digests_are_deterministic_and_bind_settings() {
     );
     assert_eq!(
         first.request_sha256().unwrap().as_str(),
-        "sha256:edaceaeed030a5ea26ef3485ff5466906aa851bf431cd90ca6a8aafd3a541639"
+        "sha256:e2d1ae3abeffdf3f8f40a9118b14d112ae1b57221877d493297ede12fb165d86"
     );
     assert_eq!(
         first.coverage_manifest_sha256().as_str(),
@@ -556,7 +672,11 @@ fn request_digest_binds_every_current_provider_and_inference_input() {
     value.model.model_version = "2026-07-10".to_string();
     variants.push(value);
     let mut value = config();
-    value.model.model_content_sha256 = Sha256Digest::from_bytes(b"changed model");
+    value.model = ArtifactReviewModelIdentityV2::measured_local(
+        value.model.model_id.clone(),
+        value.model.model_version.clone(),
+        Sha256Digest::from_bytes(b"changed model"),
+    );
     variants.push(value);
     let mut value = config();
     value.inference.seed += 1;
@@ -639,7 +759,7 @@ fn unpinned_model_identity_is_rejected() {
             &analysis,
             hosted_without_policy_authority
         ),
-        Err(ArtifactReviewErrorV2::HostedReviewNotAuthorized)
+        Err(ArtifactReviewErrorV2::InvalidConfig)
     );
 }
 
@@ -1265,6 +1385,18 @@ fn validated_finding_requires_completed_exact_chunk_range_and_evidence_digest() 
             selected_sha256: &selected_sha256,
             explanation,
         });
+    let finding_id_sha256 =
+        artifact_review_finding_identity_sha256_v2(ArtifactReviewFindingIdentityInputV2 {
+            artifact_sha256: request.artifact_sha256(),
+            category,
+            file_id: &index_file.file_id,
+            file_sha256: &index_file.sha256,
+            context_id: context.context_id(),
+            context_kind: context.kind(),
+            start_byte: start as u64,
+            end_byte: end as u64,
+            selected_sha256: &selected_sha256,
+        });
     let finding = serde_json::json!({
         "category": "obfuscation",
         "severity": "medium",
@@ -1279,7 +1411,9 @@ fn validated_finding_requires_completed_exact_chunk_range_and_evidence_digest() 
         "start_line": start_line,
         "end_line": end_line,
         "selected_sha256": selected_sha256,
+        "finding_id_sha256": finding_id_sha256,
         "evidence_sha256": evidence_sha256,
+        "behavior_gate_eligible": false,
         "explanation": explanation,
     });
     let raw = result_json(&request, "suspicious", serde_json::json!([finding]));
@@ -1317,15 +1451,40 @@ fn validated_finding_requires_completed_exact_chunk_range_and_evidence_digest() 
     let truncated_report =
         ArtifactReviewExecutionReportV2::from_adapter_claims(&request, [truncated_claim], &raw)
             .expect("structural truncated report");
+    let truncated_validated = decode_and_structurally_validate_artifact_review_result_v2(
+        &raw,
+        &request,
+        &artifact,
+        &analysis,
+        &truncated_report,
+    )
+    .expect("valid positive is retained from explicitly incomplete coverage");
+    assert_eq!(truncated_validated.findings().len(), 1);
+    assert_eq!(
+        truncated_validated.verdict(),
+        ArtifactReviewVerdictV2::Suspicious
+    );
+
+    let mut false_authority: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+    false_authority["findings"][0]["behavior_gate_eligible"] = serde_json::json!(true);
+    let false_authority = serde_json::to_vec(&false_authority).unwrap();
+    let false_authority_receipt = execution_report(
+        &request,
+        vec![item.work_item_id().clone()],
+        &false_authority,
+        ArtifactReviewChannelIsolationV2::SeparateTrustedAndUntrusted,
+        true,
+    )
+    .unwrap();
     assert!(matches!(
         decode_and_structurally_validate_artifact_review_result_v2(
-            &raw,
+            &false_authority,
             &request,
             &artifact,
             &analysis,
-            &truncated_report,
+            &false_authority_receipt,
         ),
-        Err(ArtifactReviewErrorV2::InvalidFindingReference)
+        Err(ArtifactReviewErrorV2::InvalidFindingEvidence)
     ));
 
     let mut tampered: serde_json::Value = serde_json::from_slice(&raw).unwrap();

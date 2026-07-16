@@ -126,11 +126,11 @@ mod test_support {
                     adapter_version: crate::OLLAMA_ADAPTER_VERSION_V1.to_string(),
                     adapter_sha256: Sha256Digest::from_bytes(b"measured inert adapter bytes"),
                 },
-                model: ArtifactReviewModelIdentityV2 {
-                    model_id: "qwen3:8b-inert".to_string(),
-                    model_version: "manifest-2026-07-10".to_string(),
-                    model_content_sha256: Sha256Digest::from_bytes(b"pinned inert model manifest"),
-                },
+                model: ArtifactReviewModelIdentityV2::measured_local(
+                    "qwen3:8b-inert",
+                    "manifest-2026-07-10",
+                    Sha256Digest::from_bytes(b"pinned inert model manifest"),
+                ),
                 prompt: ArtifactReviewPromptIdentityV2 {
                     template_id: ARTIFACT_REVIEW_PROMPT_TEMPLATE_ID_V2.to_string(),
                     template_version: ARTIFACT_REVIEW_PROMPT_TEMPLATE_VERSION_V2.to_string(),

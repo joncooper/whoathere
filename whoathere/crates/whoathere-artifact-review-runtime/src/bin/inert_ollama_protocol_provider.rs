@@ -63,9 +63,9 @@ fn run() -> i32 {
         server_version: "inert-no-server".to_string(),
         requested_model: input.model().model_id.clone(),
         response_model: input.model().model_id.clone(),
-        expected_model_content_sha256: input.model().model_content_sha256.clone(),
-        pre_model_content_sha256: input.model().model_content_sha256.clone(),
-        post_model_content_sha256: input.model().model_content_sha256.clone(),
+        expected_model_content_sha256: measured_model_digest(&input),
+        pre_model_content_sha256: measured_model_digest(&input),
+        post_model_content_sha256: measured_model_digest(&input),
         system_message_sha256: prepared.system_message_sha256().clone(),
         user_message_sha256: prepared.user_message_sha256().clone(),
         role_mapping_contract_sha256: prepared.role_mapping_contract_sha256().clone(),
@@ -101,4 +101,14 @@ fn run() -> i32 {
         return 70;
     }
     0
+}
+
+fn measured_model_digest(
+    input: &whoathere_detector::ValidatedArtifactReviewProviderInputV2,
+) -> whoathere_artifact::Sha256Digest {
+    input
+        .model()
+        .measured_content_sha256()
+        .expect("inert Ollama fixture requires measured local model content")
+        .clone()
 }

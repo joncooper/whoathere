@@ -537,7 +537,9 @@ version = "0.1.0"
 dependencies = [
  "flate2",
  "libc",
+ "serde",
  "serde_json",
+ "serde_json_canonicalizer",
  "tar",
  "whoathere-artifact",
  "whoathere-artifact-review-ollama",
@@ -687,6 +689,7 @@ dependencies = [
  "serde_json",
  "tar",
  "whoathere-artifact",
+ "whoathere-artifact-review-runtime",
  "whoathere-cache",
  "whoathere-detector",
  "whoathere-detonation",
