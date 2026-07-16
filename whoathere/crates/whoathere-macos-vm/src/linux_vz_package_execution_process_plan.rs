@@ -6,7 +6,10 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 use std::fmt;
 use whoathere_artifact::{ArtifactFormat, Sha256Digest};
-use whoathere_detonation::{ArtifactScenarioLimitsV1, NpmEnvironmentProfileV1, SdistBuildModeV1};
+use whoathere_detonation::{
+    supported_wheel_console_command_name_v1, ArtifactScenarioLimitsV1, NpmEnvironmentProfileV1,
+    SdistBuildModeV1, WheelScenarioKindV1,
+};
 
 pub const MACOS_LINUX_VZ_PACKAGE_EXECUTION_PROCESS_PLAN_SCHEMA_V1: &str =
     "whoathere.macos_linux_vz_package_execution_process_plan.v1";
@@ -26,9 +29,11 @@ const SDIST_DERIVED: &str = "/run/whoathere/derived";
 
 const PYTHON_IMPORT_PROBE: &str = "import importlib,sys;importlib.import_module(sys.argv[1])";
 const PYTHON_PTH_PROBE: &str = "pass";
-const PYTHON_CONSOLE_ENTRY_POINT_PROBE: &str = "import functools,importlib,sys;command,module,callable,*arguments=sys.argv[1:];target=functools.reduce(getattr,callable.split('.'),importlib.import_module(module));sys.argv=[command,*arguments];raise SystemExit(target())";
 const PYTHON_PEP517_BUILD: &str = "import functools,importlib,sys;backend,out,*paths=sys.argv[1:];sys.path[:0]=paths;module,sep,obj=backend.partition(':');target=importlib.import_module(module);target=functools.reduce(getattr,obj.split('.'),target) if sep else target;name=target.build_wheel(out,config_settings=None,metadata_directory=None);print(name)";
 const PYTHON_LEGACY_BUILD: &str = "import runpy,sys;sys.path.insert(0,'/run/whoathere/source');sys.argv=['setup.py','bdist_wheel','--dist-dir','/run/whoathere/derived'];runpy.run_path('/run/whoathere/source/setup.py',run_name='__main__')";
+const WHEEL_INSTALL_EXACT_PROCESS_ACTION_COUNT_V1: u32 = 3;
+const WHEEL_INSTALL_THEN_PROBE_PROCESS_ACTION_COUNT_V1: u32 = 4;
+const WHEEL_INSTALL_THEN_CONSOLE_PROCESS_ACTION_COUNT_V1: u32 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -291,6 +296,39 @@ impl fmt::Display for MacosLinuxVzPackageExecutionProcessPlanErrorV1 {
 
 impl std::error::Error for MacosLinuxVzPackageExecutionProcessPlanErrorV1 {}
 
+/// The exact number of ordered process-plan actions for one supported wheel scenario.
+///
+/// Counts include materializing `artifact.bin`. The derivation path below checks the same closed
+/// operation counts, so bundle-v2 action counts cannot silently drift from the physical plan.
+pub const fn expected_macos_linux_vz_wheel_process_action_count_v1(
+    scenario_kind: &WheelScenarioKindV1,
+) -> u32 {
+    match scenario_kind {
+        WheelScenarioKindV1::InstallExactWheel => WHEEL_INSTALL_EXACT_PROCESS_ACTION_COUNT_V1,
+        WheelScenarioKindV1::FreshInterpreterPth { .. }
+        | WheelScenarioKindV1::ImportRoot { .. } => {
+            WHEEL_INSTALL_THEN_PROBE_PROCESS_ACTION_COUNT_V1
+        }
+        WheelScenarioKindV1::ConsoleEntryPoint { .. } => {
+            WHEEL_INSTALL_THEN_CONSOLE_PROCESS_ACTION_COUNT_V1
+        }
+    }
+}
+
+fn expected_wheel_process_action_count_for_operation_v1(operation: &str) -> Option<u32> {
+    match operation {
+        "wheel_install_exact" => Some(WHEEL_INSTALL_EXACT_PROCESS_ACTION_COUNT_V1),
+        "wheel_install_then_fresh_interpreter_pth" | "wheel_install_then_import_root" => {
+            Some(WHEEL_INSTALL_THEN_PROBE_PROCESS_ACTION_COUNT_V1)
+        }
+        "wheel_install_then_generated_console_wrapper_help"
+        | "wheel_install_then_generated_console_wrapper_no_arguments" => {
+            Some(WHEEL_INSTALL_THEN_CONSOLE_PROCESS_ACTION_COUNT_V1)
+        }
+        _ => None,
+    }
+}
+
 pub fn derive_macos_linux_vz_package_execution_process_plan_v1(
     program: &MacosLinuxVzPackageExecutionProgramV1,
 ) -> Result<MacosLinuxVzPackageExecutionProcessPlanV1, MacosLinuxVzPackageExecutionProcessPlanErrorV1>
@@ -309,6 +347,13 @@ pub fn derive_macos_linux_vz_package_execution_process_plan_v1(
     for stage in program.stages() {
         let mut derived = actions_for_stage_v1(stage, program.runtime_executables())?;
         actions.append(&mut derived);
+    }
+    if let Some(expected) =
+        expected_wheel_process_action_count_for_operation_v1(program.operation_name())
+    {
+        if u32::try_from(actions.len()).ok() != Some(expected) {
+            return Err(MacosLinuxVzPackageExecutionProcessPlanErrorV1::InvalidStage);
+        }
     }
     if actions.is_empty() {
         return Err(MacosLinuxVzPackageExecutionProcessPlanErrorV1::InvalidStage);
@@ -438,15 +483,40 @@ fn actions_for_stage_v1(
                 process_action(venv_python_process(
                     runtime,
                     WHEEL_VENV,
-                    "python_console_entry_point_help_probe",
+                    "python_installed_generated_console_wrapper_help_probe",
                     vec![
                         literal("-I"),
-                        literal("-c"),
-                        literal(PYTHON_CONSOLE_ENTRY_POINT_PROBE),
-                        literal(command_name),
-                        literal(module),
-                        literal(callable),
+                        literal(format!("{WHEEL_VENV}/bin/{command_name}")),
                         literal("--help"),
+                    ],
+                    RUN_ROOT,
+                )?),
+            ]
+        }
+        MacosLinuxVzPackageExecutionStageV1::PythonConsoleEntryPointNoArgumentsProbe {
+            command_name,
+            module,
+            callable,
+            target_sha256,
+            ..
+        } => {
+            validated_console_name_v1(command_name)?;
+            vec![
+                MacosLinuxVzPackageExecutionActionV1::Internal {
+                    action:
+                        MacosLinuxVzPackageInternalActionV1::ValidateConsoleEntryPointTarget {
+                            module: module.clone(),
+                            callable: callable.clone(),
+                            target_sha256: target_sha256.clone(),
+                        },
+                },
+                process_action(venv_python_process(
+                    runtime,
+                    WHEEL_VENV,
+                    "python_installed_generated_console_wrapper_no_arguments_probe",
+                    vec![
+                        literal("-I"),
+                        literal(format!("{WHEEL_VENV}/bin/{command_name}")),
                     ],
                     RUN_ROOT,
                 )?),
@@ -470,6 +540,23 @@ fn actions_for_stage_v1(
                 SDIST_BUILD_VENV,
                 "python_create_fresh_sdist_build_virtual_environment",
             )?)]
+        }
+        MacosLinuxVzPackageExecutionStageV1::PythonValidateEmptySdistBuildClosure {
+            build_requires_sha256,
+            build_closure,
+        } => {
+            if build_closure.validate().is_err()
+                || build_requires_sha256 != build_closure.declaration_set_sha256()
+                || !build_closure.artifacts().is_empty()
+            {
+                return Err(MacosLinuxVzPackageExecutionProcessPlanErrorV1::InvalidStage);
+            }
+            vec![MacosLinuxVzPackageExecutionActionV1::Internal {
+                action: MacosLinuxVzPackageInternalActionV1::ValidateExactBuildClosure {
+                    build_requires_sha256: build_requires_sha256.clone(),
+                    build_closure: build_closure.clone(),
+                },
+            }]
         }
         MacosLinuxVzPackageExecutionStageV1::PythonInstallExactSdistBuildClosure {
             build_requires_sha256,
@@ -756,12 +843,7 @@ fn venv_python_process(
 fn validated_console_name_v1(
     command_name: &str,
 ) -> Result<(), MacosLinuxVzPackageExecutionProcessPlanErrorV1> {
-    if command_name.is_empty()
-        || command_name.starts_with('-')
-        || !command_name
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
-    {
+    if !supported_wheel_console_command_name_v1(command_name) {
         return Err(MacosLinuxVzPackageExecutionProcessPlanErrorV1::InvalidDerivedPath);
     }
     Ok(())
@@ -1082,11 +1164,11 @@ mod tests {
     }
 
     #[test]
-    fn console_target_is_data_to_a_fixed_venv_python_probe() {
+    fn console_target_is_validated_before_the_installed_generated_wrapper_probe() {
         let target_sha256 = Sha256Digest::from_bytes(b"fixture_pkg.cli:main");
         let program = test_macos_linux_vz_package_execution_program_v1(
             python_runtime(),
-            "wheel_install_then_console_entry_point_help",
+            "wheel_install_then_generated_console_wrapper_help",
             vec![
                 MacosLinuxVzPackageExecutionStageV1::PythonCreateFreshWheelVirtualEnvironment,
                 MacosLinuxVzPackageExecutionStageV1::PythonPipInstallExactWheel {
@@ -1129,13 +1211,48 @@ mod tests {
             literal_arguments(process_at(&plan, 4)),
             [
                 "-I",
-                "-c",
-                PYTHON_CONSOLE_ENTRY_POINT_PROBE,
-                "fixture-tool",
-                "fixture_pkg.cli",
-                "main",
+                "/run/whoathere/work/wheel-venv/bin/fixture-tool",
                 "--help"
             ]
+        );
+        assert_eq!(
+            process_at(&plan, 4).stage_name(),
+            "python_installed_generated_console_wrapper_help_probe"
+        );
+    }
+
+    #[test]
+    fn no_argument_console_probe_has_no_synthetic_package_arguments() {
+        let target_sha256 = Sha256Digest::from_bytes(b"fixture_pkg.cli:main");
+        let program = test_macos_linux_vz_package_execution_program_v1(
+            python_runtime(),
+            "wheel_install_then_generated_console_wrapper_no_arguments",
+            vec![
+                MacosLinuxVzPackageExecutionStageV1::PythonCreateFreshWheelVirtualEnvironment,
+                MacosLinuxVzPackageExecutionStageV1::PythonPipInstallExactWheel {
+                    input_basename: "fixture_pkg-1.0.0-py3-none-any.whl".to_string(),
+                    package_normalized_name: "fixture-pkg".to_string(),
+                    package_version: "1.0.0".to_string(),
+                    resolver_policy: MacosLinuxVzPackageDependencyPolicyV1::NoIndexNoDependencies,
+                },
+                MacosLinuxVzPackageExecutionStageV1::PythonConsoleEntryPointNoArgumentsProbe {
+                    command_name: "fixture-tool".to_string(),
+                    module: "fixture_pkg.cli".to_string(),
+                    callable: "main".to_string(),
+                    target_sha256,
+                },
+            ],
+        );
+        let plan = derive_macos_linux_vz_package_execution_process_plan_v1(&program)
+            .expect("no-argument console process plan");
+        assert_eq!(plan.actions().len(), 5);
+        assert_eq!(
+            literal_arguments(process_at(&plan, 4)),
+            ["-I", "/run/whoathere/work/wheel-venv/bin/fixture-tool"]
+        );
+        assert_eq!(
+            process_at(&plan, 4).stage_name(),
+            "python_installed_generated_console_wrapper_no_arguments_probe"
         );
     }
 
@@ -1252,6 +1369,68 @@ mod tests {
             derive_macos_linux_vz_package_execution_process_plan_v1(&mismatched),
             Err(MacosLinuxVzPackageExecutionProcessPlanErrorV1::InvalidStage)
         ));
+    }
+
+    #[test]
+    fn empty_sdist_closure_has_one_validation_action_and_no_pip_install() {
+        let closure = SdistBuildClosureV1::new(&[], Vec::new()).expect("empty closure");
+        let build = MacosLinuxVzSdistBuildRecipeV1::new_for_execution_program_test_v1(
+            ArtifactFormat::SdistTarGzip,
+            "fixture-pkg-1.0.0".to_string(),
+            SdistBuildModeV1::Pep517,
+            Some("fixture_backend".to_string()),
+            vec!["backend".to_string()],
+            closure.declaration_set_sha256().clone(),
+            closure.clone(),
+        );
+        let program = test_macos_linux_vz_package_execution_program_v1(
+            python_runtime(),
+            "sdist_build_exact",
+            vec![
+                MacosLinuxVzPackageExecutionStageV1::PythonSafelyExtractExactSdist {
+                    input_basename: "package.tar.gz".to_string(),
+                    artifact_format: ArtifactFormat::SdistTarGzip,
+                    expected_archive_root: "fixture-pkg-1.0.0".to_string(),
+                },
+                MacosLinuxVzPackageExecutionStageV1::PythonCreateFreshSdistBuildVirtualEnvironment,
+                MacosLinuxVzPackageExecutionStageV1::PythonValidateEmptySdistBuildClosure {
+                    build_requires_sha256: closure.declaration_set_sha256().clone(),
+                    build_closure: closure.clone(),
+                },
+                MacosLinuxVzPackageExecutionStageV1::PythonBuildExactSdist { build },
+                MacosLinuxVzPackageExecutionStageV1::PythonValidateSingleDerivedWheel,
+            ],
+        );
+        let plan = derive_macos_linux_vz_package_execution_process_plan_v1(&program)
+            .expect("empty closure process plan");
+        assert_eq!(plan.actions().len(), 6);
+        assert!(matches!(
+            &plan.actions()[3],
+            MacosLinuxVzPackageExecutionActionV1::Internal {
+                action: MacosLinuxVzPackageInternalActionV1::ValidateExactBuildClosure {
+                    build_requires_sha256,
+                    build_closure,
+                }
+            } if build_requires_sha256 == closure.declaration_set_sha256()
+                && build_closure == &closure
+        ));
+        let process_stage_names = plan
+            .actions()
+            .iter()
+            .filter_map(|action| match action {
+                MacosLinuxVzPackageExecutionActionV1::Process { process } => {
+                    Some(process.stage_name())
+                }
+                MacosLinuxVzPackageExecutionActionV1::Internal { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            process_stage_names,
+            [
+                "python_create_fresh_sdist_build_virtual_environment",
+                "python_build_exact_sdist",
+            ]
+        );
     }
 
     #[test]

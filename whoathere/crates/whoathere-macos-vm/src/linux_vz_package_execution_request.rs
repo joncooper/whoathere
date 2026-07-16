@@ -9,10 +9,10 @@ use whoathere_artifact::{ArtifactFormat, Sha256Digest};
 use whoathere_detonation::{
     decode_and_validate_artifact_scenario_template_v1, decode_and_validate_sdist_scenario_plan_v1,
     decode_and_validate_sdist_scenario_template_v1, decode_and_validate_wheel_scenario_plan_v1,
-    decode_and_validate_wheel_scenario_template_v1, ArtifactScenarioLimitsV1,
-    ArtifactTelemetrySyncBackPolicyV1, NpmEnvironmentProfileV1, SdistBuildClosureV1,
-    SdistBuildModeV1, SdistScenarioKindV1, WheelConsoleArgumentProfileV1, WheelScenarioKindV1,
-    MAX_ARTIFACT_SCENARIO_BYTES_V1,
+    decode_and_validate_wheel_scenario_template_v1, supported_wheel_console_command_name_v1,
+    ArtifactScenarioLimitsV1, ArtifactTelemetrySyncBackPolicyV1, NpmEnvironmentProfileV1,
+    SdistBuildClosureV1, SdistBuildModeV1, SdistScenarioKindV1, WheelConsoleArgumentProfileV1,
+    WheelScenarioKindV1, MAX_ARTIFACT_SCENARIO_BYTES_V1,
 };
 use zeroize::Zeroize;
 
@@ -155,7 +155,23 @@ pub enum MacosLinuxVzPackageExecutionOperationV1 {
         package_version: String,
         module: String,
     },
+    /// Install the exact wheel, validate the declared target binding, then execute the wrapper
+    /// generated in the fresh virtual environment with the fixed `--help` argument.
+    #[serde(rename = "wheel_install_then_generated_console_wrapper_help")]
     WheelInstallThenConsoleEntryPointHelp {
+        install_template_sha256: Sha256Digest,
+        artifact_filename: String,
+        package_normalized_name: String,
+        package_version: String,
+        command_name: String,
+        module: String,
+        callable: String,
+        target_sha256: Sha256Digest,
+    },
+    /// Install the exact wheel, validate the declared target binding, then execute the wrapper
+    /// generated in the fresh virtual environment with no arguments.
+    #[serde(rename = "wheel_install_then_generated_console_wrapper_no_arguments")]
+    WheelInstallThenConsoleEntryPointNoArguments {
         install_template_sha256: Sha256Digest,
         artifact_filename: String,
         package_normalized_name: String,
@@ -190,7 +206,10 @@ impl MacosLinuxVzPackageExecutionOperationV1 {
             }
             Self::WheelInstallThenImportRoot { .. } => "wheel_install_then_import_root",
             Self::WheelInstallThenConsoleEntryPointHelp { .. } => {
-                "wheel_install_then_console_entry_point_help"
+                "wheel_install_then_generated_console_wrapper_help"
+            }
+            Self::WheelInstallThenConsoleEntryPointNoArguments { .. } => {
+                "wheel_install_then_generated_console_wrapper_no_arguments"
             }
             Self::SdistBuildExact { .. } => "sdist_build_exact",
             Self::SdistBuildThenInspectDerivedWheel { .. } => {
@@ -660,6 +679,16 @@ fn validate_closed_operation_v1(
                 module,
                 callable,
                 target_sha256,
+            }
+            | MacosLinuxVzPackageExecutionOperationV1::WheelInstallThenConsoleEntryPointNoArguments {
+                install_template_sha256,
+                artifact_filename,
+                package_normalized_name,
+                package_version,
+                command_name,
+                module,
+                callable,
+                target_sha256,
             },
         ) if install_template_sha256 != &empty
             && valid_wheel_filename_v1(
@@ -760,13 +789,7 @@ fn valid_python_target_v1(value: &str) -> bool {
 }
 
 fn valid_console_name_v1(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 128
-        && !value.starts_with('-')
-        && value.is_ascii()
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    supported_wheel_console_command_name_v1(value)
 }
 
 fn valid_backend_target_v1(value: &str) -> bool {
@@ -1223,7 +1246,7 @@ fn wheel_operation_v1(
             module,
             callable,
             target_sha256,
-            argument_profile: WheelConsoleArgumentProfileV1::HelpOnly,
+            argument_profile: WheelConsoleArgumentProfileV1::InstalledGeneratedWrapperHelp,
         } => MacosLinuxVzPackageExecutionOperationV1::WheelInstallThenConsoleEntryPointHelp {
             install_template_sha256,
             artifact_filename: artifact_filename.to_string(),
@@ -1234,6 +1257,24 @@ fn wheel_operation_v1(
             callable: callable.clone(),
             target_sha256: target_sha256.clone(),
         },
+        WheelScenarioKindV1::ConsoleEntryPoint {
+            command_name,
+            module,
+            callable,
+            target_sha256,
+            argument_profile: WheelConsoleArgumentProfileV1::InstalledGeneratedWrapperNoArguments,
+        } => {
+            MacosLinuxVzPackageExecutionOperationV1::WheelInstallThenConsoleEntryPointNoArguments {
+                install_template_sha256,
+                artifact_filename: artifact_filename.to_string(),
+                package_normalized_name: package_normalized_name.to_string(),
+                package_version: package_version.to_string(),
+                command_name: command_name.clone(),
+                module: module.clone(),
+                callable: callable.clone(),
+                target_sha256: target_sha256.clone(),
+            }
+        }
     };
     Ok(operation)
 }
@@ -1464,6 +1505,51 @@ mod tests {
     }
 
     #[test]
+    fn wheel_console_profiles_compile_to_distinct_closed_operations() {
+        let install_digest = digest("wheel install template");
+        let target_sha256 = Sha256Digest::from_bytes(b"safe_fixture.cli:main");
+        for (argument_profile, expected_operation_name) in [
+            (
+                WheelConsoleArgumentProfileV1::InstalledGeneratedWrapperHelp,
+                "wheel_install_then_generated_console_wrapper_help",
+            ),
+            (
+                WheelConsoleArgumentProfileV1::InstalledGeneratedWrapperNoArguments,
+                "wheel_install_then_generated_console_wrapper_no_arguments",
+            ),
+        ] {
+            let kind = WheelScenarioKindV1::ConsoleEntryPoint {
+                command_name: "safe-tool".to_string(),
+                module: "safe_fixture.cli".to_string(),
+                callable: "main".to_string(),
+                target_sha256: target_sha256.clone(),
+                argument_profile,
+            };
+            let templates = vec![
+                (
+                    "install".to_string(),
+                    WheelScenarioKindV1::InstallExactWheel,
+                    install_digest.clone(),
+                ),
+                (
+                    "console".to_string(),
+                    kind.clone(),
+                    digest(expected_operation_name),
+                ),
+            ];
+            let operation = wheel_operation_v1(
+                &templates,
+                "safe_fixture-1.0.0-py3-none-any.whl",
+                "safe-fixture",
+                "1.0.0",
+                &kind,
+            )
+            .expect("closed console operation");
+            assert_eq!(operation.operation_name(), expected_operation_name);
+        }
+    }
+
+    #[test]
     fn wheel_probe_without_install_prerequisite_fails_closed() {
         let templates = vec![(
             "import".to_string(),
@@ -1575,7 +1661,7 @@ mod tests {
 
     #[test]
     fn operation_wire_has_no_free_form_process_interface() {
-        let operation =
+        let operations = [
             MacosLinuxVzPackageExecutionOperationV1::WheelInstallThenConsoleEntryPointHelp {
                 install_template_sha256: digest("install"),
                 artifact_filename: "fixture-1.0.0-py3-none-any.whl".to_string(),
@@ -1585,21 +1671,37 @@ mod tests {
                 module: "fixture.cli".to_string(),
                 callable: "main".to_string(),
                 target_sha256: Sha256Digest::from_bytes(b"fixture.cli:main"),
-            };
-        let json = serde_json::to_string(&operation).expect("serialize");
-        for forbidden in [
-            "argv",
-            "shell",
-            "executable_path",
-            "artifact_path",
-            "working_directory",
-        ] {
-            assert!(
-                !json.contains(forbidden),
-                "unexpected process interface: {forbidden}"
-            );
+            },
+            MacosLinuxVzPackageExecutionOperationV1::WheelInstallThenConsoleEntryPointNoArguments {
+                install_template_sha256: digest("install"),
+                artifact_filename: "fixture-1.0.0-py3-none-any.whl".to_string(),
+                package_normalized_name: "fixture".to_string(),
+                package_version: "1.0.0".to_string(),
+                command_name: "fixture-cli".to_string(),
+                module: "fixture.cli".to_string(),
+                callable: "main".to_string(),
+                target_sha256: Sha256Digest::from_bytes(b"fixture.cli:main"),
+            },
+        ];
+        for (operation, expected_name) in operations.into_iter().zip([
+            "wheel_install_then_generated_console_wrapper_help",
+            "wheel_install_then_generated_console_wrapper_no_arguments",
+        ]) {
+            let json = serde_json::to_string(&operation).expect("serialize");
+            for forbidden in [
+                "argv",
+                "shell",
+                "executable_path",
+                "artifact_path",
+                "working_directory",
+            ] {
+                assert!(
+                    !json.contains(forbidden),
+                    "unexpected process interface: {forbidden}"
+                );
+            }
+            assert!(json.contains(expected_name));
         }
-        assert!(json.contains("wheel_install_then_console_entry_point_help"));
     }
 
     #[test]

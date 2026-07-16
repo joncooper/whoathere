@@ -7,7 +7,8 @@ use whoathere_artifact::{
 use whoathere_detonation::{
     compile_wheel_scenarios_v1, decode_and_validate_wheel_scenario_plan_v1,
     decode_and_validate_wheel_scenario_template_v1, expected_wheel_scenario_kinds_v1,
-    ArtifactRuntimeTargetV1, ArtifactScenarioCompileErrorV1, ArtifactScenarioExecutionIdentityV1,
+    supported_wheel_console_command_name_v1, ArtifactRuntimeTargetV1,
+    ArtifactScenarioCompileErrorV1, ArtifactScenarioExecutionIdentityV1,
     WheelConsoleArgumentProfileV1, WheelRuntimeProfileV1, WheelScenarioCompilationRequestV1,
     WheelScenarioIdentitySetV1, WheelScenarioKindV1, WheelScenarioPlanV1, WheelScenarioPolicyV1,
 };
@@ -235,7 +236,7 @@ fn exact_wheel_compiles_install_pth_import_and_console_scenarios() {
     .expect("policy");
     let identities = identities(&fixture, "matrix").expect("identities");
     let plan = compile(&fixture, &policy, &identities).expect("wheel plan");
-    assert_eq!(plan.templates().len(), 4);
+    assert_eq!(plan.templates().len(), 5);
     assert!(matches!(
         plan.templates()[0].scenario_kind(),
         WheelScenarioKindV1::InstallExactWheel
@@ -257,10 +258,29 @@ fn exact_wheel_compiles_install_pth_import_and_console_scenarios() {
             command_name,
             module,
             callable,
-            argument_profile: WheelConsoleArgumentProfileV1::HelpOnly,
+            argument_profile: WheelConsoleArgumentProfileV1::InstalledGeneratedWrapperHelp,
             ..
         } if command_name == "wheel-tool" && module == "wheel_fixture.cli" && callable == "main"
     ));
+    assert!(matches!(
+        plan.templates()[4].scenario_kind(),
+        WheelScenarioKindV1::ConsoleEntryPoint {
+            command_name,
+            module,
+            callable,
+            argument_profile:
+                WheelConsoleArgumentProfileV1::InstalledGeneratedWrapperNoArguments,
+            ..
+        } if command_name == "wheel-tool" && module == "wheel_fixture.cli" && callable == "main"
+    ));
+    assert_ne!(
+        plan.templates()[3].identity().scenario_id(),
+        plan.templates()[4].identity().scenario_id()
+    );
+    assert_ne!(
+        plan.templates()[3].template_sha256(),
+        plan.templates()[4].template_sha256()
+    );
 
     for template in plan.templates() {
         let wire = template.canonical_json_v1().expect("canonical template");
@@ -286,7 +306,7 @@ fn exact_wheel_compiles_install_pth_import_and_console_scenarios() {
     let decoded_plan =
         decode_and_validate_wheel_scenario_plan_v1(&plan_wire).expect("validated plan");
     assert_eq!(decoded_plan.plan_sha256(), plan.plan_sha256());
-    assert_eq!(decoded_plan.templates().len(), 4);
+    assert_eq!(decoded_plan.templates().len(), 5);
     assert!(!std::str::from_utf8(&plan_wire)
         .expect("plan utf8")
         .contains("sync"));
@@ -331,21 +351,75 @@ fn wheel_compiler_rejects_dependencies_native_scripts_and_unvalidated_targets() 
             ),
             ArtifactScenarioCompileErrorV1::InvalidTriggerSurface,
         ),
+        (
+            wheel_fixture(
+                "",
+                "[console_scripts]\npython3 = wheel_fixture.cli:main\n",
+                &[],
+                b"VALUE = 'inert'\n",
+            ),
+            ArtifactScenarioCompileErrorV1::InvalidTriggerSurface,
+        ),
+        (
+            wheel_fixture(
+                "",
+                "[console_scripts]\npython3.12 = wheel_fixture.cli:main\n",
+                &[],
+                b"VALUE = 'inert'\n",
+            ),
+            ArtifactScenarioCompileErrorV1::InvalidTriggerSurface,
+        ),
+        (
+            wheel_fixture(
+                "",
+                "[console_scripts]\n. = wheel_fixture.cli:main\n",
+                &[],
+                b"VALUE = 'inert'\n",
+            ),
+            ArtifactScenarioCompileErrorV1::InvalidTriggerSurface,
+        ),
+        (
+            wheel_fixture(
+                "",
+                "[console_scripts]\n.. = wheel_fixture.cli:main\n",
+                &[],
+                b"VALUE = 'inert'\n",
+            ),
+            ArtifactScenarioCompileErrorV1::InvalidTriggerSurface,
+        ),
     ];
     for (index, (fixture, expected)) in cases.into_iter().enumerate() {
-        let policy = WheelScenarioPolicyV1::inert_qualification_only(
-            fixture.envelope.original_sha256.clone(),
-            runtime_profile(),
-        )
-        .expect("policy");
-        let identities = identities(&fixture, &format!("reject-{index}"));
-        if expected == ArtifactScenarioCompileErrorV1::InvalidTriggerSurface {
-            assert_eq!(identities, Err(expected));
-            continue;
-        }
         assert_eq!(
-            compile(&fixture, &policy, &identities.expect("identities")),
+            identities(&fixture, &format!("reject-{index}")),
             Err(expected)
+        );
+    }
+}
+
+#[test]
+fn generated_console_names_cannot_replace_the_probe_venv_tools() {
+    for rejected in [
+        "python",
+        "Python",
+        "python3",
+        "python3.14",
+        "PYTHON3.14",
+        "pip",
+        "Pip",
+        "pip3",
+        "pip3.14",
+        ".",
+        "..",
+    ] {
+        assert!(
+            !supported_wheel_console_command_name_v1(rejected),
+            "protected generated wrapper name was accepted: {rejected}"
+        );
+    }
+    for supported in ["python-tool", "pip-tools", "fixture.cli", "fixture_cli"] {
+        assert!(
+            supported_wheel_console_command_name_v1(supported),
+            "safe neighboring command name was rejected: {supported}"
         );
     }
 }
@@ -410,6 +484,30 @@ fn wheel_wire_is_closed_canonical_and_tamper_evident() {
         serde_json_canonicalizer::to_vec(&target_digest).expect("target digest wire");
     assert_eq!(
         decode_and_validate_wheel_scenario_template_v1(&target_digest),
+        Err(ArtifactScenarioCompileErrorV1::InvalidWire)
+    );
+
+    let mut unknown_profile: serde_json::Value =
+        serde_json::from_slice(&console).expect("console wire value");
+    unknown_profile["scenario_kind"]["argument_profile"] =
+        serde_json::json!("future_generated_wrapper_profile");
+    let unknown_profile =
+        serde_json_canonicalizer::to_vec(&unknown_profile).expect("unknown profile wire");
+    assert_eq!(
+        decode_and_validate_wheel_scenario_template_v1(&unknown_profile),
+        Err(ArtifactScenarioCompileErrorV1::InvalidWire)
+    );
+
+    let mut missing_profile: serde_json::Value =
+        serde_json::from_slice(&console).expect("console wire value");
+    missing_profile["scenario_kind"]
+        .as_object_mut()
+        .expect("scenario kind object")
+        .remove("argument_profile");
+    let missing_profile =
+        serde_json_canonicalizer::to_vec(&missing_profile).expect("missing profile wire");
+    assert_eq!(
+        decode_and_validate_wheel_scenario_template_v1(&missing_profile),
         Err(ArtifactScenarioCompileErrorV1::InvalidWire)
     );
 

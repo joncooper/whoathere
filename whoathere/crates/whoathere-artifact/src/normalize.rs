@@ -446,13 +446,32 @@ fn normalize_wheel(
         .cloned()
         .unwrap_or_default();
 
-    let pth_file_ids = logical
+    let pth_members = logical
         .iter()
         .filter(|member| {
             member.record.member_type == MemberType::File
                 && member.record.normalized_path.ends_with(".pth")
         })
+        .collect::<Vec<_>>();
+    let pth_file_ids = pth_members
+        .iter()
+        .filter(|member| {
+            wheel_pth_has_site_packages_activation_semantics(
+                &member.record.normalized_path,
+                &dist_info,
+            )
+        })
         .map(|member| member.record.file_id.clone())
+        .collect::<Vec<_>>();
+    let inventory_only_pth_paths = pth_members
+        .iter()
+        .filter(|member| {
+            !wheel_pth_has_site_packages_activation_semantics(
+                &member.record.normalized_path,
+                &dist_info,
+            )
+        })
+        .map(|member| member.record.normalized_path.clone())
         .collect::<Vec<_>>();
     let import_roots = wheel_import_roots(&logical, &dist_info);
     let script_file_ids = logical
@@ -503,6 +522,14 @@ fn normalize_wheel(
         &logical,
     );
     input.metadata.wheel = Some(wheel);
+    for path in inventory_only_pth_paths {
+        input.issues.push(crate::ManifestIssue {
+            reason_code: "wheel_pth_inventory_not_site_packages_activation".to_string(),
+            path: Some(path),
+            detail: "the .pth file is retained in inventory but is not installed at a site-packages activation root".to_string(),
+        });
+        input.normalization_completeness = NormalizationCompleteness::Incomplete;
+    }
     if let Some(expected) = subject.expected_external_dependency_requirement {
         record_expected_dependency_resolution_mismatch(
             expected,
@@ -513,6 +540,24 @@ fn normalize_wheel(
     }
     add_inventory(&logical, &mut input);
     finalize_artifact(input, &logical)
+}
+
+fn wheel_pth_has_site_packages_activation_semantics(path: &str, dist_info: &str) -> bool {
+    if !path.ends_with(".pth") {
+        return false;
+    }
+    if !path.contains('/') {
+        return true;
+    }
+    let Some(distribution_stem) = dist_info.strip_suffix(".dist-info") else {
+        return false;
+    };
+    ["purelib", "platlib"].into_iter().any(|scheme| {
+        let prefix = format!("{distribution_stem}.data/{scheme}/");
+        path.strip_prefix(&prefix).is_some_and(|installed_path| {
+            !installed_path.is_empty() && !installed_path.contains('/')
+        })
+    })
 }
 
 fn normalize_sdist(

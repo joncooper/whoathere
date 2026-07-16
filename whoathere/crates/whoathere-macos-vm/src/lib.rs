@@ -60,6 +60,7 @@ mod linux_vz_package_sensor_tracepoint;
 mod linux_vz_package_workspace;
 mod linux_vz_platform_evidence_payload;
 mod linux_vz_process_evidence_payload;
+mod linux_vz_wheel_execution_fanout;
 
 pub use linux_vz_package_sensor_bpf_inert_probe::{
     run_linux_vz_package_sensor_bpf_inert_probe_v1, LinuxVzPackageSensorBpfInertProbeErrorV1,
@@ -150,6 +151,7 @@ pub use linux_vz_telemetry_evidence::*;
 pub use linux_vz_telemetry_guest_receipt::*;
 pub use linux_vz_telemetry_host_receipt::*;
 pub use linux_vz_telemetry_qualification::*;
+pub use linux_vz_wheel_execution_fanout::*;
 pub use sdist_backend::*;
 pub use sdist_build_closure_transport::*;
 pub use sdist_build_execution_grant::*;

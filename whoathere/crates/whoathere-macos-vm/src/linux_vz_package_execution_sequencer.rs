@@ -320,6 +320,7 @@ fn sequence_requirements_v1(
     let mut materialize_count = 0_usize;
     let mut source_count = 0_usize;
     let mut closure_count = 0_usize;
+    let mut closure_payload_count = 0_usize;
     let mut derived_count = 0_usize;
     let mut inspect_count = 0_usize;
     let mut process_count = 0_usize;
@@ -338,11 +339,20 @@ fn sequence_requirements_v1(
                     source_count += 1;
                     source_ready = true;
                 }
-                MacosLinuxVzPackageInternalActionV1::ValidateExactBuildClosure { .. } => {
-                    if !source_ready {
+                MacosLinuxVzPackageInternalActionV1::ValidateExactBuildClosure {
+                    build_requires_sha256,
+                    build_closure,
+                } => {
+                    if !source_ready
+                        || build_closure.validate().is_err()
+                        || build_requires_sha256 != build_closure.declaration_set_sha256()
+                    {
                         return Err(LinuxVzPackageExecutionSequencerErrorV1::InvalidPlan);
                     }
                     closure_count += 1;
+                    if !build_closure.artifacts().is_empty() {
+                        closure_payload_count += 1;
+                    }
                     closure_ready = true;
                 }
                 MacosLinuxVzPackageInternalActionV1::ValidateSingleDerivedWheel => {
@@ -384,6 +394,7 @@ fn sequence_requirements_v1(
     if materialize_count != 1
         || source_count > 1
         || closure_count > 1
+        || closure_payload_count > 1
         || derived_count > 1
         || inspect_count > 1
         || process_count == 0
@@ -395,7 +406,7 @@ fn sequence_requirements_v1(
         return Err(LinuxVzPackageExecutionSequencerErrorV1::InvalidPlan);
     }
     Ok(SequenceRequirementsV1 {
-        build_closure_required: closure_count == 1,
+        build_closure_required: closure_payload_count == 1,
         derived_wheel_required: derived_count == 1,
         process_count,
     })
@@ -478,9 +489,24 @@ pub fn execute_linux_vz_package_sequence_v1(
                     sdist_source = Some(materialized);
                     sdist_observation = Some(observation);
                 }
-                MacosLinuxVzPackageInternalActionV1::ValidateExactBuildClosure { .. } => {
+                MacosLinuxVzPackageInternalActionV1::ValidateExactBuildClosure {
+                    build_requires_sha256,
+                    build_closure: declared_closure,
+                } => {
                     if build_closure.is_some() {
                         return Err(LinuxVzPackageExecutionSequencerErrorV1::InvalidPlan);
+                    }
+                    if declared_closure.validate().is_err()
+                        || build_requires_sha256 != declared_closure.declaration_set_sha256()
+                    {
+                        return Err(LinuxVzPackageExecutionSequencerErrorV1::InvalidPlan);
+                    }
+                    if declared_closure.artifacts().is_empty() {
+                        if exact_build_closure_payload_source.is_some() {
+                            return Err(LinuxVzPackageExecutionSequencerErrorV1::InvalidInputs);
+                        }
+                        completed_action_count = action_index + 1;
+                        continue;
                     }
                     let payload = exact_build_closure_payload_source
                         .take()

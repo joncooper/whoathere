@@ -231,7 +231,7 @@ mod tests {
                 pip_version: "25.1".to_string(),
                 pip_cli_sha256: Sha256Digest::from_bytes(b"inert pip"),
             },
-            "wheel_install_then_console_entry_point_help",
+            "wheel_install_then_generated_console_wrapper_help",
             vec![
                 MacosLinuxVzPackageExecutionStageV1::PythonCreateFreshWheelVirtualEnvironment,
                 MacosLinuxVzPackageExecutionStageV1::PythonPipInstallExactWheel {
