@@ -44,8 +44,9 @@ use whoathere_policy::{
 use whoathere_runner::{
     canonical_utc_timestamp_from_unix_seconds_v1, execute_readonly, inspect_exact_artifact_v1,
     plan_protected_execution, ExactArtifactAiAdapterV1, ExactArtifactCodexAiAdapterV1,
-    ExactArtifactCodexAiConfigV1, ExactArtifactInspectionErrorV1, ExactArtifactInspectionRequestV1,
-    ExecutionDecision,
+    ExactArtifactCodexAiConfigV1, ExactArtifactDetonationAdapterV1, ExactArtifactInspectionErrorV1,
+    ExactArtifactInspectionRequestV1, ExecutionDecision, LinuxVzExactNpmDetonationAdapterV1,
+    LinuxVzExactNpmDetonationConfigV1,
 };
 use whoathere_sandbox::{
     admit_linux_active_probe_receipt, admit_linux_active_probe_receipt_with_replay_decision,
@@ -103,6 +104,7 @@ pub enum Command {
         ai_timeout_seconds: Option<u64>,
         approve_hosted_source_review: bool,
         detonation: bool,
+        detonation_config: Option<String>,
     },
     Doctor {
         json: bool,
@@ -561,6 +563,7 @@ fn parse_exact_artifact_inspect(args: &[String]) -> Command {
     let mut ai_review = false;
     let mut approve_hosted_source_review = false;
     let mut detonation = false;
+    let mut detonation_config = None;
     let mut seen = std::collections::BTreeSet::new();
     let mut index = 1;
     while index < args.len() {
@@ -598,7 +601,8 @@ fn parse_exact_artifact_inspect(args: &[String]) -> Command {
             | "--ai-client-sha256"
             | "--ai-model"
             | "--ai-auth-home"
-            | "--ai-timeout-seconds" => {
+            | "--ai-timeout-seconds"
+            | "--detonation-config" => {
                 if !seen.insert(flag) {
                     return Command::ArtifactInspectInvalidOptions {
                         reason_code: "exact_artifact_option_duplicate",
@@ -632,6 +636,7 @@ fn parse_exact_artifact_inspect(args: &[String]) -> Command {
                     "--ai-client-sha256" => ai_client_sha256 = Some(value),
                     "--ai-model" => ai_model = Some(value),
                     "--ai-auth-home" => ai_auth_home = Some(value),
+                    "--detonation-config" => detonation_config = Some(value),
                     "--ai-timeout-seconds" => {
                         ai_timeout_seconds = match value.parse::<u64>() {
                             Ok(value) => Some(value),
@@ -668,6 +673,7 @@ fn parse_exact_artifact_inspect(args: &[String]) -> Command {
         ai_timeout_seconds,
         approve_hosted_source_review,
         detonation,
+        detonation_config,
     }
 }
 
@@ -975,6 +981,7 @@ fn render_command_text(command: Command) -> String {
             ai_timeout_seconds,
             approve_hosted_source_review,
             detonation,
+            detonation_config,
         } => render_exact_artifact_inspect(ExactArtifactInspectArgs {
             path: &path,
             ecosystem: ecosystem.as_deref(),
@@ -989,6 +996,7 @@ fn render_command_text(command: Command) -> String {
             ai_timeout_seconds,
             approve_hosted_source_review,
             detonation,
+            detonation_config: detonation_config.as_deref(),
         }),
         Command::Doctor {
             json,
@@ -1610,7 +1618,7 @@ fn render_command_text(command: Command) -> String {
 fn command_help() -> String {
     concat!(
         "whoathere <",
-        "artifact inspect <npm.tgz|package.whl|package.tar.gz|package.zip> [--ecosystem auto|npm|pypi] [--state-dir <dir>] [--acquired-at <YYYY-MM-DDTHH:MM:SSZ>] [--ai-review --ai-provider codex --ai-client-path <absolute-native-binary> --ai-client-sha256 <sha256:...> --ai-model <exact-model> --ai-auth-home <dedicated-auth-home> --approve-hosted-source-review [--ai-timeout-seconds <1..600>]] [--detonation]|",
+        "artifact inspect <npm.tgz|package.whl|package.tar.gz|package.zip> [--ecosystem auto|npm|pypi] [--state-dir <dir>] [--acquired-at <YYYY-MM-DDTHH:MM:SSZ>] [--ai-review --ai-provider codex --ai-client-path <absolute-native-binary> --ai-client-sha256 <sha256:...> --ai-model <exact-model> --ai-auth-home <dedicated-auth-home> --approve-hosted-source-review [--ai-timeout-seconds <1..600>]] [--detonation --detonation-config <absolute-json>]|",
         "doctor [--json] [--state-dir <dir>] [--helper <path>]",
         "|status",
         "|config check <path>",
@@ -1677,6 +1685,7 @@ struct ExactArtifactInspectArgs<'a> {
     ai_timeout_seconds: Option<u64>,
     approve_hosted_source_review: bool,
     detonation: bool,
+    detonation_config: Option<&'a str>,
 }
 
 fn render_exact_artifact_inspect(args: ExactArtifactInspectArgs<'_>) -> String {
@@ -1766,6 +1775,72 @@ fn render_exact_artifact_inspect(args: ExactArtifactInspectArgs<'_>) -> String {
         }
     };
     let quarantine_root = state_root.join("quarantine-cas-v1");
+    let detonation_adapter = match (args.detonation, args.detonation_config) {
+        (false, None) => None,
+        (false, Some(_)) => {
+            return ExactArtifactInspectionErrorV1::invalid_request(
+                "exact_artifact_detonation_flag_required",
+            )
+            .to_pretty_json()
+        }
+        (true, None) => {
+            return ExactArtifactInspectionErrorV1::invalid_request(
+                "exact_artifact_detonation_config_required",
+            )
+            .to_pretty_json()
+        }
+        (true, Some(config_path)) => {
+            let config_path = Path::new(config_path);
+            if !config_path.is_absolute() {
+                return ExactArtifactInspectionErrorV1::invalid_request(
+                    "exact_artifact_detonation_config_path_invalid",
+                )
+                .to_pretty_json();
+            }
+            let metadata = match std::fs::symlink_metadata(config_path) {
+                Ok(value) if value.file_type().is_file() && !value.file_type().is_symlink() => {
+                    value
+                }
+                _ => {
+                    return ExactArtifactInspectionErrorV1::invalid_request(
+                        "exact_artifact_detonation_config_unavailable",
+                    )
+                    .to_pretty_json()
+                }
+            };
+            if metadata.len() == 0 || metadata.len() > 1024 * 1024 {
+                return ExactArtifactInspectionErrorV1::invalid_request(
+                    "exact_artifact_detonation_config_size_invalid",
+                )
+                .to_pretty_json();
+            }
+            let bytes = match std::fs::read(config_path) {
+                Ok(value) => value,
+                Err(_) => {
+                    return ExactArtifactInspectionErrorV1::invalid_request(
+                        "exact_artifact_detonation_config_unavailable",
+                    )
+                    .to_pretty_json()
+                }
+            };
+            let config = match serde_json::from_slice::<LinuxVzExactNpmDetonationConfigV1>(&bytes) {
+                Ok(value) => value,
+                Err(_) => {
+                    return ExactArtifactInspectionErrorV1::invalid_request(
+                        "exact_artifact_detonation_config_invalid",
+                    )
+                    .to_pretty_json()
+                }
+            };
+            match LinuxVzExactNpmDetonationAdapterV1::new(config) {
+                Ok(value) => Some(value),
+                Err(error) => {
+                    return ExactArtifactInspectionErrorV1::invalid_request(error.reason_code())
+                        .to_pretty_json()
+                }
+            }
+        }
+    };
     let codex_adapter = if args.ai_review {
         if !args.approve_hosted_source_review {
             return ExactArtifactInspectionErrorV1::invalid_request(
@@ -1839,7 +1914,10 @@ fn render_exact_artifact_inspect(args: ExactArtifactInspectArgs<'_>) -> String {
     let ai_adapter = codex_adapter
         .as_ref()
         .map(|adapter| adapter as &dyn ExactArtifactAiAdapterV1);
-    match inspect_exact_artifact_v1(request, ai_adapter, None) {
+    let detonation_adapter = detonation_adapter
+        .as_ref()
+        .map(|adapter| adapter as &dyn ExactArtifactDetonationAdapterV1);
+    match inspect_exact_artifact_v1(request, ai_adapter, detonation_adapter) {
         Ok(report) => report
             .to_pretty_json()
             .unwrap_or_else(|error| error.to_pretty_json()),
@@ -18201,6 +18279,8 @@ mod tests {
             "45".to_string(),
             "--approve-hosted-source-review".to_string(),
             "--detonation".to_string(),
+            "--detonation-config".to_string(),
+            "/tmp/whoathere-detonation.json".to_string(),
         ];
         assert_eq!(
             parse_command(&args),
@@ -18221,6 +18301,7 @@ mod tests {
                 ai_timeout_seconds: Some(45),
                 approve_hosted_source_review: true,
                 detonation: true,
+                detonation_config: Some("/tmp/whoathere-detonation.json".to_string()),
             }
         );
     }
@@ -18310,6 +18391,44 @@ mod tests {
     }
 
     #[test]
+    fn exact_artifact_detonation_requires_an_explicit_config_and_flag() {
+        let root = temp_root("whoathere-cli-exact-detonation-options");
+        let common = |detonation, detonation_config| Command::ArtifactInspect {
+            path: root.join("missing.tgz").display().to_string(),
+            ecosystem: Some("npm".to_string()),
+            state_dir: Some(root.join("state").display().to_string()),
+            acquired_at: Some("2026-07-15T00:00:00Z".to_string()),
+            ai_review: false,
+            ai_provider: None,
+            ai_client_path: None,
+            ai_client_sha256: None,
+            ai_model: None,
+            ai_auth_home: None,
+            ai_timeout_seconds: None,
+            approve_hosted_source_review: false,
+            detonation,
+            detonation_config,
+        };
+        for (command, reason) in [
+            (
+                common(true, None),
+                "exact_artifact_detonation_config_required",
+            ),
+            (
+                common(false, Some("/tmp/config.json".to_string())),
+                "exact_artifact_detonation_flag_required",
+            ),
+        ] {
+            let result = evaluate_command(command);
+            assert_eq!(result.exit_code, 64);
+            let json: serde_json::Value =
+                serde_json::from_str(&result.output).expect("detonation option error is JSON");
+            assert_eq!(json["reason_codes"][0], reason);
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn exact_artifact_command_emits_bound_json_and_never_observed_clean() {
         use flate2::write::GzEncoder;
         use flate2::Compression;
@@ -18357,6 +18476,7 @@ mod tests {
             ai_timeout_seconds: None,
             approve_hosted_source_review: false,
             detonation: false,
+            detonation_config: None,
         });
 
         assert_eq!(result.exit_code, ExitCode::ManualReview.code());
@@ -18407,6 +18527,7 @@ mod tests {
                 ai_timeout_seconds: None,
                 approve_hosted_source_review: false,
                 detonation: false,
+                detonation_config: None,
             },
             Command::ArtifactInspect {
                 path: missing.display().to_string(),
@@ -18422,6 +18543,7 @@ mod tests {
                 ai_timeout_seconds: None,
                 approve_hosted_source_review: false,
                 detonation: false,
+                detonation_config: None,
             },
             Command::ArtifactInspect {
                 path: missing.display().to_string(),
@@ -18437,6 +18559,7 @@ mod tests {
                 ai_timeout_seconds: None,
                 approve_hosted_source_review: false,
                 detonation: false,
+                detonation_config: None,
             },
             Command::ArtifactInspect {
                 path: missing.display().to_string(),
@@ -18452,6 +18575,7 @@ mod tests {
                 ai_timeout_seconds: None,
                 approve_hosted_source_review: false,
                 detonation: false,
+                detonation_config: None,
             },
             Command::ArtifactInspect {
                 path: missing.display().to_string(),
@@ -18467,6 +18591,7 @@ mod tests {
                 ai_timeout_seconds: None,
                 approve_hosted_source_review: false,
                 detonation: false,
+                detonation_config: None,
             },
             Command::ArtifactInspect {
                 path: missing.display().to_string(),
@@ -18482,6 +18607,7 @@ mod tests {
                 ai_timeout_seconds: None,
                 approve_hosted_source_review: false,
                 detonation: false,
+                detonation_config: None,
             },
             Command::ArtifactInspect {
                 path: missing.display().to_string(),
@@ -18497,6 +18623,7 @@ mod tests {
                 ai_timeout_seconds: None,
                 approve_hosted_source_review: false,
                 detonation: false,
+                detonation_config: None,
             },
         ];
 

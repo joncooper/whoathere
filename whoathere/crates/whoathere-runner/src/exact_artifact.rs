@@ -170,7 +170,7 @@ struct ScenarioPlanDigestWireV1<'a> {
     status: ExactArtifactStageStatusV1,
     intents: &'a [ExactArtifactScenarioIntentV1],
     runtime_binding_required: bool,
-    runtime_binding_status: &'static str,
+    runtime_binding_status: &'a str,
     executable: bool,
     reason_codes: &'a [String],
 }
@@ -221,6 +221,32 @@ impl ExactArtifactScenarioPlanV1 {
             executable: false,
             reason_codes,
         })
+    }
+
+    fn with_verified_runtime_binding(mut self) -> Result<Self, ExactArtifactInspectionErrorV1> {
+        self.runtime_binding_status = "verified".to_string();
+        self.executable = true;
+        self.reason_codes
+            .retain(|code| code != "exact_artifact_runtime_binding_not_supplied");
+        self.reason_codes = sorted_unique(self.reason_codes);
+        let wire = ScenarioPlanDigestWireV1 {
+            schema_version: EXACT_ARTIFACT_SCENARIO_PLAN_SCHEMA_V1,
+            artifact_sha256: &self.artifact_sha256,
+            manifest_sha256: &self.manifest_sha256,
+            status: self.status,
+            intents: &self.intents,
+            runtime_binding_required: self.runtime_binding_required,
+            runtime_binding_status: &self.runtime_binding_status,
+            executable: self.executable,
+            reason_codes: &self.reason_codes,
+        };
+        let bytes = serde_json::to_vec(&wire).map_err(|_| {
+            ExactArtifactInspectionErrorV1::internal(
+                "exact_artifact_scenario_plan_serialization_failed",
+            )
+        })?;
+        self.plan_sha256 = Sha256Digest::from_bytes(&bytes).to_string();
+        Ok(self)
     }
 }
 
@@ -416,6 +442,15 @@ pub trait ExactArtifactAiAdapterV1 {
 pub trait ExactArtifactDetonationAdapterV1 {
     fn provider_id(&self) -> &str;
     fn readiness_reason(&self) -> Option<&'static str>;
+    /// Returns true only when this adapter can bind and execute the supplied
+    /// complete scenario plan with its currently configured runtime.
+    fn supports_runtime_binding(
+        &self,
+        _prepared: &PreparedArtifact,
+        _scenarios: &ExactArtifactScenarioPlanV1,
+    ) -> bool {
+        false
+    }
     fn detonate(
         &self,
         request: &ExactArtifactAdapterRequestV1,
@@ -615,7 +650,17 @@ pub fn inspect_exact_artifact_v1(
     let deterministic = prepared.analyze_deterministically().map_err(|_| {
         ExactArtifactInspectionErrorV1::inconclusive("exact_artifact_deterministic_analysis_failed")
     })?;
-    let scenario_plan = compile_scenario_intents(&prepared)?;
+    let mut scenario_plan = compile_scenario_intents(&prepared)?;
+    if request.detonation_requested {
+        if let Some(adapter) = detonation_adapter {
+            if scenario_plan.status == ExactArtifactStageStatusV1::Complete
+                && adapter.readiness_reason().is_none()
+                && adapter.supports_runtime_binding(&prepared, &scenario_plan)
+            {
+                scenario_plan = scenario_plan.with_verified_runtime_binding()?;
+            }
+        }
+    }
 
     let mut stages = vec![
         ExactArtifactStageReportV1::bound(
