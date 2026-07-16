@@ -1185,6 +1185,8 @@ fn append_network_sockaddr_capture_v1(
     program.store_register_v1(BPF_DW_V1, BPF_REG_10_V1, BPF_REG_1_V1, -16);
     program.load_register_v1(BPF_DW_V1, BPF_REG_1_V1, BPF_REG_6_V1, argument_offset(5)?);
     program.store_register_v1(BPF_DW_V1, BPF_REG_10_V1, BPF_REG_1_V1, -24);
+    let sendto_without_destination =
+        program.jump_immediate_placeholder_v1(BPF_JEQ_V1, BPF_REG_1_V1, 0);
 
     let capture = program.instructions.len();
     program.patch_forward_jump_v1(connect_ready, capture)?;
@@ -1228,6 +1230,7 @@ fn append_network_sockaddr_capture_v1(
     let complete = program.instructions.len();
     program.patch_forward_jump_v1(ipv4_complete, complete)?;
     program.patch_forward_jump_v1(sendto_mismatch, complete)?;
+    program.patch_forward_jump_v1(sendto_without_destination, complete)?;
     Ok(failures)
 }
 
@@ -2535,6 +2538,74 @@ mod tests {
             selected_syscall_argument_indices_v1(LinuxVzPackageSelectedSyscallV1::Mmap),
             &[1, 2, 3, 4, 5]
         );
+    }
+
+    #[test]
+    fn sendto_without_destination_skips_sockaddr_capture_and_submits_the_enter_record() {
+        let instructions = build_selected_syscall_program_v1(
+            &layout_v1(LinuxVzPackageTracepointKindV1::RawSyscallsSysEnter),
+            11,
+            12,
+            13,
+        )
+        .expect("selected syscall enter program");
+        let sendto_length_load = instructions
+            .windows(3)
+            .position(|window| {
+                window[0].code == BPF_LDX_V1 | BPF_MEM_V1 | BPF_DW_V1
+                    && window[0].destination_v1() == BPF_REG_1_V1
+                    && window[0].source_v1() == BPF_REG_6_V1
+                    && window[0].offset == 56
+                    && window[1].code == BPF_STX_V1 | BPF_MEM_V1 | BPF_DW_V1
+                    && window[1].destination_v1() == BPF_REG_10_V1
+                    && window[1].source_v1() == BPF_REG_1_V1
+                    && window[1].offset == -24
+                    && window[2].code == BPF_JMP_V1 | BPF_JEQ_V1 | BPF_K_V1
+                    && window[2].destination_v1() == BPF_REG_1_V1
+                    && window[2].immediate == 0
+            })
+            .expect("sendto destination-length branch");
+        let zero_length_jump = sendto_length_load + 2;
+        let normal_submission = zero_length_jump
+            + 1
+            + usize::try_from(instructions[zero_length_jump].offset)
+                .expect("forward zero-length jump");
+        assert_eq!(
+            instructions[normal_submission],
+            BpfInstructionV1::new_v1(
+                BPF_JMP_V1 | BPF_CALL_V1,
+                0,
+                0,
+                0,
+                BPF_FUNC_GET_SMP_PROCESSOR_ID_V1,
+            )
+        );
+        assert!(instructions[zero_length_jump + 1..normal_submission]
+            .iter()
+            .any(|instruction| {
+                instruction.code == BPF_JMP_V1 | BPF_CALL_V1
+                    && instruction.immediate == BPF_FUNC_PROBE_READ_USER_V1
+            }));
+        let normal_exit = instructions[normal_submission..]
+            .iter()
+            .position(|instruction| instruction.code == BPF_JMP_V1 | BPF_EXIT_V1)
+            .map(|offset| normal_submission + offset)
+            .expect("normal submission exit");
+        assert!(instructions[normal_submission..normal_exit]
+            .iter()
+            .any(|instruction| {
+                instruction.code == BPF_JMP_V1 | BPF_CALL_V1
+                    && instruction.immediate == BPF_FUNC_RINGBUF_SUBMIT_V1
+            }));
+        assert!(!instructions[normal_submission..normal_exit]
+            .iter()
+            .any(|instruction| {
+                instruction.code == BPF_JMP_V1 | BPF_CALL_V1
+                    && matches!(
+                        instruction.immediate,
+                        BPF_FUNC_PROBE_READ_USER_V1 | BPF_FUNC_RINGBUF_DISCARD_V1
+                    )
+            }));
     }
 
     #[test]
