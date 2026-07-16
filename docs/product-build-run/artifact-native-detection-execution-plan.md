@@ -122,6 +122,18 @@ Every engineering slice must end in at least one measurable artifact run, detect
 test, or frozen evaluation result. Do not spend more than one engineering day on infrastructure
 without reaching such a checkpoint or documenting the concrete detection gate that requires it.
 
+Use an explicit forest/trees checkpoint whenever one blocker consumes three implementation
+iterations or crosses a milestone boundary. Ask whether the work produced a package run, a
+behavior-specific detection, a representative fixture, or a more trustworthy release gate. If it
+did not, stop the local patch loop and compare the current design with the smallest alternative
+that still preserves containment and evidence authenticity. Continuing requires a named detection
+gate and a bounded next decision point; telemetry completeness is not, by itself, a reason to delay
+artifact coverage.
+
+Paused issues and their exact resume experiments live in the
+[detection blocker and revisit queue](detection-blocker-queue.md). An item in that queue is not a
+completed milestone and may not be silently reclassified as unsupported or clean.
+
 ### Detection-capable alpha
 
 - inert npm, wheel, and sdist workflows pass;
@@ -222,6 +234,39 @@ One orchestrator must consume the existing prepared exact artifact and invoke, i
 Each stage receives immutable digest-bound inputs and produces a strict, size-limited result. It may
 not infer success from a reason-string substring. The orchestrator records partial valid evidence
 even when a later stage fails, while the overall completion state remains honest.
+
+### 4.5 Current vertical-slice implementation checkpoint
+
+The existing code is closer to physical wheel and sdist execution than the July campaign result
+alone suggests, but several bridges remain claim-critical:
+
+- **npm:** the physical harness remains the leading path, and per-frame `SCM_CREDENTIALS` now bind
+  sensor control traffic to the measured runner PID while `SO_PEERCRED` remains structural channel
+  evidence. The runtime-v11 CI=true decision run nevertheless stopped on an authenticated orphan
+  `sendto` exit with no pending entry. Safety and teardown held, but no package result was accepted;
+  CI=false remains unrun. Further stream-protocol patching is paused in favor of the bounded signed
+  end-of-action journal described in blocker `BLK-001`.
+- **wheel:** metadata-driven install, `.pth`, import-root, and console-entry-point scenario compilers
+  and fixed offline process plans already exist. The missing work is an explicit runtime-binding
+  fanout bridge, generic physical `artifact.bin` packaging, multi-action evidence, independent
+  verification of every root receipt, and an authenticated zero-frame network observation. The
+  first wheel fixture must exercise more than one import root and console entry point. The runtime
+  must also verify the installed `.pth` surfaces it intended to exercise and define whether console
+  coverage means callable activation or execution of the generated wrapper.
+- **sdist:** nested-root normalization, exact wheel-only build closure, fixed build plans, and
+  exactly-one-derived-wheel sealing already exist in code, but have not run physically. Source
+  package-root guesses must not authorize post-build probes. The sdist identity must survive into
+  derived-wheel validation; dynamic build requirements must be exercised and fail closed; and an
+  authenticated derived-wheel probe manifest must drive `.pth`, import, and entry-point scenarios.
+  The first implementation uses a two-pass discovery/probe workflow so every action remains sealed
+  before execution.
+- **canaries:** the current root-runtime workspace classifies sensitive paths but does not yet seed
+  fake npm, PyPI, GitHub, or repository/workflow credentials. Initial inert artifact runs therefore
+  qualify trigger and evidence plumbing only. Credential and propagation claims begin only after a
+  typed canary-seeding contract and local sinkhole/shim controls are present.
+
+These are detection-bearing gaps, so they take precedence over additional transport or protocol
+hardening unless a failing gate demonstrates a new prerequisite.
 
 ## 5. Claude and Codex artifact analysis
 
