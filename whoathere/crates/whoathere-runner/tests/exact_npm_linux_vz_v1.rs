@@ -155,6 +155,29 @@ printf '{{"schema_version":"whoathere.linux_vz_package_execution_result.v1","sta
     path
 }
 
+fn write_failed_mock_helper(root: &std::path::Path) -> std::path::PathBuf {
+    let path = root.join("mock-linux-vz-failed-helper.sh");
+    let script = r#"#!/bin/sh
+environment=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --environment) environment="$2" ;;
+  esac
+  shift 2
+done
+printf 'NPM_TOKEN_CANARY_SECRET raw package stdout\n' >&2
+printf '{"schema_version":"whoathere.linux_vz_package_execution_result.v1","status":"failed_closed","reason":"builder_execution_bundle_exit_74","environment":"%s","authoritative_verdict_permitted":false,"public_network_route_present":false,"vm_started":false,"vm_stopped":false,"clone_destroyed":false,"image_identity_stable":false,"package_execution":false,"sync_back":false}\n' "$environment"
+exit 70
+"#;
+    std::fs::write(&path, script.as_bytes()).expect("write failed mock helper");
+    let mut permissions = std::fs::metadata(&path)
+        .expect("failed mock helper metadata")
+        .permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&path, permissions).expect("make failed mock helper executable");
+    path
+}
+
 fn adapter_config(
     root: &std::path::Path,
     helper_path: std::path::PathBuf,
@@ -410,6 +433,51 @@ fn exact_npm_adapter_does_not_bind_when_runtime_dependencies_need_a_closure() {
         !output_root.exists(),
         "helper must not run without the closure"
     );
+    assert_eq!(report.status, ExactArtifactDispositionV1::Inconclusive);
+    assert!(!report.observed_clean);
+    assert!(!report.admission_authority);
+    assert!(!report.sync_back_enabled);
+}
+
+#[test]
+fn exact_npm_failed_helper_exposes_only_a_typed_failure_class() {
+    let root = TempRoot::new("whoathere-exact-npm-linux-vz-failed-helper");
+    let artifact = npm_tgz();
+    let artifact_path = root.path().join("detonation-inert-1.0.0.tgz");
+    std::fs::write(&artifact_path, &artifact).expect("write exact npm fixture");
+    let helper_path = write_failed_mock_helper(root.path());
+    let config = adapter_config(root.path(), helper_path);
+    let adapter = LinuxVzExactNpmDetonationAdapterV1::new(config).expect("ready failed adapter");
+
+    let report = inspect_exact_artifact_v1(
+        ExactArtifactInspectionRequestV1 {
+            artifact_path: &artifact_path,
+            quarantine_root: &root.path().join("cas"),
+            ecosystem: None,
+            acquired_at: "2026-07-16T12:34:56Z",
+            ai_requested: false,
+            ai_provider: None,
+            behavior_observation_requested: false,
+            detonation_requested: true,
+            normalization_limits: NormalizationLimits::default(),
+        },
+        None,
+        Some(&adapter),
+    )
+    .expect("failed helper remains an inconclusive product result");
+
+    for environment in ["ci_false", "ci_true"] {
+        assert!(report
+            .reason_codes
+            .contains(&format!("vm_{environment}_helper_process_failed")));
+        assert!(report.reason_codes.contains(&format!(
+            "vm_{environment}_helper_failure_execution_bundle_exit"
+        )));
+    }
+    let report_json = serde_json::to_string(&report).expect("serialize report");
+    assert!(!report_json.contains("builder_execution_bundle_exit_74"));
+    assert!(!report_json.contains("NPM_TOKEN_CANARY_SECRET"));
+    assert!(!report_json.contains("raw package stdout"));
     assert_eq!(report.status, ExactArtifactDispositionV1::Inconclusive);
     assert!(!report.observed_clean);
     assert!(!report.admission_authority);

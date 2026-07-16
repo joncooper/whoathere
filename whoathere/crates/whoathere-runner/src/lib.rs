@@ -5,6 +5,7 @@ mod exact_artifact_codex;
 mod exact_npm_linux_vz;
 mod exact_sdist_linux_vz;
 mod exact_wheel_linux_vz;
+mod linux_vz_helper_diagnostics;
 
 pub use behavior_codex_observer::*;
 pub use behavior_evidence_projector::*;

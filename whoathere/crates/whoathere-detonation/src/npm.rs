@@ -97,10 +97,7 @@ pub fn compile_artifact_scenarios_v1(
         .npm
         .as_ref()
         .ok_or(ArtifactScenarioCompileErrorV1::InvalidManifest)?;
-    if request.envelope.requires_external_dependency_resolution
-        || npm.requires_offline_closure
-        || !npm.dependency_declarations.is_empty()
-    {
+    if request.envelope.requires_external_dependency_resolution || npm.requires_offline_closure {
         return Err(ArtifactScenarioCompileErrorV1::UnsupportedDependencyClosure);
     }
     if npm.implicit_node_gyp_rebuild || !request.manifest.native_binary_file_ids.is_empty() {

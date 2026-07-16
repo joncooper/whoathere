@@ -225,6 +225,23 @@ fn canonical_package_root_compiles_under_the_same_closed_contract() {
 }
 
 #[test]
+fn development_dependencies_do_not_create_a_runtime_closure() {
+    let fixture = fixture(
+        br#"{"name":"artifact-scenario-fixture","version":"1.0.0","devDependencies":{"rollup":"1.0.0"}}"#,
+        &[],
+        false,
+    );
+    let policy = ArtifactScenarioPolicyV1::inert_qualification_only(
+        fixture.envelope.original_sha256.clone(),
+        runtime_profile(),
+    )
+    .expect("policy");
+    let plan = compile(&fixture, &policy, &identities("dev-only"))
+        .expect("development-only dependencies do not execute at install time");
+    assert_eq!(plan.templates().len(), 2);
+}
+
+#[test]
 fn unsupported_closure_native_and_unqualified_hook_fail_before_any_backend() {
     let dependency = fixture(
         br#"{"name":"artifact-scenario-fixture","version":"1.0.0","dependencies":{"left-pad":"1.3.0"}}"#,

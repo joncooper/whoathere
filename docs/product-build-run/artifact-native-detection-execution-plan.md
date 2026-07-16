@@ -162,12 +162,21 @@ macOS-hosted local detection beta. Cloudflare and AWS portability are a separate
   development-only dependencies were incorrectly treated as a runtime closure requirement. The
   product now distinguishes those declarations, compiles exactly both CI install profiles, and
   reports its `main` probe as an explicit coverage gap rather than rejecting the artifact. npm
-  packages that rely on Node's implicit `index.js` entry point receive the same honest gap. Bounded
-  cloud-Mac attempts reached verified npm runtime binding, but both tried helper configurations
-  failed before package execution or behavior projection. The exact Telnyx `4.87.0` neighbor wheel
-  likewise normalized and bound its install/import actions, then failed inside the current helper
-  before producing a behavior bundle. That shared diagnostic issue is parked in BLK-007; it does
-  not erase the exact-artifact normalization and planning improvements.
+  packages that rely on Node's implicit `index.js` entry point receive the same honest gap. A
+  second copy of the development-dependency defect in the physical npm bundle compiler was exposed
+  by a new bounded helper-failure class and corrected. The exact `sbx` tarball then completed both
+  CI profiles in fresh cloud-Mac guests and projected two digest-bound behavior bundles with 11
+  typed events each, verified teardown, no public route, and no sync-back. Subscription-backed
+  Codex consumed both copied bundles through `behavior observe`; only the process specialist was
+  applicable, it produced no findings, and the correlator preserved the incomplete coverage as
+  inconclusive rather than clean.
+- The exact Telnyx `4.87.0` neighbor wheel now reaches the guest in both install and import actions,
+  but its sensor-control session fails before a partial evidence result is sealed. A direct bounded
+  action identified `linux_vz_package_sensor_control_sensor_fault`; the host's subsequent
+  `malformedSection` is a consequence of that missing partial result. The same helper and runtime
+  completed all eight actions for the pinned inert wheel and projected all eight behavior bundles,
+  so this is not a general wheel-runtime failure. The remaining artifact-sensitive sensor issue is
+  parked in BLK-007 with one stage-specific resume experiment.
 - Subscription-backed Codex source review then completed on both exact clean Telnyx neighbor
   wheels. It produced two moderate import/API-tampering advisories for `4.87.0` and one moderate
   import-time-tampering advisory for `4.88.1`. All citations were structurally valid, but source

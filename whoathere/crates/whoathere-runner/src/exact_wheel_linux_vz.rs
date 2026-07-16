@@ -6,6 +6,9 @@
 //! template before projecting typed behavior evidence.
 
 use crate::{
+    linux_vz_helper_diagnostics::{
+        linux_vz_helper_failure_class_v1, MAX_LINUX_VZ_HELPER_RESULT_WIRE_BYTES_V1,
+    },
     project_exact_detonation_behavior_v1, BoundOptionalEvidenceOutcomeV1, BoundOptionalEvidenceV1,
     ExactArtifactAdapterRequestV1, ExactArtifactDetonationAdapterV1, ExactArtifactOptionalResultV1,
     ExactArtifactScenarioKindV1, ExactArtifactScenarioPlanV1, ExactArtifactStageStatusV1,
@@ -258,6 +261,9 @@ impl LinuxVzExactWheelDetonationAdapterV1 {
                 return WheelActionRunV1::incomplete(scenario_index, "helper_invocation_failed")
             }
         };
+        if output.stdout.len() > MAX_LINUX_VZ_HELPER_RESULT_WIRE_BYTES_V1 {
+            return WheelActionRunV1::incomplete(scenario_index, "helper_output_oversize");
+        }
         let parsed = match serde_json::from_slice::<PhysicalWheelHelperResultV1>(&output.stdout) {
             Ok(parsed) => parsed,
             Err(_) => return WheelActionRunV1::incomplete(scenario_index, "helper_output_invalid"),
@@ -265,6 +271,7 @@ impl LinuxVzExactWheelDetonationAdapterV1 {
         let mut limitations = Vec::new();
         if !output.status.success() {
             limitations.push("helper_process_failed");
+            limitations.push(linux_vz_helper_failure_class_v1(parsed.reason.as_deref()));
         }
         if parsed.schema_version != HELPER_RESULT_SCHEMA_V1 {
             limitations.push("helper_schema_invalid");
@@ -541,6 +548,7 @@ fn wheel_kinds_from_plan_v1(
 struct PhysicalWheelHelperResultV1 {
     schema_version: String,
     status: String,
+    reason: Option<String>,
     artifact_kind: Option<String>,
     scenario_index: Option<String>,
     artifact_sha256: Option<String>,

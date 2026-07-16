@@ -156,6 +156,29 @@ printf '{{"schema_version":"whoathere.linux_vz_package_execution_result.v1","sta
     path
 }
 
+fn write_failed_mock_helper(root: &std::path::Path) -> std::path::PathBuf {
+    let path = root.join("mock-linux-vz-wheel-failed-helper.sh");
+    let script = r#"#!/bin/sh
+scenario_index=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --scenario-index) scenario_index="$2" ;;
+  esac
+  shift 2
+done
+printf 'PYPI_TOKEN_CANARY_SECRET raw package stdout\n' >&2
+printf '{"schema_version":"whoathere.linux_vz_package_execution_result.v1","status":"failed_closed","reason":"builder_execution_image_exit_70","artifact_kind":"wheel","scenario_index":"%s","authoritative_verdict_permitted":false,"public_network_route_present":false,"vm_started":false,"vm_stopped":false,"clone_destroyed":false,"image_identity_stable":false,"package_execution":false,"sync_back":false}\n' "$scenario_index"
+exit 70
+"#;
+    std::fs::write(&path, script.as_bytes()).expect("write failed mock helper");
+    let mut permissions = std::fs::metadata(&path)
+        .expect("failed mock helper metadata")
+        .permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&path, permissions).expect("make failed mock helper executable");
+    path
+}
+
 fn adapter_config(
     root: &std::path::Path,
     helper_path: std::path::PathBuf,
@@ -353,6 +376,53 @@ fn dependency_bearing_pure_wheel_is_runtime_bound_and_executed_without_dependenc
             .count(),
         1
     );
+    assert!(!report.observed_clean);
+    assert!(!report.admission_authority);
+    assert!(!report.sync_back_enabled);
+}
+
+#[test]
+fn exact_wheel_failed_helper_exposes_only_an_action_bound_typed_failure_class() {
+    let root = TempRoot::new("whoathere-exact-wheel-linux-vz-failed-helper");
+    let artifact = wheel_zip();
+    let artifact_path = root
+        .path()
+        .join("exact_wheel_detonation-1.0.0-py3-none-any.whl");
+    std::fs::write(&artifact_path, &artifact).expect("write exact wheel fixture");
+    let helper_path = write_failed_mock_helper(root.path());
+    let config = adapter_config(root.path(), helper_path);
+    let adapter = LinuxVzExactWheelDetonationAdapterV1::new(config).expect("ready failed adapter");
+
+    let report = inspect_exact_artifact_v1(
+        ExactArtifactInspectionRequestV1 {
+            artifact_path: &artifact_path,
+            quarantine_root: &root.path().join("cas"),
+            ecosystem: None,
+            acquired_at: "2026-07-16T12:34:56Z",
+            ai_requested: false,
+            ai_provider: None,
+            behavior_observation_requested: false,
+            detonation_requested: true,
+            normalization_limits: NormalizationLimits::default(),
+        },
+        None,
+        Some(&adapter),
+    )
+    .expect("failed helper remains an inconclusive product result");
+
+    for scenario_index in 0..report.scenario_plan.intents.len() {
+        assert!(report.reason_codes.contains(&format!(
+            "vm_wheel_action_{scenario_index}_helper_process_failed"
+        )));
+        assert!(report.reason_codes.contains(&format!(
+            "vm_wheel_action_{scenario_index}_helper_failure_execution_image_exit"
+        )));
+    }
+    let report_json = serde_json::to_string(&report).expect("serialize report");
+    assert!(!report_json.contains("builder_execution_image_exit_70"));
+    assert!(!report_json.contains("PYPI_TOKEN_CANARY_SECRET"));
+    assert!(!report_json.contains("raw package stdout"));
+    assert_eq!(report.status, ExactArtifactDispositionV1::Inconclusive);
     assert!(!report.observed_clean);
     assert!(!report.admission_authority);
     assert!(!report.sync_back_enabled);

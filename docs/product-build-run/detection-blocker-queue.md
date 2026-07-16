@@ -225,10 +225,10 @@ Smallest resume experiment:
 Until this bounded experiment is resumed, preserve actions 0 through 2 as valid positive evidence
 and report the full sdist run as incomplete.
 
-## BLK-007: ordinary npm and Telnyx wheel controls bind but the cloud helper exits early
+## BLK-007: Telnyx wheel reaches the guest but sensor control cannot seal partial evidence
 
-Status: parked on July 16, 2026 after bounded npm configuration checks and one adjacent Telnyx
-wheel run failed before package execution could be proven or behavior evidence projected.
+Status: ordinary npm is resolved on July 16, 2026. The adjacent Telnyx wheel remains parked after
+one same-runtime inert comparison isolated an artifact-sensitive guest sensor-control failure.
 
 Confirmed:
 
@@ -244,32 +244,40 @@ Confirmed:
 - the npm adapter now binds and executes the two CI install profiles while recording the unexecuted
   `main` probe as incomplete coverage; unit tests prove that this path remains inconclusive and has
   no clean, admission, or sync-back authority;
-- on the approved cloud Mac, both tried helper/runtime configurations reached verified npm runtime
-  binding but returned `helper_process_failed` for `ci_false` and `ci_true` before artifact
-  binding, package execution, VM teardown, or behavior projection could be proven;
-- the retained evidence directories contain only the pre-execution runtime clone bindings. No
-  behavior bundle was produced, and the result remains inconclusive;
+- the physical npm bundle compiler contained the same incorrect all-dependencies check; a bounded
+  typed helper class identified `execution_bundle` builder exit, and the compiler now rejects only
+  actual runtime-closure requirements;
+- after that correction, the exact `sbx@2.1.0` tarball completed both `ci_false` and `ci_true` in
+  fresh guests. Both actions proved artifact binding, package execution, VM stop and clone
+  destruction, stable images, no public route, and no sync-back, and each projected an 11-event
+  behavior bundle;
+- local subscription-backed Codex independently consumed both exact bundle digests. The two panels
+  found only ordinary process children, retained every coverage gap, stayed inconclusive, and
+  granted neither observed-clean nor admission authority;
 - the exact public Telnyx `4.87.0` wheel,
   `sha256:5aeb8172c29ade224e6c2d166713f304596aa21e3dbfa5b6b2b028e6997f6bd2`, also
-  normalized completely and bound its two dependency-aware install/import actions to the current
-  wheel helper, but both actions returned `helper_process_failed` without proving artifact binding,
-  package execution, image stability, teardown, or behavior projection;
-- the adapter currently discards helper stderr and does not retain the parsed helper failure body,
-  so the bounded report does not identify the underlying helper reason.
+  normalized completely and bound its two dependency-aware install/import actions. Both VMs
+  started and stopped and destroyed their clones, but the guest reported
+  `linux_vz_package_sensor_control_sensor_fault` before emitting a partial typed result; the host
+  therefore reported `malformedSection` and no wheel behavior bundle was projected;
+- with the identical helper and runtime, the pinned inert wheel completed all eight install and
+  trigger actions and projected all eight bundles (8 events for install, then 1 event for each of
+  the seven trigger actions). This rules out a generally broken helper, image, or wheel runtime;
+- helper result JSON larger than 64 KiB is rejected before parsing and mapped to fixed
+  action-bound diagnostic classes. Raw helper reasons, stderr, fake tokens, and package output
+  never enter the product report.
 
 Do not continue swapping runtime configurations. Smallest resume experiment:
 
-1. Retain bounded helper stdout and stderr for this exact benign artifact without changing the VM
-   safety policy or running package code on the host.
-2. Repeat only one `ci_false` npm profile and one wheel install action with the last successful
-   pinned inert identities, then extract each helper's typed failure reason.
-3. Determine whether the pinned inert controls also fail before attributing the result to either
-   public artifact shape.
-4. Compare only the first divergent typed step; do not rotate more helpers or runtime bundles.
-5. If corrected, require both npm CI profiles and both Telnyx wheel actions to produce behavior
-   bundles, verified teardown, no public route, and no sync-back while all unqualified triggers
-   remain explicit coverage gaps.
+1. Preserve the same Telnyx artifact, helper, runtime, and action-0 install scenario.
+2. Replace the collector's broad `SensorFault` collapse with a fixed stage class identifying
+   whether process collection, file collection, network collection, evidence encoding, or receipt
+   signing failed; do not add raw telemetry to ordinary logs.
+3. Repeat only Telnyx action 0 and compare its first failing stage with the already-successful inert
+   install action under the same identities.
+4. Correct only that bounded capacity or encoding incompatibility, then require both Telnyx actions
+   to project bundles with verified teardown, no public route, and no sync-back.
 
-This blocker matters because ordinary npm packages commonly declare `main` and development-only
-dependencies, while the adjacent Telnyx wheel has the exact form needed for two known misses. It
-does not justify more telemetry hardening before the typed helper failures are available.
+This blocker matters because the adjacent Telnyx wheel has the exact form needed for two known
+misses. The npm vertical slice is no longer blocked. The remaining work is one wheel-specific
+sensor-stage diagnosis, not general telemetry hardening.
