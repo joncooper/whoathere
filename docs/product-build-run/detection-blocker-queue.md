@@ -108,3 +108,48 @@ Smallest resume experiment:
 
 Until the receipt chain supplies that denominator and the native verifier passes this inert fixture,
 no new campaign can produce a claim-bearing verified registry.
+
+## BLK-003: the physical host harness discards partial evidence and overstates failure state
+
+Status: parked after read-only audit. The Rust/C v7-v11 diagnostic core is a useful fail-closed
+checkpoint; the untracked Swift physical helper remains inert-only and non-authoritative.
+
+Confirmed:
+
+- the guest emits a partial result and child diagnostic log when package execution fails, but the
+  serial parser rejects the failure marker before parsing either artifact;
+- the physical command requires a terminal `complete` result, so a structurally valid
+  `process_failed` result and its typed Rust failure are reduced to a generic host error;
+- any retained network frame is treated as harness failure before it is retained as behavioral
+  evidence;
+- the helper still requires the fixture-only `malware_execution=false` marker;
+- its generic error output always reports package and malware execution as false, even after a VM
+  may have started or executed, and does not report whether stop and clone destruction were proven;
+- success-path teardown waits for verified stop and clone identity before destruction, but the
+  failure path cannot make the same claim.
+
+Required correction:
+
+- parse and retain every structurally valid partial result, child log, and signed evidence frame
+  before classifying the terminal status;
+- treat failed package processes and retained network frames as behavioral evidence, not automatic
+  harness failure;
+- replace fixture markers and booleans with separate attempt, execution-observed, completion,
+  VM-stop, clone-destruction or preservation, and evidence-coverage states;
+- preserve a clone on stop-unproven failure and never report destruction without re-verification;
+- independently verify each root receipt and host-composite receipt before projecting typed
+  observations;
+- keep any incomplete or unverified coverage incapable of producing observed-clean.
+
+Smallest resume experiment:
+
+1. Run an inert fixture that writes one marker, emits one retained sinkhole-bound network frame, and
+   exits nonzero with a typed child failure after a valid partial result.
+2. Require the host result to preserve the marker, frame, process failure, child reason, action
+   index, and honest incomplete coverage without treating any of them as harness corruption.
+3. Exercise timeout, verified-stop failure, and stop-unproven failure separately; require exact
+   attempt/execution/stop/clone states and preserve the clone whenever stop is not proven.
+4. Reject duplicate or out-of-order serial markers, mismatched action indexes, forged completion,
+   omitted frames, and receipt rebindings.
+5. Only after these inert cases pass may the physical helper be attached to real-package
+   acceptance; this does not resume BLK-001's online syscall-pair redesign.
