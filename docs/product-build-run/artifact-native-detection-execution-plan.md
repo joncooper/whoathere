@@ -77,6 +77,19 @@ macOS-hosted local detection beta. Cloudflare and AWS portability are a separate
   the product retained `vm_wheel_dependency_closure_not_installed`, an inconclusive verdict, no
   admission authority, and no sync-back. This closes the execution shape needed by the two missed
   dependency-bearing wheels without claiming their dependencies were analyzed.
+- The paired canonical benign npm, wheel, and sdist artifacts exposed a deterministic false-positive
+  boundary: generic environment access plus a network API was treated as malicious exfiltration
+  even though the static rule does not establish runtime data flow or destination. That composite
+  remains visible as typed review context but is no longer behavior-detection eligible by itself.
+  All three benign neighbors now produce zero deterministic behavior detections; stronger
+  credential-specific exfiltration regressions remain detection-bearing.
+- The canonical benign wheel then completed its full eight-action physical install, `.pth`, import,
+  and console-entry matrix in fresh disposable guests. The install action projected ordinary setup
+  processes, and each trigger action projected only its expected package-trigger process event:
+  no protected-canary read and no network send occurred. Codex cited the wheel-import event as
+  context-only lifecycle execution and returned `behavior_observed`, not a malicious detection.
+  The result remains inconclusive because evidence coverage and independent host composition are
+  incomplete; it does not claim the artifact is clean.
 - Standalone Codex observation of the physical wheel `.pth` bundle succeeded after network access
   was granted to the provider subprocess. It cited the `wheel_pth` event, retained incomplete
   coverage, and reported context-only behavior rather than a malicious detection. The permission

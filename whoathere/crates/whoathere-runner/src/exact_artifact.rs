@@ -1481,7 +1481,6 @@ fn deterministic_finding_detection_eligible_v1(category: ArtifactFindingCategory
         category,
         ArtifactFindingCategory::CredentialAccess
             | ArtifactFindingCategory::SensitivePathAccess
-            | ArtifactFindingCategory::EnvironmentExfiltrationCapability
             | ArtifactFindingCategory::CredentialExfiltrationCapability
             | ArtifactFindingCategory::SensitiveFileExfiltrationCapability
             | ArtifactFindingCategory::DownloadExecuteCapability

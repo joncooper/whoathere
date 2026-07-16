@@ -147,7 +147,7 @@ fn npm_network_context_tgz() -> Vec<u8> {
     append_tar_file(
         &mut archive,
         "package/index.js",
-        b"const https = require('node:https');\nhttps.request('https://example.invalid/status');\n",
+        b"const https = require('node:https');\nconst endpoint = process.env.SERVICE_STATUS_URL || 'https://example.invalid/status';\nhttps.request(endpoint);\n",
     );
     archive
         .into_inner()
@@ -704,6 +704,17 @@ fn ordinary_static_network_capability_is_preserved_without_a_malware_verdict() {
         })
         .expect("network capability remains visible for review");
     assert!(!observation.behavior_detection_eligible);
+    let environment_network_context = report
+        .observations
+        .iter()
+        .find(|observation| {
+            observation.finding_kind
+                == ExactArtifactFindingKindV1::DeterministicStatic(
+                    ArtifactFindingCategory::EnvironmentExfiltrationCapability,
+                )
+        })
+        .expect("ordinary environment-configured network capability remains visible for review");
+    assert!(!environment_network_context.behavior_detection_eligible);
     assert_eq!(report.status, ExactArtifactDispositionV1::Inconclusive);
     assert_eq!(
         report.verdict,
