@@ -98,6 +98,13 @@ macOS-hosted local detection beta. Cloudflare and AWS portability are a separate
   review, but require independent deterministic or verified behavioral corroboration before the
   fused artifact verdict becomes malicious. Verified Codex behavioral findings remain
   detection-bearing.
+- The six canonical active/benign npm, wheel, and sdist artifacts now have one repeatable,
+  digest-bound static development baseline. The current release binary reports zero of three
+  active artifacts as malicious, zero of three benign artifacts as false-malicious, and all three
+  benign artifacts as inconclusive friction, with zero admission, observed-clean, or sync-back
+  violations. This is deliberately non-claim-bearing: it establishes that static and hosted source
+  review alone are not the detection gate and that verified VM behavior plus Codex observation is
+  the shortest path to useful detection.
 - Standalone Codex observation of the physical wheel `.pth` bundle succeeded after network access
   was granted to the provider subprocess. It cited the `wheel_pth` event, retained incomplete
   coverage, and reported context-only behavior rather than a malicious detection. The permission
