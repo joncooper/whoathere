@@ -435,6 +435,9 @@ pub fn execute_linux_vz_package_sequence_v1(
     let (mut workspace, workspace_initial) =
         create_fresh_linux_vz_package_workspace_v1(process_plan, &policy)
             .map_err(|_| LinuxVzPackageExecutionSequencerErrorV1::WorkspaceFailed)?;
+    workspace
+        .seed_guest_file_canaries_v1(&attempt_binding_sha256)
+        .map_err(|_| LinuxVzPackageExecutionSequencerErrorV1::WorkspaceFailed)?;
     let scenario_clock = LinuxVzPackageScenarioClockV1::start_v1(process_plan)
         .map_err(|_| LinuxVzPackageExecutionSequencerErrorV1::AuthorityInvalid)?;
 

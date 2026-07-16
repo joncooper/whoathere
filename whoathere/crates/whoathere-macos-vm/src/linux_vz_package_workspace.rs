@@ -7,7 +7,7 @@ use serde::Serialize;
 use std::ffi::{CStr, CString};
 use std::fmt;
 use std::fs::File;
-#[cfg(any(target_os = "linux", test))]
+use std::io::Write;
 use std::mem::MaybeUninit;
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::fs::MetadataExt;
@@ -16,6 +16,11 @@ use whoathere_artifact::Sha256Digest;
 pub const LINUX_VZ_PACKAGE_WORKSPACE_OBSERVATION_SCHEMA_V1: &str =
     "whoathere.linux_vz_package_workspace_observation.v1";
 pub const MAX_LINUX_VZ_PACKAGE_WORKSPACE_OBSERVATION_BYTES_V1: usize = 64 * 1024;
+pub const LINUX_VZ_PACKAGE_GUEST_CANARY_SEED_SCHEMA_V1: &str =
+    "whoathere.linux_vz_package_guest_canary_seed.v1";
+
+const NPMRC_CANARY_RELATIVE_PATH_V1: &str = "home/.npmrc";
+const NPM_TOKEN_CANARY_RELATIVE_PATH_V1: &str = "home/.whoathere-canaries/npm-token";
 
 #[cfg(target_os = "linux")]
 const RUN_PARENT_PATH_V1: &str = "/run";
@@ -170,6 +175,70 @@ impl LinuxVzPackageWorkspaceObservationV1 {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinuxVzPackageGuestCanaryFileBindingV1 {
+    relative_path: &'static str,
+    relative_path_sha256: Sha256Digest,
+    content_sha256: Sha256Digest,
+    byte_length: usize,
+}
+
+impl LinuxVzPackageGuestCanaryFileBindingV1 {
+    pub const fn relative_path(&self) -> &'static str {
+        self.relative_path
+    }
+
+    pub fn relative_path_sha256(&self) -> &Sha256Digest {
+        &self.relative_path_sha256
+    }
+
+    pub fn content_sha256(&self) -> &Sha256Digest {
+        &self.content_sha256
+    }
+
+    pub const fn byte_length(&self) -> usize {
+        self.byte_length
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct LinuxVzPackageGuestCanarySeedV1 {
+    derivation_binding_sha256: Sha256Digest,
+    canary_value_sha256: Sha256Digest,
+    seed_sha256: Sha256Digest,
+    files: [LinuxVzPackageGuestCanaryFileBindingV1; 2],
+}
+
+impl fmt::Debug for LinuxVzPackageGuestCanarySeedV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LinuxVzPackageGuestCanarySeedV1")
+            .field("derivation_binding_sha256", &self.derivation_binding_sha256)
+            .field("canary_value_sha256", &self.canary_value_sha256)
+            .field("seed_sha256", &self.seed_sha256)
+            .field("file_count", &self.files.len())
+            .finish()
+    }
+}
+
+impl LinuxVzPackageGuestCanarySeedV1 {
+    pub fn derivation_binding_sha256(&self) -> &Sha256Digest {
+        &self.derivation_binding_sha256
+    }
+
+    pub fn canary_value_sha256(&self) -> &Sha256Digest {
+        &self.canary_value_sha256
+    }
+
+    pub fn seed_sha256(&self) -> &Sha256Digest {
+        &self.seed_sha256
+    }
+
+    pub fn files(&self) -> &[LinuxVzPackageGuestCanaryFileBindingV1] {
+        &self.files
+    }
+}
+
 struct RetainedWorkspaceDirectoryV1 {
     relative_path: &'static str,
     file: File,
@@ -187,6 +256,7 @@ pub struct MaterializedLinuxVzPackageWorkspaceV1 {
     run_root: Option<File>,
     run_root_name: CString,
     directories: Vec<RetainedWorkspaceDirectoryV1>,
+    guest_canary_seed: Option<LinuxVzPackageGuestCanarySeedV1>,
     mounted_tmpfs: bool,
     cleaned: bool,
 }
@@ -198,6 +268,7 @@ impl fmt::Debug for MaterializedLinuxVzPackageWorkspaceV1 {
             .field("process_plan_sha256", &self.process_plan_sha256)
             .field("mounted_tmpfs", &self.mounted_tmpfs)
             .field("directory_count", &self.directories.len())
+            .field("guest_canary_seeded", &self.guest_canary_seed.is_some())
             .field("path", &"<fixed-run-root-redacted>")
             .field("cleaned", &self.cleaned)
             .finish()
@@ -221,6 +292,34 @@ impl MaterializedLinuxVzPackageWorkspaceV1 {
         &self,
     ) -> Result<LinuxVzPackageWorkspaceObservationV1, LinuxVzPackageWorkspaceErrorV1> {
         self.verify_v1()
+    }
+
+    pub fn guest_canary_seed_v1(&self) -> Option<&LinuxVzPackageGuestCanarySeedV1> {
+        self.guest_canary_seed.as_ref()
+    }
+
+    pub fn seed_guest_file_canaries_v1(
+        &mut self,
+        derivation_binding_sha256: &Sha256Digest,
+    ) -> Result<&LinuxVzPackageGuestCanarySeedV1, LinuxVzPackageWorkspaceErrorV1> {
+        if self.guest_canary_seed.is_some() {
+            return Err(LinuxVzPackageWorkspaceErrorV1::WorkspaceAlreadyPresent);
+        }
+        let home = self
+            .directories
+            .iter()
+            .find(|entry| entry.relative_path == "home")
+            .ok_or(LinuxVzPackageWorkspaceErrorV1::VerificationFailed)?;
+        let seed = seed_guest_file_canaries_v1(
+            &home.file,
+            self.policy.package_uid(),
+            self.policy.package_gid(),
+            derivation_binding_sha256,
+        )?;
+        self.guest_canary_seed = Some(seed);
+        self.guest_canary_seed
+            .as_ref()
+            .ok_or(LinuxVzPackageWorkspaceErrorV1::VerificationFailed)
     }
 
     pub(crate) fn derived_directory_for_validation_v1(
@@ -302,6 +401,15 @@ impl MaterializedLinuxVzPackageWorkspaceV1 {
             return Ok(());
         }
         self.verify_v1()?;
+        remove_guest_file_canaries_v1(
+            &self
+                .directories
+                .iter()
+                .find(|entry| entry.relative_path == "home")
+                .ok_or(LinuxVzPackageWorkspaceErrorV1::CleanupFailed)?
+                .file,
+        )?;
+        self.guest_canary_seed = None;
         self.directories.clear();
         self.run_root.take();
         if self.mounted_tmpfs {
@@ -521,6 +629,7 @@ fn finish_workspace_v1(
         run_root: Some(run_root),
         run_root_name,
         directories,
+        guest_canary_seed: None,
         mounted_tmpfs,
         cleaned: false,
     };
@@ -806,6 +915,213 @@ fn open_directory_at_v1(
         return Err(LinuxVzPackageWorkspaceErrorV1::VerificationFailed);
     }
     Ok(unsafe { File::from_raw_fd(descriptor) })
+}
+
+fn seed_guest_file_canaries_v1(
+    home: &File,
+    package_uid: u32,
+    package_gid: u32,
+    derivation_binding_sha256: &Sha256Digest,
+) -> Result<LinuxVzPackageGuestCanarySeedV1, LinuxVzPackageWorkspaceErrorV1> {
+    let token_derivation = format!(
+        "{LINUX_VZ_PACKAGE_GUEST_CANARY_SEED_SCHEMA_V1}\0npm-token\0{}",
+        derivation_binding_sha256.as_str()
+    );
+    let token_material_sha256 = Sha256Digest::from_bytes(token_derivation.as_bytes());
+    let token = format!(
+        "whoathere_fake_npm_token_v1_{}",
+        token_material_sha256
+            .as_str()
+            .strip_prefix("sha256:")
+            .expect("sha256 digest prefix")
+    );
+    let canary_value_sha256 = Sha256Digest::from_bytes(token.as_bytes());
+    let npmrc_content = format!("//registry.npmjs.org/:_authToken={token}\n").into_bytes();
+    let mut token_file_content = token.into_bytes();
+    token_file_content.push(b'\n');
+
+    let npmrc_name = fixed_component_v1(".npmrc")?;
+    let canary_directory_name = fixed_component_v1(".whoathere-canaries")?;
+    let token_name = fixed_component_v1("npm-token")?;
+    if unsafe { libc::mkdirat(home.as_raw_fd(), canary_directory_name.as_ptr(), 0o700) } != 0 {
+        return Err(LinuxVzPackageWorkspaceErrorV1::CreateFailed);
+    }
+    let canary_directory = open_directory_at_v1(home.as_raw_fd(), &canary_directory_name)?;
+    if unsafe { libc::fchown(canary_directory.as_raw_fd(), package_uid, package_gid) } != 0
+        || unsafe { libc::fchmod(canary_directory.as_raw_fd(), 0o700) } != 0
+    {
+        return Err(LinuxVzPackageWorkspaceErrorV1::OwnershipFailed);
+    }
+
+    let npmrc =
+        create_private_file_at_v1(home, &npmrc_name, &npmrc_content, package_uid, package_gid)?;
+    let token_file = create_private_file_at_v1(
+        &canary_directory,
+        &token_name,
+        &token_file_content,
+        package_uid,
+        package_gid,
+    )?;
+    canary_directory
+        .sync_all()
+        .map_err(|_| LinuxVzPackageWorkspaceErrorV1::CreateFailed)?;
+    home.sync_all()
+        .map_err(|_| LinuxVzPackageWorkspaceErrorV1::CreateFailed)?;
+
+    let files = [
+        LinuxVzPackageGuestCanaryFileBindingV1 {
+            relative_path: NPMRC_CANARY_RELATIVE_PATH_V1,
+            relative_path_sha256: Sha256Digest::from_bytes(
+                NPMRC_CANARY_RELATIVE_PATH_V1.as_bytes(),
+            ),
+            content_sha256: Sha256Digest::from_bytes(&npmrc_content),
+            byte_length: npmrc_content.len(),
+        },
+        LinuxVzPackageGuestCanaryFileBindingV1 {
+            relative_path: NPM_TOKEN_CANARY_RELATIVE_PATH_V1,
+            relative_path_sha256: Sha256Digest::from_bytes(
+                NPM_TOKEN_CANARY_RELATIVE_PATH_V1.as_bytes(),
+            ),
+            content_sha256: Sha256Digest::from_bytes(&token_file_content),
+            byte_length: token_file_content.len(),
+        },
+    ];
+    verify_private_file_v1(&npmrc, package_uid, package_gid, &files[0])?;
+    verify_private_file_v1(&token_file, package_uid, package_gid, &files[1])?;
+
+    let seed_binding = format!(
+        "{LINUX_VZ_PACKAGE_GUEST_CANARY_SEED_SCHEMA_V1}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}",
+        derivation_binding_sha256.as_str(),
+        canary_value_sha256.as_str(),
+        files[0].relative_path_sha256.as_str(),
+        files[0].content_sha256.as_str(),
+        files[0].byte_length,
+        files[1].relative_path_sha256.as_str(),
+        files[1].content_sha256.as_str(),
+        files[1].byte_length,
+    );
+    Ok(LinuxVzPackageGuestCanarySeedV1 {
+        derivation_binding_sha256: derivation_binding_sha256.clone(),
+        canary_value_sha256,
+        seed_sha256: Sha256Digest::from_bytes(seed_binding.as_bytes()),
+        files,
+    })
+}
+
+fn create_private_file_at_v1(
+    parent: &File,
+    name: &CString,
+    content: &[u8],
+    package_uid: u32,
+    package_gid: u32,
+) -> Result<File, LinuxVzPackageWorkspaceErrorV1> {
+    let descriptor = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            0o600,
+        )
+    };
+    if descriptor < 0 {
+        return Err(LinuxVzPackageWorkspaceErrorV1::CreateFailed);
+    }
+    let mut file = unsafe { File::from_raw_fd(descriptor) };
+    if unsafe { libc::fchown(file.as_raw_fd(), package_uid, package_gid) } != 0
+        || unsafe { libc::fchmod(file.as_raw_fd(), 0o600) } != 0
+    {
+        return Err(LinuxVzPackageWorkspaceErrorV1::OwnershipFailed);
+    }
+    file.write_all(content)
+        .map_err(|_| LinuxVzPackageWorkspaceErrorV1::CreateFailed)?;
+    file.sync_all()
+        .map_err(|_| LinuxVzPackageWorkspaceErrorV1::CreateFailed)?;
+    Ok(file)
+}
+
+fn verify_private_file_v1(
+    file: &File,
+    package_uid: u32,
+    package_gid: u32,
+    binding: &LinuxVzPackageGuestCanaryFileBindingV1,
+) -> Result<(), LinuxVzPackageWorkspaceErrorV1> {
+    let metadata = file
+        .metadata()
+        .map_err(|_| LinuxVzPackageWorkspaceErrorV1::VerificationFailed)?;
+    if !metadata.file_type().is_file()
+        || metadata.uid() != package_uid
+        || metadata.gid() != package_gid
+        || metadata.mode() & 0o7777 != 0o600
+        || usize::try_from(metadata.len()).ok() != Some(binding.byte_length)
+    {
+        return Err(LinuxVzPackageWorkspaceErrorV1::VerificationFailed);
+    }
+    Ok(())
+}
+
+fn remove_guest_file_canaries_v1(home: &File) -> Result<(), LinuxVzPackageWorkspaceErrorV1> {
+    let npmrc_name = fixed_component_v1(".npmrc")?;
+    unlink_file_if_present_v1(home, &npmrc_name)?;
+
+    let canary_directory_name = fixed_component_v1(".whoathere-canaries")?;
+    let canary_directory = match open_directory_at_v1(home.as_raw_fd(), &canary_directory_name) {
+        Ok(directory) => Some(directory),
+        Err(_) if entry_absent_at_v1(home, &canary_directory_name)? => None,
+        Err(_) => return Err(LinuxVzPackageWorkspaceErrorV1::CleanupFailed),
+    };
+    if let Some(canary_directory) = canary_directory {
+        let token_name = fixed_component_v1("npm-token")?;
+        unlink_file_if_present_v1(&canary_directory, &token_name)?;
+        if unsafe {
+            libc::unlinkat(
+                home.as_raw_fd(),
+                canary_directory_name.as_ptr(),
+                libc::AT_REMOVEDIR,
+            )
+        } != 0
+        {
+            return Err(LinuxVzPackageWorkspaceErrorV1::CleanupFailed);
+        }
+    }
+    home.sync_all()
+        .map_err(|_| LinuxVzPackageWorkspaceErrorV1::CleanupFailed)
+}
+
+fn unlink_file_if_present_v1(
+    parent: &File,
+    name: &CString,
+) -> Result<(), LinuxVzPackageWorkspaceErrorV1> {
+    if unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), 0) } == 0 {
+        return Ok(());
+    }
+    if std::io::Error::last_os_error().raw_os_error() == Some(libc::ENOENT) {
+        Ok(())
+    } else {
+        Err(LinuxVzPackageWorkspaceErrorV1::CleanupFailed)
+    }
+}
+
+fn entry_absent_at_v1(
+    parent: &File,
+    name: &CString,
+) -> Result<bool, LinuxVzPackageWorkspaceErrorV1> {
+    let mut stat = MaybeUninit::<libc::stat>::uninit();
+    if unsafe {
+        libc::fstatat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            stat.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } == 0
+    {
+        return Ok(false);
+    }
+    if std::io::Error::last_os_error().raw_os_error() == Some(libc::ENOENT) {
+        Ok(true)
+    } else {
+        Err(LinuxVzPackageWorkspaceErrorV1::VerificationFailed)
+    }
 }
 
 fn list_directory_names_v1(
@@ -1108,6 +1424,118 @@ mod tests {
         );
         workspace.cleanup().expect("cleanup");
         std::fs::remove_dir(&base).expect("remove test parent");
+    }
+
+    #[test]
+    fn guest_file_canaries_are_private_fake_and_digest_bound() {
+        let base = unique_test_root();
+        std::fs::create_dir(&base).expect("test parent");
+        std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700))
+            .expect("parent mode");
+        let parent = File::open(&base).expect("open parent");
+        let policy = LinuxVzPackageMaterializationPolicyV1::for_current_test_user_v1();
+        let plan = npm_plan();
+        let mut workspace =
+            create_test_linux_vz_package_workspace_at_v1(parent, "scenario", &plan, &policy)
+                .expect("workspace");
+        let binding = Sha256Digest::from_bytes(b"inert canary test attempt");
+        let seed = workspace
+            .seed_guest_file_canaries_v1(&binding)
+            .expect("seed canaries")
+            .clone();
+
+        assert_eq!(seed.derivation_binding_sha256(), &binding);
+        assert_eq!(seed.files().len(), 2);
+        assert_eq!(
+            seed.files()
+                .iter()
+                .map(LinuxVzPackageGuestCanaryFileBindingV1::relative_path)
+                .collect::<Vec<_>>(),
+            vec![
+                NPMRC_CANARY_RELATIVE_PATH_V1,
+                NPM_TOKEN_CANARY_RELATIVE_PATH_V1
+            ]
+        );
+        let npmrc = std::fs::read(base.join("scenario/home/.npmrc")).expect("read npmrc");
+        let token_file = std::fs::read(base.join("scenario/home/.whoathere-canaries/npm-token"))
+            .expect("read token canary");
+        assert_eq!(
+            Sha256Digest::from_bytes(&npmrc),
+            *seed.files()[0].content_sha256()
+        );
+        assert_eq!(
+            Sha256Digest::from_bytes(&token_file),
+            *seed.files()[1].content_sha256()
+        );
+        assert!(npmrc.starts_with(b"//registry.npmjs.org/:_authToken="));
+        assert!(npmrc.ends_with(b"\n"));
+        assert!(token_file.starts_with(b"whoathere_fake_npm_token_v1_"));
+        assert!(token_file.ends_with(b"\n"));
+        let token = &token_file[..token_file.len() - 1];
+        assert_eq!(Sha256Digest::from_bytes(token), *seed.canary_value_sha256());
+        assert!(npmrc.windows(token.len()).any(|window| window == token));
+
+        for path in [
+            base.join("scenario/home/.npmrc"),
+            base.join("scenario/home/.whoathere-canaries/npm-token"),
+        ] {
+            let metadata = std::fs::symlink_metadata(path).expect("canary metadata");
+            assert!(metadata.file_type().is_file());
+            assert_eq!(metadata.mode() & 0o7777, 0o600);
+            assert_eq!(metadata.uid(), policy.package_uid());
+            assert_eq!(metadata.gid(), policy.package_gid());
+        }
+        let directory_metadata =
+            std::fs::symlink_metadata(base.join("scenario/home/.whoathere-canaries"))
+                .expect("canary directory metadata");
+        assert!(directory_metadata.file_type().is_dir());
+        assert_eq!(directory_metadata.mode() & 0o7777, 0o700);
+        assert!(!format!("{seed:?}").contains("whoathere_fake_npm_token"));
+        assert!(matches!(
+            workspace.seed_guest_file_canaries_v1(&binding),
+            Err(LinuxVzPackageWorkspaceErrorV1::WorkspaceAlreadyPresent)
+        ));
+
+        workspace.cleanup().expect("cleanup");
+        std::fs::remove_dir(&base).expect("remove test parent");
+    }
+
+    #[test]
+    fn guest_file_canary_derivation_is_stable_and_attempt_bound() {
+        fn seed_for(binding: &Sha256Digest) -> LinuxVzPackageGuestCanarySeedV1 {
+            let base = unique_test_root();
+            std::fs::create_dir(&base).expect("test parent");
+            let parent = File::open(&base).expect("open parent");
+            let policy = LinuxVzPackageMaterializationPolicyV1::for_current_test_user_v1();
+            let plan = npm_plan();
+            let mut workspace =
+                create_test_linux_vz_package_workspace_at_v1(parent, "scenario", &plan, &policy)
+                    .expect("workspace");
+            let seed = workspace
+                .seed_guest_file_canaries_v1(binding)
+                .expect("seed canaries")
+                .clone();
+            workspace.cleanup().expect("cleanup");
+            std::fs::remove_dir(&base).expect("remove test parent");
+            seed
+        }
+
+        let first_binding = Sha256Digest::from_bytes(b"inert first attempt");
+        let second_binding = Sha256Digest::from_bytes(b"inert second attempt");
+        let first = seed_for(&first_binding);
+        let repeated = seed_for(&first_binding);
+        let second = seed_for(&second_binding);
+        assert_eq!(first, repeated);
+        assert_ne!(first.seed_sha256(), second.seed_sha256());
+        assert_ne!(first.canary_value_sha256(), second.canary_value_sha256());
+        assert_ne!(
+            first.files()[0].content_sha256(),
+            second.files()[0].content_sha256()
+        );
+        assert_ne!(
+            first.files()[1].content_sha256(),
+            second.files()[1].content_sha256()
+        );
     }
 
     #[test]
