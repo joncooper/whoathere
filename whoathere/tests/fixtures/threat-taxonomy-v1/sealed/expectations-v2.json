@@ -123,7 +123,7 @@
     {
       "artifact_filename": "whoathere_fixture_wheel_canary-1.0.0-py3-none-any.whl",
       "artifact_kind": "wheel",
-      "artifact_sha256": "1a56ad55c53a6f6caf62e8e6891652cad38899fd0bda5016dc5fd393a5bfafcb",
+      "artifact_sha256": "9b186568de21ac9209b102870a35748c268a827ac271f97a24dd0eea06e17833",
       "campaign_id": "canonical-inert-fixture-v1",
       "ecosystem": "pypi",
       "expected_result": "malicious",
@@ -217,7 +217,7 @@
     {
       "artifact_filename": "whoathere_fixture_wheel_neighbor-1.0.0-py3-none-any.whl",
       "artifact_kind": "wheel",
-      "artifact_sha256": "e9bc51a6480b4cddcd6f5fb697e9bc40c783bfc7db6a8625d32d25f65b21bf77",
+      "artifact_sha256": "8810634137a5606e35f74decc0e190fdfc78e62d8b1c8795e30141f553990f7f",
       "campaign_id": "canonical-inert-fixture-v1",
       "ecosystem": "pypi",
       "expected_result": "benign",
@@ -299,7 +299,7 @@
     {
       "artifact_filename": "whoathere_fixture_sdist_canary-1.0.0.tar.gz",
       "artifact_kind": "sdist_tar_gz",
-      "artifact_sha256": "3e3160e802294decdbb33129d541ffc402fc8004bed2fbf69e11087132256e07",
+      "artifact_sha256": "f1266af1c1bad98759003b3e4eaecbc948c8216e178c29d6c66761679dc24576",
       "campaign_id": "canonical-inert-fixture-v1",
       "ecosystem": "pypi",
       "expected_result": "malicious",
@@ -418,7 +418,7 @@
     {
       "artifact_filename": "whoathere_fixture_sdist_neighbor-1.0.0.tar.gz",
       "artifact_kind": "sdist_tar_gz",
-      "artifact_sha256": "02578d5abb4cc2d601719771817823bb68daebe5b351456f9c949fcf51f96afc",
+      "artifact_sha256": "55de72b472b29e90d74cf1b8a6d7282364908da581ecbdafe93a52defa9587ba",
       "campaign_id": "canonical-inert-fixture-v1",
       "ecosystem": "pypi",
       "expected_result": "benign",

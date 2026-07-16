@@ -211,14 +211,26 @@ def npm_artifact(active: bool) -> tuple[str, bytes]:
 def python_probe_source(active: bool, public_filename: str) -> bytes:
     if active:
         probe_body = r'''
-    credential_path = Path(os.environ.get("WHOATHERE_FAKE_CREDENTIAL_PATH", "")).resolve()
-    if (
+    credential_path = (
+        Path("/run/whoathere/home/.whoathere-canaries/pypi-token")
+        if runtime_fixture
+        else Path(os.environ.get("WHOATHERE_FAKE_CREDENTIAL_PATH", "")).resolve()
+    )
+    if runtime_fixture:
+        if credential_path != Path("/run/whoathere/home/.whoathere-canaries/pypi-token"):
+            raise RuntimeError("fixture_runtime_canary_path_refused")
+    elif (
         credential_path.name != "whoathere-fake-credential.txt"
         or not any(part.startswith("whoathere-fixture-") for part in credential_path.parts)
     ):
         raise RuntimeError("fixture_fake_credential_path_refused")
     fake_credential = credential_path.read_text(encoding="utf-8")
-    if not fake_credential.startswith("WHOATHERE_FAKE_CANARY_V1:"):
+    expected_sentinel = (
+        "whoathere_fake_pypi_token_v1_"
+        if runtime_fixture
+        else "WHOATHERE_FAKE_CANARY_V1:"
+    )
+    if not fake_credential.startswith(expected_sentinel):
         raise RuntimeError("fixture_fake_credential_sentinel_missing")
     canary_touched = True
 '''
@@ -239,10 +251,21 @@ from pathlib import Path
 
 
 def probe(trigger: str) -> None:
-    if os.environ.get("WHOATHERE_FIXTURE_ARMED") != "1":
+    runtime_fixture = {active!r} and (
+        "WHOATHERE_FIXTURE_ARMED" not in os.environ
+        and os.environ.get("HOME") == "/run/whoathere/home"
+    )
+    if os.environ.get("WHOATHERE_FIXTURE_ARMED") != "1" and not runtime_fixture:
         return
-    output_dir = Path(os.environ.get("WHOATHERE_FIXTURE_OUTPUT_DIR", "")).resolve()
-    if not any(part.startswith("whoathere-fixture-") for part in output_dir.parts):
+    output_dir = (
+        Path("/run/whoathere/tmp/.whoathere-fixture-output")
+        if runtime_fixture
+        else Path(os.environ.get("WHOATHERE_FIXTURE_OUTPUT_DIR", "")).resolve()
+    )
+    if runtime_fixture:
+        if output_dir != Path("/run/whoathere/tmp/.whoathere-fixture-output"):
+            raise RuntimeError("fixture_runtime_output_path_refused")
+    elif not any(part.startswith("whoathere-fixture-") for part in output_dir.parts):
         raise RuntimeError("fixture_output_path_refused")
     output_dir.mkdir(parents=True, exist_ok=True)
 {probe_body}

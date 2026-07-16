@@ -220,6 +220,46 @@ def validate_npm_physical_fixture_contract(path: Path, *, active: bool) -> None:
         )
 
 
+def python_probe_sources(path: Path) -> list[str]:
+    if path.suffix == ".whl":
+        with zipfile.ZipFile(path) as archive:
+            names = [name for name in archive.namelist() if name.endswith("_probe.py")]
+            require(len(names) == 1, f"wheel_probe_count_invalid:{path.name}")
+            return [archive.read(names[0]).decode("utf-8")]
+    with tarfile.open(path, "r:gz") as archive:
+        names = [name for name in archive.getnames() if name.endswith("fixture_build_probe.py")]
+        require(len(names) == 1, f"sdist_probe_count_invalid:{path.name}")
+        source_file = archive.extractfile(names[0])
+        require(source_file is not None, f"sdist_probe_missing:{path.name}")
+        return [source_file.read().decode("utf-8")]
+
+
+def validate_python_physical_fixture_contract(path: Path, *, active: bool) -> None:
+    for source in python_probe_sources(path):
+        if active:
+            require(
+                'os.environ.get("HOME") == "/run/whoathere/home"' in source,
+                f"python_physical_fixture_home_binding_missing:{path.name}",
+            )
+            require(
+                "/run/whoathere/home/.whoathere-canaries/pypi-token" in source,
+                f"python_physical_fixture_canary_binding_missing:{path.name}",
+            )
+            require(
+                "/run/whoathere/tmp/.whoathere-fixture-output" in source,
+                f"python_physical_fixture_output_binding_missing:{path.name}",
+            )
+            require(
+                "whoathere_fake_pypi_token_v1_" in source,
+                f"python_physical_fixture_canary_sentinel_missing:{path.name}",
+            )
+        else:
+            require(
+                "runtime_fixture = False and (" in source,
+                f"python_benign_neighbor_must_not_auto_arm:{path.name}",
+            )
+
+
 def minimal_environment(root: Path, *, armed: bool, ci: str = "true", fake_path: Path | None = None) -> dict[str, str]:
     home = root / "home"
     temp = root / "tmp"
@@ -447,6 +487,11 @@ def main() -> int:
                 validate_npm_physical_fixture_contract(
                     artifact_a,
                     active="-canary-" in filename,
+                )
+            elif filename.endswith((".whl", ".tar.gz")):
+                validate_python_physical_fixture_contract(
+                    artifact_a,
+                    active="_canary-" in filename,
                 )
 
         fake_root = temp / "whoathere-fixture-fake-canary"

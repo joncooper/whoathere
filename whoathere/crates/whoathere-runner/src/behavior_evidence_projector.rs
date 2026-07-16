@@ -629,7 +629,10 @@ fn project_file_v1(
             },
             "protected_canary" => BehaviorEvidenceSignalV1::Canary {
                 action: CanaryActionV1::Read,
-                canary: CanaryClassV1::NpmToken,
+                canary: match protected_canary_class_v1(input.package_trigger) {
+                    Some(canary) => canary,
+                    None => continue,
+                },
             },
             _ => continue,
         };
@@ -657,6 +660,20 @@ fn project_file_v1(
         declared_scope_complete,
         global_mount_coverage_complete,
     })
+}
+
+fn protected_canary_class_v1(trigger: Option<PackageTriggerV1>) -> Option<CanaryClassV1> {
+    match trigger? {
+        PackageTriggerV1::NpmLifecycle | PackageTriggerV1::NpmBin | PackageTriggerV1::NpmImport => {
+            Some(CanaryClassV1::NpmToken)
+        }
+        PackageTriggerV1::WheelPth
+        | PackageTriggerV1::WheelImport
+        | PackageTriggerV1::WheelEntryPoint
+        | PackageTriggerV1::SdistBuildBackend
+        | PackageTriggerV1::SdistSetupPy
+        | PackageTriggerV1::SdistImport => Some(CanaryClassV1::PypiToken),
+    }
 }
 
 fn project_network_v1(
@@ -1358,6 +1375,66 @@ mod tests {
                 .iter()
                 .any(|code| code == "independent_host_composition_missing")
         }));
+    }
+
+    #[test]
+    fn protected_canary_projection_tracks_package_ecosystem_trigger() {
+        for trigger in [
+            PackageTriggerV1::NpmLifecycle,
+            PackageTriggerV1::NpmBin,
+            PackageTriggerV1::NpmImport,
+        ] {
+            assert_eq!(
+                protected_canary_class_v1(Some(trigger)),
+                Some(CanaryClassV1::NpmToken)
+            );
+        }
+        for trigger in [
+            PackageTriggerV1::WheelPth,
+            PackageTriggerV1::WheelImport,
+            PackageTriggerV1::WheelEntryPoint,
+            PackageTriggerV1::SdistBuildBackend,
+            PackageTriggerV1::SdistSetupPy,
+            PackageTriggerV1::SdistImport,
+        ] {
+            assert_eq!(
+                protected_canary_class_v1(Some(trigger)),
+                Some(CanaryClassV1::PypiToken)
+            );
+        }
+        assert_eq!(protected_canary_class_v1(None), None);
+
+        for trigger in [
+            PackageTriggerV1::WheelImport,
+            PackageTriggerV1::SdistBuildBackend,
+        ] {
+            let fixtures = fixtures();
+            let mut input = fixtures.input();
+            input.package_trigger = Some(trigger);
+            let bundle =
+                project_exact_detonation_behavior_v1(input).expect("project pypi canary evidence");
+            assert_eq!(
+                bundle
+                    .events()
+                    .iter()
+                    .filter(|event| matches!(
+                        event.signal(),
+                        BehaviorEvidenceSignalV1::Canary {
+                            action: CanaryActionV1::Read,
+                            canary: CanaryClassV1::PypiToken
+                        }
+                    ))
+                    .count(),
+                1
+            );
+            assert!(bundle.events().iter().all(|event| !matches!(
+                event.signal(),
+                BehaviorEvidenceSignalV1::Canary {
+                    canary: CanaryClassV1::NpmToken,
+                    ..
+                }
+            )));
+        }
     }
 
     #[test]

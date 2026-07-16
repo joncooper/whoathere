@@ -21,6 +21,7 @@ pub const LINUX_VZ_PACKAGE_GUEST_CANARY_SEED_SCHEMA_V1: &str =
 
 const NPMRC_CANARY_RELATIVE_PATH_V1: &str = "home/.npmrc";
 const NPM_TOKEN_CANARY_RELATIVE_PATH_V1: &str = "home/.whoathere-canaries/npm-token";
+const PYPI_TOKEN_CANARY_RELATIVE_PATH_V1: &str = "home/.whoathere-canaries/pypi-token";
 
 #[cfg(target_os = "linux")]
 const RUN_PARENT_PATH_V1: &str = "/run";
@@ -205,8 +206,9 @@ impl LinuxVzPackageGuestCanaryFileBindingV1 {
 pub struct LinuxVzPackageGuestCanarySeedV1 {
     derivation_binding_sha256: Sha256Digest,
     canary_value_sha256: Sha256Digest,
+    pypi_canary_value_sha256: Sha256Digest,
     seed_sha256: Sha256Digest,
-    files: [LinuxVzPackageGuestCanaryFileBindingV1; 2],
+    files: [LinuxVzPackageGuestCanaryFileBindingV1; 3],
 }
 
 impl fmt::Debug for LinuxVzPackageGuestCanarySeedV1 {
@@ -215,6 +217,7 @@ impl fmt::Debug for LinuxVzPackageGuestCanarySeedV1 {
             .debug_struct("LinuxVzPackageGuestCanarySeedV1")
             .field("derivation_binding_sha256", &self.derivation_binding_sha256)
             .field("canary_value_sha256", &self.canary_value_sha256)
+            .field("pypi_canary_value_sha256", &self.pypi_canary_value_sha256)
             .field("seed_sha256", &self.seed_sha256)
             .field("file_count", &self.files.len())
             .finish()
@@ -228,6 +231,10 @@ impl LinuxVzPackageGuestCanarySeedV1 {
 
     pub fn canary_value_sha256(&self) -> &Sha256Digest {
         &self.canary_value_sha256
+    }
+
+    pub fn pypi_canary_value_sha256(&self) -> &Sha256Digest {
+        &self.pypi_canary_value_sha256
     }
 
     pub fn seed_sha256(&self) -> &Sha256Digest {
@@ -940,9 +947,29 @@ fn seed_guest_file_canaries_v1(
     let mut token_file_content = token.into_bytes();
     token_file_content.push(b'\n');
 
+    // Keep both attempt-bound fake ecosystem tokens in one shared honey-directory. The package
+    // cannot learn its scenario kind from the seed set, while the typed trigger selects the
+    // ecosystem-specific canary class during evidence projection.
+    let pypi_token_derivation = format!(
+        "{LINUX_VZ_PACKAGE_GUEST_CANARY_SEED_SCHEMA_V1}\0pypi-token\0{}",
+        derivation_binding_sha256.as_str()
+    );
+    let pypi_token_material_sha256 = Sha256Digest::from_bytes(pypi_token_derivation.as_bytes());
+    let pypi_token = format!(
+        "whoathere_fake_pypi_token_v1_{}",
+        pypi_token_material_sha256
+            .as_str()
+            .strip_prefix("sha256:")
+            .expect("sha256 digest prefix")
+    );
+    let pypi_canary_value_sha256 = Sha256Digest::from_bytes(pypi_token.as_bytes());
+    let mut pypi_token_file_content = pypi_token.into_bytes();
+    pypi_token_file_content.push(b'\n');
+
     let npmrc_name = fixed_component_v1(".npmrc")?;
     let canary_directory_name = fixed_component_v1(".whoathere-canaries")?;
     let token_name = fixed_component_v1("npm-token")?;
+    let pypi_token_name = fixed_component_v1("pypi-token")?;
     if unsafe { libc::mkdirat(home.as_raw_fd(), canary_directory_name.as_ptr(), 0o700) } != 0 {
         return Err(LinuxVzPackageWorkspaceErrorV1::CreateFailed);
     }
@@ -959,6 +986,13 @@ fn seed_guest_file_canaries_v1(
         &canary_directory,
         &token_name,
         &token_file_content,
+        package_uid,
+        package_gid,
+    )?;
+    let pypi_token_file = create_private_file_at_v1(
+        &canary_directory,
+        &pypi_token_name,
+        &pypi_token_file_content,
         package_uid,
         package_gid,
     )?;
@@ -985,24 +1019,38 @@ fn seed_guest_file_canaries_v1(
             content_sha256: Sha256Digest::from_bytes(&token_file_content),
             byte_length: token_file_content.len(),
         },
+        LinuxVzPackageGuestCanaryFileBindingV1 {
+            relative_path: PYPI_TOKEN_CANARY_RELATIVE_PATH_V1,
+            relative_path_sha256: Sha256Digest::from_bytes(
+                PYPI_TOKEN_CANARY_RELATIVE_PATH_V1.as_bytes(),
+            ),
+            content_sha256: Sha256Digest::from_bytes(&pypi_token_file_content),
+            byte_length: pypi_token_file_content.len(),
+        },
     ];
     verify_private_file_v1(&npmrc, package_uid, package_gid, &files[0])?;
     verify_private_file_v1(&token_file, package_uid, package_gid, &files[1])?;
+    verify_private_file_v1(&pypi_token_file, package_uid, package_gid, &files[2])?;
 
     let seed_binding = format!(
-        "{LINUX_VZ_PACKAGE_GUEST_CANARY_SEED_SCHEMA_V1}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}",
+        "{LINUX_VZ_PACKAGE_GUEST_CANARY_SEED_SCHEMA_V1}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}",
         derivation_binding_sha256.as_str(),
         canary_value_sha256.as_str(),
+        pypi_canary_value_sha256.as_str(),
         files[0].relative_path_sha256.as_str(),
         files[0].content_sha256.as_str(),
         files[0].byte_length,
         files[1].relative_path_sha256.as_str(),
         files[1].content_sha256.as_str(),
         files[1].byte_length,
+        files[2].relative_path_sha256.as_str(),
+        files[2].content_sha256.as_str(),
+        files[2].byte_length,
     );
     Ok(LinuxVzPackageGuestCanarySeedV1 {
         derivation_binding_sha256: derivation_binding_sha256.clone(),
         canary_value_sha256,
+        pypi_canary_value_sha256,
         seed_sha256: Sha256Digest::from_bytes(seed_binding.as_bytes()),
         files,
     })
@@ -1071,7 +1119,9 @@ fn remove_guest_file_canaries_v1(home: &File) -> Result<(), LinuxVzPackageWorksp
     };
     if let Some(canary_directory) = canary_directory {
         let token_name = fixed_component_v1("npm-token")?;
+        let pypi_token_name = fixed_component_v1("pypi-token")?;
         unlink_file_if_present_v1(&canary_directory, &token_name)?;
+        unlink_file_if_present_v1(&canary_directory, &pypi_token_name)?;
         if unsafe {
             libc::unlinkat(
                 home.as_raw_fd(),
@@ -1445,7 +1495,7 @@ mod tests {
             .clone();
 
         assert_eq!(seed.derivation_binding_sha256(), &binding);
-        assert_eq!(seed.files().len(), 2);
+        assert_eq!(seed.files().len(), 3);
         assert_eq!(
             seed.files()
                 .iter()
@@ -1453,12 +1503,16 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 NPMRC_CANARY_RELATIVE_PATH_V1,
-                NPM_TOKEN_CANARY_RELATIVE_PATH_V1
+                NPM_TOKEN_CANARY_RELATIVE_PATH_V1,
+                PYPI_TOKEN_CANARY_RELATIVE_PATH_V1
             ]
         );
         let npmrc = std::fs::read(base.join("scenario/home/.npmrc")).expect("read npmrc");
         let token_file = std::fs::read(base.join("scenario/home/.whoathere-canaries/npm-token"))
             .expect("read token canary");
+        let pypi_token_file =
+            std::fs::read(base.join("scenario/home/.whoathere-canaries/pypi-token"))
+                .expect("read pypi token canary");
         assert_eq!(
             Sha256Digest::from_bytes(&npmrc),
             *seed.files()[0].content_sha256()
@@ -1467,6 +1521,10 @@ mod tests {
             Sha256Digest::from_bytes(&token_file),
             *seed.files()[1].content_sha256()
         );
+        assert_eq!(
+            Sha256Digest::from_bytes(&pypi_token_file),
+            *seed.files()[2].content_sha256()
+        );
         assert!(npmrc.starts_with(b"//registry.npmjs.org/:_authToken="));
         assert!(npmrc.ends_with(b"\n"));
         assert!(token_file.starts_with(b"whoathere_fake_npm_token_v1_"));
@@ -1474,10 +1532,18 @@ mod tests {
         let token = &token_file[..token_file.len() - 1];
         assert_eq!(Sha256Digest::from_bytes(token), *seed.canary_value_sha256());
         assert!(npmrc.windows(token.len()).any(|window| window == token));
+        assert!(pypi_token_file.starts_with(b"whoathere_fake_pypi_token_v1_"));
+        assert!(pypi_token_file.ends_with(b"\n"));
+        let pypi_token = &pypi_token_file[..pypi_token_file.len() - 1];
+        assert_eq!(
+            Sha256Digest::from_bytes(pypi_token),
+            *seed.pypi_canary_value_sha256()
+        );
 
         for path in [
             base.join("scenario/home/.npmrc"),
             base.join("scenario/home/.whoathere-canaries/npm-token"),
+            base.join("scenario/home/.whoathere-canaries/pypi-token"),
         ] {
             let metadata = std::fs::symlink_metadata(path).expect("canary metadata");
             assert!(metadata.file_type().is_file());
@@ -1491,6 +1557,7 @@ mod tests {
         assert!(directory_metadata.file_type().is_dir());
         assert_eq!(directory_metadata.mode() & 0o7777, 0o700);
         assert!(!format!("{seed:?}").contains("whoathere_fake_npm_token"));
+        assert!(!format!("{seed:?}").contains("whoathere_fake_pypi_token"));
         assert!(matches!(
             workspace.seed_guest_file_canaries_v1(&binding),
             Err(LinuxVzPackageWorkspaceErrorV1::WorkspaceAlreadyPresent)
@@ -1529,12 +1596,20 @@ mod tests {
         assert_ne!(first.seed_sha256(), second.seed_sha256());
         assert_ne!(first.canary_value_sha256(), second.canary_value_sha256());
         assert_ne!(
+            first.pypi_canary_value_sha256(),
+            second.pypi_canary_value_sha256()
+        );
+        assert_ne!(
             first.files()[0].content_sha256(),
             second.files()[0].content_sha256()
         );
         assert_ne!(
             first.files()[1].content_sha256(),
             second.files()[1].content_sha256()
+        );
+        assert_ne!(
+            first.files()[2].content_sha256(),
+            second.files()[2].content_sha256()
         );
     }
 

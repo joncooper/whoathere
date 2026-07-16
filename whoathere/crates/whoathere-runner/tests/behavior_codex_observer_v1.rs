@@ -112,6 +112,60 @@ fn inert_bundle() -> (BehaviorAnalysisBundleV1, BehaviorEvidenceReferenceV1) {
     (bundle, reference)
 }
 
+fn pypi_canary_bundle(
+    trigger: PackageTriggerV1,
+) -> (BehaviorAnalysisBundleV1, BehaviorEvidenceReferenceV1) {
+    let process = BehaviorEvidenceEventV1::new(
+        1,
+        "process-1-exec-0",
+        digest("pypi-process-receipt"),
+        BehaviorEvidenceSignalV1::Process {
+            action: ProcessActionV1::PackageTrigger,
+            trigger: Some(trigger),
+        },
+        None,
+    )
+    .expect("pypi process event");
+    let canary = BehaviorEvidenceEventV1::new(
+        2,
+        "file-2-protected-canary-read-0",
+        digest("pypi-file-receipt"),
+        BehaviorEvidenceSignalV1::Canary {
+            action: CanaryActionV1::Read,
+            canary: CanaryClassV1::PypiToken,
+        },
+        None,
+    )
+    .expect("pypi canary event");
+    let reference = BehaviorEvidenceReferenceV1::for_event(&canary);
+    let coverage = BehaviorEvidenceModalityV1::ALL
+        .iter()
+        .copied()
+        .map(|modality| {
+            BehaviorEvidenceCoverageV1::incomplete(
+                modality,
+                vec!["independent_host_composition_missing".to_string()],
+            )
+            .expect("honest incomplete coverage")
+        })
+        .collect();
+    let bundle = BehaviorAnalysisBundleV1::new(
+        BehaviorAnalysisBundleInputV1 {
+            artifact_sha256: digest("pypi-inert-artifact"),
+            manifest_sha256: digest("pypi-inert-manifest"),
+            scenario_id: format!("inert.pypi.{trigger:?}.v1"),
+            scenario_sha256: digest("pypi-inert-scenario"),
+            run_id: "pypi-inert-observer-run-1".to_string(),
+            root_receipt_sha256: digest("pypi-root-receipt"),
+            host_receipt_sha256: digest("pypi-host-receipt"),
+        },
+        coverage,
+        vec![process, canary],
+    )
+    .expect("pypi behavior bundle");
+    (bundle, reference)
+}
+
 struct FixtureRuntime {
     root: PathBuf,
     client: PathBuf,
@@ -440,6 +494,39 @@ fn fake_codex_positive_is_bound_to_the_exact_canary_event() {
     assert_eq!(report.findings()[0].evidence(), &[reference]);
     assert!(!observation.can_authorize_allow());
     assert!(!observation.observed_clean());
+}
+
+#[test]
+fn wheel_and_sdist_pypi_canaries_survive_codex_citation_validation() {
+    for trigger in [
+        PackageTriggerV1::WheelImport,
+        PackageTriggerV1::SdistBuildBackend,
+    ] {
+        let (bundle, reference) = pypi_canary_bundle(trigger);
+        let output = serde_json::json!({
+            "conclusion": "positive",
+            "coverage_gap_codes": ["independent_host_composition_missing"],
+            "findings": [{
+                "kind": "canary_access",
+                "confidence": "high",
+                "evidence": [reference],
+                "explanation": "The verified typed event records access to the seeded PyPI-token canary."
+            }]
+        });
+        let fixture = FixtureRuntime::new(&output);
+
+        let observation = fixture.observer().observe(&bundle).expect("observation");
+
+        assert_eq!(
+            observation.outcome(),
+            BehaviorCodexObservationOutcomeV1::Positive
+        );
+        let report = observation.report().expect("validated specialist report");
+        assert_eq!(report.findings().len(), 1);
+        assert_eq!(report.findings()[0].evidence(), &[reference]);
+        assert!(!observation.can_authorize_allow());
+        assert!(!observation.observed_clean());
+    }
 }
 
 #[test]
