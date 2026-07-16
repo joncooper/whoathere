@@ -14,9 +14,10 @@ use crate::{
     LinuxVzPackageProcessLaunchContractV1, LinuxVzPackageProcessSupervisorErrorV1,
     LinuxVzPackageProtectedProcessObserverV1, LinuxVzPackageProtectedSensorOutputV1,
     LinuxVzPackageRootEvidenceReceiptClaimsV1, LinuxVzPackageRootEvidenceSigningAuthorityV1,
-    LinuxVzPackageRootFileEvidenceV1, LinuxVzPackageRootNetworkEvidenceV1,
-    LinuxVzPackageRootProcessEvidenceV1, MacosLinuxVzPackageAuthorityRequestV1,
-    MacosLinuxVzPackageExecutionGrantObservationV1,
+    LinuxVzPackageRootFileEvidenceErrorV1, LinuxVzPackageRootFileEvidenceV1,
+    LinuxVzPackageRootNetworkEvidenceErrorV1, LinuxVzPackageRootNetworkEvidenceV1,
+    LinuxVzPackageRootProcessEvidenceErrorV1, LinuxVzPackageRootProcessEvidenceV1,
+    MacosLinuxVzPackageAuthorityRequestV1, MacosLinuxVzPackageExecutionGrantObservationV1,
 };
 use crate::{
     LinuxVzPackageProcessCompletionV1, LinuxVzPackageProcessLaunchIdentityV1,
@@ -88,7 +89,8 @@ pub const LINUX_VZ_PACKAGE_SENSOR_CONTROL_ABORT_ACK_SCHEMA_V1: &str =
     "whoathere.linux_vz_package_sensor_control_abort_ack.v1";
 
 pub const MAX_LINUX_VZ_PACKAGE_SENSOR_CONTROL_MESSAGE_BYTES_V1: usize = 256 * 1024;
-pub const MAX_LINUX_VZ_PACKAGE_SENSOR_CONTROL_EVIDENCE_BYTES_V1: usize = 4 * 1024 * 1024;
+pub const MAX_LINUX_VZ_PACKAGE_SENSOR_CONTROL_EVIDENCE_BYTES_V1: usize =
+    MAX_LINUX_VZ_PACKAGE_PROTECTED_SENSOR_PAYLOAD_BYTES_V1;
 pub const LINUX_VZ_PACKAGE_SENSOR_CONTROL_HEADER_BYTES_V1: usize = 60;
 
 const CONTROL_MAGIC_V1: &[u8; 8] = b"WTPKSN01";
@@ -179,6 +181,17 @@ pub enum LinuxVzPackageSensorControlErrorV1 {
     FileSensorLeaderFailed,
     FileSensorFinishFailed,
     FileSensorRuntimeFault,
+    ProcessEvidenceExpectedFailed,
+    ProcessEvidenceLimitExceeded,
+    ProcessEvidenceEncodeFailed,
+    NetworkEvidenceExpectedFailed,
+    NetworkEvidenceLimitExceeded,
+    NetworkEvidenceEncodeFailed,
+    FileEvidenceExpectedFailed,
+    FileEvidenceLimitExceeded,
+    FileEvidenceEncodeFailed,
+    RootEvidenceClaimsFailed,
+    RootEvidenceSignFailed,
     SensorFault,
     Io,
 }
@@ -228,6 +241,39 @@ impl LinuxVzPackageSensorControlErrorV1 {
             }
             Self::FileSensorRuntimeFault => {
                 "linux_vz_package_sensor_control_file_sensor_runtime_fault"
+            }
+            Self::ProcessEvidenceExpectedFailed => {
+                "linux_vz_package_sensor_control_process_evidence_expected_failed"
+            }
+            Self::ProcessEvidenceLimitExceeded => {
+                "linux_vz_package_sensor_control_process_evidence_limit_exceeded"
+            }
+            Self::ProcessEvidenceEncodeFailed => {
+                "linux_vz_package_sensor_control_process_evidence_encode_failed"
+            }
+            Self::NetworkEvidenceExpectedFailed => {
+                "linux_vz_package_sensor_control_network_evidence_expected_failed"
+            }
+            Self::NetworkEvidenceLimitExceeded => {
+                "linux_vz_package_sensor_control_network_evidence_limit_exceeded"
+            }
+            Self::NetworkEvidenceEncodeFailed => {
+                "linux_vz_package_sensor_control_network_evidence_encode_failed"
+            }
+            Self::FileEvidenceExpectedFailed => {
+                "linux_vz_package_sensor_control_file_evidence_expected_failed"
+            }
+            Self::FileEvidenceLimitExceeded => {
+                "linux_vz_package_sensor_control_file_evidence_limit_exceeded"
+            }
+            Self::FileEvidenceEncodeFailed => {
+                "linux_vz_package_sensor_control_file_evidence_encode_failed"
+            }
+            Self::RootEvidenceClaimsFailed => {
+                "linux_vz_package_sensor_control_root_evidence_claims_failed"
+            }
+            Self::RootEvidenceSignFailed => {
+                "linux_vz_package_sensor_control_root_evidence_sign_failed"
             }
             Self::SensorFault => "linux_vz_package_sensor_control_sensor_fault",
             Self::Io => "linux_vz_package_sensor_control_io_failed",
@@ -1437,10 +1483,16 @@ impl LinuxVzPackageRootSensorServiceCollectorV1 for LinuxVzPackageRootProcessSer
             &context.launch_identity,
             completion,
         )
-        .map_err(|_| LinuxVzPackageSensorControlErrorV1::SensorFault)?;
+        .map_err(|_| LinuxVzPackageSensorControlErrorV1::ProcessEvidenceExpectedFailed)?;
         let process_evidence =
-            encode_linux_vz_package_root_process_evidence_v1(&expected, &collection)
-                .map_err(|_| LinuxVzPackageSensorControlErrorV1::SensorFault)?;
+            encode_linux_vz_package_root_process_evidence_v1(&expected, &collection).map_err(
+                |error| match error {
+                    LinuxVzPackageRootProcessEvidenceErrorV1::LimitExceeded => {
+                        LinuxVzPackageSensorControlErrorV1::ProcessEvidenceLimitExceeded
+                    }
+                    _ => LinuxVzPackageSensorControlErrorV1::ProcessEvidenceEncodeFailed,
+                },
+            )?;
         let network_expected = LinuxVzPackageExpectedRootNetworkEvidenceV1::from_action_v1(
             context.sensor_session_challenge_sha256.clone(),
             context.launch_contract_sha256.clone(),
@@ -1453,10 +1505,15 @@ impl LinuxVzPackageRootSensorServiceCollectorV1 for LinuxVzPackageRootProcessSer
             leader_pid,
             completion,
         )
-        .map_err(|_| LinuxVzPackageSensorControlErrorV1::SensorFault)?;
+        .map_err(|_| LinuxVzPackageSensorControlErrorV1::NetworkEvidenceExpectedFailed)?;
         let network_evidence =
             encode_linux_vz_package_root_network_evidence_v1(&network_expected, &collection)
-                .map_err(|_| LinuxVzPackageSensorControlErrorV1::SensorFault)?;
+                .map_err(|error| match error {
+                    LinuxVzPackageRootNetworkEvidenceErrorV1::LimitExceeded => {
+                        LinuxVzPackageSensorControlErrorV1::NetworkEvidenceLimitExceeded
+                    }
+                    _ => LinuxVzPackageSensorControlErrorV1::NetworkEvidenceEncodeFailed,
+                })?;
         let file_expected = LinuxVzPackageExpectedRootFileEvidenceV1::from_action_v1(
             context.sensor_session_challenge_sha256.clone(),
             context.launch_contract_sha256.clone(),
@@ -1468,10 +1525,15 @@ impl LinuxVzPackageRootSensorServiceCollectorV1 for LinuxVzPackageRootProcessSer
             leader_pid,
             completion,
         )
-        .map_err(|_| LinuxVzPackageSensorControlErrorV1::SensorFault)?;
+        .map_err(|_| LinuxVzPackageSensorControlErrorV1::FileEvidenceExpectedFailed)?;
         let file_evidence =
             encode_linux_vz_package_root_file_evidence_v1(&file_expected, &file_collection)
-                .map_err(|_| LinuxVzPackageSensorControlErrorV1::SensorFault)?;
+                .map_err(|error| match error {
+                    LinuxVzPackageRootFileEvidenceErrorV1::LimitExceeded => {
+                        LinuxVzPackageSensorControlErrorV1::FileEvidenceLimitExceeded
+                    }
+                    _ => LinuxVzPackageSensorControlErrorV1::FileEvidenceEncodeFailed,
+                })?;
         self.state = RootProcessServiceCollectorStateV1::Ready;
         Ok(RootSensorServiceFinishStatusV1 {
             output: RootSensorServiceCollectedOutputV1::AuthenticatedRootIncomplete {
@@ -2026,14 +2088,14 @@ impl RootSensorServiceSessionV1<'_, '_> {
             created_at_unix_seconds,
             expires_at_unix_seconds,
         )
-        .map_err(|_| LinuxVzPackageSensorControlErrorV1::SensorFault)?;
+        .map_err(|_| LinuxVzPackageSensorControlErrorV1::RootEvidenceClaimsFailed)?;
         let package_authority_request_sha256 = request.request_sha256().clone();
         let execution_grant_sha256 = grant.execution_grant_sha256().clone();
         let guest_evidence_public_key_sha256 = grant.guest_evidence_public_key_sha256().clone();
         let root_evidence_receipt = self
             .signing_authority
             .sign_bound_claims_v1(&claims)
-            .map_err(|_| LinuxVzPackageSensorControlErrorV1::SensorFault)?;
+            .map_err(|_| LinuxVzPackageSensorControlErrorV1::RootEvidenceSignFailed)?;
         let process_evidence = process.canonical_json_v1();
         let file_evidence = file.canonical_json_v1();
         let network_evidence = network.canonical_json_v1();
@@ -4015,6 +4077,62 @@ mod tests {
     }
 
     #[test]
+    fn finish_failure_reason_codes_are_fixed_and_stage_specific() {
+        let cases = [
+            (
+                LinuxVzPackageSensorControlErrorV1::ProcessEvidenceExpectedFailed,
+                "linux_vz_package_sensor_control_process_evidence_expected_failed",
+            ),
+            (
+                LinuxVzPackageSensorControlErrorV1::ProcessEvidenceLimitExceeded,
+                "linux_vz_package_sensor_control_process_evidence_limit_exceeded",
+            ),
+            (
+                LinuxVzPackageSensorControlErrorV1::ProcessEvidenceEncodeFailed,
+                "linux_vz_package_sensor_control_process_evidence_encode_failed",
+            ),
+            (
+                LinuxVzPackageSensorControlErrorV1::NetworkEvidenceExpectedFailed,
+                "linux_vz_package_sensor_control_network_evidence_expected_failed",
+            ),
+            (
+                LinuxVzPackageSensorControlErrorV1::NetworkEvidenceLimitExceeded,
+                "linux_vz_package_sensor_control_network_evidence_limit_exceeded",
+            ),
+            (
+                LinuxVzPackageSensorControlErrorV1::NetworkEvidenceEncodeFailed,
+                "linux_vz_package_sensor_control_network_evidence_encode_failed",
+            ),
+            (
+                LinuxVzPackageSensorControlErrorV1::FileEvidenceExpectedFailed,
+                "linux_vz_package_sensor_control_file_evidence_expected_failed",
+            ),
+            (
+                LinuxVzPackageSensorControlErrorV1::FileEvidenceLimitExceeded,
+                "linux_vz_package_sensor_control_file_evidence_limit_exceeded",
+            ),
+            (
+                LinuxVzPackageSensorControlErrorV1::FileEvidenceEncodeFailed,
+                "linux_vz_package_sensor_control_file_evidence_encode_failed",
+            ),
+            (
+                LinuxVzPackageSensorControlErrorV1::RootEvidenceClaimsFailed,
+                "linux_vz_package_sensor_control_root_evidence_claims_failed",
+            ),
+            (
+                LinuxVzPackageSensorControlErrorV1::RootEvidenceSignFailed,
+                "linux_vz_package_sensor_control_root_evidence_sign_failed",
+            ),
+        ];
+        for (index, (error, expected)) in cases.iter().enumerate() {
+            assert_eq!(error.reason_code(), *expected);
+            assert!(cases[index + 1..]
+                .iter()
+                .all(|(_, other)| other != expected));
+        }
+    }
+
+    #[test]
     fn control_frame_round_trip_is_exact_and_redacted() {
         let payload = br#"{"alpha":"one","beta":"two"}"#;
         let encoded = encode_linux_vz_package_sensor_control_frame_v1(
@@ -4066,6 +4184,10 @@ mod tests {
 
     #[test]
     fn control_frame_rejects_sequence_length_trailing_and_limits() {
+        assert_eq!(
+            MAX_LINUX_VZ_PACKAGE_SENSOR_CONTROL_EVIDENCE_BYTES_V1,
+            MAX_LINUX_VZ_PACKAGE_PROTECTED_SENSOR_PAYLOAD_BYTES_V1
+        );
         let payload = b"evidence";
         let frame = encode_linux_vz_package_sensor_control_frame_v1(
             LinuxVzPackageSensorControlFrameKindV1::NetworkEvidence,
@@ -4104,6 +4226,25 @@ mod tests {
                 1024,
             ),
             Err(LinuxVzPackageSensorControlErrorV1::InvalidSequence)
+        );
+
+        let beyond_legacy_limit = vec![0; 4 * 1024 * 1024 + 1];
+        let expanded = encode_linux_vz_package_sensor_control_frame_v1(
+            LinuxVzPackageSensorControlFrameKindV1::ProcessEvidence,
+            4,
+            &beyond_legacy_limit,
+            MAX_LINUX_VZ_PACKAGE_SENSOR_CONTROL_EVIDENCE_BYTES_V1,
+        )
+        .expect("evidence above the legacy limit");
+        assert_eq!(
+            decode_linux_vz_package_sensor_control_frame_v1(
+                &expanded,
+                MAX_LINUX_VZ_PACKAGE_SENSOR_CONTROL_EVIDENCE_BYTES_V1,
+            )
+            .expect("expanded evidence frame")
+            .payload()
+            .len(),
+            beyond_legacy_limit.len()
         );
     }
 

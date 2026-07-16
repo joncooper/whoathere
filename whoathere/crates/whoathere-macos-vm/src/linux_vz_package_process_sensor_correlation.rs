@@ -18,7 +18,7 @@ pub const LINUX_VZ_PACKAGE_PROCESS_SENSOR_CORRELATION_SCHEMA_V3: &str =
 pub const LINUX_VZ_PACKAGE_PROCESS_SENSOR_CORRELATION_SCHEMA_V4: &str =
     "whoathere.linux_vz_package_process_sensor_correlation.v4";
 pub const MAX_LINUX_VZ_PACKAGE_PROCESS_SENSOR_CORRELATION_BYTES_V1: usize = 64 * 1024;
-pub const MAX_LINUX_VZ_PACKAGE_PROTECTED_SENSOR_PAYLOAD_BYTES_V1: usize = 4 * 1024 * 1024;
+pub const MAX_LINUX_VZ_PACKAGE_PROTECTED_SENSOR_PAYLOAD_BYTES_V1: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinuxVzPackageProcessSensorCorrelationErrorV1 {
@@ -866,6 +866,10 @@ mod tests {
 
     #[test]
     fn detailed_sensor_payloads_must_match_the_correlated_digests() {
+        assert_eq!(
+            MAX_LINUX_VZ_PACKAGE_PROTECTED_SENSOR_PAYLOAD_BYTES_V1,
+            16 * 1024 * 1024
+        );
         let contract = contract_v1();
         let challenge = Sha256Digest::from_bytes(b"fresh sensor session challenge");
         let correlation = decode_linux_vz_package_process_sensor_correlation_v1(

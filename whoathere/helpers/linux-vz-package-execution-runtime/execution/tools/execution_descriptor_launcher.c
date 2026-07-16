@@ -20,6 +20,12 @@
 #define MIN_PRIVATE_FD 32
 #define RESULT_LIMIT (256ULL * 1024ULL * 1024ULL)
 #define LOG_LIMIT (1024ULL * 1024ULL)
+/*
+ * The package root runtime can legitimately remain output-silent while an action runs. Keep this
+ * finite launcher backstop at the host helper's maximum overall VM timeout so the helper-selected
+ * deadline (30--600 seconds, 180 by default) remains authoritative.
+ */
+#define OUTPUT_IDLE_TIMEOUT_MILLISECONDS (600 * 1000)
 
 static const char *const input_paths[INPUT_COUNT] = {
     "/whoathere/guest-ed25519.seed",
@@ -347,7 +353,7 @@ int main(void) {
             {.fd = result_open ? result_pipe[0] : -1, .events = POLLIN | POLLHUP | POLLERR},
             {.fd = log_open ? log_pipe[0] : -1, .events = POLLIN | POLLHUP | POLLERR},
         };
-        int ready = poll(descriptors, 2, 30000);
+        int ready = poll(descriptors, 2, OUTPUT_IDLE_TIMEOUT_MILLISECONDS);
         if (ready < 0 && errno == EINTR) {
             continue;
         }

@@ -77,6 +77,17 @@ emit_base64_file() {
     echo "${marker}_END sha256=$digest byte_length=$byte_length"
 }
 
+quiesce_kernel_console_for_evidence() {
+    [ -w /proc/sys/kernel/printk ] || fail kernel_console_control_missing
+    printf '%s\n' 1 > /proc/sys/kernel/printk \
+        || fail kernel_console_control_failed
+    console_level=$("$busybox" awk 'NR == 1 { print $1; exit }' \
+        /proc/sys/kernel/printk)
+    [ "$console_level" = 1 ] || fail kernel_console_control_failed
+    "$busybox" sleep 0.1 || fail kernel_console_control_failed
+    echo "WHOATHERE_CAPABILITY kernel_console=emergency_only_for_evidence_transport"
+}
+
 "$busybox" chmod 0755 /
 "$busybox" mkdir -p /proc /sys /dev /run /runtime
 "$busybox" mount -t proc proc /proc || fail proc_mount_failed
@@ -217,6 +228,7 @@ echo "WHOATHERE_CAPABILITY bpf_fs=mounted"
 echo "WHOATHERE_CAPABILITY external_route_configured=false"
 
 if ! /whoathere/execution-descriptor-launcher; then
+    quiesce_kernel_console_for_evidence
     emit_base64_file WHOATHERE_PACKAGE_EXECUTION_PARTIAL_RESULT_BASE64 \
         /run/whoathere-package-execution-result.bin
     emit_base64_file WHOATHERE_PACKAGE_EXECUTION_CHILD_LOG_BASE64 \
@@ -224,6 +236,7 @@ if ! /whoathere/execution-descriptor-launcher; then
     fail package_runtime_failed
 fi
 [ ! -e /whoathere/guest-ed25519.seed ] || fail signing_seed_path_retained
+quiesce_kernel_console_for_evidence
 emit_base64_file WHOATHERE_PACKAGE_EXECUTION_RESULT_BASE64 \
     /run/whoathere-package-execution-result.bin
 emit_base64_file WHOATHERE_PACKAGE_EXECUTION_CHILD_LOG_BASE64 \

@@ -19,6 +19,7 @@ use crate::{
 use crate::{
     MAX_LINUX_VZ_PACKAGE_EXECUTION_SEQUENCE_TRANSCRIPT_BYTES_V1,
     MAX_LINUX_VZ_PACKAGE_PROCESS_SUPERVISOR_EVIDENCE_BYTES_V1,
+    MAX_LINUX_VZ_PACKAGE_PROTECTED_SENSOR_PAYLOAD_BYTES_V1,
     MAX_LINUX_VZ_PACKAGE_ROOT_EVIDENCE_RECEIPT_BYTES_V1,
 };
 #[cfg(target_os = "linux")]
@@ -49,7 +50,8 @@ const RESULT_FRAME_VERSION_V1: u16 = 1;
 #[cfg(any(target_os = "linux", test))]
 const RESULT_FRAME_HEADER_BYTES_V1: usize = 56;
 #[cfg(any(target_os = "linux", test))]
-const MAX_RESULT_EVIDENCE_FRAME_BYTES_V1: usize = 4 * 1024 * 1024;
+const MAX_RESULT_EVIDENCE_FRAME_BYTES_V1: usize =
+    MAX_LINUX_VZ_PACKAGE_PROTECTED_SENSOR_PAYLOAD_BYTES_V1;
 #[cfg(any(target_os = "linux", test))]
 const MAX_RESULT_SUMMARY_BYTES_V1: usize = 64 * 1024;
 #[cfg(target_os = "linux")]
@@ -1489,6 +1491,10 @@ mod tests {
 
     #[test]
     fn result_frame_round_trip_rejects_corruption_and_bounds() {
+        assert_eq!(
+            MAX_RESULT_EVIDENCE_FRAME_BYTES_V1,
+            MAX_LINUX_VZ_PACKAGE_PROTECTED_SENSOR_PAYLOAD_BYTES_V1
+        );
         let payload = b"authenticated inert result";
         let mut frame = Vec::new();
         write_result_frame_v1(&mut frame, RuntimeResultFrameKindV1::Process, 7, payload)
@@ -1499,6 +1505,15 @@ mod tests {
         assert_eq!(decoded.action_index, 7);
         assert_eq!(decoded.payload, payload);
         assert_eq!(aggregate, RESULT_FRAME_HEADER_BYTES_V1 + payload.len());
+
+        let beyond_legacy_limit = vec![0; 4 * 1024 * 1024 + 1];
+        write_result_frame_v1(
+            &mut Vec::new(),
+            RuntimeResultFrameKindV1::Process,
+            8,
+            &beyond_legacy_limit,
+        )
+        .expect("result evidence above the legacy limit");
 
         frame[24] ^= 1;
         assert_eq!(
