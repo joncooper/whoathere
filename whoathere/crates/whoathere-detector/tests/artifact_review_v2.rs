@@ -631,7 +631,7 @@ fn request_and_coverage_digests_are_deterministic_and_bind_settings() {
     );
     assert_eq!(
         first.request_sha256().unwrap().as_str(),
-        "sha256:e2d1ae3abeffdf3f8f40a9118b14d112ae1b57221877d493297ede12fb165d86"
+        "sha256:2e840b225a39391fce491a258cd3feb6252f16a3768da1986122f54ba7e49a55"
     );
     assert_eq!(
         first.coverage_manifest_sha256().as_str(),

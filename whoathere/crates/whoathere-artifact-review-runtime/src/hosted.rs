@@ -398,6 +398,22 @@ impl ArtifactAiProviderReceiptV2 {
         self.finished_at_unix_millis
     }
 
+    pub fn elapsed_millis(&self) -> u64 {
+        self.elapsed_millis
+    }
+
+    pub fn raw_stdout_byte_len(&self) -> u64 {
+        self.raw_stdout_byte_len
+    }
+
+    pub fn raw_stderr_byte_len(&self) -> u64 {
+        self.raw_stderr_byte_len
+    }
+
+    pub fn model_output_byte_len(&self) -> Option<u64> {
+        self.model_output_byte_len
+    }
+
     pub fn model_output_sha256(&self) -> Option<&Sha256Digest> {
         self.model_output_sha256.as_ref()
     }

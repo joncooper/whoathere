@@ -2,7 +2,7 @@
 
 Date: 2026-07-09
 
-Revised: 2026-07-15
+Revised: 2026-07-16
 
 Status: canonical detection-first execution plan for the macOS-hosted local beta
 
@@ -51,6 +51,20 @@ The strategic correction is therefore:
 Do not pursue IPv6, GSO, full TLS interception, or general protocol expansion unless a failing
 detection gate shows that it is necessary. The current goal ends at a credible, usable,
 macOS-hosted local detection beta. Cloudflare and AWS portability are a separate follow-on goal.
+
+### July 16 working checkpoint
+
+- A real subscription-backed Codex invocation completed through the exact-artifact path on an
+  inert npm fixture. All six declared findings were structurally valid and retained with exact
+  artifact citations: sensitive-path access, credential access, environment gating, process
+  execution, network capability, and credential exfiltration. Coverage remained honestly
+  incomplete, so the result carried no admission authority and could not become `observed_clean`.
+- The current qualified generic npm execution stack still stops before authenticated evidence
+  sealing with `linux_vz_package_sensor_control_io_failed`. A lifecycle-only fixture and a
+  canary-read fixture reproduce the same failure, so package-authored networking is not required.
+  The VM stops safely and no sync-back occurs; BLK-001 records the bounded resume experiment.
+- No restricted malware was rerun. The known-malware detection result therefore remains **7/11**;
+  this checkpoint proves a working static-AI detection slice, not an improved campaign score.
 
 ### July 15 working checkpoint
 

@@ -7,61 +7,37 @@ An entry must distinguish confirmed evidence from inference, preserve the safety
 the smallest decision or experiment needed to resume it. Mainline work moves to another
 detection-bearing slice instead of continuing an unbounded patch loop.
 
-## BLK-001: npm package execution stops on an orphan `sendto` exit
+## BLK-001: physical npm evidence sealing stops on guest sensor control I/O
 
-Status: paused after physical reproduction under both npm CI profiles; no runtime-v12 work
-authorized in the working-solution slice.
+Status: paused after physical reproduction with the current qualified generic execution stack.
+Static exact-artifact work can proceed independently, but physical behavioral observation cannot
+claim success until this boundary emits an authenticated bundle.
 
 Confirmed:
 
-- deterministic runtime qualification passed twice, a fresh cloud-Mac physical qualification
-  passed, and the signed qualification record verified;
-- the exact inert network/canary npm artifact failed closed under both `ci_false` and `ci_true`
-  before an accepted package result;
-- a second inert package that only read the seeded canary reproduced the same fault under both
-  profiles, so package-authored networking is not required to trigger it;
-- the bounded child reason was `exit_without_enter`, observed syscall `sendto`, pending count zero;
-- the failure propagated as process-stream pairing invalid, then process-sensor runtime fault;
-- the VM stopped, the disposable clone was destroyed, no public route or sync-back existed, and
-  no authenticated behavior bundle was sealed.
+- the earlier targetless-`sendto` and execution-window fixes were rebuilt and qualified;
+- exact inert npm runs now fail at the root runtime with
+  `linux_vz_package_sensor_control_io_failed`, before authenticated evidence sealing;
+- both a lifecycle-only fixture and a canary-read fixture reproduce the same failure, so
+  package-authored networking is not required;
+- matching the current generic helper, runtime, and image stack does not remove the failure, so it
+  is not explained by the older helper/parser mismatch;
+- the VM stops safely, the disposable clone is destroyed, no sync-back occurs, and no behavior
+  bundle is accepted.
 
 Not established:
 
-- CPU migration or single-CPU tracepoint attachment is not the cause; prior physical qualification
-  disproves that hypothesis for this backend;
-- an unsupported, null, non-IP, or unreadable `sendto` address being discarded on entry while its
-  exit is retained is plausible from the producer code, but the v11 evidence does not prove it.
+- the exact control operation and guest component that fails have not yet been isolated;
+- no physical behavior bundle has reached the Codex observer, so the successful inert static-AI
+  result is not a physical detonation-observation claim.
 
-Recommended resume decision:
+Smallest resume experiment:
 
-- replace online syscall-pair completeness with a bounded guest-local `ActionEvidenceBundleV1`;
-- journal structurally valid syscall halves, process lifecycle, file/canary, and cgroup-egress facts;
-- derive pairing and correlations after the action, without allowing a missing half to erase valid
-  evidence or abort sealing;
-- sign the ordered journal, coverage counters, and typed gaps, then bind it to host raw-frame,
-  teardown, and clone-destruction evidence;
-- forbid `observed_clean` for any orphan half, producer drop, unsupported target detail,
-  truncation, missing modality, or failed host composition.
-
-First experiment on resume:
-
-1. Exercise `exec -> orphan sendto exit -> file/canary event -> cgroup egress -> leader exit`.
-2. Require a valid signed bundle with one typed `unpaired_syscall_exit/sendto` gap and all valid
-   positive observations preserved.
-3. Prove that omitted gaps, forged completeness, count changes, or bundle tampering fail
-   verification.
-4. Rebuild deterministically, requalify twice, and rerun the read-only canary fixture under
-   `ci_false` first, then `ci_true`.
-5. Require authenticated guest evidence, independently verified host composition, honest
-   incomplete/non-clean status, and complete teardown before reconnecting the Codex observer.
-
-Alternatives considered:
-
-- retaining the current stream and merely signing typed gaps is slightly faster but preserves the
-  brittle online-pair invariant and its adjacency assumptions;
-- dropping syscall-intent evidence for an alpha run is faster but loses failed/pre-transmission
-  network intent, credential transitions, and dynamic-loading evidence, and could never support an
-  observed-clean result.
+1. Add bounded stage and error reporting around the existing sensor-control exchange.
+2. Rerun the lifecycle-only fixture under `ci_false` and fix the first identified control failure.
+3. Require authenticated process, file, canary, and network evidence with honest coverage plus
+   verified stop, clone destruction, and no sync-back.
+4. Only then repeat `ci_true` and pass the resulting bundle to the Codex behavioral observer.
 
 ## BLK-002: the signed event denominator and independent verifier do not exist
 
