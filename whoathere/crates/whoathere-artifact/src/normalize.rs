@@ -217,6 +217,8 @@ fn normalize_npm(
             main.as_string("package.json main target must be a string")?
                 .to_string(),
         );
+    } else if logical_file(&logical, "index.js").is_some() {
+        npm.main_target = Some("index.js".to_string());
     }
     if let Some(scripts) = object.get("scripts") {
         for (name, command) in scripts.as_object("package.json scripts must be an object")? {

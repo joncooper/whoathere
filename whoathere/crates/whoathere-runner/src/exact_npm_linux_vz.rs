@@ -321,8 +321,10 @@ impl ExactArtifactDetonationAdapterV1 for LinuxVzExactNpmDetonationAdapterV1 {
         prepared: &PreparedArtifact,
         scenarios: &ExactArtifactScenarioPlanV1,
     ) -> bool {
-        if scenarios.status != ExactArtifactStageStatusV1::Complete
-            || scenarios.executable
+        if !matches!(
+            scenarios.status,
+            ExactArtifactStageStatusV1::Complete | ExactArtifactStageStatusV1::Incomplete
+        ) || scenarios.executable
             || scenarios.runtime_binding_status != "not_bound"
             || prepared.normalized().manifest.magic_detected_format != ArtifactFormat::NpmTarGzip
             || prepared.envelope().requires_external_dependency_resolution
@@ -334,38 +336,13 @@ impl ExactArtifactDetonationAdapterV1 for LinuxVzExactNpmDetonationAdapterV1 {
             return false;
         };
         if npm.requires_offline_closure
-            || !npm.dependency_declarations.is_empty()
             || npm.implicit_node_gyp_rebuild
             || !manifest.native_binary_file_ids.is_empty()
-            || scenarios.intents.len() != 2
-            || scenarios.intents.iter().any(|intent| {
-                !matches!(
-                    intent.kind,
-                    ExactArtifactScenarioKindV1::Npm(
-                        ArtifactScenarioKindV1::NpmLocalTarballInstall { .. }
-                    )
-                )
-            })
+            || !npm_plan_has_required_install_profiles_v1(scenarios)
         {
             return false;
         }
-        let has_ci_false = scenarios.intents.iter().any(|intent| {
-            matches!(
-                intent.kind,
-                ExactArtifactScenarioKindV1::Npm(ArtifactScenarioKindV1::NpmLocalTarballInstall {
-                    environment: NpmEnvironmentProfileV1::CiFalse
-                })
-            )
-        });
-        let has_ci_true = scenarios.intents.iter().any(|intent| {
-            matches!(
-                intent.kind,
-                ExactArtifactScenarioKindV1::Npm(ArtifactScenarioKindV1::NpmLocalTarballInstall {
-                    environment: NpmEnvironmentProfileV1::CiTrue
-                })
-            )
-        });
-        has_ci_false && has_ci_true
+        true
     }
 
     fn detonate(
@@ -407,6 +384,7 @@ impl ExactArtifactDetonationAdapterV1 for LinuxVzExactNpmDetonationAdapterV1 {
         if self.configuration_reason().is_some()
             || artifact_sha256 != request.artifact_sha256
             || artifact_sha256 != prepared.evidence_subject().artifact_sha256()
+            || request.scenario_plan_sha256 != scenarios.plan_sha256
             || envelope_digest != prepared_envelope_digest
             || manifest_digest != prepared.normalized().manifest.manifest_sha256
             || scenarios.runtime_binding_status != "verified"
@@ -480,17 +458,36 @@ impl ExactArtifactDetonationAdapterV1 for LinuxVzExactNpmDetonationAdapterV1 {
 
 impl LinuxVzExactNpmDetonationAdapterV1 {
     fn supports_bound_npm_plan(&self, scenarios: &ExactArtifactScenarioPlanV1) -> bool {
-        scenarios.status == ExactArtifactStageStatusV1::Complete
-            && scenarios.intents.len() == 2
-            && scenarios.intents.iter().all(|intent| {
-                matches!(
-                    intent.kind,
-                    ExactArtifactScenarioKindV1::Npm(
-                        ArtifactScenarioKindV1::NpmLocalTarballInstall { .. }
-                    )
-                )
-            })
+        matches!(
+            scenarios.status,
+            ExactArtifactStageStatusV1::Complete | ExactArtifactStageStatusV1::Incomplete
+        ) && npm_plan_has_required_install_profiles_v1(scenarios)
     }
+}
+
+fn npm_plan_has_required_install_profiles_v1(scenarios: &ExactArtifactScenarioPlanV1) -> bool {
+    if scenarios.intents.len() != 2 {
+        return false;
+    }
+    let mut ci_false = 0usize;
+    let mut ci_true = 0usize;
+    for intent in &scenarios.intents {
+        match intent.kind {
+            ExactArtifactScenarioKindV1::Npm(ArtifactScenarioKindV1::NpmLocalTarballInstall {
+                environment: NpmEnvironmentProfileV1::CiFalse,
+            }) => ci_false += 1,
+            ExactArtifactScenarioKindV1::Npm(ArtifactScenarioKindV1::NpmLocalTarballInstall {
+                environment: NpmEnvironmentProfileV1::CiTrue,
+            }) => ci_true += 1,
+            ExactArtifactScenarioKindV1::Npm(
+                ArtifactScenarioKindV1::NpmMainOrExportProbe | ArtifactScenarioKindV1::NpmBinProbe,
+            ) => return false,
+            ExactArtifactScenarioKindV1::Wheel(_) | ExactArtifactScenarioKindV1::Sdist(_) => {
+                return false
+            }
+        }
+    }
+    ci_false == 1 && ci_true == 1
 }
 
 #[derive(Debug, Deserialize)]

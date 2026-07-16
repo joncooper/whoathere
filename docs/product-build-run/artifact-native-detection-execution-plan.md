@@ -155,6 +155,26 @@ macOS-hosted local detection beta. Cloudflare and AWS portability are a separate
   two exact custody artifacts, and the current local environment has neither the prior staged
   custody bundle nor a configured MalwareBazaar acquisition key; restoring one of those inputs is
   the remaining external prerequisite for the two real-wheel runs.
+- Exact public-registry neighbors now exercise the missed package families without executing code
+  on the host. Telnyx `4.87.0` and `4.88.1` wheels and sdists all normalized as the expected exact
+  artifact forms and remained inconclusive with zero behavior detections when AI and detonation
+  were not requested. The public `sbx` `2.1.0` tarball exposed a real npm support defect:
+  development-only dependencies were incorrectly treated as a runtime closure requirement. The
+  product now distinguishes those declarations, compiles exactly both CI install profiles, and
+  reports its `main` probe as an explicit coverage gap rather than rejecting the artifact. npm
+  packages that rely on Node's implicit `index.js` entry point receive the same honest gap. Bounded
+  cloud-Mac attempts reached verified npm runtime binding, but both tried helper configurations
+  failed before package execution or behavior projection. The exact Telnyx `4.87.0` neighbor wheel
+  likewise normalized and bound its install/import actions, then failed inside the current helper
+  before producing a behavior bundle. That shared diagnostic issue is parked in BLK-007; it does
+  not erase the exact-artifact normalization and planning improvements.
+- Subscription-backed Codex source review then completed on both exact clean Telnyx neighbor
+  wheels. It produced two moderate import/API-tampering advisories for `4.87.0` and one moderate
+  import-time-tampering advisory for `4.88.1`. All citations were structurally valid, but source
+  advisories are not behavior-gate eligible without independent corroboration. Both artifacts
+  therefore remained inconclusive with zero behavior detections, zero false-malicious verdicts,
+  no admission authority, and no observed-clean claim. This paired result exposes a repeatable
+  family-level AI false-positive pattern while proving that the current arbitration contains it.
 - No restricted malware was rerun. The known-malware detection result therefore remains **7/11**;
   this checkpoint proves working npm, wheel, and base PEP 517 sdist execution/observation slices,
   not an improved campaign score.

@@ -70,6 +70,56 @@ fn npm_tgz() -> Vec<u8> {
         .expect("finish gzip")
 }
 
+fn npm_main_with_dev_dependencies_tgz() -> Vec<u8> {
+    let encoder = GzEncoder::new(Vec::new(), Compression::default());
+    let mut archive = tar::Builder::new(encoder);
+    append_tar_file(
+        &mut archive,
+        "package/package.json",
+        br#"{"name":"detonation-main-dev-only","version":"1.0.0","main":"index.js","bin":{"detonation-main-dev-only":"cli.js"},"scripts":{"postinstall":"node postinstall.js"},"devDependencies":{"rollup":"1.0.0"}}"#,
+    );
+    append_tar_file(
+        &mut archive,
+        "package/postinstall.js",
+        b"process.stdout.write('inert');\n",
+    );
+    append_tar_file(
+        &mut archive,
+        "package/index.js",
+        b"module.exports = 'inert';\n",
+    );
+    append_tar_file(
+        &mut archive,
+        "package/cli.js",
+        b"#!/usr/bin/env node\nprocess.exit(0);\n",
+    );
+    archive
+        .into_inner()
+        .expect("finish tar")
+        .finish()
+        .expect("finish gzip")
+}
+
+fn npm_runtime_dependency_tgz() -> Vec<u8> {
+    let encoder = GzEncoder::new(Vec::new(), Compression::default());
+    let mut archive = tar::Builder::new(encoder);
+    append_tar_file(
+        &mut archive,
+        "package/package.json",
+        br#"{"name":"detonation-runtime-dependency","version":"1.0.0","scripts":{"postinstall":"node postinstall.js"},"dependencies":{"left-pad":"1.3.0"}}"#,
+    );
+    append_tar_file(
+        &mut archive,
+        "package/postinstall.js",
+        b"process.stdout.write('inert');\n",
+    );
+    archive
+        .into_inner()
+        .expect("finish tar")
+        .finish()
+        .expect("finish gzip")
+}
+
 fn write_mock_helper(root: &std::path::Path, artifact_sha256: &str) -> std::path::PathBuf {
     let path = root.join("mock-linux-vz-helper.sh");
     let script = format!(
@@ -230,6 +280,137 @@ fn exact_npm_adapter_runs_both_ci_profiles_with_the_verified_artifact_bytes() {
         .expect("artifact manifest JSON");
         assert_eq!(manifest["artifact_sha256"], artifact_sha256);
     }
+    assert!(!report.observed_clean);
+    assert!(!report.admission_authority);
+    assert!(!report.sync_back_enabled);
+}
+
+#[test]
+fn exact_npm_adapter_runs_planned_install_profiles_and_retains_other_trigger_gaps() {
+    let root = TempRoot::new("whoathere-exact-npm-linux-vz-partial");
+    let artifact = npm_main_with_dev_dependencies_tgz();
+    let artifact_sha256 = Sha256Digest::from_bytes(&artifact).to_string();
+    let artifact_path = root.path().join("detonation-main-dev-only-1.0.0.tgz");
+    std::fs::write(&artifact_path, &artifact).expect("write exact npm fixture");
+    let helper_path = write_mock_helper(root.path(), &artifact_sha256);
+    let config = adapter_config(root.path(), helper_path);
+    let output_root = config.output_root.clone();
+    let adapter = LinuxVzExactNpmDetonationAdapterV1::new(config).expect("ready mock adapter");
+
+    let report = inspect_exact_artifact_v1(
+        ExactArtifactInspectionRequestV1 {
+            artifact_path: &artifact_path,
+            quarantine_root: &root.path().join("cas"),
+            ecosystem: None,
+            acquired_at: "2026-07-16T12:34:56Z",
+            ai_requested: false,
+            ai_provider: None,
+            behavior_observation_requested: false,
+            detonation_requested: true,
+            normalization_limits: NormalizationLimits::default(),
+        },
+        None,
+        Some(&adapter),
+    )
+    .expect("run partial exact npm detonation adapter");
+
+    assert_eq!(
+        report.scenario_plan.status,
+        ExactArtifactStageStatusV1::Incomplete
+    );
+    assert_eq!(report.scenario_plan.runtime_binding_status, "verified");
+    assert!(report.scenario_plan.executable);
+    assert_eq!(report.scenario_plan.intents.len(), 2);
+    assert!(!report
+        .reason_codes
+        .contains(&"exact_artifact_dependency_closure_required".to_string()));
+    assert!(report
+        .scenario_plan
+        .reason_codes
+        .contains(&"exact_artifact_npm_main_or_export_probe_runtime_not_qualified".to_string()));
+    assert!(report
+        .scenario_plan
+        .reason_codes
+        .contains(&"exact_artifact_npm_bin_probe_runtime_not_qualified".to_string()));
+    let detonation = report
+        .stages
+        .iter()
+        .find(|stage| stage.stage == "detonation")
+        .expect("detonation stage");
+    assert!(detonation
+        .reason_codes
+        .contains(&"vm_evidence_captured_pending_analysis".to_string()));
+
+    let run_roots = std::fs::read_dir(&output_root)
+        .expect("read retained output root")
+        .map(|entry| entry.expect("retained run entry").path())
+        .collect::<Vec<_>>();
+    assert_eq!(run_roots.len(), 1);
+    for environment in ["ci_false", "ci_true"] {
+        let evidence = run_roots[0].join(environment).join("evidence");
+        assert_eq!(
+            std::fs::read_to_string(evidence.join("seen-environment.txt"))
+                .expect("mock saw environment"),
+            format!("{environment}\n")
+        );
+    }
+    assert_eq!(report.status, ExactArtifactDispositionV1::Inconclusive);
+    assert!(!report.observed_clean);
+    assert!(!report.admission_authority);
+    assert!(!report.sync_back_enabled);
+}
+
+#[test]
+fn exact_npm_adapter_does_not_bind_when_runtime_dependencies_need_a_closure() {
+    let root = TempRoot::new("whoathere-exact-npm-linux-vz-runtime-dependency");
+    let artifact = npm_runtime_dependency_tgz();
+    let artifact_sha256 = Sha256Digest::from_bytes(&artifact).to_string();
+    let artifact_path = root.path().join("detonation-runtime-dependency-1.0.0.tgz");
+    std::fs::write(&artifact_path, &artifact).expect("write exact npm fixture");
+    let helper_path = write_mock_helper(root.path(), &artifact_sha256);
+    let config = adapter_config(root.path(), helper_path);
+    let output_root = config.output_root.clone();
+    let adapter = LinuxVzExactNpmDetonationAdapterV1::new(config).expect("ready mock adapter");
+
+    let report = inspect_exact_artifact_v1(
+        ExactArtifactInspectionRequestV1 {
+            artifact_path: &artifact_path,
+            quarantine_root: &root.path().join("cas"),
+            ecosystem: None,
+            acquired_at: "2026-07-16T12:34:56Z",
+            ai_requested: false,
+            ai_provider: None,
+            behavior_observation_requested: false,
+            detonation_requested: true,
+            normalization_limits: NormalizationLimits::default(),
+        },
+        None,
+        Some(&adapter),
+    )
+    .expect("runtime dependency remains a supported inconclusive result");
+
+    assert_eq!(
+        report.scenario_plan.status,
+        ExactArtifactStageStatusV1::Incomplete
+    );
+    assert_eq!(report.scenario_plan.runtime_binding_status, "not_bound");
+    assert!(!report.scenario_plan.executable);
+    assert!(report
+        .reason_codes
+        .contains(&"exact_artifact_dependency_closure_required".to_string()));
+    let detonation = report
+        .stages
+        .iter()
+        .find(|stage| stage.stage == "detonation")
+        .expect("detonation stage");
+    assert!(detonation
+        .reason_codes
+        .contains(&"exact_artifact_runtime_binding_not_verified".to_string()));
+    assert!(
+        !output_root.exists(),
+        "helper must not run without the closure"
+    );
+    assert_eq!(report.status, ExactArtifactDispositionV1::Inconclusive);
     assert!(!report.observed_clean);
     assert!(!report.admission_authority);
     assert!(!report.sync_back_enabled);

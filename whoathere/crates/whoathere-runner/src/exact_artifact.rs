@@ -1145,7 +1145,7 @@ pub fn inspect_exact_artifact_with_behavior_v1(
 
 fn manifest_requires_external_resolution(manifest: &whoathere_artifact::ArtifactManifest) -> bool {
     if let Some(npm) = &manifest.metadata.npm {
-        return npm.requires_offline_closure || !npm.dependency_declarations.is_empty();
+        return npm.requires_offline_closure;
     }
     if let Some(wheel) = &manifest.metadata.wheel {
         return !wheel.requires_dist.is_empty();
@@ -1585,7 +1585,6 @@ fn compile_scenario_intents(
             };
             if prepared.envelope().requires_external_dependency_resolution
                 || npm.requires_offline_closure
-                || !npm.dependency_declarations.is_empty()
             {
                 reasons.push("exact_artifact_dependency_closure_required".to_string());
             }
@@ -1599,7 +1598,7 @@ fn compile_scenario_intents(
             {
                 reasons.push("exact_artifact_npm_lifecycle_hook_unqualified".to_string());
             }
-            let mut kinds = vec![
+            let kinds = vec![
                 ExactArtifactScenarioKindV1::Npm(ArtifactScenarioKindV1::NpmLocalTarballInstall {
                     environment: NpmEnvironmentProfileV1::CiFalse,
                 }),
@@ -1608,14 +1607,12 @@ fn compile_scenario_intents(
                 }),
             ];
             if npm.main_target.is_some() || !npm.export_targets.is_empty() {
-                kinds.push(ExactArtifactScenarioKindV1::Npm(
-                    ArtifactScenarioKindV1::NpmMainOrExportProbe,
-                ));
+                reasons.push(
+                    "exact_artifact_npm_main_or_export_probe_runtime_not_qualified".to_string(),
+                );
             }
             if !npm.bin_targets.is_empty() {
-                kinds.push(ExactArtifactScenarioKindV1::Npm(
-                    ArtifactScenarioKindV1::NpmBinProbe,
-                ));
+                reasons.push("exact_artifact_npm_bin_probe_runtime_not_qualified".to_string());
             }
             kinds
         }
@@ -1765,7 +1762,26 @@ fn scenario_plan_runtime_binding_candidate_v1(
                 .collect::<Option<Vec<_>>>();
             actual.is_some_and(|actual| actual == expected)
         }
-        ArtifactFormat::NpmTarGzip | ArtifactFormat::Unknown => false,
+        ArtifactFormat::NpmTarGzip => {
+            if prepared.normalized().manifest.metadata.npm.is_none() {
+                return false;
+            }
+            let expected = vec![
+                ExactArtifactScenarioKindV1::Npm(ArtifactScenarioKindV1::NpmLocalTarballInstall {
+                    environment: NpmEnvironmentProfileV1::CiFalse,
+                }),
+                ExactArtifactScenarioKindV1::Npm(ArtifactScenarioKindV1::NpmLocalTarballInstall {
+                    environment: NpmEnvironmentProfileV1::CiTrue,
+                }),
+            ];
+            let actual = scenarios
+                .intents
+                .iter()
+                .map(|intent| intent.kind.clone())
+                .collect::<Vec<_>>();
+            actual == expected
+        }
+        ArtifactFormat::Unknown => false,
     }
 }
 

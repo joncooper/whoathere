@@ -35,17 +35,15 @@ Current claim boundary:
 
 This is useful security tooling, not a promise that arbitrary packages are safe.
 
-The artifact-native detection build now has exact-artifact Linux VZ bundle routes for npm tarballs,
-pure-Python wheels, and nested-root PEP 517 sdists. The sdist route carries an optional exact offline
-build closure through the Mac helper and guest image, then uses the existing sealed derived-wheel
-build/install/import plan. These routes are contract-tested, and the observe-only Codex specialists
-can analyze the resulting typed process, file, canary, and network bundle. One `artifact inspect`
-run now preserves exact-cited deterministic and Codex source findings, accepts validated behavior
-bundles from the npm and wheel VM adapters, and automatically runs the Codex behavioral specialists
-when AI review and detonation are selected together. An inert one-call test proves that a cited
-canary access becomes a malicious result while ordinary lifecycle and network context alone does
-not. This is a contract-tested product path, not a physical detonation claim: physical package
-evidence sealing remains blocked by the shared `BLK-001` syscall-pairing fault. See the
+The artifact-native detection build now has physically exercised exact-artifact Linux VZ routes for
+npm tarballs, pure-Python wheels, and nested-root PEP 517 sdists. Exact npm installation completed
+under both CI profiles, one wheel completed its eight install and trigger actions, and the base
+sdist path completed build, derived-wheel inspection and install, and import. Observe-only Codex
+specialists consumed sanitized, digest-bound process, file, canary, and network bundles from those
+runs and preserved behavior-specific findings without gaining VM or admission authority. Evidence
+coverage remains incomplete, the independent claim-bearing event verifier is not implemented, and
+the known-malware score remains 7/11. This is working detection infrastructure, not yet a broad
+detection claim. See the
 [execution plan](docs/product-build-run/artifact-native-detection-execution-plan.md) and
 [blocker queue](docs/product-build-run/detection-blocker-queue.md).
 
@@ -94,15 +92,14 @@ Avoid claims such as:
 
 Next gates before a detection-credible beta:
 
-- Replace the brittle online syscall-pair acceptance point with the bounded signed end-of-action
-  journal in `BLK-001`, then seal physical evidence for the exact npm, wheel, and PEP 517 sdist
-  routes.
+- Measure the 40-artifact development benign cohort and correct practical false-malicious or
+  unsupported results.
+- Restore exact restricted-sample custody, rerun the four prior misses, and then require 11/11
+  behavior-specific known-regression detections.
 - Complete the second-pass derived-wheel `.pth` and console-entry probes plus legacy and ZIP-sdist
   controls; unsupported paths must remain inconclusive or manual review.
-- Run the now-wired Codex behavioral specialists on the first completed physical process, file,
-  canary, and network bundles.
-- Rerun the four prior misses, then require 11/11 behavior-specific known-regression detections.
-- Run benign controls and report hard-deny/manual-review rates.
+- Complete the independent signed-event verifier before treating a campaign score as
+  claim-bearing or allowing complete benign evidence to become observed-clean.
 - Preserve the safety invariants: no host execution, no sync-back, no live C2, and no redaction
   leaks.
 

@@ -224,3 +224,52 @@ Smallest resume experiment:
 
 Until this bounded experiment is resumed, preserve actions 0 through 2 as valid positive evidence
 and report the full sdist run as incomplete.
+
+## BLK-007: ordinary npm and Telnyx wheel controls bind but the cloud helper exits early
+
+Status: parked on July 16, 2026 after bounded npm configuration checks and one adjacent Telnyx
+wheel run failed before package execution could be proven or behavior evidence projected.
+
+Confirmed:
+
+- the exact public npm artifact `sbx@2.1.0`,
+  `sha256:3194826cbb5007583a435872b2822cc010a5f57c7062d6025e2f5ea599a2aaf0`, contains
+  only development dependencies, a normal `main` target, and no install lifecycle script;
+- the original product incorrectly classified any npm dependency declaration, including
+  `devDependencies`, as a required runtime closure and therefore made normalization incomplete;
+- after correcting that boundary, normalization is complete, the scenario plan contains exactly
+  the two runnable install profiles, and the `main` probe remains an explicit coverage gap;
+- a package-level `index.js` without an explicit `main` is normalized as Node's implicit main
+  target, so the standard import trigger cannot disappear from coverage reporting;
+- the npm adapter now binds and executes the two CI install profiles while recording the unexecuted
+  `main` probe as incomplete coverage; unit tests prove that this path remains inconclusive and has
+  no clean, admission, or sync-back authority;
+- on the approved cloud Mac, both tried helper/runtime configurations reached verified npm runtime
+  binding but returned `helper_process_failed` for `ci_false` and `ci_true` before artifact
+  binding, package execution, VM teardown, or behavior projection could be proven;
+- the retained evidence directories contain only the pre-execution runtime clone bindings. No
+  behavior bundle was produced, and the result remains inconclusive;
+- the exact public Telnyx `4.87.0` wheel,
+  `sha256:5aeb8172c29ade224e6c2d166713f304596aa21e3dbfa5b6b2b028e6997f6bd2`, also
+  normalized completely and bound its two dependency-aware install/import actions to the current
+  wheel helper, but both actions returned `helper_process_failed` without proving artifact binding,
+  package execution, image stability, teardown, or behavior projection;
+- the adapter currently discards helper stderr and does not retain the parsed helper failure body,
+  so the bounded report does not identify the underlying helper reason.
+
+Do not continue swapping runtime configurations. Smallest resume experiment:
+
+1. Retain bounded helper stdout and stderr for this exact benign artifact without changing the VM
+   safety policy or running package code on the host.
+2. Repeat only one `ci_false` npm profile and one wheel install action with the last successful
+   pinned inert identities, then extract each helper's typed failure reason.
+3. Determine whether the pinned inert controls also fail before attributing the result to either
+   public artifact shape.
+4. Compare only the first divergent typed step; do not rotate more helpers or runtime bundles.
+5. If corrected, require both npm CI profiles and both Telnyx wheel actions to produce behavior
+   bundles, verified teardown, no public route, and no sync-back while all unqualified triggers
+   remain explicit coverage gaps.
+
+This blocker matters because ordinary npm packages commonly declare `main` and development-only
+dependencies, while the adjacent Telnyx wheel has the exact form needed for two known misses. It
+does not justify more telemetry hardening before the typed helper failures are available.

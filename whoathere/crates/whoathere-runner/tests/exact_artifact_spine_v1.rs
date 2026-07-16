@@ -102,6 +102,26 @@ fn npm_tgz() -> Vec<u8> {
         .expect("finish gzip")
 }
 
+fn npm_dev_dependencies_only_tgz() -> Vec<u8> {
+    let encoder = GzEncoder::new(Vec::new(), Compression::default());
+    let mut archive = tar::Builder::new(encoder);
+    append_tar_file(
+        &mut archive,
+        "package/package.json",
+        br#"{"name":"spine-dev-only","version":"1.0.0","devDependencies":{"rollup":"1.0.0"}}"#,
+    );
+    append_tar_file(
+        &mut archive,
+        "package/index.js",
+        b"module.exports = 'inert';\n",
+    );
+    archive
+        .into_inner()
+        .expect("finish tar")
+        .finish()
+        .expect("finish gzip")
+}
+
 const NPM_CAPABILITY_FIXTURE: &[u8] = br#"const fs = require('node:fs');
 const token = process.env.NPM_TOKEN;
 const config = fs.readFileSync(process.env.HOME + '/.npmrc');
@@ -453,7 +473,7 @@ fn inspect(
 }
 
 #[test]
-fn npm_exact_bytes_bind_static_analysis_and_all_declared_trigger_intents() {
+fn npm_exact_bytes_bind_lifecycle_intents_and_retain_unqualified_trigger_gaps() {
     let root = TempRoot::new("whoathere-exact-spine-npm");
     let bytes = npm_tgz();
     let report = inspect(
@@ -481,19 +501,19 @@ fn npm_exact_bytes_bind_static_analysis_and_all_declared_trigger_intents() {
         .starts_with("local-file:sha256:"));
     assert!(!report.identity.source_coordinate.contains("approved"));
     assert_eq!(report.identity.package_name.as_deref(), Some("spine-inert"));
-    assert_eq!(report.scenario_plan.intents.len(), 4);
+    assert_eq!(report.scenario_plan.intents.len(), 2);
     assert!(report.scenario_plan.intents.iter().any(|intent| matches!(
         intent.kind,
         ExactArtifactScenarioKindV1::Npm(ArtifactScenarioKindV1::NpmLocalTarballInstall { .. })
     )));
-    assert!(report.scenario_plan.intents.iter().any(|intent| matches!(
-        intent.kind,
-        ExactArtifactScenarioKindV1::Npm(ArtifactScenarioKindV1::NpmMainOrExportProbe)
-    )));
-    assert!(report.scenario_plan.intents.iter().any(|intent| matches!(
-        intent.kind,
-        ExactArtifactScenarioKindV1::Npm(ArtifactScenarioKindV1::NpmBinProbe)
-    )));
+    assert!(report
+        .scenario_plan
+        .reason_codes
+        .contains(&"exact_artifact_npm_main_or_export_probe_runtime_not_qualified".to_string()));
+    assert!(report
+        .scenario_plan
+        .reason_codes
+        .contains(&"exact_artifact_npm_bin_probe_runtime_not_qualified".to_string()));
     assert!(report.stages.iter().any(|stage| {
         stage.stage == "ai_review" && stage.status == ExactArtifactStageStatusV1::Unavailable
     }));
@@ -503,6 +523,39 @@ fn npm_exact_bytes_bind_static_analysis_and_all_declared_trigger_intents() {
     assert!(!report.admission_authority);
     assert!(!report.observed_clean);
     assert!(!report.sync_back_enabled);
+}
+
+#[test]
+fn npm_dev_dependencies_do_not_require_a_runtime_dependency_closure() {
+    let root = TempRoot::new("whoathere-exact-spine-npm-dev-only");
+    let report = inspect(
+        &root,
+        "spine-dev-only-1.0.0.tgz",
+        &npm_dev_dependencies_only_tgz(),
+        Some(Ecosystem::Npm),
+        (false, false),
+        (None, None),
+    );
+
+    assert_eq!(
+        report.scenario_plan.status,
+        ExactArtifactStageStatusV1::Incomplete
+    );
+    assert!(report.scenario_plan.intents.iter().any(|intent| matches!(
+        intent.kind,
+        ExactArtifactScenarioKindV1::Npm(ArtifactScenarioKindV1::NpmLocalTarballInstall { .. })
+    )));
+    assert!(!report
+        .reason_codes
+        .contains(&"exact_artifact_dependency_closure_required".to_string()));
+    assert!(report
+        .reason_codes
+        .contains(&"exact_artifact_npm_main_or_export_probe_runtime_not_qualified".to_string()));
+    assert!(!report
+        .reason_codes
+        .contains(&"exact_artifact_normalization_incomplete".to_string()));
+    assert!(!report.observed_clean);
+    assert!(!report.admission_authority);
 }
 
 #[test]
