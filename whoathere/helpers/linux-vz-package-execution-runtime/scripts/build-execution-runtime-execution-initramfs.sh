@@ -61,6 +61,7 @@ qualified_backend="$bundle_dir/qualified-backend.json"
 authority_request="$bundle_dir/package-authority-request.json"
 execution_grant="$bundle_dir/execution-grant.json"
 artifact="$bundle_dir/artifact.bin"
+build_closure="$bundle_dir/build-closure.bin"
 scenario_plan="$bundle_dir/scenario-plan.json"
 scenario_template="$bundle_dir/scenario-template.json"
 guest_public_key="$bundle_dir/guest-ed25519-public-key.bin"
@@ -125,6 +126,9 @@ then
     exit 65
 fi
 bundle_schema=$(jq -er '.schema_version | select(type == "string")' "$bundle_manifest")
+build_closure_payload_present=false
+build_closure_payload_sha256=absent
+build_closure_payload_byte_length=0
 case "$bundle_schema" in
     whoathere.linux_vz_inert_npm_execution_bundle.v1)
         bundle_environment=$(jq -er '.environment | select(type == "string")' \
@@ -152,11 +156,73 @@ case "$bundle_schema" in
         fi
         expected_artifact_kind=pypi_wheel
         ;;
+    whoathere.linux_vz_inert_sdist_execution_bundle.v1)
+        bundle_scenario_index=$(jq -er \
+            '.scenario_index | select(type == "string")' "$bundle_manifest")
+        if ! printf '%s\n' "$bundle_scenario_index" | grep -Eq '^(0|[1-9][0-9]*)$'; then
+            echo "execution bundle scenario index is invalid" >&2
+            exit 65
+        fi
+        if jq -e 'has("environment")' "$bundle_manifest" >/dev/null; then
+            echo "sdist execution bundle contains an npm selector" >&2
+            exit 65
+        fi
+        build_closure_payload_present=$(jq -er \
+            '.build_closure_payload_present | select(type == "boolean")' \
+            "$bundle_manifest")
+        build_closure_payload_byte_length=$(jq -er \
+            '.build_closure_payload_byte_length | select(type == "string")' \
+            "$bundle_manifest")
+        case "$build_closure_payload_present" in
+            true)
+                build_closure_payload_sha256=$(jq -er \
+                    '.build_closure_payload_sha256 | select(type == "string")' \
+                    "$bundle_manifest")
+                if ! printf '%s\n' "$build_closure_payload_byte_length" \
+                    | grep -Eq '^[1-9][0-9]*$'
+                then
+                    echo "sdist build closure byte length is invalid" >&2
+                    exit 65
+                fi
+                if [ ! -f "$build_closure" ] || [ -L "$build_closure" ]; then
+                    echo "sdist build closure payload is missing or unsafe" >&2
+                    exit 66
+                fi
+                ;;
+            false)
+                if ! jq -e 'has("build_closure_payload_sha256") and (.build_closure_payload_sha256 == null)' \
+                    "$bundle_manifest" >/dev/null || \
+                   [ "$build_closure_payload_byte_length" != 0 ] || \
+                   [ -e "$build_closure" ] || [ -L "$build_closure" ]
+                then
+                    echo "absent sdist build closure is not represented exactly" >&2
+                    exit 65
+                fi
+                ;;
+            *)
+                echo "sdist build closure presence is invalid" >&2
+                exit 65
+                ;;
+        esac
+        expected_artifact_kind=pypi_sdist
+        ;;
     *)
         echo "execution bundle schema is invalid" >&2
         exit 65
         ;;
 esac
+if [ "$expected_artifact_kind" != pypi_sdist ]; then
+    if jq -e '
+        has("build_closure_payload_present") or
+        has("build_closure_payload_sha256") or
+        has("build_closure_payload_byte_length")
+    ' "$bundle_manifest" >/dev/null || \
+       [ -e "$build_closure" ] || [ -L "$build_closure" ]
+    then
+        echo "non-sdist execution bundle contains build closure state" >&2
+        exit 65
+    fi
+fi
 if [ "$(jq -er '.execution_authority_issued' "$bundle_manifest")" != true ] || \
    [ "$(jq -er '.attempt_limit' "$bundle_manifest")" != 1 ] || \
    [ "$(jq -er '.public_network_route_present' "$bundle_manifest")" != false ] || \
@@ -181,6 +247,18 @@ require_digest() {
 valid_digest() {
     printf '%s\n' "$1" | grep -Eq '^sha256:[0-9a-f]{64}$'
 }
+
+if [ "$build_closure_payload_present" = true ]; then
+    valid_digest "$build_closure_payload_sha256" || {
+        echo "sdist build closure digest is invalid" >&2
+        exit 65
+    }
+    require_digest "$build_closure" "$build_closure_payload_sha256"
+    if [ "$(stat -f '%z' "$build_closure")" != "$build_closure_payload_byte_length" ]; then
+        echo "sdist build closure byte length mismatch" >&2
+        exit 65
+    fi
+fi
 
 runtime_sha256=$(jq -er '.package_runner_sha256' "$runtime_manifest")
 rootfs_sha256=$(jq -er '.rootfs_sha256' "$runtime_manifest")
@@ -305,6 +383,8 @@ sed \
     -e "s|__WHOATHERE_AUTHORITY_REQUEST_SHA256__|$authority_request_sha256|g" \
     -e "s|__WHOATHERE_EXECUTION_GRANT_SHA256__|$execution_grant_sha256|g" \
     -e "s|__WHOATHERE_ARTIFACT_SHA256__|$artifact_sha256|g" \
+    -e "s|__WHOATHERE_BUILD_CLOSURE_SHA256__|$build_closure_payload_sha256|g" \
+    -e "s|__WHOATHERE_BUILD_CLOSURE_BYTE_LENGTH__|$build_closure_payload_byte_length|g" \
     -e "s|__WHOATHERE_SCENARIO_PLAN_SHA256__|$scenario_plan_sha256|g" \
     -e "s|__WHOATHERE_SCENARIO_TEMPLATE_SHA256__|$scenario_template_sha256|g" \
     -e "s|__WHOATHERE_GUEST_PUBLIC_KEY_SHA256__|$guest_public_key_sha256|g" \
@@ -332,6 +412,9 @@ cp "$qualified_backend" "$work_output/overlay/whoathere/inputs/qualified-backend
 cp "$authority_request" "$work_output/overlay/whoathere/inputs/package-authority-request.json"
 cp "$execution_grant" "$work_output/overlay/whoathere/inputs/execution-grant.json"
 cp "$artifact" "$work_output/overlay/whoathere/inputs/artifact.bin"
+if [ "$build_closure_payload_present" = true ]; then
+    cp "$build_closure" "$work_output/overlay/whoathere/inputs/build-closure.bin"
+fi
 cp "$scenario_plan" "$work_output/overlay/whoathere/inputs/scenario-plan.json"
 cp "$scenario_template" "$work_output/overlay/whoathere/inputs/scenario-template.json"
 cp "$guest_public_key" "$work_output/overlay/whoathere/inputs/guest-ed25519-public-key.bin"
@@ -353,7 +436,7 @@ native_sdk=$(xcrun --show-sdk-path)
 "$native_cc" -O2 -Wall -Wextra -Werror -fno-ident -isysroot "$native_sdk" \
     -o "$build_root/canonical-execution-bundle-newc" "$newc_source"
 overlay="$work_output/whoathere-package-execution-overlay.cpio"
-"$build_root/canonical-execution-bundle-newc" \
+set -- \
     "$overlay" \
     "$work_output/overlay/init" \
     "$work_output/overlay/whoathere/execution-descriptor-launcher" \
@@ -372,6 +455,10 @@ overlay="$work_output/whoathere-package-execution-overlay.cpio"
     "$work_output/overlay/whoathere/inputs/grant-issuer-ed25519-public-key.bin" \
     "$work_output/overlay/whoathere/inputs/execution-runtime-qualification-record.json" \
     "$work_output/overlay/whoathere/inputs/runtime-clone-binding.json"
+if [ "$build_closure_payload_present" = true ]; then
+    set -- "$@" "$work_output/overlay/whoathere/inputs/build-closure.bin"
+fi
+"$build_root/canonical-execution-bundle-newc" "$@"
 overlay_gzip="$overlay.gz"
 gzip -n -9 -c "$overlay" > "$overlay_gzip"
 final_initramfs="$work_output/whoathere-package-execution-initramfs-virt"

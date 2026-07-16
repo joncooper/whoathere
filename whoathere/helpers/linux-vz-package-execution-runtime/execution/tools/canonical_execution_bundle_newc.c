@@ -158,10 +158,10 @@ int main(int argument_count, char **arguments) {
         0100444, 0100444, 0100444,
     };
     const int file_count = (int)(sizeof(archive_names) / sizeof(archive_names[0]));
-    if (argument_count != file_count + 2) {
+    if (argument_count != file_count + 2 && argument_count != file_count + 3) {
         fprintf(
             stderr,
-            "usage: canonical_execution_bundle_newc OUTPUT INIT LAUNCHER RUNTIME_MANIFEST SIGNING_SEED BUNDLE_MANIFEST BACKEND_IDENTITY QUALIFIED_BACKEND AUTHORITY_REQUEST EXECUTION_GRANT ARTIFACT PLAN TEMPLATE GUEST_PUBLIC_KEY HOST_PUBLIC_KEY GRANT_PUBLIC_KEY QUALIFICATION_RECORD CLONE_BINDING\n"
+            "usage: canonical_execution_bundle_newc OUTPUT INIT LAUNCHER RUNTIME_MANIFEST SIGNING_SEED BUNDLE_MANIFEST BACKEND_IDENTITY QUALIFIED_BACKEND AUTHORITY_REQUEST EXECUTION_GRANT ARTIFACT PLAN TEMPLATE GUEST_PUBLIC_KEY HOST_PUBLIC_KEY GRANT_PUBLIC_KEY QUALIFICATION_RECORD CLONE_BINDING [BUILD_CLOSURE]\n"
         );
         return 64;
     }
@@ -188,7 +188,17 @@ int main(int argument_count, char **arguments) {
             arguments[index + 2]
         );
     }
-    write_trailer(output, (uint32_t)(file_count + 3));
+    uint32_t next_inode = (uint32_t)(file_count + 3);
+    if (argument_count == file_count + 3) {
+        write_file_entry(
+            output,
+            next_inode++,
+            0100444,
+            "whoathere/inputs/build-closure.bin",
+            arguments[file_count + 2]
+        );
+    }
+    write_trailer(output, next_inode);
     if (fclose(output) != 0) {
         fail("output close failed");
     }

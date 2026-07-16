@@ -41,11 +41,13 @@ private final class ExecutionProgress {
 private enum PackageArtifactKind: String {
     case npmTgz = "npm_tgz"
     case wheel
+    case sdist
 
     var authorityArtifactKind: String {
         switch self {
         case .npmTgz: return "npm_tarball"
         case .wheel: return "pypi_wheel"
+        case .sdist: return "pypi_sdist"
         }
     }
 }
@@ -58,6 +60,7 @@ private enum NpmEnvironment: String {
 private enum ScenarioSelector {
     case npmEnvironment(NpmEnvironment)
     case wheelScenarioIndex(Int)
+    case sdistScenarioIndex(Int)
 
     var builderArguments: [String] {
         switch self {
@@ -65,13 +68,15 @@ private enum ScenarioSelector {
             return ["--environment", environment.rawValue]
         case .wheelScenarioIndex(let index):
             return ["--scenario-index", String(index)]
+        case .sdistScenarioIndex(let index):
+            return ["--scenario-index", String(index)]
         }
     }
 
     var resultKind: String {
         switch self {
         case .npmEnvironment: return "environment"
-        case .wheelScenarioIndex: return "scenario_index"
+        case .wheelScenarioIndex, .sdistScenarioIndex: return "scenario_index"
         }
     }
 
@@ -79,6 +84,7 @@ private enum ScenarioSelector {
         switch self {
         case .npmEnvironment(let environment): return environment.rawValue
         case .wheelScenarioIndex(let index): return String(index)
+        case .sdistScenarioIndex(let index): return String(index)
         }
     }
 
@@ -87,6 +93,8 @@ private enum ScenarioSelector {
         case .npmEnvironment(let environment):
             result["environment"] = environment.rawValue
         case .wheelScenarioIndex(let index):
+            result["scenario_index"] = String(index)
+        case .sdistScenarioIndex(let index):
             result["scenario_index"] = String(index)
         }
     }
@@ -120,6 +128,7 @@ private struct Options {
     let artifact: URL
     let artifactEnvelope: URL?
     let artifactManifest: URL?
+    let buildClosure: URL?
     let artifactKind: PackageArtifactKind
     let scenarioSelector: ScenarioSelector
     let kernel: URL
@@ -141,7 +150,7 @@ private struct Options {
     init(arguments: [String]) throws {
         let accepted = Set([
             "--artifact", "--artifact-envelope", "--artifact-manifest",
-            "--artifact-kind", "--environment", "--scenario-index",
+            "--build-closure", "--artifact-kind", "--environment", "--scenario-index",
             "--kernel", "--base-initramfs",
             "--runtime-directory", "--bundle-builder",
             "--image-builder", "--backend-identity", "--qualified-backend",
@@ -160,7 +169,7 @@ private struct Options {
             index += 2
         }
         let pathArguments = accepted.subtracting([
-            "--artifact-envelope", "--artifact-manifest", "--artifact-kind",
+            "--artifact-envelope", "--artifact-manifest", "--build-closure", "--artifact-kind",
             "--environment", "--scenario-index", "--timeout-seconds",
         ])
         guard pathArguments.allSatisfy({ values[$0]?.hasPrefix("/") == true }),
@@ -184,10 +193,20 @@ private struct Options {
         default:
             throw PackageExecutionHarnessError.usage
         }
+        let buildClosure: URL?
+        if let path = values["--build-closure"] {
+            guard path.hasPrefix("/") else {
+                throw PackageExecutionHarnessError.usage
+            }
+            buildClosure = URL(fileURLWithPath: path)
+        } else {
+            buildClosure = nil
+        }
         let selector: ScenarioSelector
         switch artifactKind {
         case .npmTgz:
             guard values["--scenario-index"] == nil,
+                  buildClosure == nil,
                   let environment = values["--environment"].flatMap(
                       NpmEnvironment.init(rawValue:)
                   ) else {
@@ -196,15 +215,24 @@ private struct Options {
             selector = .npmEnvironment(environment)
         case .wheel:
             guard values["--environment"] == nil,
+                  buildClosure == nil,
                   let rawIndex = values["--scenario-index"],
                   let index = canonicalNonnegativeInteger(rawIndex) else {
                 throw PackageExecutionHarnessError.usage
             }
             selector = .wheelScenarioIndex(index)
+        case .sdist:
+            guard values["--environment"] == nil,
+                  let rawIndex = values["--scenario-index"],
+                  let index = canonicalNonnegativeInteger(rawIndex) else {
+                throw PackageExecutionHarnessError.usage
+            }
+            selector = .sdistScenarioIndex(index)
         }
         artifact = URL(fileURLWithPath: values["--artifact"]!)
         artifactEnvelope = envelopeAndManifest.0
         artifactManifest = envelopeAndManifest.1
+        self.buildClosure = buildClosure
         self.artifactKind = artifactKind
         scenarioSelector = selector
         kernel = URL(fileURLWithPath: values["--kernel"]!)
@@ -262,7 +290,7 @@ private enum PackageExecutionMain {
             exit(0)
         } catch PackageExecutionHarnessError.usage {
             fputs(
-                "usage: whoathere-linux-vz-package-execution --artifact PATH [--artifact-envelope PATH --artifact-manifest PATH] --artifact-kind npm_tgz|wheel (--environment ci_true|ci_false | --scenario-index INDEX) --kernel PATH --base-initramfs PATH --runtime-directory PATH --bundle-builder PATH --image-builder PATH --backend-identity PATH --qualified-backend PATH --qualification-record PATH --guest-public-key PATH --host-public-key PATH --grant-public-key PATH --grant-signing-seed PATH --guest-signing-seed PATH --output-directory PATH [--timeout-seconds 180]\n",
+                "usage: whoathere-linux-vz-package-execution --artifact PATH [--artifact-envelope PATH --artifact-manifest PATH] [--build-closure PATH] --artifact-kind npm_tgz|wheel|sdist (--environment ci_true|ci_false | --scenario-index INDEX) --kernel PATH --base-initramfs PATH --runtime-directory PATH --bundle-builder PATH --image-builder PATH --backend-identity PATH --qualified-backend PATH --qualification-record PATH --guest-public-key PATH --host-public-key PATH --grant-public-key PATH --grant-signing-seed PATH --guest-signing-seed PATH --output-directory PATH [--timeout-seconds 180]\n",
                 stderr
             )
             emitFailure(reason: "usage", exitCode: 64, progress: progress)
@@ -298,6 +326,7 @@ private enum PackageExecutionMain {
         for (name, url) in [
             ("artifact_envelope", options.artifactEnvelope),
             ("artifact_manifest", options.artifactManifest),
+            ("build_closure", options.buildClosure),
         ] {
             if let url, !(try regularNonSymlink(url)) {
                 throw PackageExecutionHarnessError.invalidInput(name)
@@ -382,6 +411,11 @@ private enum PackageExecutionMain {
             bundleBuilderArguments.append(contentsOf: [
                 "--artifact-envelope", artifactEnvelope.path,
                 "--artifact-manifest", artifactManifest.path,
+            ])
+        }
+        if let buildClosure = options.buildClosure {
+            bundleBuilderArguments.append(contentsOf: [
+                "--build-closure", buildClosure.path,
             ])
         }
         bundleBuilderArguments.append(contentsOf: options.scenarioSelector.builderArguments)

@@ -76,6 +76,14 @@ macOS-hosted local detection beta. Cloudflare and AWS portability are a separate
   binding. The complete five-action mock fixture passes. Physical evidence sealing is not claimed;
   a wheel VM campaign is intentionally not repeated while the shared runtime path remains blocked
   by BLK-001.
+- The exact nested-root PEP 517 sdist spine now exists through the same Mac helper and Linux VZ
+  image path. It preserves the outer artifact envelope and manifest, validates an optional
+  `WHOASCL1` build-closure frame against the sdist's declared build requirements, transports only
+  the verified raw closure material, and emits build, derived-wheel inspection/install, and
+  source-root import scenarios with fresh bindings. The empty-closure inert fixture and transport
+  presence/absence contracts pass locally. This is not a physical run, does not yet turn the
+  derived wheel into fresh `.pth` and console-entry probes, and remains blocked from authenticated
+  physical evidence by BLK-001.
 
 ## 2. Product target and claim boundary
 
@@ -281,12 +289,18 @@ alone suggests, but several bridges remain claim-critical:
   gate is physical authenticated evidence and independent receipt verification, currently blocked
   by the shared `BLK-001` runtime fault rather than missing wheel orchestration.
 - **sdist:** nested-root normalization, exact wheel-only build closure, fixed build plans, and
-  exactly-one-derived-wheel sealing already exist in code, but have not run physically. Source
-  package-root guesses must not authorize post-build probes. The sdist identity must survive into
-  derived-wheel validation; dynamic build requirements must be exercised and fail closed; and an
-  authenticated derived-wheel probe manifest must drive `.pth`, import, and entry-point scenarios.
-  The first implementation uses a two-pass discovery/probe workflow so every action remains sealed
-  before execution.
+  exactly-one-derived-wheel sealing now reach an exact PEP 517 execution bundle. The Mac helper,
+  initramfs builder, guest input verifier, canonical CPIO writer, and descriptor launcher carry an
+  optional digest-and-length-bound closure to the existing root runtime; npm and wheel bundles
+  reject closure state. The bundle preserves the outer artifact envelope and manifest, validates
+  the framed closure against declared build requirements, and compiles build, derived-wheel
+  inspection/install, and source-root import actions. Its nested-root empty-closure fixture passes
+  the Rust, Swift, shell, and C contract gates. It has not run physically because the same BLK-001
+  runtime fault blocks all package forms. The current plan also cannot honestly claim complete
+  trigger coverage: source package-root guesses must not authorize post-build `.pth` or console
+  probes. The next sdist expansion is a two-pass discovery/probe workflow in which an authenticated
+  derived-wheel manifest drives fresh `.pth`, import, and entry-point actions. Legacy `setup.py` and
+  ZIP sdists remain explicit follow-on controls, never clean fallbacks.
 - **canaries:** the current root-runtime workspace classifies sensitive paths but does not yet seed
   fake npm, PyPI, GitHub, or repository/workflow credentials. Initial inert artifact runs therefore
   qualify trigger and evidence plumbing only. Credential and propagation claims begin only after a

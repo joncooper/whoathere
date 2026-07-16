@@ -35,14 +35,15 @@ Current claim boundary:
 
 This is useful security tooling, not a promise that arbitrary packages are safe.
 
-The artifact-native detection build is now exercising a separately measured Linux VM backend. Its
-first thirty-one physical inert guest-plus-host conformance cases passed on one measured identity with
-authenticated process, file, packet/lifecycle, timeout-teardown, background-listener cleanup,
-interrupted-evidence-channel handling, forced VM-stop handling, and controlled guest-sensor failure,
-but the backend is still
-unqualified until all 38 closed cases pass.
-See the [execution plan](docs/product-build-run/artifact-native-detection-execution-plan.md) and
-[guest-sensor-death checkpoint](docs/product-build-run/artifact-native-linux-vz-guest-sensor-death-checkpoint-2026-07-12.md).
+The artifact-native detection build now has exact-artifact Linux VZ bundle routes for npm tarballs,
+pure-Python wheels, and nested-root PEP 517 sdists. The sdist route carries an optional exact offline
+build closure through the Mac helper and guest image, then uses the existing sealed derived-wheel
+build/install/import plan. These routes are contract-tested, and the observe-only Codex specialists
+can analyze the resulting typed process, file, canary, and network bundle. Physical package evidence
+sealing remains blocked by the shared `BLK-001` syscall-pairing fault, so this is not yet a completed
+detonation or detection claim. See the
+[execution plan](docs/product-build-run/artifact-native-detection-execution-plan.md) and
+[blocker queue](docs/product-build-run/detection-blocker-queue.md).
 
 ## Actual Malware Experiment
 
@@ -89,9 +90,11 @@ Avoid claims such as:
 
 Next gates before a detection-credible beta:
 
-- Seal authenticated physical evidence for the existing exact npm and pure-Python wheel routes;
-  the shared VM sensor fault is recorded as `BLK-001` rather than being tuned in the current slice.
-- Complete nested PyPI sdist build-closure, derived-wheel, and trigger execution.
+- Replace the brittle online syscall-pair acceptance point with the bounded signed end-of-action
+  journal in `BLK-001`, then seal physical evidence for the exact npm, wheel, and PEP 517 sdist
+  routes.
+- Complete the second-pass derived-wheel `.pth` and console-entry probes plus legacy and ZIP-sdist
+  controls; unsupported paths must remain inconclusive or manual review.
 - Feed completed process, file, canary, and network bundles to the observe-only Codex specialists.
 - Rerun the four prior misses, then require 11/11 behavior-specific known-regression detections.
 - Run benign controls and report hard-deny/manual-review rates.

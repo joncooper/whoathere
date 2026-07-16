@@ -15,7 +15,8 @@
 
 #define INPUT_COUNT 12
 #define FIRST_INPUT_FD 3
-#define RESULT_FD 15
+#define OPTIONAL_BUILD_CLOSURE_FD (FIRST_INPUT_FD + INPUT_COUNT)
+#define RESULT_FD (OPTIONAL_BUILD_CLOSURE_FD + 1)
 #define MIN_PRIVATE_FD 32
 #define RESULT_LIMIT (256ULL * 1024ULL * 1024ULL)
 #define LOG_LIMIT (1024ULL * 1024ULL)
@@ -49,6 +50,10 @@ static const char *const descriptor_flags[INPUT_COUNT] = {
     "--grant-issuer-public-key-fd",
     "--execution-runtime-qualification-record-fd",
 };
+
+static const char optional_build_closure_path[] =
+    "/whoathere/inputs/build-closure.bin";
+static const char optional_build_closure_flag[] = "--build-closure-fd";
 
 static void fail(const char *reason) {
     fprintf(stderr, "whoathere_execution_descriptor_launcher_failed:%s\n", reason);
@@ -93,6 +98,35 @@ static int open_validated_input(const char *path, mode_t expected_mode, off_t ex
         fail("input_retain_failed");
     }
     return retained;
+}
+
+static int open_optional_validated_input(
+    const char *path,
+    mode_t expected_mode,
+    off_t expected_size
+) {
+    struct stat metadata;
+    if (lstat(path, &metadata) != 0) {
+        if (errno == ENOENT) {
+            return -1;
+        }
+        fail("optional_input_stat_failed");
+    }
+    return open_validated_input(path, expected_mode, expected_size);
+}
+
+static int retain_private_descriptor(int descriptor) {
+    int retained = fcntl(descriptor, F_DUPFD_CLOEXEC, MIN_PRIVATE_FD);
+    if (retained < 0) {
+        fail("descriptor_retain_failed");
+    }
+    return retained;
+}
+
+static void close_exec_destination_descriptors(void) {
+    for (int descriptor = FIRST_INPUT_FD; descriptor <= RESULT_FD; descriptor++) {
+        close(descriptor);
+    }
 }
 
 static void close_private_descriptors(void) {
@@ -181,6 +215,11 @@ int main(void) {
             index == 0 || (index >= 8 && index <= 10) ? 32 : 0
         );
     }
+    int retained_build_closure = open_optional_validated_input(
+        optional_build_closure_path,
+        0444,
+        0
+    );
 
     unsigned char seed[32];
     size_t seed_offset = 0;
@@ -220,7 +259,8 @@ int main(void) {
     write_all(seed_pipe[1], seed, sizeof(seed));
     memset(seed, 0, sizeof(seed));
     close(seed_pipe[1]);
-    retained[0] = seed_pipe[0];
+    retained[0] = retain_private_descriptor(seed_pipe[0]);
+    close(seed_pipe[0]);
 
     int result_output = open_output("/run/whoathere-package-execution-result.bin");
     int log_output = open_output("/run/whoathere-package-execution-child.log");
@@ -233,19 +273,26 @@ int main(void) {
         close(log_pipe[0]);
         close(result_output);
         close(log_output);
-        /* Preserve low-numbered pipe writers before input destinations 3..14 can replace them. */
-        duplicate_for_exec(result_pipe[1], RESULT_FD);
-        duplicate_for_exec(log_pipe[1], STDOUT_FILENO);
-        duplicate_for_exec(log_pipe[1], STDERR_FILENO);
+        int retained_result_writer = retain_private_descriptor(result_pipe[1]);
+        int retained_log_writer = retain_private_descriptor(log_pipe[1]);
+        close(result_pipe[1]);
+        close(log_pipe[1]);
+        close_exec_destination_descriptors();
+        duplicate_for_exec(retained_result_writer, RESULT_FD);
+        duplicate_for_exec(retained_log_writer, STDOUT_FILENO);
+        duplicate_for_exec(retained_log_writer, STDERR_FILENO);
         for (int index = 0; index < INPUT_COUNT; index++) {
             duplicate_for_exec(retained[index], FIRST_INPUT_FD + index);
+        }
+        if (retained_build_closure >= 0) {
+            duplicate_for_exec(retained_build_closure, OPTIONAL_BUILD_CLOSURE_FD);
         }
         close_private_descriptors();
         if (chroot("/runtime") != 0 || chdir("/") != 0) {
             fail("chroot_failed");
         }
-        char descriptor_values[INPUT_COUNT + 1][16];
-        char *arguments[2 + INPUT_COUNT * 2 + 2 + 1];
+        char descriptor_values[INPUT_COUNT + 2][16];
+        char *arguments[2 + INPUT_COUNT * 2 + 2 + 2 + 1];
         int argument = 0;
         arguments[argument++] = "/whoathere/package-root-runtime";
         arguments[argument++] = "--execute";
@@ -259,9 +306,24 @@ int main(void) {
             );
             arguments[argument++] = descriptor_values[index];
         }
+        if (retained_build_closure >= 0) {
+            arguments[argument++] = (char *)optional_build_closure_flag;
+            snprintf(
+                descriptor_values[INPUT_COUNT],
+                sizeof(descriptor_values[INPUT_COUNT]),
+                "%d",
+                OPTIONAL_BUILD_CLOSURE_FD
+            );
+            arguments[argument++] = descriptor_values[INPUT_COUNT];
+        }
         arguments[argument++] = "--result-fd";
-        snprintf(descriptor_values[INPUT_COUNT], sizeof(descriptor_values[INPUT_COUNT]), "%d", RESULT_FD);
-        arguments[argument++] = descriptor_values[INPUT_COUNT];
+        snprintf(
+            descriptor_values[INPUT_COUNT + 1],
+            sizeof(descriptor_values[INPUT_COUNT + 1]),
+            "%d",
+            RESULT_FD
+        );
+        arguments[argument++] = descriptor_values[INPUT_COUNT + 1];
         arguments[argument] = NULL;
         char *environment[] = {"PATH=/usr/bin:/bin", "LANG=C", "LC_ALL=C", NULL};
         execve(arguments[0], arguments, environment);
@@ -272,6 +334,9 @@ int main(void) {
     close(log_pipe[1]);
     for (int index = 0; index < INPUT_COUNT; index++) {
         close(retained[index]);
+    }
+    if (retained_build_closure >= 0) {
+        close(retained_build_closure);
     }
     int result_open = 1;
     int log_open = 1;
