@@ -2,7 +2,7 @@
 
 Date: 2026-07-09
 
-Revised: 2026-07-16
+Revised: 2026-07-17
 
 Status: canonical detection-first execution plan for the macOS-hosted local beta
 
@@ -52,7 +52,7 @@ Do not pursue IPv6, GSO, full TLS interception, or general protocol expansion un
 detection gate shows that it is necessary. The current goal ends at a credible, usable,
 macOS-hosted local detection beta. Cloudflare and AWS portability are a separate follow-on goal.
 
-### July 16 working checkpoint
+### July 17 working checkpoint
 
 - One exact canonical inert npm tarball completed physically under both `CI=false` and `CI=true`,
   with lifecycle scripts enabled and no registry fallback. `CI=false` followed the expected
@@ -151,10 +151,12 @@ macOS-hosted local detection beta. Cloudflare and AWS portability are a separate
 - Restricted-lab hosted review now supports behavior telemetry without hosted package-source
   review. The user's current approval covers the two previously missed Telnyx wheel detonations in
   fresh cloud-Mac guests and hosted review of only separately sanitized, digest-bound behavioral
-  telemetry. It does not approve hosted source review. The current cloud host does not contain the
-  two exact custody artifacts, and the current local environment has neither the prior staged
-  custody bundle nor a configured MalwareBazaar acquisition key; restoring one of those inputs is
-  the remaining external prerequisite for the two real-wheel runs.
+  telemetry. It does not approve hosted source review. On July 16 the sealed exact-hash fixture was
+  reacquired through the restricted custody container into the original checkout: all 20
+  password-protected archives and 20 custody records are present, including both missed Telnyx
+  wheels. Nothing was unpacked or executed locally. The cloud host still does not contain those
+  artifacts; after the Telnyx sensor-sealing fix, the remaining custody step is to build and
+  preflight the hash-sealed one-way staging bundle.
 - Exact public-registry neighbors now exercise the missed package families without executing code
   on the host. Telnyx `4.87.0` and `4.88.1` wheels and sdists all normalized as the expected exact
   artifact forms and remained inconclusive with zero behavior detections when AI and detonation
@@ -170,13 +172,33 @@ macOS-hosted local detection beta. Cloudflare and AWS portability are a separate
   Codex consumed both copied bundles through `behavior observe`; only the process specialist was
   applicable, it produced no findings, and the correlator preserved the incomplete coverage as
   inconclusive rather than clean.
-- The exact Telnyx `4.87.0` neighbor wheel now reaches the guest in both install and import actions,
-  but its sensor-control session fails before a partial evidence result is sealed. A direct bounded
-  action identified `linux_vz_package_sensor_control_sensor_fault`; the host's subsequent
-  `malformedSection` is a consequence of that missing partial result. The same helper and runtime
-  completed all eight actions for the pinned inert wheel and projected all eight behavior bundles,
-  so this is not a general wheel-runtime failure. The remaining artifact-sensitive sensor issue is
-  parked in BLK-007 with one stage-specific resume experiment.
+- The exact Telnyx `4.87.0` neighbor wheel now completes its direct offline install path and reaches
+  its import-root trigger in fresh disposable guests. Stage-specific diagnostics showed that the
+  install produced 5,108,950 bytes of authenticated process evidence and 4,198,077 bytes of file
+  evidence, exceeding the old 4 MiB per-modality transport cap. The Rust and Swift evidence
+  contracts now agree on a 16 MiB limit, and the rebuilt runtime passed offline verification and a
+  fresh physical qualification. The install process succeeded; the dependency-free import probe
+  returned nonzero, but its authenticated evidence was preserved for observe-only analysis. Both
+  runs stopped the VM, destroyed its clone, retained stable image identity, exposed no public
+  route, and performed no sync-back.
+- That larger import run also exposed a separate shared-console transport defect: kernel messages
+  could interleave inside the bulk base64 result on `hvc0`, causing an honest `lengthMismatch`.
+  The guest now retains normal kernel logging throughout package execution and switches the kernel
+  console to emergency-only only for the bounded evidence-transfer window. A fresh import rerun
+  parsed the complete declared result and its SHA-256 successfully. The strict parser was not
+  weakened, and BLK-007 is resolved.
+- `behavior project wheel` now revalidates a retained exact wheel, its canonical envelope and
+  manifest, the selected scenario, and all root/process/file/network/host digest bindings without
+  rerunning package code. It produced private behavior bundles for the Telnyx install and import
+  actions. Subscription-backed Codex returned an honest no-finding/inconclusive panel for the
+  install bundle and cited the typed wheel-import event as context-only lifecycle execution for the
+  import bundle. Neither result became malicious, clean, or admission-eligible.
+- The custody builder and cloud preflight now support an additive approval selecting exactly the
+  two authorized Telnyx wheels, reconcile the restored `1 acquired + 19 skipped_existing`
+  acquisition record, derive the staged count from that approval, and enforce private local, tar,
+  and remote modes. A synthetic exact-hash two-wheel test passes. The real protected staging bundle
+  has not been built or transferred because the restricted-material gate requires a fresh explicit
+  approval for that exact packaging step; no malware was unpacked or executed.
 - Subscription-backed Codex source review then completed on both exact clean Telnyx neighbor
   wheels. It produced two moderate import/API-tampering advisories for `4.87.0` and one moderate
   import-time-tampering advisory for `4.88.1`. All citations were structurally valid, but source

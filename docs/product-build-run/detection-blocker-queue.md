@@ -225,59 +225,39 @@ Smallest resume experiment:
 Until this bounded experiment is resumed, preserve actions 0 through 2 as valid positive evidence
 and report the full sdist run as incomplete.
 
-## BLK-007: Telnyx wheel reaches the guest but sensor control cannot seal partial evidence
+## BLK-007: resolved -- Telnyx wheel evidence capacity and serial transport
 
-Status: ordinary npm is resolved on July 16, 2026. The adjacent Telnyx wheel remains parked after
-one same-runtime inert comparison isolated an artifact-sensitive guest sensor-control failure.
+Status: resolved on July 17, 2026. The public Telnyx neighbor no longer blocks the two approved
+known-miss wheel experiments.
 
-Confirmed:
+Resolution evidence:
 
-- the exact public npm artifact `sbx@2.1.0`,
-  `sha256:3194826cbb5007583a435872b2822cc010a5f57c7062d6025e2f5ea599a2aaf0`, contains
-  only development dependencies, a normal `main` target, and no install lifecycle script;
-- the original product incorrectly classified any npm dependency declaration, including
-  `devDependencies`, as a required runtime closure and therefore made normalization incomplete;
-- after correcting that boundary, normalization is complete, the scenario plan contains exactly
-  the two runnable install profiles, and the `main` probe remains an explicit coverage gap;
-- a package-level `index.js` without an explicit `main` is normalized as Node's implicit main
-  target, so the standard import trigger cannot disappear from coverage reporting;
-- the npm adapter now binds and executes the two CI install profiles while recording the unexecuted
-  `main` probe as incomplete coverage; unit tests prove that this path remains inconclusive and has
-  no clean, admission, or sync-back authority;
-- the physical npm bundle compiler contained the same incorrect all-dependencies check; a bounded
-  typed helper class identified `execution_bundle` builder exit, and the compiler now rejects only
-  actual runtime-closure requirements;
-- after that correction, the exact `sbx@2.1.0` tarball completed both `ci_false` and `ci_true` in
-  fresh guests. Both actions proved artifact binding, package execution, VM stop and clone
-  destruction, stable images, no public route, and no sync-back, and each projected an 11-event
-  behavior bundle;
-- local subscription-backed Codex independently consumed both exact bundle digests. The two panels
-  found only ordinary process children, retained every coverage gap, stayed inconclusive, and
-  granted neither observed-clean nor admission authority;
-- the exact public Telnyx `4.87.0` wheel,
-  `sha256:5aeb8172c29ade224e6c2d166713f304596aa21e3dbfa5b6b2b028e6997f6bd2`, also
-  normalized completely and bound its two dependency-aware install/import actions. Both VMs
-  started and stopped and destroyed their clones, but the guest reported
-  `linux_vz_package_sensor_control_sensor_fault` before emitting a partial typed result; the host
-  therefore reported `malformedSection` and no wheel behavior bundle was projected;
-- with the identical helper and runtime, the pinned inert wheel completed all eight install and
-  trigger actions and projected all eight bundles (8 events for install, then 1 event for each of
-  the seven trigger actions). This rules out a generally broken helper, image, or wheel runtime;
-- helper result JSON larger than 64 KiB is rejected before parsing and mapped to fixed
-  action-bound diagnostic classes. Raw helper reasons, stderr, fake tokens, and package output
-  never enter the product report.
+- fixed stage-specific failure codes replaced the broad sensor-control collapse without exposing
+  raw telemetry;
+- the exact Telnyx `4.87.0` install produced 5,108,950 bytes of authenticated process evidence and
+  4,198,077 bytes of file evidence, proving that the former 4 MiB limit—not the artifact format—was
+  the first failure;
+- the enforcing Rust and Swift evidence contracts now share a 16 MiB per-modality limit, and the
+  rebuilt runtime passed offline verification and fresh physical qualification;
+- a fresh install action then completed successfully with complete declared payload lengths and
+  digests;
+- the import action exposed a second bounded transport defect: kernel messages at `loglevel=6`
+  could interleave inside the large base64 result on the shared serial console, producing an honest
+  `lengthMismatch`;
+- the guest now keeps normal kernel logging during package execution, switches the kernel console
+  to emergency-only only for evidence transfer, verifies that transition, and fails closed if the
+  transition or drain cannot be established;
+- a fresh import action then parsed the complete result and preserved the nonzero package-process
+  outcome as evidence. Its nonzero result reflects the intentionally absent dependency closure and
+  remains inconclusive rather than clean;
+- the offline wheel projector revalidated the exact wheel, envelope, manifest, scenario, receipts,
+  and modality digests and produced private behavior bundles for both actions. Observe-only Codex
+  returned no finding for the install and cited the typed wheel-import event as context-only
+  lifecycle execution for the import action;
+- both physical runs stopped the VM, destroyed its clone, retained stable image identity, exposed
+  no public route, and performed no sync-back. Neither bundle has independent host composition,
+  observed-clean status, or admission authority.
 
-Do not continue swapping runtime configurations. Smallest resume experiment:
-
-1. Preserve the same Telnyx artifact, helper, runtime, and action-0 install scenario.
-2. Replace the collector's broad `SensorFault` collapse with a fixed stage class identifying
-   whether process collection, file collection, network collection, evidence encoding, or receipt
-   signing failed; do not add raw telemetry to ordinary logs.
-3. Repeat only Telnyx action 0 and compare its first failing stage with the already-successful inert
-   install action under the same identities.
-4. Correct only that bounded capacity or encoding incompatibility, then require both Telnyx actions
-   to project bundles with verified teardown, no public route, and no sync-back.
-
-This blocker matters because the adjacent Telnyx wheel has the exact form needed for two known
-misses. The npm vertical slice is no longer blocked. The remaining work is one wheel-specific
-sensor-stage diagnosis, not general telemetry hardening.
+No BLK-007 resume experiment remains. Preserve the exact neighbor actions, the over-4-MiB boundary
+tests, the serial-init self-test, and the offline projection commands as regressions. A dedicated
+evidence console is optional later hardening, not a prerequisite for the known-miss wheel runs.
