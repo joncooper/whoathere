@@ -39,7 +39,7 @@ def bundle(index: int) -> bytes:
     return json.dumps(value, separators=(",", ":")).encode("utf-8")
 
 
-def report(bundle_digests: list[str]) -> bytes:
+def report(bundle_digests: list[str], *, static_positive: bool = False) -> bytes:
     reasons = [
         f"vm_wheel_action_{index}_behavior_bundle_sha256:{value.removeprefix('sha256:')}"
         for index, value in enumerate(bundle_digests)
@@ -84,8 +84,27 @@ def report(bundle_digests: list[str]) -> bytes:
             "intent_count": len(bundle_digests),
             "reason_codes": [],
         },
-        "observations": [],
-        "behavior_detection_count": 0,
+        "observations": [
+            {
+                "schema_version": "whoathere.exact_artifact_observation.v1",
+                "source": "deterministic_static",
+                "threat_class": "second_stage_native_or_wasm_handoff",
+                "finding_kind": {
+                    "source": "deterministic_static",
+                    "kind": "download_execute_capability",
+                },
+                "confidence": "high",
+                "artifact_sha256": ARTIFACT,
+                "manifest_sha256": MANIFEST,
+                "coverage": "complete",
+                "behavior_detection_eligible": True,
+                "observation_sha256": digest(b"static-download-execute"),
+                "coverage_gap_codes": [],
+            }
+        ]
+        if static_positive
+        else [],
+        "behavior_detection_count": 1 if static_positive else 0,
         "admission_authority": False,
         "observed_clean": False,
         "sync_back_enabled": False,
@@ -105,7 +124,9 @@ def write_inputs(root: Path) -> tuple[Path, Path, list[bytes]]:
         path.parent.mkdir(parents=True)
         path.write_bytes(raw)
     report_path = root / "sanitized-report.json"
-    report_path.write_bytes(report([digest(raw) for raw in bundles]))
+    report_path.write_bytes(
+        report([digest(raw) for raw in bundles], static_positive=True)
+    )
     return report_path, output, bundles
 
 
@@ -145,6 +166,15 @@ def main() -> int:
         manifest = json.loads((exported / "export-manifest.json").read_text(encoding="utf-8"))
         assert manifest["raw_evidence_included"] is False, manifest
         assert manifest["artifact_bytes_included"] is False, manifest
+        exported_report = json.loads(
+            (exported / "sanitized-exact-artifact-report.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert exported_report["observations"][0]["finding_kind"] == {
+            "source": "deterministic_static",
+            "kind": "download_execute_capability",
+        }, exported_report
         for file_entry in manifest["files"]:
             copied = (exported / file_entry["path"]).read_bytes()
             assert file_entry["sha256"] == digest(copied), file_entry

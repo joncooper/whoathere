@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import runpy
 import subprocess
 import sys
 import tempfile
@@ -13,6 +14,7 @@ from typing import Any
 
 
 SCRIPT = Path(__file__).with_name("whoathere-two-host-behavior-diagnostic.py")
+STEP5_SCRIPT = Path(__file__).with_name("whoathere-scaleway-step5-remote.py")
 
 
 def digest(value: bytes) -> str:
@@ -53,7 +55,43 @@ def make_bundle(artifact: str, manifest: str, run_id: str = "wheel-run-0") -> tu
     return bundle, json.dumps(bundle, separators=(",", ":")).encode()
 
 
-def make_report(artifact: str, manifest: str, bundle_sha256: str) -> dict[str, Any]:
+def make_report(
+    artifact: str,
+    manifest: str,
+    bundle_sha256: str,
+    *,
+    static_positive: bool = False,
+    ai_source_eligible: bool = False,
+) -> dict[str, Any]:
+    observations: list[dict[str, Any]] = []
+    if static_positive:
+        observations.append(
+            {
+                "source": "deterministic_static",
+                "threat_class": "second_stage_native_or_wasm_handoff",
+                "finding_kind": {
+                    "source": "deterministic_static",
+                    "kind": "download_execute_capability",
+                },
+                "confidence": "high",
+                "artifact_sha256": artifact,
+                "manifest_sha256": manifest,
+                "coverage": "complete",
+                "coverage_gap_codes": [],
+                "behavior_detection_eligible": True,
+                "observation_sha256": digest(b"static-download-execute"),
+            }
+        )
+    if ai_source_eligible:
+        observations.append(
+            {
+                "source": "ai_source_review",
+                "threat_class": "second_stage_native_or_wasm_handoff",
+                "artifact_sha256": artifact,
+                "manifest_sha256": manifest,
+                "behavior_detection_eligible": True,
+            }
+        )
     return {
         "schema_version": "whoathere.exact_artifact_inspection.v1",
         "identity": {
@@ -80,6 +118,7 @@ def make_report(artifact: str, manifest: str, bundle_sha256: str) -> dict[str, A
             "plan_sha256": digest(b"scenario-plan"),
             "intent_count": 1,
         },
+        "observations": observations,
         "admission_authority": False,
         "observed_clean": False,
         "sync_back_enabled": False,
@@ -176,6 +215,8 @@ def main() -> int:
         assert result["scenario_intent_count"] == 1, result
         assert "scenario_intent_sha256" not in result["bundles"][0], result
         assert result["behavior_specific_findings"][0]["finding"]["kind"] == "canary_access"
+        assert result["modalities"]["deterministic_static"]["detection_observed"] is False
+        assert result["modalities"]["codex_behavioral"]["detection_observed"] is True
         assert result["admission_authority"] is False and result["observed_clean"] is False
 
         unsafe_projection = make_report(artifact, manifest, bundle_sha256)
@@ -191,12 +232,52 @@ def main() -> int:
         assert code == 22 and result["verdict"] == "inconclusive", result
         assert result["reconciliation_complete"] is True and not result["behavior_specific_findings"]
 
+        write_json(
+            report_path,
+            make_report(artifact, manifest, bundle_sha256, static_positive=True),
+        )
+        sanitize = runpy.run_path(str(STEP5_SCRIPT))["sanitize_exact_artifact_report"]
+        projected = sanitize(
+            make_report(artifact, manifest, bundle_sha256, static_positive=True)
+        )
+        assert projected["observations"][0]["finding_kind"] == {
+            "source": "deterministic_static",
+            "kind": "download_execute_capability",
+        }, projected
+        code, result = run(report_path, bundles, observers)
+        assert code == 20 and result["verdict"] == "diagnostic_detection", result
+        assert result["reconciliation_complete"] is True, result
+        assert result["modalities"]["deterministic_static"]["detection_observed"] is True
+        assert result["modalities"]["codex_behavioral"]["detection_observed"] is False
+        static = result["modalities"]["deterministic_static"][
+            "behavior_specific_observations"
+        ]
+        assert static[0]["finding_kind"]["kind"] == "download_execute_capability"
+        assert not result["behavior_specific_findings"], result
+        assert result["claim_bearing"] is False and result["diagnostic_only"] is True
+        assert result["admission_authority"] is False and result["observed_clean"] is False
+
+        hosted_source = make_report(
+            artifact, manifest, bundle_sha256, ai_source_eligible=True
+        )
+        write_json(report_path, hosted_source)
+        code, result = run(report_path, bundles, observers)
+        assert code == 22 and result["verdict"] == "inconclusive", result
+        assert "two_host_remote_ai_source_finding_eligible" in result["reason_codes"]
+
+        write_json(
+            report_path,
+            make_report(artifact, manifest, bundle_sha256, static_positive=True),
+        )
+
         result_path.unlink()
         code, result = run(report_path, bundles, observers)
         assert code == 22 and result["reconciliation_complete"] is False, result
         assert "two_host_behavior_observer_missing" in result["reason_codes"]
+        assert result["modalities"]["deterministic_static"]["detection_observed"] is True
 
         write_json(result_path, make_observer(bundle, bundle_sha256, positive=True))
+        write_json(report_path, make_report(artifact, manifest, bundle_sha256))
         _, extra_raw = make_bundle(artifact, manifest, "wheel-run-extra")
         extra_path = bundles / "extra" / "behavior-bundle.json"
         extra_path.parent.mkdir()

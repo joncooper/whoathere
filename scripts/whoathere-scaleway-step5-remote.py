@@ -1008,6 +1008,20 @@ def validate_exact_artifact_report(
         and observation.get("source") == "ai_behavioral"
         and observation.get("behavior_detection_eligible") is True
     )
+    deterministic_static_observations = [
+        observation
+        for observation in observations
+        if isinstance(observation, dict)
+        and observation.get("source") == "deterministic_static"
+        and observation.get("behavior_detection_eligible") is True
+    ]
+    if any(
+        isinstance(observation, dict)
+        and observation.get("source") == "ai_source_review"
+        and observation.get("behavior_detection_eligible") is True
+        for observation in observations
+    ):
+        failures.append("exact_artifact_ai_source_review_must_be_noneligible")
     if behavior_observation_mode == "split_local_pending":
         stages = report.get("stages") if isinstance(report.get("stages"), list) else []
         ai_review_stages = [
@@ -1047,6 +1061,7 @@ def validate_exact_artifact_report(
         "codex_behavior_finding_count": codex_behavior_finding_count,
         "codex_behavior_detection_count": codex_behavior_detection_count,
         "codex_behavior_detected": codex_behavior_detection_count > 0,
+        "deterministic_static_detection_count": len(deterministic_static_observations),
     }
 
 
@@ -1301,6 +1316,11 @@ def sanitize_exact_artifact_report(report: dict[str, Any]) -> dict[str, Any]:
     for observation in report.get("observations", []) if isinstance(report.get("observations"), list) else []:
         if not isinstance(observation, dict):
             continue
+        finding_kind = (
+            observation.get("finding_kind")
+            if isinstance(observation.get("finding_kind"), dict)
+            else None
+        )
         observations.append(
             {
                 key: safe_report_scalar(observation.get(key))
@@ -1315,6 +1335,14 @@ def sanitize_exact_artifact_report(report: dict[str, Any]) -> dict[str, Any]:
                     "behavior_detection_eligible",
                     "observation_sha256",
                 )
+            }
+            | {
+                "finding_kind": {
+                    key: safe_report_scalar(finding_kind.get(key))
+                    for key in ("source", "kind")
+                }
+                if finding_kind is not None
+                else None
             }
             | {"coverage_gap_codes": sanitized_reason_codes(observation.get("coverage_gap_codes"))}
         )
@@ -1595,6 +1623,26 @@ def run_exact_artifact(
         "codex_behavior_finding_count": 0 if split_local else validation["codex_behavior_finding_count"],
         "codex_behavior_detection_count": 0 if split_local else validation["codex_behavior_detection_count"],
         "codex_behavior_detected": False if split_local else validation["codex_behavior_detected"],
+        "modalities": {
+            "deterministic_static": {
+                "behavior_detection_count": validation[
+                    "deterministic_static_detection_count"
+                ],
+                "detection_observed": validation[
+                    "deterministic_static_detection_count"
+                ]
+                > 0,
+            },
+            "codex_behavioral": {
+                "behavior_detection_count": (
+                    0 if split_local else validation["codex_behavior_detection_count"]
+                ),
+                "detection_observed": (
+                    False if split_local else validation["codex_behavior_detected"]
+                ),
+                "pending_local_finalization": split_local,
+            },
+        },
         "safety": {
             "network_policy": "sinkhole_only",
             "sync_back_allowed": False,

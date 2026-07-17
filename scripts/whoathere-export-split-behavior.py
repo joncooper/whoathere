@@ -88,8 +88,10 @@ REPORT_OBSERVATION_KEYS = {
     "coverage",
     "behavior_detection_eligible",
     "observation_sha256",
+    "finding_kind",
     "coverage_gap_codes",
 }
+REPORT_FINDING_KIND_KEYS = {"source", "kind"}
 BUNDLE_KEYS = {
     "schema_version",
     "artifact_sha256",
@@ -209,11 +211,15 @@ def validate_sanitized_report_shape(report: dict[str, Any]) -> None:
     for observation in observations:
         require(isinstance(observation, dict), reason)
         exact_keys(observation, REPORT_OBSERVATION_KEYS, reason)
+        finding_kind = observation.get("finding_kind")
+        require(isinstance(finding_kind, dict), reason)
+        exact_keys(finding_kind, REPORT_FINDING_KIND_KEYS, reason)
+        require(all(safe_report_scalar(value) for value in finding_kind.values()), reason)
         require(
             all(
                 safe_report_scalar(value)
                 for key, value in observation.items()
-                if key != "coverage_gap_codes"
+                if key not in {"coverage_gap_codes", "finding_kind"}
             ),
             reason,
         )
@@ -237,7 +243,17 @@ def project_sanitized_report(report: dict[str, Any]) -> bytes:
         ],
         "scenario_plan": {key: scenario[key] for key in REPORT_SCENARIO_KEYS},
         "observations": [
-            {key: observation[key] for key in REPORT_OBSERVATION_KEYS}
+            {
+                key: (
+                    {
+                        finding_key: observation["finding_kind"][finding_key]
+                        for finding_key in REPORT_FINDING_KIND_KEYS
+                    }
+                    if key == "finding_kind"
+                    else observation[key]
+                )
+                for key in REPORT_OBSERVATION_KEYS
+            }
             for observation in report["observations"]
         ],
         "behavior_detection_count": report["behavior_detection_count"],

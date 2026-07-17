@@ -50,6 +50,14 @@ DETECTION_ELIGIBLE = {
     "obfuscation_or_packing",
     "import_time_tampering",
 }
+DETERMINISTIC_STATIC_ELIGIBLE = {
+    "credential_access",
+    "sensitive_path_access",
+    "credential_exfiltration_capability",
+    "sensitive_file_exfiltration_capability",
+    "download_execute_capability",
+    "environment_to_process_capability",
+}
 MAX_FILE_BYTES = 16 * 1024 * 1024
 MAX_INPUTS = 128
 
@@ -170,6 +178,33 @@ def validate_remote_report(path: Path) -> dict[str, Any]:
         and report.get("sync_back_enabled") is False,
         "two_host_remote_safety_contract_invalid",
     )
+    static_observations: list[dict[str, Any]] = []
+    observations = report.get("observations", [])
+    require(isinstance(observations, list), "two_host_remote_observations_invalid")
+    for observation in observations:
+        require(isinstance(observation, dict), "two_host_remote_observations_invalid")
+        source = observation.get("source")
+        eligible = observation.get("behavior_detection_eligible")
+        require(
+            observation.get("artifact_sha256") == artifact
+            and observation.get("manifest_sha256") == manifest
+            and isinstance(eligible, bool),
+            "two_host_remote_observation_binding_invalid",
+        )
+        if source == "ai_source_review":
+            require(not eligible, "two_host_remote_ai_source_finding_eligible")
+        if source != "deterministic_static" or not eligible:
+            continue
+        finding_kind = observation.get("finding_kind")
+        require(
+            isinstance(finding_kind, dict)
+            and finding_kind.get("source") == "deterministic_static"
+            and finding_kind.get("kind") in DETERMINISTIC_STATIC_ELIGIBLE
+            and isinstance(observation.get("threat_class"), str)
+            and valid_sha256(observation.get("observation_sha256")),
+            "two_host_remote_static_observation_invalid",
+        )
+        static_observations.append(observation)
     stages = [stage for stage in report.get("stages", []) if stage.get("stage") == "detonation"]
     require(len(stages) == 1, "two_host_remote_detonation_stage_invalid")
     detonation = stages[0]
@@ -225,6 +260,7 @@ def validate_remote_report(path: Path) -> dict[str, Any]:
         "scenario_plan_sha256": plan_sha256,
         "scenario_intent_count": intent_count,
         "declared": declared,
+        "deterministic_static_observations": static_observations,
         "safety": {
             "admission_authority": False,
             "observed_clean": False,
@@ -393,6 +429,16 @@ def minimal_inconclusive(reason_code: str) -> dict[str, Any]:
         "safety": None,
         "bundles": [],
         "behavior_specific_findings": [],
+        "modalities": {
+            "deterministic_static": {
+                "detection_observed": False,
+                "behavior_specific_observations": [],
+            },
+            "codex_behavioral": {
+                "detection_observed": False,
+                "behavior_specific_findings": [],
+            },
+        },
         "admission_authority": False,
         "observed_clean": False,
         "reason_codes": sorted(
@@ -500,17 +546,24 @@ def build_diagnostic(
         )
 
     complete = not errors
-    verdict = "diagnostic_detection" if complete and preserved else "inconclusive"
+    static_preserved = remote["deterministic_static_observations"]
+    verdict = (
+        "diagnostic_detection"
+        if complete and (static_preserved or preserved)
+        else "inconclusive"
+    )
     reason_codes = {
         "two_host_behavior_diagnostic_non_claim_bearing",
         "two_host_behavior_never_authorizes_admission",
         *errors,
     }
-    reason_codes.add(
-        "two_host_behavior_specific_finding_preserved"
-        if verdict == "diagnostic_detection"
-        else "two_host_behavior_no_complete_detection_result"
-    )
+    if static_preserved:
+        reason_codes.add("two_host_deterministic_static_detection_preserved")
+    if preserved:
+        reason_codes.add("two_host_codex_behavioral_detection_preserved")
+        reason_codes.add("two_host_behavior_specific_finding_preserved")
+    if verdict != "diagnostic_detection":
+        reason_codes.add("two_host_behavior_no_complete_detection_result")
     binding = {
         "artifact_sha256": remote["artifact_sha256"],
         "remote_report_sha256": remote["report_sha256"],
@@ -537,6 +590,16 @@ def build_diagnostic(
         "safety": remote["safety"],
         "bundles": rows,
         "behavior_specific_findings": preserved,
+        "modalities": {
+            "deterministic_static": {
+                "detection_observed": bool(static_preserved),
+                "behavior_specific_observations": static_preserved,
+            },
+            "codex_behavioral": {
+                "detection_observed": bool(preserved),
+                "behavior_specific_findings": preserved,
+            },
+        },
         "admission_authority": False,
         "observed_clean": False,
         "reason_codes": sorted(reason_codes),
