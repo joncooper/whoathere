@@ -806,14 +806,28 @@ mod tests {
             &ValidatedLinuxVzPackageDynamicProcessBindingsV1::none(),
         )
         .expect("CI true launch contract");
-        assert!(!false_contract.environment().contains_key("CI"));
-        assert_eq!(
-            true_contract.environment().get("CI").map(String::as_str),
-            Some("true")
-        );
+        let mut false_environment = false_contract.environment().clone();
+        let mut true_environment = true_contract.environment().clone();
+        assert_eq!(false_environment.remove("CI"), None);
+        assert_eq!(true_environment.remove("CI"), Some("true".to_string()));
+        assert_eq!(false_environment, true_environment);
+        assert!(false_environment
+            .get("NPM_TOKEN")
+            .is_some_and(|value| value.starts_with("npm_") && value.len() == 40));
+        assert!(false_environment
+            .get("GITHUB_TOKEN")
+            .is_some_and(|value| value.starts_with("ghp_") && value.len() == 40));
+        assert!(false_environment
+            .get("AWS_ACCESS_KEY_ID")
+            .is_some_and(|value| value.starts_with("AKIA") && value.len() == 20));
         assert_ne!(
             false_contract.launch_contract_sha256(),
             true_contract.launch_contract_sha256()
         );
+        let raw_canary = false_environment
+            .get("NPM_TOKEN")
+            .expect("fake npm token canary");
+        assert!(!format!("{false_contract:?}").contains(raw_canary));
+        assert!(!format!("{true_contract:?}").contains(raw_canary));
     }
 }

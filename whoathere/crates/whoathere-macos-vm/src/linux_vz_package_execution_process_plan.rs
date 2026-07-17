@@ -1,4 +1,6 @@
 use crate::{
+    derive_linux_vz_package_guest_environment_canaries_v1,
+    LinuxVzPackageGuestEnvironmentCanariesV1, LinuxVzPackageGuestEnvironmentCanaryBindingV1,
     MacosLinuxVzPackageExecutionProgramV1, MacosLinuxVzPackageExecutionStageV1,
     MacosLinuxVzPackageRuntimeExecutablesV1, MacosLinuxVzSdistBuildRecipeV1,
 };
@@ -97,7 +99,7 @@ impl MacosLinuxVzPackageMeasuredProcessInputV1 {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Clone, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct MacosLinuxVzPackageFixedProcessV1 {
     stage_name: String,
@@ -110,6 +112,26 @@ pub struct MacosLinuxVzPackageFixedProcessV1 {
     current_directory: String,
     measured_inputs: Vec<MacosLinuxVzPackageMeasuredProcessInputV1>,
     stdio_policy: MacosLinuxVzPackageProcessStdioPolicyV1,
+}
+
+impl fmt::Debug for MacosLinuxVzPackageFixedProcessV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("MacosLinuxVzPackageFixedProcessV1")
+            .field("stage_name", &self.stage_name)
+            .field("executable", &self.executable)
+            .field("argument_count", &self.arguments.len())
+            .field("environment_policy", &self.environment_policy)
+            .field(
+                "environment_keys",
+                &self.environment.keys().collect::<Vec<_>>(),
+            )
+            .field("environment_values", &"<redacted>")
+            .field("current_directory", &self.current_directory)
+            .field("measured_inputs", &self.measured_inputs)
+            .field("stdio_policy", &self.stdio_policy)
+            .finish()
+    }
 }
 
 impl MacosLinuxVzPackageFixedProcessV1 {
@@ -192,6 +214,9 @@ struct PackageExecutionProcessPlanWireV1<'a> {
     artifact_byte_length: String,
     operation: &'a str,
     actions: &'a [MacosLinuxVzPackageExecutionActionV1],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    credential_canary_matrix_binding_sha256: Option<&'a Sha256Digest>,
+    environment_canary_bindings: &'a [LinuxVzPackageGuestEnvironmentCanaryBindingV1],
     limits: &'a ArtifactScenarioLimitsV1,
     caller_process_input_present: bool,
     environment_policy: MacosLinuxVzPackageProcessEnvironmentPolicyV1,
@@ -210,6 +235,8 @@ pub struct MacosLinuxVzPackageExecutionProcessPlanV1 {
     execution_request_sha256: Sha256Digest,
     artifact_sha256: Sha256Digest,
     artifact_byte_length: u64,
+    credential_canary_matrix_binding_sha256: Option<Sha256Digest>,
+    environment_canary_bindings: Vec<LinuxVzPackageGuestEnvironmentCanaryBindingV1>,
     actions: Vec<MacosLinuxVzPackageExecutionActionV1>,
     limits: ArtifactScenarioLimitsV1,
 }
@@ -248,6 +275,19 @@ impl MacosLinuxVzPackageExecutionProcessPlanV1 {
 
     pub const fn artifact_byte_length(&self) -> u64 {
         self.artifact_byte_length
+    }
+
+    pub fn credential_canary_matrix_binding_sha256(&self) -> Option<&Sha256Digest> {
+        self.credential_canary_matrix_binding_sha256.as_ref()
+    }
+
+    /// Digest-only bindings for fake credential values injected into the npm process.
+    ///
+    /// Authenticated root receipts bind `process_plan_sha256`, so an independent verifier can
+    /// rederive this set without receiving raw values. These bindings prove launch configuration;
+    /// they do not by themselves prove that package code read or transmitted a canary.
+    pub fn environment_canary_bindings(&self) -> &[LinuxVzPackageGuestEnvironmentCanaryBindingV1] {
+        &self.environment_canary_bindings
     }
 
     pub fn actions(&self) -> &[MacosLinuxVzPackageExecutionActionV1] {
@@ -341,11 +381,31 @@ pub fn derive_macos_linux_vz_package_execution_process_plan_v1(
         .iter()
         .find_map(input_basename_v1)
         .ok_or(MacosLinuxVzPackageExecutionProcessPlanErrorV1::InvalidStage)?;
+    let npm_canaries = if program.stages().iter().any(|stage| {
+        matches!(
+            stage,
+            MacosLinuxVzPackageExecutionStageV1::NpmInstallExactLocalTarball { .. }
+        )
+    }) {
+        Some(
+            derive_linux_vz_package_guest_environment_canaries_v1(
+                program.credential_canary_matrix_binding_sha256(),
+            )
+            .map_err(|_| MacosLinuxVzPackageExecutionProcessPlanErrorV1::InvalidStage)?,
+        )
+    } else {
+        None
+    };
+    let environment_canary_bindings = npm_canaries
+        .as_ref()
+        .map(|canaries| canaries.bindings().to_vec())
+        .unwrap_or_default();
     let mut actions = vec![MacosLinuxVzPackageExecutionActionV1::Internal {
         action: MacosLinuxVzPackageInternalActionV1::MaterializeExactArtifact { input_basename },
     }];
     for stage in program.stages() {
-        let mut derived = actions_for_stage_v1(stage, program.runtime_executables())?;
+        let mut derived =
+            actions_for_stage_v1(stage, program.runtime_executables(), npm_canaries.as_ref())?;
         actions.append(&mut derived);
     }
     if let Some(expected) =
@@ -366,6 +426,10 @@ pub fn derive_macos_linux_vz_package_execution_process_plan_v1(
         artifact_byte_length: program.artifact_byte_length().to_string(),
         operation: program.operation_name(),
         actions: &actions,
+        credential_canary_matrix_binding_sha256: npm_canaries
+            .as_ref()
+            .map(|_| program.credential_canary_matrix_binding_sha256()),
+        environment_canary_bindings: &environment_canary_bindings,
         limits: program.limits(),
         caller_process_input_present: false,
         environment_policy: MacosLinuxVzPackageProcessEnvironmentPolicyV1::ClearThenExactMap,
@@ -389,6 +453,9 @@ pub fn derive_macos_linux_vz_package_execution_process_plan_v1(
         execution_request_sha256: program.execution_request_sha256().clone(),
         artifact_sha256: program.artifact_sha256().clone(),
         artifact_byte_length: program.artifact_byte_length(),
+        credential_canary_matrix_binding_sha256: npm_canaries
+            .map(|_| program.credential_canary_matrix_binding_sha256().clone()),
+        environment_canary_bindings,
         actions,
         limits: program.limits().clone(),
     })
@@ -413,6 +480,7 @@ fn input_basename_v1(stage: &MacosLinuxVzPackageExecutionStageV1) -> Option<Stri
 fn actions_for_stage_v1(
     stage: &MacosLinuxVzPackageExecutionStageV1,
     runtime: &MacosLinuxVzPackageRuntimeExecutablesV1,
+    npm_canaries: Option<&LinuxVzPackageGuestEnvironmentCanariesV1>,
 ) -> Result<Vec<MacosLinuxVzPackageExecutionActionV1>, MacosLinuxVzPackageExecutionProcessPlanErrorV1>
 {
     let actions = match stage {
@@ -424,6 +492,7 @@ fn actions_for_stage_v1(
             runtime,
             *environment,
             input_basename,
+            npm_canaries.ok_or(MacosLinuxVzPackageExecutionProcessPlanErrorV1::InvalidStage)?,
         )?)],
         MacosLinuxVzPackageExecutionStageV1::PythonCreateFreshWheelVirtualEnvironment => {
             vec![process_action(create_venv_process(
@@ -675,6 +744,7 @@ fn npm_install_process(
     runtime: &MacosLinuxVzPackageRuntimeExecutablesV1,
     profile: NpmEnvironmentProfileV1,
     input_basename: &str,
+    canaries: &LinuxVzPackageGuestEnvironmentCanariesV1,
 ) -> Result<MacosLinuxVzPackageFixedProcessV1, MacosLinuxVzPackageExecutionProcessPlanErrorV1> {
     let MacosLinuxVzPackageRuntimeExecutablesV1::NodeNpm {
         node_executable_sha256,
@@ -695,6 +765,9 @@ fn npm_install_process(
             "false".to_string(),
         ),
     ]);
+    canaries
+        .apply_to_exact_environment_v1(&mut environment)
+        .map_err(|_| MacosLinuxVzPackageExecutionProcessPlanErrorV1::InvalidStage)?;
     if profile == NpmEnvironmentProfileV1::CiTrue {
         environment.insert("CI".to_string(), "true".to_string());
     }
@@ -1085,6 +1158,37 @@ mod tests {
             false_plan.process_plan_sha256(),
             true_plan.process_plan_sha256()
         );
+        assert_eq!(
+            false_plan.credential_canary_matrix_binding_sha256(),
+            true_plan.credential_canary_matrix_binding_sha256()
+        );
+        assert_eq!(
+            false_plan.environment_canary_bindings(),
+            true_plan.environment_canary_bindings()
+        );
+        assert_eq!(false_plan.environment_canary_bindings().len(), 3);
+        let false_process = process_at(&false_plan, 1);
+        let true_process = process_at(&true_plan, 1);
+        let mut false_environment = false_process.environment().clone();
+        let mut true_environment = true_process.environment().clone();
+        assert_eq!(false_environment.remove("CI"), None);
+        assert_eq!(true_environment.remove("CI"), Some("true".to_string()));
+        assert_eq!(false_environment, true_environment);
+        for binding in false_plan.environment_canary_bindings() {
+            let value = false_environment
+                .get(binding.environment_name())
+                .expect("bound fake credential canary is in the exact process environment");
+            match binding.environment_name() {
+                "NPM_TOKEN" => assert!(value.starts_with("npm_") && value.len() == 40),
+                "GITHUB_TOKEN" => assert!(value.starts_with("ghp_") && value.len() == 40),
+                "AWS_ACCESS_KEY_ID" => assert!(value.starts_with("AKIA") && value.len() == 20),
+                name => panic!("unexpected environment canary {name}"),
+            }
+            assert_eq!(
+                binding.value_sha256(),
+                &Sha256Digest::from_bytes(value.as_bytes())
+            );
+        }
         let false_text = std::str::from_utf8(false_plan.canonical_json_v1()).expect("UTF-8");
         let true_text = std::str::from_utf8(true_plan.canonical_json_v1()).expect("UTF-8");
         assert!(false_text.contains("/usr/bin/node"));
@@ -1096,6 +1200,17 @@ mod tests {
         assert!(!false_text.contains("caller_argv"));
         assert!(!false_plan.package_execution_authority_permitted());
         assert!(!false_plan.sync_back_permitted());
+        let debug = format!("{false_plan:?}");
+        assert!(!debug.contains("NPM_TOKEN"));
+        let process_debug = format!("{false_process:?}");
+        let actions_debug = format!("{:?}", false_plan.actions());
+        for value in false_environment.values() {
+            if value.starts_with("npm_") || value.starts_with("ghp_") || value.starts_with("AKIA") {
+                assert!(!debug.contains(value));
+                assert!(!process_debug.contains(value));
+                assert!(!actions_debug.contains(value));
+            }
+        }
     }
 
     #[test]

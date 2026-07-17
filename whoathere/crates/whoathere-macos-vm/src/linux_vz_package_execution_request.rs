@@ -268,6 +268,7 @@ pub struct MacosLinuxVzPackageExecutionRequestV1 {
     request_sha256: Sha256Digest,
     artifact_kind: MacosLinuxVzPackageArtifactKindV1,
     artifact_sha256: Sha256Digest,
+    scenario_plan_sha256: Sha256Digest,
     scenario_template_sha256: Sha256Digest,
     execution_grant_sha256: Sha256Digest,
     attempt_binding_sha256: Sha256Digest,
@@ -283,6 +284,7 @@ impl fmt::Debug for MacosLinuxVzPackageExecutionRequestV1 {
             .field("request_sha256", &self.request_sha256)
             .field("artifact_kind", &self.artifact_kind)
             .field("artifact_sha256", &self.artifact_sha256)
+            .field("scenario_plan_sha256", &self.scenario_plan_sha256)
             .field("scenario_template_sha256", &self.scenario_template_sha256)
             .field("execution_grant_sha256", &self.execution_grant_sha256)
             .field("attempt_binding_sha256", &self.attempt_binding_sha256)
@@ -314,6 +316,10 @@ impl MacosLinuxVzPackageExecutionRequestV1 {
 
     pub fn artifact_sha256(&self) -> &Sha256Digest {
         &self.artifact_sha256
+    }
+
+    pub fn scenario_plan_sha256(&self) -> &Sha256Digest {
+        &self.scenario_plan_sha256
     }
 
     pub fn scenario_template_sha256(&self) -> &Sha256Digest {
@@ -362,6 +368,7 @@ pub struct StructurallyValidatedMacosLinuxVzPackageExecutionRequestV1 {
     artifact_kind: MacosLinuxVzPackageArtifactKindV1,
     artifact_sha256: Sha256Digest,
     artifact_byte_length: u64,
+    scenario_plan_sha256: Sha256Digest,
     scenario_template_sha256: Sha256Digest,
     attempt_binding_sha256: Sha256Digest,
     clone_binding_sha256: Sha256Digest,
@@ -399,6 +406,10 @@ impl StructurallyValidatedMacosLinuxVzPackageExecutionRequestV1 {
 
     pub const fn artifact_byte_length(&self) -> u64 {
         self.artifact_byte_length
+    }
+
+    pub fn scenario_plan_sha256(&self) -> &Sha256Digest {
+        &self.scenario_plan_sha256
     }
 
     pub fn scenario_template_sha256(&self) -> &Sha256Digest {
@@ -523,6 +534,7 @@ pub fn structurally_decode_macos_linux_vz_package_execution_request_v1(
         artifact_kind: wire.artifact_kind,
         artifact_sha256: wire.artifact_sha256,
         artifact_byte_length,
+        scenario_plan_sha256: wire.scenario_plan_sha256,
         scenario_template_sha256: wire.scenario_template_sha256,
         attempt_binding_sha256: wire.attempt_binding_sha256,
         clone_binding_sha256: wire.clone_binding_sha256,
@@ -1113,6 +1125,7 @@ fn build_execution_request_v1(
         canonical_json,
         artifact_kind: authority_request.artifact_kind(),
         artifact_sha256: authority_request.artifact_sha256().clone(),
+        scenario_plan_sha256: authority_request.scenario_plan_sha256().clone(),
         scenario_template_sha256: authority_request.scenario_template_sha256().clone(),
         execution_grant_sha256: grant.execution_grant_sha256().clone(),
         attempt_binding_sha256: grant.attempt_binding_sha256().clone(),

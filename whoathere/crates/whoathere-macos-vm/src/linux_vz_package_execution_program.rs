@@ -1,4 +1,5 @@
 use crate::{
+    derive_linux_vz_package_guest_environment_canary_matrix_binding_v1,
     MacosLinuxVzPackageArtifactKindV1, MacosLinuxVzPackageExecutionOperationV1,
     MacosLinuxVzPackageRuntimeExecutablesV1, MacosLinuxVzSdistBuildRecipeV1,
     StructurallyValidatedMacosLinuxVzPackageExecutionRequestV1,
@@ -172,7 +173,9 @@ struct PackageExecutionProgramWireV1<'a> {
     artifact_kind: MacosLinuxVzPackageArtifactKindV1,
     artifact_sha256: &'a Sha256Digest,
     artifact_byte_length: String,
+    scenario_plan_sha256: &'a Sha256Digest,
     scenario_template_sha256: &'a Sha256Digest,
+    credential_canary_matrix_binding_sha256: &'a Sha256Digest,
     attempt_binding_sha256: &'a Sha256Digest,
     clone_binding_sha256: &'a Sha256Digest,
     operation: &'a str,
@@ -195,6 +198,7 @@ pub struct MacosLinuxVzPackageExecutionProgramV1 {
     canonical_json: Vec<u8>,
     program_sha256: Sha256Digest,
     execution_request_sha256: Sha256Digest,
+    credential_canary_matrix_binding_sha256: Sha256Digest,
     artifact_sha256: Sha256Digest,
     artifact_byte_length: u64,
     runtime_executables: MacosLinuxVzPackageRuntimeExecutablesV1,
@@ -228,6 +232,10 @@ impl MacosLinuxVzPackageExecutionProgramV1 {
 
     pub fn execution_request_sha256(&self) -> &Sha256Digest {
         &self.execution_request_sha256
+    }
+
+    pub fn credential_canary_matrix_binding_sha256(&self) -> &Sha256Digest {
+        &self.credential_canary_matrix_binding_sha256
     }
 
     pub fn artifact_sha256(&self) -> &Sha256Digest {
@@ -285,11 +293,19 @@ pub(crate) fn test_macos_linux_vz_package_execution_program_for_artifact_v1(
     artifact_bytes: &[u8],
 ) -> MacosLinuxVzPackageExecutionProgramV1 {
     let canonical_json = b"inert test-only execution program".to_vec();
+    let artifact_sha256 = Sha256Digest::from_bytes(artifact_bytes);
+    let credential_canary_matrix_binding_sha256 =
+        derive_linux_vz_package_guest_environment_canary_matrix_binding_v1(
+            &artifact_sha256,
+            &Sha256Digest::from_bytes(b"inert test-only complete scenario matrix"),
+        )
+        .expect("test canary matrix binding");
     MacosLinuxVzPackageExecutionProgramV1 {
         program_sha256: Sha256Digest::from_bytes(&canonical_json),
         canonical_json,
         execution_request_sha256: Sha256Digest::from_bytes(b"inert test-only request"),
-        artifact_sha256: Sha256Digest::from_bytes(artifact_bytes),
+        credential_canary_matrix_binding_sha256,
+        artifact_sha256,
         artifact_byte_length: artifact_bytes.len() as u64,
         runtime_executables,
         operation,
@@ -333,13 +349,21 @@ pub fn derive_macos_linux_vz_package_execution_program_v1(
     if stages.is_empty() {
         return Err(MacosLinuxVzPackageExecutionProgramErrorV1::InvalidOperation);
     }
+    let credential_canary_matrix_binding_sha256 =
+        derive_linux_vz_package_guest_environment_canary_matrix_binding_v1(
+            request.artifact_sha256(),
+            request.scenario_plan_sha256(),
+        )
+        .map_err(|_| MacosLinuxVzPackageExecutionProgramErrorV1::InvalidOperation)?;
     let wire = PackageExecutionProgramWireV1 {
         schema_version: MACOS_LINUX_VZ_PACKAGE_EXECUTION_PROGRAM_SCHEMA_V1,
         execution_request_sha256: request.request_sha256(),
         artifact_kind: request.artifact_kind(),
         artifact_sha256: request.artifact_sha256(),
         artifact_byte_length: request.artifact_byte_length().to_string(),
+        scenario_plan_sha256: request.scenario_plan_sha256(),
         scenario_template_sha256: request.scenario_template_sha256(),
+        credential_canary_matrix_binding_sha256: &credential_canary_matrix_binding_sha256,
         attempt_binding_sha256: request.attempt_binding_sha256(),
         clone_binding_sha256: request.clone_binding_sha256(),
         operation: request.operation().operation_name(),
@@ -369,6 +393,7 @@ pub fn derive_macos_linux_vz_package_execution_program_v1(
         program_sha256: Sha256Digest::from_bytes(&canonical_json),
         canonical_json,
         execution_request_sha256: request.request_sha256().clone(),
+        credential_canary_matrix_binding_sha256,
         artifact_sha256: request.artifact_sha256().clone(),
         artifact_byte_length: request.artifact_byte_length(),
         runtime_executables: request.runtime_executables().clone(),
