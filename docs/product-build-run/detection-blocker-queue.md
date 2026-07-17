@@ -241,6 +241,15 @@ current 16 MiB per-modality ceiling preserved it exactly. A companion boundary t
 frame one byte above 16 MiB. Existing Rust tests already cover the same raised frame and
 sensor-control limits.
 
+The retained-action path is also ready. `whoathere behavior project sdist` now re-reads and
+re-normalizes the exact PEP 517 tarball, canonical envelope, and canonical manifest; validates the
+complete scenario matrix and selected action; and passes retained root, process, file, network, and
+host records through the existing digest-bound projector without invoking the helper, VM, or
+package code. The runner does not modify the retained evidence directory, and the CLI writes only
+a caller-selected create-new private bundle. This is observe-only manual-review evidence: the
+shared projector does not independently verify Ed25519 signatures or a host-composite receipt, so
+it cannot close BLK-002, authorize clean/admission, or make a campaign claim-bearing.
+
 This strongly indicates that commit `33cdf41` incidentally removed the bounded host-size failure
 while fixing the later Telnyx-neighbor evidence path. It does not prove which modality in the
 original retained result crossed 4 MiB, and it does not replace a fresh physical action-3 run.
@@ -250,7 +259,8 @@ Smallest resume experiment:
 1. Reproduce only action 3 with the same pinned inert artifact, current helper/runtime, and
    scenario.
 2. Require the complete declared `5,945,958`-byte-class result to cross serial parsing, root-runtime
-   parsing, evidence-file retention, and typed projection.
+   parsing and evidence-file retention; then project the retained action with the offline sdist
+   command and reconcile its bundle digest before Codex observation.
 3. Require the existing VM-stop, clone-destruction, no-public-route, and no-sync-back invariants.
 
 Until that physical confirmation runs, preserve actions 0 through 2 as valid positive evidence and

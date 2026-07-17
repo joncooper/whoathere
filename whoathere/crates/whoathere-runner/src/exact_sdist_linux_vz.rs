@@ -21,7 +21,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
-use whoathere_artifact::{ArtifactFormat, Sha256Digest};
+use whoathere_artifact::{
+    detect_artifact_format, normalize_artifact, ArtifactEnvelope, ArtifactFormat, ArtifactManifest,
+    Ecosystem, NormalizationLimits, Sha256Digest,
+};
 use whoathere_cache::VerifiedArtifactLease;
 use whoathere_detector::{BehaviorAnalysisBundleV1, PackageTriggerV1};
 use whoathere_detonation::{
@@ -38,7 +41,178 @@ const HELPER_RESULT_SCHEMA_V1: &str = "whoathere.linux_vz_package_execution_resu
 const MAX_ROOT_RECEIPT_BYTES: usize = 256 * 1024;
 const MAX_SENSOR_EVIDENCE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_HOST_EXECUTION_RUN_BYTES: usize = 1024 * 1024;
+const MAX_ARTIFACT_ENVELOPE_BYTES: usize = 1024 * 1024;
 static RUN_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+/// Inputs for projecting one already-produced exact-sdist helper action.
+///
+/// This path does not execute the artifact or invoke the VM helper. It
+/// re-normalizes the exact sdist, verifies the retained outer bindings, and
+/// feeds the existing digest-bound helper evidence into the same observe-only
+/// behavior projector used by live detonation.
+#[derive(Debug, Clone, Copy)]
+pub struct OfflineExactSdistBehaviorProjectionRequestV1<'a> {
+    pub artifact_path: &'a Path,
+    pub artifact_envelope_path: &'a Path,
+    pub artifact_manifest_path: &'a Path,
+    pub evidence_directory: &'a Path,
+    pub scenario_index: usize,
+    pub normalization_limits: NormalizationLimits,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OfflineExactSdistBehaviorProjectionErrorV1 {
+    reason_code: &'static str,
+}
+
+impl OfflineExactSdistBehaviorProjectionErrorV1 {
+    fn new(reason_code: &'static str) -> Self {
+        Self { reason_code }
+    }
+
+    pub const fn reason_code(self) -> &'static str {
+        self.reason_code
+    }
+}
+
+impl std::fmt::Display for OfflineExactSdistBehaviorProjectionErrorV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.reason_code)
+    }
+}
+
+impl std::error::Error for OfflineExactSdistBehaviorProjectionErrorV1 {}
+
+/// Project a retained exact-sdist helper action without rerunning package code.
+///
+/// The result is digest-bound, observe-only evidence. This function does not
+/// authenticate retained evidence, declare it clean, or grant admission
+/// authority. Missing host composition remains incomplete in the shared
+/// behavior projector.
+pub fn project_offline_exact_sdist_behavior_v1(
+    request: OfflineExactSdistBehaviorProjectionRequestV1<'_>,
+) -> Result<BehaviorAnalysisBundleV1, OfflineExactSdistBehaviorProjectionErrorV1> {
+    if !is_directory_non_symlink(request.evidence_directory) {
+        return Err(OfflineExactSdistBehaviorProjectionErrorV1::new(
+            "sdist_behavior_projection_evidence_directory_unavailable",
+        ));
+    }
+    let maximum_artifact_bytes =
+        usize::try_from(request.normalization_limits.max_original_bytes).unwrap_or(usize::MAX);
+    let artifact_bytes = read_offline_projection_file(
+        request.artifact_path,
+        maximum_artifact_bytes,
+        "sdist_behavior_projection_artifact_unavailable",
+    )?;
+    let envelope_bytes = read_offline_projection_file(
+        request.artifact_envelope_path,
+        MAX_ARTIFACT_ENVELOPE_BYTES,
+        "sdist_behavior_projection_artifact_envelope_unavailable",
+    )?;
+    let manifest_bytes = read_offline_projection_file(
+        request.artifact_manifest_path,
+        maximum_artifact_bytes,
+        "sdist_behavior_projection_artifact_manifest_unavailable",
+    )?;
+
+    let envelope: ArtifactEnvelope = serde_json::from_slice(&envelope_bytes).map_err(|_| {
+        OfflineExactSdistBehaviorProjectionErrorV1::new(
+            "sdist_behavior_projection_artifact_envelope_invalid",
+        )
+    })?;
+    let canonical_envelope = envelope.canonical_json().map_err(|_| {
+        OfflineExactSdistBehaviorProjectionErrorV1::new(
+            "sdist_behavior_projection_artifact_envelope_invalid",
+        )
+    })?;
+    if canonical_envelope != envelope_bytes
+        || envelope.ecosystem != Ecosystem::Pypi
+        || envelope.magic_detected_format != ArtifactFormat::SdistTarGzip
+        || !envelope.matches_original_bytes(&artifact_bytes)
+    {
+        return Err(OfflineExactSdistBehaviorProjectionErrorV1::new(
+            "sdist_behavior_projection_artifact_envelope_binding_mismatch",
+        ));
+    }
+    let detected_format = detect_artifact_format(
+        envelope.ecosystem,
+        &envelope.original_filename,
+        &artifact_bytes,
+    )
+    .map_err(|_| {
+        OfflineExactSdistBehaviorProjectionErrorV1::new(
+            "sdist_behavior_projection_artifact_format_invalid",
+        )
+    })?;
+    if detected_format != ArtifactFormat::SdistTarGzip
+        || !envelope.verify_magic_format(detected_format)
+    {
+        return Err(OfflineExactSdistBehaviorProjectionErrorV1::new(
+            "sdist_behavior_projection_artifact_format_binding_mismatch",
+        ));
+    }
+
+    let supplied_manifest: ArtifactManifest =
+        serde_json::from_slice(&manifest_bytes).map_err(|_| {
+            OfflineExactSdistBehaviorProjectionErrorV1::new(
+                "sdist_behavior_projection_artifact_manifest_invalid",
+            )
+        })?;
+    let canonical_manifest = serde_json::to_vec(&supplied_manifest).map_err(|_| {
+        OfflineExactSdistBehaviorProjectionErrorV1::new(
+            "sdist_behavior_projection_artifact_manifest_invalid",
+        )
+    })?;
+    if canonical_manifest != manifest_bytes {
+        return Err(OfflineExactSdistBehaviorProjectionErrorV1::new(
+            "sdist_behavior_projection_artifact_manifest_noncanonical",
+        ));
+    }
+    let normalized = normalize_artifact(&envelope, &artifact_bytes, request.normalization_limits)
+        .map_err(|_| {
+        OfflineExactSdistBehaviorProjectionErrorV1::new(
+            "sdist_behavior_projection_artifact_normalization_failed",
+        )
+    })?;
+    if supplied_manifest != normalized.manifest {
+        return Err(OfflineExactSdistBehaviorProjectionErrorV1::new(
+            "sdist_behavior_projection_artifact_manifest_binding_mismatch",
+        ));
+    }
+    let expected_kinds = expected_sdist_scenario_kinds_v1(&normalized.manifest).map_err(|_| {
+        OfflineExactSdistBehaviorProjectionErrorV1::new(
+            "sdist_behavior_projection_expected_scenarios_invalid",
+        )
+    })?;
+    if !supported_pep517_sdist_manifest_v1(&normalized.manifest, &expected_kinds) {
+        return Err(OfflineExactSdistBehaviorProjectionErrorV1::new(
+            "sdist_behavior_projection_artifact_unsupported",
+        ));
+    }
+    if request.scenario_index >= expected_kinds.len() {
+        return Err(OfflineExactSdistBehaviorProjectionErrorV1::new(
+            "sdist_behavior_projection_scenario_index_invalid",
+        ));
+    }
+
+    let artifact_sha256 = Sha256Digest::from_bytes(&artifact_bytes);
+    let envelope_sha256 = envelope.envelope_sha256().map_err(|_| {
+        OfflineExactSdistBehaviorProjectionErrorV1::new(
+            "sdist_behavior_projection_artifact_envelope_invalid",
+        )
+    })?;
+    project_sdist_action_behavior_v1(
+        request.evidence_directory,
+        request.scenario_index,
+        &artifact_sha256,
+        &envelope_sha256,
+        &normalized.manifest.manifest_sha256,
+        artifact_bytes.len(),
+        &expected_kinds,
+        &normalized.manifest,
+    )
+    .map_err(OfflineExactSdistBehaviorProjectionErrorV1::new)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -346,10 +520,26 @@ impl LinuxVzExactSdistDetonationAdapterV1 {
             manifest_sha256,
             artifact_bytes.len(),
             expected_kinds,
-            prepared,
+            &prepared.normalized().manifest,
         );
         let behavior_bundle = match behavior_projection {
-            Ok(bundle) => Some(bundle),
+            Ok(bundle) => match serde_json::to_vec(&bundle) {
+                Err(_) => {
+                    limitations.push("sdist_behavior_projection_bundle_serialization_failed");
+                    None
+                }
+                Ok(bundle_bytes)
+                    if write_new_private_file(
+                        &evidence_directory.join("behavior-bundle.json"),
+                        &bundle_bytes,
+                    )
+                    .is_err() =>
+                {
+                    limitations.push("sdist_behavior_projection_bundle_write_failed");
+                    None
+                }
+                Ok(_) => Some(bundle),
+            },
             Err(reason) => {
                 limitations.push(reason);
                 None
@@ -555,27 +745,37 @@ fn supported_sdist_plan_v1(
     let Some(sdist) = manifest.metadata.sdist.as_ref() else {
         return false;
     };
-    if manifest.magic_detected_format != ArtifactFormat::SdistTarGzip
-        || sdist.build_backend.is_none()
-        || !manifest.native_binary_file_ids.is_empty()
-        || (!sdist.build_requires.is_empty() && !build_closure_present)
-    {
+    if !sdist.build_requires.is_empty() && !build_closure_present {
         return false;
     }
     let expected = match expected_sdist_scenario_kinds_v1(manifest) {
         Ok(expected) => expected,
         Err(_) => return false,
     };
-    if !matches!(
-        expected.first(),
-        Some(SdistScenarioKindV1::BuildExactSdist {
-            build_mode: SdistBuildModeV1::Pep517,
-            ..
-        })
-    ) {
+    if !supported_pep517_sdist_manifest_v1(manifest, &expected) {
         return false;
     }
     sdist_kinds_from_plan_v1(scenarios).is_some_and(|actual| actual == expected)
+}
+
+fn supported_pep517_sdist_manifest_v1(
+    manifest: &ArtifactManifest,
+    expected_kinds: &[SdistScenarioKindV1],
+) -> bool {
+    manifest.magic_detected_format == ArtifactFormat::SdistTarGzip
+        && manifest
+            .metadata
+            .sdist
+            .as_ref()
+            .is_some_and(|sdist| sdist.build_backend.is_some())
+        && manifest.native_binary_file_ids.is_empty()
+        && matches!(
+            expected_kinds.first(),
+            Some(SdistScenarioKindV1::BuildExactSdist {
+                build_mode: SdistBuildModeV1::Pep517,
+                ..
+            })
+        )
 }
 
 fn sdist_kinds_from_plan_v1(
@@ -635,7 +835,7 @@ fn project_sdist_action_behavior_v1(
     manifest_sha256: &Sha256Digest,
     artifact_byte_length: usize,
     expected_kinds: &[SdistScenarioKindV1],
-    prepared: &PreparedArtifact,
+    manifest: &ArtifactManifest,
 ) -> Result<BehaviorAnalysisBundleV1, &'static str> {
     let scenario_plan_json = read_bounded_regular_file(
         &evidence_directory.join("execution-bundle/scenario-plan.json"),
@@ -691,9 +891,8 @@ fn project_sdist_action_behavior_v1(
         || template.envelope_sha256() != envelope_sha256
         || template.manifest_sha256() != manifest_sha256
         || template.artifact_byte_length() != artifact_byte_length as u64
-        || template.artifact_format() != prepared.normalized().manifest.magic_detected_format
-        || template.canonical_package_root()
-            != prepared.normalized().manifest.canonical_package_root
+        || template.artifact_format() != manifest.magic_detected_format
+        || template.canonical_package_root() != manifest.canonical_package_root
         || template.runtime_target() != ArtifactRuntimeTargetV1::LinuxArm64
         || template.scenario_id() != selected_reference.0
         || template.scenario_kind() != expected_kind
@@ -749,7 +948,7 @@ fn project_sdist_action_behavior_v1(
                 "python_import_derived_wheel_root_probe",
             ),
         };
-    let bundle = project_exact_detonation_behavior_v1(ExactDetonationBehaviorProjectionInputV1 {
+    project_exact_detonation_behavior_v1(ExactDetonationBehaviorProjectionInputV1 {
         artifact_sha256,
         manifest_sha256,
         scenario_id: template.scenario_id(),
@@ -766,15 +965,7 @@ fn project_sdist_action_behavior_v1(
         network_evidence_json: &network_evidence_json,
         host_execution_run_json: &host_execution_run_json,
     })
-    .map_err(|error| error.reason_code())?;
-    let bundle_bytes = serde_json::to_vec(&bundle)
-        .map_err(|_| "sdist_behavior_projection_bundle_serialization_failed")?;
-    write_new_private_file(
-        &evidence_directory.join("behavior-bundle.json"),
-        &bundle_bytes,
-    )
-    .map_err(|_| "sdist_behavior_projection_bundle_write_failed")?;
-    Ok(bundle)
+    .map_err(|error| error.reason_code())
 }
 
 fn parse_projection_digest_field(
@@ -796,6 +987,19 @@ fn read_bounded_regular_file(path: &Path, maximum: usize) -> Result<Vec<u8>, &'s
         return Err("sdist_behavior_projection_evidence_unavailable");
     }
     fs::read(path).map_err(|_| "sdist_behavior_projection_evidence_unavailable")
+}
+
+fn read_offline_projection_file(
+    path: &Path,
+    maximum: usize,
+    reason_code: &'static str,
+) -> Result<Vec<u8>, OfflineExactSdistBehaviorProjectionErrorV1> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|_| OfflineExactSdistBehaviorProjectionErrorV1::new(reason_code))?;
+    if !metadata.file_type().is_file() || metadata.len() == 0 || metadata.len() > maximum as u64 {
+        return Err(OfflineExactSdistBehaviorProjectionErrorV1::new(reason_code));
+    }
+    fs::read(path).map_err(|_| OfflineExactSdistBehaviorProjectionErrorV1::new(reason_code))
 }
 
 fn incomplete_result(

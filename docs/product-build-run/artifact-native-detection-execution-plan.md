@@ -138,6 +138,13 @@ macOS-hosted local detection beta. Cloudflare and AWS portability are a separate
   Mac host parsers and rejects a frame above the new ceiling, so BLK-006 is ready for a single
   physical action-3 confirmation rather than further speculative hardening. The original run
   remains incomplete and grants neither `observed_clean` nor admission.
+- The missing retained-action link for that confirmation is implemented. `behavior project sdist`
+  independently revalidates the exact PEP 517 tarball, canonical envelope and manifest, complete
+  scenario vector, selected action, and retained root/process/file/network/host digest graph, then
+  emits a caller-selected private behavior bundle without invoking the helper, VM, or package
+  code or modifying the evidence directory. This supports observe-only Codex review of action 3;
+  it does not cryptographically verify the receipt signatures, close BLK-002, authorize
+  `observed_clean` or admission, or change the 7/11 baseline.
 - The physical VZ host and the subscription-authenticated Codex host can now be separate. A
   diagnostic-only bridge requires the sanitized cloud report's complete declared bundle-digest
   set, the copied sanitized bundles, and the local `behavior observe` results to reconcile
