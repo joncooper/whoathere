@@ -10,21 +10,25 @@ payloads, or behave differently on CI and developer laptops.
 
 WhoaThere's current macOS beta takes a conservative approach: run supported package workflows away
 from your host machine, watch what happens, and copy results back only when the evidence is clean
-enough.
+enough. The established project-workflow preview uses a separate macOS guest; the newer
+exact-artifact path uses fresh disposable Linux VZ guests with no sync-back.
 
 ## Current Status
 
-The active target is an Apple Silicon macOS local beta. The most recent major product experiment
-was the July 1, 2026 actual-malware evaluation on a disposable Scaleway Mac.
+The active target is an Apple Silicon macOS local beta. The July 1, 2026 actual-malware evaluation
+on a disposable Scaleway Mac remains the current claim-bearing restricted-malware baseline. Since
+then, substantial inert and public-neighbor experiments have exercised the exact-artifact path.
 
 What that means:
 
 - CLI-only. No GUI and no installer package are required.
 - Built for local Python and Node development.
-- Uses a separate macOS VM as the main safety boundary.
+- Uses a separate macOS VM for the established workflow preview and disposable Linux VZ guests for
+  exact npm and PyPI artifacts.
 - Supports scanner and package-risk checks as extra evidence.
 - Blocks or asks for manual review on package shapes that are too risky for this beta.
-- Does not depend on AWS, a company package registry, or a cloud service.
+- Keeps core containment local-first; hosted AI review and restricted cloud-lab validation are
+  explicit optional modes rather than hidden dependencies.
 
 Current claim boundary:
 
@@ -40,9 +44,11 @@ npm tarballs, pure-Python wheels, and nested-root PEP 517 sdists. Exact npm inst
 under both CI profiles, one wheel completed its eight install and trigger actions, and the base
 sdist path completed build, derived-wheel inspection and install, and import. Observe-only Codex
 specialists consumed sanitized, digest-bound process, file, canary, and network bundles from those
-runs and preserved behavior-specific findings without gaining VM or admission authority. Evidence
-coverage remains incomplete, the independent claim-bearing event verifier is not implemented, and
-the known-malware score remains 7/11. This is working detection infrastructure, not yet a broad
+runs and preserved behavior-specific findings without gaining VM or admission authority. A native
+one-action proof now independently partitions receipt-bound file events and derives a typed
+observation without consuming producer labels or verdicts. Physical results still lack the complete
+multi-action, multimodality event denominator required for a claim-bearing campaign, and the
+known-malware score remains 7/11. This is working detection infrastructure, not yet a broad
 detection claim. See the
 [execution plan](docs/product-build-run/artifact-native-detection-execution-plan.md) and
 [blocker queue](docs/product-build-run/detection-blocker-queue.md).
@@ -94,8 +100,8 @@ Next gates before a detection-credible beta:
 
 - Measure the 40-artifact development benign cohort and correct practical false-malicious or
   unsupported results.
-- Restore exact restricted-sample custody, rerun the four prior misses, and then require 11/11
-  behavior-specific known-regression detections.
+- Stage only separately approved samples from restored exact-hash custody, rerun the four prior
+  misses, and then require 11/11 behavior-specific known-regression detections.
 - Complete the second-pass derived-wheel `.pth` and console-entry probes plus legacy and ZIP-sdist
   controls; unsupported paths must remain inconclusive or manual review.
 - Complete the independent signed-event verifier before treating a campaign score as
@@ -124,7 +130,8 @@ signals and keeps risky execution away from your host.
 At a high level:
 
 1. You point WhoaThere at a project or run a protected package workflow.
-2. WhoaThere mirrors only the needed project files into a separate macOS VM.
+2. WhoaThere mirrors only the needed project files into a separate macOS VM, or stages one exact
+   package artifact into a fresh disposable Linux VZ guest.
 3. Package-manager work runs inside that VM, not directly on your host.
 4. The VM contains fake credentials and canaries instead of your real secrets.
 5. WhoaThere records package behavior, scanner results, package type, version age, diffs, and local
@@ -148,7 +155,8 @@ WhoaThere can improve local development safety for:
 - delayed behavior such as `CI=true` activation
 - macOS-specific payloads
 - packages that touch fake credentials during common API use
-- DNS/HTTPS exfiltration attempts visible from the VM
+- DNS, connect, and send intent visible in instrumented VM telemetry, without claiming live-C2 or
+  successful content-exfiltration detection
 - surprise upgrades when a last-known-good local package version exists
 - unpinned dependency specs that would otherwise float to a new version
 - known vulnerable packages when external scanners are available
