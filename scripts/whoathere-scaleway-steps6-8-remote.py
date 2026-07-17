@@ -399,6 +399,16 @@ def validate_clearance(remote_root: Path, args: argparse.Namespace, runs: list[d
             failures.append("exact_artifact_clearance_detonation_config_path_mismatch")
         if clearance.get("detonation_config_sha256") != args.detonation_config_sha256:
             failures.append("exact_artifact_clearance_detonation_config_sha256_mismatch")
+    elif args.execution_path == LEGACY_EXECUTION_PATH:
+        # Historical legacy clearances predate the discriminator and remain
+        # usable only for the legacy route. An exact clearance must never be
+        # downgraded into the looser workspace execution path.
+        if clearance.get("execution_path") not in {None, LEGACY_EXECUTION_PATH}:
+            failures.append("legacy_clearance_execution_path_mismatch")
+        if clearance.get("detonation_config_path") is not None:
+            failures.append("legacy_clearance_contains_detonation_config_path")
+        if clearance.get("detonation_config_sha256") is not None:
+            failures.append("legacy_clearance_contains_detonation_config_sha256")
     for key in ("provider_approval_ref", "legal_provider_approval_ref", "clearance_method", "reviewer"):
         if not isinstance(clearance.get(key), str) or not clearance.get(key):
             failures.append(f"{key}_missing")
