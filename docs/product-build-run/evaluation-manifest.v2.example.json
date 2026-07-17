@@ -15,7 +15,9 @@
   "verified_evidence_registry": {
     "registry_id": "example-verified-evidence",
     "verifier_id": "example-independent-verifier",
-    "verifier_public_key_sha256": "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+    "verifier_public_key_sha256": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+    "verifier_executable_sha256": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+    "projection_schema_sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   },
   "evaluation_window": {
     "starts_at_utc": "2026-07-15T00:00:00Z",
@@ -49,6 +51,7 @@
       "family_id": "example-malicious-family",
       "campaign_id": "example-malicious-campaign",
       "artifact_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "execution_profile_sha256": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
       "ecosystem": "npm",
       "expected_result": "malicious",
       "required_behavior_labels": [
@@ -69,6 +72,7 @@
       "family_id": "example-benign-family",
       "campaign_id": "example-benign-campaign",
       "artifact_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "execution_profile_sha256": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
       "ecosystem": "npm",
       "expected_result": "benign",
       "required_behavior_labels": [

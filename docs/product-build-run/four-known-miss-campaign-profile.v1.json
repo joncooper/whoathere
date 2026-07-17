@@ -1,0 +1,318 @@
+{
+  "schema": "whoathere.known_miss_campaign_profile.v1",
+  "campaign_profile_id": "four-prior-misses-v1",
+  "canonicalization": "utf8-json-sort-keys-compact-no-nan-v1",
+  "artifact_profiles": [
+    {
+      "sample_id": "mb-npm-sbx-45.0.2",
+      "artifact_sha256": "sha256:0b8e586c7a91fce4fac8296a069c1c5e673046261958e9ba519e6b6e3b458933",
+      "ecosystem": "npm",
+      "family_id": "sbx-ci-credential-harvester",
+      "campaign_id": "npm-supply-chain-2026-04",
+      "sealed_expected_behavior_labels": [
+        "ci_gated_activation",
+        "credential_env_access",
+        "https_exfil"
+      ],
+      "required_modalities": [
+        "deterministic",
+        "codex",
+        "dynamic"
+      ],
+      "execution_profile": {
+        "schema": "whoathere.aggregate_execution_profile.v1",
+        "profile_id": "npm-exact-lifecycle-ci-matrix-v1",
+        "artifact_binding": {
+          "sample_id": "mb-npm-sbx-45.0.2",
+          "artifact_sha256": "sha256:0b8e586c7a91fce4fac8296a069c1c5e673046261958e9ba519e6b6e3b458933"
+        },
+        "artifact_kind": "npm_tgz",
+        "backend": "macos_host_disposable_linux_vz_guest",
+        "execution_host_policy": {
+          "host_scope": "approved_remote_cloud_mac_lab_only",
+          "local_developer_mac_permitted": false,
+          "action_time_authorization_required": true,
+          "verified_host_binding_required": true
+        },
+        "fresh_disposable_guest_per_expanded_action": true,
+        "network_policy": "sinkhole_only",
+        "sync_back": false,
+        "live_c2": false,
+        "live_second_stage_fetch": false,
+        "evidence_modalities": [
+          "process",
+          "file",
+          "canary",
+          "network"
+        ],
+        "matrix": [
+          {
+            "action_id": "npm-ci-false",
+            "scenario": "exact_local_consumer_install",
+            "environment": {
+              "set": {},
+              "unset": [
+                "CI"
+              ]
+            },
+            "lifecycle_scripts": true,
+            "registry_fallback": false,
+            "canary_profile": "synthetic_credentials_and_sensitive_paths"
+          },
+          {
+            "action_id": "npm-ci-true",
+            "scenario": "exact_local_consumer_install",
+            "environment": {
+              "set": {
+                "CI": "true"
+              },
+              "unset": []
+            },
+            "lifecycle_scripts": true,
+            "registry_fallback": false,
+            "canary_profile": "synthetic_credentials_and_sensitive_paths"
+          }
+        ]
+      },
+      "execution_profile_sha256": "sha256:3f30cf9b63d205fc063108ff86765de30e7b83de83c924c2284a5a59b1d727ba"
+    },
+    {
+      "sample_id": "mb-telnyx-4.87.1-wheel",
+      "artifact_sha256": "sha256:7321caa303fe96ded0492c747d2f353c4f7d17185656fe292ab0a59e2bd0b8d9",
+      "ecosystem": "pypi",
+      "family_id": "telnyx-compromised-release",
+      "campaign_id": "teampcp-telnyx-2026",
+      "sealed_expected_behavior_labels": [
+        "credential_env_access",
+        "https_exfil",
+        "second_stage_fetch"
+      ],
+      "required_modalities": [
+        "deterministic",
+        "codex",
+        "dynamic"
+      ],
+      "execution_profile": {
+        "schema": "whoathere.aggregate_execution_profile.v1",
+        "profile_id": "wheel-exact-complete-trigger-matrix-v1",
+        "artifact_binding": {
+          "sample_id": "mb-telnyx-4.87.1-wheel",
+          "artifact_sha256": "sha256:7321caa303fe96ded0492c747d2f353c4f7d17185656fe292ab0a59e2bd0b8d9"
+        },
+        "artifact_kind": "wheel",
+        "backend": "macos_host_disposable_linux_vz_guest",
+        "execution_host_policy": {
+          "host_scope": "approved_remote_cloud_mac_lab_only",
+          "local_developer_mac_permitted": false,
+          "action_time_authorization_required": true,
+          "verified_host_binding_required": true
+        },
+        "fresh_disposable_guest_per_expanded_action": true,
+        "network_policy": "sinkhole_only",
+        "sync_back": false,
+        "live_c2": false,
+        "live_second_stage_fetch": false,
+        "evidence_modalities": [
+          "process",
+          "file",
+          "canary",
+          "network"
+        ],
+        "matrix": [
+          {
+            "action_id": "wheel-install",
+            "scenario": "exact_wheel_install",
+            "pip_arguments": [
+              "--no-index",
+              "--no-deps"
+            ]
+          },
+          {
+            "action_id": "wheel-pth",
+            "scenario": "fresh_interpreter_pth_processing",
+            "selector": "every_validated_pth_file"
+          },
+          {
+            "action_id": "wheel-import",
+            "scenario": "fresh_interpreter_import",
+            "selector": "every_validated_import_root"
+          },
+          {
+            "action_id": "wheel-console-entry",
+            "scenario": "fresh_console_entry_point",
+            "selector": "every_declared_console_entry_point",
+            "argument_profile": "help_only"
+          }
+        ]
+      },
+      "execution_profile_sha256": "sha256:9da59e60f1554b30b0fe4859ea9dd09712483d82f8472db789519212eb9c34d8"
+    },
+    {
+      "sample_id": "mb-telnyx-4.87.2-wheel",
+      "artifact_sha256": "sha256:cd08115806662469bbedec4b03f8427b97c8a4b3bc1442dc18b72b4e19395fe3",
+      "ecosystem": "pypi",
+      "family_id": "telnyx-compromised-release",
+      "campaign_id": "teampcp-telnyx-2026",
+      "sealed_expected_behavior_labels": [
+        "credential_env_access",
+        "https_exfil",
+        "second_stage_fetch"
+      ],
+      "required_modalities": [
+        "deterministic",
+        "codex",
+        "dynamic"
+      ],
+      "execution_profile": {
+        "schema": "whoathere.aggregate_execution_profile.v1",
+        "profile_id": "wheel-exact-complete-trigger-matrix-v1",
+        "artifact_binding": {
+          "sample_id": "mb-telnyx-4.87.2-wheel",
+          "artifact_sha256": "sha256:cd08115806662469bbedec4b03f8427b97c8a4b3bc1442dc18b72b4e19395fe3"
+        },
+        "artifact_kind": "wheel",
+        "backend": "macos_host_disposable_linux_vz_guest",
+        "execution_host_policy": {
+          "host_scope": "approved_remote_cloud_mac_lab_only",
+          "local_developer_mac_permitted": false,
+          "action_time_authorization_required": true,
+          "verified_host_binding_required": true
+        },
+        "fresh_disposable_guest_per_expanded_action": true,
+        "network_policy": "sinkhole_only",
+        "sync_back": false,
+        "live_c2": false,
+        "live_second_stage_fetch": false,
+        "evidence_modalities": [
+          "process",
+          "file",
+          "canary",
+          "network"
+        ],
+        "matrix": [
+          {
+            "action_id": "wheel-install",
+            "scenario": "exact_wheel_install",
+            "pip_arguments": [
+              "--no-index",
+              "--no-deps"
+            ]
+          },
+          {
+            "action_id": "wheel-pth",
+            "scenario": "fresh_interpreter_pth_processing",
+            "selector": "every_validated_pth_file"
+          },
+          {
+            "action_id": "wheel-import",
+            "scenario": "fresh_interpreter_import",
+            "selector": "every_validated_import_root"
+          },
+          {
+            "action_id": "wheel-console-entry",
+            "scenario": "fresh_console_entry_point",
+            "selector": "every_declared_console_entry_point",
+            "argument_profile": "help_only"
+          }
+        ]
+      },
+      "execution_profile_sha256": "sha256:d8c0689e15ca579b22f3754063d24b8db15e3e1ddc6f7ecc002356168e24338e"
+    },
+    {
+      "sample_id": "mb-telnyx-4.87.2-sdist",
+      "artifact_sha256": "sha256:a9235c0eb74a8e92e5a0150e055ee9dcdc6252a07785b6677a9ca831157833a5",
+      "ecosystem": "pypi",
+      "family_id": "telnyx-compromised-release",
+      "campaign_id": "teampcp-telnyx-2026",
+      "sealed_expected_behavior_labels": [
+        "credential_env_access",
+        "https_exfil",
+        "second_stage_fetch"
+      ],
+      "required_modalities": [
+        "deterministic",
+        "codex",
+        "dynamic"
+      ],
+      "execution_profile": {
+        "schema": "whoathere.aggregate_execution_profile.v1",
+        "profile_id": "sdist-exact-build-derived-wheel-matrix-v1",
+        "artifact_binding": {
+          "sample_id": "mb-telnyx-4.87.2-sdist",
+          "artifact_sha256": "sha256:a9235c0eb74a8e92e5a0150e055ee9dcdc6252a07785b6677a9ca831157833a5"
+        },
+        "artifact_kind": "sdist",
+        "backend": "macos_host_disposable_linux_vz_guest",
+        "execution_host_policy": {
+          "host_scope": "approved_remote_cloud_mac_lab_only",
+          "local_developer_mac_permitted": false,
+          "action_time_authorization_required": true,
+          "verified_host_binding_required": true
+        },
+        "fresh_disposable_guest_per_expanded_action": true,
+        "network_policy": "sinkhole_only",
+        "sync_back": false,
+        "live_c2": false,
+        "live_second_stage_fetch": false,
+        "evidence_modalities": [
+          "process",
+          "file",
+          "canary",
+          "network"
+        ],
+        "build_lane_policy": {
+          "allowed_lanes": [
+            "pypi_pep517",
+            "pypi_setup_py"
+          ],
+          "selection": "exact_normalized_artifact_metadata",
+          "selected_lane_required_before_execution": true,
+          "unselected_or_ambiguous_result": "inconclusive"
+        },
+        "implementation_readiness": {
+          "state": "blocked",
+          "reason_codes": [
+            "legacy_sdist_build_lane_not_implemented",
+            "derived_wheel_complete_trigger_fanout_not_implemented"
+          ],
+          "authoritative_campaign_run_permitted": false
+        },
+        "root_policy": "normalize_exactly_one_nested_or_top_level_sdist_root",
+        "build_closure_policy": "exact_offline_dependency_closure",
+        "derived_wheel_policy": "rebuild_and_seal_exactly_one_derived_wheel_per_expanded_action",
+        "matrix": [
+          {
+            "action_id": "sdist-build",
+            "scenario": "offline_selected_build_lane_and_seal_derived_wheel",
+            "selector": "one_exact_metadata_selected_build_lane"
+          },
+          {
+            "action_id": "derived-wheel-install",
+            "scenario": "exact_derived_wheel_install",
+            "pip_arguments": [
+              "--no-index",
+              "--no-deps"
+            ]
+          },
+          {
+            "action_id": "derived-wheel-pth",
+            "scenario": "fresh_interpreter_pth_processing",
+            "selector": "every_validated_derived_wheel_pth_file"
+          },
+          {
+            "action_id": "derived-wheel-import",
+            "scenario": "fresh_interpreter_import",
+            "selector": "every_validated_derived_wheel_import_root"
+          },
+          {
+            "action_id": "derived-wheel-console-entry",
+            "scenario": "fresh_console_entry_point",
+            "selector": "every_declared_derived_wheel_console_entry_point",
+            "argument_profile": "help_only"
+          }
+        ]
+      },
+      "execution_profile_sha256": "sha256:3b4dfb4a33cc2b139b29c975430b44122a51370ecc87cfd95e9edffa814f4910"
+    }
+  ]
+}
