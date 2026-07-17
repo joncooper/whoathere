@@ -219,13 +219,16 @@ child.spawn('printf', [token, config.length]);
         ArtifactFindingCategory::NetworkCapability,
         ArtifactFindingCategory::ProcessExecution,
         ArtifactFindingCategory::CredentialExfiltrationCapability,
-        ArtifactFindingCategory::DownloadExecuteCapability,
     ] {
         assert!(analysis
             .findings
             .iter()
             .any(|finding| finding.category == category));
     }
+    assert!(analysis
+        .findings
+        .iter()
+        .all(|finding| { finding.category != ArtifactFindingCategory::DownloadExecuteCapability }));
 }
 
 #[test]

