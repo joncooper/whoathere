@@ -2,7 +2,7 @@
 
 Date: 2026-07-09
 
-Revised: 2026-07-17
+Revised: 2026-07-18
 
 Status: canonical detection-first execution plan for the macOS-hosted local beta
 
@@ -54,6 +54,24 @@ macOS-hosted local detection beta. Cloudflare and AWS portability are a separate
 
 ### July 18 detection checkpoint
 
+- The npm offline-closure path has passed its physical qualification gate. A wholly inert package
+  matching the missed `sbx` dependency shape ran from an exact tarball plus four digest-sealed
+  closure tarballs in fresh disposable Linux VZ guests under both `CI=false` and `CI=true`.
+  Closure materialization and installation completed with dependency lifecycle scripts disabled;
+  only the target lifecycle scripts were enabled. Each profile produced a 29-event behavior
+  bundle, stopped its VM, destroyed its clone, retained stable image identities, exposed no public
+  route, and performed no sync-back.
+- The qualification exposed two narrow integration defects and proved their repairs in the exact
+  rerun. Package execution now selects the production `package-root-runtime` filename while legacy
+  qualification retains its older probe name. The shared-console parser can also recover exactly
+  one missing 76-character base64 fragment only when a unique bounded candidate reconstructs both
+  the declared result length and SHA-256; no match, ambiguity, or limit overflow still fails
+  closed. The complete Swift suite passed 243 of 243 tests before the physical rerun.
+- Subscription-backed Codex reviewed both final behavior bundles in observe-only mode. It cited
+  the two exact npm lifecycle events in each profile, returned `behavior_observed`, and preserved
+  the unavailable filesystem, canary, network, and evasion views plus all coverage gaps. It did
+  not produce a clean or admission decision. The environment marker remains deliberately
+  non-claim-bearing because package code could imitate it.
 - The exact `mb-telnyx-4.87.2-sdist` artifact was materialized from its sealed cloud-lab custody
   record through the new preparation-only path. The artifact digest matched
   `sha256:a9235c0e...33a5`, the custody and staging bindings verified, evidence was sealed, and the
@@ -87,11 +105,11 @@ macOS-hosted local detection beta. Cloudflare and AWS portability are a separate
   `download_execute_capability -> second_stage_fetch` mapping. They are not claim-bearing yet
   because they have not been signed after a freshly frozen campaign manifest. The remaining
   distinct sample gap is `mb-npm-sbx-45.0.2`, whose current static capability findings do not
-  legally satisfy its frozen runtime labels. Digest-bound npm runtime/optional/peer closure
-  transport now passes locally across the Rust, Linux-runtime, and Swift-helper layers. Its next
-  gate is a wholly inert physical run under both CI profiles, followed by strict publication of an
-  observed CI-profile differential. A first Node environment-read marker sensor is intentionally
-  not claim-bearing after review showed that package code could imitate the marker.
+  legally satisfy its frozen runtime labels. Its inert dependency-bearing execution gate is now
+  complete. The next restricted-lab step is to acquire and seal the exact public closure, restore
+  the restrictive host network policy for the current operator address, issue a fresh clearance,
+  and run the real artifact under both CI profiles without sync-back, live C2, or second-stage
+  fetching.
 - The strict July public baseline remains **7/11**. A manifest-bound four-sample campaign can
   establish a separate 4/4 prior-miss result; only a subsequent full eleven-sample campaign can
   establish a new 11/11 baseline. This checkpoint improves the shortest path to those gates; it

@@ -305,9 +305,10 @@ No BLK-007 resume experiment remains. Preserve the exact neighbor actions, the o
 tests, the serial-init self-test, and the offline projection commands as regressions. A dedicated
 evidence console is optional later hardening, not a prerequisite for the known-miss wheel runs.
 
-## BLK-008: npm offline closure awaits physical qualification
+## BLK-008: resolved -- npm offline closure physically qualified
 
-Status: local implementation complete; inert cloud-Mac proof pending.
+Status: resolved on July 18, 2026. The exact npm dependency-closure path no longer blocks the
+approved `sbx` experiment.
 
 The npm adapter now binds exact runtime, optional, and peer dependency declarations to a sorted,
 digest-sealed tarball closure and transports it through the existing bounded execution frame. The
@@ -332,8 +333,25 @@ binding drift. Node's `--trace-env` is useful as an inert oracle but writes pack
 and is not evidence. Build this as the next focused sensor slice after the closure run rather than
 expanding the current physical checkpoint.
 
-Resume with one wholly inert package shaped like `sbx`, its exact sealed `classnames`, `react`, and
-`react-dom` closure, and fresh guests for both CI profiles. Require offline completion, disabled
-closure lifecycle execution, authenticated process/file/canary/network evidence, marker cleanup,
-verified VM stop and clone destruction, no public route, and no sync-back. If npm still requests
-registry metadata, add only a sealed consumer manifest/lock; do not build a registry service.
+Resolution evidence:
+
+- one wholly inert package shaped like `sbx` and four wholly inert closure tarballs completed
+  offline in fresh guests under both CI profiles;
+- closure materialization ran first, closure lifecycle scripts remained disabled, and only the
+  exact target tarball's lifecycle scripts were enabled;
+- both profiles completed their package actions and produced 29-event behavior bundles bound to
+  the exact target digest;
+- the production host runner name was corrected without changing legacy qualification behavior;
+- a one-fragment shared-console loss was repaired with bounded, unique length-and-digest recovery,
+  and the full 243-test Swift suite passed before the exact physical rerun;
+- both VMs stopped, both clones were destroyed, stable image identities held, no public route was
+  exposed, and no sync-back occurred; and
+- observe-only Codex cited the exact lifecycle events for both profiles while preserving the
+  incomplete sensor coverage and declining clean or admission authority.
+
+No further inert closure experiment is required before the separately approved real `sbx` run.
+The environment-read marker remains supporting and package-forgeable, so it cannot independently
+satisfy a frozen behavior label. Before real execution, seal the exact public dependency closure,
+restore the restrictive lab network policy for the current operator address, generate a fresh
+clearance bound to the current helper/runtime/config identities, and preserve the existing no-live-
+C2, no-live-second-stage, no-sync-back, and teardown requirements.

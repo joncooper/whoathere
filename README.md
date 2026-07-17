@@ -65,16 +65,21 @@ the host, no sync-back occurred, and no live C2 was contacted. The static scan c
 artifact as malicious with five eligible detections, including sensitive-path access and
 exfiltration/process capability.
 
-Physical detonation was correctly withheld because the package declares a runtime dependency and
-peer dependencies, while the exact npm runtime then supported only an empty dependency closure.
-Digest-bound offline npm closure support is now implemented for exact runtime, optional, and peer
-tarballs and passes the local Rust, Linux-runtime, and Swift-helper suites. A bounded packer now
-constructs and immediately verifies the sealed closure frame without fetching, resolving, or
-executing package code. Closure tarballs install first with lifecycle scripts disabled; only the
-target installs with scripts enabled. The next gate is a wholly inert cloud-Mac run under both CI
-profiles; only after that succeeds will the separately approved malware workflow use the new path.
-This is useful engineering progress, not a claim-bearing campaign result, so the baseline remains
-7/11.
+Digest-bound offline npm closure support is now implemented and physically qualified. On July 18,
+a wholly inert dependency-bearing package shaped like the missed `sbx` sample completed in fresh
+disposable guests under both `CI=false` and `CI=true`. Four sealed closure tarballs were installed
+first with lifecycle scripts disabled; only the exact target tarball ran its lifecycle scripts.
+Both profiles produced 29-event behavior bundles, stopped their VMs, destroyed their clones,
+exposed no public route, and performed no sync-back.
+
+That final qualification also found and fixed two concrete integration defects: the host helper
+still expected an older runtime filename, and an emergency kernel message could replace one
+base64 evidence fragment on the shared serial console. The rebuilt helper now uses the production
+runtime name, while the parser can recover only one uniquely authenticated fragment matching both
+the declared length and SHA-256. The full 243-test Swift suite passed before the exact two-profile
+run was repeated successfully. Subscription-backed Codex then reviewed both signed bundles, cited
+the exact npm lifecycle events, and correctly left missing sensor coverage inconclusive rather
+than calling the package clean.
 
 The remaining Telnyx sdist was then prepared from its sealed exact-hash custody record on the cloud
 Mac without invoking WhoaThere, a VM, AI, or package code. Deterministic inspection of that exact
@@ -93,15 +98,17 @@ production assembler measures and pins the verifier, captures its canonical outp
 signs the bundle, and verifies publication without accepting operator-authored projection JSON.
 
 This is meaningful detection progress, but the public claim remains deliberately unchanged. The
-three verified projections still need to be signed into a freshly frozen, manifest-bound campaign;
-npm `sbx` still needs inert physical closure qualification and behavior-specific evidence from the
-CI matrix. A first Node lifecycle environment-read sensor passes its local mechanics tests, but a
-focused review correctly found that package code could imitate its writable marker. It is therefore
-not claim-bearing and will not satisfy the scorer until it has an authenticated channel. Physical
-results also lack independently verified host composition and the complete dynamic event
-denominator required for clean or admission decisions. The July restricted-malware baseline
-therefore remains 7/11. A strict four-sample rerun can establish a separate 4/4 prior-miss result;
-only the subsequent full eleven-sample rerun can establish a new 11/11 baseline. See the
+three verified Telnyx projections still need to be signed into a freshly frozen, manifest-bound
+campaign. The npm closure path has now crossed its inert physical gate; the next restricted step
+is to seal the sample's exact public dependency closure, restore the lab's restrictive network
+policy and fresh clearance, and run its two-profile VM experiment. A first Node lifecycle
+environment-read sensor passes its local mechanics tests, but a focused review correctly found
+that package code could imitate its writable marker. It remains supporting telemetry rather than
+claim-bearing evidence. Physical results also lack independently verified host composition and the
+complete dynamic event denominator required for clean or admission decisions. The July
+restricted-malware baseline therefore remains 7/11. A strict four-sample rerun can establish a
+separate 4/4 prior-miss result; only the subsequent full eleven-sample rerun can establish a new
+11/11 baseline. See the
 [execution plan](docs/product-build-run/artifact-native-detection-execution-plan.md) and
 [blocker queue](docs/product-build-run/detection-blocker-queue.md).
 
@@ -150,6 +157,9 @@ Avoid claims such as:
 
 Next gates before a detection-credible beta:
 
+- Complete the separately approved two-profile `sbx` experiment using its exact public dependency
+  closure, restrictive lab networking, fresh clearance, no sync-back, and no live C2 or second
+  stage.
 - Measure the 40-artifact development benign cohort and correct practical false-malicious or
   unsupported results.
 - Stage only separately approved samples from restored exact-hash custody, rerun the four prior
