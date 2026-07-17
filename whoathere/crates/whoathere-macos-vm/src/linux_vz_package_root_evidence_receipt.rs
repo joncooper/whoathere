@@ -1,3 +1,5 @@
+#[cfg(test)]
+use crate::LinuxVzPackageRootFileEvidenceEventV1;
 use crate::{
     LinuxVzPackageProcessCompletionV1, LinuxVzPackageRootFileEvidenceV1,
     LinuxVzPackageRootNetworkEvidenceV1, LinuxVzPackageRootProcessEvidenceV1,
@@ -727,8 +729,12 @@ pub struct VerifiedLinuxVzPackageRootEvidenceReceiptV1 {
     artifact_sha256: Sha256Digest,
     execution_grant_sha256: Sha256Digest,
     sensor_session_challenge_sha256: Sha256Digest,
+    process_plan_sha256: Sha256Digest,
+    action_index: usize,
     process_evidence_sha256: Sha256Digest,
     file_evidence_sha256: Sha256Digest,
+    file_evidence_byte_length: usize,
+    file_event_count: usize,
     network_evidence_sha256: Sha256Digest,
     evidence_complete: bool,
 }
@@ -750,12 +756,28 @@ impl VerifiedLinuxVzPackageRootEvidenceReceiptV1 {
         &self.sensor_session_challenge_sha256
     }
 
+    pub fn process_plan_sha256(&self) -> &Sha256Digest {
+        &self.process_plan_sha256
+    }
+
+    pub const fn action_index(&self) -> usize {
+        self.action_index
+    }
+
     pub fn process_evidence_sha256(&self) -> &Sha256Digest {
         &self.process_evidence_sha256
     }
 
     pub fn file_evidence_sha256(&self) -> &Sha256Digest {
         &self.file_evidence_sha256
+    }
+
+    pub const fn file_evidence_byte_length(&self) -> usize {
+        self.file_evidence_byte_length
+    }
+
+    pub const fn file_event_count(&self) -> usize {
+        self.file_event_count
     }
 
     pub fn network_evidence_sha256(&self) -> &Sha256Digest {
@@ -786,8 +808,12 @@ pub(crate) fn test_verified_linux_vz_package_root_evidence_receipt_v1(
     grant: &MacosLinuxVzPackageExecutionGrantObservationV1,
     receipt_sha256: Sha256Digest,
     sensor_session_challenge_sha256: Sha256Digest,
+    process_plan_sha256: Sha256Digest,
+    action_index: usize,
     process_evidence_sha256: Sha256Digest,
     file_evidence_sha256: Sha256Digest,
+    file_evidence_byte_length: usize,
+    file_event_count: usize,
     network_evidence_sha256: Sha256Digest,
     evidence_complete: bool,
 ) -> VerifiedLinuxVzPackageRootEvidenceReceiptV1 {
@@ -796,11 +822,126 @@ pub(crate) fn test_verified_linux_vz_package_root_evidence_receipt_v1(
         artifact_sha256: request.artifact_sha256().clone(),
         execution_grant_sha256: grant.execution_grant_sha256().clone(),
         sensor_session_challenge_sha256,
+        process_plan_sha256,
+        action_index,
         process_evidence_sha256,
         file_evidence_sha256,
+        file_evidence_byte_length,
+        file_event_count,
         network_evidence_sha256,
         evidence_complete,
     }
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn test_linux_vz_package_root_evidence_receipt_claims_for_file_v1(
+    request: &MacosLinuxVzPackageAuthorityRequestV1,
+    grant: &MacosLinuxVzPackageExecutionGrantObservationV1,
+    file: &LinuxVzPackageRootFileEvidenceV1,
+    process_plan_sha256: Sha256Digest,
+    action_index: usize,
+    cgroup_id: u64,
+    root_runner_pid: u32,
+    leader_pid: u32,
+    process_started_monotonic_nanoseconds: u64,
+    process_ended_monotonic_nanoseconds: u64,
+    signing_seed: [u8; 32],
+) -> LinuxVzPackageRootEvidenceReceiptClaimsV1 {
+    let process_evidence = br#"{"type":"process"}"#;
+    let network_evidence = br#"{"type":"network"}"#;
+    let verifying_key = SigningKey::from_bytes(&signing_seed).verifying_key();
+    assert_eq!(
+        grant.guest_evidence_public_key_sha256(),
+        &Sha256Digest::from_bytes(verifying_key.as_bytes())
+    );
+    assert_eq!(
+        file.events()
+            .iter()
+            .map(LinuxVzPackageRootFileEvidenceEventV1::cgroup_id)
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([cgroup_id])
+    );
+    let claims = LinuxVzPackageRootEvidenceReceiptClaimsV1 {
+        artifact_kind: request.artifact_kind(),
+        artifact_sha256: request.artifact_sha256().clone(),
+        artifact_byte_length: request.artifact_byte_length(),
+        package_authority_request_sha256: request.request_sha256().clone(),
+        execution_grant_sha256: grant.execution_grant_sha256().clone(),
+        execution_grant_issued_at_unix_seconds: grant.issued_at_unix_seconds(),
+        execution_grant_verified_at_unix_seconds: grant.verified_at_unix_seconds(),
+        execution_grant_expires_at_unix_seconds: grant.expires_at_unix_seconds(),
+        execution_runtime_qualification_record_sha256: grant
+            .execution_runtime_qualification_record_sha256()
+            .clone(),
+        scenario_plan_sha256: request.scenario_plan_sha256().clone(),
+        scenario_template_sha256: request.scenario_template_sha256().clone(),
+        scenario_kind_sha256: request.scenario_kind_sha256().clone(),
+        scenario_policy_sha256: request.scenario_policy_sha256().clone(),
+        dependency_closure_sha256: request.dependency_closure_sha256().clone(),
+        runtime_profile_sha256: request.runtime_profile_sha256().clone(),
+        execution_runtime_rootfs_sha256: request.candidate_runtime_rootfs_sha256().clone(),
+        execution_runtime_manifest_sha256: request.candidate_runtime_manifest_sha256().clone(),
+        package_execution_runner_sha256: request.candidate_package_runner_sha256().clone(),
+        qualified_telemetry_backend_sha256: request.qualified_telemetry_backend_sha256().clone(),
+        request_challenge_sha256: request.request_challenge_sha256().clone(),
+        grant_challenge_sha256: grant.grant_challenge_sha256().clone(),
+        attempt_binding_sha256: grant.attempt_binding_sha256().clone(),
+        clone_binding_sha256: request.clone_binding_sha256().clone(),
+        sensor_session_challenge_sha256: Sha256Digest::from_bytes(b"sensor session challenge"),
+        guest_evidence_public_key_sha256: grant.guest_evidence_public_key_sha256().clone(),
+        guest_evidence_signer_sha256: Sha256Digest::from_bytes(b"guest evidence signer"),
+        protected_sensor_bundle_sha256: Sha256Digest::from_bytes(b"protected sensor bundle"),
+        sensor_configuration_sha256: Sha256Digest::from_bytes(b"sensor configuration"),
+        launch_contract_sha256: Sha256Digest::from_bytes(b"launch contract"),
+        process_plan_sha256,
+        action_index,
+        cgroup_name: format!("whoathere-package-action-{action_index}"),
+        cgroup_id,
+        root_runner_pid,
+        leader_pid,
+        process_started_monotonic_nanoseconds,
+        process_ended_monotonic_nanoseconds,
+        leader_supervisor_wait_status: 0,
+        leader_terminal: crate::LinuxVzPackageProcessTerminalV1::Exited,
+        leader_exit_status: Some(0),
+        leader_termination_signal: None,
+        heartbeat_count: 2,
+        process_evidence_sha256: Sha256Digest::from_bytes(process_evidence),
+        process_evidence_byte_length: process_evidence.len(),
+        process_source_event_count: 1,
+        process_observation_count: 1,
+        file_evidence_sha256: file.payload_sha256().clone(),
+        file_evidence_byte_length: file.canonical_json_v1().len(),
+        file_event_count: file.events().len(),
+        file_change_count: file.changes().len(),
+        network_evidence_sha256: Sha256Digest::from_bytes(network_evidence),
+        network_evidence_byte_length: network_evidence.len(),
+        network_event_count: 0,
+        egress_event_count: 0,
+        egress_packet_coverage_complete: true,
+        egress_dropped_event_count: 0,
+        egress_discarded_record_count: 0,
+        connect_sendto_intent_coverage_complete: true,
+        guest_intent_coverage_complete: false,
+        host_frame_correlation_complete: false,
+        dns_intent_coverage_complete: false,
+        http_observation_complete: false,
+        composite_network_coverage_complete: false,
+        unobserved_network_capabilities: vec![
+            "additional_network_syscalls".to_string(),
+            "dns_intent".to_string(),
+            "host_frame_correlation".to_string(),
+            "http_observation".to_string(),
+        ],
+        file_declared_scope_complete: file.declared_scope_complete(),
+        file_global_mount_coverage_complete: file.global_mount_coverage_complete(),
+        evidence_complete: false,
+        created_at_unix_seconds: grant.verified_at_unix_seconds() + 1,
+        expires_at_unix_seconds: grant.expires_at_unix_seconds() - 1,
+    };
+    claims.validate_v1().expect("test root receipt claims");
+    claims
 }
 
 pub fn sign_linux_vz_package_root_evidence_receipt_v1(
@@ -890,8 +1031,12 @@ pub fn verify_linux_vz_package_root_evidence_receipt_v1(
         artifact_sha256: claims.artifact_sha256.clone(),
         execution_grant_sha256: claims.execution_grant_sha256.clone(),
         sensor_session_challenge_sha256: claims.sensor_session_challenge_sha256.clone(),
+        process_plan_sha256: claims.process_plan_sha256.clone(),
+        action_index: claims.action_index,
         process_evidence_sha256: claims.process_evidence_sha256.clone(),
         file_evidence_sha256: claims.file_evidence_sha256.clone(),
+        file_evidence_byte_length: claims.file_evidence_byte_length,
+        file_event_count: claims.file_event_count,
         network_evidence_sha256: claims.network_evidence_sha256.clone(),
         evidence_complete: claims.evidence_complete,
     })

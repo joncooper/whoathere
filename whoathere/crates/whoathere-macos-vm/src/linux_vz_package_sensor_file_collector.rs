@@ -718,6 +718,89 @@ impl LinuxVzPackageRootFileCollectionV1 {
             required_mark_count: REQUIRED_FANOTIFY_MARK_COUNT_FIXTURE_V1,
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn denominator_fixture_v1(
+        challenge: &Sha256Digest,
+        cgroup_id: u64,
+        leader_pid: u32,
+        process_started_monotonic_nanoseconds: u64,
+        process_ended_monotonic_nanoseconds: u64,
+    ) -> Self {
+        let mut fixture = Self::fixture_v1(
+            challenge,
+            cgroup_id,
+            leader_pid,
+            process_started_monotonic_nanoseconds,
+            process_ended_monotonic_nanoseconds,
+        );
+        let workspace_token = fixture.events[0].path_token_sha256.clone();
+        let sensitive_ssh_token = root_file_path_token_v1(
+            challenge,
+            LinuxVzPackageRootFilePathNamespaceV1::WorkspaceRelative,
+            LinuxVzPackageFilePathClassV1::SensitiveSsh,
+            b"home/.ssh/id_ed25519",
+        )
+        .expect("fixture sensitive SSH token");
+        fixture.events = vec![
+            LinuxVzPackageRootFileEventV1 {
+                kind: LinuxVzPackageRootFileEventKindV1::Read,
+                path_class: LinuxVzPackageFilePathClassV1::SensitiveSsh,
+                namespace: LinuxVzPackageRootFilePathNamespaceV1::WorkspaceRelative,
+                outcome: LinuxVzPackageRootFileAccessOutcomeV1::Observed,
+                source_sequence: 1,
+                timestamp_monotonic_nanoseconds: process_started_monotonic_nanoseconds + 1,
+                actor_pid: leader_pid,
+                cgroup_id,
+                path_token_sha256: sensitive_ssh_token,
+            },
+            LinuxVzPackageRootFileEventV1 {
+                kind: LinuxVzPackageRootFileEventKindV1::Open,
+                path_class: LinuxVzPackageFilePathClassV1::Workspace,
+                namespace: LinuxVzPackageRootFilePathNamespaceV1::WorkspaceRelative,
+                outcome: LinuxVzPackageRootFileAccessOutcomeV1::Observed,
+                source_sequence: 2,
+                timestamp_monotonic_nanoseconds: process_started_monotonic_nanoseconds + 2,
+                actor_pid: leader_pid,
+                cgroup_id,
+                path_token_sha256: workspace_token.clone(),
+            },
+        ];
+        fixture.maximum_drain_batch_event_count = 2;
+        fixture.permission_response_count = 2;
+        fixture
+    }
+
+    #[cfg(test)]
+    pub(crate) fn denominator_fixture_with_unsupported_v1(
+        challenge: &Sha256Digest,
+        cgroup_id: u64,
+        leader_pid: u32,
+        process_started_monotonic_nanoseconds: u64,
+        process_ended_monotonic_nanoseconds: u64,
+    ) -> Self {
+        let mut fixture = Self::denominator_fixture_v1(
+            challenge,
+            cgroup_id,
+            leader_pid,
+            process_started_monotonic_nanoseconds,
+            process_ended_monotonic_nanoseconds,
+        );
+        let workspace_token = fixture.events[1].path_token_sha256.clone();
+        fixture.events.push(LinuxVzPackageRootFileEventV1 {
+            kind: LinuxVzPackageRootFileEventKindV1::Write,
+            path_class: LinuxVzPackageFilePathClassV1::Workspace,
+            namespace: LinuxVzPackageRootFilePathNamespaceV1::WorkspaceRelative,
+            outcome: LinuxVzPackageRootFileAccessOutcomeV1::Observed,
+            source_sequence: 3,
+            timestamp_monotonic_nanoseconds: process_started_monotonic_nanoseconds + 3,
+            actor_pid: leader_pid,
+            cgroup_id,
+            path_token_sha256: workspace_token,
+        });
+        fixture.maximum_drain_batch_event_count = 3;
+        fixture
+    }
 }
 
 #[cfg(test)]

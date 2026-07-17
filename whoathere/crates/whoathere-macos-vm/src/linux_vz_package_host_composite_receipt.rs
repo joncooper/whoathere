@@ -725,6 +725,61 @@ fn hex_nibble_v1(value: u8) -> Result<u8, LinuxVzPackageHostCompositeReceiptErro
 }
 
 #[cfg(test)]
+#[allow(clippy::type_complexity)]
+pub(crate) fn test_sign_linux_vz_package_host_composite_receipt_v1(
+    expected: &LinuxVzPackageHostCompositeExpectedBindingsV1,
+    signing_seed: [u8; 32],
+    created_at_unix_seconds: u64,
+    expires_at_unix_seconds: u64,
+) -> Result<(Vec<u8>, Vec<u8>, [u8; 32]), LinuxVzPackageHostCompositeReceiptErrorV1> {
+    use ed25519_dalek::{Signer, SigningKey};
+
+    expected.validate_v1()?;
+    let signing_key = SigningKey::from_bytes(&signing_seed);
+    let verifying_key = signing_key.verifying_key().to_bytes();
+    if Sha256Digest::from_bytes(&verifying_key) != expected.host_evidence_public_key_sha256 {
+        return Err(LinuxVzPackageHostCompositeReceiptErrorV1::PublicKeyMismatch);
+    }
+    validate_time_v1(
+        created_at_unix_seconds,
+        expires_at_unix_seconds,
+        created_at_unix_seconds,
+    )?;
+    let evidence_bytes = canonical_json_v1(&expected_evidence_wire_v1(expected))?;
+    let evidence = decode_linux_vz_package_host_composite_evidence_v1(&evidence_bytes, expected)?;
+    let unsigned = expected_unsigned_receipt_v1(
+        &evidence,
+        expected,
+        created_at_unix_seconds,
+        expires_at_unix_seconds,
+    );
+    let unsigned_bytes = canonical_json_v1(&unsigned)?;
+    let signature = signing_key.sign(&signature_message_v1(&evidence_bytes, &unsigned_bytes));
+    let mut receipt = serde_json::to_value(unsigned)
+        .map_err(|_| LinuxVzPackageHostCompositeReceiptErrorV1::Serialization)?;
+    receipt
+        .as_object_mut()
+        .ok_or(LinuxVzPackageHostCompositeReceiptErrorV1::Serialization)?
+        .insert(
+            "signature_ed25519_hex".to_string(),
+            serde_json::Value::String(test_lower_hex_v1(&signature.to_bytes())),
+        );
+    let receipt_bytes = canonical_json_v1(&receipt)?;
+    Ok((evidence_bytes, receipt_bytes, verifying_key))
+}
+
+#[cfg(test)]
+fn test_lower_hex_v1(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(HEX[(byte >> 4) as usize] as char);
+        output.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    output
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
@@ -870,8 +925,12 @@ mod tests {
             &grant,
             digest("root receipt"),
             digest("sensor session challenge"),
+            digest("process plan"),
+            1,
             host_network.process_evidence_sha256().clone(),
             digest("file evidence"),
+            1,
+            1,
             host_network.root_network_evidence_sha256().clone(),
             false,
         );

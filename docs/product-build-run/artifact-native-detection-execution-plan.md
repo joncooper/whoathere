@@ -246,6 +246,14 @@ macOS-hosted local detection beta. Cloudflare and AWS portability are a separate
   If the first exact runs still miss, the next bounded slice is a complete sealed Linux-arm64/Python
   3.14 wheel dependency closure plus authenticated fake-credential environment-read observation;
   generic connection intent must not be relabeled as exfiltration.
+- The first native signed-event-denominator proof is complete for one action and one file stream.
+  From independently verified root and host receipts plus receipt-bound primitive events, it derives
+  one typed sensitive-SSH-read observation, accounts for an ordinary workspace open, preserves that
+  positive when an unsupported third event makes projection coverage incomplete, and hard-disables
+  `observed_clean` and verdict authority. Replay, substitution, omission, ordinal, signature/key,
+  host-root, and serialized-output tampering tests pass. This closes BLK-002's smallest inert proof;
+  it does not yet provide the complete multi-action, multimodality verifier executable or a
+  claim-bearing registry for physical campaigns.
 - No restricted malware was rerun. The known-malware detection result therefore remains **7/11**;
   this checkpoint proves working npm, wheel, and base PEP 517 sdist execution/observation slices,
   not an improved campaign score.

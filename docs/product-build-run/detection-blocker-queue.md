@@ -28,11 +28,12 @@ guest-root or host-composite completeness, clean eligibility, or admission eligi
 No resume experiment is required. Preserve the completed inert npm and wheel runs as regression
 fixtures; reopen this entry only if the same sensor-control failure recurs on those pinned inputs.
 
-## BLK-002: the signed event denominator and independent verifier do not exist
+## BLK-002: one-action native denominator proved; complete verifier wiring remains
 
-Status: parked after independent audit. The strict evaluator remains fail-closed, and production
-registry generation remains `not_generated`. The uncommitted Python producer prototype is not
-claim-bearing and must not be released as an independent verifier path.
+Status: partially resolved on July 16, 2026. A bounded native proof now independently verifies and
+partitions one action's signed file-event stream. The strict evaluator remains fail-closed,
+production registry generation remains `not_generated`, and the uncommitted Python producer
+prototype is not claim-bearing or releasable as an independent verifier path.
 
 Confirmed:
 
@@ -44,6 +45,23 @@ Confirmed:
 - a verifier cannot prove omitted events unless expected bindings, host composition, root receipts,
   modality receipts, and streams commit to a complete ordered event denominator;
 - therefore a signed registry produced by the prototype would not make an 11/11 score trustworthy.
+
+Completed bounded proof:
+
+- verified root-receipt tokens now expose their signed process-plan, action-index, file-length, and
+  file-event-count commitments;
+- a native Rust partitioner consumes only trusted expected bindings, independently verified root
+  and host receipt tokens, and decoded receipt-bound file evidence--never a producer result,
+  observation, behavior label, reason string, or verdict;
+- one inert two-event fixture derives a typed sensitive-SSH-read projection and exactly accounts
+  for an ordinary workspace open as a recognized non-observation;
+- an authenticated unsupported sibling remains in the denominator, preserves the positive
+  projection, forces projection coverage incomplete, and cannot enable `observed_clean`;
+- omission, ordinal mutation, signature/key failure, artifact/grant/root/host/file replay or
+  substitution, and serialized-output tampering fail; generation and verification share the
+  existing 256 MiB runtime-result ceiling;
+- all seven focused tests, all 269 `whoathere-macos-vm` tests, formatting, strict Clippy, and an
+  independent bounded review pass.
 
 Required v2 boundary:
 
@@ -69,20 +87,20 @@ be projected and reviewed, but the physical bundles still lack a complete indepe
 event denominator and complete modality coverage. Such observations remain useful for manual
 review; they cannot make an incomplete row detection-recall eligible or support clean admission.
 
-Smallest resume experiment:
+Remaining claim-bearing boundary:
 
-1. Define an inert signed receipt chain for one action with two ordered primitive events: one file
-   read that projects to a typed observation and one recognized non-observation.
-2. Have a native verifier derive both event IDs, the exact partition, and the one projection without
-   receiving any producer observation or label.
-3. Prove that omitting either event, inventing or relabeling a projection, changing an ordinal,
-   replaying another run, or substituting a source prevents registry generation.
-4. Prove that an unsupported third signed event preserves the positive projection but changes
-   coverage to incomplete and keeps `observed_clean` impossible.
-5. Only then reconnect the Python registry publisher and its off-tree signing helper.
+1. Extend host composition from one root receipt to the complete ordered action/root set and apply
+   the same denominator rule to every required process, file, canary, and network stream.
+2. Define the honest trusted-input contract needed by a standalone native verifier executable;
+   root-receipt verification currently requires caller-supplied claims, so a thin file-only CLI
+   would invent authority.
+3. Compare the independently reconstructed projection set bidirectionally with `RunResultV2`, then
+   reconnect the registry publisher and off-tree signing helper.
 
-Until the receipt chain supplies that denominator and the native verifier passes this inert fixture,
-no new campaign can produce a claim-bearing verified registry.
+The inert native proof closes the smallest experiment, but current physical bundles still lack the
+complete multi-action, multimodality denominator. New cloud-lab slices may produce useful positive
+manual-review evidence, but no campaign can produce a claim-bearing verified registry until the
+remaining boundary is complete.
 
 ## BLK-003: the physical host harness discards partial evidence and overstates failure state
 
