@@ -48,10 +48,10 @@ runtime evidence, and projected the package trigger, protected PyPI-token reads,
 sends. Observe-only Codex specialists cited those exact events as lifecycle, canary-access, and
 network findings while explicitly declining to infer token exfiltration or grant admission.
 
-In a follow-up restricted-lab diagnostic, one previously missed Telnyx wheel completed an
-exact-artifact run in a fresh disposable Linux VZ guest with the safety invariants intact. Its
+In follow-up restricted-lab diagnostics, both previously missed Telnyx wheels completed
+exact-artifact runs in fresh disposable Linux VZ guests with the safety invariants intact. Their
 sanitized, signed behavior bundles were reviewed by subscription-backed Codex: the split
-diagnostic preserved the deterministic behavior detection, and Codex confirmed the package's
+diagnostics preserved the deterministic behavior detections, and Codex confirmed each package's
 import trigger from the typed telemetry. This is an encouraging end-to-end validation of the new
 wheel path, but the split workflow is diagnostic rather than claim-bearing and does not change the
 7/11 known-malware baseline.
