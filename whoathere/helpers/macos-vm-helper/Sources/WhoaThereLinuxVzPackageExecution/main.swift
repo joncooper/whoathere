@@ -351,7 +351,7 @@ private enum PackageExecutionMain {
         }
 
         let layout = LinuxVzPackageRuntimeBaseLayout(
-            runtimeDirectory: options.runtimeDirectory
+            executionRuntimeDirectory: options.runtimeDirectory
         )
         let runtimeManifestData = try readBoundedRegularFile(
             layout.runtimeManifestURL,

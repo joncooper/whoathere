@@ -53,6 +53,81 @@ import Testing
     #expect(!evidence.syncBackPermitted)
 }
 
+@Test func linuxVzPackageExecutionSerialEvidenceRecoversAuthenticatedEmergencyInterleave() throws {
+    let result = Data((0..<171).map { UInt8($0 % 251) })
+    let fragments = base64Fragments(result)
+    #expect(fragments.count == 3)
+    let serial = packageExecutionSerial(
+        result: result,
+        encodedLines: [
+            fragments[0],
+            "[   30.869960] AAAA\(fragments[1])BBBBB IRQ #14",
+            fragments[2],
+        ]
+    )
+
+    let evidence = try parseLinuxVzPackageExecutionSerialEvidenceV1(serial)
+
+    #expect(evidence.result == result)
+    #expect(evidence.resultSHA256 == sha256(result))
+}
+
+@Test func linuxVzPackageExecutionSerialEvidenceRejectsUnauthenticatedEmergencyInterleave() {
+    let result = Data((0..<171).map { UInt8($0 % 251) })
+    let fragments = base64Fragments(result)
+    let replacement = fragments[1].first == "A" ? "B" : "A"
+    let corrupted = replacement + fragments[1].dropFirst()
+    let serial = packageExecutionSerial(
+        result: result,
+        encodedLines: [
+            fragments[0],
+            "[   30.869960] \(corrupted) IRQ #14",
+            fragments[2],
+        ]
+    )
+
+    #expect(throws: LinuxVzPackageExecutionSerialEvidenceError.lengthMismatch) {
+        try parseLinuxVzPackageExecutionSerialEvidenceV1(serial)
+    }
+}
+
+@Test func linuxVzPackageExecutionSerialEvidenceRejectsAmbiguousAuthenticatedRecovery() {
+    let result = Data((0..<171).map { UInt8($0 % 251) })
+    let fragments = base64Fragments(result)
+    let serial = packageExecutionSerial(
+        result: result,
+        encodedLines: [
+            fragments[0],
+            "[   30.869960] \(fragments[1]) IRQ #14",
+            "[   30.869961] \(fragments[1]) IRQ #14",
+            fragments[2],
+        ]
+    )
+
+    #expect(throws: LinuxVzPackageExecutionSerialEvidenceError.lengthMismatch) {
+        try parseLinuxVzPackageExecutionSerialEvidenceV1(serial)
+    }
+}
+
+@Test func linuxVzPackageExecutionSerialEvidenceRejectsRecoveryCandidateLimit() {
+    let result = Data((0..<171).map { UInt8($0 % 251) })
+    let fragments = base64Fragments(result)
+    // Seventeen overlapping 76-character windows exceed the bounded recovery search.
+    let overLimitRun = fragments[1] + "AAAAAAAAAAAAAAAA"
+    let serial = packageExecutionSerial(
+        result: result,
+        encodedLines: [
+            fragments[0],
+            "[   30.869960] \(overLimitRun) IRQ #14",
+            fragments[2],
+        ]
+    )
+
+    #expect(throws: LinuxVzPackageExecutionSerialEvidenceError.lengthMismatch) {
+        try parseLinuxVzPackageExecutionSerialEvidenceV1(serial)
+    }
+}
+
 @Test func linuxVzPackageExecutionSerialEvidenceCarriesBLK006SizedRuntimeResult() throws {
     let expectedResultBytes = 5_945_958
     let transcript = Data("action 3 completed in the guest".utf8)
@@ -136,7 +211,24 @@ import Testing
 }
 
 private func packageExecutionSerial(result: Data) -> Data {
+    packageExecutionSerial(result: result, encodedLines: base64Fragments(result))
+}
+
+private func base64Fragments(_ result: Data) -> [String] {
     let encoded = result.base64EncodedString()
+    var fragments = [String]()
+    fragments.reserveCapacity((encoded.utf8.count + 75) / 76)
+    var index = encoded.startIndex
+    while index < encoded.endIndex {
+        let end = encoded.index(index, offsetBy: 76, limitedBy: encoded.endIndex)
+            ?? encoded.endIndex
+        fragments.append(String(encoded[index..<end]))
+        index = end
+    }
+    return fragments
+}
+
+private func packageExecutionSerial(result: Data, encodedLines: [String]) -> Data {
     var lines = [
         "WHOATHERE_PACKAGE_EXECUTION_BEGIN",
         "WHOATHERE_CAPABILITY signed_execution_inputs=verified_exact",
@@ -144,14 +236,8 @@ private func packageExecutionSerial(result: Data) -> Data {
         "WHOATHERE_CAPABILITY external_route_configured=false",
         "WHOATHERE_PACKAGE_EXECUTION_RESULT_BASE64_BEGIN",
     ]
-    lines.reserveCapacity(lines.count + (encoded.utf8.count + 75) / 76 + 5)
-    var index = encoded.startIndex
-    while index < encoded.endIndex {
-        let end = encoded.index(index, offsetBy: 76, limitedBy: encoded.endIndex)
-            ?? encoded.endIndex
-        lines.append(String(encoded[index..<end]))
-        index = end
-    }
+    lines.reserveCapacity(lines.count + encodedLines.count + 5)
+    lines.append(contentsOf: encodedLines)
     lines.append(
         "WHOATHERE_PACKAGE_EXECUTION_RESULT_BASE64_END sha256=\(sha256(result)) byte_length=\(result.count)"
     )

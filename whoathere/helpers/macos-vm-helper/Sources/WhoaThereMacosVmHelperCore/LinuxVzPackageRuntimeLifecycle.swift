@@ -36,6 +36,21 @@ public struct LinuxVzPackageRuntimeBaseLayout: Equatable, Sendable {
         runtimeManifestURL = runtimeDirectory.appendingPathComponent("runtime-manifest.json")
         packageRunnerURL = runtimeDirectory.appendingPathComponent("package-runtime-probe")
     }
+
+    public init(executionRuntimeDirectory: URL) {
+        stateDirectory = executionRuntimeDirectory.deletingLastPathComponent()
+        bundleDirectory = executionRuntimeDirectory
+        runtimeRunsDirectory = stateDirectory.appendingPathComponent(
+            "linux-vz-package-runtime-runs", isDirectory: true
+        )
+        rootfsURL = executionRuntimeDirectory.appendingPathComponent("rootfs.ext2")
+        runtimeManifestURL = executionRuntimeDirectory.appendingPathComponent(
+            "runtime-manifest.json"
+        )
+        packageRunnerURL = executionRuntimeDirectory.appendingPathComponent(
+            "package-root-runtime"
+        )
+    }
 }
 
 public struct LinuxVzPackageRuntimeBaseMeasurement: Equatable, Sendable {

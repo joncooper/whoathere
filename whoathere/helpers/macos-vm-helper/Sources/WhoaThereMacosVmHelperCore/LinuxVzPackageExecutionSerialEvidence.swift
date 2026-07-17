@@ -136,11 +136,63 @@ private func linuxVzPackageExecutionBase64SectionV1(
           linuxVzPackageExecutionDigestV1(digest) else {
         throw LinuxVzPackageExecutionSerialEvidenceError.malformedSection
     }
-    let encodedLines = lines[(beginIndex + 1)..<endIndex].compactMap(
-        linuxVzPackageExecutionBase64FragmentV1
-    )
-    guard !encodedLines.isEmpty,
-          let decoded = Data(base64Encoded: encodedLines.joined()),
+    let sectionRange = (beginIndex + 1)..<endIndex
+    let encodedFragments = sectionRange.compactMap { lineIndex in
+        linuxVzPackageExecutionBase64FragmentV1(lines[lineIndex]).map {
+            LinuxVzPackageExecutionIndexedBase64FragmentV1(
+                lineIndex: lineIndex,
+                value: $0
+            )
+        }
+    }
+    let encoded = encodedFragments.map(\.value).joined()
+    do {
+        return try linuxVzPackageExecutionValidateBase64SectionV1(
+            encoded,
+            byteLength: byteLength,
+            digest: digest,
+            maximumBytes: maximumBytes
+        )
+    } catch let originalError as LinuxVzPackageExecutionSerialEvidenceError {
+        if let recovered = linuxVzPackageExecutionRecoverBase64SectionV1(
+            lines,
+            sectionRange: sectionRange,
+            acceptedFragments: encodedFragments,
+            byteLength: byteLength,
+            digest: digest,
+            maximumBytes: maximumBytes
+        ) {
+            return recovered
+        }
+        throw originalError
+    }
+}
+
+private struct LinuxVzPackageExecutionIndexedBase64FragmentV1 {
+    let lineIndex: Int
+    let value: String
+}
+
+private struct LinuxVzPackageExecutionRecoveryBase64FragmentV1 {
+    let lineIndex: Int
+    let value: String
+}
+
+private let linuxVzPackageExecutionBase64LineBytesV1 = 76
+private let maximumLinuxVzPackageExecutionRecoveryEncodedBytesV1 = 32 * 1024 * 1024
+private let maximumLinuxVzPackageExecutionRecoveryRejectedLinesV1 = 1024
+private let maximumLinuxVzPackageExecutionRecoveryLineBytesV1 = 4096
+private let maximumLinuxVzPackageExecutionRecoveryCandidateLinesV1 = 4
+private let maximumLinuxVzPackageExecutionRecoveryCandidatesV1 = 16
+
+private func linuxVzPackageExecutionValidateBase64SectionV1(
+    _ encoded: String,
+    byteLength: UInt64,
+    digest: String,
+    maximumBytes: Int
+) throws -> Data {
+    guard !encoded.isEmpty,
+          let decoded = Data(base64Encoded: encoded),
           decoded.count <= maximumBytes else {
         throw LinuxVzPackageExecutionSerialEvidenceError.invalidBase64
     }
@@ -151,6 +203,137 @@ private func linuxVzPackageExecutionBase64SectionV1(
         throw LinuxVzPackageExecutionSerialEvidenceError.digestMismatch
     }
     return decoded
+}
+
+private func linuxVzPackageExecutionRecoverBase64SectionV1(
+    _ lines: [String],
+    sectionRange: Range<Int>,
+    acceptedFragments: [LinuxVzPackageExecutionIndexedBase64FragmentV1],
+    byteLength: UInt64,
+    digest: String,
+    maximumBytes: Int
+) -> Data? {
+    // Recovery is deliberately limited to the observed failure mode: one normal
+    // 76-character serial fragment was embedded in a noisy console line. The
+    // terminal byte length and digest remain the sole authority for accepting it.
+    guard !acceptedFragments.isEmpty else { return nil }
+    let encodedByteCount = acceptedFragments.reduce(into: 0) { count, fragment in
+        count += fragment.value.utf8.count
+    }
+    let expectedEncodedByteCount = ((Int(byteLength) + 2) / 3) * 4
+    guard expectedEncodedByteCount <= maximumLinuxVzPackageExecutionRecoveryEncodedBytesV1,
+          encodedByteCount + linuxVzPackageExecutionBase64LineBytesV1
+              == expectedEncodedByteCount,
+          let candidates = linuxVzPackageExecutionRecoveryCandidatesV1(
+              lines,
+              sectionRange: sectionRange
+          ),
+          !candidates.isEmpty else {
+        return nil
+    }
+
+    var authenticated: Data?
+    for candidate in candidates {
+        var fragments = [String]()
+        fragments.reserveCapacity(acceptedFragments.count + 1)
+        var inserted = false
+        for fragment in acceptedFragments {
+            if !inserted, candidate.lineIndex < fragment.lineIndex {
+                fragments.append(candidate.value)
+                inserted = true
+            }
+            fragments.append(fragment.value)
+        }
+        if !inserted {
+            fragments.append(candidate.value)
+        }
+        guard let decoded = try? linuxVzPackageExecutionValidateBase64SectionV1(
+            fragments.joined(),
+            byteLength: byteLength,
+            digest: digest,
+            maximumBytes: maximumBytes
+        ) else {
+            continue
+        }
+        // Even two paths that reconstruct identical bytes are ambiguous evidence:
+        // the parser cannot prove which serial position supplied the missing line.
+        guard authenticated == nil else { return nil }
+        authenticated = decoded
+    }
+    return authenticated
+}
+
+private func linuxVzPackageExecutionRecoveryCandidatesV1(
+    _ lines: [String],
+    sectionRange: Range<Int>
+) -> [LinuxVzPackageExecutionRecoveryBase64FragmentV1]? {
+    var candidates = [LinuxVzPackageExecutionRecoveryBase64FragmentV1]()
+    var rejectedLineCount = 0
+    var candidateLineCount = 0
+    for lineIndex in sectionRange {
+        let line = lines[lineIndex]
+        guard linuxVzPackageExecutionBase64FragmentV1(line) == nil else { continue }
+        rejectedLineCount += 1
+        guard rejectedLineCount <= maximumLinuxVzPackageExecutionRecoveryRejectedLinesV1,
+              line.utf8.count <= maximumLinuxVzPackageExecutionRecoveryLineBytesV1 else {
+            return nil
+        }
+        guard let fragments = linuxVzPackageExecutionBase64WindowsV1(line) else {
+            return nil
+        }
+        if !fragments.isEmpty {
+            candidateLineCount += 1
+            guard candidateLineCount <= maximumLinuxVzPackageExecutionRecoveryCandidateLinesV1
+            else {
+                return nil
+            }
+        }
+        guard candidates.count + fragments.count
+            <= maximumLinuxVzPackageExecutionRecoveryCandidatesV1
+        else {
+            return nil
+        }
+        candidates.append(
+            contentsOf: fragments.map {
+                LinuxVzPackageExecutionRecoveryBase64FragmentV1(
+                    lineIndex: lineIndex,
+                    value: $0
+                )
+            }
+        )
+    }
+    return candidates
+}
+
+private func linuxVzPackageExecutionBase64WindowsV1(_ line: String) -> [String]? {
+    let bytes = Array(line.utf8)
+    var fragments = [String]()
+    var runStart = 0
+    while runStart < bytes.count {
+        while runStart < bytes.count,
+              !linuxVzPackageExecutionBase64ByteV1(bytes[runStart]) {
+            runStart += 1
+        }
+        var runEnd = runStart
+        while runEnd < bytes.count, linuxVzPackageExecutionBase64ByteV1(bytes[runEnd]) {
+            runEnd += 1
+        }
+        if runEnd - runStart >= linuxVzPackageExecutionBase64LineBytesV1 {
+            let windowCount = runEnd - runStart - linuxVzPackageExecutionBase64LineBytesV1 + 1
+            guard fragments.count + windowCount
+                <= maximumLinuxVzPackageExecutionRecoveryCandidatesV1
+            else {
+                return nil
+            }
+            for offset in 0..<windowCount {
+                let start = runStart + offset
+                let end = start + linuxVzPackageExecutionBase64LineBytesV1
+                fragments.append(String(decoding: bytes[start..<end], as: UTF8.self))
+            }
+        }
+        runStart = runEnd + 1
+    }
+    return fragments
 }
 
 private func linuxVzPackageExecutionBase64FragmentV1(_ line: String) -> String? {

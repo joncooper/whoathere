@@ -3,6 +3,60 @@ import Foundation
 import Testing
 @testable import WhoaThereMacosVmHelperCore
 
+@Test func linuxVzPackageRuntimeLayoutsSelectTheirBoundRunnerNames() {
+    let runtimeDirectory = URL(fileURLWithPath: "/tmp/whoathere-runtime", isDirectory: true)
+    let qualification = LinuxVzPackageRuntimeBaseLayout(
+        runtimeDirectory: runtimeDirectory
+    )
+    let execution = LinuxVzPackageRuntimeBaseLayout(
+        executionRuntimeDirectory: runtimeDirectory
+    )
+
+    #expect(qualification.packageRunnerURL.lastPathComponent == "package-runtime-probe")
+    #expect(execution.packageRunnerURL.lastPathComponent == "package-root-runtime")
+    #expect(qualification.rootfsURL == execution.rootfsURL)
+    #expect(qualification.runtimeManifestURL == execution.runtimeManifestURL)
+    #expect(qualification.runtimeRunsDirectory == execution.runtimeRunsDirectory)
+}
+
+@Test func linuxVzPackageExecutionRuntimeBaseLocksRootRuntimeRunner() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+        "whoathere-linux-vz-package-execution-runtime-lifecycle-\(UUID().uuidString)",
+        isDirectory: true
+    )
+    defer { try? FileManager.default.removeItem(at: root) }
+    let state = root.appendingPathComponent("state", isDirectory: true)
+    let runtime = state.appendingPathComponent("execution-runtime", isDirectory: true)
+    let layout = LinuxVzPackageRuntimeBaseLayout(executionRuntimeDirectory: runtime)
+    for directory in [root, state, runtime] {
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try linuxVzRuntimeSetMode(directory, 0o700)
+    }
+    let manifest = try executionRuntimeManifestFixture()
+    for (url, data, mode): (URL, Data, mode_t) in [
+        (layout.rootfsURL, manifest.rootfs, 0o400),
+        (layout.runtimeManifestURL, manifest.data, 0o400),
+        (layout.packageRunnerURL, manifest.runner, 0o500),
+    ] {
+        try data.write(to: url)
+        try linuxVzRuntimeSetMode(url, mode)
+    }
+
+    let base = try verifyAndLockLinuxVzPackageExecutionRuntimeBase(
+        layout: layout,
+        expectedRootfsSHA256: sha256(manifest.rootfs),
+        expectedRootfsByteLength: UInt64(manifest.rootfs.count),
+        expectedRuntimeManifestSHA256: sha256(manifest.data),
+        expectedPackageRunnerSHA256: sha256(manifest.runner)
+    )
+    #expect(base.layout.packageRunnerURL.lastPathComponent == "package-root-runtime")
+    #expect(base.measurement.packageRunnerSHA256 == sha256(manifest.runner))
+}
+
 @Test func linuxVzPackageRuntimeBaseCreatesUniqueMeasuredWritableClones() throws {
     let fixture = try linuxVzPackageRuntimeLifecycleFixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
