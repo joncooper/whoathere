@@ -25,6 +25,7 @@ LIVE_APPROVED=""
 FORCE=""
 DETONATION_CONFIG=""
 DETONATION_CONFIG_SHA256=""
+EXECUTION_TOOLS_BIN=""
 CODEX_CLIENT_PATH=""
 CODEX_CLIENT_SHA256=""
 CODEX_MODEL=""
@@ -62,6 +63,7 @@ usage:
 
 Exact-artifact options:
     --detonation-config <absolute-remote-json> --detonation-config-sha256 sha256:<digest> \
+    --execution-tools-bin <absolute-remote-directory-containing-zig> \
     [--split-local-behavior-finalization | \
       --codex-client-path <absolute-remote-native-binary> --codex-client-sha256 sha256:<digest> \
       --codex-model <model> --codex-auth-home <absolute-dedicated-home>] \
@@ -115,6 +117,7 @@ while [ "$#" -gt 0 ]; do
     --live-malware-execution-approved) LIVE_APPROVED=1; shift ;;
     --detonation-config) [ "$#" -ge 2 ] || usage; DETONATION_CONFIG=$2; shift 2 ;;
     --detonation-config-sha256) [ "$#" -ge 2 ] || usage; DETONATION_CONFIG_SHA256=$2; shift 2 ;;
+    --execution-tools-bin) [ "$#" -ge 2 ] || usage; EXECUTION_TOOLS_BIN=$2; shift 2 ;;
     --codex-client-path) [ "$#" -ge 2 ] || usage; CODEX_CLIENT_PATH=$2; shift 2 ;;
     --codex-client-sha256) [ "$#" -ge 2 ] || usage; CODEX_CLIENT_SHA256=$2; shift 2 ;;
     --codex-model) [ "$#" -ge 2 ] || usage; CODEX_MODEL=$2; shift 2 ;;
@@ -160,6 +163,7 @@ case "$EXECUTION_PATH" in
     [ -n "$SINKHOLE_ASSERTED" ] || usage
     [ -n "$DETONATION_CONFIG" ] || usage
     [ -n "$DETONATION_CONFIG_SHA256" ] || usage
+    [ -n "$EXECUTION_TOOLS_BIN" ] || usage
     [ -n "$RESTRICTED_BEHAVIOR_APPROVED" ] || usage
     [ -n "$RESTRICTED_BEHAVIOR_APPROVAL_REF" ] || usage
     [ -n "$CLEARANCE_CONSUMPTION_RECORD" ] || usage
@@ -176,7 +180,9 @@ case "$EXECUTION_PATH" in
       [ -n "$CODEX_AUTH_HOME" ] || usage
     fi
     ;;
-  legacy_workspace_non_claim_bearing) ;;
+  legacy_workspace_non_claim_bearing)
+    [ -z "$EXECUTION_TOOLS_BIN" ] || usage
+    ;;
   *) usage ;;
 esac
 if [ -n "$SPLIT_LOCAL_BEHAVIOR_FINALIZATION" ] && [ "$EXECUTION_PATH" != "exact_artifact_diagnostic" ]; then
@@ -197,6 +203,7 @@ safe_remote_value "$LEGAL_PROVIDER_APPROVAL_REF" "legal_provider_approval_ref"
 [ -z "$LULU_REFERENCE" ] || safe_remote_value "$LULU_REFERENCE" "lulu_reference"
 [ -z "$DETONATION_CONFIG" ] || safe_remote_value "$DETONATION_CONFIG" "detonation_config"
 [ -z "$DETONATION_CONFIG_SHA256" ] || safe_remote_value "$DETONATION_CONFIG_SHA256" "detonation_config_sha256"
+[ -z "$EXECUTION_TOOLS_BIN" ] || safe_remote_value "$EXECUTION_TOOLS_BIN" "execution_tools_bin"
 [ -z "$CODEX_CLIENT_PATH" ] || safe_remote_value "$CODEX_CLIENT_PATH" "codex_client_path"
 [ -z "$CODEX_CLIENT_SHA256" ] || safe_remote_value "$CODEX_CLIENT_SHA256" "codex_client_sha256"
 [ -z "$CODEX_MODEL" ] || safe_remote_value "$CODEX_MODEL" "codex_model"
@@ -231,13 +238,26 @@ remote_evaluator="$remote_tools/whoathere-actual-malware-evaluation.py"
 remote_step5="$remote_tools/whoathere-scaleway-step5-remote.py"
 remote_scanner_bin="$remote_tools/scanners/bin"
 
+if [ -n "$EXECUTION_TOOLS_BIN" ]; then
+  case "$EXECUTION_TOOLS_BIN" in
+    /*) ;;
+    *) echo "execution_tools_bin_must_be_absolute" >&2; exit 64 ;;
+  esac
+  case "$EXECUTION_TOOLS_BIN" in
+    *:*) echo "execution_tools_bin_must_not_contain_colon" >&2; exit 64 ;;
+  esac
+  ssh_run "test -d $EXECUTION_TOOLS_BIN && test ! -L $EXECUTION_TOOLS_BIN && test -f $EXECUTION_TOOLS_BIN/zig && test ! -L $EXECUTION_TOOLS_BIN/zig && test -x $EXECUTION_TOOLS_BIN/zig"
+fi
+
 ssh_run "mkdir -p $remote_tools $REMOTE_ROOT/evidence/step5 $REMOTE_ROOT/workspaces/malware"
 ssh_run "chmod u+w $remote_evaluator $remote_step5 2>/dev/null || true"
 scp_to_remote "$REPO_ROOT/scripts/whoathere-actual-malware-evaluation.py" "$remote_evaluator"
 scp_to_remote "$REPO_ROOT/scripts/whoathere-scaleway-step5-remote.py" "$remote_step5"
 ssh_run "chmod 700 $remote_tools && chmod 500 $remote_evaluator $remote_step5"
 
-remote_command="WHOATHERE_SCANNER_CACHE_DIR=$remote_tools/scanners PATH=$remote_scanner_bin:\$PATH python3 $remote_step5 --remote-root $REMOTE_ROOT --state-dir $STATE_DIR --whoathere-bin $WHOATHERE_BIN --evaluator-script $remote_evaluator --execution-path $EXECUTION_PATH --sample-id $SAMPLE_ID --provider-approval-ref $PROVIDER_APPROVAL_REF --legal-provider-approval-ref $LEGAL_PROVIDER_APPROVAL_REF --cloud-firewall-default-deny-asserted --lulu-enabled-asserted --live-malware-execution-approved"
+remote_path_prefix=$remote_scanner_bin
+[ -z "$EXECUTION_TOOLS_BIN" ] || remote_path_prefix="$EXECUTION_TOOLS_BIN:$remote_path_prefix"
+remote_command="WHOATHERE_SCANNER_CACHE_DIR=$remote_tools/scanners PATH=$remote_path_prefix:\$PATH /usr/bin/python3 $remote_step5 --remote-root $REMOTE_ROOT --state-dir $STATE_DIR --whoathere-bin $WHOATHERE_BIN --evaluator-script $remote_evaluator --execution-path $EXECUTION_PATH --sample-id $SAMPLE_ID --provider-approval-ref $PROVIDER_APPROVAL_REF --legal-provider-approval-ref $LEGAL_PROVIDER_APPROVAL_REF --cloud-firewall-default-deny-asserted --lulu-enabled-asserted --live-malware-execution-approved"
 [ -z "$STAGE_DIR" ] || remote_command="$remote_command --stage-dir $STAGE_DIR"
 [ -z "$RUN_ID" ] || remote_command="$remote_command --run-id $RUN_ID"
 [ -z "$SINKHOLE_ASSERTED" ] || remote_command="$remote_command --sinkhole-ready-asserted --sinkhole-reference $SINKHOLE_REFERENCE"

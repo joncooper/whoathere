@@ -47,6 +47,7 @@ HOST_REBUILT_OR_CLEARED=""
 VM_REBUILT_OR_PRUNED=""
 DETONATION_CONFIG=""
 DETONATION_CONFIG_SHA256=""
+EXECUTION_TOOLS_BIN=""
 CODEX_CLIENT_PATH=""
 CODEX_CLIENT_SHA256=""
 CODEX_MODEL=""
@@ -98,6 +99,7 @@ usage:
 
 Exact-artifact clearance/slice options:
     --detonation-config <absolute-remote-json> --detonation-config-sha256 sha256:<digest> \
+    --execution-tools-bin <absolute-remote-directory-containing-zig> \
 
 Additional exact-artifact slice options:
     [--split-local-behavior-finalization | \
@@ -195,6 +197,7 @@ while [ "$#" -gt 0 ]; do
     --live-malware-execution-approved) LIVE_APPROVED=1; shift ;;
     --detonation-config) [ "$#" -ge 2 ] || usage; DETONATION_CONFIG=$2; shift 2 ;;
     --detonation-config-sha256) [ "$#" -ge 2 ] || usage; DETONATION_CONFIG_SHA256=$2; shift 2 ;;
+    --execution-tools-bin) [ "$#" -ge 2 ] || usage; EXECUTION_TOOLS_BIN=$2; shift 2 ;;
     --codex-client-path) [ "$#" -ge 2 ] || usage; CODEX_CLIENT_PATH=$2; shift 2 ;;
     --codex-client-sha256) [ "$#" -ge 2 ] || usage; CODEX_CLIENT_SHA256=$2; shift 2 ;;
     --codex-model) [ "$#" -ge 2 ] || usage; CODEX_MODEL=$2; shift 2 ;;
@@ -287,6 +290,7 @@ if [ "$PHASE" = "slice" ]; then
       [ -n "$SINKHOLE_ASSERTED" ] || usage
       [ -n "$DETONATION_CONFIG" ] || usage
       [ -n "$DETONATION_CONFIG_SHA256" ] || usage
+      [ -n "$EXECUTION_TOOLS_BIN" ] || usage
       [ -n "$RESTRICTED_BEHAVIOR_APPROVED" ] || usage
       [ -n "$RESTRICTED_BEHAVIOR_APPROVAL_REF" ] || usage
       if [ -n "$SPLIT_LOCAL_BEHAVIOR_FINALIZATION" ]; then
@@ -302,7 +306,7 @@ if [ "$PHASE" = "slice" ]; then
       fi
       ;;
     legacy_workspace_non_claim_bearing)
-      [ -z "$DETONATION_CONFIG$DETONATION_CONFIG_SHA256" ] || usage
+      [ -z "$DETONATION_CONFIG$DETONATION_CONFIG_SHA256$EXECUTION_TOOLS_BIN" ] || usage
       ;;
     *) usage ;;
   esac
@@ -318,6 +322,7 @@ if [ "$PHASE" = "clearance" ]; then
     exact_artifact_diagnostic)
       [ -n "$DETONATION_CONFIG" ] || usage
       [ -n "$DETONATION_CONFIG_SHA256" ] || usage
+      [ -n "$EXECUTION_TOOLS_BIN" ] || usage
       ;;
     ""|legacy_workspace_non_claim_bearing)
       [ -z "$DETONATION_CONFIG$DETONATION_CONFIG_SHA256" ] || usage
@@ -330,6 +335,10 @@ if [ "$PHASE" = "all" ]; then
   [ -n "$HOST_REBUILT_OR_CLEARED" ] || usage
   [ -n "$VM_REBUILT_OR_PRUNED" ] || usage
 fi
+case "$PHASE:$EXECUTION_PATH" in
+  clearance:exact_artifact_diagnostic|slice:exact_artifact_diagnostic) ;;
+  *) [ -z "$EXECUTION_TOOLS_BIN" ] || usage ;;
+esac
 
 safe_remote_value "$REMOTE_ROOT" "remote_root"
 safe_remote_value "$STATE_DIR" "state_dir"
@@ -356,6 +365,7 @@ safe_remote_value "$MAX_SAMPLES_PER_CLEARANCE" "max_samples_per_clearance"
 [ -z "$LULU_REFERENCE" ] || safe_remote_value "$LULU_REFERENCE" "lulu_reference"
 [ -z "$DETONATION_CONFIG" ] || safe_remote_value "$DETONATION_CONFIG" "detonation_config"
 [ -z "$DETONATION_CONFIG_SHA256" ] || { require_sha256 "$DETONATION_CONFIG_SHA256" "detonation_config_sha256"; safe_remote_value "$DETONATION_CONFIG_SHA256" "detonation_config_sha256"; }
+[ -z "$EXECUTION_TOOLS_BIN" ] || safe_remote_value "$EXECUTION_TOOLS_BIN" "execution_tools_bin"
 [ -z "$CODEX_CLIENT_PATH" ] || safe_remote_value "$CODEX_CLIENT_PATH" "codex_client_path"
 [ -z "$CODEX_CLIENT_SHA256" ] || { require_sha256 "$CODEX_CLIENT_SHA256" "codex_client_sha256"; safe_remote_value "$CODEX_CLIENT_SHA256" "codex_client_sha256"; }
 [ -z "$CODEX_MODEL" ] || safe_remote_value "$CODEX_MODEL" "codex_model"
@@ -389,6 +399,17 @@ remote_step5="$remote_tools/whoathere-scaleway-step5-remote.py"
 remote_steps68="$remote_tools/whoathere-scaleway-steps6-8-remote.py"
 remote_scanner_bin="$remote_tools/scanners/bin"
 
+if [ -n "$EXECUTION_TOOLS_BIN" ]; then
+  case "$EXECUTION_TOOLS_BIN" in
+    /*) ;;
+    *) echo "execution_tools_bin_must_be_absolute" >&2; exit 64 ;;
+  esac
+  case "$EXECUTION_TOOLS_BIN" in
+    *:*) echo "execution_tools_bin_must_not_contain_colon" >&2; exit 64 ;;
+  esac
+  ssh_run "test -d $EXECUTION_TOOLS_BIN && test ! -L $EXECUTION_TOOLS_BIN && test -f $EXECUTION_TOOLS_BIN/zig && test ! -L $EXECUTION_TOOLS_BIN/zig && test -x $EXECUTION_TOOLS_BIN/zig"
+fi
+
 ssh_run "mkdir -p $remote_tools $REMOTE_ROOT/evidence/step6 $REMOTE_ROOT/evidence/step7 $REMOTE_ROOT/evidence/step8"
 ssh_run "chmod u+w $remote_evaluator $remote_step5 $remote_steps68 2>/dev/null || true"
 scp_to_remote "$REPO_ROOT/scripts/whoathere-actual-malware-evaluation.py" "$remote_evaluator"
@@ -396,7 +417,9 @@ scp_to_remote "$REPO_ROOT/scripts/whoathere-scaleway-step5-remote.py" "$remote_s
 scp_to_remote "$REPO_ROOT/scripts/whoathere-scaleway-steps6-8-remote.py" "$remote_steps68"
 ssh_run "chmod 700 $remote_tools && chmod 500 $remote_evaluator $remote_step5 $remote_steps68"
 
-remote_command="WHOATHERE_SCANNER_CACHE_DIR=$remote_tools/scanners PATH=$remote_scanner_bin:\$PATH python3 $remote_steps68 --phase $PHASE --remote-root $REMOTE_ROOT --state-dir $STATE_DIR --whoathere-bin $WHOATHERE_BIN --evaluator-script $remote_evaluator --step5-script $remote_step5 --campaign-id $CAMPAIGN_ID --clearance-method $CLEARANCE_METHOD --clearance-reviewer $CLEARANCE_REVIEWER --max-samples-per-clearance $MAX_SAMPLES_PER_CLEARANCE --run-timeout-seconds $RUN_TIMEOUT_SECONDS"
+remote_path_prefix=$remote_scanner_bin
+[ -z "$EXECUTION_TOOLS_BIN" ] || remote_path_prefix="$EXECUTION_TOOLS_BIN:$remote_path_prefix"
+remote_command="WHOATHERE_SCANNER_CACHE_DIR=$remote_tools/scanners PATH=$remote_path_prefix:\$PATH /usr/bin/python3 $remote_steps68 --phase $PHASE --remote-root $REMOTE_ROOT --state-dir $STATE_DIR --whoathere-bin $WHOATHERE_BIN --evaluator-script $remote_evaluator --step5-script $remote_step5 --campaign-id $CAMPAIGN_ID --clearance-method $CLEARANCE_METHOD --clearance-reviewer $CLEARANCE_REVIEWER --max-samples-per-clearance $MAX_SAMPLES_PER_CLEARANCE --run-timeout-seconds $RUN_TIMEOUT_SECONDS"
 [ -z "$EXECUTION_PATH" ] || remote_command="$remote_command --execution-path $EXECUTION_PATH"
 [ -z "$STAGE_DIR" ] || remote_command="$remote_command --stage-dir $STAGE_DIR"
 [ -z "$CLEARANCE_ID" ] || remote_command="$remote_command --clearance-id $CLEARANCE_ID"

@@ -13,6 +13,7 @@ WHOATHERE_BIN="/Users/m1/.whoathere/bin/whoathere"
 EXECUTION_PATH="legacy_workspace_non_claim_bearing"
 DETONATION_CONFIG=""
 DETONATION_CONFIG_SHA256=""
+EXECUTION_TOOLS_BIN=""
 SECURITY_LAB_OWNER=""
 EVALUATION_OWNER=""
 PROVIDER_APPROVAL_REF=""
@@ -38,6 +39,7 @@ usage:
     [--execution-path legacy_workspace_non_claim_bearing|exact_artifact_diagnostic] \
     [--detonation-config <absolute-remote-json> \
      --detonation-config-sha256 sha256:<digest>] \
+    [--execution-tools-bin <absolute-remote-directory-containing-zig>] \
     --security-lab-owner <ref> \
     --evaluation-owner <ref> \
     [--provider-approval-ref <ref>] \
@@ -59,7 +61,7 @@ safe_remote_value() {
   value=$1
   name=$2
   case "$value" in
-    *"'"*|*";"*|*"&"*|*"|"*|*"\\"*|*"\`"*|*'$('*|*"<"*|*">"*|*" "*)
+    *[!A-Za-z0-9_./:@%+=,-]*)
       echo "invalid_${name}=$value" >&2
       exit 64
       ;;
@@ -111,6 +113,11 @@ while [ "$#" -gt 0 ]; do
     --detonation-config-sha256)
       [ "$#" -ge 2 ] || usage
       DETONATION_CONFIG_SHA256=$2
+      shift 2
+      ;;
+    --execution-tools-bin)
+      [ "$#" -ge 2 ] || usage
+      EXECUTION_TOOLS_BIN=$2
       shift 2
       ;;
     --security-lab-owner)
@@ -180,7 +187,7 @@ esac
 
 case "$EXECUTION_PATH" in
   legacy_workspace_non_claim_bearing)
-    if [ -n "$DETONATION_CONFIG$DETONATION_CONFIG_SHA256" ]; then
+    if [ -n "$DETONATION_CONFIG$DETONATION_CONFIG_SHA256$EXECUTION_TOOLS_BIN" ]; then
       echo "legacy_phase1_rejects_exact_artifact_options" >&2
       exit 64
     fi
@@ -192,6 +199,7 @@ case "$EXECUTION_PATH" in
     }
     [ -n "$DETONATION_CONFIG" ] || usage
     [ -n "$DETONATION_CONFIG_SHA256" ] || usage
+    [ -n "$EXECUTION_TOOLS_BIN" ] || usage
     case "$DETONATION_CONFIG" in
       /*) ;;
       *) echo "detonation_config_must_be_absolute" >&2; exit 64 ;;
@@ -213,6 +221,7 @@ safe_remote_value "$WHOATHERE_BIN" "whoathere_bin"
 safe_remote_value "$EXECUTION_PATH" "execution_path"
 [ -z "$DETONATION_CONFIG" ] || safe_remote_value "$DETONATION_CONFIG" "detonation_config"
 [ -z "$DETONATION_CONFIG_SHA256" ] || safe_remote_value "$DETONATION_CONFIG_SHA256" "detonation_config_sha256"
+[ -z "$EXECUTION_TOOLS_BIN" ] || safe_remote_value "$EXECUTION_TOOLS_BIN" "execution_tools_bin"
 [ -z "$STAGE_DIR" ] || safe_remote_value "$STAGE_DIR" "stage_dir"
 safe_remote_value "$SECURITY_LAB_OWNER" "security_lab_owner"
 safe_remote_value "$EVALUATION_OWNER" "evaluation_owner"
@@ -243,13 +252,26 @@ remote_evaluator="$remote_tools/whoathere-actual-malware-evaluation.py"
 remote_phase1="$remote_tools/whoathere-scaleway-phase1-remote.py"
 remote_scanner_bin="$remote_tools/scanners/bin"
 
+if [ -n "$EXECUTION_TOOLS_BIN" ]; then
+  case "$EXECUTION_TOOLS_BIN" in
+    /*) ;;
+    *) echo "execution_tools_bin_must_be_absolute" >&2; exit 64 ;;
+  esac
+  case "$EXECUTION_TOOLS_BIN" in
+    *:*) echo "execution_tools_bin_must_not_contain_colon" >&2; exit 64 ;;
+  esac
+  ssh_run "test -d $EXECUTION_TOOLS_BIN && test ! -L $EXECUTION_TOOLS_BIN && test -f $EXECUTION_TOOLS_BIN/zig && test ! -L $EXECUTION_TOOLS_BIN/zig && test -x $EXECUTION_TOOLS_BIN/zig"
+fi
+
 ssh_run "mkdir -p $remote_tools $remote_scanner_bin $REMOTE_ROOT/evidence/phase1 $REMOTE_ROOT/workspaces/benign"
 ssh_run "chmod u+w $remote_evaluator $remote_phase1 2>/dev/null || true"
 scp_to_remote "$REPO_ROOT/scripts/whoathere-actual-malware-evaluation.py" "$remote_evaluator"
 scp_to_remote "$REPO_ROOT/scripts/whoathere-scaleway-phase1-remote.py" "$remote_phase1"
 ssh_run "chmod 700 $remote_tools && chmod 500 $remote_evaluator $remote_phase1"
 
-remote_command="WHOATHERE_SCANNER_CACHE_DIR=$remote_tools/scanners PATH=$remote_scanner_bin:\$PATH python3 $remote_phase1 --remote-root $REMOTE_ROOT --state-dir $STATE_DIR --whoathere-bin $WHOATHERE_BIN --evaluator-script $remote_evaluator --execution-path $EXECUTION_PATH --security-lab-owner $SECURITY_LAB_OWNER --evaluation-owner $EVALUATION_OWNER --phase $PHASE --run-timeout-seconds $RUN_TIMEOUT_SECONDS"
+remote_path_prefix=$remote_scanner_bin
+[ -z "$EXECUTION_TOOLS_BIN" ] || remote_path_prefix="$EXECUTION_TOOLS_BIN:$remote_path_prefix"
+remote_command="WHOATHERE_SCANNER_CACHE_DIR=$remote_tools/scanners PATH=$remote_path_prefix:\$PATH /usr/bin/python3 $remote_phase1 --remote-root $REMOTE_ROOT --state-dir $STATE_DIR --whoathere-bin $WHOATHERE_BIN --evaluator-script $remote_evaluator --execution-path $EXECUTION_PATH --security-lab-owner $SECURITY_LAB_OWNER --evaluation-owner $EVALUATION_OWNER --phase $PHASE --run-timeout-seconds $RUN_TIMEOUT_SECONDS"
 [ -z "$DETONATION_CONFIG" ] || remote_command="$remote_command --detonation-config $DETONATION_CONFIG --detonation-config-sha256 $DETONATION_CONFIG_SHA256"
 [ -z "$STAGE_DIR" ] || remote_command="$remote_command --stage-dir $STAGE_DIR"
 [ -z "$PROVIDER_APPROVAL_REF" ] || remote_command="$remote_command --provider-approval-ref $PROVIDER_APPROVAL_REF"

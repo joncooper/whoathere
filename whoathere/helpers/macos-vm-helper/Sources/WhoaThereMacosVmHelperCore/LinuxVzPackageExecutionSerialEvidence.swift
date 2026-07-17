@@ -164,7 +164,15 @@ private func linuxVzPackageExecutionBase64FragmentV1(_ line: String) -> String? 
           prefix.allSatisfy(linuxVzPackageExecutionBase64ByteV1),
           bytes.dropFirst(76).first.map({ !linuxVzPackageExecutionBase64ByteV1($0) }) == true
     else {
-        return nil
+        let suffix = bytes.suffix(76)
+        let prefix = bytes.dropLast(76)
+        guard bytes.count > 76, suffix.count == 76,
+              suffix.allSatisfy(linuxVzPackageExecutionBase64ByteV1),
+              prefix.contains(where: { !linuxVzPackageExecutionBase64ByteV1($0) })
+        else {
+            return nil
+        }
+        return String(decoding: suffix, as: UTF8.self)
     }
     return String(decoding: prefix, as: UTF8.self)
 }

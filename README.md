@@ -47,9 +47,18 @@ import run also crossed the previously failing large-evidence boundary, retained
 runtime evidence, and projected the package trigger, protected PyPI-token reads, and local-sinkhole
 sends. Observe-only Codex specialists cited those exact events as lifecycle, canary-access, and
 network findings while explicitly declining to infer token exfiltration or grant admission.
+
+In a follow-up restricted-lab diagnostic, one previously missed Telnyx wheel completed an
+exact-artifact run in a fresh disposable Linux VZ guest with the safety invariants intact. Its
+sanitized, signed behavior bundles were reviewed by subscription-backed Codex: the split
+diagnostic preserved the deterministic behavior detection, and Codex confirmed the package's
+import trigger from the typed telemetry. This is an encouraging end-to-end validation of the new
+wheel path, but the split workflow is diagnostic rather than claim-bearing and does not change the
+7/11 known-malware baseline.
+
 Physical results still lack independently verified host composition and the complete event
-denominator required for a claim-bearing campaign, and the known-malware score remains 7/11. This
-is working detection infrastructure, not yet a broad detection claim. See the
+denominator required for a claim-bearing campaign. This is working detection infrastructure, not
+yet a broad detection claim. See the
 [execution plan](docs/product-build-run/artifact-native-detection-execution-plan.md) and
 [blocker queue](docs/product-build-run/detection-blocker-queue.md).
 

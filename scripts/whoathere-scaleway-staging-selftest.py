@@ -146,6 +146,9 @@ case "${1:-}" in
     ;;
   artifact)
     test "${2:-}" = "inspect" || exit 64
+    if [ -n "${WHOATHERE_SELFTEST_EXPECTED_ZIG:-}" ]; then
+      test "$(command -v zig)" = "$WHOATHERE_SELFTEST_EXPECTED_ZIG"
+    fi
     shift 2
     config=""
     while [ "$#" -gt 0 ]; do
@@ -433,6 +436,12 @@ def main() -> int:
         sudo_pf_info = remote_root / "evidence/preflight/host-firewall-sudo-info.out"
         sudo_pf_info.write_text("Status: Enabled\n", encoding="utf-8")
         sudo_pf_info.chmod(0o600)
+        execution_tools_bin = temp_root / "execution-tools-bin"
+        execution_tools_bin.mkdir(mode=0o700)
+        fake_zig = execution_tools_bin / "zig"
+        fake_zig.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        fake_zig.chmod(0o500)
+        exact_environment["WHOATHERE_SELFTEST_EXPECTED_ZIG"] = str(fake_zig)
         phase1_common = [
             str(PHASE1),
             "--ssh-host",
@@ -451,6 +460,8 @@ def main() -> int:
             str(detonation_config),
             "--detonation-config-sha256",
             detonation_config_sha256,
+            "--execution-tools-bin",
+            str(execution_tools_bin),
             "--security-lab-owner",
             "synthetic-security-owner",
             "--evaluation-owner",
