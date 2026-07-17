@@ -129,6 +129,55 @@ bundle_schema=$(jq -er '.schema_version | select(type == "string")' "$bundle_man
 build_closure_payload_present=false
 build_closure_payload_sha256=absent
 build_closure_payload_byte_length=0
+parse_build_closure_manifest() {
+    closure_artifact_label=$1
+    if ! jq -e \
+        '.build_closure_payload_present | type == "boolean"' \
+        "$bundle_manifest" >/dev/null
+    then
+        echo "$closure_artifact_label build closure presence is invalid" >&2
+        exit 65
+    fi
+    # `jq -e` deliberately returns status 1 for a valid boolean false. Extract the
+    # already type-checked value without `-e` so an absent optional closure remains
+    # supported rather than tripping this script's `set -e` policy.
+    build_closure_payload_present=$(jq -r \
+        '.build_closure_payload_present' "$bundle_manifest")
+    build_closure_payload_byte_length=$(jq -er \
+        '.build_closure_payload_byte_length | select(type == "string")' \
+        "$bundle_manifest")
+    case "$build_closure_payload_present" in
+        true)
+            build_closure_payload_sha256=$(jq -er \
+                '.build_closure_payload_sha256 | select(type == "string")' \
+                "$bundle_manifest")
+            if ! printf '%s\n' "$build_closure_payload_byte_length" \
+                | grep -Eq '^[1-9][0-9]*$'
+            then
+                echo "$closure_artifact_label build closure byte length is invalid" >&2
+                exit 65
+            fi
+            if [ ! -f "$build_closure" ] || [ -L "$build_closure" ]; then
+                echo "$closure_artifact_label build closure payload is missing or unsafe" >&2
+                exit 66
+            fi
+            ;;
+        false)
+            if ! jq -e 'has("build_closure_payload_sha256") and (.build_closure_payload_sha256 == null)' \
+                "$bundle_manifest" >/dev/null || \
+               [ "$build_closure_payload_byte_length" != 0 ] || \
+               [ -e "$build_closure" ] || [ -L "$build_closure" ]
+            then
+                echo "absent $closure_artifact_label build closure is not represented exactly" >&2
+                exit 65
+            fi
+            ;;
+        *)
+            echo "$closure_artifact_label build closure presence is invalid" >&2
+            exit 65
+            ;;
+    esac
+}
 case "$bundle_schema" in
     whoathere.linux_vz_inert_npm_execution_bundle.v1)
         bundle_environment=$(jq -er '.environment | select(type == "string")' \
@@ -141,6 +190,7 @@ case "$bundle_schema" in
             echo "npm execution bundle contains a wheel selector" >&2
             exit 65
         fi
+        parse_build_closure_manifest npm
         expected_artifact_kind=npm_tarball
         ;;
     whoathere.linux_vz_inert_wheel_execution_bundle.v1)
@@ -167,52 +217,7 @@ case "$bundle_schema" in
             echo "sdist execution bundle contains an npm selector" >&2
             exit 65
         fi
-        if ! jq -e \
-            '.build_closure_payload_present | type == "boolean"' \
-            "$bundle_manifest" >/dev/null
-        then
-            echo "sdist build closure presence is invalid" >&2
-            exit 65
-        fi
-        # `jq -e` deliberately returns status 1 for a valid boolean false. Extract the
-        # already type-checked value without `-e` so an absent optional closure remains
-        # a supported sdist bundle rather than tripping this script's `set -e` policy.
-        build_closure_payload_present=$(jq -r \
-            '.build_closure_payload_present' "$bundle_manifest")
-        build_closure_payload_byte_length=$(jq -er \
-            '.build_closure_payload_byte_length | select(type == "string")' \
-            "$bundle_manifest")
-        case "$build_closure_payload_present" in
-            true)
-                build_closure_payload_sha256=$(jq -er \
-                    '.build_closure_payload_sha256 | select(type == "string")' \
-                    "$bundle_manifest")
-                if ! printf '%s\n' "$build_closure_payload_byte_length" \
-                    | grep -Eq '^[1-9][0-9]*$'
-                then
-                    echo "sdist build closure byte length is invalid" >&2
-                    exit 65
-                fi
-                if [ ! -f "$build_closure" ] || [ -L "$build_closure" ]; then
-                    echo "sdist build closure payload is missing or unsafe" >&2
-                    exit 66
-                fi
-                ;;
-            false)
-                if ! jq -e 'has("build_closure_payload_sha256") and (.build_closure_payload_sha256 == null)' \
-                    "$bundle_manifest" >/dev/null || \
-                   [ "$build_closure_payload_byte_length" != 0 ] || \
-                   [ -e "$build_closure" ] || [ -L "$build_closure" ]
-                then
-                    echo "absent sdist build closure is not represented exactly" >&2
-                    exit 65
-                fi
-                ;;
-            *)
-                echo "sdist build closure presence is invalid" >&2
-                exit 65
-                ;;
-        esac
+        parse_build_closure_manifest sdist
         expected_artifact_kind=pypi_sdist
         ;;
     *)
@@ -220,7 +225,7 @@ case "$bundle_schema" in
         exit 65
         ;;
 esac
-if [ "$expected_artifact_kind" != pypi_sdist ]; then
+if [ "$expected_artifact_kind" = pypi_wheel ]; then
     if jq -e '
         has("build_closure_payload_present") or
         has("build_closure_payload_sha256") or
@@ -228,7 +233,7 @@ if [ "$expected_artifact_kind" != pypi_sdist ]; then
     ' "$bundle_manifest" >/dev/null || \
        [ -e "$build_closure" ] || [ -L "$build_closure" ]
     then
-        echo "non-sdist execution bundle contains build closure state" >&2
+        echo "wheel execution bundle contains build closure state" >&2
         exit 65
     fi
 fi

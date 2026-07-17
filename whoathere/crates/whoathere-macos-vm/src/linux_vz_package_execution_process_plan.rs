@@ -1,15 +1,18 @@
 use crate::{
     derive_linux_vz_package_guest_environment_canaries_v1,
+    fixed_linux_vz_package_npm_environment_credential_sensor_binding_v1,
     LinuxVzPackageGuestEnvironmentCanariesV1, LinuxVzPackageGuestEnvironmentCanaryBindingV1,
-    MacosLinuxVzPackageExecutionProgramV1, MacosLinuxVzPackageExecutionStageV1,
-    MacosLinuxVzPackageRuntimeExecutablesV1, MacosLinuxVzSdistBuildRecipeV1,
+    LinuxVzPackageNpmEnvironmentCredentialSensorBindingV1, MacosLinuxVzPackageExecutionProgramV1,
+    MacosLinuxVzPackageExecutionStageV1, MacosLinuxVzPackageRuntimeExecutablesV1,
+    MacosLinuxVzSdistBuildRecipeV1, LINUX_VZ_PACKAGE_NPM_ENVIRONMENT_CREDENTIAL_SENSOR_HOOK_V1,
 };
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::fmt;
 use whoathere_artifact::{ArtifactFormat, Sha256Digest};
 use whoathere_detonation::{
-    supported_wheel_console_command_name_v1, ArtifactScenarioLimitsV1, NpmEnvironmentProfileV1,
+    supported_wheel_console_command_name_v1, ArtifactScenarioLimitsV1, DependencyClosureV1,
+    NpmEnvironmentProfileV1, SdistBuildClosureArtifactFormatV1, SdistBuildClosureV1,
     SdistBuildModeV1, WheelScenarioKindV1,
 };
 
@@ -73,6 +76,7 @@ pub enum MacosLinuxVzPackageProcessArgumentV1 {
 #[serde(rename_all = "snake_case")]
 pub enum MacosLinuxVzPackageMeasuredProcessInputRoleV1 {
     NpmCli,
+    NpmEnvironmentCredentialSensorHook,
     PipCli,
     DerivedWheel,
 }
@@ -184,6 +188,10 @@ pub enum MacosLinuxVzPackageInternalActionV1 {
         build_requires_sha256: Sha256Digest,
         build_closure: whoathere_detonation::SdistBuildClosureV1,
     },
+    ValidateExactNpmDependencyClosure {
+        dependency_declarations_sha256: Sha256Digest,
+        dependency_closure: SdistBuildClosureV1,
+    },
     ValidateSingleDerivedWheel,
     InspectDerivedWheelMetadata,
     ValidateConsoleEntryPointTarget {
@@ -217,6 +225,9 @@ struct PackageExecutionProcessPlanWireV1<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     credential_canary_matrix_binding_sha256: Option<&'a Sha256Digest>,
     environment_canary_bindings: &'a [LinuxVzPackageGuestEnvironmentCanaryBindingV1],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    npm_environment_credential_sensor:
+        Option<&'a LinuxVzPackageNpmEnvironmentCredentialSensorBindingV1>,
     limits: &'a ArtifactScenarioLimitsV1,
     caller_process_input_present: bool,
     environment_policy: MacosLinuxVzPackageProcessEnvironmentPolicyV1,
@@ -237,6 +248,8 @@ pub struct MacosLinuxVzPackageExecutionProcessPlanV1 {
     artifact_byte_length: u64,
     credential_canary_matrix_binding_sha256: Option<Sha256Digest>,
     environment_canary_bindings: Vec<LinuxVzPackageGuestEnvironmentCanaryBindingV1>,
+    npm_environment_credential_sensor:
+        Option<LinuxVzPackageNpmEnvironmentCredentialSensorBindingV1>,
     actions: Vec<MacosLinuxVzPackageExecutionActionV1>,
     limits: ArtifactScenarioLimitsV1,
 }
@@ -288,6 +301,12 @@ impl MacosLinuxVzPackageExecutionProcessPlanV1 {
     /// they do not by themselves prove that package code read or transmitted a canary.
     pub fn environment_canary_bindings(&self) -> &[LinuxVzPackageGuestEnvironmentCanaryBindingV1] {
         &self.environment_canary_bindings
+    }
+
+    pub fn npm_environment_credential_sensor(
+        &self,
+    ) -> Option<&LinuxVzPackageNpmEnvironmentCredentialSensorBindingV1> {
+        self.npm_environment_credential_sensor.as_ref()
     }
 
     pub fn actions(&self) -> &[MacosLinuxVzPackageExecutionActionV1] {
@@ -400,12 +419,22 @@ pub fn derive_macos_linux_vz_package_execution_process_plan_v1(
         .as_ref()
         .map(|canaries| canaries.bindings().to_vec())
         .unwrap_or_default();
+    let npm_environment_credential_sensor = npm_canaries
+        .as_ref()
+        .map(|_| fixed_linux_vz_package_npm_environment_credential_sensor_binding_v1())
+        .transpose()
+        .map_err(|_| MacosLinuxVzPackageExecutionProcessPlanErrorV1::InvalidStage)?;
     let mut actions = vec![MacosLinuxVzPackageExecutionActionV1::Internal {
         action: MacosLinuxVzPackageInternalActionV1::MaterializeExactArtifact { input_basename },
     }];
     for stage in program.stages() {
-        let mut derived =
-            actions_for_stage_v1(stage, program.runtime_executables(), npm_canaries.as_ref())?;
+        let mut derived = actions_for_stage_v1(
+            stage,
+            program.runtime_executables(),
+            npm_canaries.as_ref(),
+            npm_environment_credential_sensor.as_ref(),
+            program.npm_dependency_closure(),
+        )?;
         actions.append(&mut derived);
     }
     if let Some(expected) =
@@ -430,6 +459,7 @@ pub fn derive_macos_linux_vz_package_execution_process_plan_v1(
             .as_ref()
             .map(|_| program.credential_canary_matrix_binding_sha256()),
         environment_canary_bindings: &environment_canary_bindings,
+        npm_environment_credential_sensor: npm_environment_credential_sensor.as_ref(),
         limits: program.limits(),
         caller_process_input_present: false,
         environment_policy: MacosLinuxVzPackageProcessEnvironmentPolicyV1::ClearThenExactMap,
@@ -456,6 +486,7 @@ pub fn derive_macos_linux_vz_package_execution_process_plan_v1(
         credential_canary_matrix_binding_sha256: npm_canaries
             .map(|_| program.credential_canary_matrix_binding_sha256().clone()),
         environment_canary_bindings,
+        npm_environment_credential_sensor,
         actions,
         limits: program.limits().clone(),
     })
@@ -481,19 +512,68 @@ fn actions_for_stage_v1(
     stage: &MacosLinuxVzPackageExecutionStageV1,
     runtime: &MacosLinuxVzPackageRuntimeExecutablesV1,
     npm_canaries: Option<&LinuxVzPackageGuestEnvironmentCanariesV1>,
+    npm_environment_credential_sensor: Option<
+        &LinuxVzPackageNpmEnvironmentCredentialSensorBindingV1,
+    >,
+    npm_dependency_closure: Option<&DependencyClosureV1>,
 ) -> Result<Vec<MacosLinuxVzPackageExecutionActionV1>, MacosLinuxVzPackageExecutionProcessPlanErrorV1>
 {
     let actions = match stage {
         MacosLinuxVzPackageExecutionStageV1::NpmInstallExactLocalTarball {
             environment,
             input_basename,
+            dependency_policy,
             ..
-        } => vec![process_action(npm_install_process(
-            runtime,
-            *environment,
-            input_basename,
-            npm_canaries.ok_or(MacosLinuxVzPackageExecutionProcessPlanErrorV1::InvalidStage)?,
-        )?)],
+        } => {
+            let canaries =
+                npm_canaries.ok_or(MacosLinuxVzPackageExecutionProcessPlanErrorV1::InvalidStage)?;
+            match (dependency_policy, npm_dependency_closure) {
+                (
+                    crate::MacosLinuxVzPackageDependencyPolicyV1::OfflineExactDependencyFree,
+                    Some(DependencyClosureV1::Empty { .. }),
+                ) => vec![process_action(npm_install_process(
+                    runtime,
+                    *environment,
+                    input_basename,
+                    canaries,
+                    npm_environment_credential_sensor.ok_or(
+                        MacosLinuxVzPackageExecutionProcessPlanErrorV1::InvalidStage,
+                    )?,
+                )?)],
+                (
+                    crate::MacosLinuxVzPackageDependencyPolicyV1::NoIndexFixedClosureOnly,
+                    Some(DependencyClosureV1::NpmTarballSet { closure }),
+                ) if closure.validate().is_ok()
+                    && !closure.artifacts().is_empty()
+                    && closure.artifacts().iter().all(|artifact| {
+                        artifact.artifact_format()
+                            == SdistBuildClosureArtifactFormatV1::NpmTarGzip
+                    }) => vec![
+                    MacosLinuxVzPackageExecutionActionV1::Internal {
+                        action: MacosLinuxVzPackageInternalActionV1::ValidateExactNpmDependencyClosure {
+                            dependency_declarations_sha256: closure
+                                .declaration_set_sha256()
+                                .clone(),
+                            dependency_closure: closure.clone(),
+                        },
+                    },
+                    process_action(npm_preinstall_dependency_closure_process(
+                        runtime,
+                        closure,
+                    )?),
+                    process_action(npm_install_process(
+                        runtime,
+                        *environment,
+                        input_basename,
+                        canaries,
+                        npm_environment_credential_sensor.ok_or(
+                            MacosLinuxVzPackageExecutionProcessPlanErrorV1::InvalidStage,
+                        )?,
+                    )?),
+                ],
+                _ => return Err(MacosLinuxVzPackageExecutionProcessPlanErrorV1::InvalidStage),
+            }
+        }
         MacosLinuxVzPackageExecutionStageV1::PythonCreateFreshWheelVirtualEnvironment => {
             vec![process_action(create_venv_process(
                 runtime,
@@ -745,6 +825,7 @@ fn npm_install_process(
     profile: NpmEnvironmentProfileV1,
     input_basename: &str,
     canaries: &LinuxVzPackageGuestEnvironmentCanariesV1,
+    sensor: &LinuxVzPackageNpmEnvironmentCredentialSensorBindingV1,
 ) -> Result<MacosLinuxVzPackageFixedProcessV1, MacosLinuxVzPackageExecutionProcessPlanErrorV1> {
     let MacosLinuxVzPackageRuntimeExecutablesV1::NodeNpm {
         node_executable_sha256,
@@ -764,37 +845,129 @@ fn npm_install_process(
             "npm_config_update_notifier".to_string(),
             "false".to_string(),
         ),
+        ("npm_config_ignore_scripts".to_string(), "false".to_string()),
     ]);
     canaries
         .apply_to_exact_environment_v1(&mut environment)
         .map_err(|_| MacosLinuxVzPackageExecutionProcessPlanErrorV1::InvalidStage)?;
+    let fixed_sensor = fixed_linux_vz_package_npm_environment_credential_sensor_binding_v1()
+        .map_err(|_| MacosLinuxVzPackageExecutionProcessPlanErrorV1::InvalidStage)?;
+    if sensor != &fixed_sensor
+        || Sha256Digest::from_bytes(LINUX_VZ_PACKAGE_NPM_ENVIRONMENT_CREDENTIAL_SENSOR_HOOK_V1)
+            != *sensor.hook_sha256()
+        || environment
+            .insert("NODE_OPTIONS".to_string(), sensor.node_options_value_v1())
+            .is_some()
+    {
+        return Err(MacosLinuxVzPackageExecutionProcessPlanErrorV1::InvalidStage);
+    }
     if profile == NpmEnvironmentProfileV1::CiTrue {
         environment.insert("CI".to_string(), "true".to_string());
     }
+    let arguments = [
+        NPM_CLI_PATH,
+        "install",
+        "--offline",
+        "--no-audit",
+        "--no-fund",
+        "--no-update-notifier",
+        "--foreground-scripts",
+        "--ignore-scripts=false",
+        "--package-lock=false",
+        "--cache=/run/whoathere/cache/npm",
+        "--prefix=/run/whoathere/work/npm",
+        "--script-shell=/bin/sh",
+    ]
+    .into_iter()
+    .map(literal)
+    .chain([literal(format!("{RUN_ROOT}/input/{input_basename}"))])
+    .collect::<Vec<_>>();
     Ok(MacosLinuxVzPackageFixedProcessV1 {
         stage_name: "npm_install_exact_local_tarball".to_string(),
         executable: MacosLinuxVzPackageProcessExecutableV1::PinnedRuntimeFile {
             absolute_path: NODE_PATH.to_string(),
             expected_sha256: node_executable_sha256.clone(),
         },
-        arguments: [
-            NPM_CLI_PATH,
-            "install",
-            "--offline",
-            "--no-audit",
-            "--no-fund",
-            "--no-update-notifier",
-            "--foreground-scripts",
-            "--ignore-scripts=false",
-            "--package-lock=false",
-            "--cache=/run/whoathere/cache/npm",
-            "--prefix=/run/whoathere/work/npm",
-            "--script-shell=/bin/sh",
-        ]
-        .into_iter()
-        .map(literal)
-        .chain([literal(format!("{RUN_ROOT}/input/{input_basename}"))])
-        .collect(),
+        arguments,
+        environment_policy: MacosLinuxVzPackageProcessEnvironmentPolicyV1::ClearThenExactMap,
+        environment,
+        current_directory: NPM_WORK.to_string(),
+        measured_inputs: vec![
+            MacosLinuxVzPackageMeasuredProcessInputV1 {
+                role: MacosLinuxVzPackageMeasuredProcessInputRoleV1::NpmCli,
+                absolute_path: NPM_CLI_PATH.to_string(),
+                expected_sha256: npm_cli_sha256.clone(),
+            },
+            MacosLinuxVzPackageMeasuredProcessInputV1 {
+                role: MacosLinuxVzPackageMeasuredProcessInputRoleV1::NpmEnvironmentCredentialSensorHook,
+                absolute_path: sensor.hook_absolute_path().to_string(),
+                expected_sha256: sensor.hook_sha256().clone(),
+            },
+        ],
+        stdio_policy: MacosLinuxVzPackageProcessStdioPolicyV1::NullStdinBoundedCapturedOutput,
+    })
+}
+
+fn npm_preinstall_dependency_closure_process(
+    runtime: &MacosLinuxVzPackageRuntimeExecutablesV1,
+    closure: &SdistBuildClosureV1,
+) -> Result<MacosLinuxVzPackageFixedProcessV1, MacosLinuxVzPackageExecutionProcessPlanErrorV1> {
+    let MacosLinuxVzPackageRuntimeExecutablesV1::NodeNpm {
+        node_executable_sha256,
+        npm_cli_sha256,
+        ..
+    } = runtime
+    else {
+        return Err(MacosLinuxVzPackageExecutionProcessPlanErrorV1::RuntimeMismatch);
+    };
+    if closure.validate().is_err()
+        || closure.artifacts().is_empty()
+        || closure.artifacts().iter().any(|artifact| {
+            artifact.artifact_format() != SdistBuildClosureArtifactFormatV1::NpmTarGzip
+        })
+    {
+        return Err(MacosLinuxVzPackageExecutionProcessPlanErrorV1::InvalidStage);
+    }
+    let mut environment = common_environment();
+    environment.extend([
+        ("npm_config_audit".to_string(), "false".to_string()),
+        ("npm_config_fund".to_string(), "false".to_string()),
+        ("npm_config_offline".to_string(), "true".to_string()),
+        ("npm_config_progress".to_string(), "false".to_string()),
+        (
+            "npm_config_update_notifier".to_string(),
+            "false".to_string(),
+        ),
+        ("npm_config_ignore_scripts".to_string(), "true".to_string()),
+    ]);
+    let arguments = [
+        NPM_CLI_PATH,
+        "install",
+        "--offline",
+        "--no-audit",
+        "--no-fund",
+        "--no-update-notifier",
+        "--ignore-scripts=true",
+        "--package-lock=false",
+        "--cache=/run/whoathere/cache/npm",
+        "--prefix=/run/whoathere/work/npm",
+    ]
+    .into_iter()
+    .map(literal)
+    .chain(closure.artifacts().iter().map(|artifact| {
+        literal(format!(
+            "{RUN_ROOT}/closure/{}",
+            artifact.artifact_filename()
+        ))
+    }))
+    .collect();
+    Ok(MacosLinuxVzPackageFixedProcessV1 {
+        stage_name: "npm_preinstall_exact_dependency_closure".to_string(),
+        executable: MacosLinuxVzPackageProcessExecutableV1::PinnedRuntimeFile {
+            absolute_path: NODE_PATH.to_string(),
+            expected_sha256: node_executable_sha256.clone(),
+        },
+        arguments,
         environment_policy: MacosLinuxVzPackageProcessEnvironmentPolicyV1::ClearThenExactMap,
         environment,
         current_directory: NPM_WORK.to_string(),
@@ -963,9 +1136,12 @@ mod tests {
         derive_macos_linux_vz_package_execution_program_v1,
         linux_vz_package_authority_request::test_macos_linux_vz_package_authority_request_from_scenario_v1,
         linux_vz_package_execution_grant::test_macos_linux_vz_package_execution_grant_observation_v1,
-        linux_vz_package_execution_program::test_macos_linux_vz_package_execution_program_v1,
-        MacosLinuxVzPackageArtifactKindV1, MacosLinuxVzPackageDependencyPolicyV1,
-        MacosLinuxVzPackageExecutionRequestAuthorizerV1,
+        linux_vz_package_execution_program::{
+            test_macos_linux_vz_package_execution_program_v1,
+            test_macos_linux_vz_package_execution_program_with_npm_closure_v1,
+        },
+        MacosLinuxVzNpmLifecyclePolicyV1, MacosLinuxVzPackageArtifactKindV1,
+        MacosLinuxVzPackageDependencyPolicyV1, MacosLinuxVzPackageExecutionRequestAuthorizerV1,
     };
     use flate2::write::GzEncoder;
     use flate2::Compression;
@@ -1167,6 +1343,18 @@ mod tests {
             true_plan.environment_canary_bindings()
         );
         assert_eq!(false_plan.environment_canary_bindings().len(), 3);
+        assert_eq!(
+            false_plan.npm_environment_credential_sensor(),
+            true_plan.npm_environment_credential_sensor()
+        );
+        let sensor = false_plan
+            .npm_environment_credential_sensor()
+            .expect("fixed npm environment sensor");
+        assert_eq!(sensor.markers().len(), 3);
+        assert_eq!(
+            sensor.hook_sha256(),
+            &Sha256Digest::from_bytes(LINUX_VZ_PACKAGE_NPM_ENVIRONMENT_CREDENTIAL_SENSOR_HOOK_V1,)
+        );
         let false_process = process_at(&false_plan, 1);
         let true_process = process_at(&true_plan, 1);
         let mut false_environment = false_process.environment().clone();
@@ -1174,6 +1362,23 @@ mod tests {
         assert_eq!(false_environment.remove("CI"), None);
         assert_eq!(true_environment.remove("CI"), Some("true".to_string()));
         assert_eq!(false_environment, true_environment);
+        assert_eq!(
+            false_environment.get("NODE_OPTIONS").map(String::as_str),
+            Some(sensor.node_options_value_v1().as_str())
+        );
+        assert_eq!(false_process.measured_inputs().len(), 2);
+        assert_eq!(
+            false_process.measured_inputs()[1].role(),
+            MacosLinuxVzPackageMeasuredProcessInputRoleV1::NpmEnvironmentCredentialSensorHook
+        );
+        assert_eq!(
+            false_process.measured_inputs()[1].absolute_path(),
+            sensor.hook_absolute_path()
+        );
+        assert_eq!(
+            false_process.measured_inputs()[1].expected_sha256(),
+            sensor.hook_sha256()
+        );
         for binding in false_plan.environment_canary_bindings() {
             let value = false_environment
                 .get(binding.environment_name())
@@ -1211,6 +1416,184 @@ mod tests {
                 assert!(!actions_debug.contains(value));
             }
         }
+    }
+
+    #[test]
+    fn npm_closure_scripts_are_disabled_and_target_lifecycle_is_a_separate_action() {
+        let closure = SdistBuildClosureV1::new(
+            &[
+                "left-pad 1.3.0".to_string(),
+                "react >=16.8.0".to_string(),
+                "react-dom >=16.8.0".to_string(),
+            ],
+            vec![
+                SdistBuildClosureArtifactV1::new(
+                    "left-pad",
+                    "1.3.0",
+                    "left-pad-1.3.0.tgz",
+                    SdistBuildClosureArtifactFormatV1::NpmTarGzip,
+                    digest("left-pad exact tgz"),
+                    1024,
+                )
+                .expect("left-pad descriptor"),
+                SdistBuildClosureArtifactV1::new(
+                    "react",
+                    "19.1.1",
+                    "react-19.1.1.tgz",
+                    SdistBuildClosureArtifactFormatV1::NpmTarGzip,
+                    digest("react exact tgz"),
+                    2048,
+                )
+                .expect("react descriptor"),
+                SdistBuildClosureArtifactV1::new(
+                    "react-dom",
+                    "19.1.1",
+                    "react-dom-19.1.1.tgz",
+                    SdistBuildClosureArtifactFormatV1::NpmTarGzip,
+                    digest("react-dom exact tgz"),
+                    3072,
+                )
+                .expect("react-dom descriptor"),
+            ],
+        )
+        .expect("exact npm closure");
+        let program = test_macos_linux_vz_package_execution_program_with_npm_closure_v1(
+            MacosLinuxVzPackageRuntimeExecutablesV1::NodeNpm {
+                node_version: "24.4.0".to_string(),
+                node_executable_sha256: digest("node executable"),
+                npm_version: "11.4.2".to_string(),
+                npm_cli_sha256: digest("npm cli"),
+            },
+            "npm_install_exact_local_tarball",
+            vec![
+                MacosLinuxVzPackageExecutionStageV1::NpmInstallExactLocalTarball {
+                    environment: NpmEnvironmentProfileV1::CiTrue,
+                    input_basename: "package.tgz".to_string(),
+                    dependency_policy:
+                        MacosLinuxVzPackageDependencyPolicyV1::NoIndexFixedClosureOnly,
+                    lifecycle_policy:
+                        MacosLinuxVzNpmLifecyclePolicyV1::PackageManifestInstallHooksOnly,
+                },
+            ],
+            DependencyClosureV1::NpmTarballSet {
+                closure: closure.clone(),
+            },
+        );
+
+        let plan = derive_macos_linux_vz_package_execution_process_plan_v1(&program)
+            .expect("npm closure process plan");
+        assert_eq!(plan.actions().len(), 4);
+        assert!(matches!(
+            &plan.actions()[1],
+            MacosLinuxVzPackageExecutionActionV1::Internal {
+                action: MacosLinuxVzPackageInternalActionV1::ValidateExactNpmDependencyClosure {
+                    dependency_declarations_sha256,
+                    dependency_closure,
+                }
+            } if dependency_declarations_sha256 == closure.declaration_set_sha256()
+                && dependency_closure == &closure
+        ));
+        let closure_process = process_at(&plan, 2);
+        assert_eq!(
+            closure_process.stage_name(),
+            "npm_preinstall_exact_dependency_closure"
+        );
+        assert_eq!(
+            literal_arguments(closure_process),
+            [
+                NPM_CLI_PATH,
+                "install",
+                "--offline",
+                "--no-audit",
+                "--no-fund",
+                "--no-update-notifier",
+                "--ignore-scripts=true",
+                "--package-lock=false",
+                "--cache=/run/whoathere/cache/npm",
+                "--prefix=/run/whoathere/work/npm",
+                "/run/whoathere/closure/left-pad-1.3.0.tgz",
+                "/run/whoathere/closure/react-19.1.1.tgz",
+                "/run/whoathere/closure/react-dom-19.1.1.tgz",
+            ]
+        );
+        assert_eq!(
+            closure_process
+                .environment()
+                .get("npm_config_ignore_scripts")
+                .map(String::as_str),
+            Some("true")
+        );
+        for forbidden in [
+            "CI",
+            "NODE_OPTIONS",
+            "NPM_TOKEN",
+            "GITHUB_TOKEN",
+            "AWS_ACCESS_KEY_ID",
+        ] {
+            assert!(
+                !closure_process.environment().contains_key(forbidden),
+                "closure preinstall must not receive {forbidden}"
+            );
+        }
+        assert_eq!(closure_process.measured_inputs().len(), 1);
+        assert_eq!(
+            closure_process.measured_inputs()[0].role(),
+            MacosLinuxVzPackageMeasuredProcessInputRoleV1::NpmCli
+        );
+
+        let target_process = process_at(&plan, 3);
+        assert_eq!(
+            target_process.stage_name(),
+            "npm_install_exact_local_tarball"
+        );
+        assert_eq!(
+            literal_arguments(target_process),
+            [
+                NPM_CLI_PATH,
+                "install",
+                "--offline",
+                "--no-audit",
+                "--no-fund",
+                "--no-update-notifier",
+                "--foreground-scripts",
+                "--ignore-scripts=false",
+                "--package-lock=false",
+                "--cache=/run/whoathere/cache/npm",
+                "--prefix=/run/whoathere/work/npm",
+                "--script-shell=/bin/sh",
+                "/run/whoathere/input/package.tgz",
+            ]
+        );
+        assert_eq!(
+            target_process
+                .environment()
+                .get("npm_config_ignore_scripts")
+                .map(String::as_str),
+            Some("false")
+        );
+        assert_eq!(
+            target_process.environment().get("CI").map(String::as_str),
+            Some("true")
+        );
+        for required in [
+            "NODE_OPTIONS",
+            "NPM_TOKEN",
+            "GITHUB_TOKEN",
+            "AWS_ACCESS_KEY_ID",
+        ] {
+            assert!(
+                target_process.environment().contains_key(required),
+                "target lifecycle must receive {required}"
+            );
+        }
+        assert_eq!(target_process.measured_inputs().len(), 2);
+        assert_eq!(
+            target_process.measured_inputs()[1].role(),
+            MacosLinuxVzPackageMeasuredProcessInputRoleV1::NpmEnvironmentCredentialSensorHook
+        );
+        assert!(literal_arguments(target_process)
+            .iter()
+            .all(|value| !value.starts_with("/run/whoathere/closure/")));
     }
 
     #[test]

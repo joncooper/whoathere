@@ -1143,7 +1143,9 @@ pub fn inspect_exact_artifact_with_behavior_v1(
     })
 }
 
-fn manifest_requires_external_resolution(manifest: &whoathere_artifact::ArtifactManifest) -> bool {
+pub(crate) fn manifest_requires_external_resolution(
+    manifest: &whoathere_artifact::ArtifactManifest,
+) -> bool {
     if let Some(npm) = &manifest.metadata.npm {
         return npm.requires_offline_closure;
     }
@@ -1158,7 +1160,7 @@ fn manifest_requires_external_resolution(manifest: &whoathere_artifact::Artifact
     false
 }
 
-fn checked_filename(path: &Path) -> Result<String, ExactArtifactInspectionErrorV1> {
+pub(crate) fn checked_filename(path: &Path) -> Result<String, ExactArtifactInspectionErrorV1> {
     let filename = path
         .file_name()
         .and_then(|value| value.to_str())
@@ -1167,7 +1169,7 @@ fn checked_filename(path: &Path) -> Result<String, ExactArtifactInspectionErrorV
     Ok(filename.to_string())
 }
 
-fn read_exact_artifact(
+pub(crate) fn read_exact_artifact(
     path: &Path,
     limits: NormalizationLimits,
 ) -> Result<Vec<u8>, ExactArtifactInspectionErrorV1> {
@@ -1298,7 +1300,7 @@ fn civil_date_from_unix_days(days: i64) -> Option<(i64, u64, u64)> {
     Some((year, u64::try_from(month).ok()?, u64::try_from(day).ok()?))
 }
 
-fn declared_format_for(ecosystem: Ecosystem, filename: &str) -> Option<ArtifactFormat> {
+pub(crate) fn declared_format_for(ecosystem: Ecosystem, filename: &str) -> Option<ArtifactFormat> {
     let filename = filename.to_ascii_lowercase();
     match ecosystem {
         Ecosystem::Npm if filename.ends_with(".tgz") || filename.ends_with(".tar.gz") => {

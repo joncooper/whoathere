@@ -1,12 +1,18 @@
+use crate::linux_vz_package_sensor_file_collector::{
+    root_file_path_token_v1, LinuxVzPackageRootFilePathNamespaceV1,
+};
 use crate::{
-    LinuxVzPackageFilePathClassV1, LinuxVzPackageRootFileEvidenceAccessOutcomeV1,
-    LinuxVzPackageRootFileEvidenceEventKindV1, LinuxVzPackageRootFileEvidenceEventV1,
-    LinuxVzPackageRootFileEvidencePathNamespaceV1, LinuxVzPackageRootFileEvidenceV1,
-    VerifiedLinuxVzPackageHostCompositeReceiptV1, VerifiedLinuxVzPackageRootEvidenceReceiptV1,
+    fixed_linux_vz_package_npm_environment_credential_sensor_binding_v1,
+    LinuxVzPackageFilePathClassV1, LinuxVzPackageNpmEnvironmentCredentialMarkerKindV1,
+    LinuxVzPackageNpmEnvironmentCredentialSensorBindingV1,
+    LinuxVzPackageRootFileEvidenceAccessOutcomeV1, LinuxVzPackageRootFileEvidenceEventKindV1,
+    LinuxVzPackageRootFileEvidenceEventV1, LinuxVzPackageRootFileEvidencePathNamespaceV1,
+    LinuxVzPackageRootFileEvidenceV1, VerifiedLinuxVzPackageHostCompositeReceiptV1,
+    VerifiedLinuxVzPackageRootEvidenceReceiptV1,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use whoathere_artifact::Sha256Digest;
 
@@ -75,6 +81,7 @@ pub struct LinuxVzPackageExpectedSingleActionFilePartitionV1 {
     file_evidence_sha256: Sha256Digest,
     expected_action_count: usize,
     action_index: usize,
+    npm_environment_credential_sensor_binding_sha256: Option<Sha256Digest>,
 }
 
 impl LinuxVzPackageExpectedSingleActionFilePartitionV1 {
@@ -98,9 +105,28 @@ impl LinuxVzPackageExpectedSingleActionFilePartitionV1 {
             file_evidence_sha256,
             expected_action_count,
             action_index,
+            npm_environment_credential_sensor_binding_sha256: None,
         };
         value.validate_v1()?;
         Ok(value)
+    }
+
+    /// Enables the fixed npm lifecycle credential sensor for a plan which already commits to this
+    /// exact binding. No caller-defined hook, environment name, marker path, or behavior label is
+    /// accepted here.
+    pub fn with_fixed_npm_environment_credential_sensor_v1(
+        mut self,
+        process_plan_sensor_binding: &LinuxVzPackageNpmEnvironmentCredentialSensorBindingV1,
+    ) -> Result<Self, LinuxVzPackageVerifiedFileEventPartitionErrorV1> {
+        let fixed = fixed_linux_vz_package_npm_environment_credential_sensor_binding_v1()
+            .map_err(|_| LinuxVzPackageVerifiedFileEventPartitionErrorV1::InvalidExpectedBinding)?;
+        if process_plan_sensor_binding != &fixed {
+            return Err(LinuxVzPackageVerifiedFileEventPartitionErrorV1::InvalidExpectedBinding);
+        }
+        self.npm_environment_credential_sensor_binding_sha256 =
+            Some(fixed.binding_sha256().clone());
+        self.validate_v1()?;
+        Ok(self)
     }
 
     fn validate_v1(&self) -> Result<(), LinuxVzPackageVerifiedFileEventPartitionErrorV1> {
@@ -118,6 +144,20 @@ impl LinuxVzPackageExpectedSingleActionFilePartitionV1 {
             || self.action_index != 1
         {
             return Err(LinuxVzPackageVerifiedFileEventPartitionErrorV1::InvalidExpectedBinding);
+        }
+        if let Some(binding_sha256) = self
+            .npm_environment_credential_sensor_binding_sha256
+            .as_ref()
+        {
+            let fixed = fixed_linux_vz_package_npm_environment_credential_sensor_binding_v1()
+                .map_err(|_| {
+                    LinuxVzPackageVerifiedFileEventPartitionErrorV1::InvalidExpectedBinding
+                })?;
+            if binding_sha256 != fixed.binding_sha256() {
+                return Err(
+                    LinuxVzPackageVerifiedFileEventPartitionErrorV1::InvalidExpectedBinding,
+                );
+            }
         }
         Ok(())
     }
@@ -153,12 +193,18 @@ impl LinuxVzPackageExpectedSingleActionFilePartitionV1 {
     pub const fn action_index(&self) -> usize {
         self.action_index
     }
+
+    pub fn npm_environment_credential_sensor_binding_sha256(&self) -> Option<&Sha256Digest> {
+        self.npm_environment_credential_sensor_binding_sha256
+            .as_ref()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LinuxVzPackageVerifiedFileEventDispositionV1 {
     ProjectedSensitiveSshRead,
+    RecognizedUnauthenticatedEnvironmentCredentialMarkerActivity,
     RecognizedOrdinaryWorkspaceOpen,
     UnsupportedKnownFileEvent,
 }
@@ -176,12 +222,17 @@ pub struct LinuxVzPackageVerifiedFileEventV1 {
 #[serde(rename_all = "snake_case")]
 pub enum LinuxVzPackageVerifiedFileObservationKindV1 {
     SensitiveSshRead,
+    EnvironmentCredentialRead,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct LinuxVzPackageVerifiedFileObservationV1 {
     observation_kind: LinuxVzPackageVerifiedFileObservationKindV1,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    environment_marker_kind: Option<LinuxVzPackageNpmEnvironmentCredentialMarkerKindV1>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    descendant_actor_pid: Option<String>,
     source_event_id: String,
     source_event_sha256: Sha256Digest,
     source_sequence: u64,
@@ -190,6 +241,27 @@ pub struct LinuxVzPackageVerifiedFileObservationV1 {
 impl LinuxVzPackageVerifiedFileObservationV1 {
     pub const fn observation_kind(&self) -> LinuxVzPackageVerifiedFileObservationKindV1 {
         self.observation_kind
+    }
+
+    pub const fn evidence_type_v1(&self) -> &'static str {
+        match self.observation_kind {
+            LinuxVzPackageVerifiedFileObservationKindV1::SensitiveSshRead => "sensitive_ssh_read",
+            LinuxVzPackageVerifiedFileObservationKindV1::EnvironmentCredentialRead => {
+                "environment_credential_read"
+            }
+        }
+    }
+
+    pub const fn environment_marker_kind(
+        &self,
+    ) -> Option<LinuxVzPackageNpmEnvironmentCredentialMarkerKindV1> {
+        self.environment_marker_kind
+    }
+
+    pub fn descendant_actor_pid(&self) -> Option<u32> {
+        self.descendant_actor_pid
+            .as_deref()
+            .map(|value| value.parse().expect("verified descendant actor pid"))
     }
 
     pub fn source_event_id(&self) -> &str {
@@ -232,6 +304,8 @@ struct VerifiedFileEventPartitionBindingWireV1<'a> {
     expected_action_count: String,
     file_evidence_sha256: &'a Sha256Digest,
     host_receipt_sha256: &'a Sha256Digest,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    npm_environment_credential_sensor_binding_sha256: Option<&'a Sha256Digest>,
     process_plan_sha256: &'a Sha256Digest,
     root_receipt_sha256: &'a Sha256Digest,
 }
@@ -240,6 +314,10 @@ struct VerifiedFileEventPartitionBindingWireV1<'a> {
 #[serde(deny_unknown_fields)]
 struct VerifiedFileEventPartitionCoverageWireV1 {
     authoritative_verdict_permitted: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    environment_credential_read_no_finding_conclusive: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    environment_credential_read_observation_present: Option<bool>,
     file_event_partition_complete: bool,
     file_event_projection_coverage_complete: bool,
     host_composite_evidence_complete: bool,
@@ -251,6 +329,10 @@ struct VerifiedFileEventPartitionCoverageWireV1 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct VerifiedFileEventPartitionCountsWireV1 {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unauthenticated_environment_credential_marker_activity_count: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    projected_environment_credential_read_count: Option<String>,
     ordinary_workspace_open_count: String,
     partitioned_event_count: String,
     projected_sensitive_ssh_read_count: String,
@@ -295,11 +377,14 @@ pub struct LinuxVzPackageVerifiedFileEventPartitionV1 {
     action_index: usize,
     source_event_count: usize,
     projected_sensitive_ssh_read_count: usize,
+    projected_environment_credential_read_count: usize,
+    recognized_unauthenticated_environment_credential_marker_activity_count: usize,
     recognized_ordinary_workspace_open_count: usize,
     unsupported_event_count: usize,
     events: Vec<LinuxVzPackageVerifiedFileEventV1>,
     observations: Vec<LinuxVzPackageVerifiedFileObservationV1>,
     root_evidence_complete: bool,
+    npm_environment_credential_sensor_enabled: bool,
 }
 
 impl LinuxVzPackageVerifiedFileEventPartitionV1 {
@@ -355,6 +440,16 @@ impl LinuxVzPackageVerifiedFileEventPartitionV1 {
         self.projected_sensitive_ssh_read_count
     }
 
+    pub const fn projected_environment_credential_read_count(&self) -> usize {
+        self.projected_environment_credential_read_count
+    }
+
+    pub const fn recognized_unauthenticated_environment_credential_marker_activity_count(
+        &self,
+    ) -> usize {
+        self.recognized_unauthenticated_environment_credential_marker_activity_count
+    }
+
     pub const fn recognized_ordinary_workspace_open_count(&self) -> usize {
         self.recognized_ordinary_workspace_open_count
     }
@@ -375,12 +470,22 @@ impl LinuxVzPackageVerifiedFileEventPartitionV1 {
         self.projected_sensitive_ssh_read_count > 0
     }
 
+    pub const fn environment_credential_read_observation_present(&self) -> bool {
+        self.projected_environment_credential_read_count > 0
+    }
+
+    /// The marker path is writable by package code, so neither its presence nor its absence can
+    /// authenticate an environment read. It is retained only as supporting telemetry.
+    pub const fn environment_credential_read_no_finding_conclusive(&self) -> bool {
+        false
+    }
+
     pub const fn file_event_partition_complete(&self) -> bool {
         true
     }
 
     pub const fn file_event_projection_coverage_complete(&self) -> bool {
-        self.unsupported_event_count == 0
+        self.unsupported_event_count == 0 && !self.npm_environment_credential_sensor_enabled
     }
 
     pub const fn root_evidence_complete(&self) -> bool {
@@ -439,10 +544,17 @@ pub fn verify_linux_vz_package_single_action_file_partition_v1(
         return Err(LinuxVzPackageVerifiedFileEventPartitionErrorV1::SignedDenominatorMismatch);
     }
 
+    let environment_marker_tokens = expected_environment_marker_tokens_v1(expected, root)?;
+    let npm_environment_credential_sensor_enabled = expected
+        .npm_environment_credential_sensor_binding_sha256
+        .is_some();
+
     let mut events = Vec::with_capacity(file.events().len());
     let mut event_ids = BTreeSet::new();
     let mut observations = Vec::new();
     let mut projected_sensitive_ssh_read_count = 0usize;
+    let projected_environment_credential_read_count = 0usize;
+    let mut recognized_unauthenticated_environment_credential_marker_activity_count = 0usize;
     let mut recognized_ordinary_workspace_open_count = 0usize;
     let mut unsupported_event_count = 0usize;
     for (offset, source) in file.events().iter().enumerate() {
@@ -453,10 +565,13 @@ pub fn verify_linux_vz_package_single_action_file_partition_v1(
         if source.source_sequence() != expected_sequence {
             return Err(LinuxVzPackageVerifiedFileEventPartitionErrorV1::InvalidEventPartition);
         }
-        let disposition = classify_file_event_v1(source);
+        let disposition = classify_file_event_v1(source, &environment_marker_tokens);
         match disposition {
             LinuxVzPackageVerifiedFileEventDispositionV1::ProjectedSensitiveSshRead => {
                 projected_sensitive_ssh_read_count += 1;
+            }
+            LinuxVzPackageVerifiedFileEventDispositionV1::RecognizedUnauthenticatedEnvironmentCredentialMarkerActivity => {
+                recognized_unauthenticated_environment_credential_marker_activity_count += 1;
             }
             LinuxVzPackageVerifiedFileEventDispositionV1::RecognizedOrdinaryWorkspaceOpen => {
                 recognized_ordinary_workspace_open_count += 1;
@@ -479,6 +594,8 @@ pub fn verify_linux_vz_package_single_action_file_partition_v1(
         if disposition == LinuxVzPackageVerifiedFileEventDispositionV1::ProjectedSensitiveSshRead {
             observations.push(LinuxVzPackageVerifiedFileObservationV1 {
                 observation_kind: LinuxVzPackageVerifiedFileObservationKindV1::SensitiveSshRead,
+                environment_marker_kind: None,
+                descendant_actor_pid: None,
                 source_event_id: event_id,
                 source_event_sha256: event_sha256,
                 source_sequence: source.source_sequence(),
@@ -486,7 +603,8 @@ pub fn verify_linux_vz_package_single_action_file_partition_v1(
         }
     }
     let accounted = projected_sensitive_ssh_read_count
-        .checked_add(recognized_ordinary_workspace_open_count)
+        .checked_add(recognized_unauthenticated_environment_credential_marker_activity_count)
+        .and_then(|count| count.checked_add(recognized_ordinary_workspace_open_count))
         .and_then(|count| count.checked_add(unsupported_event_count))
         .ok_or(LinuxVzPackageVerifiedFileEventPartitionErrorV1::InvalidEventPartition)?;
     if events.len() != file.events().len() || accounted != file.events().len() {
@@ -500,10 +618,17 @@ pub fn verify_linux_vz_package_single_action_file_partition_v1(
     let counts = partition_counts_wire_v1(
         file.events().len(),
         projected_sensitive_ssh_read_count,
+        projected_environment_credential_read_count,
+        recognized_unauthenticated_environment_credential_marker_activity_count,
         recognized_ordinary_workspace_open_count,
         unsupported_event_count,
+        npm_environment_credential_sensor_enabled,
     );
-    let coverage = partition_coverage_wire_v1(root, unsupported_event_count);
+    let coverage = partition_coverage_wire_v1(
+        root,
+        unsupported_event_count,
+        npm_environment_credential_sensor_enabled,
+    );
     let digest_wire = VerifiedFileEventPartitionDigestWireV1 {
         binding,
         counts,
@@ -519,10 +644,17 @@ pub fn verify_linux_vz_package_single_action_file_partition_v1(
         counts: partition_counts_wire_v1(
             file.events().len(),
             projected_sensitive_ssh_read_count,
+            projected_environment_credential_read_count,
+            recognized_unauthenticated_environment_credential_marker_activity_count,
             recognized_ordinary_workspace_open_count,
             unsupported_event_count,
+            npm_environment_credential_sensor_enabled,
         ),
-        coverage: partition_coverage_wire_v1(root, unsupported_event_count),
+        coverage: partition_coverage_wire_v1(
+            root,
+            unsupported_event_count,
+            npm_environment_credential_sensor_enabled,
+        ),
         events: &events,
         observations: &observations,
         partition_sha256: &partition_sha256,
@@ -546,11 +678,14 @@ pub fn verify_linux_vz_package_single_action_file_partition_v1(
         action_index: expected.action_index,
         source_event_count: file.events().len(),
         projected_sensitive_ssh_read_count,
+        projected_environment_credential_read_count,
+        recognized_unauthenticated_environment_credential_marker_activity_count,
         recognized_ordinary_workspace_open_count,
         unsupported_event_count,
         events,
         observations,
         root_evidence_complete: root.evidence_complete(),
+        npm_environment_credential_sensor_enabled,
     })
 }
 
@@ -579,9 +714,62 @@ pub fn verify_linux_vz_package_single_action_file_partition_output_v1(
     Ok(partition)
 }
 
+fn expected_environment_marker_tokens_v1(
+    expected: &LinuxVzPackageExpectedSingleActionFilePartitionV1,
+    root: &VerifiedLinuxVzPackageRootEvidenceReceiptV1,
+) -> Result<
+    BTreeMap<Sha256Digest, LinuxVzPackageNpmEnvironmentCredentialMarkerKindV1>,
+    LinuxVzPackageVerifiedFileEventPartitionErrorV1,
+> {
+    let Some(expected_binding) = expected
+        .npm_environment_credential_sensor_binding_sha256
+        .as_ref()
+    else {
+        return Ok(BTreeMap::new());
+    };
+    let sensor = fixed_linux_vz_package_npm_environment_credential_sensor_binding_v1()
+        .map_err(|_| LinuxVzPackageVerifiedFileEventPartitionErrorV1::InvalidExpectedBinding)?;
+    if sensor.binding_sha256() != expected_binding {
+        return Err(LinuxVzPackageVerifiedFileEventPartitionErrorV1::InvalidExpectedBinding);
+    }
+    let mut tokens = BTreeMap::new();
+    for marker in sensor.markers() {
+        let token = root_file_path_token_v1(
+            root.sensor_session_challenge_sha256(),
+            LinuxVzPackageRootFilePathNamespaceV1::WorkspaceRelative,
+            LinuxVzPackageFilePathClassV1::ProtectedSensor,
+            marker.marker_relative_path().as_bytes(),
+        )
+        .map_err(|_| LinuxVzPackageVerifiedFileEventPartitionErrorV1::InvalidExpectedBinding)?;
+        if tokens.insert(token, marker.kind()).is_some() {
+            return Err(LinuxVzPackageVerifiedFileEventPartitionErrorV1::InvalidExpectedBinding);
+        }
+    }
+    Ok(tokens)
+}
+
 fn classify_file_event_v1(
     event: &LinuxVzPackageRootFileEvidenceEventV1,
+    environment_marker_tokens: &BTreeMap<
+        Sha256Digest,
+        LinuxVzPackageNpmEnvironmentCredentialMarkerKindV1,
+    >,
 ) -> LinuxVzPackageVerifiedFileEventDispositionV1 {
+    let environment_marker_kind = environment_marker_tokens
+        .get(event.path_token_sha256())
+        .copied();
+    if environment_marker_kind.is_some()
+        && matches!(
+            event.kind(),
+            LinuxVzPackageRootFileEvidenceEventKindV1::Open
+                | LinuxVzPackageRootFileEvidenceEventKindV1::Write
+        )
+        && event.path_class() == LinuxVzPackageFilePathClassV1::ProtectedSensor
+        && event.namespace() == LinuxVzPackageRootFileEvidencePathNamespaceV1::WorkspaceRelative
+        && event.outcome() == LinuxVzPackageRootFileEvidenceAccessOutcomeV1::Observed
+    {
+        return LinuxVzPackageVerifiedFileEventDispositionV1::RecognizedUnauthenticatedEnvironmentCredentialMarkerActivity;
+    }
     if event.kind() == LinuxVzPackageRootFileEvidenceEventKindV1::Read
         && event.path_class() == LinuxVzPackageFilePathClassV1::SensitiveSsh
         && event.outcome() == LinuxVzPackageRootFileEvidenceAccessOutcomeV1::Observed
@@ -664,6 +852,9 @@ fn partition_binding_wire_v1(
         expected_action_count: expected.expected_action_count.to_string(),
         file_evidence_sha256: &expected.file_evidence_sha256,
         host_receipt_sha256: &expected.host_receipt_sha256,
+        npm_environment_credential_sensor_binding_sha256: expected
+            .npm_environment_credential_sensor_binding_sha256
+            .as_ref(),
         process_plan_sha256: &expected.process_plan_sha256,
         root_receipt_sha256: &expected.root_receipt_sha256,
     }
@@ -672,10 +863,19 @@ fn partition_binding_wire_v1(
 fn partition_counts_wire_v1(
     source_event_count: usize,
     projected_sensitive_ssh_read_count: usize,
+    projected_environment_credential_read_count: usize,
+    recognized_unauthenticated_environment_credential_marker_activity_count: usize,
     recognized_ordinary_workspace_open_count: usize,
     unsupported_event_count: usize,
+    npm_environment_credential_sensor_enabled: bool,
 ) -> VerifiedFileEventPartitionCountsWireV1 {
     VerifiedFileEventPartitionCountsWireV1 {
+        unauthenticated_environment_credential_marker_activity_count:
+            npm_environment_credential_sensor_enabled.then(|| {
+                recognized_unauthenticated_environment_credential_marker_activity_count.to_string()
+            }),
+        projected_environment_credential_read_count: npm_environment_credential_sensor_enabled
+            .then(|| projected_environment_credential_read_count.to_string()),
         ordinary_workspace_open_count: recognized_ordinary_workspace_open_count.to_string(),
         partitioned_event_count: source_event_count.to_string(),
         projected_sensitive_ssh_read_count: projected_sensitive_ssh_read_count.to_string(),
@@ -687,11 +887,17 @@ fn partition_counts_wire_v1(
 fn partition_coverage_wire_v1(
     root: &VerifiedLinuxVzPackageRootEvidenceReceiptV1,
     unsupported_event_count: usize,
+    npm_environment_credential_sensor_enabled: bool,
 ) -> VerifiedFileEventPartitionCoverageWireV1 {
     VerifiedFileEventPartitionCoverageWireV1 {
         authoritative_verdict_permitted: false,
+        environment_credential_read_no_finding_conclusive:
+            npm_environment_credential_sensor_enabled.then_some(false),
+        environment_credential_read_observation_present: npm_environment_credential_sensor_enabled
+            .then_some(false),
         file_event_partition_complete: true,
-        file_event_projection_coverage_complete: unsupported_event_count == 0,
+        file_event_projection_coverage_complete: unsupported_event_count == 0
+            && !npm_environment_credential_sensor_enabled,
         host_composite_evidence_complete: false,
         observed_clean_permitted: false,
         producer_observations_consumed: false,
@@ -860,7 +1066,15 @@ mod tests {
         root_observed_at_unix_seconds: u64,
     }
 
-    fn signed_fixture_v1(include_unsupported: bool) -> SignedFixtureV1 {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum FileFixtureKindV1 {
+        Standard,
+        Unsupported,
+        FixedEnvironmentMarker { actor_pid: u32 },
+        AdjacentEnvironmentMarker { actor_pid: u32 },
+    }
+
+    fn signed_fixture_v1(kind: FileFixtureKindV1) -> SignedFixtureV1 {
         let guest_key = SigningKey::from_bytes(&GUEST_SIGNING_SEED);
         let host_key = SigningKey::from_bytes(&HOST_SIGNING_SEED);
         let guest_verifying_key = guest_key.verifying_key().to_bytes();
@@ -898,7 +1112,7 @@ mod tests {
             &completion,
         )
         .expect("file expected binding");
-        let collection = if include_unsupported {
+        let collection = if kind == FileFixtureKindV1::Unsupported {
             LinuxVzPackageRootFileCollectionV1::denominator_fixture_with_unsupported_v1(
                 file_expected.sensor_session_challenge_sha256(),
                 CGROUP_ID,
@@ -915,8 +1129,53 @@ mod tests {
                 ENDED_MONOTONIC,
             )
         };
-        let file = encode_linux_vz_package_root_file_evidence_v1(&file_expected, &collection)
+        let mut file = encode_linux_vz_package_root_file_evidence_v1(&file_expected, &collection)
             .expect("file evidence");
+        if let FileFixtureKindV1::FixedEnvironmentMarker { actor_pid }
+        | FileFixtureKindV1::AdjacentEnvironmentMarker { actor_pid } = kind
+        {
+            let sensor = fixed_linux_vz_package_npm_environment_credential_sensor_binding_v1()
+                .expect("fixed environment sensor");
+            let marker =
+                sensor.marker(LinuxVzPackageNpmEnvironmentCredentialMarkerKindV1::NpmToken);
+            let relative_path = if kind == (FileFixtureKindV1::FixedEnvironmentMarker { actor_pid })
+            {
+                marker.marker_relative_path()
+            } else {
+                "home/.whoathere-canaries/environment-read-npm-token-adjacent"
+            };
+            let path_token_sha256 = root_file_path_token_v1(
+                file_expected.sensor_session_challenge_sha256(),
+                LinuxVzPackageRootFilePathNamespaceV1::WorkspaceRelative,
+                if kind == (FileFixtureKindV1::FixedEnvironmentMarker { actor_pid }) {
+                    LinuxVzPackageFilePathClassV1::ProtectedSensor
+                } else {
+                    LinuxVzPackageFilePathClassV1::ProtectedCanary
+                },
+                relative_path.as_bytes(),
+            )
+            .expect("environment marker path token");
+            let mut value: serde_json::Value =
+                serde_json::from_slice(file.canonical_json_v1()).expect("file evidence json");
+            value["events"][0]["event_kind"] = serde_json::Value::String("open".to_string());
+            value["events"][0]["path_class"] = serde_json::Value::String(
+                if kind == (FileFixtureKindV1::FixedEnvironmentMarker { actor_pid }) {
+                    "protected_sensor"
+                } else {
+                    "protected_canary"
+                }
+                .to_string(),
+            );
+            value["events"][0]["path_namespace"] =
+                serde_json::Value::String("workspace_relative".to_string());
+            value["events"][0]["actor_pid"] = serde_json::Value::String(actor_pid.to_string());
+            value["events"][0]["path_token_sha256"] =
+                serde_json::to_value(path_token_sha256).expect("path token value");
+            let canonical =
+                serde_json_canonicalizer::to_vec(&value).expect("canonical marker evidence");
+            file = decode_linux_vz_package_root_file_evidence_v1(&file_expected, &canonical)
+                .expect("decoded marker file evidence");
+        }
         let root_claims = test_linux_vz_package_root_evidence_receipt_claims_for_file_v1(
             &request,
             &grant,
@@ -982,7 +1241,7 @@ mod tests {
             host_created,
         )
         .expect("verified host receipt");
-        let expected = LinuxVzPackageExpectedSingleActionFilePartitionV1::new_v1(
+        let mut expected = LinuxVzPackageExpectedSingleActionFilePartitionV1::new_v1(
             request.artifact_sha256().clone(),
             grant.execution_grant_sha256().clone(),
             process_plan_sha256,
@@ -993,6 +1252,17 @@ mod tests {
             ACTION_INDEX,
         )
         .expect("partition expected binding");
+        if matches!(
+            kind,
+            FileFixtureKindV1::FixedEnvironmentMarker { .. }
+                | FileFixtureKindV1::AdjacentEnvironmentMarker { .. }
+        ) {
+            let sensor = fixed_linux_vz_package_npm_environment_credential_sensor_binding_v1()
+                .expect("fixed environment sensor");
+            expected = expected
+                .with_fixed_npm_environment_credential_sensor_v1(&sensor)
+                .expect("sensor-bound expected partition");
+        }
         SignedFixtureV1 {
             expected,
             root,
@@ -1008,7 +1278,7 @@ mod tests {
 
     #[test]
     fn signed_two_event_fixture_projects_one_typed_observation_and_partitions_exactly() {
-        let fixture = signed_fixture_v1(false);
+        let fixture = signed_fixture_v1(FileFixtureKindV1::Standard);
         let partition = verify_linux_vz_package_single_action_file_partition_v1(
             &fixture.expected,
             &fixture.root,
@@ -1058,7 +1328,7 @@ mod tests {
 
     #[test]
     fn unsupported_event_preserves_positive_and_forces_projection_incomplete_never_clean() {
-        let fixture = signed_fixture_v1(true);
+        let fixture = signed_fixture_v1(FileFixtureKindV1::Unsupported);
         let partition = verify_linux_vz_package_single_action_file_partition_v1(
             &fixture.expected,
             &fixture.root,
@@ -1080,8 +1350,84 @@ mod tests {
     }
 
     #[test]
+    fn direct_descendant_marker_activity_is_supporting_only_and_never_projects_a_read() {
+        let fixture = signed_fixture_v1(FileFixtureKindV1::FixedEnvironmentMarker {
+            actor_pid: LEADER_PID + 1,
+        });
+        let partition = verify_linux_vz_package_single_action_file_partition_v1(
+            &fixture.expected,
+            &fixture.root,
+            &fixture.host,
+            &fixture.file,
+        )
+        .expect("verified environment marker partition");
+        assert_eq!(partition.projected_sensitive_ssh_read_count(), 0);
+        assert_eq!(partition.projected_environment_credential_read_count(), 0);
+        assert_eq!(partition.observations().len(), 0);
+        assert_eq!(
+            partition.recognized_unauthenticated_environment_credential_marker_activity_count(),
+            1
+        );
+        assert_eq!(
+            partition.events()[0].disposition(),
+            LinuxVzPackageVerifiedFileEventDispositionV1::RecognizedUnauthenticatedEnvironmentCredentialMarkerActivity
+        );
+        assert!(!partition.environment_credential_read_observation_present());
+        assert!(!partition.environment_credential_read_no_finding_conclusive());
+        assert!(!partition.positive_observation_present());
+        assert!(!partition.file_event_projection_coverage_complete());
+        assert!(!partition.observed_clean_permitted());
+        let serialized: serde_json::Value =
+            serde_json::from_slice(partition.canonical_json_v1()).expect("partition json");
+        assert_eq!(serialized["observations"], serde_json::json!([]));
+        assert_eq!(
+            serialized["counts"]["projected_environment_credential_read_count"],
+            "0"
+        );
+        assert_eq!(
+            serialized["counts"]["unauthenticated_environment_credential_marker_activity_count"],
+            "1"
+        );
+        assert_eq!(
+            serialized["coverage"]["environment_credential_read_observation_present"],
+            false
+        );
+        let serialized = serialized.to_string();
+        assert!(serialized
+            .contains("recognized_unauthenticated_environment_credential_marker_activity"));
+        assert!(!serialized.contains("NPM_TOKEN="));
+        assert!(!serialized.contains("whoathere_fake_npm_token"));
+    }
+
+    #[test]
+    fn tooling_leader_and_adjacent_marker_paths_cannot_false_positive() {
+        for fixture in [
+            signed_fixture_v1(FileFixtureKindV1::FixedEnvironmentMarker {
+                actor_pid: LEADER_PID,
+            }),
+            signed_fixture_v1(FileFixtureKindV1::AdjacentEnvironmentMarker {
+                actor_pid: LEADER_PID + 1,
+            }),
+        ] {
+            let partition = verify_linux_vz_package_single_action_file_partition_v1(
+                &fixture.expected,
+                &fixture.root,
+                &fixture.host,
+                &fixture.file,
+            )
+            .expect("verified nonqualifying marker partition");
+            assert_eq!(partition.projected_environment_credential_read_count(), 0);
+            assert!(!partition.environment_credential_read_observation_present());
+            assert!(!partition.positive_observation_present());
+            assert!(!partition.environment_credential_read_no_finding_conclusive());
+            assert!(!partition.file_event_projection_coverage_complete());
+            assert!(!partition.observed_clean_permitted());
+        }
+    }
+
+    #[test]
     fn serialized_output_tamper_is_rejected_by_signed_input_reconstruction() {
-        let fixture = signed_fixture_v1(false);
+        let fixture = signed_fixture_v1(FileFixtureKindV1::Standard);
         let partition = verify_linux_vz_package_single_action_file_partition_v1(
             &fixture.expected,
             &fixture.root,
@@ -1107,7 +1453,7 @@ mod tests {
 
     #[test]
     fn file_event_omission_and_ordinal_mutation_fail_before_partitioning() {
-        let fixture = signed_fixture_v1(false);
+        let fixture = signed_fixture_v1(FileFixtureKindV1::Standard);
         let mut omitted: serde_json::Value =
             serde_json::from_slice(fixture.file.canonical_json_v1()).expect("file json");
         omitted["events"].as_array_mut().expect("events").remove(1);
@@ -1129,7 +1475,7 @@ mod tests {
 
     #[test]
     fn root_signature_and_key_tamper_are_rejected_before_partitioning() {
-        let fixture = signed_fixture_v1(false);
+        let fixture = signed_fixture_v1(FileFixtureKindV1::Standard);
         let mut receipt: serde_json::Value =
             serde_json::from_slice(&fixture.root_receipt).expect("root receipt json");
         receipt["signature_ed25519_hex"] = serde_json::Value::String("00".repeat(64));
@@ -1158,8 +1504,8 @@ mod tests {
 
     #[test]
     fn trusted_binding_rejects_foreign_artifact_grant_receipt_and_file_replay() {
-        let fixture = signed_fixture_v1(false);
-        let foreign_file_fixture = signed_fixture_v1(true);
+        let fixture = signed_fixture_v1(FileFixtureKindV1::Standard);
+        let foreign_file_fixture = signed_fixture_v1(FileFixtureKindV1::Unsupported);
         let rebound_artifact = LinuxVzPackageExpectedSingleActionFilePartitionV1::new_v1(
             digest("foreign artifact"),
             fixture.expected.execution_grant_sha256().clone(),
@@ -1231,7 +1577,7 @@ mod tests {
 
     #[test]
     fn one_action_scope_is_explicit_and_cannot_overclaim_clean() {
-        let fixture = signed_fixture_v1(false);
+        let fixture = signed_fixture_v1(FileFixtureKindV1::Standard);
         assert_eq!(fixture.expected.expected_action_count(), 1);
         assert_eq!(fixture.expected.action_index(), 1);
         assert_eq!(

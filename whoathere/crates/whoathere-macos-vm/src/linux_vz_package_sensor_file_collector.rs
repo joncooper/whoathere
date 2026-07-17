@@ -1981,6 +1981,10 @@ fn classify_observed_path_v1(
 fn classify_workspace_path_v1(relative: &[u8]) -> LinuxVzPackageFilePathClassV1 {
     if path_prefix_v1(relative, b"cache") {
         LinuxVzPackageFilePathClassV1::PackageCache
+    } else if crate::is_linux_vz_package_npm_environment_credential_sensor_marker_relative_path_v1(
+        relative,
+    ) {
+        LinuxVzPackageFilePathClassV1::ProtectedSensor
     } else if relative == b"home/.whoathere-canary"
         || path_prefix_v1(relative, b"home/.whoathere-canaries")
     {
@@ -2872,6 +2876,16 @@ mod tests {
         );
         assert_eq!(
             classify_workspace_path_v1(b"home/.whoathere-canary"),
+            LinuxVzPackageFilePathClassV1::ProtectedCanary
+        );
+        assert_eq!(
+            classify_workspace_path_v1(b"home/.whoathere-canaries/environment-read-npm-token"),
+            LinuxVzPackageFilePathClassV1::ProtectedSensor
+        );
+        assert_eq!(
+            classify_workspace_path_v1(
+                b"home/.whoathere-canaries/environment-read-npm-token-adjacent"
+            ),
             LinuxVzPackageFilePathClassV1::ProtectedCanary
         );
         assert_eq!(

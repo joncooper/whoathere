@@ -28,7 +28,7 @@ guest-root or host-composite completeness, clean eligibility, or admission eligi
 No resume experiment is required. Preserve the completed inert npm and wheel runs as regression
 fixtures; reopen this entry only if the same sensor-control failure recurs on those pinned inputs.
 
-## BLK-002: one-action native denominator proved; complete verifier wiring remains
+## BLK-002: positive-only static verifier complete; dynamic denominator remains
 
 Status: partially resolved on July 16, 2026. A bounded native proof now independently verifies and
 partitions one action's signed file-event stream. The strict evaluator remains fail-closed,
@@ -41,7 +41,8 @@ Confirmed:
   verifier could merely echo the claimed detections;
 - exhaustiveness was measured against that producer-authored observation list, not against every
   event committed by signed receipts;
-- the current work has no production native verifier executable;
+- the current work has no complete multi-action, multimodality dynamic verifier executable; the
+  narrower positive-only native static verifier is implemented and measured;
 - a verifier cannot prove omitted events unless expected bindings, host composition, root receipts,
   modality receipts, and streams commit to a complete ordered event denominator;
 - therefore a signed registry produced by the prototype would not make an 11/11 score trustworthy.
@@ -85,7 +86,24 @@ Required v2 boundary:
 The July 16 npm, wheel, and sdist runs do not close this blocker. Authenticated positive events can
 be projected and reviewed, but the physical bundles still lack a complete independently verified
 event denominator and complete modality coverage. Such observations remain useful for manual
-review; they cannot make an incomplete row detection-recall eligible or support clean admission.
+review. Once the production verifier authenticates and publishes them, behavior-specific positives
+remain detection-recall eligible even when sibling coverage is incomplete; the independent
+completion gate still fails, and incomplete evidence can never support clean admission.
+
+The July 18 deterministic checkpoint closes the positive-only static portion of this blocker.
+Both missed Telnyx wheels and the missed Telnyx sdist now have exact-hash, behavior-eligible
+`download_execute_capability` findings plus source-free citation metadata for the artifact,
+normalized manifest, observation, finding evidence, deterministic result receipt, file, range, and
+selected-byte digests. A narrow measured verifier can reopen those exact archives and derive
+citation-complete static projections without another VM or package execution. That verifier has now reopened all
+three exact archives on the approved cloud Mac and independently produced one citation-complete
+projection per artifact. The production assembler now measures and pins that verifier, invokes it
+directly, signs its captured canonical output, and verifies publication. The exhaustive multi-run
+registry bridge also passes the mandatory V2 scorer in its inert end-to-end test. The three real
+outputs still need a freshly frozen campaign manifest and signed production bundles. This does not
+close the multimodality denominator requirement,
+authorize clean results, or change the 7/11 baseline; it provides the shortest honest path for
+three positive known-regression rows while the dynamic verifier remains incomplete.
 
 Remaining claim-bearing boundary:
 
@@ -97,10 +115,10 @@ Remaining claim-bearing boundary:
 3. Compare the independently reconstructed projection set bidirectionally with `RunResultV2`, then
    reconnect the registry publisher and off-tree signing helper.
 
-The inert native proof closes the smallest experiment, but current physical bundles still lack the
-complete multi-action, multimodality denominator. New cloud-lab slices may produce useful positive
-manual-review evidence, but no campaign can produce a claim-bearing verified registry until the
-remaining boundary is complete.
+The inert native proof closes the smallest dynamic experiment, but current physical bundles still
+lack the complete multi-action, multimodality denominator. A freshly signed static positive can be
+claim-bearing for malicious recall while coverage remains incomplete; no dynamic result can become
+complete or support `observed_clean` until the remaining boundary is complete.
 
 ## BLK-003: the physical host harness discards partial evidence and overstates failure state
 
@@ -286,3 +304,36 @@ Resolution evidence:
 No BLK-007 resume experiment remains. Preserve the exact neighbor actions, the over-4-MiB boundary
 tests, the serial-init self-test, and the offline projection commands as regressions. A dedicated
 evidence console is optional later hardening, not a prerequisite for the known-miss wheel runs.
+
+## BLK-008: npm offline closure awaits physical qualification
+
+Status: local implementation complete; inert cloud-Mac proof pending.
+
+The npm adapter now binds exact runtime, optional, and peer dependency declarations to a sorted,
+digest-sealed tarball closure and transports it through the existing bounded execution frame. The
+Rust compiler/runner/runtime suites, Linux ARM64 root-runtime cross-check, Swift helper, and closure
+tamper tests pass. A bounded create-new packer now constructs and round-trip verifies the
+`WHOASCL1` frame from a canonical recipe and exact regular-file inputs without fetching, resolving,
+unpacking, or executing them. No real malware used this new path during implementation.
+
+Focused review found two attribution boundaries before physical use:
+
+- dependency tarballs must be installed offline with lifecycle scripts disabled before the target
+  tarball is installed with lifecycle scripts enabled, so closure behavior cannot be credited to
+  the target; and
+- the first Node environment-read marker is package-forgeable. It remains supporting telemetry
+  only and cannot publish `environment_credential_read`. The immediate known-miss path is the
+  authenticated `CI=false` versus `CI=true` behavior differential.
+
+The bounded claim-bearing replacement is a root-owned, cgroup-filtered uprobe on the exact pinned
+Node runtime's `uv_os_getenv` entry. It must bind the measured Node digest and symbol offset, emit
+only fixed credential-key enums through the protected collector, and fail incomplete on loss or
+binding drift. Node's `--trace-env` is useful as an inert oracle but writes package-forgeable stderr
+and is not evidence. Build this as the next focused sensor slice after the closure run rather than
+expanding the current physical checkpoint.
+
+Resume with one wholly inert package shaped like `sbx`, its exact sealed `classnames`, `react`, and
+`react-dom` closure, and fresh guests for both CI profiles. Require offline completion, disabled
+closure lifecycle execution, authenticated process/file/canary/network evidence, marker cleanup,
+verified VM stop and clone destruction, no public route, and no sync-back. If npm still requests
+registry metadata, add only a sealed consumer manifest/lock; do not build a registry service.

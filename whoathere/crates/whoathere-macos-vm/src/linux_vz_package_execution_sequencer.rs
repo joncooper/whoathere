@@ -28,6 +28,8 @@ use std::fmt;
 #[cfg(target_os = "linux")]
 use std::fs::File;
 use whoathere_artifact::Sha256Digest;
+#[cfg(any(target_os = "linux", test))]
+use whoathere_detonation::SdistBuildClosureArtifactFormatV1;
 
 pub const LINUX_VZ_PACKAGE_EXECUTION_SEQUENCE_TRANSCRIPT_SCHEMA_V1: &str =
     "whoathere.linux_vz_package_execution_sequence_transcript.v1";
@@ -320,10 +322,15 @@ fn sequence_requirements_v1(
     let mut materialize_count = 0_usize;
     let mut source_count = 0_usize;
     let mut closure_count = 0_usize;
+    let mut build_closure_count = 0_usize;
+    let mut npm_closure_count = 0_usize;
+    let mut npm_closure_artifact_count = 0_usize;
     let mut closure_payload_count = 0_usize;
     let mut derived_count = 0_usize;
     let mut inspect_count = 0_usize;
     let mut process_count = 0_usize;
+    let mut npm_closure_preinstall_process_count = 0_usize;
+    let mut npm_target_install_process_count = 0_usize;
     let mut sdist_build_process_count = 0_usize;
     let mut source_ready = false;
     let mut closure_ready = false;
@@ -350,9 +357,33 @@ fn sequence_requirements_v1(
                         return Err(LinuxVzPackageExecutionSequencerErrorV1::InvalidPlan);
                     }
                     closure_count += 1;
+                    build_closure_count += 1;
                     if !build_closure.artifacts().is_empty() {
                         closure_payload_count += 1;
                     }
+                    closure_ready = true;
+                }
+                MacosLinuxVzPackageInternalActionV1::ValidateExactNpmDependencyClosure {
+                    dependency_declarations_sha256,
+                    dependency_closure,
+                } => {
+                    if source_ready
+                        || process_count != 0
+                        || dependency_closure.validate().is_err()
+                        || dependency_declarations_sha256
+                            != dependency_closure.declaration_set_sha256()
+                        || dependency_closure.artifacts().is_empty()
+                        || dependency_closure.artifacts().iter().any(|artifact| {
+                            artifact.artifact_format()
+                                != SdistBuildClosureArtifactFormatV1::NpmTarGzip
+                        })
+                    {
+                        return Err(LinuxVzPackageExecutionSequencerErrorV1::InvalidPlan);
+                    }
+                    closure_count += 1;
+                    npm_closure_count += 1;
+                    npm_closure_artifact_count = dependency_closure.artifacts().len();
+                    closure_payload_count += 1;
                     closure_ready = true;
                 }
                 MacosLinuxVzPackageInternalActionV1::ValidateSingleDerivedWheel => {
@@ -371,6 +402,74 @@ fn sequence_requirements_v1(
                 MacosLinuxVzPackageInternalActionV1::ValidateConsoleEntryPointTarget { .. } => {}
             },
             MacosLinuxVzPackageExecutionActionV1::Process { process } => {
+                let uses_npm_closure = process.arguments().iter().any(|argument| {
+                    matches!(
+                        argument,
+                        MacosLinuxVzPackageProcessArgumentV1::Literal { value }
+                            if value.starts_with("/run/whoathere/closure/")
+                    )
+                });
+                if npm_closure_count == 1
+                    && npm_closure_preinstall_process_count == 0
+                    && process.stage_name() != "npm_preinstall_exact_dependency_closure"
+                {
+                    return Err(LinuxVzPackageExecutionSequencerErrorV1::InvalidPlan);
+                }
+                if process.stage_name() == "npm_preinstall_exact_dependency_closure" {
+                    let closure_path_count = process
+                        .arguments()
+                        .iter()
+                        .filter(|argument| {
+                            matches!(
+                                argument,
+                                MacosLinuxVzPackageProcessArgumentV1::Literal { value }
+                                    if value.starts_with("/run/whoathere/closure/")
+                            )
+                        })
+                        .count();
+                    if npm_closure_count != 1
+                        || !closure_ready
+                        || npm_closure_preinstall_process_count != 0
+                        || npm_target_install_process_count != 0
+                        || !uses_npm_closure
+                        || closure_path_count != npm_closure_artifact_count
+                        || process.arguments().iter().any(|argument| {
+                            matches!(
+                                argument,
+                                MacosLinuxVzPackageProcessArgumentV1::Literal { value }
+                                    if value.starts_with("/run/whoathere/input/")
+                            )
+                        })
+                    {
+                        return Err(LinuxVzPackageExecutionSequencerErrorV1::InvalidPlan);
+                    }
+                    npm_closure_preinstall_process_count += 1;
+                } else if process.stage_name() == "npm_install_exact_local_tarball" {
+                    if uses_npm_closure
+                        || npm_target_install_process_count != 0
+                        || (npm_closure_count == 1 && npm_closure_preinstall_process_count != 1)
+                        || (npm_closure_count == 0 && npm_closure_preinstall_process_count != 0)
+                    {
+                        return Err(LinuxVzPackageExecutionSequencerErrorV1::InvalidPlan);
+                    }
+                    let exact_target_count = process
+                        .arguments()
+                        .iter()
+                        .filter(|argument| {
+                            matches!(
+                                argument,
+                                MacosLinuxVzPackageProcessArgumentV1::Literal { value }
+                                    if value.starts_with("/run/whoathere/input/")
+                            )
+                        })
+                        .count();
+                    if exact_target_count != 1 {
+                        return Err(LinuxVzPackageExecutionSequencerErrorV1::InvalidPlan);
+                    }
+                    npm_target_install_process_count += 1;
+                } else if npm_closure_count == 1 && uses_npm_closure {
+                    return Err(LinuxVzPackageExecutionSequencerErrorV1::InvalidPlan);
+                }
                 if process.stage_name() == "python_build_exact_sdist" {
                     if !source_ready || !closure_ready || sdist_build_completed {
                         return Err(LinuxVzPackageExecutionSequencerErrorV1::InvalidPlan);
@@ -394,14 +493,23 @@ fn sequence_requirements_v1(
     if materialize_count != 1
         || source_count > 1
         || closure_count > 1
+        || build_closure_count > 1
+        || npm_closure_count > 1
         || closure_payload_count > 1
         || derived_count > 1
         || inspect_count > 1
         || process_count == 0
-        || (source_count == 0 && (closure_count != 0 || derived_count != 0 || inspect_count != 0))
+        || npm_closure_preinstall_process_count != npm_closure_count
+        || npm_target_install_process_count > 1
+        || (npm_closure_count == 1 && npm_target_install_process_count != 1)
+        || (source_count == 0
+            && (build_closure_count != 0 || derived_count != 0 || inspect_count != 0))
         || (source_count == 0 && sdist_build_process_count != 0)
         || (source_count == 1
-            && (closure_count != 1 || sdist_build_process_count != 1 || derived_count != 1))
+            && (build_closure_count != 1
+                || npm_closure_count != 0
+                || sdist_build_process_count != 1
+                || derived_count != 1))
     {
         return Err(LinuxVzPackageExecutionSequencerErrorV1::InvalidPlan);
     }
@@ -510,6 +618,40 @@ pub fn execute_linux_vz_package_sequence_v1(
                         }
                         completed_action_count = action_index + 1;
                         continue;
+                    }
+                    let payload = exact_build_closure_payload_source
+                        .take()
+                        .ok_or(LinuxVzPackageExecutionSequencerErrorV1::InvalidInputs)?;
+                    let (materialized, observation) =
+                        materialize_linux_vz_package_build_closure_v1(
+                            workspace.run_root().map_err(|_| {
+                                LinuxVzPackageExecutionSequencerErrorV1::WorkspaceFailed
+                            })?,
+                            payload,
+                            process_plan,
+                            &policy,
+                        )
+                        .map_err(|_| {
+                            LinuxVzPackageExecutionSequencerErrorV1::MaterializationFailed
+                        })?;
+                    build_closure = Some(materialized);
+                    build_closure_staged = Some(observation);
+                }
+                MacosLinuxVzPackageInternalActionV1::ValidateExactNpmDependencyClosure {
+                    dependency_declarations_sha256,
+                    dependency_closure: declared_closure,
+                } => {
+                    if build_closure.is_some()
+                        || declared_closure.validate().is_err()
+                        || dependency_declarations_sha256
+                            != declared_closure.declaration_set_sha256()
+                        || declared_closure.artifacts().is_empty()
+                        || declared_closure.artifacts().iter().any(|artifact| {
+                            artifact.artifact_format()
+                                != SdistBuildClosureArtifactFormatV1::NpmTarGzip
+                        })
+                    {
+                        return Err(LinuxVzPackageExecutionSequencerErrorV1::InvalidPlan);
                     }
                     let payload = exact_build_closure_payload_source
                         .take()
@@ -894,15 +1036,18 @@ mod tests {
     use super::*;
     use crate::{
         derive_macos_linux_vz_package_execution_process_plan_v1,
-        linux_vz_package_execution_program::test_macos_linux_vz_package_execution_program_v1,
+        linux_vz_package_execution_program::{
+            test_macos_linux_vz_package_execution_program_v1,
+            test_macos_linux_vz_package_execution_program_with_npm_closure_v1,
+        },
         MacosLinuxVzNpmLifecyclePolicyV1, MacosLinuxVzPackageDependencyPolicyV1,
         MacosLinuxVzPackageExecutionStageV1, MacosLinuxVzPackageRuntimeExecutablesV1,
         MacosLinuxVzSdistBuildRecipeV1,
     };
     use whoathere_artifact::ArtifactFormat;
     use whoathere_detonation::{
-        NpmEnvironmentProfileV1, SdistBuildClosureArtifactFormatV1, SdistBuildClosureArtifactV1,
-        SdistBuildClosureV1, SdistBuildModeV1,
+        DependencyClosureV1, NpmEnvironmentProfileV1, SdistBuildClosureArtifactFormatV1,
+        SdistBuildClosureArtifactV1, SdistBuildClosureV1, SdistBuildModeV1,
     };
 
     fn npm_plan_v1() -> MacosLinuxVzPackageExecutionProcessPlanV1 {
@@ -935,6 +1080,43 @@ mod tests {
             pip_version: "25.1".to_string(),
             pip_cli_sha256: Sha256Digest::from_bytes(b"inert pip"),
         }
+    }
+
+    fn npm_closure_plan_v1() -> MacosLinuxVzPackageExecutionProcessPlanV1 {
+        let closure = SdistBuildClosureV1::new(
+            &["left-pad 1.3.0".to_string()],
+            vec![SdistBuildClosureArtifactV1::new(
+                "left-pad",
+                "1.3.0",
+                "left-pad-1.3.0.tgz",
+                SdistBuildClosureArtifactFormatV1::NpmTarGzip,
+                Sha256Digest::from_bytes(b"inert left-pad tgz"),
+                1024,
+            )
+            .expect("npm closure artifact")],
+        )
+        .expect("npm closure");
+        let program = test_macos_linux_vz_package_execution_program_with_npm_closure_v1(
+            MacosLinuxVzPackageRuntimeExecutablesV1::NodeNpm {
+                node_version: "24.4.0".to_string(),
+                node_executable_sha256: Sha256Digest::from_bytes(b"inert node"),
+                npm_version: "11.4.2".to_string(),
+                npm_cli_sha256: Sha256Digest::from_bytes(b"inert npm cli"),
+            },
+            "npm_install_exact_local_tarball",
+            vec![
+                MacosLinuxVzPackageExecutionStageV1::NpmInstallExactLocalTarball {
+                    environment: NpmEnvironmentProfileV1::CiTrue,
+                    input_basename: "package.tgz".to_string(),
+                    dependency_policy:
+                        MacosLinuxVzPackageDependencyPolicyV1::NoIndexFixedClosureOnly,
+                    lifecycle_policy:
+                        MacosLinuxVzNpmLifecyclePolicyV1::PackageManifestInstallHooksOnly,
+                },
+            ],
+            DependencyClosureV1::NpmTarballSet { closure },
+        );
+        derive_macos_linux_vz_package_execution_process_plan_v1(&program).expect("npm closure plan")
     }
 
     fn sdist_plan_v1() -> MacosLinuxVzPackageExecutionProcessPlanV1 {
@@ -996,6 +1178,15 @@ mod tests {
         assert!(!requirements.build_closure_required);
         assert!(!requirements.derived_wheel_required);
         assert_eq!(requirements.process_count, 1);
+    }
+
+    #[test]
+    fn npm_sequence_requires_scripts_disabled_closure_then_target_install() {
+        let requirements =
+            sequence_requirements_v1(&npm_closure_plan_v1()).expect("npm closure requirements");
+        assert!(requirements.build_closure_required);
+        assert!(!requirements.derived_wheel_required);
+        assert_eq!(requirements.process_count, 2);
     }
 
     #[test]

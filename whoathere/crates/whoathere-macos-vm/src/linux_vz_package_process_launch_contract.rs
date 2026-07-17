@@ -669,11 +669,17 @@ mod tests {
     use super::*;
     use crate::{
         derive_macos_linux_vz_package_execution_process_plan_v1,
-        linux_vz_package_execution_program::test_macos_linux_vz_package_execution_program_v1,
+        linux_vz_package_execution_program::{
+            test_macos_linux_vz_package_execution_program_v1,
+            test_macos_linux_vz_package_execution_program_with_npm_closure_v1,
+        },
         MacosLinuxVzNpmLifecyclePolicyV1, MacosLinuxVzPackageDependencyPolicyV1,
         MacosLinuxVzPackageExecutionStageV1, MacosLinuxVzPackageRuntimeExecutablesV1,
     };
-    use whoathere_detonation::NpmEnvironmentProfileV1;
+    use whoathere_detonation::{
+        DependencyClosureV1, NpmEnvironmentProfileV1, SdistBuildClosureArtifactFormatV1,
+        SdistBuildClosureArtifactV1, SdistBuildClosureV1,
+    };
 
     fn npm_plan(profile: NpmEnvironmentProfileV1) -> MacosLinuxVzPackageExecutionProcessPlanV1 {
         let program = test_macos_linux_vz_package_execution_program_v1(
@@ -694,6 +700,43 @@ mod tests {
                         MacosLinuxVzNpmLifecyclePolicyV1::PackageManifestInstallHooksOnly,
                 },
             ],
+        );
+        derive_macos_linux_vz_package_execution_process_plan_v1(&program).expect("process plan")
+    }
+
+    fn npm_closure_plan() -> MacosLinuxVzPackageExecutionProcessPlanV1 {
+        let closure = SdistBuildClosureV1::new(
+            &["left-pad 1.3.0".to_string()],
+            vec![SdistBuildClosureArtifactV1::new(
+                "left-pad",
+                "1.3.0",
+                "left-pad-1.3.0.tgz",
+                SdistBuildClosureArtifactFormatV1::NpmTarGzip,
+                Sha256Digest::from_bytes(b"inert closure tgz"),
+                128,
+            )
+            .expect("closure descriptor")],
+        )
+        .expect("closure");
+        let program = test_macos_linux_vz_package_execution_program_with_npm_closure_v1(
+            MacosLinuxVzPackageRuntimeExecutablesV1::NodeNpm {
+                node_version: "24.4.0".to_string(),
+                node_executable_sha256: Sha256Digest::from_bytes(b"inert node"),
+                npm_version: "11.4.2".to_string(),
+                npm_cli_sha256: Sha256Digest::from_bytes(b"inert npm cli"),
+            },
+            "npm_install_exact_local_tarball",
+            vec![
+                MacosLinuxVzPackageExecutionStageV1::NpmInstallExactLocalTarball {
+                    environment: NpmEnvironmentProfileV1::CiTrue,
+                    input_basename: "package.tgz".to_string(),
+                    dependency_policy:
+                        MacosLinuxVzPackageDependencyPolicyV1::NoIndexFixedClosureOnly,
+                    lifecycle_policy:
+                        MacosLinuxVzNpmLifecyclePolicyV1::PackageManifestInstallHooksOnly,
+                },
+            ],
+            DependencyClosureV1::NpmTarballSet { closure },
         );
         derive_macos_linux_vz_package_execution_process_plan_v1(&program).expect("process plan")
     }
@@ -720,10 +763,25 @@ mod tests {
             contract.environment().get("CI").map(String::as_str),
             Some("true")
         );
-        assert_eq!(contract.measured_inputs().len(), 1);
+        assert_eq!(
+            contract
+                .environment()
+                .get("NODE_OPTIONS")
+                .map(String::as_str),
+            Some("--require=/run/whoathere/input/npm-environment-credential-read-preload-v1.cjs")
+        );
+        assert_eq!(contract.measured_inputs().len(), 2);
         assert_eq!(
             contract.measured_inputs()[0].absolute_path(),
             "/usr/lib/node_modules/npm/bin/npm-cli.js"
+        );
+        assert_eq!(
+            contract.measured_inputs()[1].role(),
+            MacosLinuxVzPackageMeasuredProcessInputRoleV1::NpmEnvironmentCredentialSensorHook
+        );
+        assert_eq!(
+            contract.measured_inputs()[1].absolute_path(),
+            "/run/whoathere/input/npm-environment-credential-read-preload-v1.cjs"
         );
         assert_eq!(
             contract.limits().scenario_wall_clock_milliseconds(),
@@ -764,6 +822,76 @@ mod tests {
         );
         assert_eq!(identity.argv_item_count(), contract.argv().len());
         assert!(!format!("{identity:?}").contains("package.tgz"));
+    }
+
+    #[test]
+    fn closure_launch_cannot_execute_or_be_attributed_as_target_lifecycle() {
+        let plan = npm_closure_plan();
+        let closure = derive_linux_vz_package_process_launch_contract_v1(
+            &plan,
+            2,
+            &ValidatedLinuxVzPackageDynamicProcessBindingsV1::none(),
+        )
+        .expect("closure launch contract");
+        let target = derive_linux_vz_package_process_launch_contract_v1(
+            &plan,
+            3,
+            &ValidatedLinuxVzPackageDynamicProcessBindingsV1::none(),
+        )
+        .expect("target launch contract");
+
+        assert_eq!(
+            closure.stage_name(),
+            "npm_preinstall_exact_dependency_closure"
+        );
+        assert!(closure
+            .argv()
+            .iter()
+            .any(|value| value == "--ignore-scripts=true"));
+        assert!(closure
+            .argv()
+            .iter()
+            .any(|value| value == "/run/whoathere/closure/left-pad-1.3.0.tgz"));
+        assert!(closure
+            .argv()
+            .iter()
+            .all(|value| !value.starts_with("/run/whoathere/input/")));
+        for forbidden in [
+            "CI",
+            "NODE_OPTIONS",
+            "NPM_TOKEN",
+            "GITHUB_TOKEN",
+            "AWS_ACCESS_KEY_ID",
+        ] {
+            assert!(!closure.environment().contains_key(forbidden));
+        }
+        assert_eq!(closure.measured_inputs().len(), 1);
+        assert_eq!(
+            closure.measured_inputs()[0].role(),
+            MacosLinuxVzPackageMeasuredProcessInputRoleV1::NpmCli
+        );
+
+        assert_eq!(target.stage_name(), "npm_install_exact_local_tarball");
+        assert!(target
+            .argv()
+            .iter()
+            .any(|value| value == "--ignore-scripts=false"));
+        assert_eq!(
+            target.argv().last().map(String::as_str),
+            Some("/run/whoathere/input/package.tgz")
+        );
+        assert!(target
+            .argv()
+            .iter()
+            .all(|value| !value.starts_with("/run/whoathere/closure/")));
+        assert!(target.environment().contains_key("NODE_OPTIONS"));
+        assert!(target.environment().contains_key("NPM_TOKEN"));
+        assert_eq!(target.measured_inputs().len(), 2);
+        assert_ne!(closure.stage_name(), target.stage_name());
+        assert_ne!(
+            closure.launch_contract_sha256(),
+            target.launch_contract_sha256()
+        );
     }
 
     #[test]

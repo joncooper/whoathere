@@ -3,8 +3,10 @@
 #![allow(clippy::useless_conversion)]
 
 use crate::{
+    verify_linux_vz_package_npm_environment_credential_sensor_hook_v1,
     MacosLinuxVzPackageExecutionActionV1, MacosLinuxVzPackageExecutionProcessPlanV1,
     MacosLinuxVzPackageInternalActionV1,
+    LINUX_VZ_PACKAGE_NPM_ENVIRONMENT_CREDENTIAL_SENSOR_HOOK_V1,
 };
 use sha2::{Digest, Sha256};
 use std::ffi::CString;
@@ -198,6 +200,10 @@ pub struct MaterializedLinuxVzPackageArtifactV1 {
     input_directory_name: CString,
     artifact_file: Option<File>,
     input_basename: CString,
+    sensor_hook_file: Option<File>,
+    sensor_hook_basename: Option<CString>,
+    sensor_hook_device: Option<u64>,
+    sensor_hook_inode: Option<u64>,
     process_plan_sha256: Sha256Digest,
     artifact_sha256: Sha256Digest,
     artifact_byte_length: u64,
@@ -314,6 +320,7 @@ impl MaterializedLinuxVzPackageArtifactV1 {
                 self.supervisor_gid,
             )?;
         }
+        self.verify_sensor_hook_v1()?;
         set_file_mode_v1(&self.input_directory, 0o700)
             .map_err(|_| LinuxVzPackageMaterializationErrorV1::CleanupFailed)?;
         if unsafe {
@@ -327,6 +334,12 @@ impl MaterializedLinuxVzPackageArtifactV1 {
             return Err(LinuxVzPackageMaterializationErrorV1::CleanupFailed);
         }
         self.artifact_file.take();
+        if let Some(name) = self.sensor_hook_basename.as_ref() {
+            if unsafe { libc::unlinkat(self.input_directory.as_raw_fd(), name.as_ptr(), 0) } != 0 {
+                return Err(LinuxVzPackageMaterializationErrorV1::CleanupFailed);
+            }
+        }
+        self.sensor_hook_file.take();
         self.input_directory
             .sync_all()
             .map_err(|_| LinuxVzPackageMaterializationErrorV1::CleanupFailed)?;
@@ -383,7 +396,47 @@ impl MaterializedLinuxVzPackageArtifactV1 {
         if digest != self.artifact_sha256 || length != self.artifact_byte_length {
             return Err(LinuxVzPackageMaterializationErrorV1::VerificationFailed);
         }
+        self.verify_sensor_hook_v1()?;
         Ok(self.observation(phase))
+    }
+
+    fn verify_sensor_hook_v1(&self) -> Result<(), LinuxVzPackageMaterializationErrorV1> {
+        match (
+            self.sensor_hook_file.as_ref(),
+            self.sensor_hook_basename.as_ref(),
+            self.sensor_hook_device,
+            self.sensor_hook_inode,
+        ) {
+            (None, None, None, None) => Ok(()),
+            (Some(file), Some(name), Some(device), Some(inode)) => {
+                let sensor =
+                    crate::fixed_linux_vz_package_npm_environment_credential_sensor_binding_v1()
+                        .map_err(|_| LinuxVzPackageMaterializationErrorV1::VerificationFailed)?;
+                verify_named_file_v1(
+                    &self.input_directory,
+                    name,
+                    file,
+                    device,
+                    inode,
+                    u64::try_from(sensor.hook_byte_length())
+                        .map_err(|_| LinuxVzPackageMaterializationErrorV1::VerificationFailed)?,
+                    0o444,
+                    self.supervisor_uid,
+                    self.supervisor_gid,
+                )?;
+                let mut retained = file
+                    .try_clone()
+                    .map_err(|_| LinuxVzPackageMaterializationErrorV1::VerificationFailed)?;
+                let (digest, length) = hash_file_from_start_v1(&mut retained)?;
+                if digest != *sensor.hook_sha256()
+                    || usize::try_from(length).ok() != Some(sensor.hook_byte_length())
+                {
+                    return Err(LinuxVzPackageMaterializationErrorV1::VerificationFailed);
+                }
+                Ok(())
+            }
+            _ => Err(LinuxVzPackageMaterializationErrorV1::VerificationFailed),
+        }
     }
 
     fn observation(
@@ -427,6 +480,23 @@ pub fn materialize_linux_vz_package_artifact_v1(
     policy.validate_current_process()?;
     validate_run_root_v1(run_root, policy)?;
     let input_basename = exact_input_basename_v1(process_plan)?;
+    let sensor_hook_basename = process_plan
+        .npm_environment_credential_sensor()
+        .map(|sensor| {
+            let name = fixed_component_v1(sensor.hook_relative_path())?;
+            let expected_absolute = format!("/run/whoathere/input/{}", sensor.hook_relative_path());
+            if sensor.hook_absolute_path() != expected_absolute
+                || sensor.hook_sha256()
+                    != &Sha256Digest::from_bytes(
+                        LINUX_VZ_PACKAGE_NPM_ENVIRONMENT_CREDENTIAL_SENSOR_HOOK_V1,
+                    )
+                || name == input_basename
+            {
+                return Err(LinuxVzPackageMaterializationErrorV1::InvalidProcessPlan);
+            }
+            Ok(name)
+        })
+        .transpose()?;
     validate_source_v1(
         exact_artifact_source,
         policy,
@@ -494,6 +564,48 @@ pub fn materialize_linux_vz_package_artifact_v1(
         {
             return Err(LinuxVzPackageMaterializationErrorV1::VerificationFailed);
         }
+        let sensor_hook = if let (Some(sensor), Some(name)) = (
+            process_plan.npm_environment_credential_sensor(),
+            sensor_hook_basename.as_ref(),
+        ) {
+            let mut hook = create_file_at_v1(input_directory.as_raw_fd(), name, 0o600)?;
+            hook.write_all(LINUX_VZ_PACKAGE_NPM_ENVIRONMENT_CREDENTIAL_SENSOR_HOOK_V1)
+                .map_err(|_| LinuxVzPackageMaterializationErrorV1::CopyFailed)?;
+            hook.sync_all()
+                .map_err(|_| LinuxVzPackageMaterializationErrorV1::SyncFailed)?;
+            set_file_mode_v1(&hook, 0o444)?;
+            hook.sync_all()
+                .map_err(|_| LinuxVzPackageMaterializationErrorV1::SyncFailed)?;
+            let hook_metadata = hook
+                .metadata()
+                .map_err(|_| LinuxVzPackageMaterializationErrorV1::VerificationFailed)?;
+            verify_named_file_v1(
+                &input_directory,
+                name,
+                &hook,
+                hook_metadata.dev(),
+                hook_metadata.ino(),
+                u64::try_from(sensor.hook_byte_length())
+                    .map_err(|_| LinuxVzPackageMaterializationErrorV1::VerificationFailed)?,
+                0o444,
+                policy.supervisor_uid(),
+                policy.supervisor_gid(),
+            )?;
+            verify_linux_vz_package_npm_environment_credential_sensor_hook_v1(
+                LINUX_VZ_PACKAGE_NPM_ENVIRONMENT_CREDENTIAL_SENSOR_HOOK_V1,
+                sensor,
+            )
+            .map_err(|_| LinuxVzPackageMaterializationErrorV1::VerificationFailed)?;
+            let (hook_digest, hook_length) = hash_file_from_start_v1(&mut hook)?;
+            if hook_digest != *sensor.hook_sha256()
+                || usize::try_from(hook_length).ok() != Some(sensor.hook_byte_length())
+            {
+                return Err(LinuxVzPackageMaterializationErrorV1::VerificationFailed);
+            }
+            Some((hook, name.clone(), hook_metadata.dev(), hook_metadata.ino()))
+        } else {
+            None
+        };
         set_file_mode_v1(&input_directory, 0o555)?;
         input_directory
             .sync_all()
@@ -517,17 +629,36 @@ pub fn materialize_linux_vz_package_artifact_v1(
             metadata.ino(),
             input_directory_metadata.dev(),
             input_directory_metadata.ino(),
+            sensor_hook,
         ))
     })();
 
     match result {
-        Ok((artifact_file, device, inode, input_directory_device, input_directory_inode)) => {
+        Ok((
+            artifact_file,
+            device,
+            inode,
+            input_directory_device,
+            input_directory_inode,
+            sensor_hook,
+        )) => {
+            let (sensor_hook_file, sensor_hook_basename, sensor_hook_device, sensor_hook_inode) =
+                match sensor_hook {
+                    Some((file, name, device, inode)) => {
+                        (Some(file), Some(name), Some(device), Some(inode))
+                    }
+                    None => (None, None, None, None),
+                };
             let materialized = MaterializedLinuxVzPackageArtifactV1 {
                 run_root: retained_run_root,
                 input_directory,
                 input_directory_name: input_name,
                 artifact_file: Some(artifact_file),
                 input_basename,
+                sensor_hook_file,
+                sensor_hook_basename,
+                sensor_hook_device,
+                sensor_hook_inode,
                 process_plan_sha256: process_plan.process_plan_sha256().clone(),
                 artifact_sha256: process_plan.artifact_sha256().clone(),
                 artifact_byte_length: process_plan.artifact_byte_length(),
@@ -547,6 +678,7 @@ pub fn materialize_linux_vz_package_artifact_v1(
                 run_root,
                 &input_directory,
                 &input_basename,
+                sensor_hook_basename.as_ref(),
                 &input_name,
             );
             Err(error)
@@ -558,10 +690,14 @@ fn best_effort_remove_created_input_v1(
     run_root: &File,
     input_directory: &File,
     input_basename: &CString,
+    sensor_hook_basename: Option<&CString>,
     input_name: &CString,
 ) {
     let _ = unsafe { libc::fchmod(input_directory.as_raw_fd(), 0o700 as libc::mode_t) };
     let _ = unsafe { libc::unlinkat(input_directory.as_raw_fd(), input_basename.as_ptr(), 0) };
+    if let Some(name) = sensor_hook_basename {
+        let _ = unsafe { libc::unlinkat(input_directory.as_raw_fd(), name.as_ptr(), 0) };
+    }
     let _ = input_directory.sync_all();
     let _ = unsafe {
         libc::unlinkat(

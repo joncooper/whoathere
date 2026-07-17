@@ -22,6 +22,7 @@ SINKHOLE_ASSERTED=""
 EGRESS_DENY_ASSERTED=""
 LULU_ASSERTED=""
 LIVE_APPROVED=""
+PREPARE_ONLY=""
 FORCE=""
 DETONATION_CONFIG=""
 DETONATION_CONFIG_SHA256=""
@@ -59,9 +60,12 @@ usage:
     --cloud-firewall-default-deny-asserted \
     (--sinkhole-ready-asserted --sinkhole-reference <ref> | --egress-deny-asserted) \
     --lulu-enabled-asserted [--lulu-reference <ref>] \
-    --live-malware-execution-approved
+    [--prepare-only | --live-malware-execution-approved]
 
 Exact-artifact options:
+    --prepare-only
+
+Or, for execution:
     --detonation-config <absolute-remote-json> --detonation-config-sha256 sha256:<digest> \
     --execution-tools-bin <absolute-remote-directory-containing-zig> \
     [--split-local-behavior-finalization | \
@@ -115,6 +119,7 @@ while [ "$#" -gt 0 ]; do
     --egress-deny-asserted) EGRESS_DENY_ASSERTED=1; shift ;;
     --lulu-enabled-asserted) LULU_ASSERTED=1; shift ;;
     --live-malware-execution-approved) LIVE_APPROVED=1; shift ;;
+    --prepare-only) PREPARE_ONLY=1; shift ;;
     --detonation-config) [ "$#" -ge 2 ] || usage; DETONATION_CONFIG=$2; shift 2 ;;
     --detonation-config-sha256) [ "$#" -ge 2 ] || usage; DETONATION_CONFIG_SHA256=$2; shift 2 ;;
     --execution-tools-bin) [ "$#" -ge 2 ] || usage; EXECUTION_TOOLS_BIN=$2; shift 2 ;;
@@ -141,10 +146,15 @@ done
 [ -n "$EXECUTION_PATH" ] || usage
 [ -n "$PROVIDER_APPROVAL_REF" ] || usage
 [ -n "$LEGAL_PROVIDER_APPROVAL_REF" ] || usage
-[ -n "$CLOUD_FIREWALL_ASSERTED" ] || usage
-[ -n "$LULU_ASSERTED" ] || usage
-[ -n "$LIVE_APPROVED" ] || usage
-if [ -z "$SINKHOLE_ASSERTED" ] && [ -z "$EGRESS_DENY_ASSERTED" ]; then
+if [ -z "$PREPARE_ONLY" ]; then
+  [ -n "$CLOUD_FIREWALL_ASSERTED" ] || usage
+  [ -n "$LULU_ASSERTED" ] || usage
+  [ -n "$LIVE_APPROVED" ] || usage
+elif [ -n "$LIVE_APPROVED" ]; then
+  echo "prepare_only_rejects_live_malware_execution_approval" >&2
+  exit 64
+fi
+if [ -z "$PREPARE_ONLY" ] && [ -z "$SINKHOLE_ASSERTED" ] && [ -z "$EGRESS_DENY_ASSERTED" ]; then
   usage
 fi
 if [ -n "$SINKHOLE_ASSERTED" ] && [ -z "$SINKHOLE_REFERENCE" ]; then
@@ -160,27 +170,35 @@ if [ -z "$RESTRICTED_SOURCE_APPROVED" ] && [ -n "$RESTRICTED_SOURCE_APPROVAL_REF
 fi
 case "$EXECUTION_PATH" in
   exact_artifact_diagnostic)
-    [ -n "$SINKHOLE_ASSERTED" ] || usage
-    [ -n "$DETONATION_CONFIG" ] || usage
-    [ -n "$DETONATION_CONFIG_SHA256" ] || usage
-    [ -n "$EXECUTION_TOOLS_BIN" ] || usage
-    [ -n "$RESTRICTED_BEHAVIOR_APPROVED" ] || usage
-    [ -n "$RESTRICTED_BEHAVIOR_APPROVAL_REF" ] || usage
-    [ -n "$CLEARANCE_CONSUMPTION_RECORD" ] || usage
-    [ -n "$CLEARANCE_CONSUMPTION_RECORD_SHA256" ] || usage
-    if [ -n "$SPLIT_LOCAL_BEHAVIOR_FINALIZATION" ]; then
-      if [ -n "$CODEX_CLIENT_PATH$CODEX_CLIENT_SHA256$CODEX_MODEL$CODEX_AUTH_HOME$RESTRICTED_SOURCE_APPROVED$RESTRICTED_SOURCE_APPROVAL_REF" ]; then
-        echo "split_local_behavior_finalization_rejects_remote_codex_and_source_review_inputs" >&2
+    if [ -n "$PREPARE_ONLY" ]; then
+      if [ -n "$FORCE$DETONATION_CONFIG$DETONATION_CONFIG_SHA256$EXECUTION_TOOLS_BIN$CODEX_CLIENT_PATH$CODEX_CLIENT_SHA256$CODEX_MODEL$CODEX_AUTH_HOME$RESTRICTED_SOURCE_APPROVED$RESTRICTED_SOURCE_APPROVAL_REF$RESTRICTED_BEHAVIOR_APPROVED$RESTRICTED_BEHAVIOR_APPROVAL_REF$SPLIT_LOCAL_BEHAVIOR_FINALIZATION$CLEARANCE_CONSUMPTION_RECORD$CLEARANCE_CONSUMPTION_RECORD_SHA256" ]; then
+        echo "prepare_only_rejects_execution_options" >&2
         exit 64
       fi
     else
-      [ -n "$CODEX_CLIENT_PATH" ] || usage
-      [ -n "$CODEX_CLIENT_SHA256" ] || usage
-      [ -n "$CODEX_MODEL" ] || usage
-      [ -n "$CODEX_AUTH_HOME" ] || usage
+      [ -n "$SINKHOLE_ASSERTED" ] || usage
+      [ -n "$DETONATION_CONFIG" ] || usage
+      [ -n "$DETONATION_CONFIG_SHA256" ] || usage
+      [ -n "$EXECUTION_TOOLS_BIN" ] || usage
+      [ -n "$RESTRICTED_BEHAVIOR_APPROVED" ] || usage
+      [ -n "$RESTRICTED_BEHAVIOR_APPROVAL_REF" ] || usage
+      [ -n "$CLEARANCE_CONSUMPTION_RECORD" ] || usage
+      [ -n "$CLEARANCE_CONSUMPTION_RECORD_SHA256" ] || usage
+      if [ -n "$SPLIT_LOCAL_BEHAVIOR_FINALIZATION" ]; then
+        if [ -n "$CODEX_CLIENT_PATH$CODEX_CLIENT_SHA256$CODEX_MODEL$CODEX_AUTH_HOME$RESTRICTED_SOURCE_APPROVED$RESTRICTED_SOURCE_APPROVAL_REF" ]; then
+          echo "split_local_behavior_finalization_rejects_remote_codex_and_source_review_inputs" >&2
+          exit 64
+        fi
+      else
+        [ -n "$CODEX_CLIENT_PATH" ] || usage
+        [ -n "$CODEX_CLIENT_SHA256" ] || usage
+        [ -n "$CODEX_MODEL" ] || usage
+        [ -n "$CODEX_AUTH_HOME" ] || usage
+      fi
     fi
     ;;
   legacy_workspace_non_claim_bearing)
+    [ -z "$PREPARE_ONLY" ] || usage
     [ -z "$EXECUTION_TOOLS_BIN" ] || usage
     ;;
   *) usage ;;
@@ -257,14 +275,18 @@ ssh_run "chmod 700 $remote_tools && chmod 500 $remote_evaluator $remote_step5"
 
 remote_path_prefix=$remote_scanner_bin
 [ -z "$EXECUTION_TOOLS_BIN" ] || remote_path_prefix="$EXECUTION_TOOLS_BIN:$remote_path_prefix"
-remote_command="WHOATHERE_SCANNER_CACHE_DIR=$remote_tools/scanners PATH=$remote_path_prefix:\$PATH /usr/bin/python3 $remote_step5 --remote-root $REMOTE_ROOT --state-dir $STATE_DIR --whoathere-bin $WHOATHERE_BIN --evaluator-script $remote_evaluator --execution-path $EXECUTION_PATH --sample-id $SAMPLE_ID --provider-approval-ref $PROVIDER_APPROVAL_REF --legal-provider-approval-ref $LEGAL_PROVIDER_APPROVAL_REF --cloud-firewall-default-deny-asserted --lulu-enabled-asserted --live-malware-execution-approved"
+remote_command="WHOATHERE_SCANNER_CACHE_DIR=$remote_tools/scanners PATH=$remote_path_prefix:\$PATH /usr/bin/python3 $remote_step5 --remote-root $REMOTE_ROOT --state-dir $STATE_DIR --whoathere-bin $WHOATHERE_BIN --evaluator-script $remote_evaluator --execution-path $EXECUTION_PATH --sample-id $SAMPLE_ID --provider-approval-ref $PROVIDER_APPROVAL_REF --legal-provider-approval-ref $LEGAL_PROVIDER_APPROVAL_REF"
+[ -z "$CLOUD_FIREWALL_ASSERTED" ] || remote_command="$remote_command --cloud-firewall-default-deny-asserted"
+[ -z "$LULU_ASSERTED" ] || remote_command="$remote_command --lulu-enabled-asserted"
+[ -z "$LIVE_APPROVED" ] || remote_command="$remote_command --live-malware-execution-approved"
+[ -z "$PREPARE_ONLY" ] || remote_command="$remote_command --prepare-only"
 [ -z "$STAGE_DIR" ] || remote_command="$remote_command --stage-dir $STAGE_DIR"
 [ -z "$RUN_ID" ] || remote_command="$remote_command --run-id $RUN_ID"
 [ -z "$SINKHOLE_ASSERTED" ] || remote_command="$remote_command --sinkhole-ready-asserted --sinkhole-reference $SINKHOLE_REFERENCE"
 [ -z "$EGRESS_DENY_ASSERTED" ] || remote_command="$remote_command --egress-deny-asserted"
 [ -z "$LULU_REFERENCE" ] || remote_command="$remote_command --lulu-reference $LULU_REFERENCE"
 [ -z "$FORCE" ] || remote_command="$remote_command --force"
-if [ "$EXECUTION_PATH" = "exact_artifact_diagnostic" ]; then
+if [ "$EXECUTION_PATH" = "exact_artifact_diagnostic" ] && [ -z "$PREPARE_ONLY" ]; then
   remote_command="$remote_command --detonation-config $DETONATION_CONFIG --detonation-config-sha256 $DETONATION_CONFIG_SHA256 --product-run-timeout-seconds $PRODUCT_RUN_TIMEOUT_SECONDS --restricted-behavior-hosted-review-approved --restricted-behavior-review-approval-ref $RESTRICTED_BEHAVIOR_APPROVAL_REF --clearance-consumption-record $CLEARANCE_CONSUMPTION_RECORD --clearance-consumption-record-sha256 $CLEARANCE_CONSUMPTION_RECORD_SHA256"
   if [ -n "$SPLIT_LOCAL_BEHAVIOR_FINALIZATION" ]; then
     remote_command="$remote_command --split-local-behavior-finalization"

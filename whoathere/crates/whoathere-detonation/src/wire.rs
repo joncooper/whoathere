@@ -148,6 +148,7 @@ pub struct ValidatedArtifactScenarioTemplateWireV1 {
     artifact_byte_length: u64,
     policy_sha256: Sha256Digest,
     dependency_closure_sha256: Sha256Digest,
+    dependency_closure: DependencyClosureV1,
     scenario_id: String,
     environment: NpmEnvironmentProfileV1,
     runtime_target: ArtifactRuntimeTargetV1,
@@ -211,6 +212,10 @@ impl ValidatedArtifactScenarioTemplateWireV1 {
         &self.dependency_closure_sha256
     }
 
+    pub fn dependency_closure(&self) -> &DependencyClosureV1 {
+        &self.dependency_closure
+    }
+
     pub fn scenario_id(&self) -> &str {
         &self.scenario_id
     }
@@ -272,6 +277,7 @@ pub fn decode_and_validate_artifact_scenario_template_v1(
         .ok_or(ArtifactScenarioCompileErrorV1::InvalidWire)?;
     let runtime_target = ArtifactRuntimeTargetV1::from_wire(&wire.target_os, &wire.target_arch)
         .ok_or(ArtifactScenarioCompileErrorV1::InvalidWire)?;
+    let dependency_closure_sha256 = wire.dependency_closure.closure_sha256().clone();
     Ok(ValidatedArtifactScenarioTemplateWireV1 {
         template_sha256: Sha256Digest::from_bytes(bytes),
         artifact_sha256: wire.subject.artifact_sha256,
@@ -279,7 +285,8 @@ pub fn decode_and_validate_artifact_scenario_template_v1(
         manifest_sha256: wire.subject.manifest_sha256,
         artifact_byte_length: wire.artifact_byte_length,
         policy_sha256: wire.policy_sha256,
-        dependency_closure_sha256: wire.dependency_closure.declaration_set_sha256().clone(),
+        dependency_closure_sha256,
+        dependency_closure: wire.dependency_closure,
         scenario_id: wire.identity.scenario_id,
         environment,
         runtime_target,
@@ -355,9 +362,26 @@ fn validate_template_wire_v1(
         return Err(ArtifactScenarioCompileErrorV1::InvalidWire);
     }
 
-    let expected_closure = expected_empty_closure_sha256_v1(&wire.subject.manifest_sha256)?;
-    if wire.dependency_closure.declaration_set_sha256() != &expected_closure {
-        return Err(ArtifactScenarioCompileErrorV1::InvalidWire);
+    match &wire.dependency_closure {
+        DependencyClosureV1::Empty {
+            declaration_set_sha256,
+        } => {
+            let expected_closure = expected_empty_closure_sha256_v1(&wire.subject.manifest_sha256)?;
+            if declaration_set_sha256 != &expected_closure {
+                return Err(ArtifactScenarioCompileErrorV1::InvalidWire);
+            }
+        }
+        DependencyClosureV1::NpmTarballSet { closure } => {
+            if closure.validate().is_err()
+                || closure.artifacts().is_empty()
+                || closure.artifacts().iter().any(|artifact| {
+                    artifact.artifact_format()
+                        != crate::SdistBuildClosureArtifactFormatV1::NpmTarGzip
+                })
+            {
+                return Err(ArtifactScenarioCompileErrorV1::InvalidWire);
+            }
+        }
     }
     let mut seen = BTreeSet::new();
     for binding in &wire.lifecycle_hooks {

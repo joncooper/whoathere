@@ -52,6 +52,51 @@ Do not pursue IPv6, GSO, full TLS interception, or general protocol expansion un
 detection gate shows that it is necessary. The current goal ends at a credible, usable,
 macOS-hosted local detection beta. Cloudflare and AWS portability are a separate follow-on goal.
 
+### July 18 detection checkpoint
+
+- The exact `mb-telnyx-4.87.2-sdist` artifact was materialized from its sealed cloud-lab custody
+  record through the new preparation-only path. The artifact digest matched
+  `sha256:a9235c0e...33a5`, the custody and staging bindings verified, evidence was sealed, and the
+  operation invoked no WhoaThere command, VM, AI provider, package code, clearance, or sync-back.
+- A subsequent deterministic-only inspection on the approved cloud Mac normalized the exact sdist
+  and returned a malicious static result with three behavior-detection-eligible capability chains.
+  Its `download_execute_capability` observation matches the frozen `second_stage_fetch` class;
+  coverage remains incomplete and the result has no clean, release, or admission authority.
+- The retained exact Telnyx `4.87.1` and `4.87.2` wheels were hash-verified and re-inspected with the
+  measured diagnostic runtime that produced the earlier wheel findings. Both again produced the
+  behavior-eligible `download_execute_capability`. The first attempted reinspection used an older
+  npm-focused runtime and stopped inconclusively at
+  `artifact_scenario_dependency_closure_unsupported`; that tooling mismatch is recorded and was
+  not counted as a malware result.
+- The restricted sanitizer now retains only the citation metadata needed for independent static
+  verification: exact artifact and manifest digests, observation and finding-evidence digests,
+  deterministic source-receipt digest, file id and digest, byte/line range, and selected-byte
+  digest. It still exports no selected bytes, package source, raw telemetry, or raw artifact.
+- A new native static verifier was built as measured arm64 executable
+  `sha256:9197be19...7631` and exercised directly on the approved cloud Mac against all three exact
+  Telnyx artifacts. It independently reopened, normalized, and analyzed each archive and emitted
+  one exact ten-field `download_execute_capability` projection. Each run reported package
+  execution, networking, AI, VM use, observed-clean authority, and admission authority as false.
+- The exhaustive signed-bundle-to-registry bridge now passes a synthetic three-run/six-evidence
+  chain through the mandatory V2 scorer and rejects missing, duplicate, unknown, substituted, or
+  signature-tampered rows. The production assembler is also complete: it copies and pins the
+  measured verifier, invokes it directly in a private directory, validates canonical output,
+  signs the bundle, and verifies publication in one trust-preserving operation. It does not accept
+  loose operator-supplied projection JSON. A fresh manifest-bound production invocation remains.
+- All three Telnyx misses are therefore verified and semantically ready for the sealed
+  `download_execute_capability -> second_stage_fetch` mapping. They are not claim-bearing yet
+  because they have not been signed after a freshly frozen campaign manifest. The remaining
+  distinct sample gap is `mb-npm-sbx-45.0.2`, whose current static capability findings do not
+  legally satisfy its frozen runtime labels. Digest-bound npm runtime/optional/peer closure
+  transport now passes locally across the Rust, Linux-runtime, and Swift-helper layers. Its next
+  gate is a wholly inert physical run under both CI profiles, followed by strict publication of an
+  observed CI-profile differential. A first Node environment-read marker sensor is intentionally
+  not claim-bearing after review showed that package code could imitate the marker.
+- The strict July public baseline remains **7/11**. A manifest-bound four-sample campaign can
+  establish a separate 4/4 prior-miss result; only a subsequent full eleven-sample campaign can
+  establish a new 11/11 baseline. This checkpoint improves the shortest path to those gates; it
+  does not retroactively rescore diagnostics.
+
 ### July 17 working checkpoint
 
 - One exact canonical inert npm tarball completed physically under both `CI=false` and `CI=true`,
@@ -175,7 +220,8 @@ macOS-hosted local detection beta. Cloudflare and AWS portability are a separate
   typed events each, verified teardown, no public route, and no sync-back. Subscription-backed
   Codex consumed both copied bundles through `behavior observe`; only the process specialist was
   applicable, it produced no findings, and the correlator preserved the incomplete coverage as
-  inconclusive rather than clean.
+  inconclusive rather than clean. A later apparent requalification "reboot" was traced to SSH
+  source-IP loss after Cloudflare WARP changed the operator's egress, not a cloud-Mac or VM failure.
 - The exact Telnyx `4.87.0` neighbor wheel now completes its direct offline install path and reaches
   its import-root trigger in fresh disposable guests. Stage-specific diagnostics showed that the
   install produced 5,108,950 bytes of authenticated process evidence and 4,198,077 bytes of file
@@ -256,9 +302,23 @@ macOS-hosted local detection beta. Cloudflare and AWS portability are a separate
   host-root, and serialized-output tampering tests pass. This closes BLK-002's smallest inert proof;
   it does not yet provide the complete multi-action, multimodality verifier executable or a
   claim-bearing registry for physical campaigns.
-- No restricted malware was rerun. The known-malware detection result therefore remains **7/11**;
-  this checkpoint proves working npm, wheel, and base PEP 517 sdist execution/observation slices,
-  not an improved campaign score.
+- Under separate one-sample restricted approval, the real `mb-npm-sbx-45.0.2` artifact was unpacked
+  only on the approved cloud Mac for a bounded deterministic static scan. No VM started, no helper
+  or clone remained, no package code executed on the host, no sync-back occurred, and no live C2
+  was contacted. The scan classified the artifact as malicious with five eligible detections,
+  including sensitive-path access and exfiltration/process capability. Those findings establish
+  static capability, not observed runtime behavior.
+- Physical detonation was correctly withheld because the package declares a runtime dependency and
+  peer dependencies, while the exact npm runtime then accepted only an empty dependency closure.
+  Digest-bound offline npm dependency-closure support has since been implemented locally; inert
+  physical qualification remains the next gate. This result is diagnostic and non-claim-bearing,
+  so the known-malware baseline remains **7/11**; the checkpoint narrows the npm gap rather than
+  improving the campaign score.
+- The V2 evaluator now enforces the intended separation between detection, completeness, and
+  safety. A registry-authenticated behavior-specific positive remains a detection when sibling
+  coverage is incomplete, while the independent completion gate still fails and neither
+  `observed_clean` nor admission can be produced. An incomplete malicious row without a verified
+  positive remains inconclusive and a recall miss.
 
 ### July 15 historical checkpoint (superseded by July 16)
 
@@ -493,9 +553,10 @@ and Codex behavioral observations survive into one report with exact artifact an
 bindings. Positive behavioral findings survive an incomplete detonation result or a failing sibling
 AI role. Context-only behavioral findings remain visible but are not malicious or
 behavior-detection eligible. The base physical PEP 517 sdist run is complete, and standalone Codex
-qualification consumed its authenticated install-action bundle. The strict frozen-corpus scorer,
-authenticated derived-wheel probe-manifest fanout, nonempty build-closure qualification, legacy
-`setup.py`, and ZIP sdists remain separate follow-on slices; this product report does not grant
+qualification consumed its authenticated install-action bundle. Authenticated derived-wheel
+probe-manifest fanout, physical nonempty-closure qualification, legacy `setup.py`, and ZIP sdists
+remain separate follow-on slices. The V2 scorer and signed static
+registry bridge now pass their inert adversarial suites; this product report does not grant
 admission authority or claim clean.
 
 This is a connected observation path, not complete evidence verification. The current physical
@@ -520,6 +581,13 @@ bridges remain claim-critical:
   loopback TCP-connect intent. Both preserved verified stop, clone destruction, stable image
   identity, no public route, and no sync-back. Positive observations are available for review, but
   broad evidence coverage remains incomplete and cannot authorize `observed_clean` or admission.
+  Runtime, optional, and peer declarations can now bind to a sorted, digest-sealed set of exact npm
+  tarballs transported through the existing closure frame. A bounded packer validates the
+  canonical recipe, filenames, lengths, hashes, and ordering, round-trips the frame, and writes it
+  create-new without fetching or executing. Closure tarballs preinstall offline with scripts
+  disabled; only the target installs afterward with scripts enabled. All local layers pass. The
+  immediate exit gate is an inert dependency-bearing package under both CI profiles; physical npm
+  resolution remains to be proven.
 - **wheel:** metadata-driven install, `.pth`, import-root, and console-entry-point scenario
   compilers, fixed offline process plans, the runtime-binding fanout bridge, generic physical
   `artifact.bin` packaging, shared Mac helper selection, and the exact-artifact adapter now exist.
@@ -537,8 +605,10 @@ bridges remain claim-critical:
   exactly-one-derived-wheel sealing now reach an exact PEP 517 execution bundle. The product
   adapter and CLI route are implemented. The Mac helper,
   initramfs builder, guest input verifier, canonical CPIO writer, and descriptor launcher carry an
-  optional digest-and-length-bound closure to the existing root runtime; npm and wheel bundles
-  reject closure state. The bundle preserves the outer artifact envelope and manifest, validates
+  optional digest-and-length-bound closure to the existing root runtime. Npm now reuses that sealed
+  transport with explicit `npm_tar_gzip` descriptors, while wheel bundles alone reject closure
+  state. The bundle preserves the outer
+  artifact envelope and manifest, validates
   the framed closure against declared build requirements, and compiles build, derived-wheel
   inspection/install, and source-root import actions. Its nested-root empty-closure fixture passes
   the Rust, Swift, shell, and C contract gates and now completes all four physical actions, yielding
@@ -551,13 +621,17 @@ bridges remain claim-critical:
   drives fresh `.pth`, import, and entry-point actions. Nonempty sealed build-closure qualification,
   legacy `setup.py`, and ZIP sdists remain explicit follow-on controls, never clean fallbacks. A
   separate canary-bearing exact sdist run projected actions 0 through 2; Codex detected
-  build-backend, PyPI-canary, and local-network behavior from action 0. Action 3 completed in the
-  guest but failed on the host before projection of its 5,945,958-byte runtime result, so that case
-  is parked in BLK-006 rather than being polished in the current slice.
+  build-backend, PyPI-canary, and local-network behavior from action 0. The former host-side
+  action-3 projection failure is resolved: the 5,945,958-byte runtime result now survives and
+  projects the source-root import, protected PyPI-token reads, and local-sinkhole sends.
 - **canaries:** the canonical npm fixture and the exact PyPI wheel and sdist fixtures now exercise
   protected fake-token paths inside the VZ guest plus fixed local-sinkhole intent. These runs prove
-  typed canary access and network intent, not that canary bytes were used or egressed. GitHub,
-  repository, and workflow canaries plus propagation sinkhole/shim controls remain future work.
+  typed canary access and network intent, not that canary bytes were used or egressed. A measured
+  Node lifecycle preload now emits value-free markers for reads of `NPM_TOKEN`, `GITHUB_TOKEN`, and
+  `AWS_ACCESS_KEY_ID`, but review showed its package-writable marker is imitable; it remains
+  experimental supporting telemetry and cannot publish `environment_credential_read` until the
+  signal crosses an authenticated channel. GitHub, repository, and workflow canaries plus
+  propagation sinkhole/shim controls remain future work.
 
 These are detection-bearing gaps, so they take precedence over additional transport or protocol
 hardening unless a failing gate demonstrates a new prerequisite.
@@ -921,6 +995,10 @@ conservatively and never become observed-clean.
 
 Exit evidence: two physically verified inert npm profiles plus scorer tests proving that missing,
 duplicate, generic-block, label-only, mismatched, and incomplete campaigns fail.
+
+Current progress: the base dependency-free CI profiles and strict scorer are complete. The
+dependency-bearing closure path passes locally; its immediate exit gate is physical inert
+qualification with closure scripts disabled and target lifecycle scripts enabled.
 
 ### Slice 2: generic bundle and wheel
 

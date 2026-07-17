@@ -8,8 +8,8 @@ use serde::Serialize;
 use std::fmt;
 use whoathere_artifact::{ArtifactFormat, Sha256Digest};
 use whoathere_detonation::{
-    ArtifactScenarioLimitsV1, ArtifactTelemetrySyncBackPolicyV1, NpmEnvironmentProfileV1,
-    SdistBuildClosureV1,
+    ArtifactScenarioLimitsV1, ArtifactTelemetrySyncBackPolicyV1, DependencyClosureV1,
+    NpmEnvironmentProfileV1, SdistBuildClosureV1,
 };
 
 pub const MACOS_LINUX_VZ_PACKAGE_EXECUTION_PROGRAM_SCHEMA_V1: &str =
@@ -186,6 +186,8 @@ struct PackageExecutionProgramWireV1<'a> {
     package_gid: String,
     runtime_executables: &'a MacosLinuxVzPackageRuntimeExecutablesV1,
     stages: &'a [MacosLinuxVzPackageExecutionStageV1],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    npm_dependency_closure: Option<&'a DependencyClosureV1>,
     limits: &'a ArtifactScenarioLimitsV1,
     arbitrary_command_input_present: bool,
     execution_authority: bool,
@@ -204,6 +206,7 @@ pub struct MacosLinuxVzPackageExecutionProgramV1 {
     runtime_executables: MacosLinuxVzPackageRuntimeExecutablesV1,
     operation: &'static str,
     stages: Vec<MacosLinuxVzPackageExecutionStageV1>,
+    npm_dependency_closure: Option<DependencyClosureV1>,
     limits: ArtifactScenarioLimitsV1,
 }
 
@@ -258,6 +261,10 @@ impl MacosLinuxVzPackageExecutionProgramV1 {
         &self.stages
     }
 
+    pub fn npm_dependency_closure(&self) -> Option<&DependencyClosureV1> {
+        self.npm_dependency_closure.as_ref()
+    }
+
     pub fn limits(&self) -> &ArtifactScenarioLimitsV1 {
         &self.limits
     }
@@ -286,6 +293,19 @@ pub(crate) fn test_macos_linux_vz_package_execution_program_v1(
 }
 
 #[cfg(test)]
+pub(crate) fn test_macos_linux_vz_package_execution_program_with_npm_closure_v1(
+    runtime_executables: MacosLinuxVzPackageRuntimeExecutablesV1,
+    operation: &'static str,
+    stages: Vec<MacosLinuxVzPackageExecutionStageV1>,
+    npm_dependency_closure: DependencyClosureV1,
+) -> MacosLinuxVzPackageExecutionProgramV1 {
+    let mut program =
+        test_macos_linux_vz_package_execution_program_v1(runtime_executables, operation, stages);
+    program.npm_dependency_closure = Some(npm_dependency_closure);
+    program
+}
+
+#[cfg(test)]
 pub(crate) fn test_macos_linux_vz_package_execution_program_for_artifact_v1(
     runtime_executables: MacosLinuxVzPackageRuntimeExecutablesV1,
     operation: &'static str,
@@ -300,6 +320,17 @@ pub(crate) fn test_macos_linux_vz_package_execution_program_for_artifact_v1(
             &Sha256Digest::from_bytes(b"inert test-only complete scenario matrix"),
         )
         .expect("test canary matrix binding");
+    let npm_dependency_closure = stages
+        .iter()
+        .any(|stage| {
+            matches!(
+                stage,
+                MacosLinuxVzPackageExecutionStageV1::NpmInstallExactLocalTarball { .. }
+            )
+        })
+        .then(|| DependencyClosureV1::Empty {
+            declaration_set_sha256: Sha256Digest::from_bytes(b"inert test-only empty npm closure"),
+        });
     MacosLinuxVzPackageExecutionProgramV1 {
         program_sha256: Sha256Digest::from_bytes(&canonical_json),
         canonical_json,
@@ -310,6 +341,7 @@ pub(crate) fn test_macos_linux_vz_package_execution_program_for_artifact_v1(
         runtime_executables,
         operation,
         stages,
+        npm_dependency_closure,
         limits: ArtifactScenarioLimitsV1::first_slice_defaults(),
     }
 }
@@ -349,6 +381,13 @@ pub fn derive_macos_linux_vz_package_execution_program_v1(
     if stages.is_empty() {
         return Err(MacosLinuxVzPackageExecutionProgramErrorV1::InvalidOperation);
     }
+    let npm_dependency_closure = match request.operation() {
+        MacosLinuxVzPackageExecutionOperationV1::NpmInstallExactLocalTarball {
+            dependency_closure,
+            ..
+        } => Some(dependency_closure.clone()),
+        _ => None,
+    };
     let credential_canary_matrix_binding_sha256 =
         derive_linux_vz_package_guest_environment_canary_matrix_binding_v1(
             request.artifact_sha256(),
@@ -376,6 +415,7 @@ pub fn derive_macos_linux_vz_package_execution_program_v1(
         package_gid: request.package_gid().to_string(),
         runtime_executables: request.runtime_executables(),
         stages: &stages,
+        npm_dependency_closure: npm_dependency_closure.as_ref(),
         limits: request.limits(),
         arbitrary_command_input_present: false,
         execution_authority: false,
@@ -399,6 +439,7 @@ pub fn derive_macos_linux_vz_package_execution_program_v1(
         runtime_executables: request.runtime_executables().clone(),
         operation: request.operation().operation_name(),
         stages,
+        npm_dependency_closure,
         limits: request.limits().clone(),
     })
 }
@@ -407,13 +448,28 @@ fn stages_for_operation_v1(
     operation: &MacosLinuxVzPackageExecutionOperationV1,
 ) -> Result<Vec<MacosLinuxVzPackageExecutionStageV1>, MacosLinuxVzPackageExecutionProgramErrorV1> {
     let stages = match operation {
-        MacosLinuxVzPackageExecutionOperationV1::NpmInstallExactLocalTarball { environment } => {
+        MacosLinuxVzPackageExecutionOperationV1::NpmInstallExactLocalTarball {
+            environment,
+            dependency_closure,
+        } => {
+            let dependency_policy = match dependency_closure {
+                DependencyClosureV1::Empty { .. } => {
+                    MacosLinuxVzPackageDependencyPolicyV1::OfflineExactDependencyFree
+                }
+                DependencyClosureV1::NpmTarballSet { closure }
+                    if closure.validate().is_ok() && !closure.artifacts().is_empty() =>
+                {
+                    MacosLinuxVzPackageDependencyPolicyV1::NoIndexFixedClosureOnly
+                }
+                DependencyClosureV1::NpmTarballSet { .. } => {
+                    return Err(MacosLinuxVzPackageExecutionProgramErrorV1::InvalidOperation)
+                }
+            };
             vec![
                 MacosLinuxVzPackageExecutionStageV1::NpmInstallExactLocalTarball {
                     environment: *environment,
                     input_basename: NPM_INPUT_BASENAME_V1.to_string(),
-                    dependency_policy:
-                        MacosLinuxVzPackageDependencyPolicyV1::OfflineExactDependencyFree,
+                    dependency_policy,
                     lifecycle_policy:
                         MacosLinuxVzNpmLifecyclePolicyV1::PackageManifestInstallHooksOnly,
                 },
@@ -653,6 +709,9 @@ mod tests {
         let npm = stages_for_operation_v1(
             &MacosLinuxVzPackageExecutionOperationV1::NpmInstallExactLocalTarball {
                 environment: NpmEnvironmentProfileV1::CiTrue,
+                dependency_closure: DependencyClosureV1::Empty {
+                    declaration_set_sha256: digest("empty npm dependency closure"),
+                },
             },
         )
         .expect("npm stages");

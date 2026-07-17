@@ -75,6 +75,13 @@ fn build_closure_payload_required_v1(
                     build_closure,
                     ..
                 }
+            }
+            | crate::MacosLinuxVzPackageExecutionActionV1::Internal {
+                action:
+                    crate::MacosLinuxVzPackageInternalActionV1::ValidateExactNpmDependencyClosure {
+                        dependency_closure: build_closure,
+                        ..
+                    }
             } if !build_closure.artifacts().is_empty()
         )
     })

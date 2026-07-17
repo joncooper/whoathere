@@ -10,23 +10,28 @@ use whoathere_artifact::{
     NormalizationLimits, NormalizedArtifact, Sha256Digest,
 };
 use whoathere_detonation::{
-    compile_artifact_scenarios_v1, ArtifactProtectedTelemetryRequirementsV1,
-    ArtifactRuntimeTargetV1, ArtifactScenarioCompilationRequestV1,
-    ArtifactScenarioExecutionIdentityV1, ArtifactScenarioIdentitySetV1, ArtifactScenarioPolicyV1,
-    NpmEnvironmentProfileV1, NpmRuntimeProfileV1,
+    compile_artifact_scenarios_with_npm_closure_v1, npm_runtime_dependency_requirements_v1,
+    ArtifactProtectedTelemetryRequirementsV1, ArtifactRuntimeTargetV1,
+    ArtifactScenarioCompilationRequestV1, ArtifactScenarioExecutionIdentityV1,
+    ArtifactScenarioIdentitySetV1, ArtifactScenarioPolicyV1, NpmEnvironmentProfileV1,
+    NpmRuntimeProfileV1, SdistBuildClosureArtifactFormatV1, SdistBuildClosureArtifactV1,
+    SdistBuildClosureV1,
 };
 use whoathere_evidence::v2::{canonical_cas_object_key_for_artifact, ArtifactEvidenceSubjectV2};
 use whoathere_macos_vm::{
-    build_macos_linux_vz_package_authority_request_v1,
+    build_macos_linux_vz_package_authority_request_v1, decode_macos_sdist_build_closure_frame_v1,
     decode_qualified_macos_linux_vz_telemetry_backend_v1,
     decode_unqualified_macos_linux_vz_telemetry_backend_identity_v1,
     sign_macos_linux_vz_package_execution_grant_v1,
     verify_macos_linux_vz_package_execution_runtime_qualification_record_v1,
     MacosLinuxVzCandidatePackageRuntimeV1, MacosLinuxVzPackageArtifactKindV1,
-    MacosLinuxVzPackageExecutionGrantContextV1,
+    MacosLinuxVzPackageExecutionGrantContextV1, MACOS_SDIST_BUILD_CLOSURE_MAGIC_V1,
+    MACOS_SDIST_BUILD_CLOSURE_PREFIX_BYTES_V1,
     MAX_MACOS_LINUX_VZ_PACKAGE_EXECUTION_RUNTIME_QUALIFICATION_RECORD_BYTES_V1,
     MAX_MACOS_LINUX_VZ_TELEMETRY_BACKEND_IDENTITY_BYTES_V1,
     MAX_MACOS_LINUX_VZ_TELEMETRY_CONFORMANCE_EVIDENCE_BYTES_V1,
+    MAX_MACOS_SDIST_BUILD_CLOSURE_MANIFEST_BYTES_V1,
+    MAX_MACOS_SDIST_BUILD_CLOSURE_PAYLOAD_BYTES_V1,
 };
 use zeroize::Zeroize;
 
@@ -39,6 +44,7 @@ struct ArgumentsV1 {
     artifact: PathBuf,
     artifact_envelope: Option<PathBuf>,
     artifact_manifest: Option<PathBuf>,
+    build_closure: Option<PathBuf>,
     environment: NpmEnvironmentProfileV1,
     backend_identity: PathBuf,
     qualified_backend: PathBuf,
@@ -82,6 +88,10 @@ struct BundleManifestV1<'a> {
     issued_at_unix_seconds: String,
     expires_at_unix_seconds: String,
     environment: NpmEnvironmentProfileV1,
+    dependency_closure_sha256: Option<&'a Sha256Digest>,
+    build_closure_payload_present: bool,
+    build_closure_payload_sha256: Option<&'a Sha256Digest>,
+    build_closure_payload_byte_length: String,
     execution_authority_issued: bool,
     attempt_limit: String,
     public_network_route_present: bool,
@@ -158,6 +168,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let envelope = bindings.envelope;
     let normalized = bindings.normalized;
+    let (dependency_closure, build_closure_payload) = resolve_npm_dependency_closure_v1(
+        arguments.build_closure.as_deref(),
+        &normalized.manifest,
+    )?;
     let cas_key =
         canonical_cas_object_key_for_artifact(normalized.manifest.artifact_sha256.as_str())
             .map_err(|_| io::Error::other("artifact CAS key invalid"))?;
@@ -195,13 +209,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "linux-vz-inert-execution-gate-scenario-ci-true-v1",
         )?,
     )?;
-    let plan = compile_artifact_scenarios_v1(ArtifactScenarioCompilationRequestV1 {
-        envelope: &envelope,
-        manifest: &normalized.manifest,
-        subject: &subject,
-        policy: &policy,
-        identities: &identities,
-    })?;
+    let plan = compile_artifact_scenarios_with_npm_closure_v1(
+        ArtifactScenarioCompilationRequestV1 {
+            envelope: &envelope,
+            manifest: &normalized.manifest,
+            subject: &subject,
+            policy: &policy,
+            identities: &identities,
+        },
+        dependency_closure.as_ref(),
+    )?;
     let plan_bytes = plan.canonical_json_v1()?;
     let template = plan
         .templates()
@@ -242,6 +259,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         &arguments.output_directory.join("artifact.bin"),
         &artifact_bytes,
     )?;
+    let build_closure_payload_sha256 = (!build_closure_payload.is_empty())
+        .then(|| Sha256Digest::from_bytes(&build_closure_payload));
+    if !build_closure_payload.is_empty() {
+        write_new_private_v1(
+            &arguments.output_directory.join("build-closure.bin"),
+            &build_closure_payload,
+        )?;
+    }
     write_new_private_v1(
         &arguments.output_directory.join("scenario-plan.json"),
         &plan_bytes,
@@ -316,6 +341,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         issued_at_unix_seconds: issued_at.to_string(),
         expires_at_unix_seconds: expires_at.to_string(),
         environment: arguments.environment,
+        dependency_closure_sha256: dependency_closure
+            .as_ref()
+            .map(SdistBuildClosureV1::closure_sha256),
+        build_closure_payload_present: build_closure_payload_sha256.is_some(),
+        build_closure_payload_sha256: build_closure_payload_sha256.as_ref(),
+        build_closure_payload_byte_length: build_closure_payload.len().to_string(),
         execution_authority_issued: true,
         attempt_limit: "1".to_string(),
         public_network_route_present: false,
@@ -336,6 +367,180 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         authority_request.request_sha256(),
     );
     Ok(())
+}
+
+fn resolve_npm_dependency_closure_v1(
+    frame_path: Option<&Path>,
+    manifest: &ArtifactManifest,
+) -> Result<(Option<SdistBuildClosureV1>, Vec<u8>), io::Error> {
+    let requirements = npm_runtime_dependency_requirements_v1(manifest)
+        .map_err(|_| io::Error::other("npm dependency declarations unsupported"))?;
+    if requirements.is_empty() {
+        if frame_path.is_some() {
+            return Err(io::Error::other("npm dependency closure unexpected"));
+        }
+        return Ok((None, Vec::new()));
+    }
+    let path = frame_path.ok_or_else(|| io::Error::other("npm dependency closure required"))?;
+    let maximum = (MACOS_SDIST_BUILD_CLOSURE_PREFIX_BYTES_V1
+        + MAX_MACOS_SDIST_BUILD_CLOSURE_MANIFEST_BYTES_V1) as u64
+        + MAX_MACOS_SDIST_BUILD_CLOSURE_PAYLOAD_BYTES_V1;
+    let frame = read_regular_bounded_v1(path, maximum)?;
+    let closure = closure_from_frame_manifest_v1(&frame)?;
+    let expected = SdistBuildClosureV1::new(&requirements, closure.artifacts().to_vec())
+        .map_err(|_| io::Error::other("npm dependency closure declarations mismatch"))?;
+    if expected != closure {
+        return Err(io::Error::other(
+            "npm dependency closure declarations mismatch",
+        ));
+    }
+    let (payload, _) = decode_macos_sdist_build_closure_frame_v1(&frame, &closure)
+        .map_err(|_| io::Error::other("npm dependency closure frame invalid"))?;
+    validate_exact_npm_closure_artifacts_v1(&closure, &payload)?;
+    Ok((Some(closure), payload))
+}
+
+fn closure_from_frame_manifest_v1(bytes: &[u8]) -> Result<SdistBuildClosureV1, io::Error> {
+    if bytes.len() < MACOS_SDIST_BUILD_CLOSURE_PREFIX_BYTES_V1
+        || &bytes[..8] != MACOS_SDIST_BUILD_CLOSURE_MAGIC_V1
+    {
+        return Err(io::Error::other("npm dependency closure frame invalid"));
+    }
+    let manifest_length = u32::from_be_bytes(
+        bytes[12..16]
+            .try_into()
+            .map_err(|_| io::Error::other("npm dependency closure frame invalid"))?,
+    ) as usize;
+    if manifest_length == 0 || manifest_length > MAX_MACOS_SDIST_BUILD_CLOSURE_MANIFEST_BYTES_V1 {
+        return Err(io::Error::other("npm dependency closure manifest invalid"));
+    }
+    let end = MACOS_SDIST_BUILD_CLOSURE_PREFIX_BYTES_V1
+        .checked_add(manifest_length)
+        .filter(|end| *end <= bytes.len())
+        .ok_or_else(|| io::Error::other("npm dependency closure frame invalid"))?;
+    let manifest_bytes = &bytes[MACOS_SDIST_BUILD_CLOSURE_PREFIX_BYTES_V1..end];
+    let closure: SdistBuildClosureV1 = serde_json::from_slice(manifest_bytes)
+        .map_err(|_| io::Error::other("npm dependency closure manifest invalid"))?;
+    if closure
+        .canonical_json_v1()
+        .map_err(|_| io::Error::other("npm dependency closure manifest invalid"))?
+        != manifest_bytes
+    {
+        return Err(io::Error::other(
+            "npm dependency closure manifest noncanonical",
+        ));
+    }
+    Ok(closure)
+}
+
+fn validate_exact_npm_closure_artifacts_v1(
+    closure: &SdistBuildClosureV1,
+    payload: &[u8],
+) -> Result<(), io::Error> {
+    if closure.artifacts().is_empty()
+        || closure.artifacts().iter().any(|artifact| {
+            artifact.artifact_format() != SdistBuildClosureArtifactFormatV1::NpmTarGzip
+        })
+    {
+        return Err(io::Error::other("npm dependency closure artifact invalid"));
+    }
+    let available = closure
+        .artifacts()
+        .iter()
+        .map(SdistBuildClosureArtifactV1::normalized_name)
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut offset = 0_usize;
+    for descriptor in closure.artifacts() {
+        let length = usize::try_from(descriptor.artifact_byte_length())
+            .map_err(|_| io::Error::other("npm dependency closure payload invalid"))?;
+        let end = offset
+            .checked_add(length)
+            .filter(|end| *end <= payload.len())
+            .ok_or_else(|| io::Error::other("npm dependency closure payload invalid"))?;
+        let normalized =
+            normalize_exact_npm_closure_artifact_v1(descriptor, &payload[offset..end])?;
+        for requirement in npm_runtime_dependency_requirements_v1(&normalized.manifest)
+            .map_err(|_| io::Error::other("npm transitive dependency unsupported"))?
+        {
+            let name = requirement
+                .split_ascii_whitespace()
+                .next()
+                .unwrap_or_default()
+                .replace(['_', '.'], "-")
+                .to_ascii_lowercase();
+            if !available.contains(name.as_str()) {
+                return Err(io::Error::other(
+                    "npm dependency closure transitive artifact missing",
+                ));
+            }
+        }
+        offset = end;
+    }
+    if offset != payload.len() {
+        return Err(io::Error::other("npm dependency closure payload invalid"));
+    }
+    Ok(())
+}
+
+fn normalize_exact_npm_closure_artifact_v1(
+    descriptor: &SdistBuildClosureArtifactV1,
+    bytes: &[u8],
+) -> Result<NormalizedArtifact, io::Error> {
+    if detect_artifact_format(Ecosystem::Npm, descriptor.artifact_filename(), bytes)
+        .map_err(|_| io::Error::other("npm dependency artifact format invalid"))?
+        != ArtifactFormat::NpmTarGzip
+    {
+        return Err(io::Error::other("npm dependency artifact format invalid"));
+    }
+    let mut normalized = None;
+    for requires_external_dependency_resolution in [false, true] {
+        let envelope = ArtifactEnvelope::from_original_bytes(
+            ArtifactEnvelopeInput {
+                ecosystem: Ecosystem::Npm,
+                package_name: Some(descriptor.normalized_name().to_string()),
+                package_version: Some(descriptor.version().to_string()),
+                source_coordinate: format!("local-file:{}", Sha256Digest::from_bytes(bytes)),
+                source_type: ArtifactSourceType::LocalFile,
+                acquired_at: "2026-07-15T00:00:00Z".to_string(),
+                acquisition_method: AcquisitionMethod::LocalFileImport,
+                original_filename: descriptor.artifact_filename().to_string(),
+                declared_format: Some(ArtifactFormat::NpmTarGzip),
+                custody_reference: "sealed-exact-npm-dependency-closure".to_string(),
+                resolver_metadata_sha256: None,
+                registry_metadata_sha256: None,
+                policy_version: "linux-vz-exact-npm-closure.v1".to_string(),
+                requires_external_dependency_resolution,
+            },
+            bytes,
+            ArtifactFormat::NpmTarGzip,
+        );
+        if let Ok(candidate) = normalize_artifact(&envelope, bytes, NormalizationLimits::default())
+        {
+            normalized = Some(candidate);
+            break;
+        }
+    }
+    let normalized = normalized
+        .ok_or_else(|| io::Error::other("npm dependency artifact normalization failed"))?;
+    let identity = normalized
+        .manifest
+        .identity
+        .as_ref()
+        .ok_or_else(|| io::Error::other("npm dependency artifact identity missing"))?;
+    if identity.normalized_name != descriptor.normalized_name()
+        || identity.version != descriptor.version()
+        || normalized.manifest.magic_detected_format != ArtifactFormat::NpmTarGzip
+        || !normalized.manifest.native_binary_file_ids.is_empty()
+        || normalized
+            .manifest
+            .metadata
+            .npm
+            .as_ref()
+            .is_none_or(|npm| npm.implicit_node_gyp_rebuild)
+    {
+        return Err(io::Error::other("npm dependency artifact binding invalid"));
+    }
+    Ok(normalized)
 }
 
 struct ArtifactBindingsV1 {
@@ -469,6 +674,7 @@ fn parse_arguments_v1() -> Result<ArgumentsV1, io::Error> {
             "--artifact"
             | "--artifact-envelope"
             | "--artifact-manifest"
+            | "--build-closure"
             | "--backend-identity"
             | "--qualified-backend"
             | "--qualification-record"
@@ -490,6 +696,7 @@ fn parse_arguments_v1() -> Result<ArgumentsV1, io::Error> {
     }
     let artifact_envelope = paths.remove("--artifact-envelope");
     let artifact_manifest = paths.remove("--artifact-manifest");
+    let build_closure = paths.remove("--build-closure");
     if artifact_envelope.is_some() != artifact_manifest.is_some() {
         return Err(io::Error::other(
             "artifact envelope and manifest must be supplied together",
@@ -507,6 +714,7 @@ fn parse_arguments_v1() -> Result<ArgumentsV1, io::Error> {
         artifact: take("--artifact")?,
         artifact_envelope,
         artifact_manifest,
+        build_closure,
         environment: environment.ok_or_else(|| io::Error::other("environment required"))?,
         backend_identity: take("--backend-identity")?,
         qualified_backend: take("--qualified-backend")?,
@@ -598,24 +806,55 @@ fn valid_run_id_v1(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_outer_artifact_bindings_v1;
+    use super::{resolve_npm_dependency_closure_v1, validate_outer_artifact_bindings_v1};
     use flate2::write::GzEncoder;
     use flate2::Compression;
     use std::io::Cursor;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use whoathere_artifact::{
         normalize_artifact, AcquisitionMethod, ArtifactEnvelope, ArtifactEnvelopeInput,
         ArtifactFormat, ArtifactSourceType, Ecosystem, NormalizationLimits, Sha256Digest,
     };
+    use whoathere_detonation::{
+        SdistBuildClosureArtifactFormatV1, SdistBuildClosureArtifactV1, SdistBuildClosureV1,
+    };
+    use whoathere_macos_vm::encode_macos_sdist_build_closure_frame_v1;
+
+    static NEXT_TEMP: AtomicU64 = AtomicU64::new(1);
+
+    struct TempRoot(std::path::PathBuf);
+
+    impl TempRoot {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "whoathere-npm-closure-bundle-{}-{}",
+                std::process::id(),
+                NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
+            ));
+            std::fs::create_dir(&path).expect("create test root");
+            Self(path)
+        }
+    }
+
+    impl Drop for TempRoot {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
 
     fn npm_tgz() -> Vec<u8> {
+        npm_tgz_with(
+            br#"{"name":"outer-bound-fixture","version":"4.2.1","scripts":{"postinstall":"node post.js"}}"#,
+            b"process.exit(0)",
+        )
+    }
+
+    fn npm_tgz_with(package_json: &[u8], program: &[u8]) -> Vec<u8> {
         let encoder = GzEncoder::new(Vec::new(), Compression::default());
         let mut archive = tar::Builder::new(encoder);
         for (path, bytes) in [
-            (
-                "package/package.json",
-                br#"{"name":"outer-bound-fixture","version":"4.2.1","scripts":{"postinstall":"node post.js"}}"#.as_slice(),
-            ),
-            ("package/post.js", b"process.exit(0)".as_slice()),
+            ("package/package.json", package_json),
+            ("package/post.js", program),
         ] {
             let mut header = tar::Header::new_gnu();
             header.set_entry_type(tar::EntryType::Regular);
@@ -634,6 +873,37 @@ mod tests {
             .expect("finish inert npm tar")
             .finish()
             .expect("finish inert npm gzip")
+    }
+
+    fn normalized_npm(
+        bytes: &[u8],
+        name: &str,
+        version: &str,
+        filename: &str,
+        requires_external_dependency_resolution: bool,
+    ) -> whoathere_artifact::NormalizedArtifact {
+        let envelope = ArtifactEnvelope::from_original_bytes(
+            ArtifactEnvelopeInput {
+                ecosystem: Ecosystem::Npm,
+                package_name: Some(name.to_string()),
+                package_version: Some(version.to_string()),
+                source_coordinate: format!("fixture:{name}@{version}"),
+                source_type: ArtifactSourceType::LocalFile,
+                acquired_at: "2026-07-16T00:00:00Z".to_string(),
+                acquisition_method: AcquisitionMethod::LocalInertFixture,
+                original_filename: filename.to_string(),
+                declared_format: Some(ArtifactFormat::NpmTarGzip),
+                custody_reference: "inert-npm-closure-builder-test".to_string(),
+                resolver_metadata_sha256: None,
+                registry_metadata_sha256: None,
+                policy_version: "npm-closure-builder-test.v1".to_string(),
+                requires_external_dependency_resolution,
+            },
+            bytes,
+            ArtifactFormat::NpmTarGzip,
+        );
+        normalize_artifact(&envelope, bytes, NormalizationLimits::default())
+            .expect("normalize npm fixture")
     }
 
     #[test]
@@ -690,5 +960,58 @@ mod tests {
             Some(registry_metadata_sha256)
         );
         assert_eq!(bindings.normalized.manifest, normalized.manifest);
+    }
+
+    #[test]
+    fn exact_npm_dependency_frame_is_verified_and_payload_tamper_is_rejected() {
+        let target = npm_tgz_with(
+            br#"{"name":"closure-target","version":"1.0.0","scripts":{"postinstall":"node post.js"},"dependencies":{"left-pad":"1.3.0"}}"#,
+            b"process.exit(0)",
+        );
+        let target = normalized_npm(
+            &target,
+            "closure-target",
+            "1.0.0",
+            "closure-target-1.0.0.tgz",
+            true,
+        );
+        assert!(resolve_npm_dependency_closure_v1(None, &target.manifest).is_err());
+        let dependency = npm_tgz_with(
+            br#"{"name":"left-pad","version":"1.3.0","main":"post.js"}"#,
+            b"module.exports = (value) => String(value);",
+        );
+        let closure = SdistBuildClosureV1::new(
+            &["left-pad 1.3.0".to_string()],
+            vec![SdistBuildClosureArtifactV1::new(
+                "left-pad",
+                "1.3.0",
+                "left-pad-1.3.0.tgz",
+                SdistBuildClosureArtifactFormatV1::NpmTarGzip,
+                Sha256Digest::from_bytes(&dependency),
+                dependency.len() as u64,
+            )
+            .expect("dependency descriptor")],
+        )
+        .expect("exact npm dependency closure");
+        let frame = encode_macos_sdist_build_closure_frame_v1(&closure, &[dependency.clone()])
+            .expect("encode closure frame");
+        let root = TempRoot::new();
+        let frame_path = root.0.join("dependency-closure.frame");
+        std::fs::write(&frame_path, &frame).expect("write closure frame");
+
+        let (resolved, payload) =
+            resolve_npm_dependency_closure_v1(Some(&frame_path), &target.manifest)
+                .expect("verify closure frame");
+        assert_eq!(resolved, Some(closure));
+        assert_eq!(payload, dependency);
+
+        let mut tampered = frame;
+        let last = tampered.last_mut().expect("framed payload byte");
+        *last ^= 0x01;
+        let tampered_path = root.0.join("dependency-closure-tampered.frame");
+        std::fs::write(&tampered_path, tampered).expect("write tampered frame");
+        assert!(
+            resolve_npm_dependency_closure_v1(Some(&tampered_path), &target.manifest,).is_err()
+        );
     }
 }

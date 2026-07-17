@@ -30,6 +30,18 @@ struct EmptyClosureDigestWireV1<'a> {
 pub fn compile_artifact_scenarios_v1(
     request: ArtifactScenarioCompilationRequestV1<'_>,
 ) -> Result<ArtifactScenarioPlanV1, ArtifactScenarioCompileErrorV1> {
+    compile_artifact_scenarios_with_npm_closure_v1(request, None)
+}
+
+/// Compile the same closed npm lifecycle matrix with an optional exact offline tarball closure.
+///
+/// The closure is caller-supplied only as already sealed descriptors and is rebound here to the
+/// dependency declarations parsed from the exact package artifact. It does not authorize network
+/// resolution or a registry/cache fallback.
+pub fn compile_artifact_scenarios_with_npm_closure_v1(
+    request: ArtifactScenarioCompilationRequestV1<'_>,
+    supplied_closure: Option<&crate::SdistBuildClosureV1>,
+) -> Result<ArtifactScenarioPlanV1, ArtifactScenarioCompileErrorV1> {
     request
         .envelope
         .validate()
@@ -97,9 +109,42 @@ pub fn compile_artifact_scenarios_v1(
         .npm
         .as_ref()
         .ok_or(ArtifactScenarioCompileErrorV1::InvalidManifest)?;
-    if request.envelope.requires_external_dependency_resolution || npm.requires_offline_closure {
-        return Err(ArtifactScenarioCompileErrorV1::UnsupportedDependencyClosure);
-    }
+    let npm_requirements = npm_runtime_dependency_requirements_v1(request.manifest)?;
+    let dependency_closure = if request.envelope.requires_external_dependency_resolution
+        || npm.requires_offline_closure
+    {
+        let closure =
+            supplied_closure.ok_or(ArtifactScenarioCompileErrorV1::UnsupportedDependencyClosure)?;
+        if npm_requirements.is_empty()
+            || closure.artifacts().is_empty()
+            || closure.artifacts().iter().any(|artifact| {
+                artifact.artifact_format() != crate::SdistBuildClosureArtifactFormatV1::NpmTarGzip
+            })
+        {
+            return Err(ArtifactScenarioCompileErrorV1::UnsupportedDependencyClosure);
+        }
+        let expected =
+            crate::SdistBuildClosureV1::new(&npm_requirements, closure.artifacts().to_vec())?;
+        if &expected != closure {
+            return Err(ArtifactScenarioCompileErrorV1::UnsupportedDependencyClosure);
+        }
+        DependencyClosureV1::NpmTarballSet {
+            closure: closure.clone(),
+        }
+    } else {
+        if supplied_closure.is_some() || !npm_requirements.is_empty() {
+            return Err(ArtifactScenarioCompileErrorV1::UnsupportedDependencyClosure);
+        }
+        let closure_bytes = serde_json_canonicalizer::to_vec(&EmptyClosureDigestWireV1 {
+            schema_version: EMPTY_DEPENDENCY_CLOSURE_SCHEMA_V1,
+            manifest_sha256: &request.manifest.manifest_sha256,
+            dependency_declarations: [],
+        })
+        .map_err(|_| ArtifactScenarioCompileErrorV1::Serialization)?;
+        DependencyClosureV1::Empty {
+            declaration_set_sha256: Sha256Digest::from_bytes(&closure_bytes),
+        }
+    };
     if npm.implicit_node_gyp_rebuild || !request.manifest.native_binary_file_ids.is_empty() {
         return Err(ArtifactScenarioCompileErrorV1::UnsupportedNativeArtifact);
     }
@@ -117,16 +162,6 @@ pub fn compile_artifact_scenarios_v1(
         ));
     }
     lifecycle_hooks.sort_by_key(LifecycleHookBindingV1::hook);
-
-    let closure_bytes = serde_json_canonicalizer::to_vec(&EmptyClosureDigestWireV1 {
-        schema_version: EMPTY_DEPENDENCY_CLOSURE_SCHEMA_V1,
-        manifest_sha256: &request.manifest.manifest_sha256,
-        dependency_declarations: [],
-    })
-    .map_err(|_| ArtifactScenarioCompileErrorV1::Serialization)?;
-    let dependency_closure = DependencyClosureV1::Empty {
-        declaration_set_sha256: Sha256Digest::from_bytes(&closure_bytes),
-    };
 
     let mut templates = Vec::with_capacity(2);
     for environment in [
@@ -162,4 +197,77 @@ pub fn compile_artifact_scenarios_v1(
     let canonical = plan.canonical_json_v1()?;
     plan.plan_sha256 = Sha256Digest::from_bytes(&canonical);
     Ok(plan)
+}
+
+/// Canonical direct runtime/optional/peer requirements for the first exact npm closure slice.
+///
+/// Development and bundled dependency declarations do not require an external runtime closure.
+/// Scoped names and remote/file specifications are conservatively rejected by the shared closure
+/// validator rather than being guessed into paths.
+pub fn npm_runtime_dependency_requirements_v1(
+    manifest: &ArtifactManifest,
+) -> Result<Vec<String>, ArtifactScenarioCompileErrorV1> {
+    let npm = manifest
+        .metadata
+        .npm
+        .as_ref()
+        .ok_or(ArtifactScenarioCompileErrorV1::InvalidManifest)?;
+    let mut requirements = npm
+        .dependency_declarations
+        .iter()
+        .filter(|dependency| {
+            matches!(
+                dependency.group.as_str(),
+                "dependencies" | "optionalDependencies" | "peerDependencies"
+            )
+        })
+        .map(|dependency| format!("{} {}", dependency.name, dependency.requirement))
+        .collect::<Vec<_>>();
+    requirements.sort();
+    requirements.dedup();
+    crate::sdist::validate_build_requirements(&requirements)?;
+    if npm
+        .dependency_declarations
+        .iter()
+        .filter(|dependency| {
+            matches!(
+                dependency.group.as_str(),
+                "dependencies" | "optionalDependencies" | "peerDependencies"
+            )
+        })
+        .any(|dependency| {
+            dependency.name.is_empty()
+                || dependency.name.len() > 128
+                || !dependency.name.is_ascii()
+                || !dependency.name.bytes().all(|byte| {
+                    byte.is_ascii_lowercase()
+                        || byte.is_ascii_digit()
+                        || matches!(byte, b'-' | b'_' | b'.')
+                })
+                || dependency.requirement.is_empty()
+                || dependency.requirement.len() > 512
+                || !dependency.requirement.is_ascii()
+                || dependency.requirement.chars().any(char::is_control)
+                || !dependency.requirement.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric()
+                        || matches!(
+                            byte,
+                            b'.' | b'-'
+                                | b'_'
+                                | b'+'
+                                | b'^'
+                                | b'~'
+                                | b'*'
+                                | b'<'
+                                | b'>'
+                                | b'='
+                                | b'|'
+                                | b' '
+                        )
+                })
+        })
+    {
+        return Err(ArtifactScenarioCompileErrorV1::UnsupportedDependencyClosure);
+    }
+    Ok(requirements)
 }

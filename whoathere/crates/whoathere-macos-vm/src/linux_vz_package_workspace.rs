@@ -1122,6 +1122,18 @@ fn remove_guest_file_canaries_v1(home: &File) -> Result<(), LinuxVzPackageWorksp
         let pypi_token_name = fixed_component_v1("pypi-token")?;
         unlink_file_if_present_v1(&canary_directory, &token_name)?;
         unlink_file_if_present_v1(&canary_directory, &pypi_token_name)?;
+        let environment_sensor =
+            crate::fixed_linux_vz_package_npm_environment_credential_sensor_binding_v1()
+                .map_err(|_| LinuxVzPackageWorkspaceErrorV1::CleanupFailed)?;
+        for marker in environment_sensor.markers() {
+            let basename = marker
+                .marker_relative_path()
+                .strip_prefix("home/.whoathere-canaries/")
+                .filter(|value| !value.is_empty() && !value.contains('/'))
+                .ok_or(LinuxVzPackageWorkspaceErrorV1::CleanupFailed)?;
+            let marker_name = fixed_component_v1(basename)?;
+            unlink_file_if_present_v1(&canary_directory, &marker_name)?;
+        }
         if unsafe {
             libc::unlinkat(
                 home.as_raw_fd(),
@@ -1562,6 +1574,17 @@ mod tests {
             workspace.seed_guest_file_canaries_v1(&binding),
             Err(LinuxVzPackageWorkspaceErrorV1::WorkspaceAlreadyPresent)
         ));
+
+        let environment_sensor =
+            crate::fixed_linux_vz_package_npm_environment_credential_sensor_binding_v1()
+                .expect("fixed environment sensor");
+        for marker in environment_sensor.markers() {
+            std::fs::write(
+                base.join("scenario").join(marker.marker_relative_path()),
+                b"1\n",
+            )
+            .expect("write inert environment-read marker");
+        }
 
         workspace.cleanup().expect("cleanup");
         std::fs::remove_dir(&base).expect("remove test parent");

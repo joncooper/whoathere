@@ -6,6 +6,7 @@ mod exact_npm_linux_vz;
 mod exact_sdist_linux_vz;
 mod exact_wheel_linux_vz;
 mod linux_vz_helper_diagnostics;
+mod static_download_execute_projection;
 
 pub use behavior_codex_observer::*;
 pub use behavior_evidence_projector::*;
@@ -14,6 +15,7 @@ pub use exact_artifact_codex::*;
 pub use exact_npm_linux_vz::*;
 pub use exact_sdist_linux_vz::*;
 pub use exact_wheel_linux_vz::*;
+pub use static_download_execute_projection::*;
 
 use whoathere_artifact::{
     detect_artifact_format, normalize_artifact, ArtifactEnvelope, ArtifactEnvelopeInput,

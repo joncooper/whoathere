@@ -10,9 +10,10 @@ use whoathere_detonation::{
     decode_and_validate_artifact_scenario_template_v1, decode_and_validate_sdist_scenario_plan_v1,
     decode_and_validate_sdist_scenario_template_v1, decode_and_validate_wheel_scenario_plan_v1,
     decode_and_validate_wheel_scenario_template_v1, supported_wheel_console_command_name_v1,
-    ArtifactScenarioLimitsV1, ArtifactTelemetrySyncBackPolicyV1, NpmEnvironmentProfileV1,
-    SdistBuildClosureV1, SdistBuildModeV1, SdistScenarioKindV1, WheelConsoleArgumentProfileV1,
-    WheelScenarioKindV1, MAX_ARTIFACT_SCENARIO_BYTES_V1,
+    ArtifactScenarioLimitsV1, ArtifactTelemetrySyncBackPolicyV1, DependencyClosureV1,
+    NpmEnvironmentProfileV1, SdistBuildClosureArtifactFormatV1, SdistBuildClosureV1,
+    SdistBuildModeV1, SdistScenarioKindV1, WheelConsoleArgumentProfileV1, WheelScenarioKindV1,
+    MAX_ARTIFACT_SCENARIO_BYTES_V1,
 };
 use zeroize::Zeroize;
 
@@ -134,6 +135,7 @@ impl MacosLinuxVzSdistBuildRecipeV1 {
 pub enum MacosLinuxVzPackageExecutionOperationV1 {
     NpmInstallExactLocalTarball {
         environment: NpmEnvironmentProfileV1,
+        dependency_closure: DependencyClosureV1,
     },
     WheelInstallExact {
         install_template_sha256: Sha256Digest,
@@ -621,8 +623,25 @@ fn validate_closed_operation_v1(
     match (artifact_kind, operation) {
         (
             MacosLinuxVzPackageArtifactKindV1::NpmTarball,
-            MacosLinuxVzPackageExecutionOperationV1::NpmInstallExactLocalTarball { .. },
-        ) => Ok(()),
+            MacosLinuxVzPackageExecutionOperationV1::NpmInstallExactLocalTarball {
+                dependency_closure,
+                ..
+            },
+        ) if match dependency_closure {
+            DependencyClosureV1::Empty {
+                declaration_set_sha256,
+            } => declaration_set_sha256 != &empty,
+            DependencyClosureV1::NpmTarballSet { closure } => {
+                closure.validate().is_ok()
+                    && !closure.artifacts().is_empty()
+                    && closure.artifacts().iter().all(|artifact| {
+                        artifact.artifact_format() == SdistBuildClosureArtifactFormatV1::NpmTarGzip
+                    })
+            }
+        } =>
+        {
+            Ok(())
+        }
         (
             MacosLinuxVzPackageArtifactKindV1::PypiWheel,
             MacosLinuxVzPackageExecutionOperationV1::WheelInstallExact {
@@ -1155,6 +1174,7 @@ fn operation_and_limits_v1(
             Ok((
                 MacosLinuxVzPackageExecutionOperationV1::NpmInstallExactLocalTarball {
                     environment: template.environment(),
+                    dependency_closure: template.dependency_closure().clone(),
                 },
                 template.limits().clone(),
                 MacosLinuxVzPackageRuntimeExecutablesV1::NodeNpm {
@@ -1761,12 +1781,13 @@ mod tests {
             request.artifact_sha256(),
             &Sha256Digest::from_bytes(&artifact_bytes)
         );
-        assert_eq!(
+        assert!(matches!(
             request.operation(),
-            &MacosLinuxVzPackageExecutionOperationV1::NpmInstallExactLocalTarball {
+            MacosLinuxVzPackageExecutionOperationV1::NpmInstallExactLocalTarball {
                 environment: NpmEnvironmentProfileV1::CiTrue,
+                dependency_closure: DependencyClosureV1::Empty { .. },
             }
-        );
+        ));
         assert!(request.package_execution_permitted());
         assert!(!request.sync_back_permitted());
         let value: serde_json::Value =

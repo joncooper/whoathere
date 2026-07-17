@@ -7,11 +7,13 @@ use whoathere_artifact::{
     ArtifactSourceType, Ecosystem, NormalizationLimits, Sha256Digest,
 };
 use whoathere_detonation::{
-    compile_artifact_scenarios_v1, decode_and_validate_artifact_scenario_plan_v1,
+    compile_artifact_scenarios_v1, compile_artifact_scenarios_with_npm_closure_v1,
+    decode_and_validate_artifact_scenario_plan_v1,
     decode_and_validate_artifact_scenario_template_v1, ArtifactRuntimeTargetV1,
     ArtifactScenarioCompilationRequestV1, ArtifactScenarioCompileErrorV1,
     ArtifactScenarioExecutionIdentityV1, ArtifactScenarioIdentitySetV1, ArtifactScenarioPolicyV1,
-    NpmEnvironmentProfileV1, NpmRuntimeProfileV1,
+    DependencyClosureV1, NpmEnvironmentProfileV1, NpmRuntimeProfileV1,
+    SdistBuildClosureArtifactFormatV1, SdistBuildClosureArtifactV1, SdistBuildClosureV1,
 };
 use whoathere_evidence::v2::{canonical_cas_object_key_for_artifact, ArtifactEvidenceSubjectV2};
 
@@ -286,6 +288,110 @@ fn unsupported_closure_native_and_unqualified_hook_fail_before_any_backend() {
     assert_eq!(
         compile(&prepare, &policy, &identities("prepare")),
         Err(ArtifactScenarioCompileErrorV1::UnsupportedLifecycleHook)
+    );
+}
+
+#[test]
+fn exact_npm_tarball_closure_is_bound_into_both_install_profiles() {
+    let fixture = fixture(
+        br#"{"name":"artifact-scenario-fixture","version":"1.0.0","dependencies":{"left-pad":"1.3.0"},"peerDependencies":{"react":">=16.8.0","react-dom":">=16.8.0"},"scripts":{"postinstall":"node post.js"}}"#,
+        &[("odd-root/post.js", b"process.exit(0)")],
+        true,
+    );
+    let left_pad = b"exact inert left-pad tarball";
+    let react = b"exact inert react tarball";
+    let react_dom = b"exact inert react-dom tarball";
+    let closure = SdistBuildClosureV1::new(
+        &[
+            "left-pad 1.3.0".to_string(),
+            "react >=16.8.0".to_string(),
+            "react-dom >=16.8.0".to_string(),
+        ],
+        vec![
+            SdistBuildClosureArtifactV1::new(
+                "left-pad",
+                "1.3.0",
+                "left-pad-1.3.0.tgz",
+                SdistBuildClosureArtifactFormatV1::NpmTarGzip,
+                Sha256Digest::from_bytes(left_pad),
+                left_pad.len() as u64,
+            )
+            .expect("left-pad descriptor"),
+            SdistBuildClosureArtifactV1::new(
+                "react",
+                "18.3.1",
+                "react-18.3.1.tgz",
+                SdistBuildClosureArtifactFormatV1::NpmTarGzip,
+                Sha256Digest::from_bytes(react),
+                react.len() as u64,
+            )
+            .expect("react descriptor"),
+            SdistBuildClosureArtifactV1::new(
+                "react-dom",
+                "18.3.1",
+                "react-dom-18.3.1.tgz",
+                SdistBuildClosureArtifactFormatV1::NpmTarGzip,
+                Sha256Digest::from_bytes(react_dom),
+                react_dom.len() as u64,
+            )
+            .expect("react-dom descriptor"),
+        ],
+    )
+    .expect("npm closure");
+    let policy = ArtifactScenarioPolicyV1::inert_qualification_only(
+        fixture.envelope.original_sha256.clone(),
+        runtime_profile(),
+    )
+    .expect("policy");
+    let plan = compile_artifact_scenarios_with_npm_closure_v1(
+        ArtifactScenarioCompilationRequestV1 {
+            envelope: &fixture.envelope,
+            manifest: &fixture.artifact.manifest,
+            subject: &fixture.subject,
+            policy: &policy,
+            identities: &identities("fixed-closure"),
+        },
+        Some(&closure),
+    )
+    .expect("compile exact npm closure");
+
+    assert_eq!(plan.templates().len(), 2);
+    for template in plan.templates() {
+        assert!(matches!(
+            template.dependency_closure(),
+            DependencyClosureV1::NpmTarballSet { closure: bound } if bound == &closure
+        ));
+        let decoded = decode_and_validate_artifact_scenario_template_v1(
+            &template.canonical_json_v1().expect("template bytes"),
+        )
+        .expect("decode populated closure template");
+        assert_eq!(
+            decoded.dependency_closure_sha256(),
+            closure.closure_sha256()
+        );
+        assert_eq!(
+            decoded.dependency_closure().npm_tarball_closure(),
+            Some(&closure)
+        );
+    }
+
+    let wrong = SdistBuildClosureV1::new(
+        &["left-pad 1.3.0".to_string()],
+        vec![closure.artifacts()[0].clone()],
+    )
+    .expect("wrong closure");
+    assert_eq!(
+        compile_artifact_scenarios_with_npm_closure_v1(
+            ArtifactScenarioCompilationRequestV1 {
+                envelope: &fixture.envelope,
+                manifest: &fixture.artifact.manifest,
+                subject: &fixture.subject,
+                policy: &policy,
+                identities: &identities("wrong-fixed-closure"),
+            },
+            Some(&wrong),
+        ),
+        Err(ArtifactScenarioCompileErrorV1::UnsupportedDependencyClosure)
     );
 }
 

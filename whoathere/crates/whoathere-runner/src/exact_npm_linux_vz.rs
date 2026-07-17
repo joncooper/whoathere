@@ -39,6 +39,7 @@ const HELPER_RESULT_SCHEMA_V1: &str = "whoathere.linux_vz_package_execution_resu
 const MAX_ROOT_RECEIPT_BYTES: usize = 256 * 1024;
 const MAX_SENSOR_EVIDENCE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_HOST_EXECUTION_RUN_BYTES: usize = 1024 * 1024;
+const MAX_DEPENDENCY_CLOSURE_FRAME_BYTES: usize = 129 * 1024 * 1024;
 static RUN_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,6 +59,8 @@ pub struct LinuxVzExactNpmDetonationConfigV1 {
     pub grant_public_key_path: PathBuf,
     pub grant_signing_seed_path: PathBuf,
     pub guest_signing_seed_path: PathBuf,
+    #[serde(default)]
+    pub dependency_closure_path: Option<PathBuf>,
     pub output_root: PathBuf,
     pub timeout_seconds: u64,
     pub helper_sha256: Option<String>,
@@ -109,6 +112,14 @@ impl LinuxVzExactNpmDetonationAdapterV1 {
         {
             return Some("linux_vz_exact_npm_input_invalid");
         }
+        if self
+            .config
+            .dependency_closure_path
+            .as_ref()
+            .is_some_and(|path| !path.is_absolute() || !is_regular_non_symlink(path))
+        {
+            return Some("linux_vz_exact_npm_dependency_closure_invalid");
+        }
         let helper_mode = match fs::symlink_metadata(&self.config.helper_path) {
             Ok(metadata) => metadata.permissions().mode(),
             Err(_) => return Some("linux_vz_exact_npm_helper_unreadable"),
@@ -152,6 +163,7 @@ impl LinuxVzExactNpmDetonationAdapterV1 {
         artifact_bytes: &[u8],
         artifact_sha256: &Sha256Digest,
         prepared: &PreparedArtifact,
+        dependency_closure_frame: Option<&[u8]>,
     ) -> ProfileRun {
         let profile_root = run_root.join(environment);
         let evidence_directory = profile_root.join("evidence");
@@ -163,6 +175,19 @@ impl LinuxVzExactNpmDetonationAdapterV1 {
         let artifact_path = profile_root.join("artifact.tgz");
         if write_new_private_file(&artifact_path, artifact_bytes).is_err() {
             return ProfileRun::incomplete(environment, "artifact_materialization_failed");
+        }
+        let dependency_closure_path = dependency_closure_frame.map(|bytes| {
+            let path = profile_root.join("dependency-closure.frame");
+            (path, bytes)
+        });
+        if dependency_closure_path
+            .as_ref()
+            .is_some_and(|(path, bytes)| write_new_private_file(path, bytes).is_err())
+        {
+            return ProfileRun::incomplete(
+                environment,
+                "dependency_closure_materialization_failed",
+            );
         }
         let artifact_envelope_path = profile_root.join("artifact-envelope.json");
         let artifact_manifest_path = profile_root.join("artifact-manifest.json");
@@ -191,7 +216,8 @@ impl LinuxVzExactNpmDetonationAdapterV1 {
         };
         let manifest_sha256 = &prepared.normalized().manifest.manifest_sha256;
 
-        let output = Command::new(&self.config.helper_path)
+        let mut command = Command::new(&self.config.helper_path);
+        command
             .arg("--artifact")
             .arg(&artifact_path)
             .arg("--artifact-envelope")
@@ -231,7 +257,11 @@ impl LinuxVzExactNpmDetonationAdapterV1 {
             .arg("--output-directory")
             .arg(&evidence_directory)
             .arg("--timeout-seconds")
-            .arg(self.config.timeout_seconds.to_string())
+            .arg(self.config.timeout_seconds.to_string());
+        if let Some((path, _)) = dependency_closure_path.as_ref() {
+            command.arg("--build-closure").arg(path);
+        }
+        let output = command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -334,7 +364,6 @@ impl ExactArtifactDetonationAdapterV1 for LinuxVzExactNpmDetonationAdapterV1 {
         ) || scenarios.executable
             || scenarios.runtime_binding_status != "not_bound"
             || prepared.normalized().manifest.magic_detected_format != ArtifactFormat::NpmTarGzip
-            || prepared.envelope().requires_external_dependency_resolution
         {
             return false;
         }
@@ -342,7 +371,10 @@ impl ExactArtifactDetonationAdapterV1 for LinuxVzExactNpmDetonationAdapterV1 {
         let Some(npm) = &manifest.metadata.npm else {
             return false;
         };
-        if npm.requires_offline_closure
+        let dependency_closure_required =
+            prepared.envelope().requires_external_dependency_resolution
+                || npm.requires_offline_closure;
+        if dependency_closure_required != self.config.dependency_closure_path.is_some()
             || npm.implicit_node_gyp_rebuild
             || !manifest.native_binary_file_ids.is_empty()
             || !npm_plan_has_required_install_profiles_v1(scenarios)
@@ -413,6 +445,19 @@ impl ExactArtifactDetonationAdapterV1 for LinuxVzExactNpmDetonationAdapterV1 {
                     )
                 }
             };
+        let dependency_closure_frame = match self.config.dependency_closure_path.as_deref() {
+            Some(path) => match read_bounded_regular_file(path, MAX_DEPENDENCY_CLOSURE_FRAME_BYTES)
+            {
+                Ok(bytes) => Some(bytes),
+                Err(_) => {
+                    return incomplete_result(
+                        &request.request_sha256,
+                        vec!["vm_dependency_closure_unavailable".to_string()],
+                    )
+                }
+            },
+            None => None,
+        };
         let runs = [
             self.run_profile(
                 &run_root,
@@ -420,6 +465,7 @@ impl ExactArtifactDetonationAdapterV1 for LinuxVzExactNpmDetonationAdapterV1 {
                 artifact.bytes(),
                 &artifact_digest,
                 prepared,
+                dependency_closure_frame.as_deref(),
             ),
             self.run_profile(
                 &run_root,
@@ -427,6 +473,7 @@ impl ExactArtifactDetonationAdapterV1 for LinuxVzExactNpmDetonationAdapterV1 {
                 artifact.bytes(),
                 &artifact_digest,
                 prepared,
+                dependency_closure_frame.as_deref(),
             ),
         ];
         let mut reasons = vec![

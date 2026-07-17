@@ -236,6 +236,12 @@ pub enum DependencyClosureV1 {
     Empty {
         declaration_set_sha256: Sha256Digest,
     },
+    /// A sorted, digest-bound set of exact npm tarballs.
+    ///
+    /// `SdistBuildClosureV1` is deliberately reused as the bounded descriptor set for this first
+    /// vertical slice. Its artifact-format discriminator prevents npm tarballs from being accepted
+    /// as build wheels, while reusing the already-qualified closure frame and guest materializer.
+    NpmTarballSet { closure: crate::SdistBuildClosureV1 },
 }
 
 impl DependencyClosureV1 {
@@ -244,6 +250,23 @@ impl DependencyClosureV1 {
             Self::Empty {
                 declaration_set_sha256,
             } => declaration_set_sha256,
+            Self::NpmTarballSet { closure } => closure.declaration_set_sha256(),
+        }
+    }
+
+    pub fn closure_sha256(&self) -> &Sha256Digest {
+        match self {
+            Self::Empty {
+                declaration_set_sha256,
+            } => declaration_set_sha256,
+            Self::NpmTarballSet { closure } => closure.closure_sha256(),
+        }
+    }
+
+    pub fn npm_tarball_closure(&self) -> Option<&crate::SdistBuildClosureV1> {
+        match self {
+            Self::NpmTarballSet { closure } => Some(closure),
+            Self::Empty { .. } => None,
         }
     }
 }

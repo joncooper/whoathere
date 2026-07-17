@@ -3,7 +3,8 @@
 
 Runs only on the disposable Scaleway Mac. It verifies live-run guardrail assertions, prepares one
 approved MalwareBazaar package artifact into a remote lab workspace, executes it only through
-WhoaThere's VM-backed no-sync path, suspends the VM, and seals sanitized evidence.
+WhoaThere's VM-backed no-sync path, suspends the VM, and seals sanitized evidence. Exact-artifact
+mode also supports a preparation-only stop before any WhoaThere, AI, or VM invocation.
 """
 
 from __future__ import annotations
@@ -30,6 +31,8 @@ LEGACY_EXECUTION_PATH = "legacy_workspace_non_claim_bearing"
 EXACT_ARTIFACT_EXECUTION_PATH = "exact_artifact_diagnostic"
 EXACT_ARTIFACT_REPORT_SCHEMA = "whoathere.exact_artifact_inspection.v1"
 EXACT_ARTIFACT_DIAGNOSTIC_SCHEMA = "whoathere.actual_malware.exact_artifact_diagnostic_result.v1"
+PREPARED_ONLY_RESULT_SCHEMA = f"{SCHEMA_PREFIX}.prepared_only_result.v1"
+PHASE1_STATE_LOCK_SCHEMA = "whoathere.actual_malware.scaleway_phase1.state_lock.v1"
 PHYSICAL_DETONATION_PROVIDERS = {
     "linux_vz_exact_npm_v1",
     "linux_vz_exact_wheel_v1",
@@ -290,6 +293,7 @@ def step5_paths(remote_root: Path, sample_id: str, run_id: str) -> dict[str, Pat
         "exact_artifact": workspace_root / "exact-artifact",
         "restricted_command_output": workspace_root / "restricted-command-output",
         "prepared_manifest": evidence_dir / "prepared-workspace.json",
+        "prepared_only_result": evidence_dir / "prepared-only-result.json",
         "live_gate": evidence_dir / "live-gate.json",
         "run_dir": evidence_dir / "whoathere-run",
         "exact_artifact_report": evidence_dir / "whoathere-run" / "exact-artifact-inspection-sanitized.json",
@@ -610,6 +614,58 @@ def prepare_sample(
 
 
 def validate_execution_path_args(args: argparse.Namespace, remote_root: Path) -> dict[str, Any]:
+    if getattr(args, "prepare_only", False):
+        if args.execution_path != EXACT_ARTIFACT_EXECUTION_PATH:
+            raise Step5Error("prepare_only_requires_exact_artifact_diagnostic")
+        incompatible = [
+            label
+            for label, value in (
+                ("live_malware_execution_approved", args.live_malware_execution_approved),
+                ("force", args.force),
+                ("detonation_config", args.detonation_config),
+                ("detonation_config_sha256", args.detonation_config_sha256),
+                ("codex_client_path", args.codex_client_path),
+                ("codex_client_sha256", args.codex_client_sha256),
+                ("codex_model", args.codex_model),
+                ("codex_auth_home", args.codex_auth_home),
+                (
+                    "restricted_source_hosted_review_approved",
+                    args.restricted_source_hosted_review_approved,
+                ),
+                ("restricted_source_review_approval_ref", args.restricted_source_review_approval_ref),
+                (
+                    "restricted_behavior_hosted_review_approved",
+                    args.restricted_behavior_hosted_review_approved,
+                ),
+                (
+                    "restricted_behavior_review_approval_ref",
+                    args.restricted_behavior_review_approval_ref,
+                ),
+                ("split_local_behavior_finalization", args.split_local_behavior_finalization),
+                ("clearance_consumption_record", args.clearance_consumption_record),
+                (
+                    "clearance_consumption_record_sha256",
+                    args.clearance_consumption_record_sha256,
+                ),
+            )
+            if value not in {None, "", False}
+        ]
+        if incompatible:
+            raise Step5Error(
+                "prepare_only_rejects_execution_options:" + ",".join(incompatible)
+            )
+        return {
+            "execution_path": EXACT_ARTIFACT_EXECUTION_PATH,
+            "operation_mode": "prepare_only",
+            "claim_bearing": False,
+            "clearance_consumed": False,
+            "live_malware_execution_approval_required": False,
+            "whoathere_invocation_requested": False,
+            "ai_invocation_requested": False,
+            "vm_invocation_requested": False,
+            "sync_back_requested": False,
+        }
+
     if args.execution_path == LEGACY_EXECUTION_PATH:
         exact_values = (
             args.detonation_config,
@@ -901,6 +957,88 @@ def verify_live_gate(remote_root: Path, stage_dir: Path, args: argparse.Namespac
     write_json(paths["live_gate"], gate)
     if blockers:
         raise Step5Error(f"live_gate_not_ready:{','.join(blockers)}")
+    return gate
+
+
+def verify_prepare_only_gate(
+    remote_root: Path,
+    stage_dir: Path,
+    args: argparse.Namespace,
+    sample_id: str,
+    run_id: str,
+) -> dict[str, Any]:
+    """Verify staged identity and custody without invoking WhoaThere."""
+
+    paths = step5_paths(remote_root, sample_id, run_id)
+    state_path = remote_root / "evidence" / "phase1" / "state-lock.json"
+    if not state_path.is_file():
+        raise Step5Error(f"missing_phase1_state_lock:{state_path}")
+    state_lock = read_json(state_path)
+    sample, _ = sample_and_matrix(stage_dir, sample_id)
+    validate_sample_for_step5(sample)
+    archive, sidecar, custody = archive_paths(stage_dir, sample)
+
+    stage_identity = state_lock.get("stage") if isinstance(state_lock.get("stage"), dict) else {}
+    execution_binding = (
+        state_lock.get("execution_binding")
+        if isinstance(state_lock.get("execution_binding"), dict)
+        else {}
+    )
+    current_identity = {
+        "stage_dir": str(stage_dir),
+        "manifest_sha256": sha256_file(stage_dir / "metadata" / "staging-manifest.json"),
+        "corpus_sha256": sha256_file(stage_dir / "metadata" / "corpus_manifest.jsonl"),
+        "run_matrix_sha256": sha256_file(stage_dir / "metadata" / "run_matrix.todo.csv"),
+    }
+    blockers: list[str] = []
+    if state_lock.get("schema") != PHASE1_STATE_LOCK_SCHEMA:
+        blockers.append("phase1_state_lock_schema_invalid")
+    if state_lock.get("valid") is not True:
+        blockers.append("phase1_state_lock_not_valid")
+    if state_lock.get("remote_root") != str(remote_root):
+        blockers.append("phase1_state_lock_remote_root_mismatch")
+    if (
+        execution_binding.get("valid") is not True
+        or execution_binding.get("execution_path") != EXACT_ARTIFACT_EXECUTION_PATH
+    ):
+        blockers.append("phase1_exact_artifact_execution_binding_not_valid")
+    if state_lock.get("provider_approval_ref") != args.provider_approval_ref:
+        blockers.append("phase1_provider_approval_ref_mismatch")
+    if state_lock.get("legal_provider_approval_ref") != args.legal_provider_approval_ref:
+        blockers.append("phase1_legal_provider_approval_ref_mismatch")
+    if any(stage_identity.get(key) != value for key, value in current_identity.items()):
+        blockers.append("phase1_stage_identity_not_bound")
+    gate = {
+        "schema": f"{SCHEMA_PREFIX}.prepare_only_gate.v1",
+        "created_at_utc": now_utc(),
+        "sample_id": sample_id,
+        "run_id": run_id,
+        "execution_path": EXACT_ARTIFACT_EXECUTION_PATH,
+        "operation_mode": "prepare_only",
+        "phase1_state_lock_sha256": sha256_file(state_path),
+        "stage_identity": current_identity,
+        "custody": {
+            "verified": True,
+            "archive_sha256": sha256_file(archive),
+            "sidecar_sha256": sha256_file(sidecar),
+            "custody_sha256": sha256_file(custody),
+            "artifact_sha256": sample["artifact_sha256"],
+        },
+        "commands": {},
+        "whoathere_invoked": False,
+        "live_malware_execution_approved": False,
+        "clearance_consumed": False,
+        "ready_for_restricted_artifact_preparation": not blockers,
+        "ready_for_single_malware_rehearsal": False,
+        "claim_boundary": "custody and exact-byte materialization only; no package execution or physical-safety assessment",
+        "live_c2_allowed": False,
+        "second_stage_live_fetch_allowed": False,
+        "sync_back_allowed": False,
+        "blockers": blockers,
+    }
+    write_json(paths["live_gate"], gate)
+    if blockers:
+        raise Step5Error(f"prepare_only_gate_not_ready:{','.join(blockers)}")
     return gate
 
 
@@ -1289,15 +1427,76 @@ def safe_report_scalar(value: Any, maximum_length: int = 256) -> str | int | boo
     return None
 
 
+def sanitize_static_evidence_reference(
+    value: Any,
+    source_receipt_sha256: Any = None,
+) -> dict[str, Any] | None:
+    """Retain citation metadata while excluding selected bytes and package source."""
+
+    if not isinstance(value, dict):
+        return None
+    location = value.get("location")
+    if not isinstance(location, dict):
+        return None
+    evidence_sha256 = value.get("evidence_sha256")
+    file_id = location.get("file_id")
+    file_sha256 = location.get("file_sha256")
+    selected_bytes_sha256 = location.get("selected_bytes_sha256")
+    if not all(
+        valid_sha256(item)
+        for item in (evidence_sha256, file_id, file_sha256, selected_bytes_sha256)
+    ):
+        return None
+    range_value = location.get("range")
+    if not isinstance(range_value, dict) or range_value.get("kind") not in {"bytes", "lines"}:
+        return None
+    range_keys = (
+        ("start_byte", "end_byte")
+        if range_value["kind"] == "bytes"
+        else ("start_line", "end_line", "start_byte", "end_byte")
+    )
+    range_projection = {"kind": range_value["kind"]}
+    for key in range_keys:
+        item = range_value.get(key)
+        if not isinstance(item, int) or isinstance(item, bool) or item < 0:
+            return None
+        range_projection[key] = item
+    if range_projection[range_keys[0]] > range_projection[range_keys[1]]:
+        return None
+    if "start_byte" in range_projection and range_projection["start_byte"] > range_projection["end_byte"]:
+        return None
+    return {
+        "source": safe_report_scalar(value.get("source")),
+        "evidence_sha256": evidence_sha256,
+        "source_receipt_sha256": (
+            source_receipt_sha256 if valid_sha256(source_receipt_sha256) else None
+        ),
+        "location": {
+            "kind": safe_report_scalar(location.get("kind")),
+            "file_id": file_id,
+            "file_sha256": file_sha256,
+            "range": range_projection,
+            "selected_bytes_sha256": selected_bytes_sha256,
+        },
+        "selected_bytes_included": False,
+        "package_source_included": False,
+    }
+
+
 def sanitize_exact_artifact_report(report: dict[str, Any]) -> dict[str, Any]:
     """Project the trusted report schema without copying source, telemetry, or unknown fields."""
 
     identity = report.get("identity") if isinstance(report.get("identity"), dict) else {}
     scenario_plan = report.get("scenario_plan") if isinstance(report.get("scenario_plan"), dict) else {}
     stages: list[dict[str, Any]] = []
+    deterministic_source_receipt_sha256 = None
     for stage in report.get("stages", []) if isinstance(report.get("stages"), list) else []:
         if not isinstance(stage, dict):
             continue
+        if stage.get("stage") == "deterministic_analysis" and valid_sha256(
+            stage.get("result_sha256")
+        ):
+            deterministic_source_receipt_sha256 = stage["result_sha256"]
         stages.append(
             {
                 key: safe_report_scalar(stage.get(key))
@@ -1323,6 +1522,13 @@ def sanitize_exact_artifact_report(report: dict[str, Any]) -> dict[str, Any]:
             if isinstance(observation.get("finding_kind"), dict)
             else None
         )
+        static_evidence = (
+            sanitize_static_evidence_reference(
+                observation.get("evidence"), deterministic_source_receipt_sha256
+            )
+            if observation.get("source") == "deterministic_static"
+            else None
+        )
         observations.append(
             {
                 key: safe_report_scalar(observation.get(key))
@@ -1346,6 +1552,7 @@ def sanitize_exact_artifact_report(report: dict[str, Any]) -> dict[str, Any]:
                 if finding_kind is not None
                 else None
             }
+            | {"evidence": static_evidence}
             | {"coverage_gap_codes": sanitized_reason_codes(observation.get("coverage_gap_codes"))}
         )
     return {
@@ -1556,12 +1763,17 @@ def run_exact_artifact(
         and run_record["exit_code"] in {20, 22}
         and (not split_local or physical_assessment["physical_detonation_evidence_completed"])
     )
-    product_finding_observed = (
-        diagnostic_completed and run_record["exit_code"] == 20 and not split_local
+    product_finding_observed = validation["finding_observed"]
+    deterministic_static_detection_observed = (
+        product_finding_observed
+        and validation["deterministic_static_detection_count"] > 0
     )
     codex_observed_detonation = (
         product_finding_observed
         and physical_assessment["codex_observed_detonation_gate_passed"]
+    )
+    diagnostic_detection_observed = (
+        deterministic_static_detection_observed or codex_observed_detonation
     )
     safety_failures = [
         failure
@@ -1610,30 +1822,40 @@ def run_exact_artifact(
         },
         "diagnostic_completed": diagnostic_completed,
         "product_finding_observed": product_finding_observed,
-        "diagnostic_detection_observed": codex_observed_detonation,
+        "diagnostic_detection_observed": diagnostic_detection_observed,
+        "deterministic_static_detection_observed": deterministic_static_detection_observed,
         "codex_observed_detonation_gate_passed": codex_observed_detonation,
         "physical_detonation": physical_assessment,
         "verdict_class": (
-            "diagnostic_pending_local_behavior_finalization"
+            "diagnostic_detection"
+            if codex_observed_detonation
+            else "diagnostic_static_detection"
+            if deterministic_static_detection_observed
+            else "diagnostic_pending_local_behavior_finalization"
             if pending_local_behavior_finalization
             else "diagnostic_incomplete"
             if split_local
-            else ("diagnostic_detection" if codex_observed_detonation else "diagnostic_miss")
+            else "diagnostic_miss"
         ),
-        "behavior_detection_count": 0 if split_local else validation["behavior_detection_count"],
+        "behavior_detection_count": (
+            validation["deterministic_static_detection_count"]
+            if split_local and deterministic_static_detection_observed
+            else 0
+            if split_local
+            else validation["behavior_detection_count"]
+        ),
         "codex_source_finding_count": 0 if split_local else validation["codex_source_finding_count"],
         "codex_behavior_finding_count": 0 if split_local else validation["codex_behavior_finding_count"],
         "codex_behavior_detection_count": 0 if split_local else validation["codex_behavior_detection_count"],
         "codex_behavior_detected": False if split_local else validation["codex_behavior_detected"],
         "modalities": {
             "deterministic_static": {
-                "behavior_detection_count": validation[
-                    "deterministic_static_detection_count"
-                ],
-                "detection_observed": validation[
-                    "deterministic_static_detection_count"
-                ]
-                > 0,
+                "behavior_detection_count": (
+                    validation["deterministic_static_detection_count"]
+                    if deterministic_static_detection_observed
+                    else 0
+                ),
+                "detection_observed": deterministic_static_detection_observed,
             },
             "codex_behavioral": {
                 "behavior_detection_count": (
@@ -1642,7 +1864,7 @@ def run_exact_artifact(
                 "detection_observed": (
                     False if split_local else validation["codex_behavior_detected"]
                 ),
-                "pending_local_finalization": split_local,
+                "pending_local_finalization": pending_local_behavior_finalization,
             },
         },
         "safety": {
@@ -1673,7 +1895,8 @@ def run_exact_artifact(
         "verdict_class": result["verdict_class"],
         "diagnostic_completed": diagnostic_completed,
         "product_finding_observed": product_finding_observed,
-        "diagnostic_detection_observed": codex_observed_detonation,
+        "diagnostic_detection_observed": diagnostic_detection_observed,
+        "deterministic_static_detection_observed": deterministic_static_detection_observed,
         "codex_observed_detonation_gate_passed": codex_observed_detonation,
         "physical_detonation_evidence_completed": physical_assessment[
             "physical_detonation_evidence_completed"
@@ -1693,6 +1916,93 @@ def run_step5(remote_root: Path, stage_dir: Path, args: argparse.Namespace) -> d
     paths = step5_paths(remote_root, sample_id, run_id)
     paths["evidence_dir"].mkdir(parents=True, exist_ok=True)
     execution_config = validate_execution_path_args(args, remote_root)
+    if args.prepare_only:
+        live_gate = verify_prepare_only_gate(remote_root, stage_dir, args, sample_id, run_id)
+        prepared = prepare_exact_artifact_sample(
+            remote_root, stage_dir, sample_id, run_id, args.force
+        )
+        result = {
+            "schema": PREPARED_ONLY_RESULT_SCHEMA,
+            "created_at_utc": now_utc(),
+            "sample_id": sample_id,
+            "run_id": run_id,
+            "execution_path": EXACT_ARTIFACT_EXECUTION_PATH,
+            "operation_mode": "prepare_only",
+            "claim_bearing": False,
+            "scorable": False,
+            "finalizable": False,
+            "preparation_completed": True,
+            "artifact": {
+                "ecosystem": prepared["sample"]["ecosystem"],
+                "filename": prepared["sample"]["artifact_filename"],
+                "sha256": prepared["exact_artifact"]["sha256"],
+                "size": prepared["exact_artifact"]["size"],
+                "restricted_workspace_path": prepared["exact_artifact"]["path"],
+            },
+            "custody_verified": live_gate["custody"]["verified"],
+            "execution_config": execution_config,
+            "whoathere_invoked": False,
+            "package_execution_requested": False,
+            "ai_invoked": False,
+            "vm_invoked": False,
+            "sync_back_requested": False,
+            "clearance_consumed": False,
+            "physical_safety_assessment": "not_performed",
+            "physical_safety_claimed": False,
+            "raw_artifact_bytes_in_result": False,
+        }
+        write_json(paths["prepared_only_result"], result)
+        summary = {
+            "schema": f"{SCHEMA_PREFIX}.summary.v2",
+            "created_at_utc": now_utc(),
+            "sample_id": sample_id,
+            "run_id": run_id,
+            "execution_path": EXACT_ARTIFACT_EXECUTION_PATH,
+            "operation_mode": "prepare_only",
+            "prepare_only": True,
+            "claim_bearing": False,
+            "scorable": False,
+            "finalizable": False,
+            "live_gate": live_gate,
+            "prepared_manifest_path": str(paths["prepared_manifest"]),
+            "prepared_manifest_sha256": sha256_file(paths["prepared_manifest"]),
+            "result_path": str(paths["prepared_only_result"]),
+            "result_sha256": sha256_file(paths["prepared_only_result"]),
+            "preparation_completed": True,
+            "whoathere_invoked": False,
+            "package_execution_requested": False,
+            "ai_invoked": False,
+            "vm_invoked": False,
+            "sync_back_allowed": False,
+            "clearance_consumed": False,
+            "physical_safety_assessment": "not_performed",
+            "physical_safety_claimed": False,
+            "host_contamination_status": "not_assessed_by_prepare_only",
+            "vm_state_status": "not_accessed",
+        }
+        write_json(paths["summary"], summary)
+        seal_record = run_capture(
+            [
+                sys.executable,
+                str(args.evaluator_script),
+                "seal-evidence",
+                "--evidence-dir",
+                str(paths["evidence_dir"]),
+                "--out",
+                str(paths["seal"]),
+            ],
+            paths["evidence_dir"] / "seal-evidence.stdout",
+            args.timeout_seconds,
+        )
+        returned_summary = dict(summary)
+        evidence_sealed = seal_record["exit_code"] == 0 and paths["seal"].is_file()
+        returned_summary["evidence_sealed"] = evidence_sealed
+        if paths["seal"].is_file():
+            returned_summary["evidence_seal_path"] = str(paths["seal"])
+            returned_summary["evidence_seal_sha256"] = sha256_file(paths["seal"])
+        returned_summary["seal_record"] = seal_record
+        return returned_summary
+
     live_gate = verify_live_gate(remote_root, stage_dir, args, sample_id, run_id)
     prepared = prepare_sample(remote_root, stage_dir, sample_id, run_id, args.force, args.execution_path)
     paths["run_dir"].mkdir(parents=True, exist_ok=True)
@@ -1763,6 +2073,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lulu-enabled-asserted", action="store_true")
     parser.add_argument("--lulu-reference", default="")
     parser.add_argument("--live-malware-execution-approved", action="store_true")
+    parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("--detonation-config", type=Path)
     parser.add_argument("--detonation-config-sha256")
     parser.add_argument("--codex-client-path", type=Path)
@@ -1784,6 +2095,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def step5_exit_code(result: dict[str, Any], execution_path: str) -> int:
+    if result.get("prepare_only") is True:
+        return 0 if result.get("preparation_completed") is True and result.get("evidence_sealed") is True else 70
     if result.get("safety_passed") is not True:
         return 20
     if result.get("diagnostic_completed") is not True:

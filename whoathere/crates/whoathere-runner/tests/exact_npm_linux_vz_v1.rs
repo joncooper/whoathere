@@ -133,6 +133,7 @@ while [ "$#" -gt 0 ]; do
     --artifact-envelope) artifact_envelope="$2" ;;
     --artifact-manifest) artifact_manifest="$2" ;;
     --artifact-kind) artifact_kind="$2" ;;
+    --build-closure) build_closure="$2" ;;
     --environment) environment="$2" ;;
     --output-directory) output="$2" ;;
   esac
@@ -141,6 +142,9 @@ done
 cp "$artifact" "$output/seen-artifact.bin"
 cp "$artifact_envelope" "$output/seen-artifact-envelope.json"
 cp "$artifact_manifest" "$output/seen-artifact-manifest.json"
+if [ -n "$build_closure" ]; then
+  cp "$build_closure" "$output/seen-dependency-closure.frame"
+fi
 printf '%s\n' "$artifact_kind" > "$output/seen-artifact-kind.txt"
 printf '%s\n' "$environment" > "$output/seen-environment.txt"
 printf '{{"schema_version":"whoathere.linux_vz_package_execution_result.v1","status":"package_process_complete_evidence_pending_host_composition","environment":"%s","artifact_sha256":"{artifact_sha256}","authoritative_verdict_permitted":false,"public_network_route_present":false,"vm_started":true,"vm_stopped":true,"clone_destroyed":true,"image_identity_stable":true,"package_execution":true,"sync_back":false}}\n' "$environment"
@@ -205,6 +209,7 @@ fn adapter_config(
         grant_public_key_path: input.clone(),
         grant_signing_seed_path: input.clone(),
         guest_signing_seed_path: input,
+        dependency_closure_path: None,
         output_root: root.join("evidence-output"),
         timeout_seconds: 60,
         helper_sha256: Some(helper_sha256),
@@ -384,8 +389,81 @@ fn exact_npm_adapter_runs_planned_install_profiles_and_retains_other_trigger_gap
 }
 
 #[test]
-fn exact_npm_adapter_does_not_bind_when_runtime_dependencies_need_a_closure() {
+fn exact_npm_adapter_runs_both_profiles_with_the_exact_sealed_dependency_closure() {
     let root = TempRoot::new("whoathere-exact-npm-linux-vz-runtime-dependency");
+    let artifact = npm_runtime_dependency_tgz();
+    let artifact_sha256 = Sha256Digest::from_bytes(&artifact).to_string();
+    let artifact_path = root.path().join("detonation-runtime-dependency-1.0.0.tgz");
+    std::fs::write(&artifact_path, &artifact).expect("write exact npm fixture");
+    let helper_path = write_mock_helper(root.path(), &artifact_sha256);
+    // The adapter is a custody/pass-through boundary. Structural frame and payload validation is
+    // performed by the execution-bundle builder, whose tests use the real frame encoder.
+    let dependency_closure = b"opaque sealed dependency closure frame".to_vec();
+    let dependency_closure_path = root.path().join("dependency-closure.frame");
+    std::fs::write(&dependency_closure_path, &dependency_closure)
+        .expect("write exact dependency closure");
+    let mut config = adapter_config(root.path(), helper_path);
+    config.dependency_closure_path = Some(dependency_closure_path);
+    let output_root = config.output_root.clone();
+    let adapter = LinuxVzExactNpmDetonationAdapterV1::new(config).expect("ready mock adapter");
+
+    let report = inspect_exact_artifact_v1(
+        ExactArtifactInspectionRequestV1 {
+            artifact_path: &artifact_path,
+            quarantine_root: &root.path().join("cas"),
+            ecosystem: None,
+            acquired_at: "2026-07-16T12:34:56Z",
+            ai_requested: false,
+            ai_provider: None,
+            behavior_observation_requested: false,
+            detonation_requested: true,
+            normalization_limits: NormalizationLimits::default(),
+        },
+        None,
+        Some(&adapter),
+    )
+    .expect("runtime dependency closure remains a supported inconclusive result");
+
+    assert_eq!(
+        report.scenario_plan.status,
+        ExactArtifactStageStatusV1::Incomplete
+    );
+    assert_eq!(report.scenario_plan.runtime_binding_status, "verified");
+    assert!(report.scenario_plan.executable);
+    assert!(report
+        .reason_codes
+        .contains(&"exact_artifact_dependency_closure_required".to_string()));
+    let detonation = report
+        .stages
+        .iter()
+        .find(|stage| stage.stage == "detonation")
+        .expect("detonation stage");
+    assert!(detonation
+        .reason_codes
+        .contains(&"vm_evidence_captured_pending_analysis".to_string()));
+    let run_roots = std::fs::read_dir(&output_root)
+        .expect("read retained output root")
+        .map(|entry| entry.expect("retained run entry").path())
+        .collect::<Vec<_>>();
+    assert_eq!(run_roots.len(), 1);
+    for environment in ["ci_false", "ci_true"] {
+        let retained = std::fs::read(
+            run_roots[0]
+                .join(environment)
+                .join("evidence/seen-dependency-closure.frame"),
+        )
+        .expect("mock saw dependency closure");
+        assert_eq!(retained, dependency_closure);
+    }
+    assert_eq!(report.status, ExactArtifactDispositionV1::Inconclusive);
+    assert!(!report.observed_clean);
+    assert!(!report.admission_authority);
+    assert!(!report.sync_back_enabled);
+}
+
+#[test]
+fn exact_npm_adapter_keeps_missing_dependency_closure_inconclusive_and_unexecuted() {
+    let root = TempRoot::new("whoathere-exact-npm-linux-vz-missing-closure");
     let artifact = npm_runtime_dependency_tgz();
     let artifact_sha256 = Sha256Digest::from_bytes(&artifact).to_string();
     let artifact_path = root.path().join("detonation-runtime-dependency-1.0.0.tgz");
@@ -410,33 +488,16 @@ fn exact_npm_adapter_does_not_bind_when_runtime_dependencies_need_a_closure() {
         None,
         Some(&adapter),
     )
-    .expect("runtime dependency remains a supported inconclusive result");
+    .expect("missing closure remains an inconclusive result");
 
-    assert_eq!(
-        report.scenario_plan.status,
-        ExactArtifactStageStatusV1::Incomplete
-    );
     assert_eq!(report.scenario_plan.runtime_binding_status, "not_bound");
     assert!(!report.scenario_plan.executable);
     assert!(report
         .reason_codes
         .contains(&"exact_artifact_dependency_closure_required".to_string()));
-    let detonation = report
-        .stages
-        .iter()
-        .find(|stage| stage.stage == "detonation")
-        .expect("detonation stage");
-    assert!(detonation
-        .reason_codes
-        .contains(&"exact_artifact_runtime_binding_not_verified".to_string()));
-    assert!(
-        !output_root.exists(),
-        "helper must not run without the closure"
-    );
+    assert!(!output_root.exists(), "helper must not run without closure");
     assert_eq!(report.status, ExactArtifactDispositionV1::Inconclusive);
     assert!(!report.observed_clean);
-    assert!(!report.admission_authority);
-    assert!(!report.sync_back_enabled);
 }
 
 #[test]

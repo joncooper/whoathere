@@ -56,9 +56,52 @@ import trigger from the typed telemetry. This is an encouraging end-to-end valid
 wheel path, but the split workflow is diagnostic rather than claim-bearing and does not change the
 7/11 known-malware baseline.
 
-Physical results still lack independently verified host composition and the complete event
-denominator required for a claim-bearing campaign. This is working detection infrastructure, not
-yet a broad detection claim. See the
+The npm lane also advanced on July 17. What first looked like a requalification reboot was only SSH
+source-IP loss after Cloudflare WARP changed the operator's egress; the approved cloud Mac had not
+failed. The public benign `sbx` `2.1.0` artifact then completed both CI profiles safely. Under a
+separate restricted-lab approval, `mb-npm-sbx-45.0.2` was unpacked only on that cloud Mac for a
+deterministic static scan. No VM started, no helper or clone remained, no package code executed on
+the host, no sync-back occurred, and no live C2 was contacted. The static scan classified the
+artifact as malicious with five eligible detections, including sensitive-path access and
+exfiltration/process capability.
+
+Physical detonation was correctly withheld because the package declares a runtime dependency and
+peer dependencies, while the exact npm runtime then supported only an empty dependency closure.
+Digest-bound offline npm closure support is now implemented for exact runtime, optional, and peer
+tarballs and passes the local Rust, Linux-runtime, and Swift-helper suites. A bounded packer now
+constructs and immediately verifies the sealed closure frame without fetching, resolving, or
+executing package code. Closure tarballs install first with lifecycle scripts disabled; only the
+target installs with scripts enabled. The next gate is a wholly inert cloud-Mac run under both CI
+profiles; only after that succeeds will the separately approved malware workflow use the new path.
+This is useful engineering progress, not a claim-bearing campaign result, so the baseline remains
+7/11.
+
+The remaining Telnyx sdist was then prepared from its sealed exact-hash custody record on the cloud
+Mac without invoking WhoaThere, a VM, AI, or package code. Deterministic inspection of that exact
+artifact found three behavior-eligible capability chains, including download-and-execute behavior
+that matches the frozen `second_stage_fetch` regression label. The two retained Telnyx wheels were
+also re-inspected without package execution using their measured diagnostic runtime. All three
+Telnyx artifacts now have source-free, citation-complete metadata containing the exact artifact,
+manifest, finding, file, range, and selected-byte digests needed by the narrow static verifier.
+
+That verifier is now implemented and has been exercised directly on the approved cloud Mac against
+all three retained exact artifacts. It independently reopened each archive and reproduced one
+behavior-specific download-and-execute projection without running package code, starting a VM,
+using AI, or accessing the network. A new exhaustive multi-run bridge also passes an end-to-end
+test through the strict evaluator, including signature, denominator, and tamper checks. The
+production assembler measures and pins the verifier, captures its canonical output directly,
+signs the bundle, and verifies publication without accepting operator-authored projection JSON.
+
+This is meaningful detection progress, but the public claim remains deliberately unchanged. The
+three verified projections still need to be signed into a freshly frozen, manifest-bound campaign;
+npm `sbx` still needs inert physical closure qualification and behavior-specific evidence from the
+CI matrix. A first Node lifecycle environment-read sensor passes its local mechanics tests, but a
+focused review correctly found that package code could imitate its writable marker. It is therefore
+not claim-bearing and will not satisfy the scorer until it has an authenticated channel. Physical
+results also lack independently verified host composition and the complete dynamic event
+denominator required for clean or admission decisions. The July restricted-malware baseline
+therefore remains 7/11. A strict four-sample rerun can establish a separate 4/4 prior-miss result;
+only the subsequent full eleven-sample rerun can establish a new 11/11 baseline. See the
 [execution plan](docs/product-build-run/artifact-native-detection-execution-plan.md) and
 [blocker queue](docs/product-build-run/detection-blocker-queue.md).
 
@@ -113,8 +156,9 @@ Next gates before a detection-credible beta:
   misses, and then require 11/11 behavior-specific known-regression detections.
 - Complete the second-pass derived-wheel `.pth` and console-entry probes plus legacy and ZIP-sdist
   controls; unsupported paths must remain inconclusive or manual review.
-- Complete the independent signed-event verifier before treating a campaign score as
-  claim-bearing or allowing complete benign evidence to become observed-clean.
+- Complete the independent multi-action, multimodality dynamic verifier before allowing complete
+  benign evidence to become observed-clean. The narrower positive-only static verifier and signed
+  campaign assembler are already implemented; their fresh campaign invocation remains pending.
 - Preserve the safety invariants: no host execution, no sync-back, no live C2, and no redaction
   leaks.
 

@@ -1438,6 +1438,19 @@ mod tests {
     }
 
     #[test]
+    fn protected_sensor_marker_activity_never_projects_as_a_canary_read() {
+        let fixtures = fixtures();
+        let mut file: Value = serde_json::from_slice(&fixtures.file).expect("file fixture");
+        file["events"][2]["path_class"] = Value::String("protected_sensor".to_string());
+        let file = file.as_object().expect("file object");
+        let projection = project_file_v1(file, fixtures.input(), 42).expect("file projection");
+        assert!(projection
+            .events
+            .iter()
+            .all(|event| !matches!(&event.signal, BehaviorEvidenceSignalV1::Canary { .. })));
+    }
+
+    #[test]
     fn rejects_unbound_host_execution_run_digest() {
         let fixtures = fixtures();
         let wrong = digest("wrong-host-run");
@@ -1537,6 +1550,33 @@ mod tests {
                     .any(|code| code == "process_action_attribution_incomplete")
         }));
 
+        let mut closure_fixtures = fixtures();
+        let mut closure_host_run =
+            canonical_object(&closure_fixtures.host_run, MAX_HOST_EXECUTION_RUN_BYTES)
+                .expect("host run");
+        closure_host_run.insert(
+            "selected_process_stage_name".to_string(),
+            Value::String("npm_preinstall_exact_dependency_closure".to_string()),
+        );
+        closure_fixtures.host_run = canonical(Value::Object(closure_host_run));
+        closure_fixtures.host_run_sha256 = Sha256Digest::from_bytes(&closure_fixtures.host_run);
+        let closure_bundle = project_exact_detonation_behavior_v1(closure_fixtures.input())
+            .expect("preserve closure setup evidence without target attribution");
+        assert!(closure_bundle.events().iter().all(|event| !matches!(
+            event.signal(),
+            BehaviorEvidenceSignalV1::Process {
+                action: ProcessActionV1::PackageTrigger,
+                ..
+            }
+        )));
+        assert!(closure_bundle.coverage().iter().any(|coverage| {
+            coverage.modality() == BehaviorEvidenceModalityV1::Process
+                && coverage
+                    .limitation_codes()
+                    .iter()
+                    .any(|code| code == "process_action_attribution_incomplete")
+        }));
+
         let mut build_fixtures = fixtures();
         let mut build_host_run =
             canonical_object(&build_fixtures.host_run, MAX_HOST_EXECUTION_RUN_BYTES)
@@ -1576,5 +1616,39 @@ mod tests {
             2,
             "an earlier package-code build keeps positive evidence without an import trigger"
         );
+    }
+
+    #[test]
+    fn target_lifecycle_remains_selected_after_closure_preinstall() {
+        let mut split_fixtures = fixtures();
+        let mut host_run = canonical_object(&split_fixtures.host_run, MAX_HOST_EXECUTION_RUN_BYTES)
+            .expect("host run");
+        host_run.insert(
+            "process_action_count".to_string(),
+            Value::String("2".to_string()),
+        );
+        host_run.insert(
+            "process_action_indexes".to_string(),
+            serde_json::json!(["1", "2"]),
+        );
+        split_fixtures.host_run = canonical(Value::Object(host_run));
+        split_fixtures.host_run_sha256 = Sha256Digest::from_bytes(&split_fixtures.host_run);
+
+        let bundle = project_exact_detonation_behavior_v1(split_fixtures.input())
+            .expect("attribute the final target lifecycle action");
+        assert!(bundle.events().iter().any(|event| matches!(
+            event.signal(),
+            BehaviorEvidenceSignalV1::Process {
+                action: ProcessActionV1::PackageTrigger,
+                ..
+            }
+        )));
+        assert!(!bundle.coverage().iter().any(|coverage| {
+            coverage.modality() == BehaviorEvidenceModalityV1::Process
+                && coverage
+                    .limitation_codes()
+                    .iter()
+                    .any(|code| code == "process_action_attribution_incomplete")
+        }));
     }
 }

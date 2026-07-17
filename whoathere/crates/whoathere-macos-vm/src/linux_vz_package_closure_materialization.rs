@@ -449,6 +449,13 @@ fn exact_build_closure_v1(
                         build_closure,
                     },
             } => Some((build_requires_sha256, build_closure)),
+            MacosLinuxVzPackageExecutionActionV1::Internal {
+                action:
+                    MacosLinuxVzPackageInternalActionV1::ValidateExactNpmDependencyClosure {
+                        dependency_declarations_sha256,
+                        dependency_closure,
+                    },
+            } => Some((dependency_declarations_sha256, dependency_closure)),
             _ => None,
         });
     let (build_requires_sha256, closure) = actions

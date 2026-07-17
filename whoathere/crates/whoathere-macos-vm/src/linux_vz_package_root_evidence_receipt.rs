@@ -731,6 +731,7 @@ pub struct VerifiedLinuxVzPackageRootEvidenceReceiptV1 {
     sensor_session_challenge_sha256: Sha256Digest,
     process_plan_sha256: Sha256Digest,
     action_index: usize,
+    leader_pid: u32,
     process_evidence_sha256: Sha256Digest,
     file_evidence_sha256: Sha256Digest,
     file_evidence_byte_length: usize,
@@ -762,6 +763,13 @@ impl VerifiedLinuxVzPackageRootEvidenceReceiptV1 {
 
     pub const fn action_index(&self) -> usize {
         self.action_index
+    }
+
+    /// The signed process leader for this action. Keeping it in the verified projection lets
+    /// downstream evidence partitioners reject tooling-leader marker activity without reparsing
+    /// producer-authored JSON.
+    pub const fn leader_pid(&self) -> u32 {
+        self.leader_pid
     }
 
     pub fn process_evidence_sha256(&self) -> &Sha256Digest {
@@ -824,6 +832,7 @@ pub(crate) fn test_verified_linux_vz_package_root_evidence_receipt_v1(
         sensor_session_challenge_sha256,
         process_plan_sha256,
         action_index,
+        leader_pid: 42,
         process_evidence_sha256,
         file_evidence_sha256,
         file_evidence_byte_length,
@@ -1033,6 +1042,7 @@ pub fn verify_linux_vz_package_root_evidence_receipt_v1(
         sensor_session_challenge_sha256: claims.sensor_session_challenge_sha256.clone(),
         process_plan_sha256: claims.process_plan_sha256.clone(),
         action_index: claims.action_index,
+        leader_pid: claims.leader_pid,
         process_evidence_sha256: claims.process_evidence_sha256.clone(),
         file_evidence_sha256: claims.file_evidence_sha256.clone(),
         file_evidence_byte_length: claims.file_evidence_byte_length,

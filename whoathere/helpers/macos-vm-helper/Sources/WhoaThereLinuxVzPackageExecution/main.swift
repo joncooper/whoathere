@@ -206,7 +206,6 @@ private struct Options {
         switch artifactKind {
         case .npmTgz:
             guard values["--scenario-index"] == nil,
-                  buildClosure == nil,
                   let environment = values["--environment"].flatMap(
                       NpmEnvironment.init(rawValue:)
                   ) else {

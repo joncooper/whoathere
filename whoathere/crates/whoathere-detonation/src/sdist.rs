@@ -148,6 +148,12 @@ pub struct SdistBuildClosureArtifactV1 {
 #[serde(rename_all = "snake_case")]
 pub enum SdistBuildClosureArtifactFormatV1 {
     Wheel,
+    /// Exact npm package tarball carried through the existing bounded closure transport.
+    ///
+    /// The type retains its historical sdist-oriented name because the physical transport and
+    /// guest materializer are shared. The artifact format remains explicit so an npm dependency
+    /// can never be confused with a Python build wheel.
+    NpmTarGzip,
 }
 
 impl SdistBuildClosureArtifactV1 {
@@ -196,14 +202,22 @@ impl SdistBuildClosureArtifactV1 {
     }
 
     fn validate(&self) -> Result<(), ArtifactScenarioCompileErrorV1> {
-        if normalize_build_name(&self.normalized_name).as_deref()
-            != Some(self.normalized_name.as_str())
-            || !valid_version_component_v1(&self.version)
-            || !valid_closure_wheel_filename(
+        let filename_valid = match self.artifact_format {
+            SdistBuildClosureArtifactFormatV1::Wheel => valid_closure_wheel_filename(
                 &self.normalized_name,
                 &self.version,
                 &self.artifact_filename,
-            )
+            ),
+            SdistBuildClosureArtifactFormatV1::NpmTarGzip => valid_closure_npm_filename(
+                &self.normalized_name,
+                &self.version,
+                &self.artifact_filename,
+            ),
+        };
+        if normalize_build_name(&self.normalized_name).as_deref()
+            != Some(self.normalized_name.as_str())
+            || !valid_version_component_v1(&self.version)
+            || !filename_valid
             || self.artifact_byte_length == 0
             || self.artifact_byte_length > MAX_ARTIFACT_SCENARIO_BYTES_V1
         {
@@ -211,6 +225,22 @@ impl SdistBuildClosureArtifactV1 {
         }
         Ok(())
     }
+}
+
+fn valid_closure_npm_filename(normalized_name: &str, version: &str, filename: &str) -> bool {
+    if filename.is_empty()
+        || filename.len() > 255
+        || !filename.is_ascii()
+        || filename.contains('/')
+        || filename.contains('\\')
+        || !filename.ends_with(".tgz")
+        || !filename
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return false;
+    }
+    filename == format!("{normalized_name}-{version}.tgz")
 }
 
 fn valid_closure_wheel_filename(normalized_name: &str, version: &str, filename: &str) -> bool {
@@ -1500,7 +1530,7 @@ fn build_requirement_set_sha256(
     .map_err(|_| ArtifactScenarioCompileErrorV1::Serialization)
 }
 
-fn validate_build_requirements(
+pub(crate) fn validate_build_requirements(
     build_requires: &[String],
 ) -> Result<(), ArtifactScenarioCompileErrorV1> {
     if build_requires.windows(2).any(|pair| pair[0] >= pair[1])

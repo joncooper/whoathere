@@ -31,6 +31,7 @@ mod linux_vz_package_guest_environment_canaries;
 mod linux_vz_package_host_composite_receipt;
 mod linux_vz_package_host_udp_sendto_evidence;
 mod linux_vz_package_materialization;
+mod linux_vz_package_npm_environment_credential_sensor;
 mod linux_vz_package_process_evidence_payload;
 mod linux_vz_package_process_launch_contract;
 mod linux_vz_package_process_measurement;
@@ -63,6 +64,7 @@ mod linux_vz_package_workspace;
 mod linux_vz_platform_evidence_payload;
 mod linux_vz_process_evidence_payload;
 mod linux_vz_wheel_execution_fanout;
+mod npm_closure_frame_packer;
 
 pub use linux_vz_package_sensor_bpf_inert_probe::{
     run_linux_vz_package_sensor_bpf_inert_probe_v1, LinuxVzPackageSensorBpfInertProbeErrorV1,
@@ -126,6 +128,7 @@ pub use linux_vz_package_guest_environment_canaries::*;
 pub use linux_vz_package_host_composite_receipt::*;
 pub use linux_vz_package_host_udp_sendto_evidence::*;
 pub use linux_vz_package_materialization::*;
+pub use linux_vz_package_npm_environment_credential_sensor::*;
 pub use linux_vz_package_process_evidence_payload::*;
 pub use linux_vz_package_process_launch_contract::*;
 pub use linux_vz_package_process_measurement::*;
@@ -156,6 +159,7 @@ pub use linux_vz_telemetry_guest_receipt::*;
 pub use linux_vz_telemetry_host_receipt::*;
 pub use linux_vz_telemetry_qualification::*;
 pub use linux_vz_wheel_execution_fanout::*;
+pub use npm_closure_frame_packer::*;
 pub use sdist_backend::*;
 pub use sdist_build_closure_transport::*;
 pub use sdist_build_execution_grant::*;
