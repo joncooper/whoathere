@@ -224,6 +224,16 @@ macOS-hosted local detection beta. Cloudflare and AWS portability are a separate
   lock binds the staging manifest, preflight digest, execution path, and config path/digest; an
   exact clearance binds the same identities, and every malware slice still requires an explicit
   execution path plus a fresh one-sample clearance.
+- A paired inert exact-wheel regression now fixes the expected static gate shape for the
+  typo-broken Telnyx class before restricted execution. An ordinary SDK neighbor that reads an
+  environment URL and performs a request remains inconclusive with zero eligible detections; the
+  compromised neighbor contains network and process-execution capabilities followed by a
+  deliberately misspelled hook, and still produces an exact-file, exact-byte
+  `DownloadExecuteCapability` detection and malicious verdict. This proves that the current
+  trigger-reachable lexical capability rule does not depend on successful activation. It does not
+  prove download-to-process dataflow or rule out a benign network-plus-helper-process false
+  positive; that precision remains an explicit benign-qualification task. The full 19-case
+  exact-artifact spine passes with this regression.
 - The two Telnyx wheel runs should happen before a general wheel-dependency implementation. Static
   exact-artifact behavior evidence may recover both misses immediately, and Telnyx `4.87.1` cannot
   honestly be expected to auto-execute because the published malicious hook contained a typo, as
