@@ -805,9 +805,11 @@ def verify_live_gate(remote_root: Path, stage_dir: Path, args: argparse.Namespac
     command_dir = paths["evidence_dir"] / "live-gate-commands"
     whoathere_bin = str(args.whoathere_bin)
     if args.execution_path == EXACT_ARTIFACT_EXECUTION_PATH:
+        # Exact-artifact inspection does not consume the legacy external-scanner inventory.
+        # `scanners list` actively probes scanner versions (and may invoke uvx), so keep this
+        # restricted live gate side-effect-free before the exact artifact is detonated.
         commands = {
             "red_team_gate": run_capture([whoathere_bin, "vm", "red-team-gate", "--json"], command_dir / "red-team-gate.json", args.timeout_seconds),
-            "scanners_list": run_capture([whoathere_bin, "scanners", "list", "--json"], command_dir / "scanners-list.json", args.timeout_seconds),
         }
     else:
         commands = {

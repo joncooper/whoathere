@@ -463,11 +463,16 @@ pub fn scanner_inventory() -> Vec<ExternalScannerInventoryItem> {
         .into_iter()
         .map(|spec| {
             let executable = resolve_scanner_executable(spec.name);
-            let available = executable.is_some();
             let display_path = executable.as_ref().map(|path| display_scanner_path(path));
             let version = executable
                 .as_ref()
                 .and_then(|path| scanner_version(spec.name, path));
+            // A launcher on disk does not prove that the scanner behind it is usable. This is
+            // especially important for `uvx`, which can otherwise turn an inventory probe into
+            // package acquisition. Inventory claims availability only after the version probe
+            // succeeds under the enforced offline environment below.
+            let available =
+                scanner_available_for_inventory(executable.as_deref(), version.as_deref());
             ExternalScannerInventoryItem {
                 spec,
                 available,
@@ -476,6 +481,10 @@ pub fn scanner_inventory() -> Vec<ExternalScannerInventoryItem> {
             }
         })
         .collect()
+}
+
+fn scanner_available_for_inventory(executable: Option<&Path>, version: Option<&str>) -> bool {
+    executable.is_some() && version.is_some_and(|value| !value.is_empty())
 }
 
 pub fn scanner_bootstrap_cache_dir() -> PathBuf {
@@ -1122,6 +1131,13 @@ fn configure_scanner_process_environment(command: &mut Command) {
     command.env("HOME", home);
     command.env("PATH", safe_scanner_path());
     command.env("TMPDIR", std::env::temp_dir());
+    // Scanner execution may resolve only material already present in the sealed scanner cache.
+    // In particular, uvx must never turn an inventory/version probe into package acquisition.
+    command.env("UV_OFFLINE", "1");
+    command.env("UV_NO_CONFIG", "1");
+    command.env("UV_NO_ENV_FILE", "1");
+    command.env("UV_PYTHON_DOWNLOADS", "never");
+    command.env("UV_NO_PROGRESS", "1");
 }
 
 fn safe_scanner_path() -> String {
@@ -1246,7 +1262,13 @@ fn file_sha256_digest(path: &Path) -> Option<String> {
 fn scanner_version(name: &str, executable: &Path) -> Option<String> {
     let mut args = vec!["--version".to_string()];
     if executable.file_name().and_then(|name| name.to_str()) == Some("uvx") {
-        args = vec![name.to_string(), "--version".to_string()];
+        args = vec![
+            "--offline".to_string(),
+            "--no-config".to_string(),
+            "--no-python-downloads".to_string(),
+            name.to_string(),
+            "--version".to_string(),
+        ];
     } else if name == "scorecard" {
         args = vec!["version".to_string()];
     }
@@ -1273,6 +1295,9 @@ fn scanner_version(name: &str, executable: &Path) -> Option<String> {
         }
     }
     let output = child.wait_with_output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
     let text = if output.stdout.is_empty() {
         String::from_utf8_lossy(&output.stderr).to_string()
     } else {
@@ -2221,5 +2246,95 @@ build-backend = "fixture_backend""#,
         assert!(output
             .sanitized_log_summary
             .contains("job_id=<invalid-summary-value>"));
+    }
+
+    #[test]
+    fn scanner_process_environment_forces_uv_offline() {
+        let mut command = Command::new("/usr/bin/true");
+        configure_scanner_process_environment(&mut command);
+
+        let configured = |name: &str| {
+            command
+                .get_envs()
+                .find(|(candidate, _)| candidate == &std::ffi::OsStr::new(name))
+                .and_then(|(_, value)| value)
+                .and_then(|value| value.to_str())
+                .map(str::to_string)
+        };
+        assert_eq!(configured("UV_OFFLINE").as_deref(), Some("1"));
+        assert_eq!(configured("UV_NO_CONFIG").as_deref(), Some("1"));
+        assert_eq!(configured("UV_NO_ENV_FILE").as_deref(), Some("1"));
+        assert_eq!(configured("UV_PYTHON_DOWNLOADS").as_deref(), Some("never"));
+        assert_eq!(configured("UV_NO_PROGRESS").as_deref(), Some("1"));
+    }
+
+    #[test]
+    fn executable_presence_alone_does_not_claim_a_scanner_is_available() {
+        assert!(!scanner_available_for_inventory(
+            Some(Path::new("/sealed/bin/uvx")),
+            None
+        ));
+        assert!(scanner_available_for_inventory(
+            Some(Path::new("/sealed/bin/uvx")),
+            Some("guarddog 2.6.0")
+        ));
+        assert!(!scanner_available_for_inventory(
+            Some(Path::new("/sealed/bin/guarddog")),
+            None
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn uvx_scanner_version_probe_is_offline_and_requires_success() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "whoathere-detector-uvx-offline-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("temp root");
+        let uvx = root.join("uvx");
+        let args_path = root.join("args");
+        std::fs::write(
+            &uvx,
+            format!(
+                "#!/bin/sh\n\
+                 [ \"$UV_OFFLINE\" = 1 ] || exit 91\n\
+                 [ \"$UV_NO_CONFIG\" = 1 ] || exit 92\n\
+                 [ \"$UV_NO_ENV_FILE\" = 1 ] || exit 93\n\
+                 [ \"$UV_PYTHON_DOWNLOADS\" = never ] || exit 94\n\
+                 printf '%s\\n' \"$@\" > '{}'\n\
+                 printf 'guarddog 9.8.7\\n'\n",
+                args_path.display()
+            ),
+        )
+        .expect("fake uvx");
+        std::fs::set_permissions(&uvx, std::fs::Permissions::from_mode(0o755))
+            .expect("fake uvx executable");
+
+        assert_eq!(
+            scanner_version("guarddog", &uvx).as_deref(),
+            Some("guarddog 9.8.7")
+        );
+        assert_eq!(
+            std::fs::read_to_string(&args_path).expect("captured args"),
+            "--offline\n--no-config\n--no-python-downloads\nguarddog\n--version\n"
+        );
+
+        std::fs::write(
+            &uvx,
+            "#!/bin/sh\nprintf 'cached tool error 123\\n' >&2\nexit 2\n",
+        )
+        .expect("failing fake uvx");
+        std::fs::set_permissions(&uvx, std::fs::Permissions::from_mode(0o755))
+            .expect("failing fake uvx executable");
+        assert_eq!(scanner_version("guarddog", &uvx), None);
+
+        std::fs::remove_dir_all(root).expect("remove temp root");
     }
 }

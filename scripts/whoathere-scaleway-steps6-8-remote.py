@@ -516,15 +516,13 @@ def build_clearance_record(remote_root: Path, stage_dir: Path, args: argparse.Na
             args,
             preflight_path,
         )
+        # Exact-artifact inspection does not consume the legacy external-scanner inventory.
+        # `scanners list` actively probes scanner versions (and may invoke uvx), so clearance
+        # must not launch it on the restricted host.
         direct_commands = {
             "red_team_gate": run_capture(
                 [str(args.whoathere_bin), "vm", "red-team-gate", "--json"],
                 clearance_dir / "red-team-gate.json",
-                args.timeout_seconds,
-            ),
-            "scanners_list": run_capture(
-                [str(args.whoathere_bin), "scanners", "list", "--json"],
-                clearance_dir / "scanners-list.json",
                 args.timeout_seconds,
             ),
         }

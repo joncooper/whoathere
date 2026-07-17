@@ -441,15 +441,16 @@ def guardrails(remote_root: Path, stage_dir: Path, args: argparse.Namespace) -> 
     exact_readiness = None
     if args.execution_path == EXACT_ARTIFACT_EXECUTION_PATH:
         exact_readiness = exact_artifact_readiness_probe(remote_root, command_dir, args)
+        # Exact-artifact inspection does not consume the legacy external-scanner inventory.
+        # `scanners list` actively probes scanner versions (and may invoke uvx), so it is not a
+        # side-effect-free guardrail for a restricted exact-artifact run.
         commands = {
             "exact_artifact_readiness": exact_readiness["command"],
             "red_team_gate": run_capture([whoathere_bin, "vm", "red-team-gate", "--json"], command_dir / "red-team-gate.json", args.timeout_seconds),
-            "scanners_list": run_capture([whoathere_bin, "scanners", "list", "--json"], command_dir / "scanners-list.json", args.timeout_seconds),
         }
         command_ok = (
             exact_readiness["valid"] is True
             and commands["red_team_gate"]["exit_code"] == 0
-            and commands["scanners_list"]["exit_code"] == 0
         )
     else:
         commands = {

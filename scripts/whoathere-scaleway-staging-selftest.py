@@ -375,6 +375,8 @@ def main() -> int:
         legacy_guardrails = json.loads(legacy_phase1.stdout)["guardrails"]
         require(legacy_guardrails["ready_for_benign_dry_run"] is True, legacy_guardrails)
         require("vm_health" in legacy_guardrails["commands"], legacy_guardrails["commands"])
+        legacy_invocations = invocation_log.read_text(encoding="utf-8").splitlines()
+        require(any(line.startswith("scanners list ") for line in legacy_invocations), legacy_invocations)
 
         invocation_log.write_text("", encoding="utf-8")
         exact_environment = dict(environment)
@@ -541,6 +543,8 @@ def main() -> int:
         require(exact_guardrails["ready_for_live_malware_rehearsal"] is True, exact_guardrails)
         require(exact_guardrails["exact_artifact_readiness"]["valid"] is True, exact_guardrails)
         require("vm_health" not in exact_guardrails["commands"], exact_guardrails["commands"])
+        phase1_invocations = invocation_log.read_text(encoding="utf-8").splitlines()
+        require(not any(line.startswith("scanners list ") for line in phase1_invocations), phase1_invocations)
 
         step5_module = load_module(STEP5_REMOTE, "whoathere_step5_readiness_selftest")
         corpus_rows = [
@@ -589,6 +593,7 @@ def main() -> int:
         )
         step5_invocations = invocation_log.read_text(encoding="utf-8").splitlines()
         require(not any(line.startswith("vm health ") for line in step5_invocations), step5_invocations)
+        require(not any(line.startswith("scanners list ") for line in step5_invocations), step5_invocations)
 
     print("whoathere_scaleway_staging_selftest=pass")
     print("approved_sample_count=2")
