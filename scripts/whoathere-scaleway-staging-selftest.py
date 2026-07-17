@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -16,6 +18,8 @@ import tempfile
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BUILDER = REPO_ROOT / "scripts/whoathere-build-scaleway-staging-bundle.sh"
 PREFLIGHT = REPO_ROOT / "scripts/whoathere-scaleway-host-preflight.sh"
+PHASE1 = REPO_ROOT / "scripts/whoathere-scaleway-phase1.sh"
+STEP5_REMOTE = REPO_ROOT / "scripts/whoathere-scaleway-step5-remote.py"
 FIXTURE = REPO_ROOT / "docs/product-build-run/actual-malware-malwarebazaar-fixture.jsonl.sample"
 CASE_ID = "whoathere-actual-malware-2026-07-01"
 APPROVED_DIGESTS = {
@@ -126,10 +130,39 @@ cp "$src" "$dst"
     whoathere.write_text(
         """#!/bin/sh
 set -eu
+test -z "${WHOATHERE_SELFTEST_INVOCATIONS:-}" || printf '%s\n' "$*" >>"$WHOATHERE_SELFTEST_INVOCATIONS"
 case "${1:-}" in
   --version) printf '%s\n' 'whoathere synthetic-selftest' ;;
-  doctor|scanners) printf '%s\n' '{}' ;;
-  vm) printf '%s\n' '{}' ;;
+  doctor)
+    test -z "${WHOATHERE_SELFTEST_LEGACY_VM_UNREADY:-}" || exit 70
+    printf '%s\n' '{}'
+    ;;
+  scanners) printf '%s\n' '{}' ;;
+  vm)
+    if [ "${2:-}" = "health" ] && [ -n "${WHOATHERE_SELFTEST_LEGACY_VM_UNREADY:-}" ]; then
+      exit 70
+    fi
+    printf '%s\n' '{}'
+    ;;
+  artifact)
+    test "${2:-}" = "inspect" || exit 64
+    shift 2
+    config=""
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = "--detonation-config" ]; then
+        config=$2
+        shift 2
+      else
+        shift
+      fi
+    done
+    test -n "$config" && test -f "$config" || {
+      printf '%s\n' '{"admission_authority":false,"exit_code":64,"observed_clean":false,"reason_codes":["linux_vz_exact_wheel_input_invalid"],"schema_version":"whoathere.exact_artifact_inspection.v1","status":"error","sync_back_enabled":false}'
+      exit 64
+    }
+    printf '%s\n' '{"admission_authority":false,"exit_code":64,"observed_clean":false,"reason_codes":["exact_artifact_path_unreadable"],"schema_version":"whoathere.exact_artifact_inspection.v1","status":"error","sync_back_enabled":false}'
+    exit 64
+    ;;
   *) exit 64 ;;
 esac
 """,
@@ -144,6 +177,14 @@ def assert_private_tree(root: Path) -> None:
     for path in (root, *root.rglob("*")):
         mode = stat.S_IMODE(path.stat().st_mode)
         require(mode & 0o077 == 0, f"path_not_private={path}:{oct(mode)}")
+
+
+def load_module(path: Path, name: str) -> object:
+    spec = importlib.util.spec_from_file_location(name, path)
+    require(spec is not None and spec.loader is not None, f"module_load_failed={path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def main() -> int:
@@ -295,11 +336,267 @@ def main() -> int:
         require(manifest_check["approval_sample_count"] == 2, manifest_check)
         assert_private_tree(remote_root)
 
+        detonation_config = temp_root / "exact-wheel-detonation-config.json"
+        write_json(detonation_config, {"artifact_kind": "pypi_wheel", "selftest": True})
+        detonation_config.chmod(0o600)
+        detonation_config_sha256 = sha256_file(detonation_config)
+        invocation_log = temp_root / "whoathere-invocations.log"
+        invocation_log.write_text("", encoding="utf-8")
+        legacy_phase1_environment = dict(environment)
+        legacy_phase1_environment["WHOATHERE_SELFTEST_INVOCATIONS"] = str(invocation_log)
+        legacy_phase1 = subprocess.run(
+            [
+                str(PHASE1),
+                "--ssh-host",
+                "synthetic-host",
+                "--remote-root",
+                str(remote_root),
+                "--stage-dir",
+                str(Path(manifest_check["staging_manifest"]).parent.parent),
+                "--state-dir",
+                str(temp_root / "synthetic-state"),
+                "--whoathere-bin",
+                str(fake_whoathere),
+                "--security-lab-owner",
+                "synthetic-security-owner",
+                "--evaluation-owner",
+                "synthetic-evaluation-owner",
+                "--phase",
+                "guardrails",
+            ],
+            cwd=REPO_ROOT,
+            env=legacy_phase1_environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        require(legacy_phase1.returncode == 0, f"legacy_phase1_failed={legacy_phase1.stderr}")
+        legacy_guardrails = json.loads(legacy_phase1.stdout)["guardrails"]
+        require(legacy_guardrails["ready_for_benign_dry_run"] is True, legacy_guardrails)
+        require("vm_health" in legacy_guardrails["commands"], legacy_guardrails["commands"])
+
+        invocation_log.write_text("", encoding="utf-8")
+        exact_environment = dict(environment)
+        exact_environment["WHOATHERE_SELFTEST_LEGACY_VM_UNREADY"] = "1"
+        exact_environment["WHOATHERE_SELFTEST_INVOCATIONS"] = str(invocation_log)
+        exact_preflight_command = [
+            str(PREFLIGHT),
+            "--ssh-host",
+            "synthetic-host",
+            "--remote-root",
+            str(remote_root),
+            "--state-dir",
+            str(temp_root / "synthetic-state"),
+            "--whoathere-bin",
+            str(fake_whoathere),
+            "--execution-path",
+            "exact_artifact_diagnostic",
+            "--detonation-config",
+            str(detonation_config),
+            "--detonation-config-sha256",
+            detonation_config_sha256,
+        ]
+        exact_preflight = subprocess.run(
+            exact_preflight_command,
+            cwd=REPO_ROOT,
+            env=exact_environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        require(exact_preflight.returncode == 0, f"exact_preflight_failed={exact_preflight.stderr}")
+        exact_preflight_summary = json.loads(
+            (remote_root / "evidence/preflight/actual-malware-preflight-summary.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        require(
+            exact_preflight_summary["execution_path"] == "exact_artifact_diagnostic"
+            and exact_preflight_summary["ready_for_sample_workspace_preparation"] is True,
+            exact_preflight_summary,
+        )
+        require(
+            exact_preflight_summary["exact_artifact_readiness"]["detonation_config_sha256"]
+            == detonation_config_sha256,
+            exact_preflight_summary,
+        )
+        exact_invocations = invocation_log.read_text(encoding="utf-8").splitlines()
+        require(any(line.startswith("artifact inspect ") for line in exact_invocations), exact_invocations)
+        require(not any(line.startswith("doctor ") for line in exact_invocations), exact_invocations)
+        require(not any(line.startswith("vm health ") for line in exact_invocations), exact_invocations)
+
+        remote_stage_dir = Path(manifest_check["staging_manifest"]).parent.parent
+        sudo_pf_info = remote_root / "evidence/preflight/host-firewall-sudo-info.out"
+        sudo_pf_info.write_text("Status: Enabled\n", encoding="utf-8")
+        sudo_pf_info.chmod(0o600)
+        phase1_common = [
+            str(PHASE1),
+            "--ssh-host",
+            "synthetic-host",
+            "--remote-root",
+            str(remote_root),
+            "--stage-dir",
+            str(remote_stage_dir),
+            "--state-dir",
+            str(temp_root / "synthetic-state"),
+            "--whoathere-bin",
+            str(fake_whoathere),
+            "--execution-path",
+            "exact_artifact_diagnostic",
+            "--detonation-config",
+            str(detonation_config),
+            "--detonation-config-sha256",
+            detonation_config_sha256,
+            "--security-lab-owner",
+            "synthetic-security-owner",
+            "--evaluation-owner",
+            "synthetic-evaluation-owner",
+            "--provider-approval-ref",
+            "synthetic-provider-approval",
+            "--legal-provider-approval-ref",
+            "synthetic-legal-approval",
+            "--cloud-firewall-default-deny-asserted",
+            "--sinkhole-ready-asserted",
+            "--sinkhole-reference",
+            "synthetic-sinkhole",
+            "--phase",
+            "guardrails",
+        ]
+        phase1_lock = list(phase1_common)
+        phase1_lock[-1] = "lock"
+        locked = subprocess.run(
+            phase1_lock,
+            cwd=REPO_ROOT,
+            env=exact_environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        require(locked.returncode == 0, f"exact_phase1_lock_failed={locked.stderr}")
+        locked_state = json.loads(locked.stdout)["state_lock"]
+        require(locked_state["valid"] is True, locked_state)
+        require(
+            locked_state["execution_binding"]["detonation_config_sha256"]
+            == detonation_config_sha256,
+            locked_state,
+        )
+
+        alternate_config = temp_root / "alternate-exact-wheel-detonation-config.json"
+        write_json(alternate_config, {"artifact_kind": "pypi_wheel", "selftest": "alternate"})
+        alternate_config.chmod(0o600)
+        mismatched_lock_args = list(phase1_common)
+        mismatched_lock_args[
+            mismatched_lock_args.index("--detonation-config") + 1
+        ] = str(alternate_config)
+        mismatched_lock_args[
+            mismatched_lock_args.index("--detonation-config-sha256") + 1
+        ] = sha256_file(alternate_config)
+        mismatched_lock = subprocess.run(
+            mismatched_lock_args,
+            cwd=REPO_ROOT,
+            env=exact_environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        require(mismatched_lock.returncode == 64, mismatched_lock.stderr)
+        require(
+            "state_lock_execution_or_stage_binding_mismatch" in mismatched_lock.stderr,
+            mismatched_lock.stderr,
+        )
+
+        bad_phase1 = list(phase1_common)
+        bad_phase1[bad_phase1.index("--detonation-config-sha256") + 1] = "sha256:" + "0" * 64
+        rejected_phase1 = subprocess.run(
+            bad_phase1,
+            cwd=REPO_ROOT,
+            env=exact_environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        require(rejected_phase1.returncode == 64, rejected_phase1.stderr)
+        require("detonation_config_sha256_mismatch" in rejected_phase1.stderr, rejected_phase1.stderr)
+
+        invocation_log.write_text("", encoding="utf-8")
+        phase1 = subprocess.run(
+            phase1_common,
+            cwd=REPO_ROOT,
+            env=exact_environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        require(phase1.returncode == 0, f"exact_phase1_failed={phase1.stderr}")
+        phase1_result = json.loads(phase1.stdout)
+        exact_guardrails = phase1_result["guardrails"]
+        require(exact_guardrails["ready_for_exact_artifact_diagnostic"] is True, exact_guardrails)
+        require(exact_guardrails["ready_for_benign_dry_run"] is False, exact_guardrails)
+        require(exact_guardrails["ready_for_live_malware_rehearsal"] is True, exact_guardrails)
+        require(exact_guardrails["exact_artifact_readiness"]["valid"] is True, exact_guardrails)
+        require("vm_health" not in exact_guardrails["commands"], exact_guardrails["commands"])
+
+        step5_module = load_module(STEP5_REMOTE, "whoathere_step5_readiness_selftest")
+        corpus_rows = [
+            json.loads(line)
+            for line in (remote_stage_dir / "metadata/corpus_manifest.jsonl").read_text(
+                encoding="utf-8"
+            ).splitlines()
+            if line.strip()
+        ]
+        sample_id = corpus_rows[0]["sample_id"]
+        live_gate_args = argparse.Namespace(
+            whoathere_bin=fake_whoathere,
+            state_dir=temp_root / "synthetic-state",
+            timeout_seconds=30,
+            execution_path="exact_artifact_diagnostic",
+            detonation_config=detonation_config,
+            detonation_config_sha256=detonation_config_sha256,
+            sinkhole_ready_asserted=True,
+            egress_deny_asserted=False,
+            cloud_firewall_default_deny_asserted=True,
+            live_malware_execution_approved=True,
+            lulu_enabled_asserted=True,
+            lulu_reference="synthetic-lulu",
+            sinkhole_reference="synthetic-sinkhole",
+            provider_approval_ref="synthetic-provider-approval",
+            legal_provider_approval_ref="synthetic-legal-approval",
+            restricted_source_hosted_review_approved=False,
+            restricted_source_review_approval_ref="",
+            restricted_behavior_hosted_review_approved=True,
+            restricted_behavior_review_approval_ref="synthetic-behavior-approval",
+        )
+        invocation_log.write_text("", encoding="utf-8")
+        live_gate = step5_module.verify_live_gate(
+            remote_root,
+            remote_stage_dir,
+            live_gate_args,
+            sample_id,
+            "synthetic-exact-live-gate",
+        )
+        require(live_gate["ready_for_single_malware_rehearsal"] is True, live_gate)
+        require("vm_health" not in live_gate["commands"], live_gate["commands"])
+        require(
+            live_gate["phase1_execution_readiness"]["detonation_config_sha256"]
+            == detonation_config_sha256,
+            live_gate,
+        )
+        step5_invocations = invocation_log.read_text(encoding="utf-8").splitlines()
+        require(not any(line.startswith("vm health ") for line in step5_invocations), step5_invocations)
+
     print("whoathere_scaleway_staging_selftest=pass")
     print("approved_sample_count=2")
     print("mixed_acquisition_statuses=accepted")
     print("approval_selected_preflight_count=accepted")
     print("private_custody_and_staging_modes=enforced")
+    print("exact_artifact_config_readiness=verified_without_vm_execution")
+    print("exact_artifact_live_gate=consumes_phase1_readiness")
     return 0
 
 

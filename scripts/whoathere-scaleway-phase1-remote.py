@@ -25,6 +25,10 @@ from typing import Any
 
 SCHEMA_PREFIX = "whoathere.actual_malware.scaleway_phase1"
 BENIGN_SAMPLE_ID = "benign-npm-postinstall-001"
+LEGACY_EXECUTION_PATH = "legacy_workspace_non_claim_bearing"
+EXACT_ARTIFACT_EXECUTION_PATH = "exact_artifact_diagnostic"
+EXACT_ARTIFACT_REPORT_SCHEMA = "whoathere.exact_artifact_inspection.v1"
+EXACT_ARTIFACT_READINESS_REASON = "exact_artifact_path_unreadable"
 
 
 class Phase1Error(Exception):
@@ -64,6 +68,18 @@ def sha256_file(path: Path) -> str:
 
 def sha256_text(value: str) -> str:
     return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def valid_sha256(value: Any) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", value) is not None
+
+
+def regular_non_symlink(path: Path) -> bool:
+    try:
+        metadata = path.lstat()
+    except OSError:
+        return False
+    return path.is_file() and not path.is_symlink() and metadata.st_size > 0
 
 
 def run_capture(argv: list[str], out_path: Path, timeout_seconds: int = 120) -> dict[str, Any]:
@@ -107,6 +123,83 @@ def require_under(path: Path, root: Path, label: str) -> Path:
     if resolved_path != resolved_root and resolved_root not in resolved_path.parents:
         raise Phase1Error(f"{label}_outside_remote_root:{resolved_path}")
     return resolved_path
+
+
+def validate_execution_path_args(args: argparse.Namespace) -> None:
+    if args.execution_path == LEGACY_EXECUTION_PATH:
+        if args.detonation_config is not None or args.detonation_config_sha256:
+            raise Phase1Error("legacy_phase1_rejects_exact_artifact_options")
+        return
+    if args.execution_path != EXACT_ARTIFACT_EXECUTION_PATH:
+        raise Phase1Error(f"unsupported_execution_path:{args.execution_path}")
+    if args.phase not in {"lock", "guardrails"}:
+        raise Phase1Error("exact_artifact_phase1_supports_lock_or_guardrails_only")
+    if args.detonation_config is None or not args.detonation_config_sha256:
+        raise Phase1Error("exact_artifact_phase1_detonation_config_required")
+    if not args.detonation_config.is_absolute() or not regular_non_symlink(args.detonation_config):
+        raise Phase1Error("detonation_config_must_be_absolute_regular_non_symlink")
+    if not valid_sha256(args.detonation_config_sha256):
+        raise Phase1Error("detonation_config_sha256_invalid")
+    if sha256_file(args.detonation_config) != args.detonation_config_sha256:
+        raise Phase1Error("detonation_config_sha256_mismatch")
+
+
+def exact_artifact_readiness_probe(
+    remote_root: Path,
+    command_dir: Path,
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    probe_artifact = command_dir / "exact-artifact-readiness-probe-missing.whl"
+    if probe_artifact.exists() or probe_artifact.is_symlink():
+        raise Phase1Error(f"exact_artifact_readiness_probe_path_exists:{probe_artifact}")
+    output_path = command_dir / "exact-artifact-readiness.json"
+    record = run_capture(
+        [
+            str(args.whoathere_bin),
+            "artifact",
+            "inspect",
+            str(probe_artifact),
+            "--ecosystem",
+            "pypi",
+            "--state-dir",
+            str(args.state_dir),
+            "--detonation",
+            "--detonation-config",
+            str(args.detonation_config),
+        ],
+        output_path,
+        args.timeout_seconds,
+    )
+    try:
+        report = read_json(output_path)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        report = None
+    valid = (
+        record["exit_code"] == 64
+        and record["timed_out"] is False
+        and isinstance(report, dict)
+        and report.get("schema_version") == EXACT_ARTIFACT_REPORT_SCHEMA
+        and report.get("status") == "error"
+        and report.get("exit_code") == 64
+        and report.get("reason_codes") == [EXACT_ARTIFACT_READINESS_REASON]
+        and report.get("admission_authority") is False
+        and report.get("observed_clean") is False
+        and report.get("sync_back_enabled") is False
+    )
+    return {
+        "schema": f"{SCHEMA_PREFIX}.exact_artifact_readiness.v1",
+        "execution_path": EXACT_ARTIFACT_EXECUTION_PATH,
+        "valid": valid,
+        "detonation_config_path": str(args.detonation_config),
+        "detonation_config_sha256": args.detonation_config_sha256,
+        "probe_artifact_path": str(probe_artifact),
+        "probe_artifact_exists": False,
+        "expected_terminal_reason": EXACT_ARTIFACT_READINESS_REASON,
+        "report_sha256": sha256_file(output_path) if output_path.is_file() else None,
+        "command": record,
+        "artifact_executed": False,
+        "vm_execution_requested": False,
+    }
 
 
 def latest_stage(remote_root: Path) -> Path:
@@ -231,11 +324,56 @@ def check_stage_invariants(stage_dir: Path) -> dict[str, Any]:
     }
 
 
+def preflight_execution_binding(preflight: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
+    execution_path = preflight.get("execution_path")
+    exact_readiness = preflight.get("exact_artifact_readiness")
+    failures: list[str] = []
+    if args.execution_path == EXACT_ARTIFACT_EXECUTION_PATH:
+        if execution_path != EXACT_ARTIFACT_EXECUTION_PATH:
+            failures.append("preflight_execution_path_mismatch")
+        if not isinstance(exact_readiness, dict):
+            failures.append("preflight_exact_artifact_readiness_missing")
+        else:
+            if exact_readiness.get("detonation_config_path") != str(args.detonation_config):
+                failures.append("preflight_detonation_config_path_mismatch")
+            if exact_readiness.get("detonation_config_sha256") != args.detonation_config_sha256:
+                failures.append("preflight_detonation_config_sha256_mismatch")
+            if exact_readiness.get("expected_terminal_reason") != EXACT_ARTIFACT_READINESS_REASON:
+                failures.append("preflight_exact_artifact_terminal_reason_mismatch")
+            if exact_readiness.get("artifact_executed") is not False:
+                failures.append("preflight_exact_artifact_execution_invalid")
+            if exact_readiness.get("vm_execution_requested") is not False:
+                failures.append("preflight_exact_artifact_vm_execution_invalid")
+    else:
+        # Older legacy summaries predate the discriminator. Continue to accept
+        # them only for the legacy path; they can never authorize exact mode.
+        if execution_path not in {None, LEGACY_EXECUTION_PATH}:
+            failures.append("preflight_execution_path_mismatch")
+        if exact_readiness is not None:
+            failures.append("legacy_preflight_contains_exact_artifact_readiness")
+    return {
+        "execution_path": args.execution_path,
+        "detonation_config_path": (
+            str(args.detonation_config)
+            if args.execution_path == EXACT_ARTIFACT_EXECUTION_PATH
+            else None
+        ),
+        "detonation_config_sha256": (
+            args.detonation_config_sha256
+            if args.execution_path == EXACT_ARTIFACT_EXECUTION_PATH
+            else None
+        ),
+        "valid": not failures,
+        "failures": failures,
+    }
+
+
 def lock_state(remote_root: Path, stage_dir: Path, args: argparse.Namespace) -> dict[str, Any]:
     paths = phase_paths(remote_root)
     stage_check = check_stage_invariants(stage_dir)
     preflight_path = remote_root / "evidence" / "preflight" / "actual-malware-preflight-summary.json"
     preflight = read_json(preflight_path) if preflight_path.is_file() else {}
+    execution_binding = preflight_execution_binding(preflight, args)
     state_lock = {
         "schema": f"{SCHEMA_PREFIX}.state_lock.v1",
         "created_at_utc": now_utc(),
@@ -244,6 +382,7 @@ def lock_state(remote_root: Path, stage_dir: Path, args: argparse.Namespace) -> 
         "preflight_summary_path": str(preflight_path),
         "preflight_summary_sha256": sha256_file(preflight_path) if preflight_path.is_file() else None,
         "preflight_ready_for_sample_workspace_preparation": preflight.get("ready_for_sample_workspace_preparation") is True,
+        "execution_binding": execution_binding,
         "provider_approval_ref": args.provider_approval_ref,
         "legal_provider_approval_ref": args.legal_provider_approval_ref,
         "security_lab_owner": args.security_lab_owner,
@@ -252,7 +391,11 @@ def lock_state(remote_root: Path, stage_dir: Path, args: argparse.Namespace) -> 
         "malware_unpacked_by_phase1": False,
         "malware_executed_by_phase1": False,
         "sync_back_allowed_by_phase1": False,
-        "valid": stage_check["valid"] and preflight.get("ready_for_sample_workspace_preparation") is True,
+        "valid": (
+            stage_check["valid"]
+            and preflight.get("ready_for_sample_workspace_preparation") is True
+            and execution_binding["valid"]
+        ),
     }
     write_json(paths["state_lock"], state_lock)
     return state_lock
@@ -263,13 +406,62 @@ def guardrails(remote_root: Path, stage_dir: Path, args: argparse.Namespace) -> 
     if not paths["state_lock"].is_file():
         lock_state(remote_root, stage_dir, args)
     state_lock = read_json(paths["state_lock"])
+    current_stage = check_stage_invariants(stage_dir)
+    preflight_path = remote_root / "evidence" / "preflight" / "actual-malware-preflight-summary.json"
+    current_preflight_sha256 = sha256_file(preflight_path) if preflight_path.is_file() else None
+    expected_binding = {
+        "execution_path": args.execution_path,
+        "detonation_config_path": (
+            str(args.detonation_config)
+            if args.execution_path == EXACT_ARTIFACT_EXECUTION_PATH
+            else None
+        ),
+        "detonation_config_sha256": (
+            args.detonation_config_sha256
+            if args.execution_path == EXACT_ARTIFACT_EXECUTION_PATH
+            else None
+        ),
+    }
+    locked_binding = state_lock.get("execution_binding")
+    state_lock_bound = (
+        state_lock.get("schema") == f"{SCHEMA_PREFIX}.state_lock.v1"
+        and state_lock.get("valid") is True
+        and state_lock.get("remote_root") == str(remote_root)
+        and state_lock.get("stage") == current_stage
+        and state_lock.get("preflight_summary_path") == str(preflight_path)
+        and state_lock.get("preflight_summary_sha256") == current_preflight_sha256
+        and isinstance(locked_binding, dict)
+        and locked_binding.get("valid") is True
+        and all(locked_binding.get(key) == value for key, value in expected_binding.items())
+    )
+    if not state_lock_bound:
+        raise Phase1Error("state_lock_execution_or_stage_binding_mismatch")
     command_dir = paths["evidence_dir"] / "guardrail-commands"
     whoathere_bin = str(args.whoathere_bin)
-    commands = {
-        "vm_health": run_capture([whoathere_bin, "vm", "health", "--state-dir", str(args.state_dir)], command_dir / "vm-health.out", args.timeout_seconds),
-        "red_team_gate": run_capture([whoathere_bin, "vm", "red-team-gate", "--json"], command_dir / "red-team-gate.json", args.timeout_seconds),
-        "scanners_list": run_capture([whoathere_bin, "scanners", "list", "--json"], command_dir / "scanners-list.json", args.timeout_seconds),
-    }
+    exact_readiness = None
+    if args.execution_path == EXACT_ARTIFACT_EXECUTION_PATH:
+        exact_readiness = exact_artifact_readiness_probe(remote_root, command_dir, args)
+        commands = {
+            "exact_artifact_readiness": exact_readiness["command"],
+            "red_team_gate": run_capture([whoathere_bin, "vm", "red-team-gate", "--json"], command_dir / "red-team-gate.json", args.timeout_seconds),
+            "scanners_list": run_capture([whoathere_bin, "scanners", "list", "--json"], command_dir / "scanners-list.json", args.timeout_seconds),
+        }
+        command_ok = (
+            exact_readiness["valid"] is True
+            and commands["red_team_gate"]["exit_code"] == 0
+            and commands["scanners_list"]["exit_code"] == 0
+        )
+    else:
+        commands = {
+            "vm_health": run_capture([whoathere_bin, "vm", "health", "--state-dir", str(args.state_dir)], command_dir / "vm-health.out", args.timeout_seconds),
+            "red_team_gate": run_capture([whoathere_bin, "vm", "red-team-gate", "--json"], command_dir / "red-team-gate.json", args.timeout_seconds),
+            "scanners_list": run_capture([whoathere_bin, "scanners", "list", "--json"], command_dir / "scanners-list.json", args.timeout_seconds),
+        }
+        command_ok = all(
+            record["exit_code"] == 0
+            for name, record in commands.items()
+            if name in {"vm_health", "red_team_gate", "scanners_list"}
+        )
     pf_info = shutil.which("pfctl")
     if pf_info:
         commands["pf_info"] = run_capture([pf_info, "-s", "info"], command_dir / "pf-info.out", args.timeout_seconds)
@@ -286,11 +478,13 @@ def guardrails(remote_root: Path, stage_dir: Path, args: argparse.Namespace) -> 
         "sinkhole_ready_asserted": args.sinkhole_ready_asserted,
         "sinkhole_reference": args.sinkhole_reference,
     }
-    command_ok = all(record["exit_code"] == 0 for name, record in commands.items() if name in {"vm_health", "red_team_gate", "scanners_list"})
     pf_observed = commands.get("pf_info", {}).get("exit_code") == 0 or preflight_pf_enabled
-    ready_for_benign = state_lock.get("valid") is True and command_ok
+    execution_path_ready = state_lock.get("valid") is True and command_ok
+    ready_for_benign = (
+        execution_path_ready if args.execution_path == LEGACY_EXECUTION_PATH else False
+    )
     ready_for_live = (
-        ready_for_benign
+        execution_path_ready
         and pf_observed
         and args.cloud_firewall_default_deny_asserted
         and args.sinkhole_ready_asserted
@@ -302,6 +496,7 @@ def guardrails(remote_root: Path, stage_dir: Path, args: argparse.Namespace) -> 
         "created_at_utc": now_utc(),
         "remote_root": str(remote_root),
         "stage_dir": str(stage_dir),
+        "execution_path": args.execution_path,
         "state_lock_path": str(paths["state_lock"]),
         "state_lock_sha256": sha256_file(paths["state_lock"]),
         "commands": commands,
@@ -314,16 +509,20 @@ def guardrails(remote_root: Path, stage_dir: Path, args: argparse.Namespace) -> 
             "rules_sha256": sha256_file(preflight_pf_rules) if preflight_pf_rules.is_file() else None,
             "status_enabled_observed": preflight_pf_enabled,
         },
+        "exact_artifact_readiness": exact_readiness,
         "malware_unpacked": False,
         "malware_executed": False,
         "sync_back_allowed": False,
         "live_c2_allowed": False,
         "second_stage_live_fetch_allowed": False,
         "ready_for_benign_dry_run": ready_for_benign,
+        "ready_for_exact_artifact_diagnostic": (
+            execution_path_ready if args.execution_path == EXACT_ARTIFACT_EXECUTION_PATH else False
+        ),
         "ready_for_live_malware_rehearsal": ready_for_live,
         "live_malware_rehearsal_blockers": [] if ready_for_live else [
             reason for reason, blocked in [
-                ("state_lock_or_vm_guardrails_not_ready", not ready_for_benign),
+                ("state_lock_or_execution_path_guardrails_not_ready", not execution_path_ready),
                 ("host_pf_not_observed", not pf_observed),
                 ("cloud_firewall_default_deny_not_asserted", not args.cloud_firewall_default_deny_asserted),
                 ("sinkhole_ready_not_asserted", not args.sinkhole_ready_asserted),
@@ -507,6 +706,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--state-dir", type=Path, required=True)
     parser.add_argument("--whoathere-bin", type=Path, required=True)
     parser.add_argument("--evaluator-script", type=Path, required=True)
+    parser.add_argument(
+        "--execution-path",
+        choices=[LEGACY_EXECUTION_PATH, EXACT_ARTIFACT_EXECUTION_PATH],
+        default=LEGACY_EXECUTION_PATH,
+    )
+    parser.add_argument("--detonation-config", type=Path)
+    parser.add_argument("--detonation-config-sha256", default="")
     parser.add_argument("--case-id", default="whoathere-actual-malware-2026-07-01")
     parser.add_argument("--security-lab-owner", required=True)
     parser.add_argument("--evaluation-owner", required=True)
@@ -538,6 +744,7 @@ def main() -> int:
         require_under(args.state_dir, Path(args.state_dir).expanduser().resolve().parent, "state_dir")
         if not args.evaluator_script.is_file():
             raise Phase1Error(f"missing_evaluator_script:{args.evaluator_script}")
+        validate_execution_path_args(args)
 
         results: dict[str, Any] = {
             "schema": f"{SCHEMA_PREFIX}.run.v1",
@@ -545,6 +752,7 @@ def main() -> int:
             "phase": args.phase,
             "remote_root": str(remote_root),
             "stage_dir": str(stage_dir),
+            "execution_path": args.execution_path,
         }
         if args.phase in {"lock", "all"}:
             results["state_lock"] = lock_state(remote_root, stage_dir, args)

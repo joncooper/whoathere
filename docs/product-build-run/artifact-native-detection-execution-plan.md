@@ -206,6 +206,32 @@ macOS-hosted local detection beta. Cloudflare and AWS portability are a separate
   therefore remained inconclusive with zero behavior detections, zero false-malicious verdicts,
   no admission authority, and no observed-clean claim. This paired result exposes a repeatable
   family-level AI false-positive pattern while proving that the current arbitration contains it.
+- Named `known_regression` EvaluationManifestV2 campaigns now require a 100 percent malicious
+  behavior-detection threshold. A two-sample or eleven-sample regression can no longer pass under a
+  permissive generic threshold, while mutation and held-out manifests retain explicit configurable
+  thresholds. The strict scorer self-test covers both cases.
+- The split-host behavioral-review bridge now has a private, fail-closed exporter. It accepts only
+  the sanitized exact-artifact report and its complete declared digest set of typed
+  `BehaviorAnalysisBundleV1` files, reconstructs an allowlisted schema, rejects unknown or free-form
+  fields, and copies no artifact bytes, source, packet captures, or raw telemetry. It successfully
+  exported and hash-reconciled all eight actions from the existing benign wheel rehearsal.
+- The current measured product binary and exact-wheel detonation config are staged privately on the
+  approved cloud Mac. A production readiness pair proved ordering without package or VM execution:
+  an invalid config returned only `exact_artifact_detonation_config_invalid`, while the same
+  guaranteed-missing wheel path under the valid digest-bound config returned only
+  `exact_artifact_path_unreadable`. The preflight, Phase 1, Step 5, and Steps 6-8 wrappers now use
+  this exact-adapter readiness instead of the obsolete stopped macOS workspace VM. The Phase 1
+  lock binds the staging manifest, preflight digest, execution path, and config path/digest; an
+  exact clearance binds the same identities, and every malware slice still requires an explicit
+  execution path plus a fresh one-sample clearance.
+- The two Telnyx wheel runs should happen before a general wheel-dependency implementation. Static
+  exact-artifact behavior evidence may recover both misses immediately, and Telnyx `4.87.1` cannot
+  honestly be expected to auto-execute because the published malicious hook contained a typo, as
+  recorded by [OSV PYSEC-2026-3](https://osv.dev/vulnerability/PYSEC-2026-3) and the
+  [PyPI incident report](https://blog.pypi.org/posts/2026-04-02-incident-report-litellm-telnyx-supply-chain-attack/).
+  If the first exact runs still miss, the next bounded slice is a complete sealed Linux-arm64/Python
+  3.14 wheel dependency closure plus authenticated fake-credential environment-read observation;
+  generic connection intent must not be relabeled as exfiltration.
 - No restricted malware was rerun. The known-malware detection result therefore remains **7/11**;
   this checkpoint proves working npm, wheel, and base PEP 517 sdist execution/observation slices,
   not an improved campaign score.

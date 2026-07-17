@@ -6,6 +6,9 @@ SSH_CONFIG=""
 REMOTE_ROOT="~/whoathere-actual-malware-lab"
 STATE_DIR="~/.whoathere/scaleway-actual-malware-validation"
 WHOATHERE_BIN="whoathere"
+EXECUTION_PATH="legacy_workspace_non_claim_bearing"
+DETONATION_CONFIG=""
+DETONATION_CONFIG_SHA256=""
 BUNDLE=""
 BUNDLE_SHA256=""
 STAGE_BUNDLE=""
@@ -20,6 +23,9 @@ usage:
     [--remote-root ~/whoathere-actual-malware-lab] \
     [--state-dir ~/.whoathere/scaleway-actual-malware-validation] \
     [--whoathere-bin whoathere] \
+    [--execution-path legacy_workspace_non_claim_bearing|exact_artifact_diagnostic] \
+    [--detonation-config <absolute-remote-json> \
+     --detonation-config-sha256 sha256:<digest>] \
     [--bundle .whoathere/corpus-lab/scaleway-staging/<case>/stage-*.tar.gz] \
     [--bundle-sha256 sha256:<digest>] \
     [--stage-bundle]
@@ -27,6 +33,8 @@ usage:
 Runs remote Scaleway host preflight for actual-malware evaluation.
 If --stage-bundle is supplied, copies and extracts the staging tarball into the remote lab root.
 This script does not unpack MalwareBazaar ZIPs and does not execute malware.
+Exact-artifact mode validates the measured detonation adapter configuration with a
+guaranteed-missing artifact instead of requiring the legacy macOS VM health/doctor checks.
 EOF
   exit "$code"
 }
@@ -119,6 +127,21 @@ while [ "$#" -gt 0 ]; do
       WHOATHERE_BIN=$2
       shift 2
       ;;
+    --execution-path)
+      [ "$#" -ge 2 ] || usage
+      EXECUTION_PATH=$2
+      shift 2
+      ;;
+    --detonation-config)
+      [ "$#" -ge 2 ] || usage
+      DETONATION_CONFIG=$2
+      shift 2
+      ;;
+    --detonation-config-sha256)
+      [ "$#" -ge 2 ] || usage
+      DETONATION_CONFIG_SHA256=$2
+      shift 2
+      ;;
     --bundle)
       [ "$#" -ge 2 ] || usage
       BUNDLE=$2
@@ -143,9 +166,36 @@ while [ "$#" -gt 0 ]; do
 done
 
 [ -n "$SSH_HOST" ] || usage
+case "$EXECUTION_PATH" in
+  legacy_workspace_non_claim_bearing)
+    if [ -n "$DETONATION_CONFIG$DETONATION_CONFIG_SHA256" ]; then
+      echo "legacy_preflight_rejects_exact_artifact_options" >&2
+      exit 64
+    fi
+    ;;
+  exact_artifact_diagnostic)
+    [ -n "$DETONATION_CONFIG" ] || usage
+    [ -n "$DETONATION_CONFIG_SHA256" ] || usage
+    case "$DETONATION_CONFIG" in
+      /*) ;;
+      *) echo "detonation_config_must_be_absolute" >&2; exit 64 ;;
+    esac
+    case "$DETONATION_CONFIG_SHA256" in
+      sha256:????????????????????????????????????????????????????????????????) ;;
+      *) echo "detonation_config_sha256_invalid" >&2; exit 64 ;;
+    esac
+    case "${DETONATION_CONFIG_SHA256#sha256:}" in
+      *[!0-9a-f]*) echo "detonation_config_sha256_invalid" >&2; exit 64 ;;
+    esac
+    ;;
+  *) echo "invalid_execution_path=$EXECUTION_PATH" >&2; exit 64 ;;
+esac
 safe_remote_value "$REMOTE_ROOT" "remote_root"
 safe_remote_value "$STATE_DIR" "state_dir"
 safe_remote_value "$WHOATHERE_BIN" "whoathere_bin"
+safe_remote_value "$EXECUTION_PATH" "execution_path"
+[ -z "$DETONATION_CONFIG" ] || safe_remote_value "$DETONATION_CONFIG" "detonation_config"
+[ -z "$DETONATION_CONFIG_SHA256" ] || safe_remote_value "$DETONATION_CONFIG_SHA256" "detonation_config_sha256"
 
 if [ -n "$STAGE_BUNDLE" ]; then
   [ -n "$BUNDLE" ] || usage
@@ -217,21 +267,40 @@ fi
 overall=0
 run_remote_capture host "date -u && sw_vers && uname -a && id && df -h $REMOTE_ROOT" || overall=1
 run_remote_capture whoathere_path "command -v $WHOATHERE_BIN && $WHOATHERE_BIN --version" || overall=1
-run_remote_capture doctor "$WHOATHERE_BIN doctor --json --state-dir $STATE_DIR" || overall=1
-run_remote_capture vm_status "$WHOATHERE_BIN vm status --json --state-dir $STATE_DIR" || true
-run_remote_capture vm_health "$WHOATHERE_BIN vm health --state-dir $STATE_DIR" || overall=1
+if [ "$EXECUTION_PATH" = "exact_artifact_diagnostic" ]; then
+  readiness_probe="$REMOTE_ROOT/evidence/preflight/exact-artifact-readiness-probe-missing.whl"
+  ssh_run "test ! -e $readiness_probe"
+  run_remote_capture detonation_config_readiness "python3 -c 'import hashlib,pathlib,stat,sys; p=pathlib.Path(sys.argv[1]); m=p.lstat(); actual=\"sha256:\"+hashlib.sha256(p.read_bytes()).hexdigest(); ok=stat.S_ISREG(m.st_mode) and not p.is_symlink() and m.st_size>0 and actual==sys.argv[2]; sys.exit(0 if ok else 1)' $DETONATION_CONFIG $DETONATION_CONFIG_SHA256" || true
+  run_remote_capture exact_artifact_readiness "$WHOATHERE_BIN artifact inspect $readiness_probe --ecosystem pypi --state-dir $STATE_DIR --detonation --detonation-config $DETONATION_CONFIG" || true
+  run_remote_capture exact_artifact_readiness_validation "python3 -c 'import json,pathlib,sys; root=pathlib.Path(sys.argv[1]); report=json.loads((root/\"exact_artifact_readiness.out\").read_text()); status=(root/\"exact_artifact_readiness.status\").read_text(); ok=(status==\"64\" and report.get(\"schema_version\")==\"whoathere.exact_artifact_inspection.v1\" and report.get(\"status\")==\"error\" and report.get(\"exit_code\")==64 and report.get(\"reason_codes\")==[\"exact_artifact_path_unreadable\"] and report.get(\"admission_authority\") is False and report.get(\"observed_clean\") is False and report.get(\"sync_back_enabled\") is False); print(json.dumps({\"valid\":ok,\"expected_terminal_reason\":\"exact_artifact_path_unreadable\",\"artifact_executed\":False,\"vm_execution_requested\":False},sort_keys=True)); sys.exit(0 if ok else 1)' $REMOTE_ROOT/evidence/preflight" || true
+else
+  run_remote_capture doctor "$WHOATHERE_BIN doctor --json --state-dir $STATE_DIR" || overall=1
+  run_remote_capture vm_status "$WHOATHERE_BIN vm status --json --state-dir $STATE_DIR" || true
+  run_remote_capture vm_health "$WHOATHERE_BIN vm health --state-dir $STATE_DIR" || overall=1
+fi
 run_remote_capture scanners_list "$WHOATHERE_BIN scanners list --json" || overall=1
 run_remote_capture red_team_gate "$WHOATHERE_BIN vm red-team-gate --json" || overall=1
 run_remote_capture host_firewall "(/sbin/pfctl -s info; /sbin/pfctl -sr) 2>&1 || true" || true
 run_remote_capture network_snapshot "netstat -rn && scutil --dns" || true
 
 overall=0
-for required_status in host whoathere_path doctor vm_health scanners_list red_team_gate; do
+if [ "$EXECUTION_PATH" = "exact_artifact_diagnostic" ]; then
+  required_statuses="host whoathere_path detonation_config_readiness exact_artifact_readiness_validation scanners_list red_team_gate"
+else
+  required_statuses="host whoathere_path doctor vm_health scanners_list red_team_gate"
+fi
+for required_status in $required_statuses; do
   remote_status=$(ssh_run "cat $REMOTE_ROOT/evidence/preflight/$required_status.status 2>/dev/null || printf missing")
   if [ "$remote_status" != "0" ]; then
     overall=1
   fi
 done
+
+if [ "$EXECUTION_PATH" = "exact_artifact_diagnostic" ]; then
+  exact_artifact_readiness_json=$(printf '{"detonation_config_path":"%s","detonation_config_sha256":"%s","probe_validation_path":"%s/evidence/preflight/exact_artifact_readiness_validation.out","expected_terminal_reason":"exact_artifact_path_unreadable","artifact_executed":false,"vm_execution_requested":false}' "$DETONATION_CONFIG" "$DETONATION_CONFIG_SHA256" "$REMOTE_ROOT")
+else
+  exact_artifact_readiness_json=null
+fi
 
 ssh_run "cat >$REMOTE_ROOT/evidence/preflight/actual-malware-preflight-summary.json <<EOF
 {
@@ -239,6 +308,8 @@ ssh_run "cat >$REMOTE_ROOT/evidence/preflight/actual-malware-preflight-summary.j
   \"remote_root\": \"$REMOTE_ROOT\",
   \"state_dir\": \"$STATE_DIR\",
   \"whoathere_bin\": \"$WHOATHERE_BIN\",
+  \"execution_path\": \"$EXECUTION_PATH\",
+  \"exact_artifact_readiness\": $exact_artifact_readiness_json,
   \"staged_bundle\": \"$STAGE_BUNDLE\",
   \"ready_for_sample_workspace_preparation\": $([ "$overall" -eq 0 ] && echo true || echo false),
   \"notes\": [

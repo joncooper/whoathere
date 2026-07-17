@@ -804,16 +804,38 @@ def verify_live_gate(remote_root: Path, stage_dir: Path, args: argparse.Namespac
 
     command_dir = paths["evidence_dir"] / "live-gate-commands"
     whoathere_bin = str(args.whoathere_bin)
-    commands = {
-        "vm_health": run_capture([whoathere_bin, "vm", "health", "--state-dir", str(args.state_dir)], command_dir / "vm-health.out", args.timeout_seconds),
-        "red_team_gate": run_capture([whoathere_bin, "vm", "red-team-gate", "--json"], command_dir / "red-team-gate.json", args.timeout_seconds),
-        "scanners_list": run_capture([whoathere_bin, "scanners", "list", "--json"], command_dir / "scanners-list.json", args.timeout_seconds),
-    }
+    if args.execution_path == EXACT_ARTIFACT_EXECUTION_PATH:
+        commands = {
+            "red_team_gate": run_capture([whoathere_bin, "vm", "red-team-gate", "--json"], command_dir / "red-team-gate.json", args.timeout_seconds),
+            "scanners_list": run_capture([whoathere_bin, "scanners", "list", "--json"], command_dir / "scanners-list.json", args.timeout_seconds),
+        }
+    else:
+        commands = {
+            "vm_health": run_capture([whoathere_bin, "vm", "health", "--state-dir", str(args.state_dir)], command_dir / "vm-health.out", args.timeout_seconds),
+            "red_team_gate": run_capture([whoathere_bin, "vm", "red-team-gate", "--json"], command_dir / "red-team-gate.json", args.timeout_seconds),
+            "scanners_list": run_capture([whoathere_bin, "scanners", "list", "--json"], command_dir / "scanners-list.json", args.timeout_seconds),
+        }
     network_control_ready = args.sinkhole_ready_asserted or args.egress_deny_asserted
     blockers = []
     if state_lock.get("valid") is not True:
         blockers.append("phase1_state_lock_not_valid")
-    if guardrails.get("ready_for_benign_dry_run") is not True:
+    if args.execution_path == EXACT_ARTIFACT_EXECUTION_PATH:
+        readiness = guardrails.get("exact_artifact_readiness")
+        readiness_bound = (
+            guardrails.get("execution_path") == EXACT_ARTIFACT_EXECUTION_PATH
+            and guardrails.get("ready_for_exact_artifact_diagnostic") is True
+            and isinstance(readiness, dict)
+            and readiness.get("valid") is True
+            and readiness.get("execution_path") == EXACT_ARTIFACT_EXECUTION_PATH
+            and readiness.get("detonation_config_path") == str(args.detonation_config)
+            and readiness.get("detonation_config_sha256") == args.detonation_config_sha256
+            and readiness.get("expected_terminal_reason") == "exact_artifact_path_unreadable"
+            and readiness.get("artifact_executed") is False
+            and readiness.get("vm_execution_requested") is False
+        )
+        if not readiness_bound:
+            blockers.append("phase1_exact_artifact_readiness_not_bound")
+    elif guardrails.get("ready_for_benign_dry_run") is not True:
         blockers.append("phase1_benign_guardrail_not_ready")
     if guardrails.get("host_pf_observed") is not True:
         blockers.append("host_pf_not_observed")
@@ -837,6 +859,11 @@ def verify_live_gate(remote_root: Path, stage_dir: Path, args: argparse.Namespac
         "phase1_state_lock_sha256": sha256_file(phase1_state),
         "phase1_guardrails_path": str(phase1_guardrails),
         "phase1_guardrails_sha256": sha256_file(phase1_guardrails),
+        "phase1_execution_readiness": (
+            guardrails.get("exact_artifact_readiness")
+            if args.execution_path == EXACT_ARTIFACT_EXECUTION_PATH
+            else {"legacy_vm_health_required": True}
+        ),
         "commands": commands,
         "external_assertions": {
             "provider_approval_ref": args.provider_approval_ref,

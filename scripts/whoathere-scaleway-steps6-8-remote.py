@@ -34,6 +34,10 @@ SCORE_REPORT_V2_SCHEMA = "whoathere.actual_malware.score_report.v2"
 SCORER_V2_ID = "whoathere-actual-malware-evaluation.py:score-results-v2"
 LEGACY_EXECUTION_PATH = "legacy_workspace_non_claim_bearing"
 EXACT_ARTIFACT_EXECUTION_PATH = "exact_artifact_diagnostic"
+EXACT_ARTIFACT_READINESS_REASON = "exact_artifact_path_unreadable"
+EXACT_ARTIFACT_CLEARANCE_PREFLIGHT_SCHEMA = (
+    f"{SCHEMA_PREFIX}.exact_artifact_clearance_preflight.v1"
+)
 
 
 class Step68Error(Exception):
@@ -269,6 +273,92 @@ def latest_contamination(runs: list[dict[str, Any]]) -> dict[str, Any] | None:
     return max(contaminated, key=lambda item: parse_utc(str(item.get("created_at_utc"))) or dt.datetime.min.replace(tzinfo=dt.timezone.utc))
 
 
+def validate_exact_artifact_config(args: argparse.Namespace, context: str) -> None:
+    if args.detonation_config is None or not args.detonation_config_sha256:
+        raise Step68Error(f"{context}_exact_artifact_detonation_config_required")
+    if not args.detonation_config.is_absolute() or not regular_non_symlink(args.detonation_config):
+        raise Step68Error("detonation_config_must_be_absolute_regular_non_symlink")
+    if not valid_sha256(args.detonation_config_sha256):
+        raise Step68Error("detonation_config_sha256_invalid")
+    if sha256_file(args.detonation_config) != args.detonation_config_sha256:
+        raise Step68Error("detonation_config_sha256_mismatch")
+
+
+def validate_clearance_execution_args(args: argparse.Namespace) -> None:
+    if args.execution_path is None:
+        args.execution_path = LEGACY_EXECUTION_PATH
+    if args.execution_path == LEGACY_EXECUTION_PATH:
+        if args.detonation_config is not None or args.detonation_config_sha256:
+            raise Step68Error("legacy_clearance_rejects_exact_artifact_options")
+        return
+    if args.execution_path != EXACT_ARTIFACT_EXECUTION_PATH:
+        raise Step68Error(f"unsupported_clearance_execution_path:{args.execution_path}")
+    validate_exact_artifact_config(args, "clearance")
+
+
+def exact_artifact_clearance_preflight(
+    remote_root: Path,
+    args: argparse.Namespace,
+    out_path: Path,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    started = now_utc()
+    guardrails_path = remote_root / "evidence" / "phase1" / "guardrails-status.json"
+    failures: list[str] = []
+    guardrails: dict[str, Any] = {}
+    if not regular_non_symlink(guardrails_path):
+        failures.append("phase1_guardrails_missing")
+    else:
+        try:
+            guardrails = require_json_object(guardrails_path, "phase1_guardrails")
+        except Step68Error:
+            failures.append("phase1_guardrails_invalid")
+    readiness = guardrails.get("exact_artifact_readiness")
+    readiness_bound = (
+        guardrails.get("execution_path") == EXACT_ARTIFACT_EXECUTION_PATH
+        and guardrails.get("ready_for_exact_artifact_diagnostic") is True
+        and isinstance(readiness, dict)
+        and readiness.get("valid") is True
+        and readiness.get("execution_path") == EXACT_ARTIFACT_EXECUTION_PATH
+        and readiness.get("detonation_config_path") == str(args.detonation_config)
+        and readiness.get("detonation_config_sha256") == args.detonation_config_sha256
+        and readiness.get("expected_terminal_reason") == EXACT_ARTIFACT_READINESS_REASON
+        and readiness.get("artifact_executed") is False
+        and readiness.get("vm_execution_requested") is False
+    )
+    if not readiness_bound:
+        failures.append("phase1_exact_artifact_readiness_not_bound")
+    preflight = {
+        "schema": EXACT_ARTIFACT_CLEARANCE_PREFLIGHT_SCHEMA,
+        "created_at_utc": now_utc(),
+        "execution_path": EXACT_ARTIFACT_EXECUTION_PATH,
+        "ready_for_live_malware": not failures,
+        "ready_for_exact_artifact_diagnostic": not failures,
+        "detonation_config_path": str(args.detonation_config),
+        "detonation_config_sha256": args.detonation_config_sha256,
+        "phase1_guardrails_path": str(guardrails_path),
+        "phase1_guardrails_sha256": (
+            sha256_file(guardrails_path) if regular_non_symlink(guardrails_path) else None
+        ),
+        "phase1_exact_artifact_readiness": readiness if isinstance(readiness, dict) else None,
+        "expected_terminal_reason": EXACT_ARTIFACT_READINESS_REASON,
+        "artifact_executed": False,
+        "vm_execution_requested": False,
+        "failures": failures,
+    }
+    write_json(out_path, preflight)
+    record = {
+        "operation": "consume_phase1_exact_artifact_readiness",
+        "executed_subprocess": False,
+        "exit_code": 0 if not failures else 20,
+        "timed_out": False,
+        "started_at_utc": started,
+        "finished_at_utc": now_utc(),
+        "output_path": str(out_path),
+        "stderr_path": None,
+    }
+    return preflight, record
+
+
 def validate_clearance(remote_root: Path, args: argparse.Namespace, runs: list[dict[str, Any]]) -> dict[str, Any]:
     if args.phase not in {"slice", "all"}:
         return {"required": False, "valid": True}
@@ -303,6 +393,12 @@ def validate_clearance(remote_root: Path, args: argparse.Namespace, runs: list[d
             failures.append("exact_artifact_clearance_sinkhole_not_verified")
         if clearance.get("sinkhole_reference") != args.sinkhole_reference:
             failures.append("exact_artifact_clearance_sinkhole_reference_mismatch")
+        if clearance.get("execution_path") != EXACT_ARTIFACT_EXECUTION_PATH:
+            failures.append("exact_artifact_clearance_execution_path_mismatch")
+        if clearance.get("detonation_config_path") != str(args.detonation_config):
+            failures.append("exact_artifact_clearance_detonation_config_path_mismatch")
+        if clearance.get("detonation_config_sha256") != args.detonation_config_sha256:
+            failures.append("exact_artifact_clearance_detonation_config_sha256_mismatch")
     for key in ("provider_approval_ref", "legal_provider_approval_ref", "clearance_method", "reviewer"):
         if not isinstance(clearance.get(key), str) or not clearance.get(key):
             failures.append(f"{key}_missing")
@@ -324,6 +420,24 @@ def validate_clearance(remote_root: Path, args: argparse.Namespace, runs: list[d
                 failures.append("preflight_file_missing")
             elif preflight_sha != sha256_file(preflight_path):
                 failures.append("preflight_sha256_mismatch")
+            elif args.execution_path == EXACT_ARTIFACT_EXECUTION_PATH:
+                try:
+                    preflight_data = require_json_object(preflight_path, "clearance_preflight")
+                except Step68Error:
+                    failures.append("exact_artifact_clearance_preflight_invalid")
+                else:
+                    if preflight_data.get("schema") != EXACT_ARTIFACT_CLEARANCE_PREFLIGHT_SCHEMA:
+                        failures.append("exact_artifact_clearance_preflight_schema_invalid")
+                    if preflight_data.get("ready_for_exact_artifact_diagnostic") is not True:
+                        failures.append("exact_artifact_clearance_preflight_not_ready")
+                    if preflight_data.get("detonation_config_path") != str(args.detonation_config):
+                        failures.append("exact_artifact_clearance_preflight_config_path_mismatch")
+                    if preflight_data.get("detonation_config_sha256") != args.detonation_config_sha256:
+                        failures.append("exact_artifact_clearance_preflight_config_sha256_mismatch")
+                    if preflight_data.get("artifact_executed") is not False:
+                        failures.append("exact_artifact_clearance_preflight_artifact_execution_invalid")
+                    if preflight_data.get("vm_execution_requested") is not False:
+                        failures.append("exact_artifact_clearance_preflight_vm_execution_invalid")
     incomplete_runs = [run for run in runs if not run.get("evidence_complete")]
     if incomplete_runs:
         failures.append("prior_live_run_evidence_incomplete")
@@ -385,38 +499,62 @@ def build_clearance_record(remote_root: Path, stage_dir: Path, args: argparse.Na
     clearance_dir.mkdir(parents=True, exist_ok=False)
     runs = existing_successful_live_runs(remote_root)
     latest = latest_contamination(runs)
-    command = [
-        sys.executable,
-        str(args.evaluator_script),
-        "preflight-lab",
-        "--whoathere-bin",
-        str(args.whoathere_bin),
-        "--state-dir",
-        str(args.state_dir),
-        "--out",
-        str(clearance_dir / "preflight.json"),
-        "--timeout-seconds",
-        str(args.timeout_seconds),
-    ]
-    preflight_record = run_capture(command, clearance_dir / "preflight-lab.stdout", args.timeout_seconds + 60)
-    preflight = read_json(clearance_dir / "preflight.json") if (clearance_dir / "preflight.json").is_file() else {}
-    direct_commands = {
-        "vm_health": run_capture(
-            [str(args.whoathere_bin), "vm", "health", "--state-dir", str(args.state_dir)],
-            clearance_dir / "vm-health.out",
-            args.timeout_seconds,
-        ),
-        "red_team_gate": run_capture(
-            [str(args.whoathere_bin), "vm", "red-team-gate", "--json"],
-            clearance_dir / "red-team-gate.json",
-            args.timeout_seconds,
-        ),
-        "scanners_list": run_capture(
-            [str(args.whoathere_bin), "scanners", "list", "--json"],
-            clearance_dir / "scanners-list.json",
-            args.timeout_seconds,
-        ),
-    }
+    preflight_path = clearance_dir / "preflight.json"
+    if args.execution_path == EXACT_ARTIFACT_EXECUTION_PATH:
+        preflight, preflight_record = exact_artifact_clearance_preflight(
+            remote_root,
+            args,
+            preflight_path,
+        )
+        direct_commands = {
+            "red_team_gate": run_capture(
+                [str(args.whoathere_bin), "vm", "red-team-gate", "--json"],
+                clearance_dir / "red-team-gate.json",
+                args.timeout_seconds,
+            ),
+            "scanners_list": run_capture(
+                [str(args.whoathere_bin), "scanners", "list", "--json"],
+                clearance_dir / "scanners-list.json",
+                args.timeout_seconds,
+            ),
+        }
+    else:
+        command = [
+            sys.executable,
+            str(args.evaluator_script),
+            "preflight-lab",
+            "--whoathere-bin",
+            str(args.whoathere_bin),
+            "--state-dir",
+            str(args.state_dir),
+            "--out",
+            str(preflight_path),
+            "--timeout-seconds",
+            str(args.timeout_seconds),
+        ]
+        preflight_record = run_capture(
+            command,
+            clearance_dir / "preflight-lab.stdout",
+            args.timeout_seconds + 60,
+        )
+        preflight = read_json(preflight_path) if preflight_path.is_file() else {}
+        direct_commands = {
+            "vm_health": run_capture(
+                [str(args.whoathere_bin), "vm", "health", "--state-dir", str(args.state_dir)],
+                clearance_dir / "vm-health.out",
+                args.timeout_seconds,
+            ),
+            "red_team_gate": run_capture(
+                [str(args.whoathere_bin), "vm", "red-team-gate", "--json"],
+                clearance_dir / "red-team-gate.json",
+                args.timeout_seconds,
+            ),
+            "scanners_list": run_capture(
+                [str(args.whoathere_bin), "scanners", "list", "--json"],
+                clearance_dir / "scanners-list.json",
+                args.timeout_seconds,
+            ),
+        }
     blockers: list[str] = []
     required_assertions = [
         ("previous_contamination_resolved", args.previous_contamination_resolved_asserted),
@@ -448,6 +586,17 @@ def build_clearance_record(remote_root: Path, stage_dir: Path, args: argparse.Na
         "remote_root": str(remote_root),
         "stage_dir": str(stage_dir),
         "state_dir": str(args.state_dir),
+        "execution_path": args.execution_path,
+        "detonation_config_path": (
+            str(args.detonation_config)
+            if args.execution_path == EXACT_ARTIFACT_EXECUTION_PATH
+            else None
+        ),
+        "detonation_config_sha256": (
+            args.detonation_config_sha256
+            if args.execution_path == EXACT_ARTIFACT_EXECUTION_PATH
+            else None
+        ),
         "clearance_method": args.clearance_method,
         "ready_for_live_malware": not blockers,
         "previous_contamination_resolved": args.previous_contamination_resolved_asserted,
@@ -465,14 +614,19 @@ def build_clearance_record(remote_root: Path, stage_dir: Path, args: argparse.Na
         "reviewer": args.clearance_reviewer,
         "latest_contamination": latest,
         "preflight": {
-            "path": str(clearance_dir / "preflight.json"),
-            "sha256": sha256_file(clearance_dir / "preflight.json") if (clearance_dir / "preflight.json").is_file() else None,
+            "path": str(preflight_path),
+            "sha256": sha256_file(preflight_path) if preflight_path.is_file() else None,
             "command": preflight_record,
         },
         "direct_commands": direct_commands,
         "blockers": blockers,
         "notes": [
             "This clearance phase does not unpack MalwareBazaar ZIPs and does not execute malware.",
+            (
+                "Exact-artifact clearance consumes the digest-bound Phase 1 adapter readiness and does not require legacy VM health."
+                if args.execution_path == EXACT_ARTIFACT_EXECUTION_PATH
+                else "Legacy clearance retains the existing doctor and VM-health preflight."
+            ),
             "Step 6 still requires an explicit live-malware execution approval at slice time.",
         ],
     }
@@ -515,11 +669,13 @@ def eligible_matrix_samples(stage_dir: Path, requested: list[str], include_exist
 def validate_slice_execution_args(args: argparse.Namespace) -> None:
     if args.execution_path == LEGACY_EXECUTION_PATH:
         if (
-            args.restricted_source_hosted_review_approved
+            args.detonation_config is not None
+            or args.detonation_config_sha256
+            or args.restricted_source_hosted_review_approved
             or args.restricted_behavior_hosted_review_approved
             or args.split_local_behavior_finalization
         ):
-            raise Step68Error("legacy_execution_path_rejects_hosted_restricted_review_approvals")
+            raise Step68Error("legacy_execution_path_rejects_exact_artifact_options")
         return
     if args.execution_path != EXACT_ARTIFACT_EXECUTION_PATH:
         raise Step68Error("slice_requires_explicit_execution_path")
@@ -2146,6 +2302,8 @@ def main() -> int:
             raise Step68Error("limit_must_be_positive")
         if args.max_samples_per_clearance <= 0:
             raise Step68Error("max_samples_per_clearance_must_be_positive")
+        if args.phase in {"clearance", "all"}:
+            validate_clearance_execution_args(args)
         if args.phase in {"slice", "all"}:
             validate_slice_execution_args(args)
         if args.phase in {"clearance", "slice", "all"}:

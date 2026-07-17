@@ -10,6 +10,9 @@ REMOTE_ROOT="/Users/m1/whoathere-actual-malware-lab"
 STAGE_DIR=""
 STATE_DIR="/Users/m1/.whoathere/macos-vm-validation-ff1bb24"
 WHOATHERE_BIN="/Users/m1/.whoathere/bin/whoathere"
+EXECUTION_PATH="legacy_workspace_non_claim_bearing"
+DETONATION_CONFIG=""
+DETONATION_CONFIG_SHA256=""
 SECURITY_LAB_OWNER=""
 EVALUATION_OWNER=""
 PROVIDER_APPROVAL_REF=""
@@ -32,6 +35,9 @@ usage:
     [--stage-dir /Users/m1/whoathere-actual-malware-lab/staged/stage-...] \
     [--state-dir /Users/m1/.whoathere/macos-vm-validation-ff1bb24] \
     [--whoathere-bin /Users/m1/.whoathere/bin/whoathere] \
+    [--execution-path legacy_workspace_non_claim_bearing|exact_artifact_diagnostic] \
+    [--detonation-config <absolute-remote-json> \
+     --detonation-config-sha256 sha256:<digest>] \
     --security-lab-owner <ref> \
     --evaluation-owner <ref> \
     [--provider-approval-ref <ref>] \
@@ -43,6 +49,8 @@ usage:
 
 Copies the phase-1 remote harness to the disposable Scaleway Mac and runs it.
 The harness never unpacks MalwareBazaar ZIPs and never executes malware.
+Exact-artifact mode is limited to lock/guardrails and validates the measured detonation adapter
+configuration with a guaranteed-missing artifact. Legacy mode keeps the existing VM-health check.
 EOF
   exit "$code"
 }
@@ -88,6 +96,21 @@ while [ "$#" -gt 0 ]; do
     --whoathere-bin)
       [ "$#" -ge 2 ] || usage
       WHOATHERE_BIN=$2
+      shift 2
+      ;;
+    --execution-path)
+      [ "$#" -ge 2 ] || usage
+      EXECUTION_PATH=$2
+      shift 2
+      ;;
+    --detonation-config)
+      [ "$#" -ge 2 ] || usage
+      DETONATION_CONFIG=$2
+      shift 2
+      ;;
+    --detonation-config-sha256)
+      [ "$#" -ge 2 ] || usage
+      DETONATION_CONFIG_SHA256=$2
       shift 2
       ;;
     --security-lab-owner)
@@ -155,9 +178,41 @@ case "$PHASE" in
   *) echo "invalid_phase=$PHASE" >&2; exit 64 ;;
 esac
 
+case "$EXECUTION_PATH" in
+  legacy_workspace_non_claim_bearing)
+    if [ -n "$DETONATION_CONFIG$DETONATION_CONFIG_SHA256" ]; then
+      echo "legacy_phase1_rejects_exact_artifact_options" >&2
+      exit 64
+    fi
+    ;;
+  exact_artifact_diagnostic)
+    [ "$PHASE" = "lock" ] || [ "$PHASE" = "guardrails" ] || {
+      echo "exact_artifact_phase1_supports_lock_or_guardrails_only" >&2
+      exit 64
+    }
+    [ -n "$DETONATION_CONFIG" ] || usage
+    [ -n "$DETONATION_CONFIG_SHA256" ] || usage
+    case "$DETONATION_CONFIG" in
+      /*) ;;
+      *) echo "detonation_config_must_be_absolute" >&2; exit 64 ;;
+    esac
+    case "$DETONATION_CONFIG_SHA256" in
+      sha256:????????????????????????????????????????????????????????????????) ;;
+      *) echo "detonation_config_sha256_invalid" >&2; exit 64 ;;
+    esac
+    case "${DETONATION_CONFIG_SHA256#sha256:}" in
+      *[!0-9a-f]*) echo "detonation_config_sha256_invalid" >&2; exit 64 ;;
+    esac
+    ;;
+  *) echo "invalid_execution_path=$EXECUTION_PATH" >&2; exit 64 ;;
+esac
+
 safe_remote_value "$REMOTE_ROOT" "remote_root"
 safe_remote_value "$STATE_DIR" "state_dir"
 safe_remote_value "$WHOATHERE_BIN" "whoathere_bin"
+safe_remote_value "$EXECUTION_PATH" "execution_path"
+[ -z "$DETONATION_CONFIG" ] || safe_remote_value "$DETONATION_CONFIG" "detonation_config"
+[ -z "$DETONATION_CONFIG_SHA256" ] || safe_remote_value "$DETONATION_CONFIG_SHA256" "detonation_config_sha256"
 [ -z "$STAGE_DIR" ] || safe_remote_value "$STAGE_DIR" "stage_dir"
 safe_remote_value "$SECURITY_LAB_OWNER" "security_lab_owner"
 safe_remote_value "$EVALUATION_OWNER" "evaluation_owner"
@@ -194,7 +249,8 @@ scp_to_remote "$REPO_ROOT/scripts/whoathere-actual-malware-evaluation.py" "$remo
 scp_to_remote "$REPO_ROOT/scripts/whoathere-scaleway-phase1-remote.py" "$remote_phase1"
 ssh_run "chmod 700 $remote_tools && chmod 500 $remote_evaluator $remote_phase1"
 
-remote_command="WHOATHERE_SCANNER_CACHE_DIR=$remote_tools/scanners PATH=$remote_scanner_bin:\$PATH python3 $remote_phase1 --remote-root $REMOTE_ROOT --state-dir $STATE_DIR --whoathere-bin $WHOATHERE_BIN --evaluator-script $remote_evaluator --security-lab-owner $SECURITY_LAB_OWNER --evaluation-owner $EVALUATION_OWNER --phase $PHASE --run-timeout-seconds $RUN_TIMEOUT_SECONDS"
+remote_command="WHOATHERE_SCANNER_CACHE_DIR=$remote_tools/scanners PATH=$remote_scanner_bin:\$PATH python3 $remote_phase1 --remote-root $REMOTE_ROOT --state-dir $STATE_DIR --whoathere-bin $WHOATHERE_BIN --evaluator-script $remote_evaluator --execution-path $EXECUTION_PATH --security-lab-owner $SECURITY_LAB_OWNER --evaluation-owner $EVALUATION_OWNER --phase $PHASE --run-timeout-seconds $RUN_TIMEOUT_SECONDS"
+[ -z "$DETONATION_CONFIG" ] || remote_command="$remote_command --detonation-config $DETONATION_CONFIG --detonation-config-sha256 $DETONATION_CONFIG_SHA256"
 [ -z "$STAGE_DIR" ] || remote_command="$remote_command --stage-dir $STAGE_DIR"
 [ -z "$PROVIDER_APPROVAL_REF" ] || remote_command="$remote_command --provider-approval-ref $PROVIDER_APPROVAL_REF"
 [ -z "$LEGAL_PROVIDER_APPROVAL_REF" ] || remote_command="$remote_command --legal-provider-approval-ref $LEGAL_PROVIDER_APPROVAL_REF"

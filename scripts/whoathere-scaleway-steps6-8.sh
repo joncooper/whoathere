@@ -72,7 +72,7 @@ usage:
     [--whoathere-bin /Users/m1/.whoathere/bin/whoathere] \
     [--campaign-id whoathere-actual-malware-2026-07-01] \
     [--phase clearance|slice|score|finalize|all] \
-    [--execution-path exact_artifact_diagnostic|legacy_workspace_non_claim_bearing for slice] \
+    [--execution-path exact_artifact_diagnostic|legacy_workspace_non_claim_bearing for clearance/slice] \
     [--sample-id <sample-id>]... \
     [--limit <n>] \
     [--max-samples-per-clearance 1] \
@@ -96,8 +96,10 @@ usage:
     --lulu-enabled-asserted [--lulu-reference <ref>] \
     [--live-malware-execution-approved for slice/all]
 
-Exact-artifact slice options:
+Exact-artifact clearance/slice options:
     --detonation-config <absolute-remote-json> --detonation-config-sha256 sha256:<digest> \
+
+Additional exact-artifact slice options:
     [--split-local-behavior-finalization | \
       --codex-client-path <absolute-remote-native-binary> --codex-client-sha256 sha256:<digest> \
       --codex-model <model> --codex-auth-home <absolute-dedicated-home>] \
@@ -299,7 +301,9 @@ if [ "$PHASE" = "slice" ]; then
         [ -n "$CODEX_AUTH_HOME" ] || usage
       fi
       ;;
-    legacy_workspace_non_claim_bearing) ;;
+    legacy_workspace_non_claim_bearing)
+      [ -z "$DETONATION_CONFIG$DETONATION_CONFIG_SHA256" ] || usage
+      ;;
     *) usage ;;
   esac
 fi
@@ -310,6 +314,16 @@ if [ "$PHASE" = "clearance" ]; then
   [ -n "$PREVIOUS_CONTAMINATION_RESOLVED" ] || usage
   [ -n "$HOST_REBUILT_OR_CLEARED" ] || usage
   [ -n "$VM_REBUILT_OR_PRUNED" ] || usage
+  case "$EXECUTION_PATH" in
+    exact_artifact_diagnostic)
+      [ -n "$DETONATION_CONFIG" ] || usage
+      [ -n "$DETONATION_CONFIG_SHA256" ] || usage
+      ;;
+    ""|legacy_workspace_non_claim_bearing)
+      [ -z "$DETONATION_CONFIG$DETONATION_CONFIG_SHA256" ] || usage
+      ;;
+    *) usage ;;
+  esac
 fi
 if [ "$PHASE" = "all" ]; then
   [ -n "$PREVIOUS_CONTAMINATION_RESOLVED" ] || usage
@@ -413,14 +427,17 @@ remote_command="WHOATHERE_SCANNER_CACHE_DIR=$remote_tools/scanners PATH=$remote_
 [ -z "$FINALIZE_FAILED_SCORE" ] || remote_command="$remote_command --finalize-failed-score"
 [ -z "$LEGACY_SCORE_MAINTENANCE" ] || remote_command="$remote_command --legacy-non-claim-bearing-score-maintenance"
 [ -z "$LEGACY_SCORE_ACKNOWLEDGED" ] || remote_command="$remote_command --acknowledge-non-claim-bearing-legacy-score"
-if [ "$EXECUTION_PATH" = "exact_artifact_diagnostic" ]; then
-  remote_command="$remote_command --detonation-config $DETONATION_CONFIG --detonation-config-sha256 $DETONATION_CONFIG_SHA256 --restricted-behavior-hosted-review-approved --restricted-behavior-review-approval-ref $RESTRICTED_BEHAVIOR_APPROVAL_REF"
-  if [ -n "$SPLIT_LOCAL_BEHAVIOR_FINALIZATION" ]; then
-    remote_command="$remote_command --split-local-behavior-finalization"
-  else
-    remote_command="$remote_command --codex-client-path $CODEX_CLIENT_PATH --codex-client-sha256 $CODEX_CLIENT_SHA256 --codex-model $CODEX_MODEL --codex-auth-home $CODEX_AUTH_HOME --codex-timeout-seconds $CODEX_TIMEOUT_SECONDS"
-    if [ -n "$RESTRICTED_SOURCE_APPROVED" ]; then
-      remote_command="$remote_command --restricted-source-hosted-review-approved --restricted-source-review-approval-ref $RESTRICTED_SOURCE_APPROVAL_REF"
+if [ "$EXECUTION_PATH" = "exact_artifact_diagnostic" ] && { [ "$PHASE" = "clearance" ] || [ "$PHASE" = "slice" ]; }; then
+  remote_command="$remote_command --detonation-config $DETONATION_CONFIG --detonation-config-sha256 $DETONATION_CONFIG_SHA256"
+  if [ "$PHASE" = "slice" ]; then
+    remote_command="$remote_command --restricted-behavior-hosted-review-approved --restricted-behavior-review-approval-ref $RESTRICTED_BEHAVIOR_APPROVAL_REF"
+    if [ -n "$SPLIT_LOCAL_BEHAVIOR_FINALIZATION" ]; then
+      remote_command="$remote_command --split-local-behavior-finalization"
+    else
+      remote_command="$remote_command --codex-client-path $CODEX_CLIENT_PATH --codex-client-sha256 $CODEX_CLIENT_SHA256 --codex-model $CODEX_MODEL --codex-auth-home $CODEX_AUTH_HOME --codex-timeout-seconds $CODEX_TIMEOUT_SECONDS"
+      if [ -n "$RESTRICTED_SOURCE_APPROVED" ]; then
+        remote_command="$remote_command --restricted-source-hosted-review-approved --restricted-source-review-approval-ref $RESTRICTED_SOURCE_APPROVAL_REF"
+      fi
     fi
   fi
 fi
