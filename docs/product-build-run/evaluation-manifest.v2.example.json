@@ -1,6 +1,7 @@
 {
   "schema": "whoathere.actual_malware.evaluation_manifest.v2",
   "evaluation_id": "example-evaluation-v2",
+  "evaluation_class": "known_regression",
   "created_at_utc": "2026-07-14T23:59:00Z",
   "corpus_sha256": "sha256:0eef66eab84e7b9a1eb7c61d19cfeaf188f78b86ecd6595addf60be095b87f11",
   "identities": {
