@@ -41,15 +41,15 @@ This is useful security tooling, not a promise that arbitrary packages are safe.
 
 The artifact-native detection build now has physically exercised exact-artifact Linux VZ routes for
 npm tarballs, pure-Python wheels, and nested-root PEP 517 sdists. Exact npm installation completed
-under both CI profiles, one wheel completed its eight install and trigger actions, and the base
-sdist path completed build, derived-wheel inspection and install, and import. Observe-only Codex
-specialists consumed sanitized, digest-bound process, file, canary, and network bundles from those
-runs and preserved behavior-specific findings without gaining VM or admission authority. A native
-one-action proof now independently partitions receipt-bound file events and derives a typed
-observation without consuming producer labels or verdicts. Physical results still lack the complete
-multi-action, multimodality event denominator required for a claim-bearing campaign, and the
-known-malware score remains 7/11. This is working detection infrastructure, not yet a broad
-detection claim. See the
+under both CI profiles, one wheel completed its eight install and trigger actions, and the sdist
+path completed build, derived-wheel inspection and install, and import. A fresh canary-bearing sdist
+import run also crossed the previously failing large-evidence boundary, retained 5.95 MB of signed
+runtime evidence, and projected the package trigger, protected PyPI-token reads, and local-sinkhole
+sends. Observe-only Codex specialists cited those exact events as lifecycle, canary-access, and
+network findings while explicitly declining to infer token exfiltration or grant admission.
+Physical results still lack independently verified host composition and the complete event
+denominator required for a claim-bearing campaign, and the known-malware score remains 7/11. This
+is working detection infrastructure, not yet a broad detection claim. See the
 [execution plan](docs/product-build-run/artifact-native-detection-execution-plan.md) and
 [blocker queue](docs/product-build-run/detection-blocker-queue.md).
 

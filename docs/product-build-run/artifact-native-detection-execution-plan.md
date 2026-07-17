@@ -129,22 +129,17 @@ macOS-hosted local detection beta. Cloudflare and AWS portability are a separate
 - Codex consumed the authenticated sdist install-action bundle after the rejected model pin was
   replaced with the subscription-supported exact model. It returned a receipt-bound no-finding
   result that remained correctly inconclusive, observe-only, and without admission authority.
-- A separate exact canary-bearing sdist run exercised the build path with the current signed helper.
-  Actions 0 through 2 completed in the guest and reached typed projection. Action 0 projected
-  build-backend activation, protected PyPI-token canary access, and fixed local-sinkhole network
-  intent; Codex detected all three from the bound bundle without claiming exfiltration. Action 3
-  completed in the guest, but the host failed before projecting its 5,945,958-byte runtime result.
-  The later 16 MiB evidence correction now passes an exact-size synthetic regression through both
-  Mac host parsers and rejects a frame above the new ceiling, so BLK-006 is ready for a single
-  physical action-3 confirmation rather than further speculative hardening. The original run
-  remains incomplete and grants neither `observed_clean` nor admission.
-- The missing retained-action link for that confirmation is implemented. `behavior project sdist`
-  independently revalidates the exact PEP 517 tarball, canonical envelope and manifest, complete
-  scenario vector, selected action, and retained root/process/file/network/host digest graph, then
-  emits a caller-selected private behavior bundle without invoking the helper, VM, or package
-  code or modifying the evidence directory. This supports observe-only Codex review of action 3;
-  it does not cryptographically verify the receipt signatures, close BLK-002, authorize
-  `observed_clean` or admission, or change the 7/11 baseline.
+- The canary-bearing sdist action-3 confirmation is now complete. A fresh disposable guest ran the
+  exact import scenario with helper `sha256:985af61c...27b8a`, retained a `5,945,391`-byte signed
+  runtime result, stopped the VM, destroyed its clone, preserved stable images, and exposed neither
+  a public route nor sync-back. `behavior project sdist` revalidated the exact artifact, envelope,
+  manifest, scenario, and receipt-bound evidence and emitted bundle `sha256:d2c04df0...16d7e` with
+  the sdist import trigger, protected PyPI-token reads, and local-sinkhole sends. The observe-only
+  Codex process, credential-and-canary, and network specialists returned high-confidence
+  lifecycle, canary-access, and network findings while explicitly declining to infer token
+  exfiltration. BLK-006 is resolved. Independent signature verification and host-composite event
+  denominator proof remain BLK-002, so coverage is still incomplete and the 7/11 baseline is
+  unchanged.
 - The physical VZ host and the subscription-authenticated Codex host can now be separate. A
   diagnostic-only bridge requires the sanitized cloud report's complete declared bundle-digest
   set, the copied sanitized bundles, and the local `behavior observe` results to reconcile
