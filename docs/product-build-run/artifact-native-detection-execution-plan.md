@@ -134,8 +134,10 @@ macOS-hosted local detection beta. Cloudflare and AWS portability are a separate
   build-backend activation, protected PyPI-token canary access, and fixed local-sinkhole network
   intent; Codex detected all three from the bound bundle without claiming exfiltration. Action 3
   completed in the guest, but the host failed before projecting its 5,945,958-byte runtime result.
-  That bounded host-result problem is parked in BLK-006. This run remains incomplete and grants
-  neither `observed_clean` nor admission.
+  The later 16 MiB evidence correction now passes an exact-size synthetic regression through both
+  Mac host parsers and rejects a frame above the new ceiling, so BLK-006 is ready for a single
+  physical action-3 confirmation rather than further speculative hardening. The original run
+  remains incomplete and grants neither `observed_clean` nor admission.
 - The physical VZ host and the subscription-authenticated Codex host can now be separate. A
   diagnostic-only bridge requires the sanitized cloud report's complete declared bundle-digest
   set, the copied sanitized bundles, and the local `behavior observe` results to reconcile

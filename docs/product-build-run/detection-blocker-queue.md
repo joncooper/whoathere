@@ -197,8 +197,8 @@ empty-closure defect.
 
 ## BLK-006: canary-bearing sdist action 3 completed in the guest but did not project
 
-Status: parked on July 16, 2026. It does not block the completed wheel proof or the projected sdist
-build-backend evidence from actions 0 through 2.
+Status: ready for one bounded physical confirmation. It does not block the completed wheel proof or
+the projected sdist build-backend evidence from actions 0 through 2.
 
 Confirmed:
 
@@ -215,15 +215,28 @@ Confirmed:
 - independent guest-root and host-composition completeness remain unmet, so no result is
   `observed_clean`, admission-eligible, or complete for detection recall.
 
+On July 17, the later large-evidence correction was tested directly against the retained result
+size. A synthetic, structurally valid `5,945,958`-byte root-runtime result crossed both Mac host
+boundaries: the base64 serial extractor and the `WTPKRR01` root-runtime frame parser. Its selected
+action index was `3`, its process-evidence frame was larger than the former 4 MiB ceiling, and the
+current 16 MiB per-modality ceiling preserved it exactly. A companion boundary test rejected a
+frame one byte above 16 MiB. Existing Rust tests already cover the same raised frame and
+sensor-control limits.
+
+This strongly indicates that commit `33cdf41` incidentally removed the bounded host-size failure
+while fixing the later Telnyx-neighbor evidence path. It does not prove which modality in the
+original retained result crossed 4 MiB, and it does not replace a fresh physical action-3 run.
+
 Smallest resume experiment:
 
-1. Reproduce only action 3 with the same pinned inert artifact, helper, runtime, and scenario.
-2. Identify the single bounded host consumption or projection limit reached by the retained
-   5,945,958-byte result.
-3. Correct that limit narrowly and require typed projection plus the existing safety invariants.
+1. Reproduce only action 3 with the same pinned inert artifact, current helper/runtime, and
+   scenario.
+2. Require the complete declared `5,945,958`-byte-class result to cross serial parsing, root-runtime
+   parsing, evidence-file retention, and typed projection.
+3. Require the existing VM-stop, clone-destruction, no-public-route, and no-sync-back invariants.
 
-Until this bounded experiment is resumed, preserve actions 0 through 2 as valid positive evidence
-and report the full sdist run as incomplete.
+Until that physical confirmation runs, preserve actions 0 through 2 as valid positive evidence and
+report the full sdist run as incomplete.
 
 ## BLK-007: resolved -- Telnyx wheel evidence capacity and serial transport
 
