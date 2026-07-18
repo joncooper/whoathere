@@ -349,9 +349,71 @@ Resolution evidence:
 - observe-only Codex cited the exact lifecycle events for both profiles while preserving the
   incomplete sensor coverage and declining clean or admission authority.
 
-No further inert closure experiment is required before the separately approved real `sbx` run.
-The environment-read marker remains supporting and package-forgeable, so it cannot independently
-satisfy a frozen behavior label. Before real execution, seal the exact public dependency closure,
-restore the restrictive lab network policy for the current operator address, generate a fresh
-clearance bound to the current helper/runtime/config identities, and preserve the existing no-live-
-C2, no-live-second-stage, no-sync-back, and teardown requirements.
+The separately approved real `sbx` run has now used this closure path. Its `CI=false` profile
+completed and produced behavior-specific real-malware evidence; its `CI=true` profile exposed the
+separate file-sensor fault recorded in BLK-009. The environment-read marker remains supporting and
+package-forgeable, so it cannot independently satisfy a frozen behavior label. Preserve the inert
+closure runs as regression fixtures and keep all future real reruns behind fresh clearance,
+restrictive networking, no live C2 or second stage, no sync-back, and verified teardown.
+
+## BLK-009: real npm CI profile faults in the protected file collector
+
+Status: active, with the diagnostic implemented and physically qualified on July 18, 2026. A
+fresh real two-profile rerun is pending. This blocks a complete result for
+`mb-npm-sbx-45.0.2`; it does not invalidate the successful `CI=false` evidence.
+
+Confirmed:
+
+- one fresh, single-use clearance bound the exact real artifact, four exact public dependency
+  tarballs, current qualified runtime/helper/config identities, default-deny host PF posture,
+  LuLu, and the local sinkhole;
+- `CI=false` completed both process actions and produced a 73-event behavior bundle. Its run
+  receipt proves VM start and stop, clone destruction, stable image identity, no public route, no
+  sync-back, and successful package execution;
+- subscription-backed Codex returned `behavior_detected` for that exact bundle and cited lifecycle
+  execution, two credential-file open/read clusters, repeated outbound connections, and repeated
+  local-sinkhole sends. It did not claim payload contents or successful exfiltration, and the
+  result has no clean or admission authority;
+- `CI=true` reached the verified package runtime, emitted a healthy drained host-frame observation
+  with zero dropped or truncated frames, and then failed before emitting a complete or partial
+  runtime result;
+- its digest-verified child diagnostic contains the fixed chain
+  `file sensor runtime fault -> root runtime failure -> package_runtime_failed`;
+- the exact file-worker reason is currently unavailable because the collector exposes only a fault
+  pipe. The process collector already publishes its allowlisted first-fault code through a shared
+  atomic, but the file collector does not;
+- that observability gap is now repaired without changing limits or fault semantics. The file
+  collector publishes its first fixed error code before signaling, and the root service reads it
+  with acquire ordering. All 278 VM-library tests, strict linting, formatting, and the Linux ARM64
+  cross-build pass;
+- runtime `sha256:4a2cfc8d...59de` was sealed into a fresh rootfs, independently verified,
+  physically qualified as record `sha256:26456661...e587`, and then used for the exact inert
+  dependency-bearing npm regression. Both CI profiles again completed with 29-event bundles,
+  verified VM stop and clone destruction, stable image identity, no public route, and no
+  sync-back;
+- the VM helper exited and a post-run lab check found no running VZ process or remaining disposable
+  clone. The strict slice nevertheless remains physically and safety-incomplete because the
+  `CI=true` execution receipt was never sealed. The clearance is consumed, and the host/campaign
+  state correctly requires fresh clearing and clearance before another live run.
+
+Completed unblock and remaining experiment:
+
+1. Completed: mirror the process collector's existing first-fault channel in the file collector:
+   exhaustive fixed error-to-code mapping, release-before-signal publication, acquire read, and
+   explicit file descriptor routing. Do not change event limits, correlation rules, failure
+   semantics, or containment.
+2. Completed: add focused mapping and publication tests, run the Rust suite, rebuild the Linux
+   runtime, and requalify the changed identity with inert fixtures.
+3. If practical, exercise short-lived-child and bounded event-volume inert cases. Do not tune
+   limits or correlation until the exact fixed fault reason identifies which case matters.
+4. Re-establish current privileged PF evidence immediately before execution, clear/prune the lab
+   state, issue a new single-use clearance, and rerun the complete two-profile product experiment
+   in fresh disposable guests. The adapter intentionally executes both profiles; do not create a
+   one-profile bypass merely to reuse the earlier result.
+5. Require a complete digest-bound bundle, local Codex observation, verified stop and clone
+   destruction, no public route, no sync-back, and no live C2 or second stage before the npm pair
+   can enter a claim-bearing four-miss campaign.
+
+Forest check: the artifact, closure, VM, telemetry projection, and Codex paths have all produced a
+real positive. The remaining work is one collector fault and one fresh paired product rerun, not a
+reason to expand protocol coverage or redesign the telemetry system.

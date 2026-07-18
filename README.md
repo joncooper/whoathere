@@ -81,6 +81,28 @@ run was repeated successfully. Subscription-backed Codex then reviewed both sign
 the exact npm lifecycle events, and correctly left missing sensor coverage inconclusive rather
 than calling the package clean.
 
+That qualified path has now reached the real missed npm artifact. Under a fresh one-sample
+restricted-lab clearance, the exact `mb-npm-sbx-45.0.2` tarball ran only inside disposable Linux
+VZ guests with its four exact public dependency tarballs, restrictive host networking, no
+sync-back, and no live second-stage fetching. The `CI=false` profile completed package execution,
+stopped its VM, destroyed its clone, and produced a 73-event typed behavior bundle. A
+subscription-backed, observe-only Codex panel independently classified that bundle as malicious:
+it cited the npm lifecycle execution, two credential-file open/read clusters, repeated outbound
+connection attempts, and repeated sends to the local sinkhole. It explicitly did not infer which
+payload bytes were sent or claim successful credential exfiltration.
+
+The paired `CI=true` guest reached the package runtime but its protected file sensor faulted before
+it could seal a partial execution receipt. The VM stopped, the helper exited, and the lab was left
+with no running VZ process or disposable clone, but the strict campaign correctly remains
+incomplete because that teardown and evidence set are not represented by a complete run receipt.
+The fault is now localized to the file collector rather than npm resolution, VM startup, or the
+offline closure. The narrow diagnostic repair is now implemented without changing limits or fault
+semantics. The full 278-test VM library, strict linting, Linux ARM64 build, and physical runtime
+qualification all pass; the rebuilt runtime then repeated the inert dependency-bearing npm run
+under both CI profiles, producing two 29-event bundles with verified stop, clone destruction, no
+public route, and no sync-back. The next step is a fresh, full two-profile real run so the exact
+allowlisted file-sensor cause is either revealed or shown to be resolved.
+
 The remaining Telnyx sdist was then prepared from its sealed exact-hash custody record on the cloud
 Mac without invoking WhoaThere, a VM, AI, or package code. Deterministic inspection of that exact
 artifact found three behavior-eligible capability chains, including download-and-execute behavior
@@ -99,16 +121,15 @@ signs the bundle, and verifies publication without accepting operator-authored p
 
 This is meaningful detection progress, but the public claim remains deliberately unchanged. The
 three verified Telnyx projections still need to be signed into a freshly frozen, manifest-bound
-campaign. The npm closure path has now crossed its inert physical gate; the next restricted step
-is to seal the sample's exact public dependency closure, restore the lab's restrictive network
-policy and fresh clearance, and run its two-profile VM experiment. A first Node lifecycle
-environment-read sensor passes its local mechanics tests, but a focused review correctly found
-that package code could imitate its writable marker. It remains supporting telemetry rather than
-claim-bearing evidence. Physical results also lack independently verified host composition and the
-complete dynamic event denominator required for clean or admission decisions. The July
-restricted-malware baseline therefore remains 7/11. A strict four-sample rerun can establish a
-separate 4/4 prior-miss result; only the subsequent full eleven-sample rerun can establish a new
-11/11 baseline. See the
+campaign. The real npm run now adds strong behavior-specific supporting evidence, but its failed
+`CI=true` receipt must be repaired and rerun before the paired result can enter that campaign. A
+first Node lifecycle environment-read sensor passes its local mechanics tests, but a focused
+review correctly found that package code could imitate its writable marker. It remains supporting
+telemetry rather than claim-bearing evidence. Physical results also lack independently verified
+host composition and the complete dynamic event denominator required for clean or admission
+decisions. The July restricted-malware baseline therefore remains 7/11. A strict four-sample
+rerun can establish a separate 4/4 prior-miss result; only the subsequent full eleven-sample rerun
+can establish a new 11/11 baseline. See the
 [execution plan](docs/product-build-run/artifact-native-detection-execution-plan.md) and
 [blocker queue](docs/product-build-run/detection-blocker-queue.md).
 
@@ -157,9 +178,11 @@ Avoid claims such as:
 
 Next gates before a detection-credible beta:
 
-- Complete the separately approved two-profile `sbx` experiment using its exact public dependency
-  closure, restrictive lab networking, fresh clearance, no sync-back, and no live C2 or second
-  stage.
+- Publish the allowlisted file-sensor fault reason exposed by the real `sbx` `CI=true` run, qualify
+  the diagnostic-only runtime change on inert inputs, and rerun the complete two-profile product
+  experiment under fresh clearance. Preserve the already positive `CI=false` Codex result as
+  supporting evidence, but do not score the pair until both expected profiles are complete in the
+  same fresh run.
 - Measure the 40-artifact development benign cohort and correct practical false-malicious or
   unsupported results.
 - Stage only separately approved samples from restored exact-hash custody, rerun the four prior

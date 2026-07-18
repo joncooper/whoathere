@@ -17,8 +17,12 @@ use std::io::{self, Read};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 #[cfg(target_os = "linux")]
 use std::os::unix::ffi::OsStringExt;
+#[cfg(any(target_os = "linux", test))]
+use std::sync::atomic::{AtomicU8, Ordering};
 #[cfg(target_os = "linux")]
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
+#[cfg(target_os = "linux")]
+use std::sync::Arc;
 #[cfg(target_os = "linux")]
 use std::thread::JoinHandle;
 #[cfg(target_os = "linux")]
@@ -89,6 +93,68 @@ impl LinuxVzPackageRootFileCollectorErrorV1 {
             Self::Worker => "linux_vz_package_root_file_worker_failed",
         }
     }
+
+    #[cfg(any(target_os = "linux", test))]
+    const fn fault_code_v1(self) -> u8 {
+        match self {
+            #[cfg(not(target_os = "linux"))]
+            Self::UnsupportedPlatform => 1,
+            Self::PrivilegeBoundary => 2,
+            Self::InvalidConfiguration => 3,
+            Self::InvalidState => 4,
+            Self::OpenFailed => 5,
+            Self::WorkspaceInvalid => 6,
+            Self::SnapshotFailed => 7,
+            Self::SnapshotRace => 8,
+            Self::SnapshotLimitExceeded => 9,
+            Self::FanotifyUnavailable => 10,
+            Self::FanotifyMarkFailed => 11,
+            Self::FanotifyReadFailed => 12,
+            Self::FanotifyEventInvalid => 13,
+            Self::FanotifyResponseFailed => 14,
+            Self::FanotifyQueueOverflow => 15,
+            Self::ActorCorrelationFailed => 16,
+            Self::PreReleaseEvent => 17,
+            Self::EventLimitExceeded => 18,
+            Self::Worker => 19,
+        }
+    }
+
+    #[cfg(any(target_os = "linux", test))]
+    const fn reason_code_from_fault_code_v1(code: u8) -> Option<&'static str> {
+        match code {
+            1 => Some("linux_vz_package_root_file_platform_unsupported"),
+            2 => Some("linux_vz_package_root_file_privilege_invalid"),
+            3 => Some("linux_vz_package_root_file_configuration_invalid"),
+            4 => Some("linux_vz_package_root_file_state_invalid"),
+            5 => Some("linux_vz_package_root_file_open_failed"),
+            6 => Some("linux_vz_package_root_file_workspace_invalid"),
+            7 => Some("linux_vz_package_root_file_snapshot_failed"),
+            8 => Some("linux_vz_package_root_file_snapshot_race"),
+            9 => Some("linux_vz_package_root_file_snapshot_limit_exceeded"),
+            10 => Some("linux_vz_package_root_file_fanotify_unavailable"),
+            11 => Some("linux_vz_package_root_file_fanotify_mark_failed"),
+            12 => Some("linux_vz_package_root_file_fanotify_read_failed"),
+            13 => Some("linux_vz_package_root_file_fanotify_event_invalid"),
+            14 => Some("linux_vz_package_root_file_fanotify_response_failed"),
+            15 => Some("linux_vz_package_root_file_fanotify_queue_overflow"),
+            16 => Some("linux_vz_package_root_file_actor_correlation_failed"),
+            17 => Some("linux_vz_package_root_file_prerelease_event"),
+            18 => Some("linux_vz_package_root_file_event_limit_exceeded"),
+            19 => Some("linux_vz_package_root_file_worker_failed"),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn load_root_file_fault_reason_code_v1(
+    fault_code: &AtomicU8,
+) -> Result<&'static str, LinuxVzPackageRootFileCollectorErrorV1> {
+    LinuxVzPackageRootFileCollectorErrorV1::reason_code_from_fault_code_v1(
+        fault_code.load(Ordering::Acquire),
+    )
+    .ok_or(LinuxVzPackageRootFileCollectorErrorV1::Worker)
 }
 
 impl fmt::Display for LinuxVzPackageRootFileCollectorErrorV1 {
@@ -1016,6 +1082,7 @@ pub(crate) struct LinuxVzPackageRootFileCollectorV1 {
     expected_cgroup_id: u64,
     leader_pid: Option<u32>,
     fault_signal_read: OwnedFd,
+    fault_code: Arc<AtomicU8>,
     command_sender: Option<SyncSender<LinuxVzPackageRootFileWorkerCommandV1>>,
     worker: Option<JoinHandle<()>>,
 }
@@ -1064,6 +1131,7 @@ struct LinuxVzPackageRootFileWorkerV1 {
     workspace: File,
     fanotify: Option<OwnedFd>,
     fault_signal_write: OwnedFd,
+    fault_code: Arc<AtomicU8>,
     baseline: LinuxVzPackageRootFileSnapshotV1,
     maximum_source_events: usize,
     leader_pid: Option<u32>,
@@ -1102,6 +1170,8 @@ impl LinuxVzPackageRootFileCollectorV1 {
         validate_workspace_v1(&workspace)?;
         let baseline = snapshot_workspace_v1(&workspace)?;
         let (fault_signal_read, fault_signal_write) = create_pipe_v1()?;
+        let fault_code = Arc::new(AtomicU8::new(0));
+        let worker_fault_code = Arc::clone(&fault_code);
         let (command_sender, command_receiver) = mpsc::sync_channel(1);
         let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
         let worker = std::thread::Builder::new()
@@ -1115,6 +1185,7 @@ impl LinuxVzPackageRootFileCollectorV1 {
                     baseline,
                     maximum_source_events,
                     fault_signal_write,
+                    worker_fault_code,
                     ready_sender,
                     command_receiver,
                 );
@@ -1126,6 +1197,7 @@ impl LinuxVzPackageRootFileCollectorV1 {
                 expected_cgroup_id,
                 leader_pid: None,
                 fault_signal_read,
+                fault_code,
                 command_sender: Some(command_sender),
                 worker: Some(worker),
             }),
@@ -1199,6 +1271,12 @@ impl LinuxVzPackageRootFileCollectorV1 {
                 return Err(LinuxVzPackageRootFileCollectorErrorV1::Worker);
             }
         }
+    }
+
+    pub(crate) fn fault_reason_code_v1(
+        &self,
+    ) -> Result<&'static str, LinuxVzPackageRootFileCollectorErrorV1> {
+        load_root_file_fault_reason_code_v1(&self.fault_code)
     }
 
     pub(crate) fn finish_after_empty_cgroup_v1(
@@ -1311,6 +1389,7 @@ fn run_root_file_worker_v1(
     baseline: LinuxVzPackageRootFileSnapshotV1,
     maximum_source_events: usize,
     fault_signal_write: OwnedFd,
+    fault_code: Arc<AtomicU8>,
     ready_sender: SyncSender<
         Result<LinuxVzPackageRootFileWorkerReadyV1, LinuxVzPackageRootFileCollectorErrorV1>,
     >,
@@ -1336,6 +1415,7 @@ fn run_root_file_worker_v1(
         workspace,
         fanotify: Some(fanotify),
         fault_signal_write,
+        fault_code,
         baseline,
         maximum_source_events,
         leader_pid: None,
@@ -1739,6 +1819,8 @@ impl LinuxVzPackageRootFileWorkerV1 {
             return;
         }
         self.fault = Some(error);
+        self.fault_code
+            .store(error.fault_code_v1(), Ordering::Release);
         let marker = [1_u8];
         loop {
             let result = unsafe {
@@ -2907,9 +2989,48 @@ mod tests {
 
     #[test]
     fn reason_codes_are_stable_and_non_linux_constructor_is_closed() {
+        let errors = [
+            #[cfg(not(target_os = "linux"))]
+            LinuxVzPackageRootFileCollectorErrorV1::UnsupportedPlatform,
+            LinuxVzPackageRootFileCollectorErrorV1::PrivilegeBoundary,
+            LinuxVzPackageRootFileCollectorErrorV1::InvalidConfiguration,
+            LinuxVzPackageRootFileCollectorErrorV1::InvalidState,
+            LinuxVzPackageRootFileCollectorErrorV1::OpenFailed,
+            LinuxVzPackageRootFileCollectorErrorV1::WorkspaceInvalid,
+            LinuxVzPackageRootFileCollectorErrorV1::SnapshotFailed,
+            LinuxVzPackageRootFileCollectorErrorV1::SnapshotRace,
+            LinuxVzPackageRootFileCollectorErrorV1::SnapshotLimitExceeded,
+            LinuxVzPackageRootFileCollectorErrorV1::FanotifyUnavailable,
+            LinuxVzPackageRootFileCollectorErrorV1::FanotifyMarkFailed,
+            LinuxVzPackageRootFileCollectorErrorV1::FanotifyReadFailed,
+            LinuxVzPackageRootFileCollectorErrorV1::FanotifyEventInvalid,
+            LinuxVzPackageRootFileCollectorErrorV1::FanotifyResponseFailed,
+            LinuxVzPackageRootFileCollectorErrorV1::FanotifyQueueOverflow,
+            LinuxVzPackageRootFileCollectorErrorV1::ActorCorrelationFailed,
+            LinuxVzPackageRootFileCollectorErrorV1::PreReleaseEvent,
+            LinuxVzPackageRootFileCollectorErrorV1::EventLimitExceeded,
+            LinuxVzPackageRootFileCollectorErrorV1::Worker,
+        ];
+        let mut reason_codes = BTreeSet::new();
+        let mut fault_codes = BTreeSet::new();
+        for error in errors {
+            assert!(reason_codes.insert(error.reason_code()));
+            assert!(fault_codes.insert(error.fault_code_v1()));
+            assert_eq!(error.to_string(), error.reason_code());
+            assert_eq!(
+                LinuxVzPackageRootFileCollectorErrorV1::reason_code_from_fault_code_v1(
+                    error.fault_code_v1()
+                ),
+                Some(error.reason_code())
+            );
+        }
         assert_eq!(
-            LinuxVzPackageRootFileCollectorErrorV1::FanotifyQueueOverflow.reason_code(),
-            "linux_vz_package_root_file_fanotify_queue_overflow"
+            LinuxVzPackageRootFileCollectorErrorV1::reason_code_from_fault_code_v1(0),
+            None
+        );
+        assert_eq!(
+            LinuxVzPackageRootFileCollectorErrorV1::reason_code_from_fault_code_v1(u8::MAX),
+            None
         );
         #[cfg(not(target_os = "linux"))]
         assert!(matches!(
@@ -2921,5 +3042,22 @@ mod tests {
             ),
             Err(LinuxVzPackageRootFileCollectorErrorV1::UnsupportedPlatform)
         ));
+    }
+
+    #[test]
+    fn published_fault_reason_uses_release_acquire_and_rejects_missing_codes() {
+        let fault_code = AtomicU8::new(0);
+        assert_eq!(
+            load_root_file_fault_reason_code_v1(&fault_code),
+            Err(LinuxVzPackageRootFileCollectorErrorV1::Worker)
+        );
+        fault_code.store(
+            LinuxVzPackageRootFileCollectorErrorV1::EventLimitExceeded.fault_code_v1(),
+            Ordering::Release,
+        );
+        assert_eq!(
+            load_root_file_fault_reason_code_v1(&fault_code),
+            Ok("linux_vz_package_root_file_event_limit_exceeded")
+        );
     }
 }

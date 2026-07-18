@@ -1435,6 +1435,7 @@ impl LinuxVzPackageRootSensorServiceCollectorV1 for LinuxVzPackageRootProcessSer
     fn fault_reason_code_v1(&self, descriptor_index: usize) -> Option<&'static str> {
         match descriptor_index {
             0 => self.process.as_ref()?.fault_reason_code_v1().ok(),
+            1 => self.file.as_ref()?.fault_reason_code_v1().ok(),
             _ => None,
         }
     }

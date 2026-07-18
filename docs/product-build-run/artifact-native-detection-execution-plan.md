@@ -72,6 +72,36 @@ macOS-hosted local detection beta. Cloudflare and AWS portability are a separate
   the unavailable filesystem, canary, network, and evasion views plus all coverage gaps. It did
   not produce a clean or admission decision. The environment marker remains deliberately
   non-claim-bearing because package code could imitate it.
+- The qualified npm path was then used for one separately approved real-sample slice on the cloud
+  Mac. The exact `mb-npm-sbx-45.0.2` artifact and four exact public dependency tarballs were bound
+  to a fresh config and clearance. Host PF remained enabled with a default-deny ruleset, LuLu and
+  the local sinkhole remained active, no public route or sync-back was permitted, and no live
+  second stage was fetched.
+- The real `CI=false` profile completed both process actions and selected
+  `npm_install_exact_local_tarball`. Its receipt proves successful package execution, VM start and
+  stop, clone destruction, stable image identity, no public route, and no sync-back. It projected
+  a 73-event behavior bundle
+  `sha256:dfddf3a3...6d2b`. A subscription-backed Codex panel returned
+  `behavior_detected` with no role failures. Its specialists cited exact typed events for npm
+  lifecycle execution, two credential-file open/read clusters, repeated outbound connection
+  attempts, and repeated sends to the local sinkhole. The correlator explicitly declined to infer
+  payload content or successful credential exfiltration.
+- The paired real `CI=true` profile reached the package runtime, then the protected file collector
+  raised a runtime fault before a partial result could be sealed. The VM stopped and post-run lab
+  inspection found no running VZ process or remaining disposable clone, but the strict slice
+  correctly records physical evidence and safety as incomplete because there is no complete
+  execution receipt for that profile. The failure is localized to the file collector; the same
+  artifact, closure, runtime, and VM path already completed under `CI=false`.
+- The diagnostic fix is complete and bounded. The file collector now publishes its existing
+  allowlisted first-fault reason through the same release/acquire channel already used by the
+  process collector; limits, correlation, failure, and containment semantics are unchanged. The
+  full 278-test VM library and strict linting pass, the Linux ARM64 runtime
+  `sha256:4a2cfc8d...59de` was physically requalified as record
+  `sha256:26456661...e587`, and the inert dependency-bearing npm package again completed both CI
+  profiles with 29-event bundles, verified stop and clone destruction, no public route, and no
+  sync-back. Rerun the complete two-profile real experiment under fresh clearance. The successful
+  prior `CI=false` Codex result remains supporting evidence but cannot complete or rescore the
+  campaign by itself.
 - The exact `mb-telnyx-4.87.2-sdist` artifact was materialized from its sealed cloud-lab custody
   record through the new preparation-only path. The artifact digest matched
   `sha256:a9235c0e...33a5`, the custody and staging bindings verified, evidence was sealed, and the
@@ -104,12 +134,11 @@ macOS-hosted local detection beta. Cloudflare and AWS portability are a separate
 - All three Telnyx misses are therefore verified and semantically ready for the sealed
   `download_execute_capability -> second_stage_fetch` mapping. They are not claim-bearing yet
   because they have not been signed after a freshly frozen campaign manifest. The remaining
-  distinct sample gap is `mb-npm-sbx-45.0.2`, whose current static capability findings do not
-  legally satisfy its frozen runtime labels. Its inert dependency-bearing execution gate is now
-  complete. The next restricted-lab step is to acquire and seal the exact public closure, restore
-  the restrictive host network policy for the current operator address, issue a fresh clearance,
-  and run the real artifact under both CI profiles without sync-back, live C2, or second-stage
-  fetching.
+  distinct sample gap is `mb-npm-sbx-45.0.2`: it now has strong real dynamic and Codex evidence
+  from `CI=false`, but its expected paired `CI=true` result is incomplete and its current static
+  capability findings still do not legally satisfy the frozen runtime labels. Repairing and
+  rerunning the product's complete two-profile experiment is the shortest path to a complete npm
+  row; broad telemetry work remains deferred.
 - The strict July public baseline remains **7/11**. A manifest-bound four-sample campaign can
   establish a separate 4/4 prior-miss result; only a subsequent full eleven-sample campaign can
   establish a new 11/11 baseline. This checkpoint improves the shortest path to those gates; it
