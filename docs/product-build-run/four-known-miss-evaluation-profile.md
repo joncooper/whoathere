@@ -1,4 +1,38 @@
-# Four-known-miss evaluation profile
+# Four-known-miss evaluation profiles
+
+There are now two deliberately separate contracts:
+
+- [`four-known-miss-campaign-profile.v1.json`](./four-known-miss-campaign-profile.v1.json) remains
+  the original complete-run profile. It requires deterministic, Codex, and dynamic coverage and
+  still refuses authoritative compilation while the complete sdist execution path is blocked.
+- [`four-known-miss-positive-subscore-contract.v1.json`](./four-known-miss-positive-subscore-contract.v1.json)
+  is the R01 positive-only contract. It freezes exactly four behavior-positive rows without
+  pretending that incomplete coverage can pass completion/quality, overall evaluation, clean,
+  admission, or release gates.
+
+The positive-only contract permits only independently verified dynamic
+`environment_credential_read -> credential_env_access` evidence for the npm row and independently
+verified deterministic `download_execute_capability -> second_stage_fetch` evidence for each of
+the three Telnyx rows. It does not count a corpus label, package identity, hash, advisory,
+reputation signal, generic safe block, producer claim, or AI-authored label by itself.
+
+Validate the frozen semantic contract locally with:
+
+```sh
+scripts/whoathere-validate-four-known-miss-positive-subscore-contract.py \
+  --contract docs/product-build-run/four-known-miss-positive-subscore-contract.v1.json \
+  --complete-run-profile docs/product-build-run/four-known-miss-campaign-profile.v1.json
+```
+
+The accepted contract SHA-256 is
+`sha256:a47b8288c14c6c1eafb3976415fdc16a24ce0b85f06f4cf2c687ee50509ee053`; its artifact/profile
+denominator SHA-256 is
+`sha256:bdd99ff7ba8634dbcec7f98f442962a7c371437f9d0d3bcc9fd940f8af285c96`. R01 collects no
+evidence, so the validated positive subscore remains **0/4**. R02 next proves the scoring path with
+synthetic metadata; R02b freezes the mutable tool identities and collection window before any
+restricted evidence work begins.
+
+## Complete-run profile
 
 This profile freezes the next detection-bearing campaign around the four artifacts that the July
 1 run missed. It is a metadata-only planning and evaluation contract. Compiling it does not open,

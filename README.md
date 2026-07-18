@@ -236,6 +236,15 @@ restricted-malware baseline therefore remains 7/11. A strict four-sample publica
 a separate 4/4 prior-miss result; only the subsequent full eleven-sample rerun can establish a new
 11/11 baseline.
 
+The next claim-bearing step is no longer a moving target. R01 now freezes and fail-closed validates
+an exact positive-only four-row contract: one independently verified dynamic credential-read row
+for npm and three independently verified static download-and-execute capability rows for the
+Telnyx artifacts. Its canonical contract and denominator digests are tracked, and twenty-one
+mutation classes fail closed. No evidence was collected during this metadata-only step, so the
+validated subscore is still **0/4**. The contract explicitly prevents an eventual 4/4 positive
+subscore from being misreported as complete coverage, clean admission, release readiness, overall
+success, or a new 11-sample baseline.
+
 The product can now present that progress directly. The production `whoathere report render`
 command accepts the four source-free sanitized projections through a separate closed validator,
 checks their exact report digests and retained evidence bindings, and independently applies the
@@ -320,9 +329,11 @@ Avoid claims such as:
 
 Next gates before a detection-credible beta:
 
-- Freeze and publish one signed four-sample manifest that binds the three verified Telnyx
-  projections and the complete paired `sbx` VM/Codex result. Keep the split reconciliation
-  diagnostic-only until the strict producer/publisher path verifies every expected row.
+- Prove the frozen four-row positive-subscore path with synthetic signed metadata, then freeze the
+  exact tool identities and evaluation window before collecting restricted evidence.
+- Publish one signed four-sample result that binds the three verified Telnyx projections and an
+  independently verified `sbx` VM row. Keep the existing split reconciliation diagnostic-only
+  until the strict producer/publisher path verifies every expected row.
 - Measure the 40-artifact development benign cohort and correct practical false-malicious or
   unsupported results.
 - After the signed 4/4 publication passes, stage only separately approved samples from restored

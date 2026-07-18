@@ -1,0 +1,185 @@
+{
+  "canonicalization": "utf8-json-sort-keys-compact-no-nan-v1",
+  "claim_and_coverage_policy": {
+    "admission_authorized": false,
+    "full_corpus_baseline_claim_authorized": false,
+    "incomplete_coverage_is_completion_quality_pass": false,
+    "incomplete_coverage_preserves_independently_verified_positive": true,
+    "incomplete_without_verified_positive_is_detection_miss": true,
+    "observed_clean_authorized": false,
+    "overall_passed_authorized": false,
+    "release_authorized": false,
+    "required_publication_title_when_detection_passes_with_incomplete_coverage": "4/4 behavior-positive prior misses; incomplete coverage",
+    "sync_back_authorized": false
+  },
+  "contract_id": "four-prior-misses-positive-only-v1",
+  "contract_purpose": "behavior_positive_detection_subscore_only",
+  "detection_policy": {
+    "corpus_identity_hash_label_advisory_or_reputation_counts_as_detection": false,
+    "generic_safe_block_counts_as_detection": false,
+    "one_permitted_positive_satisfies_row": true,
+    "positive_must_be_independently_verified": true,
+    "producer_or_ai_authored_label_without_verified_evidence_counts_as_detection": false
+  },
+  "evaluation_window_policy": {
+    "manifest_must_be_frozen_before_or_at_window_start": true,
+    "maximum_result_to_registry_seconds_must_be_positive": true,
+    "maximum_result_to_registry_seconds_upper_bound": 600,
+    "observed_at_must_not_follow_result_created_at": true,
+    "result_created_at_must_not_follow_registry_created_at": true,
+    "result_observation_verification_and_registry_timestamps_must_be_inside_inclusive_window": true,
+    "starts_at_must_precede_ends_at": true,
+    "verified_at_must_not_follow_registry_created_at": true
+  },
+  "identity_policy": {
+    "change_after_freeze_invalidates_collected_rows": true,
+    "required_identity_fields": [
+      "contract_sha256",
+      "artifact_profile_denominator_sha256",
+      "source_revision",
+      "runtime_sha256",
+      "sensor_sha256",
+      "verifier_executable_sha256",
+      "verifier_public_key_sha256",
+      "projection_schema_sha256",
+      "prompt_set_sha256",
+      "model_identity",
+      "provider_adapter_sha256",
+      "policy_sha256",
+      "compiler_sha256",
+      "publisher_sha256",
+      "scorer_sha256",
+      "scorer_id"
+    ],
+    "unused_component_identity": "not_used",
+    "values_are_frozen_in_r02b_not_r01": true
+  },
+  "positive_profiles": [
+    {
+      "artifact_forms": [
+        "npm_tgz"
+      ],
+      "collection_mode": "fresh_disposable_linux_vz_guest",
+      "host_scope": "approved_remote_cloud_mac_lab_only",
+      "hosted_ai_policy": "observe_only_optional_no_positive_authority",
+      "network_policy": "sinkhole_only",
+      "permitted_positive_evidence": [
+        {
+          "behavior_label": "credential_env_access",
+          "evidence_type": "environment_credential_read",
+          "modality": "dynamic"
+        }
+      ],
+      "profile_id": "npm-exact-lifecycle-ci-matrix-positive-v1",
+      "required_scenarios": [
+        "ci_false",
+        "ci_true"
+      ],
+      "sync_back": false
+    },
+    {
+      "artifact_forms": [
+        "wheel",
+        "sdist"
+      ],
+      "collection_mode": "measured_static_exact_archive_no_package_execution",
+      "host_scope": "approved_remote_cloud_mac_lab_only",
+      "hosted_ai_policy": "not_invoked",
+      "network_policy": "no_network",
+      "permitted_positive_evidence": [
+        {
+          "behavior_label": "second_stage_fetch",
+          "evidence_type": "download_execute_capability",
+          "modality": "deterministic"
+        }
+      ],
+      "profile_id": "pypi-exact-archive-static-capability-positive-v1",
+      "required_scenarios": [
+        "exact_archive_static_projection"
+      ],
+      "sync_back": false
+    }
+  ],
+  "rows": [
+    {
+      "artifact_form": "npm_tgz",
+      "artifact_sha256": "sha256:0b8e586c7a91fce4fac8296a069c1c5e673046261958e9ba519e6b6e3b458933",
+      "ecosystem": "npm",
+      "expected_result": "malicious",
+      "positive_profile_id": "npm-exact-lifecycle-ci-matrix-positive-v1",
+      "required_behavior_labels": [
+        "credential_env_access"
+      ],
+      "row_id": "mb-npm-sbx-45.0.2-positive",
+      "sample_id": "mb-npm-sbx-45.0.2",
+      "source_complete_run_profile_id": "npm-exact-lifecycle-ci-matrix-v1",
+      "source_complete_run_profile_sha256": "sha256:3f30cf9b63d205fc063108ff86765de30e7b83de83c924c2284a5a59b1d727ba"
+    },
+    {
+      "artifact_form": "wheel",
+      "artifact_sha256": "sha256:7321caa303fe96ded0492c747d2f353c4f7d17185656fe292ab0a59e2bd0b8d9",
+      "ecosystem": "pypi",
+      "expected_result": "malicious",
+      "positive_profile_id": "pypi-exact-archive-static-capability-positive-v1",
+      "required_behavior_labels": [
+        "second_stage_fetch"
+      ],
+      "row_id": "mb-telnyx-4.87.1-wheel-positive",
+      "sample_id": "mb-telnyx-4.87.1-wheel",
+      "source_complete_run_profile_id": "wheel-exact-complete-trigger-matrix-v1",
+      "source_complete_run_profile_sha256": "sha256:9da59e60f1554b30b0fe4859ea9dd09712483d82f8472db789519212eb9c34d8"
+    },
+    {
+      "artifact_form": "wheel",
+      "artifact_sha256": "sha256:cd08115806662469bbedec4b03f8427b97c8a4b3bc1442dc18b72b4e19395fe3",
+      "ecosystem": "pypi",
+      "expected_result": "malicious",
+      "positive_profile_id": "pypi-exact-archive-static-capability-positive-v1",
+      "required_behavior_labels": [
+        "second_stage_fetch"
+      ],
+      "row_id": "mb-telnyx-4.87.2-wheel-positive",
+      "sample_id": "mb-telnyx-4.87.2-wheel",
+      "source_complete_run_profile_id": "wheel-exact-complete-trigger-matrix-v1",
+      "source_complete_run_profile_sha256": "sha256:d8c0689e15ca579b22f3754063d24b8db15e3e1ddc6f7ecc002356168e24338e"
+    },
+    {
+      "artifact_form": "sdist",
+      "artifact_sha256": "sha256:a9235c0eb74a8e92e5a0150e055ee9dcdc6252a07785b6677a9ca831157833a5",
+      "ecosystem": "pypi",
+      "expected_result": "malicious",
+      "positive_profile_id": "pypi-exact-archive-static-capability-positive-v1",
+      "required_behavior_labels": [
+        "second_stage_fetch"
+      ],
+      "row_id": "mb-telnyx-4.87.2-sdist-positive",
+      "sample_id": "mb-telnyx-4.87.2-sdist",
+      "source_complete_run_profile_id": "sdist-exact-build-derived-wheel-matrix-v1",
+      "source_complete_run_profile_sha256": "sha256:3b4dfb4a33cc2b139b29c975430b44122a51370ecc87cfd95e9edffa814f4910"
+    }
+  ],
+  "safety_policy": {
+    "required_zero_invariants": [
+      "host_package_execution",
+      "sync_back",
+      "unsafe_allow_or_admission",
+      "restricted_material_leak",
+      "live_c2_contact",
+      "live_second_stage_fetch",
+      "invalid_or_unverified_teardown"
+    ],
+    "unknown_fails": true
+  },
+  "schema": "whoathere.four_known_miss_positive_subscore_contract.v1",
+  "source_complete_run_profile_binding": {
+    "campaign_profile_id": "four-prior-misses-v1",
+    "profile_file_sha256": "sha256:f8e45c1ccb191a1e621f474fb93151c6feca9b86fc4082948259019ed6e85179"
+  },
+  "thresholds": {
+    "behavior_positive_rate_min": 1.0,
+    "required_behavior_positive_count": 4,
+    "required_row_count": 4,
+    "required_run_completion_rate_min": 1.0,
+    "safety_pass_rate_min": 1.0
+  }
+}

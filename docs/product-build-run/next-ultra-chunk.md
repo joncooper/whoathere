@@ -1,225 +1,94 @@
-# Next Ultra Chunk: P07 One-Command Inert End-to-End Demo
+# Next Ultra Chunk: R01 Freeze the Positive-Only Four-Miss Contract
 
-Status: complete. P06 is complete and pushed at `fa6fc4c`; the final P07 implementation passed one
-fresh uninterrupted default invocation on 2026-07-18. R01 is next but remains outside the current
-P04-P07 goal.
+Status: complete. P07 is complete and pushed at `c1f3e08`. R01 is accepted on its dedicated branch.
+R02 is ready but has not begun and must be instantiated as a separate bounded chunk.
 
 Updated: 2026-07-18
 
-## Immutable execution contract
-
-- Branch: `codex/p07-inert-end-to-end-demo`, based on accepted P06 commit `fa6fc4c`.
-- Budget: 2-4 hours of focused implementation, excluding one independent final verification.
-- The read-only Ultra input audit is complete. It selected a thin two-host orchestration script
-  around existing production commands; no new Rust, VM protocol, evaluator, evidence signer,
-  profile subsystem, or remote-execution framework is permitted.
-- Use the already-qualified Linux VZ runtime and helper. Only a fresh no-closure detonation
-  configuration and fresh output locations may be staged on the approved cloud Mac.
-- At four focused implementation hours, preserve the exact blocker and stop rather than expanding
-  the architecture.
-
-Primary metric: one local command performs preflight, exact-artifact static inspection, both fresh
-npm VM profiles, sanitized export, local subscription-backed Codex observation, cross-host
-reconciliation, and a concise human result.
-
-P07 proves a usable end-to-end product path. It does not change the finalized July experimental
-baseline of 7/11 and is not a claim-bearing evaluation result.
-
 ## Accepted result
 
-- The final bounded operator command composes P06, exact-artifact inspection, both npm CI profiles,
-  strict sanitized export, local subscription-backed Codex observation, cross-host reconciliation,
-  and the final human transcript. Focused hermetic tests exercise that default path.
-- Exact artifact digest:
-  `sha256:6d487f71d980a0ab8dc4aab303f99f9576e3d335d7cef3ab88463e87e41168ff`.
-- `CI=false` produced 20 typed events and one Codex lifecycle finding with an exact event-hash
-  citation.
-- `CI=true` produced 24 typed events, including three authenticated fake-token canary reads and a
-  local-sinkhole connection. Codex cited lifecycle, canary access, and the outbound connection.
-- Both VM/profile rows bind execution-result, root-receipt, host-receipt, bundle, and observer
-  identities. Both VMs stopped, both clones were destroyed, images remained stable, no public route
-  or sync-back existed, and all six canonical safety-invariant counts were zero.
-- Coverage remained incomplete; the result was `BLOCK`, diagnostic-only, observe-only, and never
-  clean, admitted, installed, or allowed.
-- The focused fake-runner suite covers preflight-before-execution, digest substitution, transfer
-  allowlisting, profile/bundle cardinality, safety proof, citation integrity, and transcript
-  redaction.
-- The first physical attempt preserved evidence but stopped at a stale remote exporter that did not
-  understand the sanitizer's typed static citation. One bounded repair staged the already-tested
-  current exporter and refreshed P06. The next remote run completed both VM profiles and the strict
-  export, then exposed two wrapper-only assumptions—requiring a post-connect send event and
-  rejecting the observer's valid exit 0. After those corrections, local observation,
-  reconciliation, and transcript generation completed through the earlier resume path. The final
-  explicit producer-plan-bound resume and remaining digest joins were implemented afterward.
-- A new final invocation then ran the default command from fresh P06-bound remote and local roots.
-  It completed preflight, both VM profiles, export, both Codex observations, reconciliation, and
-  transcript generation in one process with `Execution mode: fresh end-to-end invocation`.
+- The metadata-only validator accepts exactly four distinct artifact/profile rows.
+- Canonical contract SHA-256:
+  `sha256:a47b8288c14c6c1eafb3976415fdc16a24ce0b85f06f4cf2c687ee50509ee053`.
+- Artifact/profile denominator SHA-256:
+  `sha256:bdd99ff7ba8634dbcec7f98f442962a7c371437f9d0d3bcc9fd940f8af285c96`.
+- The original complete-run profile remains byte-for-byte unchanged at
+  `sha256:f8e45c1ccb191a1e621f474fb93151c6feca9b86fc4082948259019ed6e85179`.
+- Twenty-one semantic mutation classes fail closed; the 22-case hermetic suite passes.
+- The existing complete-run compiler and evaluator-v2 hermetic suites pass.
+- Independent final verification returned `GO`.
+- No package, evidence, cloud host, VM, hosted AI, malware, or private data was accessed.
+- The validated positive subscore remains `0/4`; the finalized July experimental baseline remains
+  `7/11`.
 
-The final command is therefore physically accepted. The earlier resumed attempt remains recorded as
-qualification history rather than being substituted for the final result.
+## Frozen user outcome
 
-## Canonical inert artifact
+An evaluator can read and fail-closed validate one tracked, exact four-row behavior-positive
+detection-subscore contract before any evidence is collected.
 
-Use the tracked deterministic fixture builder to produce exactly:
+Primary metric: the canonical contract validates as exactly four distinct artifact/profile rows,
+while every tested denominator, label, modality, threshold, claim-boundary, window-policy, or
+identity-field mutation fails.
 
-```text
-whoathere-fixture-npm-ci-canary-1.0.0.tgz
-sha256:6d487f71d980a0ab8dc4aab303f99f9576e3d335d7cef3ab88463e87e41168ff
-```
+## Scope
 
-The artifact has no dependencies and no publication authority. Its postinstall lifecycle code:
+R01 adds only:
 
-- records an inert package-written marker in both CI profiles;
-- only under `CI=true`, reads the runtime's seeded fake npm-token file;
-- only under `CI=true`, connects to `127.0.0.1:48739` and sends a constant inert marker;
-- never sends canary bytes, reaches a public destination, fetches a second stage, or writes outside
-  the disposable guest workspace.
+1. a separate positive-only contract for the four artifacts missed by the July experimental run;
+2. a metadata-only validator with an independently pinned semantic contract;
+3. focused hermetic mutation tests; and
+4. concise canonical documentation of what the contract can and cannot claim.
 
-Package-written markers are supporting-only. They cannot establish a behavior detection, evidence
-authenticity, safety, or clean status.
+The existing complete-run profile remains byte-for-byte unchanged. R01 freezes semantic profile
+and artifact bindings, not mutable executable or provider digests; those are frozen only in R02b
+after the synthetic R02 path passes.
 
-## User-facing command
+R01 performs no package access, archive inspection, evidence collection, scoring, cloud access,
+VM start, hosted AI invocation, or malware execution.
 
-```text
-scripts/whoathere-inert-e2e-demo.py \
-  --input <absolute-private-p07-plan.json> \
-  --input-sha256 sha256:<exact-plan-digest> \
-  --ssh-config <absolute-private-ssh-config>
-```
+## Frozen four-row denominator
 
-The command returns success only when the complete demo and all bindings validate. Its displayed
-package action is `BLOCK` or `REVIEW`; operational success never means `ALLOW`, clean, admitted, or
-safe to install.
+| Row | Exact form | Positive-only profile | Required behavior-positive evidence |
+| --- | --- | --- | --- |
+| `mb-npm-sbx-45.0.2` | npm tgz | paired exact lifecycle VM profiles | independently verified dynamic `environment_credential_read` -> `credential_env_access` |
+| `mb-telnyx-4.87.1-wheel` | wheel | measured exact-archive static capability | independently verified deterministic `download_execute_capability` -> `second_stage_fetch` |
+| `mb-telnyx-4.87.2-wheel` | wheel | measured exact-archive static capability | independently verified deterministic `download_execute_capability` -> `second_stage_fetch` |
+| `mb-telnyx-4.87.2-sdist` | sdist | measured exact-archive static capability | independently verified deterministic `download_execute_capability` -> `second_stage_fetch` |
 
-## Closed private plan
+Every row also binds its exact artifact SHA-256 and the corresponding complete-run profile ID for
+lineage. Corpus names, hashes, labels, advisories, reputation, a generic safe block, producer prose,
+or an AI-authored label cannot satisfy the subscore.
 
-Schema: `whoathere.inert_e2e_demo_input.v1`. Unknown fields are rejected.
+## Claim and gate semantics
 
-The plan binds:
+- One permitted independently verified positive satisfies one row.
+- A missing, invalid, inconclusive, or positive-free row is a detection miss.
+- A valid positive survives incomplete sibling coverage.
+- Incomplete coverage fails completion/quality and can never produce observed-clean, admission,
+  release, sync-back, or overall success.
+- The positive-only profile itself never creates a full-corpus-baseline or broad-detection claim.
+- Detection requires 4/4, and safety independently requires every canonical safety invariant to be
+  zero; `unknown` fails.
+- R02b must freeze a window whose manifest predates collection and whose results, verification,
+  and registry timestamps are bounded and ordered.
+- R02b must freeze every named code, runtime, sensor, verifier, prompt, model, provider, policy,
+  compiler, publisher, and scorer identity. A component not used is frozen as `not_used`, never
+  silently omitted.
 
-1. `demo`: one bounded demo ID, the exact artifact filename, byte length, and SHA-256.
-2. `preflight`: the P06 implementation, exact private P06 input, detached input digest, and expected
-   campaign/profile identity.
-3. `remote`: SSH alias plus exact absolute paths and SHA-256 identities for the staged artifact,
-   WhoaThere binary, no-closure detonation configuration, sanitizer, fresh state/output/export
-   roots, and approved remote Python interpreter.
-4. `local`: exact WhoaThere binary and native Codex client identities, exact model, dedicated
-   subscription-authenticated auth home, timeout, and a fresh ignored output root.
-5. `policy`: both required profiles, loopback sinkhole destination, hosted-behavior-review approval,
-   no raw export, no remote AI/auth, no sync-back, and no admission authority.
+## Acceptance
 
-The plan contains no password, private key, canary value, API key, raw telemetry, or restricted
-artifact path. Input and SSH files remain ignored and mode-private.
+1. The tracked contract validates through one documented metadata-only command and reports four
+   unique rows, the exact permitted modalities, and a canonical contract SHA-256.
+2. The validator rejects unknown or missing fields, row omission/duplication/reordering,
+   artifact/form/profile substitution, behavior/evidence/modality widening, threshold relaxation,
+   claim-boundary relaxation, window-policy relaxation, and identity-field changes.
+3. The existing complete-run profile has no diff.
+4. Focused tests are hermetic and use only synthetic metadata mutations.
+5. Documentation says `0/4` validated positive-subscore rows until R04/R05 collect evidence and
+   preserves the finalized July experimental baseline at `7/11`.
+6. The branch is reviewed, committed, and pushed. Work stops before R02.
 
-## Existing stages to compose
+## Stop rule
 
-The wrapper performs only this sequence:
-
-1. Run `whoathere-cloud-lab-preflight.py` and require fresh `READY` for the exact no-closure config.
-2. Over the pinned SSH route, re-hash the staged inert artifact and bound executables/configuration,
-   require all fresh output paths to be absent, then run the existing remote production command:
-
-   ```text
-   whoathere artifact inspect <exact-inert.tgz> \
-     --ecosystem npm \
-     --state-dir <fresh-private-state> \
-     --detonation \
-     --detonation-config <exact-no-closure-config.json>
-   ```
-
-3. Reuse `sanitize_exact_artifact_report()` from the existing Step 5 harness, then run
-   `whoathere-export-split-behavior.py` remotely.
-4. Transfer only the sanitized report, export manifest, two typed behavior bundles, and a bounded
-   safety projection. Artifact bytes, source, raw receipts, raw streams, packet captures, logs,
-   canary values, Codex credentials, and private remote paths do not cross hosts.
-5. Run local `whoathere behavior observe` once for each exact bundle with the saved subscription,
-   native Codex client, exact client digest, exact model, empty private work state, hosted review
-   explicitly approved, and no web or tools.
-6. Run `whoathere-two-host-behavior-diagnostic.py` to recheck artifact, manifest, scenario, bundle,
-   observer, finding, and event-citation continuity.
-7. Render one concise transcript from the validated diagnostic and safety projection.
-
-No Codex binary or authentication material is installed or copied to the cloud Mac.
-
-## Safety proof and transcript contract
-
-The remote projection is allowlisted and bounded. For both `CI=false` and `CI=true`, it binds the
-exact execution result, behavior bundle, root receipt, and host-composite receipt and reports:
-
-- VM started and stopped;
-- clone destroyed;
-- image identity stable;
-- public route absent;
-- sync-back false;
-- authoritative verdict false;
-- package execution occurred only through the Linux VZ guest provider; and
-- coverage limitations remain explicit.
-
-The final transcript contains:
-
-- `BLOCK` or `REVIEW`, never `ALLOW` or clean;
-- exact artifact, manifest, scenario-plan, detonation-result, bundle, observer-result, root-receipt,
-  and host-receipt digests;
-- distinct `CI=false` and `CI=true` rows;
-- authenticated lifecycle evidence in both profiles;
-- protected fake-canary-file access and local-sinkhole connection intent, with send activity shown
-  when observed;
-- Codex findings with exact event-ID and event-hash citations;
-- package-written marker evidence labeled supporting-only;
-- incomplete coverage and no installation, containment, admission, or sync-back authority; and
-- the canonical invariant counts: zero host package executions, sync-backs, unsafe allows,
-  restricted-material leaks, live-C2 contacts, and live second-stage fetches, with receipt refs.
-
-Because the artifact is wholly inert and contains no restricted material, the restricted-material
-count is zero by construction as well as by export policy. A public route is absent, so the fixed
-loopback sinkhole cannot become live C2.
-
-## Frozen acceptance criteria
-
-1. One documented local command completes the existing finite npm CI-paired workflow.
-2. P06 failure, plan mismatch, artifact/config/tool digest mismatch, or non-fresh output prevents
-   artifact execution.
-3. Exactly two fresh VM profiles and two report-bound bundles validate; missing, duplicate, extra,
-   or mismatched profiles/bundles fail.
-4. Exact artifact and manifest identities remain continuous through static analysis, scenario,
-   detonation, bundles, Codex results, reconciliation, and transcript.
-5. Typed lifecycle evidence appears in both profiles. Protected canary-file access plus local
-   sinkhole connection intent appears in `CI=true`; send activity is displayed when observed.
-6. Every displayed Codex citation resolves to an exact verified event ID and event SHA-256. Codex
-   cannot change containment, evidence authenticity, admission, or the safety result.
-7. Both VMs stop, both clones are destroyed, both image identities remain stable, no public route
-   or sync-back exists, and all canonical invariant counts are zero with receipt references.
-8. The package-written marker remains explicitly supporting-only. Incomplete coverage without a
-   validated positive produces `REVIEW`; incomplete coverage never produces clean or allow.
-9. Only the strict sanitized export and bounded safety projection cross from cloud to local. No
-   artifact/source bytes, raw telemetry, raw receipts, logs, canary values, private paths, or remote
-   Codex/auth invocation occur.
-10. The final transcript contains no secret, canary value, IP address, SSH detail, private path, or
-    untrusted package prose and is suitable for README/portfolio publication.
-
-## Required checks
-
-- Focused fake-runner self-test for orchestration, fail-before-execution, digest continuity,
-  profile cardinality, safe transfer allowlist, citation validation, safety proof, and transcript
-  redaction.
-- Existing fixture-builder/sealed-digest check.
-- Existing exporter, two-host diagnostic, and behavior-observer focused tests.
-- Python compilation, `git diff --check`, and secret/private-path scan.
-- One physical run on the approved cloud Mac using only the canonical inert fixture.
-- One independent Ultra verification after the physical transcript is sanitized.
-
-## Stop and parking rule
-
-After one bounded operational repair, park P07 and record the exact blocker if:
-
-- refreshed P06 is not green;
-- the canonical fixture cannot bind the no-closure config;
-- either VM lacks teardown or safety proof;
-- lifecycle or required CI=true sinkhole/canary evidence is absent;
-- the sanitized export cannot reconcile exactly;
-- local Codex authentication/model readiness fails twice; or
-- success would require a new sensor, runtime, evaluator, P05 renderer, profile subsystem, or remote
-  execution framework.
-
-Once the physical transcript passes, stop. P07's job is the working demo; R01-R06 are the next
-claim-bearing work.
+At four focused hours, push a safe WIP and record the single exact blocker. Do not respond by
+changing the scorer, registry, publisher, evidence schema, sensor, runtime, VM path, or cloud lab.
