@@ -358,11 +358,12 @@ restrictive networking, no live C2 or second stage, no sync-back, and verified t
 
 ## BLK-009: real npm CI profile faults in the protected file collector
 
-Status: active, with the diagnostic implemented and physically qualified on July 18, 2026. A
-fresh real two-profile rerun is pending. This blocks a complete result for
-`mb-npm-sbx-45.0.2`; it does not invalidate the successful `CI=false` evidence.
+Status: resolved on July 18, 2026. The diagnostic was implemented, physically qualified, and used
+in a fresh real two-profile product run. Both required profiles completed with full physical
+receipts; this blocker no longer prevents a complete diagnostic result for
+`mb-npm-sbx-45.0.2`.
 
-Confirmed:
+Initial failure and completed resolution:
 
 - one fresh, single-use clearance bound the exact real artifact, four exact public dependency
   tarballs, current qualified runtime/helper/config identities, default-deny host PF posture,
@@ -395,8 +396,26 @@ Confirmed:
   clone. The strict slice nevertheless remains physically and safety-incomplete because the
   `CI=true` execution receipt was never sealed. The clearance is consumed, and the host/campaign
   state correctly requires fresh clearing and clearance before another live run.
+- a fresh campaign root, state directory, privileged PF snapshot, live PF recheck, and one-sample
+  clearance were then created after confirming no VZ/package helper and no disposable runtime
+  clone remained;
+- the exact product adapter executed both required profiles. `CI=false` and `CI=true` each
+  completed package execution and sealed a 73-event behavior bundle; both VMs stopped, both clones
+  were destroyed, stable image identities held, no public route was exposed, and no sync-back
+  occurred;
+- the strict slice reported `physical_pending_gate_passed: true`, `safety_passed: true`, no
+  incomplete or unsafe runs, and pending local behavior finalization rather than a fabricated
+  remote-AI result;
+- subscription-backed Codex returned `behavior_detected` for both report-bound bundles with no
+  role failures. Both panels cited lifecycle-trigger execution, credential-file access, outbound
+  connections, and local-sinkhole sends while declining to claim payload contents or successful
+  exfiltration; and
+- the split exporter now strictly accepts the sanitized static evidence-reference object while
+  requiring package source and selected bytes to remain absent. The paired two-host reconciliation
+  completed and preserved both deterministic and Codex behavioral detections without granting
+  clean or admission authority.
 
-Completed unblock and remaining experiment:
+Completed unblock and next campaign step:
 
 1. Completed: mirror the process collector's existing first-fault channel in the file collector:
    exhaustive fixed error-to-code mapping, release-before-signal publication, acquire read, and
@@ -404,16 +423,15 @@ Completed unblock and remaining experiment:
    semantics, or containment.
 2. Completed: add focused mapping and publication tests, run the Rust suite, rebuild the Linux
    runtime, and requalify the changed identity with inert fixtures.
-3. If practical, exercise short-lived-child and bounded event-volume inert cases. Do not tune
-   limits or correlation until the exact fixed fault reason identifies which case matters.
-4. Re-establish current privileged PF evidence immediately before execution, clear/prune the lab
-   state, issue a new single-use clearance, and rerun the complete two-profile product experiment
-   in fresh disposable guests. The adapter intentionally executes both profiles; do not create a
-   one-profile bypass merely to reuse the earlier result.
-5. Require a complete digest-bound bundle, local Codex observation, verified stop and clone
-   destruction, no public route, no sync-back, and no live C2 or second stage before the npm pair
-   can enter a claim-bearing four-miss campaign.
+3. Completed: re-establish current privileged PF evidence immediately before execution,
+   clear/prune the lab state, issue a new single-use clearance, and rerun the complete two-profile
+   product experiment in fresh disposable guests.
+4. Completed: export exactly the two report-bound bundles, run local subscription-backed Codex on
+   both, and reconcile them with exact artifact, scenario, event, provider-receipt, and result
+   bindings.
+5. Next: freeze and publish the four prior misses through the signed manifest-bound producer path,
+   then let the strict scorer derive 4/4 before starting the full eleven-sample campaign.
 
-Forest check: the artifact, closure, VM, telemetry projection, and Codex paths have all produced a
-real positive. The remaining work is one collector fault and one fresh paired product rerun, not a
-reason to expand protocol coverage or redesign the telemetry system.
+Forest check: the artifact, closure, VM, telemetry projection, and Codex paths now produce a
+complete paired real positive. The shortest remaining path is evaluation publication, not more
+protocol work or another npm detonation.

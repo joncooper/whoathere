@@ -91,17 +91,17 @@ it cited the npm lifecycle execution, two credential-file open/read clusters, re
 connection attempts, and repeated sends to the local sinkhole. It explicitly did not infer which
 payload bytes were sent or claim successful credential exfiltration.
 
-The paired `CI=true` guest reached the package runtime but its protected file sensor faulted before
-it could seal a partial execution receipt. The VM stopped, the helper exited, and the lab was left
-with no running VZ process or disposable clone, but the strict campaign correctly remains
-incomplete because that teardown and evidence set are not represented by a complete run receipt.
-The fault is now localized to the file collector rather than npm resolution, VM startup, or the
-offline closure. The narrow diagnostic repair is now implemented without changing limits or fault
-semantics. The full 278-test VM library, strict linting, Linux ARM64 build, and physical runtime
-qualification all pass; the rebuilt runtime then repeated the inert dependency-bearing npm run
-under both CI profiles, producing two 29-event bundles with verified stop, clone destruction, no
-public route, and no sync-back. The next step is a fresh, full two-profile real run so the exact
-allowlisted file-sensor cause is either revealed or shown to be resolved.
+The narrow file-sensor diagnostic repair was then rebuilt, physically qualified, and used in a
+fresh full product run. Both `CI=false` and `CI=true` completed this time. Each profile produced a
+73-event digest-bound behavior bundle; both VMs stopped, both clones were destroyed, package
+execution completed, the images remained stable, no public route was exposed, and no sync-back
+occurred. Subscription-backed Codex independently returned `behavior_detected` for both bundles
+with no role failures. In each profile it cited lifecycle-trigger execution, two credential-file
+read sequences, outbound connections, and network sends to the local sinkhole while refusing to
+claim payload contents or successful credential exfiltration. The paired two-host reconciliation
+is complete and preserves both deterministic and Codex behavioral detections. It remains
+diagnostic-only and has no clean or admission authority until it is published through a freshly
+frozen, signed evaluation campaign.
 
 The remaining Telnyx sdist was then prepared from its sealed exact-hash custody record on the cloud
 Mac without invoking WhoaThere, a VM, AI, or package code. Deterministic inspection of that exact
@@ -119,17 +119,16 @@ test through the strict evaluator, including signature, denominator, and tamper 
 production assembler measures and pins the verifier, captures its canonical output directly,
 signs the bundle, and verifies publication without accepting operator-authored projection JSON.
 
-This is meaningful detection progress, but the public claim remains deliberately unchanged. The
-three verified Telnyx projections still need to be signed into a freshly frozen, manifest-bound
-campaign. The real npm run now adds strong behavior-specific supporting evidence, but its failed
-`CI=true` receipt must be repaired and rerun before the paired result can enter that campaign. A
-first Node lifecycle environment-read sensor passes its local mechanics tests, but a focused
-review correctly found that package code could imitate its writable marker. It remains supporting
-telemetry rather than claim-bearing evidence. Physical results also lack independently verified
-host composition and the complete dynamic event denominator required for clean or admission
-decisions. The July restricted-malware baseline therefore remains 7/11. A strict four-sample
-rerun can establish a separate 4/4 prior-miss result; only the subsequent full eleven-sample rerun
-can establish a new 11/11 baseline. See the
+This is meaningful detection progress, but the public claim remains deliberately unchanged. All
+four prior misses now have behavior-specific exact-artifact evidence: three independently verified
+Telnyx static projections and one complete paired npm VM/Codex diagnostic. They still need to be
+published together through a freshly frozen, signed, manifest-bound campaign before they can count
+as a claim-bearing 4/4 result. The first Node lifecycle environment-read sensor also remains
+supporting telemetry because package code could imitate its writable marker. Physical results lack
+the complete dynamic evidence denominator required for clean or admission decisions. The July
+restricted-malware baseline therefore remains 7/11. A strict four-sample publication can establish
+a separate 4/4 prior-miss result; only the subsequent full eleven-sample rerun can establish a new
+11/11 baseline. See the
 [execution plan](docs/product-build-run/artifact-native-detection-execution-plan.md) and
 [blocker queue](docs/product-build-run/detection-blocker-queue.md).
 
@@ -178,15 +177,13 @@ Avoid claims such as:
 
 Next gates before a detection-credible beta:
 
-- Publish the allowlisted file-sensor fault reason exposed by the real `sbx` `CI=true` run, qualify
-  the diagnostic-only runtime change on inert inputs, and rerun the complete two-profile product
-  experiment under fresh clearance. Preserve the already positive `CI=false` Codex result as
-  supporting evidence, but do not score the pair until both expected profiles are complete in the
-  same fresh run.
+- Freeze and publish one signed four-sample manifest that binds the three verified Telnyx
+  projections and the complete paired `sbx` VM/Codex result. Keep the split reconciliation
+  diagnostic-only until the strict producer/publisher path verifies every expected row.
 - Measure the 40-artifact development benign cohort and correct practical false-malicious or
   unsupported results.
-- Stage only separately approved samples from restored exact-hash custody, rerun the four prior
-  misses, and then require 11/11 behavior-specific known-regression detections.
+- After the signed 4/4 publication passes, stage only separately approved samples from restored
+  exact-hash custody and require 11/11 behavior-specific known-regression detections.
 - Complete the second-pass derived-wheel `.pth` and console-entry probes plus legacy and ZIP-sdist
   controls; unsupported paths must remain inconclusive or manual review.
 - Complete the independent multi-action, multimodality dynamic verifier before allowing complete

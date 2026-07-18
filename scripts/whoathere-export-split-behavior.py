@@ -89,9 +89,33 @@ REPORT_OBSERVATION_KEYS = {
     "behavior_detection_eligible",
     "observation_sha256",
     "finding_kind",
+    "evidence",
     "coverage_gap_codes",
 }
 REPORT_FINDING_KIND_KEYS = {"source", "kind"}
+REPORT_EVIDENCE_KEYS = {
+    "source",
+    "source_receipt_sha256",
+    "evidence_sha256",
+    "package_source_included",
+    "selected_bytes_included",
+    "location",
+}
+REPORT_EVIDENCE_LOCATION_KEYS = {
+    "file_id",
+    "file_sha256",
+    "kind",
+    "range",
+    "selected_bytes_sha256",
+}
+REPORT_EVIDENCE_LINE_RANGE_KEYS = {
+    "kind",
+    "start_line",
+    "end_line",
+    "start_byte",
+    "end_byte",
+}
+REPORT_EVIDENCE_BYTE_RANGE_KEYS = {"kind", "start_byte", "end_byte"}
 BUNDLE_KEYS = {
     "schema_version",
     "artifact_sha256",
@@ -171,6 +195,85 @@ def validate_reason_codes(value: Any, reason_code: str) -> None:
     )
 
 
+def validate_report_evidence(value: Any, observation_source: Any, reason: str) -> None:
+    if observation_source != "deterministic_static":
+        require(value is None, reason)
+        return
+
+    require(isinstance(value, dict), reason)
+    exact_keys(value, REPORT_EVIDENCE_KEYS, reason)
+    require(
+        value.get("source") == observation_source
+        and valid_sha256(value.get("source_receipt_sha256"))
+        and valid_sha256(value.get("evidence_sha256"))
+        and value.get("package_source_included") is False
+        and value.get("selected_bytes_included") is False,
+        reason,
+    )
+
+    location = value.get("location")
+    require(isinstance(location, dict), reason)
+    exact_keys(location, REPORT_EVIDENCE_LOCATION_KEYS, reason)
+    require(
+        location.get("kind") == "file"
+        and valid_sha256(location.get("file_id"))
+        and valid_sha256(location.get("file_sha256"))
+        and valid_sha256(location.get("selected_bytes_sha256")),
+        reason,
+    )
+
+    range_value = location.get("range")
+    require(isinstance(range_value, dict), reason)
+    range_kind = range_value.get("kind")
+    if range_kind == "lines":
+        exact_keys(range_value, REPORT_EVIDENCE_LINE_RANGE_KEYS, reason)
+        coordinate_keys = ("start_line", "end_line", "start_byte", "end_byte")
+    elif range_kind == "bytes":
+        exact_keys(range_value, REPORT_EVIDENCE_BYTE_RANGE_KEYS, reason)
+        coordinate_keys = ("start_byte", "end_byte")
+    else:
+        raise ExportError(reason)
+    coordinates = [range_value.get(key) for key in coordinate_keys]
+    require(
+        all(
+            isinstance(coordinate, int)
+            and not isinstance(coordinate, bool)
+            and coordinate >= 0
+            for coordinate in coordinates
+        )
+        and range_value["start_byte"] <= range_value["end_byte"],
+        reason,
+    )
+    if range_kind == "lines":
+        require(range_value["start_line"] <= range_value["end_line"], reason)
+
+
+def project_report_evidence(value: dict[str, Any] | None) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    location = value["location"]
+    range_value = location["range"]
+    range_keys = (
+        REPORT_EVIDENCE_LINE_RANGE_KEYS
+        if range_value["kind"] == "lines"
+        else REPORT_EVIDENCE_BYTE_RANGE_KEYS
+    )
+    return {
+        "source": value["source"],
+        "source_receipt_sha256": value["source_receipt_sha256"],
+        "evidence_sha256": value["evidence_sha256"],
+        "package_source_included": value["package_source_included"],
+        "selected_bytes_included": value["selected_bytes_included"],
+        "location": {
+            "file_id": location["file_id"],
+            "file_sha256": location["file_sha256"],
+            "kind": location["kind"],
+            "range": {key: range_value[key] for key in range_keys},
+            "selected_bytes_sha256": location["selected_bytes_sha256"],
+        },
+    }
+
+
 def validate_sanitized_report_shape(report: dict[str, Any]) -> None:
     reason = "split_behavior_export_report_not_sanitized"
     exact_keys(report, REPORT_KEYS, reason)
@@ -215,11 +318,14 @@ def validate_sanitized_report_shape(report: dict[str, Any]) -> None:
         require(isinstance(finding_kind, dict), reason)
         exact_keys(finding_kind, REPORT_FINDING_KIND_KEYS, reason)
         require(all(safe_report_scalar(value) for value in finding_kind.values()), reason)
+        validate_report_evidence(
+            observation.get("evidence"), observation.get("source"), reason
+        )
         require(
             all(
                 safe_report_scalar(value)
                 for key, value in observation.items()
-                if key not in {"coverage_gap_codes", "finding_kind"}
+                if key not in {"coverage_gap_codes", "finding_kind", "evidence"}
             ),
             reason,
         )
@@ -250,6 +356,8 @@ def project_sanitized_report(report: dict[str, Any]) -> bytes:
                         for finding_key in REPORT_FINDING_KIND_KEYS
                     }
                     if key == "finding_kind"
+                    else project_report_evidence(observation["evidence"])
+                    if key == "evidence"
                     else observation[key]
                 )
                 for key in REPORT_OBSERVATION_KEYS
