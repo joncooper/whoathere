@@ -46,17 +46,17 @@ use whoathere_runner::{
     behavior_finding_detection_eligible_v1, canonical_utc_timestamp_from_unix_seconds_v1,
     execute_readonly, inspect_exact_artifact_with_behavior_v1, plan_protected_execution,
     project_offline_exact_sdist_behavior_v1, project_offline_exact_wheel_behavior_v1,
-    BehaviorCodexObserverConfigV1, BehaviorCodexObserverV1, BehaviorCodexPanelOutcomeV1,
-    ExactArtifactAiAdapterV1, ExactArtifactBehaviorObserverV1, ExactArtifactCodexAiAdapterV1,
-    ExactArtifactCodexAiConfigV1, ExactArtifactDetonationAdapterV1,
-    ExactArtifactEvidenceReferenceV1, ExactArtifactFindingKindV1, ExactArtifactInspectionErrorV1,
-    ExactArtifactInspectionReportV1, ExactArtifactInspectionRequestV1,
-    ExactArtifactObservationConfidenceV1, ExactArtifactObservationSourceV1,
-    ExactArtifactStageStatusV1, ExecutionDecision, LinuxVzExactNpmDetonationAdapterV1,
-    LinuxVzExactNpmDetonationConfigV1, LinuxVzExactSdistDetonationAdapterV1,
-    LinuxVzExactSdistDetonationConfigV1, LinuxVzExactWheelDetonationAdapterV1,
-    LinuxVzExactWheelDetonationConfigV1, OfflineExactSdistBehaviorProjectionRequestV1,
-    OfflineExactWheelBehaviorProjectionRequestV1,
+    read_and_validate_retained_exact_artifact_report_v1, BehaviorCodexObserverConfigV1,
+    BehaviorCodexObserverV1, BehaviorCodexPanelOutcomeV1, ExactArtifactAiAdapterV1,
+    ExactArtifactBehaviorObserverV1, ExactArtifactCodexAiAdapterV1, ExactArtifactCodexAiConfigV1,
+    ExactArtifactDetonationAdapterV1, ExactArtifactEvidenceReferenceV1, ExactArtifactFindingKindV1,
+    ExactArtifactInspectionErrorV1, ExactArtifactInspectionReportV1,
+    ExactArtifactInspectionRequestV1, ExactArtifactObservationConfidenceV1,
+    ExactArtifactObservationSourceV1, ExactArtifactStageStatusV1, ExecutionDecision,
+    LinuxVzExactNpmDetonationAdapterV1, LinuxVzExactNpmDetonationConfigV1,
+    LinuxVzExactSdistDetonationAdapterV1, LinuxVzExactSdistDetonationConfigV1,
+    LinuxVzExactWheelDetonationAdapterV1, LinuxVzExactWheelDetonationConfigV1,
+    OfflineExactSdistBehaviorProjectionRequestV1, OfflineExactWheelBehaviorProjectionRequestV1,
 };
 use whoathere_sandbox::{
     admit_linux_active_probe_receipt, admit_linux_active_probe_receipt_with_replay_decision,
@@ -166,6 +166,14 @@ pub enum Command {
         detonation: bool,
         detonation_config: Option<String>,
         output: ArtifactInspectOutput,
+    },
+    ReportRenderMissingPath,
+    ReportRenderInvalidOptions {
+        reason_code: &'static str,
+    },
+    ReportRender {
+        report_path: String,
+        report_sha256: String,
     },
     Doctor {
         json: bool,
@@ -789,6 +797,66 @@ fn parse_human_exact_artifact_inspect(args: &[String]) -> Command {
     }
 }
 
+fn parse_report_render(args: &[String]) -> Command {
+    let Some(report_path) = args.first() else {
+        return Command::ReportRenderMissingPath;
+    };
+    if report_path.is_empty() || report_path.starts_with("--") {
+        return Command::ReportRenderMissingPath;
+    }
+
+    let mut report_sha256 = None;
+    let mut index = 1;
+    while index < args.len() {
+        let argument = args[index].as_str();
+        let (flag, inline_value) = match argument.split_once('=') {
+            Some((flag, value)) => (flag, Some(value)),
+            None => (argument, None),
+        };
+        if flag != "--report-sha256" {
+            return Command::ReportRenderInvalidOptions {
+                reason_code: "report_render_option_unknown",
+            };
+        }
+        if report_sha256.is_some() {
+            return Command::ReportRenderInvalidOptions {
+                reason_code: "report_render_option_duplicate",
+            };
+        }
+        let value = match inline_value {
+            Some(value) if !value.is_empty() => value.to_string(),
+            Some(_) => {
+                return Command::ReportRenderInvalidOptions {
+                    reason_code: "report_render_option_value_required",
+                }
+            }
+            None => match args.get(index + 1) {
+                Some(value) if !value.is_empty() && !value.starts_with("--") => {
+                    index += 1;
+                    value.clone()
+                }
+                _ => {
+                    return Command::ReportRenderInvalidOptions {
+                        reason_code: "report_render_option_value_required",
+                    }
+                }
+            },
+        };
+        report_sha256 = Some(value);
+        index += 1;
+    }
+
+    let Some(report_sha256) = report_sha256 else {
+        return Command::ReportRenderInvalidOptions {
+            reason_code: "report_render_sha256_required",
+        };
+    };
+    Command::ReportRender {
+        report_path: report_path.clone(),
+        report_sha256,
+    }
+}
+
 fn parse_behavior_observe(args: &[String]) -> Command {
     let Some(bundle_path) = args.first() else {
         return Command::BehaviorObserveMissingBundle;
@@ -1116,6 +1184,7 @@ pub fn parse_command(args: &[String]) -> Command {
         [cmd, sub, rest @ ..] if cmd == "artifact" && sub == "inspect" => {
             parse_exact_artifact_inspect(rest)
         }
+        [cmd, sub, rest @ ..] if cmd == "report" && sub == "render" => parse_report_render(rest),
         [cmd, rest @ ..] if cmd == "inspect" => parse_human_exact_artifact_inspect(rest),
         [cmd, rest @ ..] if cmd == "doctor" => Command::Doctor {
             json: rest.iter().any(|arg| arg == "--json"),
@@ -1387,12 +1456,39 @@ pub fn render_command(command: Command) -> String {
 }
 
 pub fn evaluate_command(command: Command) -> CommandResult {
+    if let Some(result) = evaluate_report_render_command(&command) {
+        return result;
+    }
     if let Some(result) = evaluate_exact_artifact_command(&command) {
         return result;
     }
     let output = render_command_text(command);
     let exit_code = infer_exit_code(&output);
     CommandResult { output, exit_code }
+}
+
+fn evaluate_report_render_command(command: &Command) -> Option<CommandResult> {
+    match command {
+        Command::ReportRenderMissingPath => Some(retained_report_error_result(
+            ExactArtifactInspectionErrorV1::invalid_request("report_render_path_required"),
+        )),
+        Command::ReportRenderInvalidOptions { reason_code } => Some(retained_report_error_result(
+            ExactArtifactInspectionErrorV1::invalid_request(reason_code),
+        )),
+        Command::ReportRender {
+            report_path,
+            report_sha256,
+        } => Some(
+            match read_and_validate_retained_exact_artifact_report_v1(
+                Path::new(report_path),
+                report_sha256,
+            ) {
+                Ok(report) => retained_report_result(&report, report_sha256),
+                Err(error) => retained_report_error_result(error),
+            },
+        ),
+        _ => None,
+    }
 }
 
 fn evaluate_exact_artifact_command(command: &Command) -> Option<CommandResult> {
@@ -1546,6 +1642,28 @@ fn render_command_text(command: Command) -> String {
             )
             .output
         }
+        Command::ReportRenderMissingPath => {
+            retained_report_error_result(ExactArtifactInspectionErrorV1::invalid_request(
+                "report_render_path_required",
+            ))
+            .output
+        }
+        Command::ReportRenderInvalidOptions { reason_code } => {
+            retained_report_error_result(ExactArtifactInspectionErrorV1::invalid_request(
+                reason_code,
+            ))
+            .output
+        }
+        Command::ReportRender {
+            report_path,
+            report_sha256,
+        } => match read_and_validate_retained_exact_artifact_report_v1(
+            Path::new(&report_path),
+            &report_sha256,
+        ) {
+            Ok(report) => retained_report_result(&report, &report_sha256).output,
+            Err(error) => retained_report_error_result(error).output,
+        },
         Command::ArtifactInspect {
             path,
             ecosystem,
@@ -2207,6 +2325,7 @@ fn command_help() -> String {
     concat!(
         "whoathere <",
         "inspect <npm.tgz|package.whl|package.tar.gz|package.zip> [--json] [--ecosystem auto|npm|pypi] [--state-dir <dir>] [--acquired-at <YYYY-MM-DDTHH:MM:SSZ>] [--ai-review --approve-hosted-source-review] [--behavior-observe --approve-hosted-behavior-review] [--ai-provider codex --ai-client-path <absolute-native-binary> --ai-client-sha256 <sha256:...> --ai-model <exact-model> --ai-auth-home <dedicated-auth-home> [--ai-timeout-seconds <1..600>]] [--detonation --detonation-config <absolute-json>] |",
+        "report render <inspection.json> --report-sha256 <sha256:...>|",
         "artifact inspect <npm.tgz|package.whl|package.tar.gz|package.zip> [--ecosystem auto|npm|pypi] [--state-dir <dir>] [--acquired-at <YYYY-MM-DDTHH:MM:SSZ>] [--ai-review --approve-hosted-source-review] [--behavior-observe --approve-hosted-behavior-review] [--ai-provider codex --ai-client-path <absolute-native-binary> --ai-client-sha256 <sha256:...> --ai-model <exact-model> --ai-auth-home <dedicated-auth-home> [--ai-timeout-seconds <1..600>]] [--detonation --detonation-config <absolute-json>]|",
         "behavior project sdist --artifact <package.tar.gz> --artifact-envelope <artifact-envelope.json> --artifact-manifest <artifact-manifest.json> --evidence-directory <helper-evidence-dir> --scenario-index <index> --output <behavior-bundle.json>|",
         "behavior project wheel --artifact <package.whl> --artifact-envelope <artifact-envelope.json> --artifact-manifest <artifact-manifest.json> --evidence-directory <helper-evidence-dir> --scenario-index <index> --output <behavior-bundle.json>|",
@@ -2603,6 +2722,35 @@ fn behavior_observe_status_v1(
     }
 }
 
+fn retained_report_result(
+    report: &ExactArtifactInspectionReportV1,
+    report_sha256: &str,
+) -> CommandResult {
+    let exit_code = report.exit_code;
+    let mut output =
+        render_exact_artifact_human_with_details_hint(report, "in the saved JSON report");
+    output.push_str("\n\nSaved report\n");
+    output.push_str(&format!("  SHA-256: {report_sha256}\n"));
+    output.push_str("  Validation: exact bytes and V1 structure matched\n");
+    output.push_str(
+        "Artifact access: none. This command did not reopen package bytes or resolve retained paths.\n",
+    );
+    output.push_str(
+        "Report authority: none. Digest matching is not producer authentication or admission.",
+    );
+    CommandResult { output, exit_code }
+}
+
+fn retained_report_error_result(error: ExactArtifactInspectionErrorV1) -> CommandResult {
+    CommandResult {
+        output: format!(
+            "ERROR - WhoaThere could not validate this saved report\n\nReason: {}\n\nAction: Confirm the trusted report digest and regenerate or repair the report.\nArtifact access: none. No package bytes were opened.\nReport authority: none. This command cannot admit, install, or sync files back.",
+            safe_human_token(error.reason_code(), 160)
+        ),
+        exit_code: error.exit_code(),
+    }
+}
+
 fn exact_artifact_report_result(
     report: &ExactArtifactInspectionReportV1,
     output: ArtifactInspectOutput,
@@ -2636,6 +2784,13 @@ fn exact_artifact_error_result(
 }
 
 fn render_exact_artifact_human(report: &ExactArtifactInspectionReportV1) -> String {
+    render_exact_artifact_human_with_details_hint(report, "with --json")
+}
+
+fn render_exact_artifact_human_with_details_hint(
+    report: &ExactArtifactInspectionReportV1,
+    details_hint: &str,
+) -> String {
     let linux_vz_bound = has_linux_vz_detonation_binding(report);
     let static_positive = report.observations.iter().any(|observation| {
         observation.behavior_detection_eligible
@@ -2768,8 +2923,8 @@ fn render_exact_artifact_human(report: &ExactArtifactInspectionReportV1) -> Stri
         }
         if total_groups > 8 {
             lines.push(format!(
-                "  - {} additional evidence groups are available with --json.",
-                total_groups - 8
+                "  - {} additional evidence groups are available {details_hint}.",
+                total_groups - 8,
             ));
         }
         if has_blocking {
@@ -2780,7 +2935,7 @@ fn render_exact_artifact_human(report: &ExactArtifactInspectionReportV1) -> Stri
                 .count();
             if context_count > 0 {
                 lines.push(format!(
-                    "  - {context_count} context-only observations are available with --json."
+                    "  - {context_count} context-only observations are available {details_hint}."
                 ));
             }
         }
@@ -20707,6 +20862,205 @@ child.spawn('printf', [token, config.length, rawSourceSentinel, secretValue]);
         assert!(unbound_output.contains("disposable VM binding unavailable"));
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn save_exact_report_then_delete_artifact(
+        root: &Path,
+        label: &str,
+        members: &[(&str, &[u8])],
+    ) -> (PathBuf, String) {
+        let (artifact, _) = write_exact_npm_fixture(root, &format!("{label}-1.0.0.tgz"), members);
+        let state = root.join(format!("{label}-state"));
+        let report = evaluate_command(parse_command(&exact_inspect_arguments(
+            &["artifact", "inspect"],
+            &artifact,
+            &state,
+            false,
+        )));
+        assert!(matches!(report.exit_code, 20 | 22));
+        let report_path = root.join(format!("{label}-inspection.json"));
+        std::fs::write(&report_path, report.output.as_bytes()).expect("save exact report JSON");
+        let report_sha256 = sha256_digest(report.output.as_bytes());
+        std::fs::remove_file(&artifact).expect("delete artifact before saved-report render");
+        std::fs::remove_dir_all(&state).expect("delete state before saved-report render");
+        (report_path, report_sha256)
+    }
+
+    #[test]
+    fn report_render_reuses_human_output_after_artifact_deletion_for_block_and_review() {
+        const POSITIVE_PACKAGE: &[u8] = br#"{"name":"retained-cli-positive","version":"1.0.0","scripts":{"postinstall":"node index.js"},"main":"index.js"}"#;
+        const POSITIVE_SOURCE: &[u8] = br#"const rawSource = 'RAW_RETAINED_SOURCE_SENTINEL';
+const token = process.env.NPM_TOKEN;
+const config = require('node:fs').readFileSync(process.env.HOME + '/.npmrc');
+require('node:https').request({method: 'POST'});
+require('node:child_process').spawn('printf', [token, config.length, rawSource]);
+"#;
+        const REVIEW_PACKAGE: &[u8] =
+            br#"{"name":"retained-cli-review","version":"1.0.0","main":"index.js"}"#;
+        const REVIEW_SOURCE: &[u8] = b"module.exports = 'RAW_REVIEW_RETAINED_SENTINEL';\n";
+
+        let root = temp_root("whoathere-report-render-PRIVATE_RETAINED_PATH_SENTINEL");
+        let (positive_path, positive_sha256) = save_exact_report_then_delete_artifact(
+            &root,
+            "retained-cli-positive",
+            &[
+                ("package/package.json", POSITIVE_PACKAGE),
+                ("package/index.js", POSITIVE_SOURCE),
+            ],
+        );
+        let positive = evaluate_command(parse_command(&[
+            "report".to_string(),
+            "render".to_string(),
+            positive_path.display().to_string(),
+            "--report-sha256".to_string(),
+            positive_sha256.clone(),
+        ]));
+        assert_eq!(positive.exit_code, 20);
+        assert!(positive
+            .output
+            .starts_with("BLOCK - malicious capability found in package"));
+        assert!(positive.output.contains("retained-cli-positive@1.0.0"));
+        assert!(positive.output.contains(&positive_sha256));
+        assert!(positive.output.contains("Artifact access: none."));
+        assert!(positive.output.contains("Report authority: none."));
+        assert!(!positive.output.contains("ALLOW"));
+        assert!(!positive.output.contains("RAW_RETAINED_SOURCE_SENTINEL"));
+        assert!(!positive.output.contains("PRIVATE_RETAINED_PATH_SENTINEL"));
+        assert!(!positive
+            .output
+            .contains(&positive_path.display().to_string()));
+
+        let mut sentinel_report: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&positive_path).expect("read positive saved report"),
+        )
+        .expect("parse positive saved report");
+        sentinel_report["stages"][4]["status"] = serde_json::Value::String("complete".to_string());
+        sentinel_report["stages"][4]["provider"] =
+            serde_json::Value::String("private_provider_path_sentinel".to_string());
+        sentinel_report["stages"][4]["request_sha256"] =
+            serde_json::Value::String(sha256_digest(b"private request binding"));
+        sentinel_report["stages"][4]["result_sha256"] =
+            serde_json::Value::String(sha256_digest(b"private result binding"));
+        sentinel_report["stages"][4]["reason_codes"] =
+            serde_json::json!(["private_host_path_sentinel"]);
+        let reasons = sentinel_report["reason_codes"]
+            .as_array_mut()
+            .expect("saved-report reason array");
+        reasons.retain(|reason| reason.as_str() != Some("exact_artifact_ai_not_requested"));
+        reasons.push(serde_json::Value::String(
+            "private_host_path_sentinel".to_string(),
+        ));
+        reasons.sort_by(|left, right| left.as_str().cmp(&right.as_str()));
+        reasons.dedup();
+        let sentinel_bytes = serde_json::to_vec(&sentinel_report).expect("serialize sentinels");
+        let sentinel_path = root.join("retained-sentinels.json");
+        std::fs::write(&sentinel_path, &sentinel_bytes).expect("write sentinel saved report");
+        let sentinel_render = evaluate_command(Command::ReportRender {
+            report_path: sentinel_path.display().to_string(),
+            report_sha256: sha256_digest(&sentinel_bytes),
+        });
+        assert_eq!(sentinel_render.exit_code, 20);
+        assert!(!sentinel_render
+            .output
+            .contains("private_provider_path_sentinel"));
+        assert!(!sentinel_render
+            .output
+            .contains("private_host_path_sentinel"));
+
+        let (review_path, review_sha256) = save_exact_report_then_delete_artifact(
+            &root,
+            "retained-cli-review",
+            &[
+                ("package/package.json", REVIEW_PACKAGE),
+                ("package/index.js", REVIEW_SOURCE),
+            ],
+        );
+        let review = evaluate_command(Command::ReportRender {
+            report_path: review_path.display().to_string(),
+            report_sha256: review_sha256.clone(),
+        });
+        assert_eq!(review.exit_code, 22);
+        assert!(review
+            .output
+            .starts_with("REVIEW - WhoaThere cannot establish that this artifact is safe"));
+        assert!(review.output.contains(&review_sha256));
+        assert!(review.output.contains("Artifact access: none."));
+        assert!(!review.output.contains("ALLOW"));
+        assert!(!review.output.contains("RAW_REVIEW_RETAINED_SENTINEL"));
+        assert!(!review.output.contains(&review_path.display().to_string()));
+
+        let mismatch = evaluate_command(Command::ReportRender {
+            report_path: review_path.display().to_string(),
+            report_sha256: sha256_digest(b"not the saved report"),
+        });
+        assert_eq!(mismatch.exit_code, 64);
+        assert!(mismatch
+            .output
+            .starts_with("ERROR - WhoaThere could not validate this saved report"));
+        assert!(!mismatch.output.contains("BLOCK"));
+        assert!(!mismatch.output.contains("ALLOW"));
+        assert!(!mismatch.output.contains(&review_path.display().to_string()));
+
+        let mut impossible_stage: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&review_path).expect("read review saved report"))
+                .expect("parse review saved report");
+        impossible_stage["stages"][1]["status"] = serde_json::Value::String("findings".to_string());
+        let impossible_bytes =
+            serde_json::to_vec(&impossible_stage).expect("serialize impossible stage report");
+        let impossible_path = root.join("retained-impossible-stage.json");
+        std::fs::write(&impossible_path, &impossible_bytes).expect("write impossible stage report");
+        let impossible = evaluate_command(Command::ReportRender {
+            report_path: impossible_path.display().to_string(),
+            report_sha256: sha256_digest(&impossible_bytes),
+        });
+        assert_eq!(impossible.exit_code, 64);
+        assert!(impossible
+            .output
+            .starts_with("ERROR - WhoaThere could not validate this saved report"));
+        assert!(!impossible.output.contains("BLOCK"));
+        assert!(!impossible.output.contains("ALLOW"));
+        assert!(!impossible
+            .output
+            .contains(&impossible_path.display().to_string()));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn report_render_parser_and_typed_errors_fail_closed_without_path_leaks() {
+        let cases = [
+            vec!["report", "render"],
+            vec!["report", "render", "/private/report.json"],
+            vec![
+                "report",
+                "render",
+                "/private/report.json",
+                "--unknown",
+                "value",
+            ],
+            vec![
+                "report",
+                "render",
+                "/private/report.json",
+                "--report-sha256=bad",
+            ],
+        ];
+        for arguments in cases {
+            let result = evaluate_command(parse_command(
+                &arguments
+                    .into_iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>(),
+            ));
+            assert_eq!(result.exit_code, 64);
+            assert!(result
+                .output
+                .starts_with("ERROR - WhoaThere could not validate this saved report"));
+            assert!(result.output.contains("Artifact access: none."));
+            assert!(!result.output.contains("/private/report.json"));
+            assert!(!result.output.contains("BLOCK"));
+            assert!(!result.output.contains("ALLOW"));
+        }
     }
 
     #[test]

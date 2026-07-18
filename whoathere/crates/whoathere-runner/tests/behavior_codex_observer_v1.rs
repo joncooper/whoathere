@@ -21,14 +21,15 @@ use whoathere_detector::{
     PackageTriggerV1, ProcessActionV1, SpecialistRoleV1,
 };
 use whoathere_runner::{
-    inspect_exact_artifact_with_behavior_v1, BehaviorCodexObservationOutcomeV1,
-    BehaviorCodexObserverConfigV1, BehaviorCodexObserverV1, BehaviorCodexPanelOutcomeV1,
-    BoundOptionalEvidenceOutcomeV1, BoundOptionalEvidenceV1, ExactArtifactAdapterRequestV1,
-    ExactArtifactAiAdapterV1, ExactArtifactBehaviorObserverV1, ExactArtifactCodexAiAdapterV1,
-    ExactArtifactCodexAiConfigV1, ExactArtifactDetonationAdapterV1, ExactArtifactDispositionV1,
-    ExactArtifactEvidenceReferenceV1, ExactArtifactFindingKindV1, ExactArtifactInspectionRequestV1,
-    ExactArtifactObservationSourceV1, ExactArtifactOptionalResultV1, ExactArtifactScenarioPlanV1,
-    ExactArtifactStageStatusV1, ExactArtifactVerdictV1, OptionalAdapterErrorV1, PreparedArtifact,
+    decode_and_validate_retained_exact_artifact_report_v1, inspect_exact_artifact_with_behavior_v1,
+    BehaviorCodexObservationOutcomeV1, BehaviorCodexObserverConfigV1, BehaviorCodexObserverV1,
+    BehaviorCodexPanelOutcomeV1, BoundOptionalEvidenceOutcomeV1, BoundOptionalEvidenceV1,
+    ExactArtifactAdapterRequestV1, ExactArtifactAiAdapterV1, ExactArtifactBehaviorObserverV1,
+    ExactArtifactCodexAiAdapterV1, ExactArtifactCodexAiConfigV1, ExactArtifactDetonationAdapterV1,
+    ExactArtifactDispositionV1, ExactArtifactEvidenceReferenceV1, ExactArtifactFindingKindV1,
+    ExactArtifactInspectionRequestV1, ExactArtifactObservationSourceV1, ExactArtifactObservationV1,
+    ExactArtifactOptionalResultV1, ExactArtifactScenarioPlanV1, ExactArtifactStageStatusV1,
+    ExactArtifactVerdictV1, OptionalAdapterErrorV1, PreparedArtifact,
     EXACT_ARTIFACT_CODEX_PROVIDER_ID_V1,
 };
 
@@ -622,6 +623,62 @@ fn one_artifact_inspection_fuses_detonation_evidence_into_a_cited_codex_detectio
     assert!(!report.admission_authority);
     assert!(!report.observed_clean);
     assert!(!report.sync_back_enabled);
+}
+
+#[test]
+fn retained_behavioral_observation_rejects_a_forged_finding_digest() {
+    let reference = BehaviorEvidenceReferenceV1::for_event(&product_canary_event());
+    let (mut report, _) = inspect_inert_product_with_codex(&positive_output(&reference));
+    let original_bytes = serde_json::to_vec(&report).expect("serialize valid retained report");
+    let original_sha256 = Sha256Digest::from_bytes(&original_bytes).to_string();
+    decode_and_validate_retained_exact_artifact_report_v1(&original_bytes, &original_sha256)
+        .expect("production active-stage report must pass retained validation");
+    let observation_index = report
+        .observations
+        .iter()
+        .position(|observation| {
+            observation.source == ExactArtifactObservationSourceV1::AiBehavioral
+        })
+        .expect("behavioral observation");
+    let original = report.observations[observation_index].clone();
+    let ExactArtifactEvidenceReferenceV1::AiBehavioral {
+        bundle_sha256,
+        events,
+        ..
+    } = &original.evidence
+    else {
+        panic!("behavioral observation evidence");
+    };
+    let forged = ExactArtifactObservationV1::new(
+        original.source,
+        original.threat_class,
+        original.finding_kind,
+        original.confidence,
+        original.artifact_sha256,
+        original.manifest_sha256,
+        ExactArtifactEvidenceReferenceV1::AiBehavioral {
+            bundle_sha256: bundle_sha256.clone(),
+            finding_sha256: digest("forged-behavioral-finding"),
+            events: events.clone(),
+        },
+        original.coverage,
+        original.coverage_gap_codes,
+        original.behavior_detection_eligible,
+    )
+    .expect("the generic observation envelope alone cannot resolve event evidence");
+    report.observations[observation_index] = forged;
+    report
+        .observations
+        .sort_by(|left, right| left.observation_sha256.cmp(&right.observation_sha256));
+    let bytes = serde_json::to_vec(&report).expect("serialize forged retained report");
+    let report_sha256 = Sha256Digest::from_bytes(&bytes).to_string();
+
+    assert_eq!(
+        decode_and_validate_retained_exact_artifact_report_v1(&bytes, &report_sha256)
+            .expect_err("retained rendering must resolve finding digest from kind and events")
+            .reason_code(),
+        "retained_report_semantics_invalid"
+    );
 }
 
 #[test]

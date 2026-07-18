@@ -63,6 +63,25 @@ artifact or grant sync-back authority. Automation can request the existing machi
 `whoathere inspect ./package.tgz --json`; the legacy `whoathere artifact inspect` JSON command
 remains compatible.
 
+### Reopen a saved report without the package
+
+Save the machine-readable inspection once, record its SHA-256 through trusted custody, and render
+it later without retaining or reopening the artifact:
+
+```sh
+whoathere/target/debug/whoathere inspect ./package.tgz --json > inspection.json
+shasum -a 256 inspection.json
+whoathere/target/debug/whoathere report render inspection.json \
+  --report-sha256 sha256:<the-digest-printed-above>
+```
+
+The saved-report command verifies the exact file bytes and the complete typed V1 report structure
+before reusing the human `BLOCK` or `REVIEW` renderer. It rejects malformed, unknown-version,
+digest-mismatched, cross-bound, or authority-bearing reports and never follows paths embedded in
+the report. Digest matching is integrity, not producer authentication: obtain the expected digest
+through a channel you trust. Rendering does not rerun analysis, open package bytes, install a
+package, grant admission, or enable sync-back.
+
 The artifact-native detection build now has physically exercised exact-artifact Linux VZ routes for
 npm tarballs, pure-Python wheels, and nested-root PEP 517 sdists. Exact npm installation completed
 under both CI profiles, one wheel completed its eight install and trigger actions, and the sdist
