@@ -16,7 +16,7 @@ exact-artifact path uses fresh disposable Linux VZ guests with no sync-back.
 ## Current Status
 
 The active target is an Apple Silicon macOS local beta. The July 1, 2026 actual-malware evaluation
-on a disposable Scaleway Mac remains the current claim-bearing restricted-malware baseline. Since
+on a disposable Scaleway Mac remains the finalized restricted-malware experimental baseline. Since
 then, substantial inert and public-neighbor experiments have exercised the exact-artifact path.
 
 What that means:
@@ -128,8 +128,9 @@ supporting telemetry because package code could imitate its writable marker. Phy
 the complete dynamic evidence denominator required for clean or admission decisions. The July
 restricted-malware baseline therefore remains 7/11. A strict four-sample publication can establish
 a separate 4/4 prior-miss result; only the subsequent full eleven-sample rerun can establish a new
-11/11 baseline. See the
-[execution plan](docs/product-build-run/artifact-native-detection-execution-plan.md) and
+11/11 baseline. See the active
+[Ultra work-chunk plan](docs/product-build-run/detection-reset-ultra-work-chunks.md), the broader
+[architecture plan](docs/product-build-run/artifact-native-detection-execution-plan.md), and the
 [blocker queue](docs/product-build-run/detection-blocker-queue.md).
 
 ## Actual Malware Experiment

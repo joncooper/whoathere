@@ -6,6 +6,8 @@
 # Local build and packaged release outputs.
 .build/
 dist/
+__pycache__/
+*.py[cod]
 whoathere/helpers/macos-vm-helper/guest-agent/whoathere-guest-ready
 
 # Rust build output and local runtime state.

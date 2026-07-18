@@ -4,7 +4,12 @@ Date: 2026-07-09
 
 Revised: 2026-07-18
 
-Status: canonical detection-first execution plan for the macOS-hosted local beta
+Status: architecture and research reference for the macOS-hosted local beta
+
+Near-term implementation is governed by the
+[Detection Reset Ultra Work Chunks](detection-reset-ultra-work-chunks.md). That plan limits each
+task to one 1-4 hour user-facing outcome and supersedes this document's immediate execution order.
+Do not resume this document as one continuous implementation goal.
 
 ## One-sentence goal
 
