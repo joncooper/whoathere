@@ -1,7 +1,7 @@
 # Next Ultra Chunk: P05 Paired npm VM/Codex Evidence in the Product Report
 
-Status: active. P04 is complete and pushed; P06 and P07 are not authorized until P05 is accepted
-and pushed.
+Status: complete. P05 passed independent Ultra verification at implementation commit `84f24f6`.
+P06 remains queued and was not started in this chunk.
 
 Updated: 2026-07-18
 
@@ -188,3 +188,43 @@ If the self-contained envelope cannot be made strict without changing the upstre
 schemas, park the exact missing binding and stop. Do not weaken citation resolution, trust producer
 reason strings, or expand into a generalized protocol. P06 remains queued until P05 is either
 accepted or explicitly parked with a reproducible blocker.
+
+## Completion result
+
+```text
+Chunk: P05
+Start SHA / implementation SHA: 96aae35 / 84f24f6
+Active time used: within the 2-4 hour focused implementation budget; independent verification was
+  performed separately
+User-visible outcome: whoathere report render supplements the existing npm static BLOCK with
+  separately labeled CI=false and CI=true disposable-VM/Codex evidence while preserving exact
+  citations, incomplete coverage, and no-authority posture
+Command or report: whoathere report render <report> --report-sha256 <digest> --reconciliation
+  <envelope> --reconciliation-sha256 <digest>; paired-npm-vm-codex-product-report.md
+Representative input: frozen sanitized npm report bc09a308...e452 plus reconciliation envelope
+  ac521c94...52b5
+Paired controls: P03 complete report and P04 sanitized static report without reconciliation;
+  baseline plus 18 fail-closed P05 mutations
+Acceptance criteria passed: 9/9 after the independent verifier's coherent identity/citation
+  substitution finding was fixed and independently rerun
+Acceptance criteria not passed: none
+Diagnostic detection score: unchanged diagnostic prior-miss result 4/4; finalized July experimental
+  baseline remains 7/11
+Claim-bearing detection subscore: not produced; P05 evidence is explicitly unauthenticated and
+  diagnostic-only
+Completion/quality gate: incomplete in process, filesystem, canary, network, and scenario coverage
+Overall evaluation passed: false / not an evaluation campaign
+Safety invariants: host package execution zero; sync-back zero; unsafe allow/admission zero;
+  restricted-material leak zero; live-C2 contact zero; live second-stage fetch zero; invalid or
+  unverified teardown zero/not applicable because P05 opened no artifact and started no VM. Evidence:
+  saved-report product selftest, independent verifier, ignored-snapshot and staged-file audit.
+One parked blocker: producer authentication is unavailable in the sanitized snapshot and remains
+  visibly deferred to the later claim-bearing R05 path
+Recommended next chunk: P06 cloud-lab ready/not-ready preflight, with no artifact access or VM start
+```
+
+The full workspace test suite, formatting, clippy with warnings denied, the deterministic assembler,
+the production render, and the focused baseline-plus-18 mutation suite passed. Independent Ultra
+verification returned GO after confirming that coherent citation omission, source-reconciliation
+substitution, and observer-result rebinding now fail with exit 64 and no `BLOCK`, `ALLOW`, or path
+leak. The exact valid report remains the P04 static `BLOCK` plus the supplemental dynamic section.

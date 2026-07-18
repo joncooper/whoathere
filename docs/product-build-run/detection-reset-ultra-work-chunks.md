@@ -240,7 +240,7 @@ their exact inputs and criteria are frozen.
 | P02 | Add human `whoathere inspect` output | 2-4h | complete | Usable product |
 | P03 | Add a validated sanitized-report rendering boundary | 2-4h | complete | Repeatable product evidence |
 | P04 | Render four previous misses as product reports | 1-3h | complete | Diagnostic 4/4 |
-| P05 | Add paired npm VM/Codex evidence to its report | 2-4h | active | AI/dynamic value |
+| P05 | Add paired npm VM/Codex evidence to its report | 2-4h | complete | AI/dynamic value |
 | P06 | Add cloud-lab ready/not-ready preflight | 1-2h | queued | Operability/safety |
 | P07 | Run one-command inert static/VM/Codex demo | 2-4h | queued | End-to-end product |
 | R01 | Freeze a positive-only four-miss subscore contract | 2-4h | queued | Evaluation contract |

@@ -76,6 +76,11 @@ Each failure exited 64 without rendering `BLOCK` or `ALLOW` and without echoing 
 The original P03 complete-report and P04 sanitized-static paths remain backward compatible when no
 reconciliation is supplied.
 
+Independent Ultra verification initially reproduced coherent citation omission and source/observer
+identity substitution. The accepted implementation now pins the complete frozen source contract
+and normalized Codex projection before revalidating every typed event and citation. The verifier
+reran all three attacks, observed exit 64 for each, and returned GO.
+
 ## Claim boundary
 
 The envelope contains sanitized typed events and prose-free Codex projections, but not the signed
