@@ -186,6 +186,32 @@ active [Ultra work-chunk plan](docs/product-build-run/detection-reset-ultra-work
 broader [architecture plan](docs/product-build-run/artifact-native-detection-execution-plan.md),
 and the [blocker queue](docs/product-build-run/detection-blocker-queue.md).
 
+The npm report can also attach one self-contained paired VM/Codex reconciliation:
+
+```sh
+whoathere/target/debug/whoathere report render inspection.json \
+  --report-sha256 sha256:<trusted-report-digest> \
+  --reconciliation paired-npm-reconciliation.json \
+  --reconciliation-sha256 sha256:<trusted-reconciliation-digest>
+```
+
+This gives the product a clear multimodal view without blurring evidence types. The static analysis
+continues to determine `BLOCK`; separate `CI=false` and `CI=true` sections show typed disposable-VM
+events and observe-only Codex findings. In the current sanitized diagnostic, each profile contains
+73 typed events, including two npm lifecycle executions, six credential-file reads, ten local
+sinkhole connects, and ten local-sinkhole sends. Every displayed Codex citation is re-resolved to
+the matching typed event. Network connect/send intent remains supporting activity and is never
+described as payload or credential exfiltration.
+
+The reconciliation boundary is deliberately strict: exact report, artifact, manifest, scenario,
+profile, bundle, observer, finding, citation, and source-reconciliation identities must agree.
+Missing, duplicated, reordered, forged, authority-bearing, or unknown-version content fails closed.
+The retained snapshot lacks the signed receipt bytes needed to authenticate its upstream producer,
+so the product labels it a sanitized, unauthenticated diagnostic with incomplete coverage and no
+clean, installation, admission, or sync-back authority. The compact
+[paired npm VM/Codex report](docs/product-build-run/paired-npm-vm-codex-product-report.md) records
+the exact outcome and boundaries.
+
 ## Actual Malware Experiment
 
 On July 1, 2026, WhoaThere was evaluated against 11 real npm/PyPI supply-chain malware artifacts

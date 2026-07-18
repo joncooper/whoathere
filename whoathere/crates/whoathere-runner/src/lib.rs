@@ -6,6 +6,7 @@ mod exact_npm_linux_vz;
 mod exact_sdist_linux_vz;
 mod exact_wheel_linux_vz;
 mod linux_vz_helper_diagnostics;
+mod paired_npm_report_reconciliation;
 mod static_download_execute_projection;
 
 pub use behavior_codex_observer::*;
@@ -15,6 +16,7 @@ pub use exact_artifact_codex::*;
 pub use exact_npm_linux_vz::*;
 pub use exact_sdist_linux_vz::*;
 pub use exact_wheel_linux_vz::*;
+pub use paired_npm_report_reconciliation::*;
 pub use static_download_execute_projection::*;
 
 use whoathere_artifact::{

@@ -443,8 +443,20 @@ impl BehaviorAnalysisBundleV1 {
         &self.scenario_id
     }
 
+    pub fn scenario_sha256(&self) -> &Sha256Digest {
+        &self.scenario_sha256
+    }
+
     pub fn run_id(&self) -> &str {
         &self.run_id
+    }
+
+    pub fn root_receipt_sha256(&self) -> &Sha256Digest {
+        &self.root_receipt_sha256
+    }
+
+    pub fn host_receipt_sha256(&self) -> &Sha256Digest {
+        &self.host_receipt_sha256
     }
 
     pub fn coverage(&self) -> &[BehaviorEvidenceCoverageV1] {

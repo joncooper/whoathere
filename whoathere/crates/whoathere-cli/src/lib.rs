@@ -18,7 +18,8 @@ use whoathere_core::{
 use whoathere_detector::{
     decode_and_validate_behavior_analysis_bundle_v1, external_scanner_specs,
     plan_external_scanner_run, run_external_scanners, scan_npm_package_json, scan_pyproject_toml,
-    scanner_bootstrap_receipt_path, scanner_inventory, scanner_workspace_digest, EvidenceRange,
+    scanner_bootstrap_receipt_path, scanner_inventory, scanner_workspace_digest,
+    BehaviorEvidenceModalityV1, BehaviorFindingConfidenceV1, BehaviorFindingKindV1, EvidenceRange,
     ExternalScannerInventoryItem, ExternalScannerRunRecord, ExternalScannerRunSummary,
     FindingLocation, ScannerEcosystem, ScannerExecutionRole, EXTERNAL_SCANNER_RUN_SCHEMA,
 };
@@ -46,6 +47,7 @@ use whoathere_runner::{
     behavior_finding_detection_eligible_v1, canonical_utc_timestamp_from_unix_seconds_v1,
     execute_readonly, inspect_exact_artifact_with_behavior_v1, plan_protected_execution,
     project_offline_exact_sdist_behavior_v1, project_offline_exact_wheel_behavior_v1,
+    read_and_validate_paired_npm_report_reconciliation_v1,
     read_and_validate_retained_exact_artifact_report_input_v1, BehaviorCodexObserverConfigV1,
     BehaviorCodexObserverV1, BehaviorCodexPanelOutcomeV1, ExactArtifactAiAdapterV1,
     ExactArtifactBehaviorObserverV1, ExactArtifactCodexAiAdapterV1, ExactArtifactCodexAiConfigV1,
@@ -57,7 +59,8 @@ use whoathere_runner::{
     LinuxVzExactSdistDetonationAdapterV1, LinuxVzExactSdistDetonationConfigV1,
     LinuxVzExactWheelDetonationAdapterV1, LinuxVzExactWheelDetonationConfigV1,
     OfflineExactSdistBehaviorProjectionRequestV1, OfflineExactWheelBehaviorProjectionRequestV1,
-    RetainedExactArtifactReportPostureV1, ValidatedRetainedExactArtifactReportV1,
+    PairedNpmReportReconciliationErrorV1, RetainedExactArtifactReportPostureV1,
+    ValidatedPairedNpmReportReconciliationV1, ValidatedRetainedExactArtifactReportV1,
 };
 use whoathere_sandbox::{
     admit_linux_active_probe_receipt, admit_linux_active_probe_receipt_with_replay_decision,
@@ -175,6 +178,8 @@ pub enum Command {
     ReportRender {
         report_path: String,
         report_sha256: String,
+        reconciliation_path: Option<String>,
+        reconciliation_sha256: Option<String>,
     },
     Doctor {
         json: bool,
@@ -807,6 +812,8 @@ fn parse_report_render(args: &[String]) -> Command {
     }
 
     let mut report_sha256 = None;
+    let mut reconciliation_path = None;
+    let mut reconciliation_sha256 = None;
     let mut index = 1;
     while index < args.len() {
         let argument = args[index].as_str();
@@ -814,12 +821,21 @@ fn parse_report_render(args: &[String]) -> Command {
             Some((flag, value)) => (flag, Some(value)),
             None => (argument, None),
         };
-        if flag != "--report-sha256" {
+        if !matches!(
+            flag,
+            "--report-sha256" | "--reconciliation" | "--reconciliation-sha256"
+        ) {
             return Command::ReportRenderInvalidOptions {
                 reason_code: "report_render_option_unknown",
             };
         }
-        if report_sha256.is_some() {
+        let duplicate = match flag {
+            "--report-sha256" => report_sha256.is_some(),
+            "--reconciliation" => reconciliation_path.is_some(),
+            "--reconciliation-sha256" => reconciliation_sha256.is_some(),
+            _ => unreachable!("matched report render option"),
+        };
+        if duplicate {
             return Command::ReportRenderInvalidOptions {
                 reason_code: "report_render_option_duplicate",
             };
@@ -843,7 +859,12 @@ fn parse_report_render(args: &[String]) -> Command {
                 }
             },
         };
-        report_sha256 = Some(value);
+        match flag {
+            "--report-sha256" => report_sha256 = Some(value),
+            "--reconciliation" => reconciliation_path = Some(value),
+            "--reconciliation-sha256" => reconciliation_sha256 = Some(value),
+            _ => unreachable!("matched report render option"),
+        }
         index += 1;
     }
 
@@ -852,9 +873,16 @@ fn parse_report_render(args: &[String]) -> Command {
             reason_code: "report_render_sha256_required",
         };
     };
+    if reconciliation_path.is_some() != reconciliation_sha256.is_some() {
+        return Command::ReportRenderInvalidOptions {
+            reason_code: "report_render_reconciliation_pair_required",
+        };
+    }
     Command::ReportRender {
         report_path: report_path.clone(),
         report_sha256,
+        reconciliation_path,
+        reconciliation_sha256,
     }
 }
 
@@ -1479,12 +1507,36 @@ fn evaluate_report_render_command(command: &Command) -> Option<CommandResult> {
         Command::ReportRender {
             report_path,
             report_sha256,
+            reconciliation_path,
+            reconciliation_sha256,
         } => Some(
             match read_and_validate_retained_exact_artifact_report_input_v1(
                 Path::new(report_path),
                 report_sha256,
             ) {
-                Ok(report) => retained_report_result(&report, report_sha256),
+                Ok(report) => match (reconciliation_path, reconciliation_sha256) {
+                    (Some(path), Some(sha256)) => {
+                        match read_and_validate_paired_npm_report_reconciliation_v1(
+                            Path::new(path),
+                            sha256,
+                            &report,
+                            report_sha256,
+                        ) {
+                            Ok(reconciliation) => retained_report_with_reconciliation_result(
+                                &report,
+                                report_sha256,
+                                &reconciliation,
+                            ),
+                            Err(error) => retained_report_reconciliation_error_result(error),
+                        }
+                    }
+                    (None, None) => retained_report_result(&report, report_sha256),
+                    _ => retained_report_error_result(
+                        ExactArtifactInspectionErrorV1::invalid_request(
+                            "report_render_reconciliation_pair_required",
+                        ),
+                    ),
+                },
                 Err(error) => retained_report_error_result(error),
             },
         ),
@@ -1658,11 +1710,39 @@ fn render_command_text(command: Command) -> String {
         Command::ReportRender {
             report_path,
             report_sha256,
+            reconciliation_path,
+            reconciliation_sha256,
         } => match read_and_validate_retained_exact_artifact_report_input_v1(
             Path::new(&report_path),
             &report_sha256,
         ) {
-            Ok(report) => retained_report_result(&report, &report_sha256).output,
+            Ok(report) => match (reconciliation_path, reconciliation_sha256) {
+                (Some(path), Some(sha256)) => {
+                    match read_and_validate_paired_npm_report_reconciliation_v1(
+                        Path::new(&path),
+                        &sha256,
+                        &report,
+                        &report_sha256,
+                    ) {
+                        Ok(reconciliation) => {
+                            retained_report_with_reconciliation_result(
+                                &report,
+                                &report_sha256,
+                                &reconciliation,
+                            )
+                            .output
+                        }
+                        Err(error) => retained_report_reconciliation_error_result(error).output,
+                    }
+                }
+                (None, None) => retained_report_result(&report, &report_sha256).output,
+                _ => {
+                    retained_report_error_result(ExactArtifactInspectionErrorV1::invalid_request(
+                        "report_render_reconciliation_pair_required",
+                    ))
+                    .output
+                }
+            },
             Err(error) => retained_report_error_result(error).output,
         },
         Command::ArtifactInspect {
@@ -2326,7 +2406,7 @@ fn command_help() -> String {
     concat!(
         "whoathere <",
         "inspect <npm.tgz|package.whl|package.tar.gz|package.zip> [--json] [--ecosystem auto|npm|pypi] [--state-dir <dir>] [--acquired-at <YYYY-MM-DDTHH:MM:SSZ>] [--ai-review --approve-hosted-source-review] [--behavior-observe --approve-hosted-behavior-review] [--ai-provider codex --ai-client-path <absolute-native-binary> --ai-client-sha256 <sha256:...> --ai-model <exact-model> --ai-auth-home <dedicated-auth-home> [--ai-timeout-seconds <1..600>]] [--detonation --detonation-config <absolute-json>] |",
-        "report render <inspection.json> --report-sha256 <sha256:...>|",
+        "report render <inspection.json> --report-sha256 <sha256:...> [--reconciliation <paired-npm-reconciliation.json> --reconciliation-sha256 <sha256:...>]|",
         "artifact inspect <npm.tgz|package.whl|package.tar.gz|package.zip> [--ecosystem auto|npm|pypi] [--state-dir <dir>] [--acquired-at <YYYY-MM-DDTHH:MM:SSZ>] [--ai-review --approve-hosted-source-review] [--behavior-observe --approve-hosted-behavior-review] [--ai-provider codex --ai-client-path <absolute-native-binary> --ai-client-sha256 <sha256:...> --ai-model <exact-model> --ai-auth-home <dedicated-auth-home> [--ai-timeout-seconds <1..600>]] [--detonation --detonation-config <absolute-json>]|",
         "behavior project sdist --artifact <package.tar.gz> --artifact-envelope <artifact-envelope.json> --artifact-manifest <artifact-manifest.json> --evidence-directory <helper-evidence-dir> --scenario-index <index> --output <behavior-bundle.json>|",
         "behavior project wheel --artifact <package.whl> --artifact-envelope <artifact-envelope.json> --artifact-manifest <artifact-manifest.json> --evidence-directory <helper-evidence-dir> --scenario-index <index> --output <behavior-bundle.json>|",
@@ -2759,6 +2839,127 @@ fn retained_report_result(
         "Report authority: none. Digest matching is not producer authentication or admission.",
     );
     CommandResult { output, exit_code }
+}
+
+fn retained_report_with_reconciliation_result(
+    retained: &ValidatedRetainedExactArtifactReportV1,
+    report_sha256: &str,
+    reconciliation: &ValidatedPairedNpmReportReconciliationV1,
+) -> CommandResult {
+    let mut result = retained_report_result(retained, report_sha256);
+    result
+        .output
+        .push_str("\n\nPaired disposable VM and Codex diagnostic\n");
+    result.output.push_str(&format!(
+        "  Reconciliation SHA-256: {}\n  Export manifest ID: {}\n  Source reconciliation ID: {}\n",
+        reconciliation.envelope_sha256(),
+        reconciliation.export_manifest_sha256(),
+        reconciliation.source_reconciliation_sha256(),
+    ));
+    result.output.push_str(
+        "  Evidence posture: sanitized diagnostic, unauthenticated; receipt and provider-output digests are identifiers only\n",
+    );
+    for profile in reconciliation.profiles() {
+        result.output.push_str(&format!(
+            "\n{} diagnostic VM/Codex evidence\n  Bundle: {} ({} typed events)\n  Observer result: {}\n  Scenario: {}\n  Run: {}\n",
+            profile.profile().label(),
+            profile.bundle_sha256(),
+            profile.event_count(),
+            profile.observer_result_sha256(),
+            safe_human_token(profile.scenario_id(), 160),
+            safe_human_token(profile.run_id(), 160),
+        ));
+        result.output.push_str(&format!(
+            "  VM observations: {} npm lifecycle executions; {} credential-file reads\n",
+            profile.lifecycle_event_count(),
+            profile.credential_read_event_count(),
+        ));
+        result.output.push_str(&format!(
+            "  Supporting network activity: {} local-sinkhole connects; {} local-sinkhole sends\n",
+            profile.connect_event_count(),
+            profile.send_event_count(),
+        ));
+        result.output.push_str(
+            "  Network limit: connect/send intent does not establish payload or credential exfiltration\n",
+        );
+        result
+            .output
+            .push_str("  Codex observe-only findings (all citations resolved):\n");
+        for finding in profile.codex_findings() {
+            let first = finding
+                .evidence()
+                .first()
+                .expect("validated finding has evidence");
+            result.output.push_str(&format!(
+                "    - {} ({}, {} verified event citations; first {} @ {})\n      Finding: {}\n",
+                paired_npm_finding_label(finding.kind()),
+                paired_npm_confidence_label(finding.confidence()),
+                finding.evidence().len(),
+                safe_human_token(first.event_id(), 160),
+                first.event_sha256(),
+                finding.finding_sha256(),
+            ));
+        }
+        result.output.push_str("  Coverage: incomplete\n");
+        for coverage in profile.coverage() {
+            result.output.push_str(&format!(
+                "    - {}: incomplete ({})\n",
+                paired_npm_modality_label(coverage.modality()),
+                coverage
+                    .limitation_codes()
+                    .iter()
+                    .map(|code| safe_human_token(code, 160))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ));
+        }
+    }
+    result.output.push_str(
+        "\nDynamic evidence authority: none. It supplements but did not create, erase, or downgrade the static result.\n",
+    );
+    result.output.push_str(
+        "Admission posture: evidence remains incomplete and cannot establish clean, install, admission, or sync-back authority.",
+    );
+    result
+}
+
+fn retained_report_reconciliation_error_result(
+    error: PairedNpmReportReconciliationErrorV1,
+) -> CommandResult {
+    CommandResult {
+        output: format!(
+            "ERROR - WhoaThere could not validate the paired VM/Codex diagnostic\n\nReason: {}\n\nAction: Confirm the trusted reconciliation digest and regenerate or repair the sanitized envelope.\nArtifact access: none. No package bytes or raw telemetry were opened.\nReport authority: none. This command cannot admit, install, or sync files back.",
+            safe_human_token(error.reason_code(), 160)
+        ),
+        exit_code: error.exit_code(),
+    }
+}
+
+fn paired_npm_finding_label(kind: BehaviorFindingKindV1) -> &'static str {
+    match kind {
+        BehaviorFindingKindV1::CredentialAccess => "credential access",
+        BehaviorFindingKindV1::LifecycleTriggerExecution => "npm lifecycle execution",
+        BehaviorFindingKindV1::NetworkSend => "local-sinkhole send intent",
+        BehaviorFindingKindV1::OutboundConnection => "local-sinkhole connection intent",
+        _ => "unsupported finding",
+    }
+}
+
+fn paired_npm_confidence_label(confidence: BehaviorFindingConfidenceV1) -> &'static str {
+    match confidence {
+        BehaviorFindingConfidenceV1::Moderate => "moderate confidence",
+        BehaviorFindingConfidenceV1::High => "high confidence",
+    }
+}
+
+fn paired_npm_modality_label(modality: BehaviorEvidenceModalityV1) -> &'static str {
+    match modality {
+        BehaviorEvidenceModalityV1::Process => "process",
+        BehaviorEvidenceModalityV1::Filesystem => "filesystem",
+        BehaviorEvidenceModalityV1::Canary => "canary",
+        BehaviorEvidenceModalityV1::Network => "network",
+        BehaviorEvidenceModalityV1::Scenario => "scenario",
+    }
 }
 
 fn retained_report_error_result(error: ExactArtifactInspectionErrorV1) -> CommandResult {
@@ -21047,6 +21248,8 @@ require('node:child_process').spawn('printf', [token, config.length, rawSource])
         let sentinel_render = evaluate_command(Command::ReportRender {
             report_path: sentinel_path.display().to_string(),
             report_sha256: sha256_digest(&sentinel_bytes),
+            reconciliation_path: None,
+            reconciliation_sha256: None,
         });
         assert_eq!(sentinel_render.exit_code, 20);
         assert!(!sentinel_render
@@ -21067,6 +21270,8 @@ require('node:child_process').spawn('printf', [token, config.length, rawSource])
         let review = evaluate_command(Command::ReportRender {
             report_path: review_path.display().to_string(),
             report_sha256: review_sha256.clone(),
+            reconciliation_path: None,
+            reconciliation_sha256: None,
         });
         assert_eq!(review.exit_code, 22);
         assert!(review
@@ -21081,6 +21286,8 @@ require('node:child_process').spawn('printf', [token, config.length, rawSource])
         let mismatch = evaluate_command(Command::ReportRender {
             report_path: review_path.display().to_string(),
             report_sha256: sha256_digest(b"not the saved report"),
+            reconciliation_path: None,
+            reconciliation_sha256: None,
         });
         assert_eq!(mismatch.exit_code, 64);
         assert!(mismatch
@@ -21101,6 +21308,8 @@ require('node:child_process').spawn('printf', [token, config.length, rawSource])
         let impossible = evaluate_command(Command::ReportRender {
             report_path: impossible_path.display().to_string(),
             report_sha256: sha256_digest(&impossible_bytes),
+            reconciliation_path: None,
+            reconciliation_sha256: None,
         });
         assert_eq!(impossible.exit_code, 64);
         assert!(impossible
@@ -21113,6 +21322,68 @@ require('node:child_process').spawn('printf', [token, config.length, rawSource])
             .contains(&impossible_path.display().to_string()));
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn report_render_reconciliation_options_are_an_optional_strict_pair() {
+        let command = parse_command(
+            &[
+                "report",
+                "render",
+                "report.json",
+                "--report-sha256",
+                "sha256:report",
+                "--reconciliation",
+                "paired.json",
+                "--reconciliation-sha256",
+                "sha256:paired",
+            ]
+            .iter()
+            .map(|value| value.to_string())
+            .collect::<Vec<_>>(),
+        );
+        assert_eq!(
+            command,
+            Command::ReportRender {
+                report_path: "report.json".to_string(),
+                report_sha256: "sha256:report".to_string(),
+                reconciliation_path: Some("paired.json".to_string()),
+                reconciliation_sha256: Some("sha256:paired".to_string()),
+            }
+        );
+
+        for incomplete in [
+            vec![
+                "report",
+                "render",
+                "report.json",
+                "--report-sha256",
+                "sha256:report",
+                "--reconciliation",
+                "paired.json",
+            ],
+            vec![
+                "report",
+                "render",
+                "report.json",
+                "--report-sha256",
+                "sha256:report",
+                "--reconciliation-sha256",
+                "sha256:paired",
+            ],
+        ] {
+            assert_eq!(
+                parse_command(
+                    &incomplete
+                        .iter()
+                        .map(|value| value.to_string())
+                        .collect::<Vec<_>>()
+                ),
+                Command::ReportRenderInvalidOptions {
+                    reason_code: "report_render_reconciliation_pair_required",
+                }
+            );
+        }
     }
 
     #[test]
@@ -21137,6 +21408,8 @@ require('node:child_process').spawn('printf', [secret, config.length]);
         let rendered = evaluate_command(Command::ReportRender {
             report_path: projection_path.display().to_string(),
             report_sha256: projection_sha256.clone(),
+            reconciliation_path: None,
+            reconciliation_sha256: None,
         });
         assert_eq!(rendered.exit_code, 20);
         assert!(rendered
