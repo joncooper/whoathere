@@ -22,6 +22,7 @@ LEGAL_PROVIDER_APPROVAL_REF=""
 SINKHOLE_REFERENCE=""
 LULU_REFERENCE=""
 CLOUD_FIREWALL_ASSERTED=""
+PROVIDER_FIREWALL_UNAVAILABLE_ASSERTED=""
 SINKHOLE_ASSERTED=""
 EGRESS_DENY_ASSERTED=""
 LULU_ASSERTED=""
@@ -91,7 +92,7 @@ usage:
     [--finalize-failed-score] \
     --provider-approval-ref <ref> \
     --legal-provider-approval-ref <ref> \
-    --cloud-firewall-default-deny-asserted \
+    (--cloud-firewall-default-deny-asserted | --provider-firewall-unavailable-asserted) \
     --host-firewall-default-deny-asserted \
     (--sinkhole-ready-asserted --sinkhole-reference <ref> | --egress-deny-asserted) \
     --lulu-enabled-asserted [--lulu-reference <ref>] \
@@ -187,6 +188,7 @@ while [ "$#" -gt 0 ]; do
     --lulu-reference) [ "$#" -ge 2 ] || usage; LULU_REFERENCE=$2; shift 2 ;;
     --phase) [ "$#" -ge 2 ] || usage; PHASE=$2; shift 2 ;;
     --cloud-firewall-default-deny-asserted) CLOUD_FIREWALL_ASSERTED=1; shift ;;
+    --provider-firewall-unavailable-asserted) PROVIDER_FIREWALL_UNAVAILABLE_ASSERTED=1; shift ;;
     --host-firewall-default-deny-asserted) HOST_FIREWALL_ASSERTED=1; shift ;;
     --previous-contamination-resolved-asserted) PREVIOUS_CONTAMINATION_RESOLVED=1; shift ;;
     --host-rebuilt-or-cleared-asserted) HOST_REBUILT_OR_CLEARED=1; shift ;;
@@ -218,6 +220,11 @@ while [ "$#" -gt 0 ]; do
     *) usage ;;
   esac
 done
+
+if [ -n "$CLOUD_FIREWALL_ASSERTED" ] && [ -n "$PROVIDER_FIREWALL_UNAVAILABLE_ASSERTED" ]; then
+  echo "provider_firewall_posture_assertions_are_mutually_exclusive" >&2
+  exit 64
+fi
 
 [ -n "$SSH_HOST" ] || usage
 case "$PHASE" in clearance|slice|score|finalize|all) ;; *) usage ;; esac
@@ -270,7 +277,9 @@ fi
 if [ "$PHASE" = "clearance" ] || [ "$PHASE" = "slice" ] || [ "$PHASE" = "all" ]; then
   [ -n "$PROVIDER_APPROVAL_REF" ] || usage
   [ -n "$LEGAL_PROVIDER_APPROVAL_REF" ] || usage
-  [ -n "$CLOUD_FIREWALL_ASSERTED" ] || usage
+  if [ -z "$CLOUD_FIREWALL_ASSERTED" ] && [ -z "$PROVIDER_FIREWALL_UNAVAILABLE_ASSERTED" ]; then
+    usage
+  fi
   [ -n "$HOST_FIREWALL_ASSERTED" ] || usage
   [ -n "$LULU_ASSERTED" ] || usage
   if [ -z "$SINKHOLE_ASSERTED" ] && [ -z "$EGRESS_DENY_ASSERTED" ]; then
@@ -436,6 +445,7 @@ remote_command="WHOATHERE_SCANNER_CACHE_DIR=$remote_tools/scanners PATH=$remote_
 [ -z "$PROVIDER_APPROVAL_REF" ] || remote_command="$remote_command --provider-approval-ref $PROVIDER_APPROVAL_REF"
 [ -z "$LEGAL_PROVIDER_APPROVAL_REF" ] || remote_command="$remote_command --legal-provider-approval-ref $LEGAL_PROVIDER_APPROVAL_REF"
 [ -z "$CLOUD_FIREWALL_ASSERTED" ] || remote_command="$remote_command --cloud-firewall-default-deny-asserted"
+[ -z "$PROVIDER_FIREWALL_UNAVAILABLE_ASSERTED" ] || remote_command="$remote_command --provider-firewall-unavailable-asserted"
 [ -z "$HOST_FIREWALL_ASSERTED" ] || remote_command="$remote_command --host-firewall-default-deny-asserted"
 [ -z "$PREVIOUS_CONTAMINATION_RESOLVED" ] || remote_command="$remote_command --previous-contamination-resolved-asserted"
 [ -z "$HOST_REBUILT_OR_CLEARED" ] || remote_command="$remote_command --host-rebuilt-or-cleared-asserted"

@@ -82,6 +82,38 @@ def regular_non_symlink(path: Path) -> bool:
     return path.is_file() and not path.is_symlink() and metadata.st_size > 0
 
 
+def host_pf_default_deny_evidence(info_path: Path, rules_path: Path) -> dict[str, Any]:
+    info_valid = regular_non_symlink(info_path)
+    rules_valid = regular_non_symlink(rules_path)
+    enabled = False
+    blanket_block = False
+    inbound_block = False
+    outbound_block = False
+    if info_valid:
+        enabled = "Status: Enabled" in info_path.read_text(encoding="utf-8", errors="replace")
+    if rules_valid:
+        for line in rules_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            tokens = line.lower().split()
+            if not tokens or tokens[0] != "block" or "all" not in tokens:
+                continue
+            if "in" in tokens:
+                inbound_block = True
+            elif "out" in tokens:
+                outbound_block = True
+            else:
+                blanket_block = True
+    default_deny_rule_observed = blanket_block or (inbound_block and outbound_block)
+    return {
+        "info_path": str(info_path),
+        "info_sha256": sha256_file(info_path) if info_valid else None,
+        "rules_path": str(rules_path),
+        "rules_sha256": sha256_file(rules_path) if rules_valid else None,
+        "status_enabled_observed": enabled,
+        "default_deny_rule_observed": default_deny_rule_observed,
+        "verified": info_valid and rules_valid and enabled and default_deny_rule_observed,
+    }
+
+
 def run_capture(argv: list[str], out_path: Path, timeout_seconds: int = 120) -> dict[str, Any]:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     started = now_utc()
@@ -469,25 +501,37 @@ def guardrails(remote_root: Path, stage_dir: Path, args: argparse.Namespace) -> 
         commands["pf_rules"] = run_capture([pf_info, "-sr"], command_dir / "pf-rules.out", args.timeout_seconds)
     preflight_pf_info = remote_root / "evidence" / "preflight" / "host-firewall-sudo-info.out"
     preflight_pf_rules = remote_root / "evidence" / "preflight" / "host-firewall-sudo-rules.out"
-    preflight_pf_enabled = False
-    if preflight_pf_info.is_file():
-        preflight_pf_enabled = "Status: Enabled" in preflight_pf_info.read_text(encoding="utf-8", errors="replace")
+    host_pf_evidence = host_pf_default_deny_evidence(preflight_pf_info, preflight_pf_rules)
+    preflight_pf_enabled = host_pf_evidence["status_enabled_observed"]
+    provider_firewall_posture_exclusive = (
+        args.cloud_firewall_default_deny_asserted
+        != args.provider_firewall_unavailable_asserted
+    )
+    provider_firewall_mode = (
+        "cloud_default_deny"
+        if args.cloud_firewall_default_deny_asserted and not args.provider_firewall_unavailable_asserted
+        else "provider_unavailable_host_pf"
+        if args.provider_firewall_unavailable_asserted and not args.cloud_firewall_default_deny_asserted
+        else "invalid"
+    )
     external_assertions = {
         "provider_approval_on_file": bool(args.provider_approval_ref),
         "legal_provider_approval_on_file": bool(args.legal_provider_approval_ref),
         "cloud_firewall_default_deny_asserted": args.cloud_firewall_default_deny_asserted,
+        "provider_firewall_unavailable_asserted": args.provider_firewall_unavailable_asserted,
         "sinkhole_ready_asserted": args.sinkhole_ready_asserted,
         "sinkhole_reference": args.sinkhole_reference,
     }
     pf_observed = commands.get("pf_info", {}).get("exit_code") == 0 or preflight_pf_enabled
+    host_pf_default_deny_verified = host_pf_evidence["verified"]
     execution_path_ready = state_lock.get("valid") is True and command_ok
     ready_for_benign = (
         execution_path_ready if args.execution_path == LEGACY_EXECUTION_PATH else False
     )
     ready_for_live = (
         execution_path_ready
-        and pf_observed
-        and args.cloud_firewall_default_deny_asserted
+        and host_pf_default_deny_verified
+        and provider_firewall_posture_exclusive
         and args.sinkhole_ready_asserted
         and bool(args.provider_approval_ref)
         and bool(args.legal_provider_approval_ref)
@@ -502,14 +546,10 @@ def guardrails(remote_root: Path, stage_dir: Path, args: argparse.Namespace) -> 
         "state_lock_sha256": sha256_file(paths["state_lock"]),
         "commands": commands,
         "external_assertions": external_assertions,
+        "provider_firewall_mode": provider_firewall_mode,
         "host_pf_observed": pf_observed,
-        "host_pf_preflight_evidence": {
-            "info_path": str(preflight_pf_info),
-            "info_sha256": sha256_file(preflight_pf_info) if preflight_pf_info.is_file() else None,
-            "rules_path": str(preflight_pf_rules),
-            "rules_sha256": sha256_file(preflight_pf_rules) if preflight_pf_rules.is_file() else None,
-            "status_enabled_observed": preflight_pf_enabled,
-        },
+        "host_pf_default_deny_verified": host_pf_default_deny_verified,
+        "host_pf_preflight_evidence": host_pf_evidence,
         "exact_artifact_readiness": exact_readiness,
         "malware_unpacked": False,
         "malware_executed": False,
@@ -524,8 +564,8 @@ def guardrails(remote_root: Path, stage_dir: Path, args: argparse.Namespace) -> 
         "live_malware_rehearsal_blockers": [] if ready_for_live else [
             reason for reason, blocked in [
                 ("state_lock_or_execution_path_guardrails_not_ready", not execution_path_ready),
-                ("host_pf_not_observed", not pf_observed),
-                ("cloud_firewall_default_deny_not_asserted", not args.cloud_firewall_default_deny_asserted),
+                ("host_pf_default_deny_not_verified", not host_pf_default_deny_verified),
+                ("provider_firewall_posture_not_exclusive", not provider_firewall_posture_exclusive),
                 ("sinkhole_ready_not_asserted", not args.sinkhole_ready_asserted),
                 ("provider_or_legal_approval_reference_missing", not (args.provider_approval_ref and args.legal_provider_approval_ref)),
             ] if blocked
@@ -721,6 +761,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--legal-provider-approval-ref", default="")
     parser.add_argument("--sinkhole-reference", default="")
     parser.add_argument("--cloud-firewall-default-deny-asserted", action="store_true")
+    parser.add_argument("--provider-firewall-unavailable-asserted", action="store_true")
     parser.add_argument("--sinkhole-ready-asserted", action="store_true")
     parser.add_argument("--timeout-seconds", type=int, default=120)
     parser.add_argument("--run-timeout-seconds", type=int, default=600)
@@ -746,6 +787,8 @@ def main() -> int:
         if not args.evaluator_script.is_file():
             raise Phase1Error(f"missing_evaluator_script:{args.evaluator_script}")
         validate_execution_path_args(args)
+        if args.cloud_firewall_default_deny_asserted and args.provider_firewall_unavailable_asserted:
+            raise Phase1Error("provider_firewall_posture_assertions_are_mutually_exclusive")
 
         results: dict[str, Any] = {
             "schema": f"{SCHEMA_PREFIX}.run.v1",

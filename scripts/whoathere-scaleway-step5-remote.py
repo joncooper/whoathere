@@ -874,6 +874,18 @@ def verify_live_gate(remote_root: Path, stage_dir: Path, args: argparse.Namespac
             "scanners_list": run_capture([whoathere_bin, "scanners", "list", "--json"], command_dir / "scanners-list.json", args.timeout_seconds),
         }
     network_control_ready = args.sinkhole_ready_asserted or args.egress_deny_asserted
+    provider_firewall_posture_exclusive = (
+        args.cloud_firewall_default_deny_asserted
+        != args.provider_firewall_unavailable_asserted
+    )
+    guardrail_assertions = guardrails.get("external_assertions")
+    provider_firewall_posture_bound = (
+        isinstance(guardrail_assertions, dict)
+        and guardrail_assertions.get("cloud_firewall_default_deny_asserted")
+        is args.cloud_firewall_default_deny_asserted
+        and guardrail_assertions.get("provider_firewall_unavailable_asserted")
+        is args.provider_firewall_unavailable_asserted
+    )
     blockers = []
     if state_lock.get("valid") is not True:
         blockers.append("phase1_state_lock_not_valid")
@@ -895,10 +907,12 @@ def verify_live_gate(remote_root: Path, stage_dir: Path, args: argparse.Namespac
             blockers.append("phase1_exact_artifact_readiness_not_bound")
     elif guardrails.get("ready_for_benign_dry_run") is not True:
         blockers.append("phase1_benign_guardrail_not_ready")
-    if guardrails.get("host_pf_observed") is not True:
-        blockers.append("host_pf_not_observed")
-    if not args.cloud_firewall_default_deny_asserted:
-        blockers.append("cloud_firewall_default_deny_not_asserted")
+    if guardrails.get("host_pf_default_deny_verified") is not True:
+        blockers.append("host_pf_default_deny_not_verified")
+    if not provider_firewall_posture_exclusive:
+        blockers.append("provider_firewall_posture_not_exclusive")
+    if not provider_firewall_posture_bound:
+        blockers.append("phase1_provider_firewall_posture_not_bound")
     if not network_control_ready:
         blockers.append("sinkhole_or_egress_deny_not_asserted")
     if not args.live_malware_execution_approved:
@@ -927,6 +941,7 @@ def verify_live_gate(remote_root: Path, stage_dir: Path, args: argparse.Namespac
             "provider_approval_ref": args.provider_approval_ref,
             "legal_provider_approval_ref": args.legal_provider_approval_ref,
             "cloud_firewall_default_deny_asserted": args.cloud_firewall_default_deny_asserted,
+            "provider_firewall_unavailable_asserted": args.provider_firewall_unavailable_asserted,
             "sinkhole_ready_asserted": args.sinkhole_ready_asserted,
             "egress_deny_asserted": args.egress_deny_asserted,
             "sinkhole_reference": args.sinkhole_reference,
@@ -2067,6 +2082,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--provider-approval-ref", required=True)
     parser.add_argument("--legal-provider-approval-ref", required=True)
     parser.add_argument("--cloud-firewall-default-deny-asserted", action="store_true")
+    parser.add_argument("--provider-firewall-unavailable-asserted", action="store_true")
     parser.add_argument("--sinkhole-ready-asserted", action="store_true")
     parser.add_argument("--egress-deny-asserted", action="store_true")
     parser.add_argument("--sinkhole-reference", default="")
@@ -2122,6 +2138,14 @@ def main() -> int:
         require_under(stage_dir, remote_root, "stage_dir")
         if not args.evaluator_script.is_file():
             raise Step5Error(f"missing_evaluator_script:{args.evaluator_script}")
+        if args.cloud_firewall_default_deny_asserted and args.provider_firewall_unavailable_asserted:
+            raise Step5Error("provider_firewall_posture_assertions_are_mutually_exclusive")
+        if (
+            not args.prepare_only
+            and not args.cloud_firewall_default_deny_asserted
+            and not args.provider_firewall_unavailable_asserted
+        ):
+            raise Step5Error("live_execution_requires_exactly_one_provider_firewall_posture")
         result = run_step5(remote_root, stage_dir, args)
         print(json.dumps(result, indent=2, sort_keys=True))
         return step5_exit_code(result, args.execution_path)

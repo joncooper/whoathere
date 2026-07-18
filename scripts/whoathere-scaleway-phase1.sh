@@ -20,6 +20,7 @@ PROVIDER_APPROVAL_REF=""
 LEGAL_PROVIDER_APPROVAL_REF=""
 SINKHOLE_REFERENCE=""
 CLOUD_FIREWALL_ASSERTED=""
+PROVIDER_FIREWALL_UNAVAILABLE_ASSERTED=""
 SINKHOLE_ASSERTED=""
 PHASE="all"
 RUN_TIMEOUT_SECONDS="600"
@@ -44,7 +45,7 @@ usage:
     --evaluation-owner <ref> \
     [--provider-approval-ref <ref>] \
     [--legal-provider-approval-ref <ref>] \
-    [--cloud-firewall-default-deny-asserted] \
+    [--cloud-firewall-default-deny-asserted | --provider-firewall-unavailable-asserted] \
     [--sinkhole-ready-asserted --sinkhole-reference <ref>] \
     [--phase lock|guardrails|prepare-benign|run-benign|all] \
     [--reprepare-benign]
@@ -149,6 +150,10 @@ while [ "$#" -gt 0 ]; do
       CLOUD_FIREWALL_ASSERTED=1
       shift
       ;;
+    --provider-firewall-unavailable-asserted)
+      PROVIDER_FIREWALL_UNAVAILABLE_ASSERTED=1
+      shift
+      ;;
     --sinkhole-ready-asserted)
       SINKHOLE_ASSERTED=1
       shift
@@ -175,6 +180,11 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
+
+if [ -n "$CLOUD_FIREWALL_ASSERTED" ] && [ -n "$PROVIDER_FIREWALL_UNAVAILABLE_ASSERTED" ]; then
+  echo "provider_firewall_posture_assertions_are_mutually_exclusive" >&2
+  exit 64
+fi
 
 [ -n "$SSH_HOST" ] || usage
 [ -n "$SECURITY_LAB_OWNER" ] || usage
@@ -278,6 +288,7 @@ remote_command="WHOATHERE_SCANNER_CACHE_DIR=$remote_tools/scanners PATH=$remote_
 [ -z "$LEGAL_PROVIDER_APPROVAL_REF" ] || remote_command="$remote_command --legal-provider-approval-ref $LEGAL_PROVIDER_APPROVAL_REF"
 [ -z "$SINKHOLE_REFERENCE" ] || remote_command="$remote_command --sinkhole-reference $SINKHOLE_REFERENCE"
 [ -z "$CLOUD_FIREWALL_ASSERTED" ] || remote_command="$remote_command --cloud-firewall-default-deny-asserted"
+[ -z "$PROVIDER_FIREWALL_UNAVAILABLE_ASSERTED" ] || remote_command="$remote_command --provider-firewall-unavailable-asserted"
 [ -z "$SINKHOLE_ASSERTED" ] || remote_command="$remote_command --sinkhole-ready-asserted"
 [ -z "$REPREPARE_BENIGN" ] || remote_command="$remote_command --reprepare-benign"
 

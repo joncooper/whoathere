@@ -18,6 +18,7 @@ LEGAL_PROVIDER_APPROVAL_REF=""
 SINKHOLE_REFERENCE=""
 LULU_REFERENCE=""
 CLOUD_FIREWALL_ASSERTED=""
+PROVIDER_FIREWALL_UNAVAILABLE_ASSERTED=""
 SINKHOLE_ASSERTED=""
 EGRESS_DENY_ASSERTED=""
 LULU_ASSERTED=""
@@ -57,7 +58,7 @@ usage:
     [--run-id run-YYYYMMDDTHHMMSSZ] \
     --provider-approval-ref <ref> \
     --legal-provider-approval-ref <ref> \
-    --cloud-firewall-default-deny-asserted \
+    (--cloud-firewall-default-deny-asserted | --provider-firewall-unavailable-asserted) \
     (--sinkhole-ready-asserted --sinkhole-reference <ref> | --egress-deny-asserted) \
     --lulu-enabled-asserted [--lulu-reference <ref>] \
     [--prepare-only | --live-malware-execution-approved]
@@ -115,6 +116,7 @@ while [ "$#" -gt 0 ]; do
     --sinkhole-reference) [ "$#" -ge 2 ] || usage; SINKHOLE_REFERENCE=$2; shift 2 ;;
     --lulu-reference) [ "$#" -ge 2 ] || usage; LULU_REFERENCE=$2; shift 2 ;;
     --cloud-firewall-default-deny-asserted) CLOUD_FIREWALL_ASSERTED=1; shift ;;
+    --provider-firewall-unavailable-asserted) PROVIDER_FIREWALL_UNAVAILABLE_ASSERTED=1; shift ;;
     --sinkhole-ready-asserted) SINKHOLE_ASSERTED=1; shift ;;
     --egress-deny-asserted) EGRESS_DENY_ASSERTED=1; shift ;;
     --lulu-enabled-asserted) LULU_ASSERTED=1; shift ;;
@@ -142,12 +144,19 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+if [ -n "$CLOUD_FIREWALL_ASSERTED" ] && [ -n "$PROVIDER_FIREWALL_UNAVAILABLE_ASSERTED" ]; then
+  echo "provider_firewall_posture_assertions_are_mutually_exclusive" >&2
+  exit 64
+fi
+
 [ -n "$SSH_HOST" ] || usage
 [ -n "$EXECUTION_PATH" ] || usage
 [ -n "$PROVIDER_APPROVAL_REF" ] || usage
 [ -n "$LEGAL_PROVIDER_APPROVAL_REF" ] || usage
 if [ -z "$PREPARE_ONLY" ]; then
-  [ -n "$CLOUD_FIREWALL_ASSERTED" ] || usage
+  if [ -z "$CLOUD_FIREWALL_ASSERTED" ] && [ -z "$PROVIDER_FIREWALL_UNAVAILABLE_ASSERTED" ]; then
+    usage
+  fi
   [ -n "$LULU_ASSERTED" ] || usage
   [ -n "$LIVE_APPROVED" ] || usage
 elif [ -n "$LIVE_APPROVED" ]; then
@@ -277,6 +286,7 @@ remote_path_prefix=$remote_scanner_bin
 [ -z "$EXECUTION_TOOLS_BIN" ] || remote_path_prefix="$EXECUTION_TOOLS_BIN:$remote_path_prefix"
 remote_command="WHOATHERE_SCANNER_CACHE_DIR=$remote_tools/scanners PATH=$remote_path_prefix:\$PATH /usr/bin/python3 $remote_step5 --remote-root $REMOTE_ROOT --state-dir $STATE_DIR --whoathere-bin $WHOATHERE_BIN --evaluator-script $remote_evaluator --execution-path $EXECUTION_PATH --sample-id $SAMPLE_ID --provider-approval-ref $PROVIDER_APPROVAL_REF --legal-provider-approval-ref $LEGAL_PROVIDER_APPROVAL_REF"
 [ -z "$CLOUD_FIREWALL_ASSERTED" ] || remote_command="$remote_command --cloud-firewall-default-deny-asserted"
+[ -z "$PROVIDER_FIREWALL_UNAVAILABLE_ASSERTED" ] || remote_command="$remote_command --provider-firewall-unavailable-asserted"
 [ -z "$LULU_ASSERTED" ] || remote_command="$remote_command --lulu-enabled-asserted"
 [ -z "$LIVE_APPROVED" ] || remote_command="$remote_command --live-malware-execution-approved"
 [ -z "$PREPARE_ONLY" ] || remote_command="$remote_command --prepare-only"

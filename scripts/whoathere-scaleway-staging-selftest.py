@@ -19,6 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 BUILDER = REPO_ROOT / "scripts/whoathere-build-scaleway-staging-bundle.sh"
 PREFLIGHT = REPO_ROOT / "scripts/whoathere-scaleway-host-preflight.sh"
 PHASE1 = REPO_ROOT / "scripts/whoathere-scaleway-phase1.sh"
+PHASE1_REMOTE = REPO_ROOT / "scripts/whoathere-scaleway-phase1-remote.py"
 STEP5_REMOTE = REPO_ROOT / "scripts/whoathere-scaleway-step5-remote.py"
 FIXTURE = REPO_ROOT / "docs/product-build-run/actual-malware-malwarebazaar-fixture.jsonl.sample"
 CASE_ID = "whoathere-actual-malware-2026-07-01"
@@ -436,6 +437,23 @@ def main() -> int:
         sudo_pf_info = remote_root / "evidence/preflight/host-firewall-sudo-info.out"
         sudo_pf_info.write_text("Status: Enabled\n", encoding="utf-8")
         sudo_pf_info.chmod(0o600)
+        sudo_pf_rules = remote_root / "evidence/preflight/host-firewall-sudo-rules.out"
+        phase1_module = load_module(PHASE1_REMOTE, "whoathere_phase1_pf_selftest")
+        require(
+            phase1_module.host_pf_default_deny_evidence(sudo_pf_info, sudo_pf_rules)["verified"]
+            is False,
+            "enabled PF without a sealed default-deny rules snapshot must fail closed",
+        )
+        sudo_pf_rules.write_text(
+            "block drop all\npass quick on lo0 all\n",
+            encoding="utf-8",
+        )
+        sudo_pf_rules.chmod(0o600)
+        require(
+            phase1_module.host_pf_default_deny_evidence(sudo_pf_info, sudo_pf_rules)["verified"]
+            is True,
+            "enabled PF with a blanket default-deny rule should verify",
+        )
         execution_tools_bin = temp_root / "execution-tools-bin"
         execution_tools_bin.mkdir(mode=0o700)
         fake_zig = execution_tools_bin / "zig"
@@ -470,7 +488,7 @@ def main() -> int:
             "synthetic-provider-approval",
             "--legal-provider-approval-ref",
             "synthetic-legal-approval",
-            "--cloud-firewall-default-deny-asserted",
+            "--provider-firewall-unavailable-asserted",
             "--sinkhole-ready-asserted",
             "--sinkhole-reference",
             "synthetic-sinkhole",
@@ -479,6 +497,21 @@ def main() -> int:
         ]
         phase1_lock = list(phase1_common)
         phase1_lock[-1] = "lock"
+        mutually_exclusive_firewalls = subprocess.run(
+            phase1_lock + ["--cloud-firewall-default-deny-asserted"],
+            cwd=REPO_ROOT,
+            env=exact_environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        require(mutually_exclusive_firewalls.returncode == 64, mutually_exclusive_firewalls.stderr)
+        require(
+            "provider_firewall_posture_assertions_are_mutually_exclusive"
+            in mutually_exclusive_firewalls.stderr,
+            mutually_exclusive_firewalls.stderr,
+        )
         locked = subprocess.run(
             phase1_lock,
             cwd=REPO_ROOT,
@@ -552,6 +585,11 @@ def main() -> int:
         require(exact_guardrails["ready_for_exact_artifact_diagnostic"] is True, exact_guardrails)
         require(exact_guardrails["ready_for_benign_dry_run"] is False, exact_guardrails)
         require(exact_guardrails["ready_for_live_malware_rehearsal"] is True, exact_guardrails)
+        require(
+            exact_guardrails["provider_firewall_mode"] == "provider_unavailable_host_pf"
+            and exact_guardrails["host_pf_default_deny_verified"] is True,
+            exact_guardrails,
+        )
         require(exact_guardrails["exact_artifact_readiness"]["valid"] is True, exact_guardrails)
         require("vm_health" not in exact_guardrails["commands"], exact_guardrails["commands"])
         phase1_invocations = invocation_log.read_text(encoding="utf-8").splitlines()
@@ -575,7 +613,8 @@ def main() -> int:
             detonation_config_sha256=detonation_config_sha256,
             sinkhole_ready_asserted=True,
             egress_deny_asserted=False,
-            cloud_firewall_default_deny_asserted=True,
+            cloud_firewall_default_deny_asserted=False,
+            provider_firewall_unavailable_asserted=True,
             live_malware_execution_approved=True,
             lulu_enabled_asserted=True,
             lulu_reference="synthetic-lulu",

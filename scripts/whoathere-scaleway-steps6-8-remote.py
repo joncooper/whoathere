@@ -296,6 +296,59 @@ def validate_clearance_execution_args(args: argparse.Namespace) -> None:
     validate_exact_artifact_config(args, "clearance")
 
 
+def phase1_provider_firewall_binding(
+    remote_root: Path,
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    guardrails_path = remote_root / "evidence" / "phase1" / "guardrails-status.json"
+    failures: list[str] = []
+    guardrails: dict[str, Any] = {}
+    if not regular_non_symlink(guardrails_path):
+        failures.append("phase1_guardrails_missing")
+    else:
+        try:
+            guardrails = require_json_object(guardrails_path, "phase1_guardrails")
+        except Step68Error:
+            failures.append("phase1_guardrails_invalid")
+    assertions = guardrails.get("external_assertions")
+    posture_exclusive = (
+        args.cloud_firewall_default_deny_asserted
+        != args.provider_firewall_unavailable_asserted
+    )
+    if not posture_exclusive:
+        failures.append("provider_firewall_posture_not_exclusive")
+    if guardrails.get("host_pf_default_deny_verified") is not True:
+        failures.append("phase1_host_pf_default_deny_not_verified")
+    if not isinstance(assertions, dict):
+        failures.append("phase1_provider_firewall_assertions_missing")
+    elif (
+        assertions.get("cloud_firewall_default_deny_asserted")
+        is not args.cloud_firewall_default_deny_asserted
+        or assertions.get("provider_firewall_unavailable_asserted")
+        is not args.provider_firewall_unavailable_asserted
+    ):
+        failures.append("phase1_provider_firewall_posture_mismatch")
+    expected_mode = (
+        "cloud_default_deny"
+        if args.cloud_firewall_default_deny_asserted
+        else "provider_unavailable_host_pf"
+        if args.provider_firewall_unavailable_asserted
+        else "invalid"
+    )
+    if guardrails.get("provider_firewall_mode") != expected_mode:
+        failures.append("phase1_provider_firewall_mode_mismatch")
+    return {
+        "valid": not failures,
+        "mode": expected_mode,
+        "phase1_guardrails_path": str(guardrails_path),
+        "phase1_guardrails_sha256": (
+            sha256_file(guardrails_path) if regular_non_symlink(guardrails_path) else None
+        ),
+        "host_pf_default_deny_verified": guardrails.get("host_pf_default_deny_verified") is True,
+        "failures": failures,
+    }
+
+
 def exact_artifact_clearance_preflight(
     remote_root: Path,
     args: argparse.Namespace,
@@ -313,6 +366,7 @@ def exact_artifact_clearance_preflight(
         except Step68Error:
             failures.append("phase1_guardrails_invalid")
     readiness = guardrails.get("exact_artifact_readiness")
+    provider_firewall_binding = phase1_provider_firewall_binding(remote_root, args)
     readiness_bound = (
         guardrails.get("execution_path") == EXACT_ARTIFACT_EXECUTION_PATH
         and guardrails.get("ready_for_exact_artifact_diagnostic") is True
@@ -327,6 +381,7 @@ def exact_artifact_clearance_preflight(
     )
     if not readiness_bound:
         failures.append("phase1_exact_artifact_readiness_not_bound")
+    failures.extend(provider_firewall_binding["failures"])
     preflight = {
         "schema": EXACT_ARTIFACT_CLEARANCE_PREFLIGHT_SCHEMA,
         "created_at_utc": now_utc(),
@@ -340,6 +395,7 @@ def exact_artifact_clearance_preflight(
             sha256_file(guardrails_path) if regular_non_symlink(guardrails_path) else None
         ),
         "phase1_exact_artifact_readiness": readiness if isinstance(readiness, dict) else None,
+        "provider_firewall_binding": provider_firewall_binding,
         "expected_terminal_reason": EXACT_ARTIFACT_READINESS_REASON,
         "artifact_executed": False,
         "vm_execution_requested": False,
@@ -379,11 +435,23 @@ def validate_clearance(remote_root: Path, args: argparse.Namespace, runs: list[d
         "host_rebuilt_or_cleared",
         "vm_state_rebuilt_or_pruned",
         "no_live_malware_execution_since_clearance",
-        "cloud_firewall_default_deny_verified",
         "host_firewall_default_deny_verified",
         "lulu_secondary_control_enabled",
     ]
     failures.extend([key for key in required_true if clearance.get(key) is not True])
+    clearance_cloud_firewall = clearance.get("cloud_firewall_default_deny_verified") is True
+    clearance_provider_unavailable = clearance.get("provider_firewall_unavailable_asserted") is True
+    if clearance_cloud_firewall == clearance_provider_unavailable:
+        failures.append("clearance_provider_firewall_posture_not_exclusive")
+    if (
+        clearance_cloud_firewall is not args.cloud_firewall_default_deny_asserted
+        or clearance_provider_unavailable is not args.provider_firewall_unavailable_asserted
+    ):
+        failures.append("clearance_provider_firewall_posture_mismatch")
+    if clearance_provider_unavailable:
+        fallback_binding = clearance.get("phase1_provider_firewall_binding")
+        if not isinstance(fallback_binding, dict) or fallback_binding.get("valid") is not True:
+            failures.append("clearance_provider_firewall_fallback_evidence_invalid")
     if not (clearance.get("sinkhole_ready_verified") is True or clearance.get("egress_deny_verified") is True):
         failures.append("sinkhole_or_egress_deny_not_verified")
     if clearance.get("sinkhole_ready_verified") is True and not clearance.get("sinkhole_reference"):
@@ -563,18 +631,22 @@ def build_clearance_record(remote_root: Path, stage_dir: Path, args: argparse.Na
                 args.timeout_seconds,
             ),
         }
+    provider_firewall_binding = phase1_provider_firewall_binding(remote_root, args)
     blockers: list[str] = []
     required_assertions = [
         ("previous_contamination_resolved", args.previous_contamination_resolved_asserted),
         ("host_rebuilt_or_cleared", args.host_rebuilt_or_cleared_asserted),
         ("vm_state_rebuilt_or_pruned", args.vm_state_rebuilt_or_pruned_asserted),
-        ("cloud_firewall_default_deny_verified", args.cloud_firewall_default_deny_asserted),
         ("host_firewall_default_deny_verified", args.host_firewall_default_deny_asserted),
         ("lulu_secondary_control_enabled", args.lulu_enabled_asserted),
     ]
     for name, asserted in required_assertions:
         if not asserted:
             blockers.append(f"{name}_not_asserted")
+    if args.cloud_firewall_default_deny_asserted == args.provider_firewall_unavailable_asserted:
+        blockers.append("provider_firewall_posture_not_exclusive")
+    if args.provider_firewall_unavailable_asserted and not provider_firewall_binding["valid"]:
+        blockers.extend(provider_firewall_binding["failures"])
     if not (args.sinkhole_ready_asserted or args.egress_deny_asserted):
         blockers.append("sinkhole_ready_or_egress_deny_not_asserted")
     if args.sinkhole_ready_asserted and not args.sinkhole_reference:
@@ -612,6 +684,9 @@ def build_clearance_record(remote_root: Path, stage_dir: Path, args: argparse.Na
         "vm_state_rebuilt_or_pruned": args.vm_state_rebuilt_or_pruned_asserted,
         "no_live_malware_execution_since_clearance": True,
         "cloud_firewall_default_deny_verified": args.cloud_firewall_default_deny_asserted,
+        "provider_firewall_unavailable_asserted": args.provider_firewall_unavailable_asserted,
+        "provider_firewall_mode": provider_firewall_binding["mode"],
+        "phase1_provider_firewall_binding": provider_firewall_binding,
         "host_firewall_default_deny_verified": args.host_firewall_default_deny_asserted,
         "lulu_secondary_control_enabled": args.lulu_enabled_asserted,
         "sinkhole_ready_verified": args.sinkhole_ready_asserted,
@@ -859,12 +934,15 @@ def run_campaign_slice(remote_root: Path, stage_dir: Path, args: argparse.Namesp
             args.provider_approval_ref,
             "--legal-provider-approval-ref",
             args.legal_provider_approval_ref,
-            "--cloud-firewall-default-deny-asserted",
             "--lulu-enabled-asserted",
             "--live-malware-execution-approved",
             "--timeout-seconds",
             str(args.timeout_seconds),
         ]
+        if args.cloud_firewall_default_deny_asserted:
+            command.append("--cloud-firewall-default-deny-asserted")
+        if args.provider_firewall_unavailable_asserted:
+            command.append("--provider-firewall-unavailable-asserted")
         if args.execution_path == EXACT_ARTIFACT_EXECUTION_PATH:
             command.extend(
                 [
@@ -2247,6 +2325,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--provider-approval-ref", default="")
     parser.add_argument("--legal-provider-approval-ref", default="")
     parser.add_argument("--cloud-firewall-default-deny-asserted", action="store_true")
+    parser.add_argument("--provider-firewall-unavailable-asserted", action="store_true")
     parser.add_argument("--host-firewall-default-deny-asserted", action="store_true")
     parser.add_argument("--previous-contamination-resolved-asserted", action="store_true")
     parser.add_argument("--host-rebuilt-or-cleared-asserted", action="store_true")
@@ -2320,7 +2399,6 @@ def main() -> int:
                 for name, value in [
                     ("provider_approval_ref", args.provider_approval_ref),
                     ("legal_provider_approval_ref", args.legal_provider_approval_ref),
-                    ("cloud_firewall_default_deny_asserted", args.cloud_firewall_default_deny_asserted),
                     ("host_firewall_default_deny_asserted", args.host_firewall_default_deny_asserted),
                     ("lulu_enabled_asserted", args.lulu_enabled_asserted),
                 ]
@@ -2330,6 +2408,8 @@ def main() -> int:
                 missing.append("live_malware_execution_approved")
             if missing:
                 raise Step68Error(f"{args.phase}_missing_required_assertions:{','.join(missing)}")
+            if args.cloud_firewall_default_deny_asserted == args.provider_firewall_unavailable_asserted:
+                raise Step68Error(f"{args.phase}_requires_exactly_one_provider_firewall_posture")
             if not (args.sinkhole_ready_asserted or args.egress_deny_asserted):
                 raise Step68Error(f"{args.phase}_requires_sinkhole_ready_or_egress_deny_assertion")
             if args.sinkhole_ready_asserted and not args.sinkhole_reference:
