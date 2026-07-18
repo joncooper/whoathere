@@ -18,9 +18,9 @@ use whoathere_core::{
 use whoathere_detector::{
     decode_and_validate_behavior_analysis_bundle_v1, external_scanner_specs,
     plan_external_scanner_run, run_external_scanners, scan_npm_package_json, scan_pyproject_toml,
-    scanner_bootstrap_receipt_path, scanner_inventory, scanner_workspace_digest,
+    scanner_bootstrap_receipt_path, scanner_inventory, scanner_workspace_digest, EvidenceRange,
     ExternalScannerInventoryItem, ExternalScannerRunRecord, ExternalScannerRunSummary,
-    ScannerEcosystem, ScannerExecutionRole, EXTERNAL_SCANNER_RUN_SCHEMA,
+    FindingLocation, ScannerEcosystem, ScannerExecutionRole, EXTERNAL_SCANNER_RUN_SCHEMA,
 };
 use whoathere_evidence::{
     minimum_profiles, EvidenceBundle, EvidenceJobBinding, EvidenceJobResult, EvidenceProfile,
@@ -48,8 +48,11 @@ use whoathere_runner::{
     project_offline_exact_sdist_behavior_v1, project_offline_exact_wheel_behavior_v1,
     BehaviorCodexObserverConfigV1, BehaviorCodexObserverV1, BehaviorCodexPanelOutcomeV1,
     ExactArtifactAiAdapterV1, ExactArtifactBehaviorObserverV1, ExactArtifactCodexAiAdapterV1,
-    ExactArtifactCodexAiConfigV1, ExactArtifactDetonationAdapterV1, ExactArtifactInspectionErrorV1,
-    ExactArtifactInspectionRequestV1, ExecutionDecision, LinuxVzExactNpmDetonationAdapterV1,
+    ExactArtifactCodexAiConfigV1, ExactArtifactDetonationAdapterV1,
+    ExactArtifactEvidenceReferenceV1, ExactArtifactFindingKindV1, ExactArtifactInspectionErrorV1,
+    ExactArtifactInspectionReportV1, ExactArtifactInspectionRequestV1,
+    ExactArtifactObservationConfidenceV1, ExactArtifactObservationSourceV1,
+    ExactArtifactStageStatusV1, ExecutionDecision, LinuxVzExactNpmDetonationAdapterV1,
     LinuxVzExactNpmDetonationConfigV1, LinuxVzExactSdistDetonationAdapterV1,
     LinuxVzExactSdistDetonationConfigV1, LinuxVzExactWheelDetonationAdapterV1,
     LinuxVzExactWheelDetonationConfigV1, OfflineExactSdistBehaviorProjectionRequestV1,
@@ -89,6 +92,12 @@ use whoathere_vault_dev::{
 pub struct CommandResult {
     pub output: String,
     pub exit_code: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArtifactInspectOutput {
+    Json,
+    Human,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -135,6 +144,10 @@ pub enum Command {
     ArtifactInspectInvalidOptions {
         reason_code: &'static str,
     },
+    ArtifactInspectHumanMissingPath,
+    ArtifactInspectHumanInvalidOptions {
+        reason_code: &'static str,
+    },
     ArtifactInspect {
         path: String,
         ecosystem: Option<String>,
@@ -152,6 +165,7 @@ pub enum Command {
         approve_hosted_behavior_review: bool,
         detonation: bool,
         detonation_config: Option<String>,
+        output: ArtifactInspectOutput,
     },
     Doctor {
         json: bool,
@@ -733,6 +747,45 @@ fn parse_exact_artifact_inspect(args: &[String]) -> Command {
         approve_hosted_behavior_review,
         detonation,
         detonation_config,
+        output: ArtifactInspectOutput::Json,
+    }
+}
+
+fn parse_human_exact_artifact_inspect(args: &[String]) -> Command {
+    let mut filtered = Vec::with_capacity(args.len());
+    let mut json = false;
+    for argument in args {
+        if argument == "--json" {
+            if json {
+                return Command::ArtifactInspectInvalidOptions {
+                    reason_code: "exact_artifact_option_duplicate",
+                };
+            }
+            json = true;
+        } else if argument.starts_with("--json=") {
+            return Command::ArtifactInspectHumanInvalidOptions {
+                reason_code: "exact_artifact_option_malformed",
+            };
+        } else {
+            filtered.push(argument.clone());
+        }
+    }
+
+    let command = parse_exact_artifact_inspect(&filtered);
+    if json {
+        return command;
+    }
+    match command {
+        Command::ArtifactInspectMissingPath => Command::ArtifactInspectHumanMissingPath,
+        Command::ArtifactInspectInvalidOptions { reason_code } => {
+            Command::ArtifactInspectHumanInvalidOptions { reason_code }
+        }
+        mut command => {
+            if let Command::ArtifactInspect { output, .. } = &mut command {
+                *output = ArtifactInspectOutput::Human;
+            }
+            command
+        }
     }
 }
 
@@ -1063,6 +1116,7 @@ pub fn parse_command(args: &[String]) -> Command {
         [cmd, sub, rest @ ..] if cmd == "artifact" && sub == "inspect" => {
             parse_exact_artifact_inspect(rest)
         }
+        [cmd, rest @ ..] if cmd == "inspect" => parse_human_exact_artifact_inspect(rest),
         [cmd, rest @ ..] if cmd == "doctor" => Command::Doctor {
             json: rest.iter().any(|arg| arg == "--json"),
             state_dir: parse_flag_value(rest, "--state-dir"),
@@ -1333,9 +1387,75 @@ pub fn render_command(command: Command) -> String {
 }
 
 pub fn evaluate_command(command: Command) -> CommandResult {
+    if let Some(result) = evaluate_exact_artifact_command(&command) {
+        return result;
+    }
     let output = render_command_text(command);
     let exit_code = infer_exit_code(&output);
     CommandResult { output, exit_code }
+}
+
+fn evaluate_exact_artifact_command(command: &Command) -> Option<CommandResult> {
+    match command {
+        Command::ArtifactInspectMissingPath => Some(exact_artifact_error_result(
+            ExactArtifactInspectionErrorV1::invalid_request("exact_artifact_path_required"),
+            ArtifactInspectOutput::Json,
+        )),
+        Command::ArtifactInspectInvalidOptions { reason_code } => {
+            Some(exact_artifact_error_result(
+                ExactArtifactInspectionErrorV1::invalid_request(reason_code),
+                ArtifactInspectOutput::Json,
+            ))
+        }
+        Command::ArtifactInspectHumanMissingPath => Some(exact_artifact_error_result(
+            ExactArtifactInspectionErrorV1::invalid_request("exact_artifact_path_required"),
+            ArtifactInspectOutput::Human,
+        )),
+        Command::ArtifactInspectHumanInvalidOptions { reason_code } => {
+            Some(exact_artifact_error_result(
+                ExactArtifactInspectionErrorV1::invalid_request(reason_code),
+                ArtifactInspectOutput::Human,
+            ))
+        }
+        Command::ArtifactInspect {
+            path,
+            ecosystem,
+            state_dir,
+            acquired_at,
+            ai_review,
+            ai_provider,
+            ai_client_path,
+            ai_client_sha256,
+            ai_model,
+            ai_auth_home,
+            ai_timeout_seconds,
+            approve_hosted_source_review,
+            behavior_observe,
+            approve_hosted_behavior_review,
+            detonation,
+            detonation_config,
+            output,
+        } => Some(evaluate_exact_artifact_inspect(ExactArtifactInspectArgs {
+            path,
+            ecosystem: ecosystem.as_deref(),
+            state_dir: state_dir.as_deref(),
+            acquired_at: acquired_at.as_deref(),
+            ai_review: *ai_review,
+            ai_provider: ai_provider.as_deref(),
+            ai_client_path: ai_client_path.as_deref(),
+            ai_client_sha256: ai_client_sha256.as_deref(),
+            ai_model: ai_model.as_deref(),
+            ai_auth_home: ai_auth_home.as_deref(),
+            ai_timeout_seconds: *ai_timeout_seconds,
+            approve_hosted_source_review: *approve_hosted_source_review,
+            behavior_observe: *behavior_observe,
+            approve_hosted_behavior_review: *approve_hosted_behavior_review,
+            detonation: *detonation,
+            detonation_config: detonation_config.as_deref(),
+            output: *output,
+        })),
+        _ => None,
+    }
 }
 
 fn render_command_text(command: Command) -> String {
@@ -1412,6 +1532,20 @@ fn render_command_text(command: Command) -> String {
         Command::ArtifactInspectInvalidOptions { reason_code } => {
             ExactArtifactInspectionErrorV1::invalid_request(reason_code).to_pretty_json()
         }
+        Command::ArtifactInspectHumanMissingPath => {
+            exact_artifact_error_result(
+                ExactArtifactInspectionErrorV1::invalid_request("exact_artifact_path_required"),
+                ArtifactInspectOutput::Human,
+            )
+            .output
+        }
+        Command::ArtifactInspectHumanInvalidOptions { reason_code } => {
+            exact_artifact_error_result(
+                ExactArtifactInspectionErrorV1::invalid_request(reason_code),
+                ArtifactInspectOutput::Human,
+            )
+            .output
+        }
         Command::ArtifactInspect {
             path,
             ecosystem,
@@ -1429,24 +1563,29 @@ fn render_command_text(command: Command) -> String {
             approve_hosted_behavior_review,
             detonation,
             detonation_config,
-        } => render_exact_artifact_inspect(ExactArtifactInspectArgs {
-            path: &path,
-            ecosystem: ecosystem.as_deref(),
-            state_dir: state_dir.as_deref(),
-            acquired_at: acquired_at.as_deref(),
-            ai_review,
-            ai_provider: ai_provider.as_deref(),
-            ai_client_path: ai_client_path.as_deref(),
-            ai_client_sha256: ai_client_sha256.as_deref(),
-            ai_model: ai_model.as_deref(),
-            ai_auth_home: ai_auth_home.as_deref(),
-            ai_timeout_seconds,
-            approve_hosted_source_review,
-            behavior_observe,
-            approve_hosted_behavior_review,
-            detonation,
-            detonation_config: detonation_config.as_deref(),
-        }),
+            output,
+        } => {
+            evaluate_exact_artifact_inspect(ExactArtifactInspectArgs {
+                path: &path,
+                ecosystem: ecosystem.as_deref(),
+                state_dir: state_dir.as_deref(),
+                acquired_at: acquired_at.as_deref(),
+                ai_review,
+                ai_provider: ai_provider.as_deref(),
+                ai_client_path: ai_client_path.as_deref(),
+                ai_client_sha256: ai_client_sha256.as_deref(),
+                ai_model: ai_model.as_deref(),
+                ai_auth_home: ai_auth_home.as_deref(),
+                ai_timeout_seconds,
+                approve_hosted_source_review,
+                behavior_observe,
+                approve_hosted_behavior_review,
+                detonation,
+                detonation_config: detonation_config.as_deref(),
+                output,
+            })
+            .output
+        }
         Command::Doctor {
             json,
             state_dir,
@@ -2067,6 +2206,7 @@ fn render_command_text(command: Command) -> String {
 fn command_help() -> String {
     concat!(
         "whoathere <",
+        "inspect <npm.tgz|package.whl|package.tar.gz|package.zip> [--json] [--ecosystem auto|npm|pypi] [--state-dir <dir>] [--acquired-at <YYYY-MM-DDTHH:MM:SSZ>] [--ai-review --approve-hosted-source-review] [--behavior-observe --approve-hosted-behavior-review] [--ai-provider codex --ai-client-path <absolute-native-binary> --ai-client-sha256 <sha256:...> --ai-model <exact-model> --ai-auth-home <dedicated-auth-home> [--ai-timeout-seconds <1..600>]] [--detonation --detonation-config <absolute-json>] |",
         "artifact inspect <npm.tgz|package.whl|package.tar.gz|package.zip> [--ecosystem auto|npm|pypi] [--state-dir <dir>] [--acquired-at <YYYY-MM-DDTHH:MM:SSZ>] [--ai-review --approve-hosted-source-review] [--behavior-observe --approve-hosted-behavior-review] [--ai-provider codex --ai-client-path <absolute-native-binary> --ai-client-sha256 <sha256:...> --ai-model <exact-model> --ai-auth-home <dedicated-auth-home> [--ai-timeout-seconds <1..600>]] [--detonation --detonation-config <absolute-json>]|",
         "behavior project sdist --artifact <package.tar.gz> --artifact-envelope <artifact-envelope.json> --artifact-manifest <artifact-manifest.json> --evidence-directory <helper-evidence-dir> --scenario-index <index> --output <behavior-bundle.json>|",
         "behavior project wheel --artifact <package.whl> --artifact-envelope <artifact-envelope.json> --artifact-manifest <artifact-manifest.json> --evidence-directory <helper-evidence-dir> --scenario-index <index> --output <behavior-bundle.json>|",
@@ -2140,6 +2280,7 @@ struct ExactArtifactInspectArgs<'a> {
     approve_hosted_behavior_review: bool,
     detonation: bool,
     detonation_config: Option<&'a str>,
+    output: ArtifactInspectOutput,
 }
 
 struct BehaviorProjectSdistArgs<'a> {
@@ -2462,47 +2603,438 @@ fn behavior_observe_status_v1(
     }
 }
 
-fn render_exact_artifact_inspect(args: ExactArtifactInspectArgs<'_>) -> String {
+fn exact_artifact_report_result(
+    report: &ExactArtifactInspectionReportV1,
+    output: ArtifactInspectOutput,
+) -> CommandResult {
+    let exit_code = report.exit_code;
+    match output {
+        ArtifactInspectOutput::Json => match report.to_pretty_json() {
+            Ok(output) => CommandResult { output, exit_code },
+            Err(error) => exact_artifact_error_result(error, ArtifactInspectOutput::Json),
+        },
+        ArtifactInspectOutput::Human => CommandResult {
+            output: render_exact_artifact_human(report),
+            exit_code,
+        },
+    }
+}
+
+fn exact_artifact_error_result(
+    error: ExactArtifactInspectionErrorV1,
+    output: ArtifactInspectOutput,
+) -> CommandResult {
+    let exit_code = error.exit_code();
+    let output = match output {
+        ArtifactInspectOutput::Json => error.to_pretty_json(),
+        ArtifactInspectOutput::Human => format!(
+            "ERROR - WhoaThere could not inspect this artifact\n\nReason: {}\n\nAction: Correct the input or configuration, then inspect again.\nInstallation authority: none. This inspection cannot install packages or sync files back.",
+            safe_human_token(error.reason_code(), 160)
+        ),
+    };
+    CommandResult { output, exit_code }
+}
+
+fn render_exact_artifact_human(report: &ExactArtifactInspectionReportV1) -> String {
+    let linux_vz_bound = has_linux_vz_detonation_binding(report);
+    let static_positive = report.observations.iter().any(|observation| {
+        observation.behavior_detection_eligible
+            && observation.source == ExactArtifactObservationSourceV1::DeterministicStatic
+    });
+    let behavioral_positive = report.observations.iter().any(|observation| {
+        observation.behavior_detection_eligible
+            && observation.source == ExactArtifactObservationSourceV1::AiBehavioral
+    });
+    let vm_positive = behavioral_positive && linux_vz_bound;
+
+    let headline = match (static_positive, vm_positive, behavioral_positive) {
+        (true, true, _) => {
+            "BLOCK - malicious capability found in package; malicious behavior observed in disposable VM"
+        }
+        (true, false, _) => "BLOCK - malicious capability found in package",
+        (false, true, _) => "BLOCK - malicious behavior observed in disposable VM",
+        (false, false, true) => {
+            "BLOCK - malicious behavioral evidence found; disposable VM binding unavailable"
+        }
+        (false, false, false) => {
+            "REVIEW - WhoaThere cannot establish that this artifact is safe"
+        }
+    };
+
+    let package = match (
+        report.identity.package_name.as_deref(),
+        report.identity.package_version.as_deref(),
+    ) {
+        (Some(name), Some(version)) => format!(
+            "{}@{}",
+            safe_human_token(name, 128),
+            safe_human_token(version, 80)
+        ),
+        (Some(name), None) => safe_human_token(name, 128),
+        _ => "not declared".to_string(),
+    };
+    let mut lines = vec![
+        headline.to_string(),
+        String::new(),
+        "Artifact".to_string(),
+        format!("  Package: {package}"),
+        format!(
+            "  Ecosystem: {}",
+            debug_identifier_label(&report.identity.ecosystem)
+        ),
+        format!(
+            "  Format: {}",
+            debug_identifier_label(&report.identity.artifact_format)
+        ),
+        format!("  Size: {} bytes", report.identity.byte_length),
+        format!("  SHA-256: {}", report.identity.artifact_sha256),
+        String::new(),
+        "Analysis coverage".to_string(),
+    ];
+    for stage in &report.stages {
+        lines.push(format!(
+            "  - {}: {}",
+            safe_human_token(&stage.stage, 80).replace('_', " "),
+            debug_identifier_label(&stage.status)
+        ));
+    }
+
+    lines.push(String::new());
+    lines.push("Typed evidence".to_string());
+    if report.observations.is_empty() {
+        lines.push("  - No behavior-specific positive evidence was found.".to_string());
+    } else {
+        let has_blocking = report
+            .observations
+            .iter()
+            .any(|observation| observation.behavior_detection_eligible);
+        let mut groups: std::collections::BTreeMap<
+            (String, String, String, String),
+            (&whoathere_runner::ExactArtifactObservationV1, usize),
+        > = std::collections::BTreeMap::new();
+        for observation in report
+            .observations
+            .iter()
+            .filter(|observation| !has_blocking || observation.behavior_detection_eligible)
+        {
+            let modality = match observation.source {
+                ExactArtifactObservationSourceV1::DeterministicStatic => "static package analysis",
+                ExactArtifactObservationSourceV1::AiSourceReview => "AI source review",
+                ExactArtifactObservationSourceV1::AiBehavioral if linux_vz_bound => {
+                    "disposable VM behavior analysis"
+                }
+                ExactArtifactObservationSourceV1::AiBehavioral => {
+                    "behavioral analysis (disposable VM binding unavailable)"
+                }
+            };
+            let key = (
+                modality.to_string(),
+                finding_kind_label(&observation.finding_kind),
+                debug_identifier_label(&observation.threat_class),
+                confidence_label(observation.confidence).to_string(),
+            );
+            groups
+                .entry(key)
+                .and_modify(|(_, count)| *count += 1)
+                .or_insert((observation, 1));
+        }
+        let total_groups = groups.len();
+        for (index, ((modality, behavior, threat_class, confidence), (observation, count))) in
+            groups.into_iter().take(8).enumerate()
+        {
+            let role = if has_blocking {
+                "blocking"
+            } else {
+                "context only"
+            };
+            lines.push(format!(
+                "  {}. {} | {} | {} confidence",
+                index + 1,
+                modality,
+                role,
+                confidence
+            ));
+            lines.push(format!("     Behavior: {behavior}"));
+            lines.push(format!("     Threat class: {threat_class}"));
+            let representative = if count == 1 {
+                "Citation".to_string()
+            } else {
+                format!("Representative citation ({count} typed observations)")
+            };
+            lines.push(format!(
+                "     {representative}: {}",
+                evidence_citation(&observation.evidence)
+            ));
+        }
+        if total_groups > 8 {
+            lines.push(format!(
+                "  - {} additional evidence groups are available with --json.",
+                total_groups - 8
+            ));
+        }
+        if has_blocking {
+            let context_count = report
+                .observations
+                .iter()
+                .filter(|observation| !observation.behavior_detection_eligible)
+                .count();
+            if context_count > 0 {
+                lines.push(format!(
+                    "  - {context_count} context-only observations are available with --json."
+                ));
+            }
+        }
+    }
+
+    let gaps = exact_artifact_human_gaps(report);
+    lines.push(String::new());
+    lines.push("Coverage gaps".to_string());
+    if gaps.is_empty() {
+        lines.push("  - None reported.".to_string());
+    } else {
+        lines.extend(gaps.into_iter().map(|gap| format!("  - {gap}")));
+    }
+
+    lines.push(String::new());
+    if static_positive || behavioral_positive {
+        lines.push(
+            "Action: Keep this artifact blocked and review the cited evidence before installation."
+                .to_string(),
+        );
+    } else {
+        lines.push(
+            "Action: Do not install automatically; obtain more evidence or complete manual review."
+                .to_string(),
+        );
+    }
+    lines.push(
+        "Installation authority: none. This inspection cannot install packages or sync files back."
+            .to_string(),
+    );
+    lines.join("\n")
+}
+
+fn has_linux_vz_detonation_binding(report: &ExactArtifactInspectionReportV1) -> bool {
+    report.stages.iter().any(|stage| {
+        stage.stage == "detonation"
+            && matches!(
+                stage.provider.as_deref(),
+                Some(
+                    "linux_vz_exact_npm_v1" | "linux_vz_exact_wheel_v1" | "linux_vz_exact_sdist_v1"
+                )
+            )
+            && stage.request_sha256.is_some()
+            && stage.result_sha256.is_some()
+            && matches!(
+                stage.status,
+                ExactArtifactStageStatusV1::Complete
+                    | ExactArtifactStageStatusV1::Findings
+                    | ExactArtifactStageStatusV1::FindingsWithIncompleteCoverage
+                    | ExactArtifactStageStatusV1::Incomplete
+            )
+    })
+}
+
+fn exact_artifact_human_gaps(report: &ExactArtifactInspectionReportV1) -> Vec<String> {
+    let mut gaps = std::collections::BTreeSet::new();
+    gaps.extend(
+        report
+            .scenario_plan
+            .reason_codes
+            .iter()
+            .map(|code| safe_human_token(code, 160)),
+    );
+    for observation in &report.observations {
+        gaps.extend(
+            observation
+                .coverage_gap_codes
+                .iter()
+                .map(|code| safe_human_token(code, 160)),
+        );
+    }
+    for stage in &report.stages {
+        if !matches!(
+            stage.status,
+            ExactArtifactStageStatusV1::Complete | ExactArtifactStageStatusV1::Findings
+        ) {
+            gaps.extend(
+                stage
+                    .reason_codes
+                    .iter()
+                    .map(|code| safe_human_token(code, 160)),
+            );
+        }
+    }
+    gaps.into_iter().collect()
+}
+
+fn confidence_label(confidence: ExactArtifactObservationConfidenceV1) -> &'static str {
+    match confidence {
+        ExactArtifactObservationConfidenceV1::Moderate => "moderate",
+        ExactArtifactObservationConfidenceV1::High => "high",
+    }
+}
+
+fn finding_kind_label(finding: &ExactArtifactFindingKindV1) -> String {
+    match finding {
+        ExactArtifactFindingKindV1::DeterministicStatic(kind) => debug_identifier_label(kind),
+        ExactArtifactFindingKindV1::AiSourceReview(kind) => debug_identifier_label(kind),
+        ExactArtifactFindingKindV1::AiBehavioral(kind) => debug_identifier_label(kind),
+    }
+}
+
+fn evidence_citation(evidence: &ExactArtifactEvidenceReferenceV1) -> String {
+    match evidence {
+        ExactArtifactEvidenceReferenceV1::DeterministicStatic {
+            evidence_sha256,
+            location,
+        } => format!(
+            "evidence {evidence_sha256}; {}",
+            finding_location_citation(location)
+        ),
+        ExactArtifactEvidenceReferenceV1::AiSourceReview {
+            finding_id_sha256,
+            evidence_sha256,
+            file_id,
+            file_sha256,
+            start_byte,
+            end_byte,
+            start_line,
+            end_line,
+            selected_sha256,
+        } => format!(
+            "finding {finding_id_sha256}; evidence {evidence_sha256}; file {file_id}; file SHA-256 {file_sha256}; lines {start_line}-{end_line}; bytes {start_byte}-{end_byte}; selected SHA-256 {selected_sha256}"
+        ),
+        ExactArtifactEvidenceReferenceV1::AiBehavioral {
+            bundle_sha256,
+            finding_sha256,
+            events,
+        } => {
+            let event_digests = events
+                .iter()
+                .map(|event| event.event_sha256().to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "bundle {bundle_sha256}; finding {finding_sha256}; event SHA-256 {event_digests}"
+            )
+        }
+    }
+}
+
+fn finding_location_citation(location: &FindingLocation) -> String {
+    match location {
+        FindingLocation::File {
+            file_id,
+            file_sha256,
+            range,
+            selected_bytes_sha256,
+        } => format!(
+            "file {file_id}; file SHA-256 {file_sha256}; {}; selected SHA-256 {selected_bytes_sha256}",
+            evidence_range_label(range)
+        ),
+        FindingLocation::None { reason_code } => {
+            format!("location unavailable ({})", safe_human_token(reason_code, 160))
+        }
+    }
+}
+
+fn evidence_range_label(range: &EvidenceRange) -> String {
+    match range {
+        EvidenceRange::Lines {
+            start_line,
+            end_line,
+            start_byte,
+            end_byte,
+        } => format!("lines {start_line}-{end_line}; bytes {start_byte}-{end_byte}"),
+        EvidenceRange::Bytes {
+            start_byte,
+            end_byte,
+        } => format!("bytes {start_byte}-{end_byte}"),
+    }
+}
+
+fn debug_identifier_label(value: &impl std::fmt::Debug) -> String {
+    let value = format!("{value:?}");
+    let mut rendered = String::with_capacity(value.len() + 8);
+    let mut previous_was_lower_or_digit = false;
+    for character in value.chars() {
+        if matches!(character, '_' | '-') {
+            if !rendered.ends_with(' ') {
+                rendered.push(' ');
+            }
+            previous_was_lower_or_digit = false;
+        } else {
+            if character.is_ascii_uppercase() && previous_was_lower_or_digit {
+                rendered.push(' ');
+            }
+            rendered.push(character.to_ascii_lowercase());
+            previous_was_lower_or_digit =
+                character.is_ascii_lowercase() || character.is_ascii_digit();
+        }
+    }
+    rendered
+}
+
+fn safe_human_token(value: &str, max_length: usize) -> String {
+    let mut rendered = String::with_capacity(value.len().min(max_length));
+    for character in value.chars().take(max_length) {
+        if character.is_ascii_alphanumeric()
+            || matches!(character, '@' | '/' | '.' | '_' | '+' | '-')
+        {
+            rendered.push(character);
+        } else {
+            rendered.push('?');
+        }
+    }
+    if rendered.is_empty() {
+        "unavailable".to_string()
+    } else {
+        rendered
+    }
+}
+
+fn evaluate_exact_artifact_inspect(args: ExactArtifactInspectArgs<'_>) -> CommandResult {
+    macro_rules! return_error {
+        ($error:expr) => {
+            return exact_artifact_error_result($error, args.output)
+        };
+    }
+
     let ecosystem = match args.ecosystem {
         None | Some("auto") => None,
         Some("npm") => Some(whoathere_artifact::Ecosystem::Npm),
         Some("pypi") | Some("pip") | Some("python") => Some(whoathere_artifact::Ecosystem::Pypi),
         Some(_) => {
-            return ExactArtifactInspectionErrorV1::invalid_request(
-                "exact_artifact_ecosystem_invalid",
-            )
-            .to_pretty_json()
+            return_error!(ExactArtifactInspectionErrorV1::invalid_request(
+                "exact_artifact_ecosystem_invalid"
+            ))
         }
     };
     if args.behavior_observe && !args.detonation {
-        return ExactArtifactInspectionErrorV1::invalid_request(
-            "exact_artifact_behavior_observe_requires_detonation",
-        )
-        .to_pretty_json();
+        return_error!(ExactArtifactInspectionErrorV1::invalid_request(
+            "exact_artifact_behavior_observe_requires_detonation"
+        ));
     }
     if args.approve_hosted_source_review && !args.ai_review {
-        return ExactArtifactInspectionErrorV1::invalid_request(
-            "exact_artifact_ai_review_flag_required",
-        )
-        .to_pretty_json();
+        return_error!(ExactArtifactInspectionErrorV1::invalid_request(
+            "exact_artifact_ai_review_flag_required"
+        ));
     }
     if args.approve_hosted_behavior_review && !args.behavior_observe {
-        return ExactArtifactInspectionErrorV1::invalid_request(
-            "exact_artifact_behavior_observe_flag_required",
-        )
-        .to_pretty_json();
+        return_error!(ExactArtifactInspectionErrorV1::invalid_request(
+            "exact_artifact_behavior_observe_flag_required"
+        ));
     }
     if args.ai_review && !args.approve_hosted_source_review {
-        return ExactArtifactInspectionErrorV1::invalid_request(
-            "exact_artifact_hosted_source_review_approval_required",
-        )
-        .to_pretty_json();
+        return_error!(ExactArtifactInspectionErrorV1::invalid_request(
+            "exact_artifact_hosted_source_review_approval_required"
+        ));
     }
     if args.behavior_observe && !args.approve_hosted_behavior_review {
-        return ExactArtifactInspectionErrorV1::invalid_request(
-            "exact_artifact_hosted_behavior_review_approval_required",
-        )
-        .to_pretty_json();
+        return_error!(ExactArtifactInspectionErrorV1::invalid_request(
+            "exact_artifact_hosted_behavior_review_approval_required"
+        ));
     }
     let hosted_review_requested = args.ai_review || args.behavior_observe;
     let has_ai_configuration = args.ai_provider.is_some()
@@ -2520,47 +3052,42 @@ fn render_exact_artifact_inspect(args: ExactArtifactInspectArgs<'_>) -> String {
     ) {
         (false, None, false) => None,
         (false, _, _) => {
-            return ExactArtifactInspectionErrorV1::invalid_request(
-                "exact_artifact_ai_review_flag_required",
-            )
-            .to_pretty_json()
+            return_error!(ExactArtifactInspectionErrorV1::invalid_request(
+                "exact_artifact_ai_review_flag_required"
+            ))
         }
         (true, Some(provider @ "codex"), _) => Some(provider),
         (true, None, _) => {
-            return ExactArtifactInspectionErrorV1::invalid_request(
-                "exact_artifact_ai_provider_required",
-            )
-            .to_pretty_json()
+            return_error!(ExactArtifactInspectionErrorV1::invalid_request(
+                "exact_artifact_ai_provider_required"
+            ))
         }
         (true, Some(_), _) => {
-            return ExactArtifactInspectionErrorV1::invalid_request(
-                "exact_artifact_ai_provider_invalid",
-            )
-            .to_pretty_json()
+            return_error!(ExactArtifactInspectionErrorV1::invalid_request(
+                "exact_artifact_ai_provider_invalid"
+            ))
         }
     };
     let current_timestamp;
     let acquired_at = match args.acquired_at {
         Some(value) if looks_like_canonical_utc_seconds(value) => value,
         Some(_) => {
-            return ExactArtifactInspectionErrorV1::invalid_request(
-                "exact_artifact_acquired_at_invalid",
-            )
-            .to_pretty_json()
+            return_error!(ExactArtifactInspectionErrorV1::invalid_request(
+                "exact_artifact_acquired_at_invalid"
+            ))
         }
         None => {
             let unix_seconds = match SystemTime::now().duration_since(UNIX_EPOCH) {
                 Ok(duration) => duration.as_secs(),
                 Err(_) => {
-                    return ExactArtifactInspectionErrorV1::invalid_request(
-                        "exact_artifact_system_time_invalid",
-                    )
-                    .to_pretty_json()
+                    return_error!(ExactArtifactInspectionErrorV1::invalid_request(
+                        "exact_artifact_system_time_invalid"
+                    ))
                 }
             };
             current_timestamp = match canonical_utc_timestamp_from_unix_seconds_v1(unix_seconds) {
                 Ok(value) => value,
-                Err(error) => return error.to_pretty_json(),
+                Err(error) => return_error!(error),
             };
             current_timestamp.as_str()
         }
@@ -2570,18 +3097,16 @@ fn render_exact_artifact_inspect(args: ExactArtifactInspectArgs<'_>) -> String {
         .map(PathBuf::from)
         .unwrap_or_else(|| default_state_dir().with_file_name("artifact-inspection"));
     if std::fs::create_dir_all(&state_root_candidate).is_err() {
-        return ExactArtifactInspectionErrorV1::invalid_request(
-            "exact_artifact_state_dir_unavailable",
-        )
-        .to_pretty_json();
+        return_error!(ExactArtifactInspectionErrorV1::invalid_request(
+            "exact_artifact_state_dir_unavailable"
+        ));
     }
     let state_root = match std::fs::canonicalize(&state_root_candidate) {
         Ok(value) => value,
         Err(_) => {
-            return ExactArtifactInspectionErrorV1::invalid_request(
-                "exact_artifact_state_dir_unavailable",
-            )
-            .to_pretty_json()
+            return_error!(ExactArtifactInspectionErrorV1::invalid_request(
+                "exact_artifact_state_dir_unavailable"
+            ))
         }
     };
     let quarantine_root = state_root.join("quarantine-cas-v1");
@@ -2591,64 +3116,56 @@ fn render_exact_artifact_inspect(args: ExactArtifactInspectArgs<'_>) -> String {
     ) {
         (false, None) => None,
         (false, Some(_)) => {
-            return ExactArtifactInspectionErrorV1::invalid_request(
-                "exact_artifact_detonation_flag_required",
-            )
-            .to_pretty_json()
+            return_error!(ExactArtifactInspectionErrorV1::invalid_request(
+                "exact_artifact_detonation_flag_required"
+            ))
         }
         (true, None) => {
-            return ExactArtifactInspectionErrorV1::invalid_request(
-                "exact_artifact_detonation_config_required",
-            )
-            .to_pretty_json()
+            return_error!(ExactArtifactInspectionErrorV1::invalid_request(
+                "exact_artifact_detonation_config_required"
+            ))
         }
         (true, Some(config_path)) => {
             let config_path = Path::new(config_path);
             if !config_path.is_absolute() {
-                return ExactArtifactInspectionErrorV1::invalid_request(
-                    "exact_artifact_detonation_config_path_invalid",
-                )
-                .to_pretty_json();
+                return_error!(ExactArtifactInspectionErrorV1::invalid_request(
+                    "exact_artifact_detonation_config_path_invalid"
+                ));
             }
             let metadata = match std::fs::symlink_metadata(config_path) {
                 Ok(value) if value.file_type().is_file() && !value.file_type().is_symlink() => {
                     value
                 }
                 _ => {
-                    return ExactArtifactInspectionErrorV1::invalid_request(
-                        "exact_artifact_detonation_config_unavailable",
-                    )
-                    .to_pretty_json()
+                    return_error!(ExactArtifactInspectionErrorV1::invalid_request(
+                        "exact_artifact_detonation_config_unavailable"
+                    ))
                 }
             };
             if metadata.len() == 0 || metadata.len() > 1024 * 1024 {
-                return ExactArtifactInspectionErrorV1::invalid_request(
-                    "exact_artifact_detonation_config_size_invalid",
-                )
-                .to_pretty_json();
+                return_error!(ExactArtifactInspectionErrorV1::invalid_request(
+                    "exact_artifact_detonation_config_size_invalid"
+                ));
             }
             let bytes = match std::fs::read(config_path) {
                 Ok(value) => value,
                 Err(_) => {
-                    return ExactArtifactInspectionErrorV1::invalid_request(
-                        "exact_artifact_detonation_config_unavailable",
-                    )
-                    .to_pretty_json()
+                    return_error!(ExactArtifactInspectionErrorV1::invalid_request(
+                        "exact_artifact_detonation_config_unavailable"
+                    ))
                 }
             };
             let config_value = match serde_json::from_slice::<serde_json::Value>(&bytes) {
                 Ok(value) if value.is_object() => value,
                 Err(_) => {
-                    return ExactArtifactInspectionErrorV1::invalid_request(
-                        "exact_artifact_detonation_config_invalid",
-                    )
-                    .to_pretty_json()
+                    return_error!(ExactArtifactInspectionErrorV1::invalid_request(
+                        "exact_artifact_detonation_config_invalid"
+                    ))
                 }
                 Ok(_) => {
-                    return ExactArtifactInspectionErrorV1::invalid_request(
-                        "exact_artifact_detonation_config_invalid",
-                    )
-                    .to_pretty_json()
+                    return_error!(ExactArtifactInspectionErrorV1::invalid_request(
+                        "exact_artifact_detonation_config_invalid"
+                    ))
                 }
             };
             match config_value.get("artifact_kind") {
@@ -2658,19 +3175,17 @@ fn render_exact_artifact_inspect(args: ExactArtifactInspectArgs<'_>) -> String {
                     ) {
                         Ok(value) => value,
                         Err(_) => {
-                            return ExactArtifactInspectionErrorV1::invalid_request(
-                                "exact_artifact_detonation_config_invalid",
-                            )
-                            .to_pretty_json()
+                            return_error!(ExactArtifactInspectionErrorV1::invalid_request(
+                                "exact_artifact_detonation_config_invalid"
+                            ))
                         }
                     };
                     match LinuxVzExactSdistDetonationAdapterV1::new(config) {
                         Ok(value) => Some(Box::new(value)),
                         Err(error) => {
-                            return ExactArtifactInspectionErrorV1::invalid_request(
-                                error.reason_code(),
-                            )
-                            .to_pretty_json()
+                            return_error!(ExactArtifactInspectionErrorV1::invalid_request(
+                                error.reason_code()
+                            ))
                         }
                     }
                 }
@@ -2680,19 +3195,17 @@ fn render_exact_artifact_inspect(args: ExactArtifactInspectArgs<'_>) -> String {
                     ) {
                         Ok(value) => value,
                         Err(_) => {
-                            return ExactArtifactInspectionErrorV1::invalid_request(
-                                "exact_artifact_detonation_config_invalid",
-                            )
-                            .to_pretty_json()
+                            return_error!(ExactArtifactInspectionErrorV1::invalid_request(
+                                "exact_artifact_detonation_config_invalid"
+                            ))
                         }
                     };
                     match LinuxVzExactWheelDetonationAdapterV1::new(config) {
                         Ok(value) => Some(Box::new(value)),
                         Err(error) => {
-                            return ExactArtifactInspectionErrorV1::invalid_request(
-                                error.reason_code(),
-                            )
-                            .to_pretty_json()
+                            return_error!(ExactArtifactInspectionErrorV1::invalid_request(
+                                error.reason_code()
+                            ))
                         }
                     }
                 }
@@ -2702,65 +3215,57 @@ fn render_exact_artifact_inspect(args: ExactArtifactInspectArgs<'_>) -> String {
                     ) {
                         Ok(value) => value,
                         Err(_) => {
-                            return ExactArtifactInspectionErrorV1::invalid_request(
-                                "exact_artifact_detonation_config_invalid",
-                            )
-                            .to_pretty_json()
+                            return_error!(ExactArtifactInspectionErrorV1::invalid_request(
+                                "exact_artifact_detonation_config_invalid"
+                            ))
                         }
                     };
                     match LinuxVzExactNpmDetonationAdapterV1::new(config) {
                         Ok(value) => Some(Box::new(value)),
                         Err(error) => {
-                            return ExactArtifactInspectionErrorV1::invalid_request(
-                                error.reason_code(),
-                            )
-                            .to_pretty_json()
+                            return_error!(ExactArtifactInspectionErrorV1::invalid_request(
+                                error.reason_code()
+                            ))
                         }
                     }
                 }
                 Some(_) => {
-                    return ExactArtifactInspectionErrorV1::invalid_request(
-                        "exact_artifact_detonation_config_invalid",
-                    )
-                    .to_pretty_json()
+                    return_error!(ExactArtifactInspectionErrorV1::invalid_request(
+                        "exact_artifact_detonation_config_invalid"
+                    ))
                 }
             }
         }
     };
     let codex_adapter = if hosted_review_requested {
         let Some(client_path) = args.ai_client_path else {
-            return ExactArtifactInspectionErrorV1::invalid_request(
-                "exact_artifact_ai_client_path_required",
-            )
-            .to_pretty_json();
+            return_error!(ExactArtifactInspectionErrorV1::invalid_request(
+                "exact_artifact_ai_client_path_required"
+            ));
         };
         let Some(client_sha256) = args.ai_client_sha256 else {
-            return ExactArtifactInspectionErrorV1::invalid_request(
-                "exact_artifact_ai_client_sha256_required",
-            )
-            .to_pretty_json();
+            return_error!(ExactArtifactInspectionErrorV1::invalid_request(
+                "exact_artifact_ai_client_sha256_required"
+            ));
         };
         let client_sha256 = match whoathere_artifact::Sha256Digest::parse(client_sha256.to_string())
         {
             Ok(value) => value,
             Err(_) => {
-                return ExactArtifactInspectionErrorV1::invalid_request(
-                    "exact_artifact_ai_client_sha256_invalid",
-                )
-                .to_pretty_json()
+                return_error!(ExactArtifactInspectionErrorV1::invalid_request(
+                    "exact_artifact_ai_client_sha256_invalid"
+                ))
             }
         };
         let Some(model) = args.ai_model else {
-            return ExactArtifactInspectionErrorV1::invalid_request(
-                "exact_artifact_ai_model_required",
-            )
-            .to_pretty_json();
+            return_error!(ExactArtifactInspectionErrorV1::invalid_request(
+                "exact_artifact_ai_model_required"
+            ));
         };
         let Some(authentication_home) = args.ai_auth_home else {
-            return ExactArtifactInspectionErrorV1::invalid_request(
-                "exact_artifact_ai_auth_home_required",
-            )
-            .to_pretty_json();
+            return_error!(ExactArtifactInspectionErrorV1::invalid_request(
+                "exact_artifact_ai_auth_home_required"
+            ));
         };
         let timeout_seconds = args.ai_timeout_seconds.unwrap_or(120);
         let config = ExactArtifactCodexAiConfigV1 {
@@ -2774,8 +3279,9 @@ fn render_exact_artifact_inspect(args: ExactArtifactInspectArgs<'_>) -> String {
         match ExactArtifactCodexAiAdapterV1::new(config) {
             Ok(value) => Some(value),
             Err(error) => {
-                return ExactArtifactInspectionErrorV1::invalid_request(error.reason_code())
-                    .to_pretty_json()
+                return_error!(ExactArtifactInspectionErrorV1::invalid_request(
+                    error.reason_code()
+                ))
             }
         }
     } else {
@@ -2807,10 +3313,8 @@ fn render_exact_artifact_inspect(args: ExactArtifactInspectArgs<'_>) -> String {
         detonation_adapter,
         behavior_observer,
     ) {
-        Ok(report) => report
-            .to_pretty_json()
-            .unwrap_or_else(|error| error.to_pretty_json()),
-        Err(error) => error.to_pretty_json(),
+        Ok(report) => exact_artifact_report_result(&report, args.output),
+        Err(error) => exact_artifact_error_result(error, args.output),
     }
 }
 
@@ -19406,6 +19910,147 @@ mod tests {
         }
     }
 
+    fn write_exact_npm_fixture(
+        root: &Path,
+        filename: &str,
+        members: &[(&str, &[u8])],
+    ) -> (PathBuf, Vec<u8>) {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        use std::io::Cursor;
+
+        let encoder = GzEncoder::new(Vec::new(), Compression::default());
+        let mut archive = tar::Builder::new(encoder);
+        for (path, bytes) in members {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(bytes.len() as u64);
+            header.set_mode(0o644);
+            header.set_uid(0);
+            header.set_gid(0);
+            header.set_mtime(0);
+            header.set_cksum();
+            archive
+                .append_data(&mut header, path, Cursor::new(bytes))
+                .expect("append exact npm fixture member");
+        }
+        let bytes = archive
+            .into_inner()
+            .expect("finish exact npm fixture tar")
+            .finish()
+            .expect("finish exact npm fixture gzip");
+        let artifact = root.join(filename);
+        std::fs::write(&artifact, &bytes).expect("write exact npm fixture");
+        (artifact, bytes)
+    }
+
+    fn exact_inspect_arguments(
+        command: &[&str],
+        artifact: &Path,
+        state: &Path,
+        json: bool,
+    ) -> Vec<String> {
+        let mut arguments = command
+            .iter()
+            .map(|value| (*value).to_string())
+            .collect::<Vec<_>>();
+        arguments.push(artifact.display().to_string());
+        arguments.extend([
+            "--ecosystem".to_string(),
+            "npm".to_string(),
+            "--state-dir".to_string(),
+            state.display().to_string(),
+            "--acquired-at".to_string(),
+            "2026-07-15T00:00:00Z".to_string(),
+        ]);
+        if json {
+            arguments.push("--json".to_string());
+        }
+        arguments
+    }
+
+    #[test]
+    fn human_exact_artifact_alias_and_json_mode_are_unambiguous() {
+        let human = parse_command(&["inspect".to_string(), "/tmp/inert.tgz".to_string()]);
+        assert!(matches!(
+            human,
+            Command::ArtifactInspect {
+                output: ArtifactInspectOutput::Human,
+                ..
+            }
+        ));
+
+        let json = parse_command(&[
+            "inspect".to_string(),
+            "/tmp/inert.tgz".to_string(),
+            "--json".to_string(),
+        ]);
+        assert!(matches!(
+            json,
+            Command::ArtifactInspect {
+                output: ArtifactInspectOutput::Json,
+                ..
+            }
+        ));
+
+        let duplicate_json = parse_command(
+            &["inspect", "/tmp/inert.tgz", "--json", "--json"]
+                .into_iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+        );
+        assert!(matches!(
+            duplicate_json,
+            Command::ArtifactInspectInvalidOptions { .. }
+        ));
+
+        let malformed_json = parse_command(
+            &["inspect", "/tmp/inert.tgz", "--json=true"]
+                .into_iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+        );
+        assert!(matches!(
+            malformed_json,
+            Command::ArtifactInspectHumanInvalidOptions { .. }
+        ));
+
+        let legacy_with_json = evaluate_command(parse_command(&[
+            "artifact".to_string(),
+            "inspect".to_string(),
+            "/tmp/inert.tgz".to_string(),
+            "--json".to_string(),
+        ]));
+        assert_eq!(legacy_with_json.exit_code, 64);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&legacy_with_json.output)
+                .expect("legacy option error JSON")["reason_codes"][0],
+            "exact_artifact_option_unknown"
+        );
+    }
+
+    #[test]
+    fn human_exact_artifact_alias_renders_typed_request_errors_as_human_text() {
+        for arguments in [
+            vec!["inspect"],
+            vec!["inspect", "/private/input/inert.tgz", "--bogus"],
+            vec!["inspect", "/private/input/inert.tgz", "--json=true"],
+        ] {
+            let result = evaluate_command(parse_command(
+                &arguments
+                    .into_iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>(),
+            ));
+            assert_eq!(result.exit_code, 64);
+            assert!(result
+                .output
+                .starts_with("ERROR - WhoaThere could not inspect this artifact"));
+            assert!(result.output.contains("Installation authority: none."));
+            assert!(!result.output.contains("/private/input/inert.tgz"));
+            assert!(serde_json::from_str::<serde_json::Value>(&result.output).is_err());
+        }
+    }
+
     #[test]
     fn parses_exact_artifact_inspection_options() {
         let args = vec![
@@ -19459,6 +20104,7 @@ mod tests {
                 approve_hosted_behavior_review: true,
                 detonation: true,
                 detonation_config: Some("/tmp/whoathere-detonation.json".to_string()),
+                output: ArtifactInspectOutput::Json,
             }
         );
     }
@@ -19571,6 +20217,7 @@ mod tests {
             approve_hosted_behavior_review: false,
             detonation,
             detonation_config,
+            output: ArtifactInspectOutput::Json,
         };
         for (command, reason) in [
             (
@@ -19671,6 +20318,7 @@ mod tests {
             approve_hosted_behavior_review: false,
             detonation: true,
             detonation_config: Some(config_path.display().to_string()),
+            output: ArtifactInspectOutput::Json,
         });
         let json: serde_json::Value =
             serde_json::from_str(&result.output).expect("wheel config error is JSON");
@@ -19731,6 +20379,7 @@ mod tests {
             approve_hosted_behavior_review: false,
             detonation: true,
             detonation_config: Some(config_path.display().to_string()),
+            output: ArtifactInspectOutput::Json,
         });
         let json: serde_json::Value =
             serde_json::from_str(&result.output).expect("sdist config error is JSON");
@@ -19794,6 +20443,7 @@ mod tests {
             approve_hosted_behavior_review: false,
             detonation: false,
             detonation_config: None,
+            output: ArtifactInspectOutput::Json,
         });
 
         assert_eq!(result.exit_code, ExitCode::ManualReview.code());
@@ -19823,6 +20473,243 @@ mod tests {
     }
 
     #[test]
+    fn human_exact_artifact_static_positive_is_actionable_and_leak_safe() {
+        const PACKAGE_JSON: &[u8] = br#"{"name":"human-static-positive","version":"1.0.0","scripts":{"postinstall":"node boot.js"},"main":"boot.js"}"#;
+        const BOOT: &[u8] = b"require('./lib/collect');\n";
+        const CAPABILITY: &[u8] = br#"const rawSourceSentinel = 'RAW_SOURCE_SENTINEL';
+const token = process.env.NPM_TOKEN;
+const secretValue = 'SECRET_CANARY_VALUE_SENTINEL';
+const fs = require('node:fs');
+const config = fs.readFileSync(process.env.HOME + '/.npmrc');
+const https = require('node:https');
+https.request({method: 'POST'});
+const child = require('node:child_process');
+child.spawn('printf', [token, config.length, rawSourceSentinel, secretValue]);
+"#;
+
+        let root = temp_root("whoathere-human-static-PRIVATE_PATH_SENTINEL");
+        let (artifact, bytes) = write_exact_npm_fixture(
+            &root,
+            "human-static-positive-1.0.0.tgz",
+            &[
+                ("package/package.json", PACKAGE_JSON),
+                ("package/boot.js", BOOT),
+                ("package/lib/collect.js", CAPABILITY),
+            ],
+        );
+        let state = root.join("AUTH_PATH_SENTINEL");
+        let result = evaluate_command(parse_command(&exact_inspect_arguments(
+            &["inspect"],
+            &artifact,
+            &state,
+            false,
+        )));
+
+        assert_eq!(result.exit_code, 20);
+        assert!(result
+            .output
+            .starts_with("BLOCK - malicious capability found in package"));
+        assert!(result.output.contains("human-static-positive@1.0.0"));
+        assert!(result.output.contains(&sha256_digest(&bytes)));
+        assert!(result.output.contains("static package analysis"));
+        assert!(result.output.contains("credential exfiltration capability"));
+        assert!(result.output.contains(" confidence"));
+        assert!(result.output.contains("citation"));
+        assert!(result.output.contains("selected SHA-256"));
+        assert!(result.output.contains("Coverage gaps"));
+        assert!(result.output.contains("Installation authority: none"));
+        for secret in [
+            "RAW_SOURCE_SENTINEL",
+            "SECRET_CANARY_VALUE_SENTINEL",
+            "PRIVATE_PATH_SENTINEL",
+            "AUTH_PATH_SENTINEL",
+            &artifact.display().to_string(),
+        ] {
+            assert!(!result.output.contains(secret), "leaked sentinel: {secret}");
+        }
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn human_exact_artifact_review_and_json_preserve_pre_render_exit_and_legacy_contract() {
+        const PACKAGE_JSON: &[u8] =
+            br#"{"name":"human-inert","version":"1.0.0","main":"index.js"}"#;
+        const INDEX: &[u8] = b"module.exports = 'RAW_REVIEW_SOURCE_SENTINEL';\n";
+
+        let root = temp_root("whoathere-human-review-PRIVATE_REVIEW_PATH_SENTINEL");
+        let (artifact, _) = write_exact_npm_fixture(
+            &root,
+            "human-inert-1.0.0.tgz",
+            &[
+                ("package/package.json", PACKAGE_JSON),
+                ("package/index.js", INDEX),
+            ],
+        );
+        let state = root.join("state");
+        let human = evaluate_command(parse_command(&exact_inspect_arguments(
+            &["inspect"],
+            &artifact,
+            &state,
+            false,
+        )));
+        let alias_json = evaluate_command(parse_command(&exact_inspect_arguments(
+            &["inspect"],
+            &artifact,
+            &state,
+            true,
+        )));
+        let legacy_json = evaluate_command(parse_command(&exact_inspect_arguments(
+            &["artifact", "inspect"],
+            &artifact,
+            &state,
+            false,
+        )));
+
+        assert_eq!(human.exit_code, 22);
+        assert_eq!(infer_exit_code(&human.output), 0);
+        assert!(human
+            .output
+            .starts_with("REVIEW - WhoaThere cannot establish that this artifact is safe"));
+        assert!(human.output.contains("Coverage gaps"));
+        assert!(human.output.contains("Do not install automatically"));
+        assert!(human.output.contains("Installation authority: none"));
+        assert!(!human.output.contains("ALLOW"));
+        assert!(!human.output.contains("RAW_REVIEW_SOURCE_SENTINEL"));
+        assert!(!human.output.contains("PRIVATE_REVIEW_PATH_SENTINEL"));
+        assert!(!human.output.contains(&artifact.display().to_string()));
+
+        assert_eq!(alias_json.exit_code, 22);
+        assert_eq!(legacy_json.exit_code, 22);
+        assert_eq!(alias_json.output, legacy_json.output);
+        let json: serde_json::Value =
+            serde_json::from_str(&alias_json.output).expect("exact report JSON");
+        assert_eq!(json["exit_code"], 22);
+        assert_eq!(json["admission_authority"], false);
+        assert_eq!(json["observed_clean"], false);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn human_exact_artifact_vm_wording_requires_typed_linux_vz_binding() {
+        use whoathere_artifact::Sha256Digest;
+        use whoathere_detector::{
+            BehaviorEvidenceEventV1, BehaviorEvidenceReferenceV1, BehaviorEvidenceSignalV1,
+            BehaviorFindingKindV1, CanaryActionV1, CanaryClassV1,
+        };
+        use whoathere_runner::{
+            ExactArtifactDispositionV1, ExactArtifactObservationCoverageV1,
+            ExactArtifactObservationV1, ExactArtifactThreatClassV1, ExactArtifactVerdictV1,
+        };
+
+        const PACKAGE_JSON: &[u8] =
+            br#"{"name":"human-vm-positive","version":"1.0.0","main":"index.js"}"#;
+        const INDEX: &[u8] = b"module.exports = 'inert';\n";
+        const UNTRUSTED_DETAIL: &str = "UNTRUSTED_DETAIL_SENTINEL SECRET_CANARY_VALUE_SENTINEL";
+
+        let root = temp_root("whoathere-human-vm-positive");
+        let (artifact, _) = write_exact_npm_fixture(
+            &root,
+            "human-vm-positive-1.0.0.tgz",
+            &[
+                ("package/package.json", PACKAGE_JSON),
+                ("package/index.js", INDEX),
+            ],
+        );
+        let quarantine = root.join("quarantine");
+        let mut report = whoathere_runner::inspect_exact_artifact_v1(
+            ExactArtifactInspectionRequestV1 {
+                artifact_path: &artifact,
+                quarantine_root: &quarantine,
+                ecosystem: Some(whoathere_artifact::Ecosystem::Npm),
+                acquired_at: "2026-07-15T00:00:00Z",
+                ai_requested: false,
+                ai_provider: None,
+                behavior_observation_requested: false,
+                detonation_requested: false,
+                normalization_limits: whoathere_artifact::NormalizationLimits::default(),
+            },
+            None,
+            None,
+        )
+        .expect("typed inert report");
+
+        let event = BehaviorEvidenceEventV1::new(
+            1,
+            "event-1-private-canary",
+            Sha256Digest::from_bytes(b"source receipt"),
+            BehaviorEvidenceSignalV1::Canary {
+                action: CanaryActionV1::Read,
+                canary: CanaryClassV1::NpmToken,
+            },
+            Some(UNTRUSTED_DETAIL.to_string()),
+        )
+        .expect("typed canary event");
+        let event_reference = BehaviorEvidenceReferenceV1::for_event(&event);
+        let event_sha256 = event_reference.event_sha256().to_string();
+        let observation = ExactArtifactObservationV1::new(
+            ExactArtifactObservationSourceV1::AiBehavioral,
+            ExactArtifactThreatClassV1::CredentialAndSensitiveFileDiscovery,
+            ExactArtifactFindingKindV1::AiBehavioral(BehaviorFindingKindV1::CanaryAccess),
+            ExactArtifactObservationConfidenceV1::High,
+            Sha256Digest::parse(report.identity.artifact_sha256.clone()).expect("artifact digest"),
+            Sha256Digest::parse(report.identity.manifest_sha256.clone()).expect("manifest digest"),
+            ExactArtifactEvidenceReferenceV1::AiBehavioral {
+                bundle_sha256: Sha256Digest::from_bytes(b"behavior bundle"),
+                finding_sha256: Sha256Digest::from_bytes(b"behavior finding"),
+                events: vec![event_reference],
+            },
+            ExactArtifactObservationCoverageV1::Incomplete,
+            vec!["behavior_sibling_modalities_incomplete".to_string()],
+            true,
+        )
+        .expect("typed behavioral observation");
+        report.observations = vec![observation];
+        report.behavior_detection_count = 1;
+        report.status = ExactArtifactDispositionV1::Findings;
+        report.verdict = ExactArtifactVerdictV1::Malicious;
+        report.exit_code = 20;
+        let detonation = report
+            .stages
+            .iter_mut()
+            .find(|stage| stage.stage == "detonation")
+            .expect("detonation stage");
+        detonation.status = ExactArtifactStageStatusV1::FindingsWithIncompleteCoverage;
+        detonation.provider = Some("linux_vz_exact_npm_v1".to_string());
+        detonation.request_sha256 = Some(Sha256Digest::from_bytes(b"request").to_string());
+        detonation.result_sha256 = Some(Sha256Digest::from_bytes(b"result").to_string());
+
+        let result = exact_artifact_report_result(&report, ArtifactInspectOutput::Human);
+        assert_eq!(result.exit_code, 20);
+        assert!(result
+            .output
+            .starts_with("BLOCK - malicious behavior observed in disposable VM"));
+        assert!(result.output.contains("disposable VM behavior analysis"));
+        assert!(result.output.contains("canary access"));
+        assert!(result.output.contains(&event_sha256));
+        assert!(result
+            .output
+            .contains("behavior_sibling_modalities_incomplete"));
+        assert!(!result.output.contains("event-1-private-canary"));
+        assert!(!result.output.contains(UNTRUSTED_DETAIL));
+        assert!(!result.output.contains("SECRET_CANARY_VALUE_SENTINEL"));
+
+        let mut unbound = report.clone();
+        let detonation = unbound
+            .stages
+            .iter_mut()
+            .find(|stage| stage.stage == "detonation")
+            .expect("detonation stage");
+        detonation.provider = None;
+        let unbound_output = render_exact_artifact_human(&unbound);
+        assert!(!unbound_output.contains("BLOCK - malicious behavior observed in disposable VM"));
+        assert!(unbound_output.contains("disposable VM binding unavailable"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn exact_artifact_error_json_always_controls_process_exit() {
         let root = temp_root("whoathere-cli-exact-artifact-errors");
         let missing = root.join("missing.tgz");
@@ -19847,6 +20734,7 @@ mod tests {
                 approve_hosted_behavior_review: false,
                 detonation: false,
                 detonation_config: None,
+                output: ArtifactInspectOutput::Json,
             },
             Command::ArtifactInspect {
                 path: missing.display().to_string(),
@@ -19865,6 +20753,7 @@ mod tests {
                 approve_hosted_behavior_review: false,
                 detonation: false,
                 detonation_config: None,
+                output: ArtifactInspectOutput::Json,
             },
             Command::ArtifactInspect {
                 path: missing.display().to_string(),
@@ -19883,6 +20772,7 @@ mod tests {
                 approve_hosted_behavior_review: false,
                 detonation: false,
                 detonation_config: None,
+                output: ArtifactInspectOutput::Json,
             },
             Command::ArtifactInspect {
                 path: missing.display().to_string(),
@@ -19901,6 +20791,7 @@ mod tests {
                 approve_hosted_behavior_review: false,
                 detonation: false,
                 detonation_config: None,
+                output: ArtifactInspectOutput::Json,
             },
             Command::ArtifactInspect {
                 path: missing.display().to_string(),
@@ -19919,6 +20810,7 @@ mod tests {
                 approve_hosted_behavior_review: false,
                 detonation: false,
                 detonation_config: None,
+                output: ArtifactInspectOutput::Json,
             },
             Command::ArtifactInspect {
                 path: missing.display().to_string(),
@@ -19937,6 +20829,7 @@ mod tests {
                 approve_hosted_behavior_review: false,
                 detonation: false,
                 detonation_config: None,
+                output: ArtifactInspectOutput::Json,
             },
             Command::ArtifactInspect {
                 path: missing.display().to_string(),
@@ -19955,6 +20848,7 @@ mod tests {
                 approve_hosted_behavior_review: false,
                 detonation: false,
                 detonation_config: None,
+                output: ArtifactInspectOutput::Json,
             },
         ];
 

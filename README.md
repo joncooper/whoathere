@@ -39,6 +39,30 @@ Current claim boundary:
 
 This is useful security tooling, not a promise that arbitrary packages are safe.
 
+## Try Exact Artifact Inspection
+
+WhoaThere now has a human-readable exact-artifact command for npm tarballs, Python wheels, and
+Python sdists:
+
+```sh
+cargo build --manifest-path whoathere/Cargo.toml -p whoathere-cli
+whoathere/target/debug/whoathere inspect ./package.tgz
+```
+
+The result leads with one conservative action:
+
+- `BLOCK - malicious capability found in package` when eligible static evidence is present;
+- `BLOCK - malicious behavior observed in disposable VM` only when typed behavior is bound to the
+  qualified Linux VZ execution path; or
+- `REVIEW - WhoaThere cannot establish that this artifact is safe` when evidence is incomplete or
+  has no behavior-specific positive.
+
+Reports identify the exact artifact, evidence modality, behavior, confidence, safe citations, and
+coverage gaps without printing package source or private host paths. They never install the
+artifact or grant sync-back authority. Automation can request the existing machine contract with
+`whoathere inspect ./package.tgz --json`; the legacy `whoathere artifact inspect` JSON command
+remains compatible.
+
 The artifact-native detection build now has physically exercised exact-artifact Linux VZ routes for
 npm tarballs, pure-Python wheels, and nested-root PEP 517 sdists. Exact npm installation completed
 under both CI profiles, one wheel completed its eight install and trigger actions, and the sdist

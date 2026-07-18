@@ -237,7 +237,7 @@ their exact inputs and criteria are frozen.
 | --- | --- | ---: | --- | --- |
 | P00 | Preserve WIP and establish the reset plan | 1-2h | complete | Recoverability |
 | P01 | Establish a truthful, panic-free exact-artifact baseline | 1-2h | complete | Reliability/measurement |
-| P02 | Add human `whoathere inspect` output | 2-4h | queued | Usable product |
+| P02 | Add human `whoathere inspect` output | 2-4h | complete | Usable product |
 | P03 | Add a validated sanitized-report rendering boundary | 2-4h | queued | Repeatable product evidence |
 | P04 | Render four previous misses as product reports | 1-3h | queued | Diagnostic 4/4 |
 | P05 | Add paired npm VM/Codex evidence to its report | 2-4h | queued | AI/dynamic value |
