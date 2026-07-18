@@ -1,94 +1,113 @@
-# Next Ultra Chunk: R01 Freeze the Positive-Only Four-Miss Contract
+# Next Ultra Chunk: R02 Synthetic 4/4 Positive-Subscore Path
 
-Status: complete. P07 is complete and pushed at `c1f3e08`. R01 is accepted on its dedicated branch.
-R02 is ready but has not begun and must be instantiated as a separate bounded chunk.
+Status: complete. R01 is accepted and pushed at `405182d`. R02 is independently accepted on its
+dedicated branch. R02b is ready but has not begun and must be a separate bounded chunk.
 
 Updated: 2026-07-18
 
 ## Accepted result
 
-- The metadata-only validator accepts exactly four distinct artifact/profile rows.
-- Canonical contract SHA-256:
-  `sha256:a47b8288c14c6c1eafb3976415fdc16a24ce0b85f06f4cf2c687ee50509ee053`.
-- Artifact/profile denominator SHA-256:
-  `sha256:bdd99ff7ba8634dbcec7f98f442962a7c371437f9d0d3bcc9fd940f8af285c96`.
-- The original complete-run profile remains byte-for-byte unchanged at
-  `sha256:f8e45c1ccb191a1e621f474fb93151c6feca9b86fc4082948259019ed6e85179`.
-- Twenty-one semantic mutation classes fail closed; the 22-case hermetic suite passes.
-- The existing complete-run compiler and evaluator-v2 hermetic suites pass.
+- One hermetic command exercises the exact-contract compiler, publisher, mixed-projection signed
+  registry bridge, mandatory V2 scorer, and strict positive-subscore summary.
+- Detection subscore: `4/4`, rate `1.0`, pass.
+- Safety: `4/4`, rate `1.0`, pass.
+- Completion: `0/4`, rate `0.0`; completion/quality fails.
+- Underlying and summarized `overall_passed` are both `false`.
+- Observed-clean, admission, release, and sync-back authority are all `false`.
+- A generic safe block and a matching label from the wrong evidence tuple each score `3/4`.
+- Empty projection sets are accepted only for incomplete runs and cannot create complete-clean
+  authority.
+- Sixteen focused integration checks plus the existing publisher, bridge, evaluator, complete-run
+  compiler, and R01 contract suites pass.
 - Independent final verification returned `GO`.
-- No package, evidence, cloud host, VM, hosted AI, malware, or private data was accessed.
-- The validated positive subscore remains `0/4`; the finalized July experimental baseline remains
-  `7/11`.
+- No package, evidence, cloud host, VM, hosted AI, malware, credential, or private data was
+  accessed.
+- This proves synthetic evaluator readiness only. Real-evidence publication remains `0/4`, and the
+  finalized July experimental baseline remains `7/11`.
 
 ## Frozen user outcome
 
-An evaluator can read and fail-closed validate one tracked, exact four-row behavior-positive
-detection-subscore contract before any evidence is collected.
+One hermetic metadata-only command proves that the exact frozen four-row contract can produce a
+valid **4/4 behavior-positive detection subscore** while safety passes, completion/quality fails,
+and overall evaluation remains false.
 
-Primary metric: the canonical contract validates as exactly four distinct artifact/profile rows,
-while every tested denominator, label, modality, threshold, claim-boundary, window-policy, or
-identity-field mutation fails.
+Primary metric: the production compiler, publisher, signed-registry bridge, mandatory V2 scorer,
+and positive-subscore summary agree on detection `4/4`, safety `4/4`, completion `0/4`, and
+`overall_passed=false`.
 
-## Scope
+## Inputs and branch
 
-R01 adds only:
+- Branch: `codex/r02-synthetic-four-of-four-subscore`, based on accepted R01 commit `405182d`.
+- Contract:
+  `docs/product-build-run/four-known-miss-positive-subscore-contract.v1.json`, canonical SHA-256
+  `sha256:a47b8288c14c6c1eafb3976415fdc16a24ce0b85f06f4cf2c687ee50509ee053`.
+- Artifact/profile denominator SHA-256:
+  `sha256:bdd99ff7ba8634dbcec7f98f442962a7c371437f9d0d3bcc9fd940f8af285c96`.
+- Existing complete-run profile remains unchanged and is used only to validate lineage.
+- The synthetic corpus contains metadata rows with the frozen sample IDs and artifact digests. It
+  contains no package bytes or restricted evidence.
+- Synthetic executable, key, provider, and policy identities prove binding behavior only. Final
+  values and the expanded R01 identity set are frozen in R02b, not R02.
 
-1. a separate positive-only contract for the four artifacts missed by the July experimental run;
-2. a metadata-only validator with an independently pinned semantic contract;
-3. focused hermetic mutation tests; and
-4. concise canonical documentation of what the contract can and cannot claim.
+## Bounded implementation
 
-The existing complete-run profile remains byte-for-byte unchanged. R01 freezes semantic profile
-and artifact bindings, not mutable executable or provider digests; those are frozen only in R02b
-after the synthetic R02 path passes.
+R02 may change only:
 
-R01 performs no package access, archive inspection, evidence collection, scoring, cloud access,
-VM start, hosted AI invocation, or malware execution.
+1. A dedicated positive-subscore compiler that validates R01 and emits the exact four positive
+   profile rows in an EvaluationManifestV2 carrier.
+2. The existing signed-projection registry bridge, narrowly generalized from static-only to both
+   publisher-supported kinds needed here:
+   - `typed_event`; and
+   - `static_download_execute_capability`.
+3. A dedicated positive-subscore summary layered on the mandatory V2 scorer. It must count only
+   the exact `(modality, evidence_type, behavior_label)` tuple permitted by R01, not a matching
+   behavior label from another modality or evidence type.
+4. Focused hermetic integration and regression tests.
 
-## Frozen four-row denominator
+The bridge may accept a signed empty projection set so a generic fail-closed block can be proven to
+remain a detection miss. It still requires one authenticated run-fact record for every manifest
+row and exhaustive equality between signed projections, publisher-derived observations, registry
+records, and results.
 
-| Row | Exact form | Positive-only profile | Required behavior-positive evidence |
-| --- | --- | --- | --- |
-| `mb-npm-sbx-45.0.2` | npm tgz | paired exact lifecycle VM profiles | independently verified dynamic `environment_credential_read` -> `credential_env_access` |
-| `mb-telnyx-4.87.1-wheel` | wheel | measured exact-archive static capability | independently verified deterministic `download_execute_capability` -> `second_stage_fetch` |
-| `mb-telnyx-4.87.2-wheel` | wheel | measured exact-archive static capability | independently verified deterministic `download_execute_capability` -> `second_stage_fetch` |
-| `mb-telnyx-4.87.2-sdist` | sdist | measured exact-archive static capability | independently verified deterministic `download_execute_capability` -> `second_stage_fetch` |
+No evaluator identity expansion, final manifest freeze, sensor, runtime, VM, AI, cloud, package,
+or malware work is permitted. Those belong to R02b or later chunks.
 
-Every row also binds its exact artifact SHA-256 and the corresponding complete-run profile ID for
-lineage. Corpus names, hashes, labels, advisories, reputation, a generic safe block, producer prose,
-or an AI-authored label cannot satisfy the subscore.
+## Frozen synthetic rows
 
-## Claim and gate semantics
+| Row | Signed positive | Coverage |
+| --- | --- | --- |
+| npm `sbx` | dynamic `environment_credential_read -> credential_env_access` | incomplete |
+| Telnyx wheel 4.87.1 | deterministic `download_execute_capability -> second_stage_fetch` | incomplete |
+| Telnyx wheel 4.87.2 | deterministic `download_execute_capability -> second_stage_fetch` | incomplete |
+| Telnyx sdist 4.87.2 | deterministic `download_execute_capability -> second_stage_fetch` | incomplete |
 
-- One permitted independently verified positive satisfies one row.
-- A missing, invalid, inconclusive, or positive-free row is a detection miss.
-- A valid positive survives incomplete sibling coverage.
-- Incomplete coverage fails completion/quality and can never produce observed-clean, admission,
-  release, sync-back, or overall success.
-- The positive-only profile itself never creates a full-corpus-baseline or broad-detection claim.
-- Detection requires 4/4, and safety independently requires every canonical safety invariant to be
-  zero; `unknown` fails.
-- R02b must freeze a window whose manifest predates collection and whose results, verification,
-  and registry timestamps are bounded and ordered.
-- R02b must freeze every named code, runtime, sensor, verifier, prompt, model, provider, policy,
-  compiler, publisher, and scorer identity. A component not used is frozen as `not_used`, never
-  silently omitted.
+Every row has zero safety violations, verified teardown, manual review required, and no artifact
+release. Synthetic signatures use ephemeral Ed25519 keys created inside a temporary directory.
 
 ## Acceptance
 
-1. The tracked contract validates through one documented metadata-only command and reports four
-   unique rows, the exact permitted modalities, and a canonical contract SHA-256.
-2. The validator rejects unknown or missing fields, row omission/duplication/reordering,
-   artifact/form/profile substitution, behavior/evidence/modality widening, threshold relaxation,
-   claim-boundary relaxation, window-policy relaxation, and identity-field changes.
-3. The existing complete-run profile has no diff.
-4. Focused tests are hermetic and use only synthetic metadata mutations.
-5. Documentation says `0/4` validated positive-subscore rows until R04/R05 collect evidence and
-   preserves the finalized July experimental baseline at `7/11`.
-6. The branch is reviewed, committed, and pushed. Work stops before R02.
+1. The compiler validates the exact R01 contract and emits four unique positive profile rows with
+   exact artifact, form, profile, label, modality, threshold, window, and corpus bindings.
+2. Publisher and bridge accept one dynamic npm bundle plus three static Telnyx bundles, derive the
+   exhaustive signed registry, and reject unknown projection kinds.
+3. The dedicated scorer summary reports:
+   - detection numerator/denominator `4/4`, rate `1.0`, pass;
+   - safety `4/4`, rate `1.0`, pass;
+   - completion `0/4`, rate `0.0`, fail;
+   - `overall_passed=false`; and
+   - observed-clean, admission, release, and sync-back authority all false.
+4. A valid signed incomplete row with no projections is a miss. A validly signed dynamic
+   `second_stage_fetch_attempt` cannot satisfy a Telnyx row that permits only deterministic
+   `download_execute_capability`.
+5. Omission, duplication, artifact/result substitution, bundle or registry signature changes,
+   profile/profile-digest drift, projection omission/addition/duplication/change, and manifest,
+   result, registry, verifier, schema, or policy identity drift fail closed.
+6. Attempted result-authored release/admission changes fail publisher recomputation or scoring.
+7. The existing complete-run compiler, publisher, bridge, and evaluator hermetic suites remain
+   green.
+8. The branch is independently reviewed, committed, and pushed. Work stops before R02b.
 
 ## Stop rule
 
-At four focused hours, push a safe WIP and record the single exact blocker. Do not respond by
-changing the scorer, registry, publisher, evidence schema, sensor, runtime, VM path, or cloud lab.
+At four focused hours, preserve the one exact missing bridge and stop. Do not widen this chunk into
+complete clean-admission verification, final identity design, or evidence collection.

@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Bridge signed static projection bundles into the mandatory V2 evidence registry.
+"""Bridge signed independent projection bundles into the mandatory V2 evidence registry.
 
 This is deliberately a narrow, fail-closed bridge. A canonical run index must name exactly one
 signed bundle and one publisher-emitted result for every manifest run. Each bundle must contain one
-or more independently verified ``static_download_execute_capability`` projections. The bridge
-reuses the RunResultV2 publisher as the policy authority, independently checks every bundle
-signature and frozen identity pin, requires every supplied RunResultV2 to be byte-for-byte publisher
-serialization and semantically identical to a fresh publisher result, and then derives the current
-evaluator registry records. It never inspects or executes package bytes and never grants release
-authority.
+or more publisher-supported independently verified projections, or an explicitly empty projection
+set for a signed no-finding run. The bridge reuses the RunResultV2 publisher as the policy authority,
+independently checks every bundle signature and frozen identity pin, requires every supplied
+RunResultV2 to be byte-for-byte publisher serialization and semantically identical to a fresh
+publisher result, and then derives the current evaluator registry records. It never inspects or
+executes package bytes and never grants release authority.
 
 The resulting registry is signed with the same Ed25519 identity frozen in EvaluationManifestV2.
 The bridge therefore needs access to that verifier identity's signing key; it neither creates nor
@@ -37,7 +37,10 @@ EVALUATOR_PATH = ROOT / "scripts" / "whoathere-actual-malware-evaluation.py"
 
 REGISTRY_SCHEMA = "whoathere.actual_malware.verified_evidence_registry.v1"
 RUN_INDEX_SCHEMA = "whoathere.actual_malware.signed_projection_run_index.v1"
-STATIC_PROJECTION_KIND = "static_download_execute_capability"
+SUPPORTED_PROJECTION_KINDS = {
+    "static_download_execute_capability",
+    "typed_event",
+}
 MAX_RUN_INDEX_BYTES = 8 * 1024 * 1024
 MAX_RESULT_BYTES = 64 * 1024 * 1024
 MAX_PRIVATE_KEY_BYTES = 64 * 1024
@@ -181,36 +184,59 @@ def evidence_records(
     publisher: ModuleType,
 ) -> list[dict[str, Any]]:
     projections = bundle.get("projections")
-    require(isinstance(projections, list) and projections, "static_projection_required")
+    require(isinstance(projections, list), "projection_array_required")
+    if not projections:
+        run_fact = bundle.get("run_fact")
+        require(
+            isinstance(run_fact, dict) and run_fact.get("completion_state") != "complete",
+            "empty_projection_requires_incomplete_run",
+        )
     by_projection_sha256: dict[str, dict[str, Any]] = {}
     for projection in projections:
         require(
-            isinstance(projection, dict) and projection.get("kind") == STATIC_PROJECTION_KIND,
-            "static_projection_kind_required",
+            isinstance(projection, dict)
+            and projection.get("kind") in SUPPORTED_PROJECTION_KINDS,
+            "projection_kind_unsupported",
         )
         projection_sha256 = publisher.sha256_bytes(publisher.canonical_json_bytes(projection))
-        require(projection_sha256 not in by_projection_sha256, "static_projection_digest_duplicate")
+        require(projection_sha256 not in by_projection_sha256, "projection_digest_duplicate")
         by_projection_sha256[projection_sha256] = projection
 
     observations = result.get("observations")
     require(
         isinstance(observations, list) and len(observations) == len(projections),
-        "static_projection_observation_count_mismatch",
+        "projection_observation_count_mismatch",
     )
     records: list[dict[str, Any]] = []
     observed_projection_sha256: set[str] = set()
     for observation in observations:
-        require(isinstance(observation, dict), "static_observation_invalid")
+        require(isinstance(observation, dict), "projection_observation_invalid")
         projection_sha256 = observation.get("projection_sha256")
         projection = by_projection_sha256.get(str(projection_sha256))
-        require(projection is not None, "static_observation_projection_unbound")
-        require(
-            observation.get("modality") == "deterministic"
-            and observation.get("evidence_type") == "download_execute_capability"
-            and observation.get("behavior_label") == "second_stage_fetch",
-            "static_observation_policy_mismatch",
+        require(projection is not None, "projection_observation_unbound")
+        projection_kind = projection.get("kind")
+        if projection_kind == "static_download_execute_capability":
+            expected_modality = "deterministic"
+            expected_evidence_type = "download_execute_capability"
+            expected_evidence_sha256 = projection.get("exact_observation_sha256")
+        elif projection_kind == "typed_event":
+            expected_modality = projection.get("modality")
+            expected_evidence_type = projection.get("evidence_type")
+            expected_evidence_sha256 = projection.get("event_sha256")
+        else:  # Guard the closed catalogue even if the caller changes above.
+            raise BridgeError("projection_kind_unsupported")
+        expected_behavior_label = publisher.EVIDENCE_TYPE_TO_BEHAVIOR_LABEL.get(
+            str(expected_evidence_type)
         )
-        require(str(projection_sha256) not in observed_projection_sha256, "static_observation_duplicate")
+        require(expected_behavior_label is not None, "projection_evidence_type_unmapped")
+        require(
+            observation.get("modality") == expected_modality
+            and observation.get("evidence_type") == expected_evidence_type
+            and observation.get("behavior_label") == expected_behavior_label
+            and observation.get("evidence_sha256") == expected_evidence_sha256,
+            "projection_observation_policy_mismatch",
+        )
+        require(str(projection_sha256) not in observed_projection_sha256, "projection_observation_duplicate")
         observed_projection_sha256.add(str(projection_sha256))
         record_binding = (
             str(result["sample_id"])
@@ -245,7 +271,7 @@ def evidence_records(
         )
     require(
         observed_projection_sha256 == set(by_projection_sha256),
-        "static_projection_observation_set_mismatch",
+        "projection_observation_set_mismatch",
     )
     return sorted(records, key=lambda row: row["record_id"])
 

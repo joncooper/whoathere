@@ -167,6 +167,7 @@ bounded operator command. It does **not** change the finalized July restricted-m
 7/11, establish a claim-bearing 4/4 result for the previous misses, measure benign friction, or
 show broad malware coverage.
 
-R01 subsequently froze and validated the separate positive-only four-miss subscore contract
-without collecting evidence. R02 is the next bounded chunk: prove the 4/4/incomplete/overall-false
-scoring semantics using synthetic metadata before any restricted row is collected.
+R01 subsequently froze the separate positive-only four-miss subscore contract, and R02 proved its
+4/4 detection, 0/4 completion, and overall-false semantics through the signed metadata path. Both
+were synthetic or metadata-only. R02b is next: freeze the exact final tool and evaluation identities
+before any restricted row is collected.

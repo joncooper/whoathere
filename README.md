@@ -245,6 +245,17 @@ validated subscore is still **0/4**. The contract explicitly prevents an eventua
 subscore from being misreported as complete coverage, clean admission, release readiness, overall
 success, or a new 11-sample baseline.
 
+R02 now proves that contract through the real metadata publication path with wholly synthetic
+inputs. The dedicated compiler creates the exact four-row manifest, the publisher converts one
+signed dynamic npm projection and three signed static Telnyx projections into manual-review-only
+results, the bridge creates the exhaustive signed evidence registry, and the mandatory V2 scorer
+authenticates every join. The contract-specific summary reports **4/4 behavior positives**, **4/4
+safety**, **0/4 completion**, and `overall_passed=false`; observed-clean, admission, release, and
+sync-back authority are all false. It also proves that a generic safe block and a matching behavior
+label from the wrong evidence type each remain a 3/4 miss. This is evaluator readiness, not new
+malware evidence: the validated real-evidence subscore remains **0/4** and the July baseline remains
+**7/11**.
+
 The product can now present that progress directly. The production `whoathere report render`
 command accepts the four source-free sanitized projections through a separate closed validator,
 checks their exact report digests and retained evidence bindings, and independently applies the
@@ -329,8 +340,9 @@ Avoid claims such as:
 
 Next gates before a detection-credible beta:
 
-- Prove the frozen four-row positive-subscore path with synthetic signed metadata, then freeze the
-  exact tool identities and evaluation window before collecting restricted evidence.
+- Freeze the exact R02-tested compiler, publisher, bridge, scorer, verifier, runtime, sensor,
+  provider, policy, key, artifact/profile denominator, and evaluation-window identities before
+  collecting restricted evidence.
 - Publish one signed four-sample result that binds the three verified Telnyx projections and an
   independently verified `sbx` VM row. Keep the existing split reconciliation diagnostic-only
   until the strict producer/publisher path verifies every expected row.

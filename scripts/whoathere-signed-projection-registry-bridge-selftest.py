@@ -639,7 +639,7 @@ def main() -> int:
         )
         checks += 1
 
-        typed_dir = case_directory(root, "typed-event-default-closed")
+        typed_dir = case_directory(root, "typed-event-supported")
         typed_bundle = copy.deepcopy(bundle_values[0])
         typed_bundle["run_fact"]["coverage"].append(
             {"modality": "dynamic", "state": "complete", "evidence_sha256": "sha256:" + "c" * 64}
@@ -678,7 +678,7 @@ def main() -> int:
         typed_index = write_run_index(
             typed_bridge_dir / "run-index.json", manifest_sha256, typed_entries
         )
-        typed_process, _, _ = bridge(
+        typed_process, typed_registry_path, _ = bridge(
             directory=typed_bridge_dir,
             manifest_path=manifest_path,
             manifest_sha256=manifest_sha256,
@@ -686,9 +686,17 @@ def main() -> int:
             public_key=public_key,
             private_key=private_key,
         )
+        require(typed_process.returncode == 0, typed_process.stderr)
+        typed_registry = json.loads(typed_registry_path.read_text(encoding="utf-8"))
         require(
-            typed_process.returncode == 20 and "static_projection_kind_required" in typed_process.stderr,
-            typed_process.stderr,
+            any(
+                row["sample_id"] == RUN_SPECS[0][0]
+                and row["modality"] == "dynamic"
+                and row["evidence_type"] == "environment_credential_read"
+                and row["behavior_label"] == "credential_env_access"
+                for row in typed_registry["records"]
+            ),
+            "typed event was not projected into the signed registry",
         )
         checks += 1
 

@@ -28,9 +28,48 @@ The accepted contract SHA-256 is
 `sha256:a47b8288c14c6c1eafb3976415fdc16a24ce0b85f06f4cf2c687ee50509ee053`; its artifact/profile
 denominator SHA-256 is
 `sha256:bdd99ff7ba8634dbcec7f98f442962a7c371437f9d0d3bcc9fd940f8af285c96`. R01 collects no
-evidence, so the validated positive subscore remains **0/4**. R02 next proves the scoring path with
+evidence, so the validated positive subscore remains **0/4**. R02 now proves the scoring path with
 synthetic metadata; R02b freezes the mutable tool identities and collection window before any
 restricted evidence work begins.
+
+## R02 synthetic publication proof
+
+R02 connects the frozen contract to the production metadata path without reading a package or
+evidence file:
+
+```sh
+scripts/whoathere-four-known-miss-positive-subscore-selftest.py
+```
+
+The hermetic command creates only temporary synthetic corpus metadata, incomplete verified
+projection bundles, and ephemeral Ed25519 keys. It exercises the dedicated positive-subscore
+compiler, RunResultV2 publisher, generalized signed-registry bridge, mandatory V2 scorer, and the
+contract-specific summary. Its accepted result is:
+
+| Gate | Synthetic result |
+| --- | --- |
+| Exact behavior-positive detection | 4/4, pass |
+| Safety | 4/4, pass |
+| Completion | 0/4, fail |
+| Completion/quality | fail |
+| Overall evaluation | `false` |
+| Observed-clean/admission/release/sync-back authority | all `false` |
+
+The summary is stricter than label matching: it requires the exact R01
+`(modality, evidence_type, behavior_label)` tuple. A signed dynamic
+`second_stage_fetch_attempt -> second_stage_fetch` therefore cannot satisfy a Telnyx row that
+permits only deterministic `download_execute_capability -> second_stage_fetch`. A signed
+incomplete no-finding row also remains a miss. The bridge permits an empty projection set only for
+an incomplete run, so this path does not create complete clean authority.
+
+Sixteen integration checks cover the happy path plus row omission/duplication, profile and artifact
+substitution, bundle and registry signatures, projection and identity drift, profile-digest drift,
+result-authored release, generic blocks, and wrong evidence tuples. Existing publisher, bridge,
+evaluator, complete-run compiler, and R01 contract suites remain green.
+
+This is still synthetic evaluator readiness. No R04/R05 evidence row has been collected, so the
+claim-bearing positive subscore remains **0/4** and the finalized July experimental result remains
+**7/11**. R02b next freezes every final identity and the evaluation window before restricted work.
 
 ## Complete-run profile
 

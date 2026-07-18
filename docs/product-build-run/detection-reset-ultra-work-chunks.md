@@ -244,8 +244,8 @@ their exact inputs and criteria are frozen.
 | P06 | Add cloud-lab ready/not-ready preflight | 1-2h | complete | Operability/safety |
 | P07 | Run one-command inert static/VM/Codex demo | 2-4h | complete | Fresh final-code physical invocation |
 | R01 | Freeze a positive-only four-miss subscore contract | 2-4h | complete | Evaluation contract |
-| R02 | Prove the subscore path with synthetic 4/4 | 2-4h | ready | Evaluator readiness |
-| R02b | Freeze final four-miss tool identities and manifest | 1-2h | queued | Evidence-collection identity |
+| R02 | Prove the subscore path with synthetic 4/4 | 2-4h | complete | Evaluator readiness |
+| R02b | Freeze final four-miss tool identities and manifest | 1-2h | ready | Evidence-collection identity |
 | R03 | Refresh lab preflight for restricted rows | 1-2h | queued | Restricted-lab readiness |
 | R04 | Produce three frozen Telnyx static rows | 2-4h | queued | Frozen positives 3/4 |
 | R05 | Produce one independently verified npm row | 2-4h | queued | Frozen inputs 4/4 |
