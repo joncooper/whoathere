@@ -1,6 +1,6 @@
 # Next Ultra Chunk: P01 Truthful, Panic-Free Baseline
 
-Status: ready, not started
+Status: complete; P02 remains queued and was not started
 
 Parent plan: [Detection Reset Ultra Work Chunks](detection-reset-ultra-work-chunks.md)
 
@@ -9,7 +9,7 @@ Parent plan: [Detection Reset Ultra Work Chunks](detection-reset-ultra-work-chun
 ```text
 Model: GPT-5.6 Codex
 Reasoning effort: Ultra
-Start commit: 7e6b8d0 plus the accepted planning-only commit
+Start commit: 87eb0ac
 Branch: codex/p01-truthful-baseline
 Timebox: 1-2 active hours; hard stop at 2 hours
 Primary metric: exact-artifact baseline rows completed without panic or hidden metric mismatch
@@ -122,3 +122,16 @@ Safety invariants or not-applicable rationale:
 One parked blocker:
 Recommendation for P02:
 ```
+
+## Completion result
+
+- All eleven frozen rows completed without a panic.
+- Canonical active fixtures: **0/3 behavior-positive**, honestly retained as conservative
+  `REVIEW`/exit 22 results.
+- Canonical benign fixtures: **0/3 false-malicious**.
+- Exact public benign controls: **5/5 present and inspected**, with **0/5 false-malicious**.
+- The frozen metric gate passed; a deliberate expected-metric change exited nonzero.
+- Duplicate IDs, unsupported forms, malformed hashes, and changed artifact bytes were rejected.
+- Safety boundary: local static inspection only. No VM, cloud, hosted AI, restricted malware,
+  sync-back, clean verdict, admission authority, or tracked public-control bytes were used.
+- P02 requires a new explicit authorization and goal.

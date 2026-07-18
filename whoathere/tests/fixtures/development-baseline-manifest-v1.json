@@ -1,0 +1,54 @@
+{
+  "expected_metrics": {
+    "canonical_active_behavior_positive_count": 0,
+    "canonical_active_review_count": 3,
+    "canonical_active_total": 3,
+    "canonical_benign_false_malicious_count": 0,
+    "canonical_benign_total": 3,
+    "public_benign_false_malicious_count": 0,
+    "public_benign_total": 5
+  },
+  "public_benign_controls": [
+    {
+      "artifact_filename": "sbx-2.1.0.tgz",
+      "artifact_sha256": "3194826cbb5007583a435872b2822cc010a5f57c7062d6025e2f5ea599a2aaf0",
+      "coordinate": "npm:sbx@2.1.0",
+      "ecosystem": "npm",
+      "form": "npm_tgz",
+      "sample_id": "public-npm-sbx-2-1-0-tgz"
+    },
+    {
+      "artifact_filename": "telnyx-4.87.0.tar.gz",
+      "artifact_sha256": "3f093a85c313c2b779594f99fc07f453f1a7fd8785878d963688c531ff94d03a",
+      "coordinate": "pypi:telnyx@4.87.0",
+      "ecosystem": "pypi",
+      "form": "pypi_sdist_tar_gzip",
+      "sample_id": "public-pypi-telnyx-4-87-0-sdist"
+    },
+    {
+      "artifact_filename": "telnyx-4.87.0-py3-none-any.whl",
+      "artifact_sha256": "5aeb8172c29ade224e6c2d166713f304596aa21e3dbfa5b6b2b028e6997f6bd2",
+      "coordinate": "pypi:telnyx@4.87.0",
+      "ecosystem": "pypi",
+      "form": "pypi_wheel",
+      "sample_id": "public-pypi-telnyx-4-87-0-wheel"
+    },
+    {
+      "artifact_filename": "telnyx-4.88.1.tar.gz",
+      "artifact_sha256": "287ac583111cd07e024023ab5a1b9e8c653254f7662faa5501057a767e8426b0",
+      "coordinate": "pypi:telnyx@4.88.1",
+      "ecosystem": "pypi",
+      "form": "pypi_sdist_tar_gzip",
+      "sample_id": "public-pypi-telnyx-4-88-1-sdist"
+    },
+    {
+      "artifact_filename": "telnyx-4.88.1-py3-none-any.whl",
+      "artifact_sha256": "ed51820e60d8b44c537ceb2851d5c03e72d475d46a3ed6e467ae6a8a0975d886",
+      "coordinate": "pypi:telnyx@4.88.1",
+      "ecosystem": "pypi",
+      "form": "pypi_wheel",
+      "sample_id": "public-pypi-telnyx-4-88-1-wheel"
+    }
+  ],
+  "schema_version": "whoathere.development_baseline_manifest.v1"
+}

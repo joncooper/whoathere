@@ -11,6 +11,10 @@ use whoathere_detector::{
 };
 use zip::write::SimpleFileOptions;
 
+const UNICODE_NPM_PACKAGE_JSON: &[u8] = include_bytes!("fixtures/unicode-npm/package.json");
+const UNICODE_NPM_INDEX: &[u8] = include_bytes!("fixtures/unicode-npm/index.js");
+const UNICODE_NPM_HELPER: &[u8] = include_bytes!("fixtures/unicode-npm/helper.js");
+
 fn envelope(
     ecosystem: Ecosystem,
     name: &str,
@@ -259,6 +263,37 @@ fn ordinary_lifecycle_build_is_no_finding_but_keeps_heuristic_limitations_explic
     assert!(!analysis
         .is_bounded_no_finding(&artifact)
         .expect("validated outcome"));
+}
+
+#[test]
+fn tracked_unicode_archive_exercises_the_production_parser_without_panic() {
+    assert!(UNICODE_NPM_INDEX
+        .windows("—".len())
+        .any(|window| window == "—".as_bytes()));
+    assert!(UNICODE_NPM_INDEX
+        .windows("’".len())
+        .any(|window| window == "’".as_bytes()));
+    let artifact = normalize_npm(&[
+        ("package/package.json", UNICODE_NPM_PACKAGE_JSON, 0o644),
+        ("package/index.js", UNICODE_NPM_INDEX, 0o644),
+        ("package/helper.js", UNICODE_NPM_HELPER, 0o644),
+    ]);
+
+    let analysis = analyze_normalized_artifact(&artifact).expect("analyze Unicode archive");
+
+    analysis
+        .validate(&artifact)
+        .expect("Unicode analysis validates");
+    assert!(analysis.findings.is_empty());
+    assert!(analysis
+        .trigger_graph
+        .local_code_edges
+        .iter()
+        .any(|edge| edge.kind == LocalCodeEdgeKind::JavascriptRequire));
+    assert!(analysis.coverage.files.iter().any(|file| {
+        file.normalized_path == "index.js"
+            && file.status == whoathere_detector::CoverageStatus::Analyzed
+    }));
 }
 
 #[test]

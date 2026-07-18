@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the six canonical paired fixtures as a non-claim-bearing baseline.
+"""Run canonical fixtures and frozen public controls as a development baseline.
 
 This development runner measures the current exact-artifact static path only.
 It deliberately does not request AI review, detonation, or admission. Sealed
@@ -25,10 +25,29 @@ FIXTURE_ROOT = ROOT / "whoathere/tests/fixtures/threat-taxonomy-v1"
 BUILDER_PATH = FIXTURE_ROOT / "build_fixtures.py"
 EXPECTATIONS_PATH = FIXTURE_ROOT / "sealed/expectations-v2.json"
 EXPECTATIONS_SHA_PATH = FIXTURE_ROOT / "sealed/expectations-v2.json.sha256"
+BASELINE_MANIFEST_PATH = (
+    ROOT / "whoathere/tests/fixtures/development-baseline-manifest-v1.json"
+)
+DEFAULT_PUBLIC_CONTROLS_DIR = ROOT / ".whoathere/benign-neighbors-20260716"
 ACQUIRED_AT = "2026-07-15T00:00:00Z"
 BASELINE_LABEL = "non_claim_bearing_development_baseline"
 REPORT_SCHEMA = "whoathere.exact_artifact_inspection.v1"
-SUMMARY_SCHEMA = "whoathere.development_fixture_baseline.v1"
+SUMMARY_SCHEMA = "whoathere.development_fixture_baseline.v2"
+BASELINE_MANIFEST_SCHEMA = "whoathere.development_baseline_manifest.v1"
+EXPECTED_METRIC_KEYS = {
+    "canonical_active_behavior_positive_count",
+    "canonical_active_review_count",
+    "canonical_active_total",
+    "canonical_benign_false_malicious_count",
+    "canonical_benign_total",
+    "public_benign_false_malicious_count",
+    "public_benign_total",
+}
+SUPPORTED_PUBLIC_FORMS = {
+    "npm_tgz": ("npm", ".tgz"),
+    "pypi_sdist_tar_gzip": ("pypi", ".tar.gz"),
+    "pypi_wheel": ("pypi", ".whl"),
+}
 
 
 class BaselineFailure(RuntimeError):
@@ -111,7 +130,17 @@ def load_expectations() -> list[dict[str, Any]]:
         )
         sample_ids.add(sample_id)
         filenames.add(filename)
-        validated.append(case)
+        validated.append(
+            {
+                **case,
+                "cohort": (
+                    "canonical_active"
+                    if expected_result == "malicious"
+                    else "canonical_benign"
+                ),
+                "form": case.get("artifact_kind"),
+            }
+        )
 
     require(
         sum(case["expected_result"] == "malicious" for case in validated) == 3,
@@ -122,6 +151,104 @@ def load_expectations() -> list[dict[str, Any]]:
         "expectations_benign_case_count_invalid",
     )
     return sorted(validated, key=lambda case: str(case["sample_id"]))
+
+
+def load_baseline_manifest(
+    path: Path,
+) -> tuple[list[dict[str, Any]], dict[str, int], str]:
+    require(path.is_file() and not path.is_symlink(), "baseline_manifest_unavailable")
+    data = path.read_bytes()
+    document = json.loads(data)
+    require(isinstance(document, dict), "baseline_manifest_invalid")
+    require(
+        document.get("schema_version") == BASELINE_MANIFEST_SCHEMA,
+        "baseline_manifest_schema_invalid",
+    )
+    expected_metrics = document.get("expected_metrics")
+    require(
+        isinstance(expected_metrics, dict)
+        and set(expected_metrics) == EXPECTED_METRIC_KEYS,
+        "baseline_expected_metrics_invalid",
+    )
+    require(
+        all(
+            isinstance(value, int) and not isinstance(value, bool) and value >= 0
+            for value in expected_metrics.values()
+        ),
+        "baseline_expected_metric_value_invalid",
+    )
+
+    controls = document.get("public_benign_controls")
+    require(
+        isinstance(controls, list) and len(controls) == 5,
+        "public_control_count_invalid",
+    )
+    sample_ids: set[str] = set()
+    filenames: set[str] = set()
+    coordinate_forms: set[tuple[str, str]] = set()
+    validated: list[dict[str, Any]] = []
+    for control in controls:
+        require(isinstance(control, dict), "public_control_invalid")
+        sample_id = control.get("sample_id")
+        filename = control.get("artifact_filename")
+        digest = control.get("artifact_sha256")
+        coordinate = control.get("coordinate")
+        ecosystem = control.get("ecosystem")
+        form = control.get("form")
+        require(
+            isinstance(sample_id, str)
+            and re.fullmatch(r"[a-z0-9][a-z0-9-]*", sample_id) is not None
+            and sample_id not in sample_ids,
+            "public_control_id_invalid_or_duplicate",
+        )
+        require(
+            isinstance(filename, str)
+            and Path(filename).name == filename
+            and filename not in filenames,
+            "public_control_filename_invalid_or_duplicate",
+        )
+        require(
+            isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest) is not None,
+            "public_control_digest_invalid",
+        )
+        require(
+            isinstance(coordinate, str)
+            and re.fullmatch(
+                r"(?:npm|pypi):[a-z0-9][a-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9._+-]*",
+                coordinate,
+            )
+            is not None,
+            "public_control_coordinate_invalid",
+        )
+        require(
+            isinstance(form, str) and form in SUPPORTED_PUBLIC_FORMS,
+            "public_control_form_unsupported",
+        )
+        expected_ecosystem, suffix = SUPPORTED_PUBLIC_FORMS[form]
+        require(
+            ecosystem == expected_ecosystem and filename.endswith(suffix),
+            "public_control_form_mismatch",
+        )
+        require(
+            coordinate.startswith(f"{ecosystem}:")
+            and (coordinate, form) not in coordinate_forms,
+            "public_control_coordinate_form_invalid_or_duplicate",
+        )
+        sample_ids.add(sample_id)
+        filenames.add(filename)
+        coordinate_forms.add((coordinate, form))
+        validated.append(
+            {
+                **control,
+                "cohort": "public_benign",
+                "expected_result": "benign",
+            }
+        )
+    return (
+        sorted(validated, key=lambda control: str(control["sample_id"])),
+        {key: int(expected_metrics[key]) for key in sorted(expected_metrics)},
+        "sha256:" + hashlib.sha256(data).hexdigest(),
+    )
 
 
 def build_fixtures(output_dir: Path) -> Path:
@@ -146,14 +273,23 @@ def build_fixtures(output_dir: Path) -> Path:
     return fixture_dir
 
 
-def verify_artifacts(fixture_dir: Path, cases: list[dict[str, Any]]) -> None:
-    require(fixture_dir.is_dir(), "fixture_directory_unavailable")
+def verify_artifacts(
+    fixture_dir: Path,
+    cases: list[dict[str, Any]],
+    *,
+    unavailable_reason: str,
+    mismatch_reason: str,
+) -> None:
+    require(fixture_dir.is_dir(), unavailable_reason)
     for case in cases:
         artifact = fixture_dir / str(case["artifact_filename"])
-        require(artifact.is_file() and not artifact.is_symlink(), "fixture_artifact_unavailable")
+        require(
+            artifact.is_file() and not artifact.is_symlink(),
+            f"{unavailable_reason}:{case['sample_id']}",
+        )
         require(
             sha256_file(artifact) == case["artifact_sha256"],
-            f"fixture_artifact_digest_mismatch:{case['sample_id']}",
+            f"{mismatch_reason}:{case['sample_id']}",
         )
 
 
@@ -241,6 +377,10 @@ def inspect_case(
         and behavior_count >= 0,
         f"inspection_behavior_count_invalid:{sample_id}",
     )
+    require(
+        (verdict == "malicious") == (behavior_count > 0),
+        f"inspection_behavior_disposition_mismatch:{sample_id}",
+    )
 
     reports_dir = output_dir / "reports"
     reports_dir.mkdir(exist_ok=True)
@@ -252,8 +392,11 @@ def inspect_case(
         "artifact_filename": case["artifact_filename"],
         "artifact_sha256": case["artifact_sha256"],
         "behavior_detection_count": behavior_count,
+        "cohort": case["cohort"],
+        "coordinate": case.get("coordinate"),
         "ecosystem": case["ecosystem"],
         "expected_result": case["expected_result"],
+        "form": case.get("form"),
         "observed_clean": report.get("observed_clean"),
         "process_exit_code": completed.returncode,
         "report_path": f"reports/{report_name}",
@@ -274,11 +417,38 @@ def metric_case(case: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def summarize(cases: list[dict[str, Any]]) -> dict[str, Any]:
-    active = [case for case in cases if case["expected_result"] == "malicious"]
-    benign = [case for case in cases if case["expected_result"] == "benign"]
-    active_misses = [case for case in active if case["verdict"] != "malicious"]
-    benign_false_malicious = [case for case in benign if case["verdict"] == "malicious"]
+def summarize(
+    cases: list[dict[str, Any]],
+    expected_metrics: dict[str, int],
+    baseline_manifest_sha256: str,
+) -> dict[str, Any]:
+    active = [case for case in cases if case["cohort"] == "canonical_active"]
+    canonical_benign = [
+        case for case in cases if case["cohort"] == "canonical_benign"
+    ]
+    public_benign = [case for case in cases if case["cohort"] == "public_benign"]
+    benign = canonical_benign + public_benign
+    active_behavior_positives = [
+        case for case in active if case["behavior_detection_count"] > 0
+    ]
+    active_misses = [
+        case for case in active if case["behavior_detection_count"] == 0
+    ]
+    active_reviews = [
+        case
+        for case in active
+        if case["process_exit_code"] == 22
+        and case["verdict"] in {"inconclusive", "unsupported"}
+    ]
+    canonical_benign_false_malicious = [
+        case for case in canonical_benign if case["verdict"] == "malicious"
+    ]
+    public_benign_false_malicious = [
+        case for case in public_benign if case["verdict"] == "malicious"
+    ]
+    benign_false_malicious = (
+        canonical_benign_false_malicious + public_benign_false_malicious
+    )
     benign_friction = [
         case for case in benign if case["verdict"] in {"inconclusive", "unsupported"}
     ]
@@ -294,9 +464,51 @@ def summarize(cases: list[dict[str, Any]]) -> dict[str, Any]:
     safety_passed = not (
         admission_violations or observed_clean_violations or sync_back_violations
     )
+    metrics = {
+        "active_behavior_positive_count": len(active_behavior_positives),
+        "active_malicious_count": len(active_behavior_positives),
+        "active_miss_count": len(active_misses),
+        "active_misses": [metric_case(case) for case in active_misses],
+        "active_review_count": len(active_reviews),
+        "active_total": len(active),
+        "benign_false_malicious": [
+            metric_case(case) for case in benign_false_malicious
+        ],
+        "benign_false_malicious_count": len(benign_false_malicious),
+        "benign_friction": [metric_case(case) for case in benign_friction],
+        "benign_friction_count": len(benign_friction),
+        "benign_total": len(benign),
+        "canonical_benign_false_malicious_count": len(
+            canonical_benign_false_malicious
+        ),
+        "canonical_benign_total": len(canonical_benign),
+        "public_benign_false_malicious_count": len(public_benign_false_malicious),
+        "public_benign_total": len(public_benign),
+    }
+    observed_expected_metrics = {
+        "canonical_active_behavior_positive_count": len(active_behavior_positives),
+        "canonical_active_review_count": len(active_reviews),
+        "canonical_active_total": len(active),
+        "canonical_benign_false_malicious_count": len(
+            canonical_benign_false_malicious
+        ),
+        "canonical_benign_total": len(canonical_benign),
+        "public_benign_false_malicious_count": len(public_benign_false_malicious),
+        "public_benign_total": len(public_benign),
+    }
+    metric_mismatches = [
+        {
+            "expected": expected_metrics[key],
+            "metric": key,
+            "observed": observed_expected_metrics[key],
+        }
+        for key in sorted(expected_metrics)
+        if expected_metrics[key] != observed_expected_metrics[key]
+    ]
     return {
         "acquired_at": ACQUIRED_AT,
         "baseline_kind": BASELINE_LABEL,
+        "baseline_manifest_sha256": baseline_manifest_sha256,
         "cases": cases,
         "claim_bearing": False,
         "configuration": {
@@ -305,19 +517,12 @@ def summarize(cases: list[dict[str, Any]]) -> dict[str, Any]:
             "expectations_passed_to_whoathere": False,
             "exact_local_artifacts": True,
         },
-        "metrics": {
-            "active_malicious_count": len(active) - len(active_misses),
-            "active_miss_count": len(active_misses),
-            "active_misses": [metric_case(case) for case in active_misses],
-            "active_total": len(active),
-            "benign_false_malicious": [
-                metric_case(case) for case in benign_false_malicious
-            ],
-            "benign_false_malicious_count": len(benign_false_malicious),
-            "benign_friction": [metric_case(case) for case in benign_friction],
-            "benign_friction_count": len(benign_friction),
-            "benign_total": len(benign),
+        "expected_metrics": expected_metrics,
+        "metric_gate": {
+            "mismatches": metric_mismatches,
+            "passed": not metric_mismatches,
         },
+        "metrics": metrics,
         "safety": {
             "admission_authority_violations": admission_violations,
             "observed_clean_violations": observed_clean_violations,
@@ -337,6 +542,18 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="Use a prebuilt canonical fixture directory instead of rebuilding it.",
     )
+    parser.add_argument(
+        "--baseline-manifest",
+        type=Path,
+        default=BASELINE_MANIFEST_PATH,
+        help="Frozen expected metrics and public-control identities.",
+    )
+    parser.add_argument(
+        "--public-controls-dir",
+        type=Path,
+        default=DEFAULT_PUBLIC_CONTROLS_DIR,
+        help="Directory containing the exact public controls (their bytes remain untracked).",
+    )
     return parser.parse_args()
 
 
@@ -348,11 +565,26 @@ def main() -> int:
         "whoathere_binary_unavailable_or_not_executable",
     )
     output_dir = prepare_output_root(args.output_dir)
-    cases = load_expectations()
+    canonical_cases = load_expectations()
+    public_cases, expected_metrics, baseline_manifest_sha256 = load_baseline_manifest(
+        args.baseline_manifest.resolve()
+    )
     fixture_dir = args.fixture_dir.resolve() if args.fixture_dir else build_fixtures(output_dir)
-    verify_artifacts(fixture_dir, cases)
+    verify_artifacts(
+        fixture_dir,
+        canonical_cases,
+        unavailable_reason="fixture_artifact_unavailable",
+        mismatch_reason="fixture_artifact_digest_mismatch",
+    )
+    public_controls_dir = args.public_controls_dir.resolve()
+    verify_artifacts(
+        public_controls_dir,
+        public_cases,
+        unavailable_reason="public_control_artifact_unavailable",
+        mismatch_reason="public_control_artifact_digest_mismatch",
+    )
 
-    results = [
+    canonical_results = [
         inspect_case(
             whoathere_bin=whoathere_bin,
             output_dir=output_dir,
@@ -360,13 +592,27 @@ def main() -> int:
             case=case,
             index=index,
         )
-        for index, case in enumerate(cases, start=1)
+        for index, case in enumerate(canonical_cases, start=1)
     ]
-    summary = summarize(results)
+    public_results = [
+        inspect_case(
+            whoathere_bin=whoathere_bin,
+            output_dir=output_dir,
+            fixture_dir=public_controls_dir,
+            case=case,
+            index=index,
+        )
+        for index, case in enumerate(public_cases, start=len(canonical_cases) + 1)
+    ]
+    summary = summarize(
+        canonical_results + public_results,
+        expected_metrics,
+        baseline_manifest_sha256,
+    )
     encoded = canonical_json(summary)
     (output_dir / "summary.json").write_text(encoded, encoding="utf-8")
     sys.stdout.write(encoded)
-    return 0 if summary["safety"]["passed"] else 1
+    return 0 if summary["safety"]["passed"] and summary["metric_gate"]["passed"] else 1
 
 
 if __name__ == "__main__":
