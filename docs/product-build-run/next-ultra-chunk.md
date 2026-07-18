@@ -1,169 +1,225 @@
-# Next Ultra Chunk: P06 Cloud-Lab Ready/Not-Ready Preflight
+# Next Ultra Chunk: P07 One-Command Inert End-to-End Demo
 
-Status: complete. P05 is complete and pushed at `da2f9a7`; P06 is accepted locally and must be
-pushed before P07 starts.
+Status: complete. P06 is complete and pushed at `fa6fc4c`; the final P07 implementation passed one
+fresh uninterrupted default invocation on 2026-07-18. R01 is next but remains outside the current
+P04-P07 goal.
 
 Updated: 2026-07-18
 
 ## Immutable execution contract
 
-- Branch: `codex/p06-cloud-lab-preflight`, based on accepted P05 commit `da2f9a7`.
-- Budget: 1-2 hours of focused implementation, excluding independent verification.
-- One read-only Ultra input audit and one final independent Ultra verification are allowed.
-- The input audit found that no existing command satisfies P06: the older preflight can report
-  ready while leaving operator checks unresolved, while the staging/clearance harnesses mutate
-  remote state or depend on prior restricted-corpus state.
-- Implement one thin Python operator command and one focused self-test. Do not add a Rust CLI
-  subsystem, new VM protocol, new evidence signer, or general remote-execution framework.
-- At two focused implementation hours, push a safe WIP reproduction and stop rather than expanding
-  scope.
+- Branch: `codex/p07-inert-end-to-end-demo`, based on accepted P06 commit `fa6fc4c`.
+- Budget: 2-4 hours of focused implementation, excluding one independent final verification.
+- The read-only Ultra input audit is complete. It selected a thin two-host orchestration script
+  around existing production commands; no new Rust, VM protocol, evaluator, evidence signer,
+  profile subsystem, or remote-execution framework is permitted.
+- Use the already-qualified Linux VZ runtime and helper. Only a fresh no-closure detonation
+  configuration and fresh output locations may be staged on the approved cloud Mac.
+- At four focused implementation hours, preserve the exact blocker and stop rather than expanding
+  the architecture.
 
-Primary metric: one command returns either green `READY` or exactly one precedence-ranked
-`BLOCKED` result with one concrete operator action, before any artifact access or VM start.
+Primary metric: one local command performs preflight, exact-artifact static inspection, both fresh
+npm VM profiles, sanitized export, local subscription-backed Codex observation, cross-host
+reconciliation, and a concise human result.
+
+P07 proves a usable end-to-end product path. It does not change the finalized July experimental
+baseline of 7/11 and is not a claim-bearing evaluation result.
 
 ## Accepted result
 
-- The final production command returned `READY` on the approved cloud Mac for exact inert campaign
-  `p07-inert-npm-demo-20260718` and profile `npm-ci-paired`.
-- The exact input digest was
-  `sha256:5fe0ae9496f4d7eaf16c365cf83005ca243b80f9505b8aee15f8de76e1e96309`.
-- The preflight implementation digest was
-  `sha256:04bec519c44102c369f3bea5d45b645688b1622dde0004904633e2b946e86007`.
-- The result recorded `artifact_opened=false`, `package_executed=false`, `vm_started=false`,
-  `remote_state_mutated=false`, and `clearance_consumed=false`.
-- The focused production-path self-test passed. Independent Ultra verification returned GO after
-  its route/output mutations and all discovered must-fix regressions failed closed.
-- No raw or restricted artifact was opened, no package code executed, and no VM started during P06.
+- The final bounded operator command composes P06, exact-artifact inspection, both npm CI profiles,
+  strict sanitized export, local subscription-backed Codex observation, cross-host reconciliation,
+  and the final human transcript. Focused hermetic tests exercise that default path.
+- Exact artifact digest:
+  `sha256:6d487f71d980a0ab8dc4aab303f99f9576e3d335d7cef3ab88463e87e41168ff`.
+- `CI=false` produced 20 typed events and one Codex lifecycle finding with an exact event-hash
+  citation.
+- `CI=true` produced 24 typed events, including three authenticated fake-token canary reads and a
+  local-sinkhole connection. Codex cited lifecycle, canary access, and the outbound connection.
+- Both VM/profile rows bind execution-result, root-receipt, host-receipt, bundle, and observer
+  identities. Both VMs stopped, both clones were destroyed, images remained stable, no public route
+  or sync-back existed, and all six canonical safety-invariant counts were zero.
+- Coverage remained incomplete; the result was `BLOCK`, diagnostic-only, observe-only, and never
+  clean, admitted, installed, or allowed.
+- The focused fake-runner suite covers preflight-before-execution, digest substitution, transfer
+  allowlisting, profile/bundle cardinality, safety proof, citation integrity, and transcript
+  redaction.
+- The first physical attempt preserved evidence but stopped at a stale remote exporter that did not
+  understand the sanitizer's typed static citation. One bounded repair staged the already-tested
+  current exporter and refreshed P06. The next remote run completed both VM profiles and the strict
+  export, then exposed two wrapper-only assumptions—requiring a post-connect send event and
+  rejecting the observer's valid exit 0. After those corrections, local observation,
+  reconciliation, and transcript generation completed through the earlier resume path. The final
+  explicit producer-plan-bound resume and remaining digest joins were implemented afterward.
+- A new final invocation then ran the default command from fresh P06-bound remote and local roots.
+  It completed preflight, both VM profiles, export, both Codex observations, reconciliation, and
+  transcript generation in one process with `Execution mode: fresh end-to-end invocation`.
+
+The final command is therefore physically accepted. The earlier resumed attempt remains recorded as
+qualification history rather than being substituted for the final result.
+
+## Canonical inert artifact
+
+Use the tracked deterministic fixture builder to produce exactly:
+
+```text
+whoathere-fixture-npm-ci-canary-1.0.0.tgz
+sha256:6d487f71d980a0ab8dc4aab303f99f9576e3d335d7cef3ab88463e87e41168ff
+```
+
+The artifact has no dependencies and no publication authority. Its postinstall lifecycle code:
+
+- records an inert package-written marker in both CI profiles;
+- only under `CI=true`, reads the runtime's seeded fake npm-token file;
+- only under `CI=true`, connects to `127.0.0.1:48739` and sends a constant inert marker;
+- never sends canary bytes, reaches a public destination, fetches a second stage, or writes outside
+  the disposable guest workspace.
+
+Package-written markers are supporting-only. They cannot establish a behavior detection, evidence
+authenticity, safety, or clean status.
 
 ## User-facing command
 
 ```text
-scripts/whoathere-cloud-lab-preflight.py \
-  --input <cloud-lab-preflight-input.json> \
-  --input-sha256 sha256:<exact-input-digest> \
-  [--ssh-config <local-ssh-config>] \
-  [--json]
+scripts/whoathere-inert-e2e-demo.py \
+  --input <absolute-private-p07-plan.json> \
+  --input-sha256 sha256:<exact-plan-digest> \
+  --ssh-config <absolute-private-ssh-config>
 ```
 
-Exit codes:
+The command returns success only when the complete demo and all bindings validate. Its displayed
+package action is `BLOCK` or `REVIEW`; operational success never means `ALLOW`, clean, admitted, or
+safe to install.
 
-- `0`: `READY`;
-- `20`: valid plan, one operational blocker; and
-- `64`: malformed, mismatched, unsafe, or unsupported input.
+## Closed private plan
 
-Human output contains one status headline and, when blocked, exactly one `ACTION:` line. JSON output
-contains the same single blocker/action plus safe identity bindings and explicit non-execution
-flags.
+Schema: `whoathere.inert_e2e_demo_input.v1`. Unknown fields are rejected.
 
-## Closed input contract
+The plan binds:
 
-Schema: `whoathere.cloud_lab_preflight_input.v1`.
+1. `demo`: one bounded demo ID, the exact artifact filename, byte length, and SHA-256.
+2. `preflight`: the P06 implementation, exact private P06 input, detached input digest, and expected
+   campaign/profile identity.
+3. `remote`: SSH alias plus exact absolute paths and SHA-256 identities for the staged artifact,
+   WhoaThere binary, no-closure detonation configuration, sanitizer, fresh state/output/export
+   roots, and approved remote Python interpreter.
+4. `local`: exact WhoaThere binary and native Codex client identities, exact model, dedicated
+   subscription-authenticated auth home, timeout, and a fresh ignored output root.
+5. `policy`: both required profiles, loopback sinkhole destination, hosted-behavior-review approval,
+   no raw export, no remote AI/auth, no sync-back, and no admission authority.
 
-The exact top-level sections are:
+The plan contains no password, private key, canary value, API key, raw telemetry, or restricted
+artifact path. Input and SSH files remain ignored and mode-private.
 
-1. `ssh`: safe host alias, expected remote hostname and user, and a non-secret source-route
-   reference.
-2. `authorization`: provider, legal, and operator authorization references plus
-   `planned_material`, either `inert_only` or `restricted_malware`.
-3. `provider`: provider name, exactly one firewall posture (`cloud_default_deny` or
-   `provider_unavailable_host_pf`), and its evidence reference.
-4. `run_binding`: exact remote checkout path and Git commit, campaign ID, profile ID, and six
-   ordered remote file identities: `whoathere_bin`, `vm_helper`, `runtime_record`,
-   `detonation_config`, `policy`, and `sanitizer`.
-5. `host_controls`: exact fresh PF-info, PF-rules, and LuLu-evidence file paths/digests; loopback-only
-   sinkhole host/port/reference; and the maximum evidence age.
-6. `storage`: exact custody, evidence, sanitized-export, and ephemeral-clone directory paths.
-7. `clearance`: `not_required_inert` with no path/digest, or `required_restricted` with an exact
-   clearance path/digest and latest-contamination timestamp.
+## Existing stages to compose
 
-All objects are closed. Digests are canonical lowercase SHA-256 values; IDs/references are bounded
-safe tokens; paths are absolute remote paths. The plan contains no sample, package, artifact,
-archive, workspace, credential, canary, or secret path/value.
+The wrapper performs only this sequence:
 
-## Probe boundary
+1. Run `whoathere-cloud-lab-preflight.py` and require fresh `READY` for the exact no-closure config.
+2. Over the pinned SSH route, re-hash the staged inert artifact and bound executables/configuration,
+   require all fresh output paths to be absent, then run the existing remote production command:
 
-After local exact-digest/schema validation and authorization checks, the command performs only:
+   ```text
+   whoathere artifact inspect <exact-inert.tgz> \
+     --ecosystem npm \
+     --state-dir <fresh-private-state> \
+     --detonation \
+     --detonation-config <exact-no-closure-config.json>
+   ```
 
-1. local `ssh -G` resolution for the intended host alias; and
-2. exactly one noninteractive SSH invocation of `/usr/bin/python3 -`, sending a fixed read-only
-   probe over stdin and receiving one bounded JSON object on stdout.
+3. Reuse `sanitize_exact_artifact_report()` from the existing Step 5 harness, then run
+   `whoathere-export-split-behavior.py` remotely.
+4. Transfer only the sanitized report, export manifest, two typed behavior bundles, and a bounded
+   safety projection. Artifact bytes, source, raw receipts, raw streams, packet captures, logs,
+   canary values, Codex credentials, and private remote paths do not cross hosts.
+5. Run local `whoathere behavior observe` once for each exact bundle with the saved subscription,
+   native Codex client, exact client digest, exact model, empty private work state, hosted review
+   explicitly approved, and no web or tools.
+6. Run `whoathere-two-host-behavior-diagnostic.py` to recheck artifact, manifest, scenario, bundle,
+   observer, finding, and event-citation continuity.
+7. Render one concise transcript from the validated diagnostic and safety projection.
 
-The remote probe may:
+No Codex binary or authentication material is installed or copied to the cloud Mac.
 
-- compare remote hostname/user and confirm an SSH session;
-- hash the six allowlisted identity files;
-- read the exact PF/LuLu control evidence files and verify freshness;
-- verify PF enabled/default-deny and LuLu enabled/filtering posture;
-- connect only to the configured loopback sinkhole;
-- check Apple Virtualization framework availability;
-- `stat` custody/evidence/sanitized/clone roots without listing custody contents;
-- check fixed WhoaThere helper/process names and require the ephemeral-clone root to be empty; and
-- for restricted material only, open and validate the exact clearance record.
+## Safety proof and transcript contract
 
-It may not upload or create files, make directories, alter permissions, invoke `sudo`, stage a
-bundle, list/open artifact custody contents, inspect a package, run scanners, call WhoaThere,
-start/stop a VM, consume clearance, contact a non-loopback destination, or write evidence remotely.
+The remote projection is allowlisted and bounded. For both `CI=false` and `CI=true`, it binds the
+exact execution result, behavior bundle, root receipt, and host-composite receipt and reports:
 
-## Blocker precedence
+- VM started and stopped;
+- clone destroyed;
+- image identity stable;
+- public route absent;
+- sync-back false;
+- authoritative verdict false;
+- package execution occurred only through the Linux VZ guest provider; and
+- coverage limitations remain explicit.
 
-The command exposes only the first failed condition in this fixed order:
+The final transcript contains:
 
-1. invalid input/detached digest (`ERROR`, no SSH);
-2. missing authorization or provider-firewall posture (`BLOCKED`, no SSH);
-3. SSH configuration/route or bounded probe failure;
-4. remote hostname/user/session mismatch;
-5. code, helper, runtime, configuration, policy, or sanitizer identity mismatch, in that order;
-6. stale/invalid PF evidence or PF not enabled/default-deny;
-7. stale/invalid LuLu evidence or LuLu not enabled/filtering;
-8. loopback sinkhole unavailable;
-9. Apple Virtualization unavailable;
-10. custody/evidence/sanitized storage missing, unsafe, or unusable;
-11. stale WhoaThere process or nonempty ephemeral-clone root; and
-12. required clearance missing, mismatched, stale, consumed, or not ready.
+- `BLOCK` or `REVIEW`, never `ALLOW` or clean;
+- exact artifact, manifest, scenario-plan, detonation-result, bundle, observer-result, root-receipt,
+  and host-receipt digests;
+- distinct `CI=false` and `CI=true` rows;
+- authenticated lifecycle evidence in both profiles;
+- protected fake-canary-file access and local-sinkhole connection intent, with send activity shown
+  when observed;
+- Codex findings with exact event-ID and event-hash citations;
+- package-written marker evidence labeled supporting-only;
+- incomplete coverage and no installation, containment, admission, or sync-back authority; and
+- the canonical invariant counts: zero host package executions, sync-backs, unsafe allows,
+  restricted-material leaks, live-C2 contacts, and live second-stage fetches, with receipt refs.
 
-Each blocker has one stable reason code and one bounded action sentence. Other failed conditions are
-not listed in human output; the operator fixes the named blocker and reruns.
+Because the artifact is wholly inert and contains no restricted material, the restricted-material
+count is zero by construction as well as by export policy. A public route is absent, so the fixed
+loopback sinkhole cannot become live C2.
 
 ## Frozen acceptance criteria
 
-1. A complete synthetic plan through a fake SSH route produces `READY`, exit 0, exact bindings, and
-   `artifact_opened=false`, `package_executed=false`, `vm_started=false`,
-   `remote_state_mutated=false`, and `clearance_consumed=false`.
-2. Missing authorization blocks before either SSH invocation.
-3. Exactly one `ssh -G` and one read-only remote probe occur on the ready path; no `scp`, remote
-   write, WhoaThere command, scanner, package, or VM command occurs.
-4. Every required code/runtime/policy identity matches its exact digest or the first mismatch is the
-   sole blocker.
-5. PF, LuLu, sinkhole, VZ, storage, stale process/clone, and clearance checks follow the fixed
-   precedence and yield one actionable result.
-6. `inert_only` requires explicit not-applicable custody/clearance posture; `restricted_malware`
-   requires a fresh exact clearance and authorization references. Neither mode accesses artifacts.
-7. Unknown, missing, duplicate, unsafe path, non-loopback sinkhole, malformed digest, symlink,
-   oversized, truncated, trailing-data, route/probe spoof, extra-output, timeout, and identity
-   substitution inputs fail conservatively without echoing untrusted values or paths.
-8. JSON and human modes agree on status, exit, blocker, bindings, and non-execution flags.
-9. The command never reports general malware readiness; it is bound to one exact
-   host/code/runtime/policy/campaign/profile plan.
-10. No credentials, IP addresses, private SSH configuration, raw control output, restricted paths,
-    or ignored lab files enter git.
+1. One documented local command completes the existing finite npm CI-paired workflow.
+2. P06 failure, plan mismatch, artifact/config/tool digest mismatch, or non-fresh output prevents
+   artifact execution.
+3. Exactly two fresh VM profiles and two report-bound bundles validate; missing, duplicate, extra,
+   or mismatched profiles/bundles fail.
+4. Exact artifact and manifest identities remain continuous through static analysis, scenario,
+   detonation, bundles, Codex results, reconciliation, and transcript.
+5. Typed lifecycle evidence appears in both profiles. Protected canary-file access plus local
+   sinkhole connection intent appears in `CI=true`; send activity is displayed when observed.
+6. Every displayed Codex citation resolves to an exact verified event ID and event SHA-256. Codex
+   cannot change containment, evidence authenticity, admission, or the safety result.
+7. Both VMs stop, both clones are destroyed, both image identities remain stable, no public route
+   or sync-back exists, and all canonical invariant counts are zero with receipt references.
+8. The package-written marker remains explicitly supporting-only. Incomplete coverage without a
+   validated positive produces `REVIEW`; incomplete coverage never produces clean or allow.
+9. Only the strict sanitized export and bounded safety projection cross from cloud to local. No
+   artifact/source bytes, raw telemetry, raw receipts, logs, canary values, private paths, or remote
+   Codex/auth invocation occur.
+10. The final transcript contains no secret, canary value, IP address, SSH detail, private path, or
+    untrusted package prose and is suitable for README/portfolio publication.
 
 ## Required checks
 
-- Focused ready-path self-test using temporary inert files, a loopback sinkhole, and fake SSH.
-- One-at-a-time blocker tests for pre-SSH authorization, route, identity, PF, LuLu, sinkhole,
-  storage, stale clone, and restricted-clearance failures.
-- Closed-schema/digest/path/output/timeout mutation tests.
-- Shell/Python compilation checks and `git diff --check`.
-- Existing Scaleway staging/phase-1 self-test only if P06 changes a shared existing helper; otherwise
-  P06 must not broaden into that harness.
-- Independent Ultra verification before commit or push.
-- One actual approved cloud-Mac run may return `READY` or one exact blocker. It must use an inert-only
-  plan, perform no repair beyond one bounded operator action, and never access a package or start a
-  VM.
+- Focused fake-runner self-test for orchestration, fail-before-execution, digest continuity,
+  profile cardinality, safe transfer allowlist, citation validation, safety proof, and transcript
+  redaction.
+- Existing fixture-builder/sealed-digest check.
+- Existing exporter, two-host diagnostic, and behavior-observer focused tests.
+- Python compilation, `git diff --check`, and secret/private-path scan.
+- One physical run on the approved cloud Mac using only the canonical inert fixture.
+- One independent Ultra verification after the physical transcript is sanitized.
 
 ## Stop and parking rule
 
-Park P06 if the host cannot provide fresh PF or LuLu evidence without mutation, SSH cannot run the
-single read-only probe, or the exact P07 runtime/helper/config identities are not yet available.
-Record the first blocker and smallest operator action. Do not weaken a required check, fall back to
-assertion-only readiness, touch the restricted corpus, or begin P07.
+After one bounded operational repair, park P07 and record the exact blocker if:
+
+- refreshed P06 is not green;
+- the canonical fixture cannot bind the no-closure config;
+- either VM lacks teardown or safety proof;
+- lifecycle or required CI=true sinkhole/canary evidence is absent;
+- the sanitized export cannot reconcile exactly;
+- local Codex authentication/model readiness fails twice; or
+- success would require a new sensor, runtime, evaluator, P05 renderer, profile subsystem, or remote
+  execution framework.
+
+Once the physical transcript passes, stop. P07's job is the working demo; R01-R06 are the next
+claim-bearing work.

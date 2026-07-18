@@ -242,8 +242,8 @@ their exact inputs and criteria are frozen.
 | P04 | Render four previous misses as product reports | 1-3h | complete | Diagnostic 4/4 |
 | P05 | Add paired npm VM/Codex evidence to its report | 2-4h | complete | AI/dynamic value |
 | P06 | Add cloud-lab ready/not-ready preflight | 1-2h | complete | Operability/safety |
-| P07 | Run one-command inert static/VM/Codex demo | 2-4h | ready | End-to-end product |
-| R01 | Freeze a positive-only four-miss subscore contract | 2-4h | queued | Evaluation contract |
+| P07 | Run one-command inert static/VM/Codex demo | 2-4h | complete | Fresh final-code physical invocation |
+| R01 | Freeze a positive-only four-miss subscore contract | 2-4h | ready | Evaluation contract |
 | R02 | Prove the subscore path with synthetic 4/4 | 2-4h | queued | Evaluator readiness |
 | R02b | Freeze final four-miss tool identities and manifest | 1-2h | queued | Evidence-collection identity |
 | R03 | Refresh lab preflight for restricted rows | 1-2h | queued | Restricted-lab readiness |

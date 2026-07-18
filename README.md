@@ -63,6 +63,45 @@ review also exercised route, identity, firewall, LuLu, sinkhole, VZ, storage, st
 restricted-clearance failures. This is plan-specific readiness—not general authorization to run
 malware. See the [P06 product report](docs/product-build-run/cloud-lab-preflight-product-report.md).
 
+### Run the complete inert demonstration
+
+The final implementation composes the product pieces into one bounded operator command:
+
+```sh
+scripts/whoathere-inert-e2e-demo.py \
+  --input /private/path/p07-demo-plan.json \
+  --input-sha256 sha256:<exact-plan-digest> \
+  --ssh-config /private/path/ssh-config
+```
+
+The command requires a green P06 preflight, then carries one exact inert npm artifact through
+deterministic analysis, fresh `CI=false` and `CI=true` Linux VZ guests, typed telemetry, a
+sanitized cross-host export, local subscription-backed Codex observation, citation
+reconciliation, and a human report. Codex credentials never reach the cloud Mac, while artifact
+bytes and raw telemetry never reach the local Mac.
+
+The July 18 physical qualification completed every stage and produced `BLOCK` with 20 typed events
+under `CI=false` and 24 under `CI=true`. Both profiles showed the exact npm lifecycle trigger.
+`CI=true` additionally showed three authenticated fake-token canary reads and a local-sinkhole
+connection. Observe-only Codex cited those exact event hashes as lifecycle, canary-access, and
+outbound-connection findings. Both VMs stopped, both clones were destroyed, no public route or
+sync-back existed, and the six canonical safety-invariant counts were zero. Coverage remained
+explicitly incomplete, so the result never claimed the inert package was clean or safe to install.
+
+Initial qualification exposed two wrapper-only assumptions after the remote VM/export stages had
+already completed, so that attempt finished locally through the earlier resume path. The final
+implementation then made resume explicitly labeled and producer-plan-bound, closed the remaining
+digest joins, and added fail-before-execution mutation coverage. A new fresh invocation of the
+default command subsequently passed from preflight through the final transcript without a resume
+or repair step. The product report preserves both the qualification history and the accepted final
+result.
+
+This is the project's first coherent exact-artifact → static → VM → telemetry → Codex → human
+report demonstration. It is deliberately diagnostic and does not change the finalized 7/11
+restricted-malware baseline. See the
+[P07 product report](docs/product-build-run/inert-end-to-end-demo-product-report.md) for the
+sanitized transcript, exact bindings, and claim boundary.
+
 ## Try Exact Artifact Inspection
 
 WhoaThere now has a human-readable exact-artifact command for npm tarballs, Python wheels, and

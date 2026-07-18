@@ -81,5 +81,6 @@ roles, boolean attempt values, error rendering, and evidence surviving a reboot.
 P06 proves plan-specific operability and safety before execution. It does not improve the finalized
 July 7/11 malware baseline, certify a package as clean, or grant restricted-material access.
 
-The next product milestone is P07: use this green exact plan to run a wholly inert package through
-one documented static-analysis, disposable-VM, telemetry, Codex-observer, and human-report command.
+P07 subsequently used a freshly rebound green plan to run a wholly inert package through one
+documented static-analysis, disposable-VM, telemetry, Codex-observer, and human-report command. See
+the [P07 product report](inert-end-to-end-demo-product-report.md).
