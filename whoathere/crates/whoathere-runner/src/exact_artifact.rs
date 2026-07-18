@@ -856,6 +856,116 @@ impl ExactArtifactInspectionReportV1 {
     }
 }
 
+/// The validated storage posture of a retained exact-artifact report.
+///
+/// A sanitized projection intentionally omits package bytes and several
+/// producer-only fields. It is validated by a separate closed schema and must
+/// never be confused with a complete V1 report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetainedExactArtifactReportPostureV1 {
+    CompleteV1,
+    SanitizedProjectionV1,
+}
+
+/// A retained report that is safe to pass to the human renderer.
+///
+/// For a sanitized projection, `report` is a presentation view derived only
+/// from validated retained fields. Canonical identity placeholders exist only
+/// for renderer compatibility; omitted package source, selected bytes, and
+/// scenario intents are never exposed or claimed as verified.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidatedRetainedExactArtifactReportV1 {
+    report: ExactArtifactInspectionReportV1,
+    posture: RetainedExactArtifactReportPostureV1,
+}
+
+impl ValidatedRetainedExactArtifactReportV1 {
+    pub fn report(&self) -> &ExactArtifactInspectionReportV1 {
+        &self.report
+    }
+
+    pub const fn posture(&self) -> RetainedExactArtifactReportPostureV1 {
+        self.posture
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SanitizedExactArtifactIdentityProjectionV1 {
+    artifact_sha256: String,
+    envelope_sha256: String,
+    manifest_sha256: String,
+    byte_length: u64,
+    ecosystem: Ecosystem,
+    artifact_format: ArtifactFormat,
+    source_type: ArtifactSourceType,
+    acquisition_method: AcquisitionMethod,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SanitizedExactArtifactScenarioPlanProjectionV1 {
+    schema_version: String,
+    artifact_sha256: String,
+    manifest_sha256: String,
+    status: ExactArtifactStageStatusV1,
+    intent_count: usize,
+    plan_sha256: String,
+    runtime_binding_required: bool,
+    runtime_binding_status: String,
+    executable: bool,
+    reason_codes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
+enum SanitizedExactArtifactEvidenceProjectionV1 {
+    DeterministicStatic {
+        source_receipt_sha256: Sha256Digest,
+        evidence_sha256: Sha256Digest,
+        location: FindingLocation,
+        package_source_included: bool,
+        selected_bytes_included: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SanitizedExactArtifactObservationProjectionV1 {
+    schema_version: String,
+    source: ExactArtifactObservationSourceV1,
+    threat_class: ExactArtifactThreatClassV1,
+    finding_kind: ExactArtifactFindingKindV1,
+    confidence: ExactArtifactObservationConfidenceV1,
+    artifact_sha256: Sha256Digest,
+    manifest_sha256: Sha256Digest,
+    evidence: SanitizedExactArtifactEvidenceProjectionV1,
+    coverage: ExactArtifactObservationCoverageV1,
+    coverage_gap_codes: Vec<String>,
+    behavior_detection_eligible: bool,
+    observation_sha256: Sha256Digest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SanitizedExactArtifactInspectionProjectionV1 {
+    schema_version: String,
+    status: ExactArtifactDispositionV1,
+    verdict: ExactArtifactVerdictV1,
+    exit_code: i32,
+    identity: SanitizedExactArtifactIdentityProjectionV1,
+    stages: Vec<ExactArtifactStageReportV1>,
+    scenario_plan: SanitizedExactArtifactScenarioPlanProjectionV1,
+    observations: Vec<SanitizedExactArtifactObservationProjectionV1>,
+    behavior_detection_count: usize,
+    admission_authority: bool,
+    observed_clean: bool,
+    sync_back_enabled: bool,
+    reason_codes: Vec<String>,
+    sanitized_projection: bool,
+    raw_source_or_telemetry_included: bool,
+}
+
 /// Reads and validates a saved exact-artifact report without reopening the
 /// artifact, resolving citations, or granting any admission authority.
 ///
@@ -876,6 +986,69 @@ pub fn decode_and_validate_retained_exact_artifact_report_v1(
     bytes: &[u8],
     expected_report_sha256: &str,
 ) -> Result<ExactArtifactInspectionReportV1, ExactArtifactInspectionErrorV1> {
+    validate_retained_exact_artifact_report_bytes_v1(bytes, expected_report_sha256)?;
+    decode_complete_retained_exact_artifact_report_v1(bytes)
+}
+
+/// Reads either a complete V1 report or the producer-defined sanitized static
+/// projection used for source-free product reporting.
+///
+/// The formats remain strictly disjoint. The complete V1 decoder above is not
+/// relaxed, and projected AI or behavioral observations are not accepted.
+pub fn read_and_validate_retained_exact_artifact_report_input_v1(
+    report_path: &Path,
+    expected_report_sha256: &str,
+) -> Result<ValidatedRetainedExactArtifactReportV1, ExactArtifactInspectionErrorV1> {
+    Sha256Digest::parse(expected_report_sha256.to_string()).map_err(|_| {
+        ExactArtifactInspectionErrorV1::invalid_request("retained_report_sha256_invalid")
+    })?;
+    let bytes = read_retained_exact_artifact_report_v1(report_path)?;
+    decode_and_validate_retained_exact_artifact_report_input_v1(&bytes, expected_report_sha256)
+}
+
+pub fn decode_and_validate_retained_exact_artifact_report_input_v1(
+    bytes: &[u8],
+    expected_report_sha256: &str,
+) -> Result<ValidatedRetainedExactArtifactReportV1, ExactArtifactInspectionErrorV1> {
+    validate_retained_exact_artifact_report_bytes_v1(bytes, expected_report_sha256)?;
+
+    if let Ok(report) = serde_json::from_slice::<ExactArtifactInspectionReportV1>(bytes) {
+        if report.schema_version != EXACT_ARTIFACT_INSPECTION_SCHEMA_V1 {
+            return Err(ExactArtifactInspectionErrorV1::misuse(
+                "retained_report_schema_unsupported",
+            ));
+        }
+        if !retained_exact_artifact_report_valid_v1(&report) {
+            return Err(ExactArtifactInspectionErrorV1::misuse(
+                "retained_report_semantics_invalid",
+            ));
+        }
+        return Ok(ValidatedRetainedExactArtifactReportV1 {
+            report,
+            posture: RetainedExactArtifactReportPostureV1::CompleteV1,
+        });
+    }
+
+    let projection: SanitizedExactArtifactInspectionProjectionV1 = serde_json::from_slice(bytes)
+        .map_err(|_| ExactArtifactInspectionErrorV1::misuse("retained_report_json_invalid"))?;
+    if projection.schema_version != EXACT_ARTIFACT_INSPECTION_SCHEMA_V1 {
+        return Err(ExactArtifactInspectionErrorV1::misuse(
+            "retained_report_schema_unsupported",
+        ));
+    }
+    let report = retained_sanitized_projection_render_report_v1(projection).ok_or_else(|| {
+        ExactArtifactInspectionErrorV1::misuse("retained_report_semantics_invalid")
+    })?;
+    Ok(ValidatedRetainedExactArtifactReportV1 {
+        report,
+        posture: RetainedExactArtifactReportPostureV1::SanitizedProjectionV1,
+    })
+}
+
+fn validate_retained_exact_artifact_report_bytes_v1(
+    bytes: &[u8],
+    expected_report_sha256: &str,
+) -> Result<(), ExactArtifactInspectionErrorV1> {
     if bytes.is_empty() || bytes.len() > MAX_EXACT_ARTIFACT_RETAINED_REPORT_BYTES_V1 {
         return Err(ExactArtifactInspectionErrorV1::misuse(
             "retained_report_size_out_of_bounds",
@@ -889,6 +1062,12 @@ pub fn decode_and_validate_retained_exact_artifact_report_v1(
             "retained_report_sha256_mismatch",
         ));
     }
+    Ok(())
+}
+
+fn decode_complete_retained_exact_artifact_report_v1(
+    bytes: &[u8],
+) -> Result<ExactArtifactInspectionReportV1, ExactArtifactInspectionErrorV1> {
     let report: ExactArtifactInspectionReportV1 = serde_json::from_slice(bytes)
         .map_err(|_| ExactArtifactInspectionErrorV1::misuse("retained_report_json_invalid"))?;
     if report.schema_version != EXACT_ARTIFACT_INSPECTION_SCHEMA_V1 {
@@ -966,10 +1145,243 @@ fn read_retained_exact_artifact_report_v1(
     Ok(bytes)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RetainedObservationEligibilityPolicyV1 {
+    Current,
+    ProducerRecorded,
+}
+
+fn retained_sanitized_projection_render_report_v1(
+    projection: SanitizedExactArtifactInspectionProjectionV1,
+) -> Option<ExactArtifactInspectionReportV1> {
+    if !projection.sanitized_projection
+        || projection.raw_source_or_telemetry_included
+        || projection.admission_authority
+        || projection.observed_clean
+        || projection.sync_back_enabled
+    {
+        return None;
+    }
+
+    let artifact_hex = projection
+        .identity
+        .artifact_sha256
+        .strip_prefix("sha256:")?;
+    let identity = ExactArtifactIdentityV1 {
+        artifact_sha256: projection.identity.artifact_sha256.clone(),
+        envelope_sha256: projection.identity.envelope_sha256.clone(),
+        manifest_sha256: projection.identity.manifest_sha256.clone(),
+        cas_object_key: format!("blobs/sha256/{artifact_hex}"),
+        byte_length: projection.identity.byte_length,
+        ecosystem: projection.identity.ecosystem,
+        artifact_format: projection.identity.artifact_format,
+        source_type: projection.identity.source_type,
+        acquisition_method: projection.identity.acquisition_method,
+        source_coordinate: format!("local-file:{}", projection.identity.artifact_sha256),
+        package_name: None,
+        package_version: None,
+    };
+    if !retained_exact_artifact_identity_valid_v1(&identity)
+        || !retained_sanitized_scenario_plan_valid_v1(&projection.scenario_plan, &identity)
+    {
+        return None;
+    }
+
+    let scenario_plan = ExactArtifactScenarioPlanV1 {
+        schema_version: projection.scenario_plan.schema_version.clone(),
+        artifact_sha256: projection.scenario_plan.artifact_sha256.clone(),
+        manifest_sha256: projection.scenario_plan.manifest_sha256.clone(),
+        status: projection.scenario_plan.status,
+        intents: Vec::new(),
+        plan_sha256: projection.scenario_plan.plan_sha256.clone(),
+        runtime_binding_required: projection.scenario_plan.runtime_binding_required,
+        runtime_binding_status: projection.scenario_plan.runtime_binding_status.clone(),
+        executable: projection.scenario_plan.executable,
+        reason_codes: projection.scenario_plan.reason_codes.clone(),
+    };
+
+    let deterministic_receipt = projection
+        .stages
+        .iter()
+        .find(|stage| stage.stage == "deterministic_analysis")?
+        .result_sha256
+        .as_deref()?;
+    let mut historical_observations = Vec::with_capacity(projection.observations.len());
+    for projected in projection.observations {
+        if projected.source != ExactArtifactObservationSourceV1::DeterministicStatic {
+            return None;
+        }
+        let evidence = match projected.evidence {
+            SanitizedExactArtifactEvidenceProjectionV1::DeterministicStatic {
+                source_receipt_sha256,
+                evidence_sha256,
+                location,
+                package_source_included,
+                selected_bytes_included,
+            } => {
+                if package_source_included
+                    || selected_bytes_included
+                    || source_receipt_sha256.as_str() != deterministic_receipt
+                {
+                    return None;
+                }
+                ExactArtifactEvidenceReferenceV1::DeterministicStatic {
+                    evidence_sha256,
+                    location,
+                }
+            }
+        };
+        historical_observations.push(ExactArtifactObservationV1 {
+            schema_version: projected.schema_version,
+            source: projected.source,
+            threat_class: projected.threat_class,
+            finding_kind: projected.finding_kind,
+            confidence: projected.confidence,
+            artifact_sha256: projected.artifact_sha256,
+            manifest_sha256: projected.manifest_sha256,
+            evidence,
+            coverage: projected.coverage,
+            coverage_gap_codes: projected.coverage_gap_codes,
+            behavior_detection_eligible: projected.behavior_detection_eligible,
+            observation_sha256: projected.observation_sha256,
+        });
+    }
+
+    let mut report = ExactArtifactInspectionReportV1 {
+        schema_version: projection.schema_version,
+        status: projection.status,
+        verdict: projection.verdict,
+        exit_code: projection.exit_code,
+        identity,
+        stages: projection.stages,
+        scenario_plan,
+        observations: historical_observations,
+        behavior_detection_count: projection.behavior_detection_count,
+        admission_authority: projection.admission_authority,
+        observed_clean: projection.observed_clean,
+        sync_back_enabled: projection.sync_back_enabled,
+        reason_codes: projection.reason_codes,
+    };
+    if !retained_exact_artifact_report_common_valid_v1(
+        &report,
+        RetainedObservationEligibilityPolicyV1::ProducerRecorded,
+    ) {
+        return None;
+    }
+
+    let mut current_observations = Vec::with_capacity(report.observations.len());
+    for observation in report.observations {
+        let ExactArtifactFindingKindV1::DeterministicStatic(category) = observation.finding_kind
+        else {
+            return None;
+        };
+        current_observations.push(
+            ExactArtifactObservationV1::new(
+                observation.source,
+                observation.threat_class,
+                ExactArtifactFindingKindV1::DeterministicStatic(category),
+                observation.confidence,
+                observation.artifact_sha256,
+                observation.manifest_sha256,
+                observation.evidence,
+                observation.coverage,
+                observation.coverage_gap_codes,
+                deterministic_finding_detection_eligible_v1(category),
+            )
+            .ok()?,
+        );
+    }
+    current_observations
+        .sort_by(|left, right| left.observation_sha256.cmp(&right.observation_sha256));
+    report.observations = current_observations;
+    report.behavior_detection_count = report
+        .observations
+        .iter()
+        .filter(|observation| observation.behavior_detection_eligible)
+        .count();
+    let has_findings = report
+        .observations
+        .iter()
+        .any(observation_supports_malicious_verdict_v1);
+    (report.status, report.verdict, report.exit_code) = if has_findings {
+        (
+            ExactArtifactDispositionV1::Findings,
+            ExactArtifactVerdictV1::Malicious,
+            20,
+        )
+    } else if report.scenario_plan.status == ExactArtifactStageStatusV1::Unsupported {
+        (
+            ExactArtifactDispositionV1::Unsupported,
+            ExactArtifactVerdictV1::Unsupported,
+            22,
+        )
+    } else {
+        (
+            ExactArtifactDispositionV1::Inconclusive,
+            ExactArtifactVerdictV1::Inconclusive,
+            22,
+        )
+    };
+    retained_exact_artifact_report_common_valid_v1(
+        &report,
+        RetainedObservationEligibilityPolicyV1::Current,
+    )
+    .then_some(report)
+}
+
+fn retained_sanitized_scenario_plan_valid_v1(
+    plan: &SanitizedExactArtifactScenarioPlanProjectionV1,
+    identity: &ExactArtifactIdentityV1,
+) -> bool {
+    if plan.schema_version != EXACT_ARTIFACT_SCENARIO_PLAN_SCHEMA_V1
+        || plan.artifact_sha256 != identity.artifact_sha256
+        || plan.manifest_sha256 != identity.manifest_sha256
+        || plan.intent_count > 128
+        || !matches!(
+            plan.status,
+            ExactArtifactStageStatusV1::Complete
+                | ExactArtifactStageStatusV1::Incomplete
+                | ExactArtifactStageStatusV1::Unsupported
+        )
+        || plan.reason_codes.is_empty()
+        || plan.reason_codes.len() > 128
+        || !sorted_reason_codes_valid_v1(&plan.reason_codes)
+        || Sha256Digest::parse(plan.plan_sha256.clone()).is_err()
+    {
+        return false;
+    }
+    match (
+        plan.runtime_binding_required,
+        plan.runtime_binding_status.as_str(),
+        plan.executable,
+    ) {
+        (true, "not_bound", false) => plan
+            .reason_codes
+            .iter()
+            .any(|code| code == "exact_artifact_runtime_binding_not_supplied"),
+        (true, "verified", true) => !plan
+            .reason_codes
+            .iter()
+            .any(|code| code == "exact_artifact_runtime_binding_not_supplied"),
+        _ => false,
+    }
+}
+
 fn retained_exact_artifact_report_valid_v1(report: &ExactArtifactInspectionReportV1) -> bool {
-    if report.schema_version != EXACT_ARTIFACT_INSPECTION_SCHEMA_V1
-        || !retained_exact_artifact_identity_valid_v1(&report.identity)
-        || report.stages.len() < 7
+    report.schema_version == EXACT_ARTIFACT_INSPECTION_SCHEMA_V1
+        && retained_exact_artifact_identity_valid_v1(&report.identity)
+        && retained_scenario_plan_valid_v1(&report.scenario_plan, &report.identity)
+        && retained_exact_artifact_report_common_valid_v1(
+            report,
+            RetainedObservationEligibilityPolicyV1::Current,
+        )
+}
+
+fn retained_exact_artifact_report_common_valid_v1(
+    report: &ExactArtifactInspectionReportV1,
+    eligibility_policy: RetainedObservationEligibilityPolicyV1,
+) -> bool {
+    if report.stages.len() < 7
         || report.stages.len() > MAX_EXACT_ARTIFACT_RETAINED_STAGES_V1
         || report.observations.len() > MAX_EXACT_ARTIFACT_OBSERVATIONS_V1
         || report.reason_codes.is_empty()
@@ -994,8 +1406,7 @@ fn retained_exact_artifact_report_valid_v1(report: &ExactArtifactInspectionRepor
         return false;
     }
 
-    if !retained_scenario_plan_valid_v1(&report.scenario_plan, &report.identity)
-        || !retained_stage_reports_valid_v1(report)
+    if !retained_stage_reports_valid_v1(report)
         || report
             .observations
             .windows(2)
@@ -1005,12 +1416,7 @@ fn retained_exact_artifact_report_valid_v1(report: &ExactArtifactInspectionRepor
                 || observation.artifact_sha256.as_str() != report.identity.artifact_sha256
                 || observation.manifest_sha256.as_str() != report.identity.manifest_sha256
                 || !retained_observation_evidence_valid_v1(observation)
-                || matches!(
-                    &observation.finding_kind,
-                    ExactArtifactFindingKindV1::DeterministicStatic(category)
-                        if observation.behavior_detection_eligible
-                            && !deterministic_finding_detection_eligible_v1(*category)
-                )
+                || !retained_observation_eligibility_valid_v1(observation, eligibility_policy)
         })
     {
         return false;
@@ -1082,6 +1488,26 @@ fn retained_exact_artifact_report_valid_v1(report: &ExactArtifactInspectionRepor
         && report.status == expected_status
         && report.verdict == expected_verdict
         && report.exit_code == expected_exit_code
+}
+
+fn retained_observation_eligibility_valid_v1(
+    observation: &ExactArtifactObservationV1,
+    policy: RetainedObservationEligibilityPolicyV1,
+) -> bool {
+    let ExactArtifactFindingKindV1::DeterministicStatic(category) = &observation.finding_kind
+    else {
+        return true;
+    };
+    let current = deterministic_finding_detection_eligible_v1(*category);
+    match policy {
+        RetainedObservationEligibilityPolicyV1::Current => {
+            observation.behavior_detection_eligible == current
+        }
+        RetainedObservationEligibilityPolicyV1::ProducerRecorded => {
+            *category == ArtifactFindingCategory::EnvironmentExfiltrationCapability
+                || observation.behavior_detection_eligible == current
+        }
+    }
 }
 
 fn retained_exact_artifact_identity_valid_v1(identity: &ExactArtifactIdentityV1) -> bool {

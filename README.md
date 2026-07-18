@@ -171,10 +171,20 @@ supporting telemetry because package code could imitate its writable marker. Phy
 the complete dynamic evidence denominator required for clean or admission decisions. The July
 restricted-malware baseline therefore remains 7/11. A strict four-sample publication can establish
 a separate 4/4 prior-miss result; only the subsequent full eleven-sample rerun can establish a new
-11/11 baseline. See the active
-[Ultra work-chunk plan](docs/product-build-run/detection-reset-ultra-work-chunks.md), the broader
-[architecture plan](docs/product-build-run/artifact-native-detection-execution-plan.md), and the
-[blocker queue](docs/product-build-run/detection-blocker-queue.md).
+11/11 baseline.
+
+The product can now present that progress directly. The production `whoathere report render`
+command accepts the four source-free sanitized projections through a separate closed validator,
+checks their exact report digests and retained evidence bindings, and independently applies the
+current behavior allowlist. All four render the behavior-specific `BLOCK` headline with exit 20;
+the three Telnyx artifacts name download-and-execute capability, while the npm artifact names
+sensitive-path, sensitive-file-exfiltration, and environment-to-process capabilities. This is a
+useful **diagnostic 4/4** product result, not a replacement for the finalized 7/11 campaign. The
+compact [four-prior-miss report](docs/product-build-run/four-prior-misses-diagnostic-product-report.md)
+shows the exact digest-bound results, safe citations, coverage gaps, and claim boundary. See the
+active [Ultra work-chunk plan](docs/product-build-run/detection-reset-ultra-work-chunks.md), the
+broader [architecture plan](docs/product-build-run/artifact-native-detection-execution-plan.md),
+and the [blocker queue](docs/product-build-run/detection-blocker-queue.md).
 
 ## Actual Malware Experiment
 

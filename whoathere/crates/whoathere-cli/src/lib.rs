@@ -46,7 +46,7 @@ use whoathere_runner::{
     behavior_finding_detection_eligible_v1, canonical_utc_timestamp_from_unix_seconds_v1,
     execute_readonly, inspect_exact_artifact_with_behavior_v1, plan_protected_execution,
     project_offline_exact_sdist_behavior_v1, project_offline_exact_wheel_behavior_v1,
-    read_and_validate_retained_exact_artifact_report_v1, BehaviorCodexObserverConfigV1,
+    read_and_validate_retained_exact_artifact_report_input_v1, BehaviorCodexObserverConfigV1,
     BehaviorCodexObserverV1, BehaviorCodexPanelOutcomeV1, ExactArtifactAiAdapterV1,
     ExactArtifactBehaviorObserverV1, ExactArtifactCodexAiAdapterV1, ExactArtifactCodexAiConfigV1,
     ExactArtifactDetonationAdapterV1, ExactArtifactEvidenceReferenceV1, ExactArtifactFindingKindV1,
@@ -57,6 +57,7 @@ use whoathere_runner::{
     LinuxVzExactSdistDetonationAdapterV1, LinuxVzExactSdistDetonationConfigV1,
     LinuxVzExactWheelDetonationAdapterV1, LinuxVzExactWheelDetonationConfigV1,
     OfflineExactSdistBehaviorProjectionRequestV1, OfflineExactWheelBehaviorProjectionRequestV1,
+    RetainedExactArtifactReportPostureV1, ValidatedRetainedExactArtifactReportV1,
 };
 use whoathere_sandbox::{
     admit_linux_active_probe_receipt, admit_linux_active_probe_receipt_with_replay_decision,
@@ -1479,7 +1480,7 @@ fn evaluate_report_render_command(command: &Command) -> Option<CommandResult> {
             report_path,
             report_sha256,
         } => Some(
-            match read_and_validate_retained_exact_artifact_report_v1(
+            match read_and_validate_retained_exact_artifact_report_input_v1(
                 Path::new(report_path),
                 report_sha256,
             ) {
@@ -1657,7 +1658,7 @@ fn render_command_text(command: Command) -> String {
         Command::ReportRender {
             report_path,
             report_sha256,
-        } => match read_and_validate_retained_exact_artifact_report_v1(
+        } => match read_and_validate_retained_exact_artifact_report_input_v1(
             Path::new(&report_path),
             &report_sha256,
         ) {
@@ -2723,18 +2724,37 @@ fn behavior_observe_status_v1(
 }
 
 fn retained_report_result(
-    report: &ExactArtifactInspectionReportV1,
+    retained: &ValidatedRetainedExactArtifactReportV1,
     report_sha256: &str,
 ) -> CommandResult {
+    let report = retained.report();
     let exit_code = report.exit_code;
     let mut output =
         render_exact_artifact_human_with_details_hint(report, "in the saved JSON report");
     output.push_str("\n\nSaved report\n");
     output.push_str(&format!("  SHA-256: {report_sha256}\n"));
-    output.push_str("  Validation: exact bytes and V1 structure matched\n");
-    output.push_str(
-        "Artifact access: none. This command did not reopen package bytes or resolve retained paths.\n",
-    );
+    match retained.posture() {
+        RetainedExactArtifactReportPostureV1::CompleteV1 => {
+            output.push_str("  Form: complete V1 report\n");
+            output.push_str("  Validation: exact bytes and V1 structure matched\n");
+            output.push_str(
+                "Artifact access: none. This command did not reopen package bytes or resolve retained paths.\n",
+            );
+        }
+        RetainedExactArtifactReportPostureV1::SanitizedProjectionV1 => {
+            output.push_str("  Form: sanitized deterministic-static projection\n");
+            output.push_str(
+                "  Validation: exact bytes and closed sanitized-projection structure matched\n",
+            );
+            output.push_str("  Verdict policy: blocking eligibility re-derived from the current typed-finding allowlist\n");
+            output.push_str(
+                "Artifact access: none. Package source, selected bytes, scenario intents, and raw telemetry were omitted and were not reopened or reconstructed.\n",
+            );
+            output.push_str(
+                "Citation limits: retained digest and range bindings were checked; citations were not re-resolved against package bytes.\n",
+            );
+        }
+    }
     output.push_str(
         "Report authority: none. Digest matching is not producer authentication or admission.",
     );
@@ -20886,6 +20906,75 @@ child.spawn('printf', [token, config.length, rawSourceSentinel, secretValue]);
         (report_path, report_sha256)
     }
 
+    fn save_sanitized_static_projection(
+        root: &Path,
+        complete_report_path: &Path,
+        label: &str,
+    ) -> (PathBuf, String) {
+        let mut report: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(complete_report_path).expect("read complete saved report"),
+        )
+        .expect("parse complete saved report");
+        let deterministic_receipt = report["stages"]
+            .as_array()
+            .expect("report stages")
+            .iter()
+            .find(|stage| stage["stage"] == "deterministic_analysis")
+            .and_then(|stage| stage["result_sha256"].as_str())
+            .expect("deterministic receipt")
+            .to_string();
+        let top = report.as_object_mut().expect("report object");
+        top.insert(
+            "sanitized_projection".to_string(),
+            serde_json::Value::Bool(true),
+        );
+        top.insert(
+            "raw_source_or_telemetry_included".to_string(),
+            serde_json::Value::Bool(false),
+        );
+        let identity = top["identity"].as_object_mut().expect("identity object");
+        for omitted in [
+            "cas_object_key",
+            "source_coordinate",
+            "package_name",
+            "package_version",
+        ] {
+            identity.remove(omitted);
+        }
+        let plan = top["scenario_plan"]
+            .as_object_mut()
+            .expect("scenario plan object");
+        let intent_count = plan
+            .remove("intents")
+            .and_then(|intents| intents.as_array().map(Vec::len))
+            .expect("scenario intents");
+        plan.insert("intent_count".to_string(), serde_json::json!(intent_count));
+        for observation in top["observations"]
+            .as_array_mut()
+            .expect("report observations")
+        {
+            let evidence = observation["evidence"]
+                .as_object_mut()
+                .expect("static evidence object");
+            evidence.insert(
+                "source_receipt_sha256".to_string(),
+                serde_json::Value::String(deterministic_receipt.clone()),
+            );
+            evidence.insert(
+                "package_source_included".to_string(),
+                serde_json::Value::Bool(false),
+            );
+            evidence.insert(
+                "selected_bytes_included".to_string(),
+                serde_json::Value::Bool(false),
+            );
+        }
+        let bytes = serde_json::to_vec(&report).expect("serialize sanitized projection");
+        let path = root.join(format!("{label}-sanitized-projection.json"));
+        std::fs::write(&path, &bytes).expect("write sanitized projection");
+        (path, sha256_digest(&bytes))
+    }
+
     #[test]
     fn report_render_reuses_human_output_after_artifact_deletion_for_block_and_review() {
         const POSITIVE_PACKAGE: &[u8] = br#"{"name":"retained-cli-positive","version":"1.0.0","scripts":{"postinstall":"node index.js"},"main":"index.js"}"#;
@@ -21022,6 +21111,52 @@ require('node:child_process').spawn('printf', [token, config.length, rawSource])
         assert!(!impossible
             .output
             .contains(&impossible_path.display().to_string()));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn report_render_accepts_strict_sanitized_projection_with_explicit_limits() {
+        const PACKAGE: &[u8] = br#"{"name":"projection-cli-positive","version":"1.0.0","scripts":{"postinstall":"node index.js"},"main":"index.js"}"#;
+        const SOURCE: &[u8] = br#"const secret = process.env.NPM_TOKEN;
+const config = require('node:fs').readFileSync(process.env.HOME + '/.npmrc');
+require('node:https').request({method: 'POST'});
+require('node:child_process').spawn('printf', [secret, config.length]);
+"#;
+        let root = temp_root("whoathere-report-render-projection-PRIVATE_PATH_SENTINEL");
+        let (complete_path, _) = save_exact_report_then_delete_artifact(
+            &root,
+            "projection-cli-positive",
+            &[
+                ("package/package.json", PACKAGE),
+                ("package/index.js", SOURCE),
+            ],
+        );
+        let (projection_path, projection_sha256) =
+            save_sanitized_static_projection(&root, &complete_path, "projection-cli-positive");
+        let rendered = evaluate_command(Command::ReportRender {
+            report_path: projection_path.display().to_string(),
+            report_sha256: projection_sha256.clone(),
+        });
+        assert_eq!(rendered.exit_code, 20);
+        assert!(rendered
+            .output
+            .starts_with("BLOCK - malicious capability found in package"));
+        assert!(rendered
+            .output
+            .contains("Form: sanitized deterministic-static projection"));
+        assert!(rendered.output.contains(&projection_sha256));
+        assert!(rendered.output.contains("blocking eligibility re-derived"));
+        assert!(rendered.output.contains("scenario intents"));
+        assert!(rendered.output.contains("citations were not re-resolved"));
+        assert!(rendered.output.contains("Artifact access: none."));
+        assert!(rendered.output.contains("Report authority: none."));
+        assert!(!rendered.output.contains("projection-cli-positive@1.0.0"));
+        assert!(!rendered.output.contains("PRIVATE_PATH_SENTINEL"));
+        assert!(!rendered
+            .output
+            .contains(&projection_path.display().to_string()));
+        assert!(!rendered.output.contains("ALLOW"));
 
         let _ = std::fs::remove_dir_all(root);
     }
