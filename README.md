@@ -39,6 +39,30 @@ Current claim boundary:
 
 This is useful security tooling, not a promise that arbitrary packages are safe.
 
+### Preflight the disposable cloud lab
+
+WhoaThere now includes a read-only operator preflight for the cloud Mac used by the restricted lab
+and inert end-to-end demonstrations:
+
+```sh
+scripts/whoathere-cloud-lab-preflight.py \
+  --input /private/path/cloud-lab-preflight-input.json \
+  --input-sha256 sha256:<exact-input-digest> \
+  --ssh-config /private/path/ssh-config
+```
+
+The command validates one exact host, code/runtime/policy bundle, campaign, and profile before any
+artifact is opened or VM is started. It returns either `READY` or one precedence-ranked `BLOCKED`
+result with one concrete action, so operators are not left to interpret a page of partially green
+checks. Its remote work is limited to one fixed read-only probe after SSH route resolution.
+
+On July 18, 2026, the final P06 implementation returned `READY` for the exact inert P07 plan on the
+approved cloud Mac. The result recorded no artifact access, package execution, VM start, remote
+state mutation, or clearance consumption. Local production-path tests and an independent Ultra
+review also exercised route, identity, firewall, LuLu, sinkhole, VZ, storage, stale-state, and
+restricted-clearance failures. This is plan-specific readiness—not general authorization to run
+malware. See the [P06 product report](docs/product-build-run/cloud-lab-preflight-product-report.md).
+
 ## Try Exact Artifact Inspection
 
 WhoaThere now has a human-readable exact-artifact command for npm tarballs, Python wheels, and

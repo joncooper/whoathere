@@ -1,230 +1,169 @@
-# Next Ultra Chunk: P05 Paired npm VM/Codex Evidence in the Product Report
+# Next Ultra Chunk: P06 Cloud-Lab Ready/Not-Ready Preflight
 
-Status: complete. P05 passed independent Ultra verification at implementation commit `84f24f6`.
-P06 remains queued and was not started in this chunk.
+Status: complete. P05 is complete and pushed at `da2f9a7`; P06 is accepted locally and must be
+pushed before P07 starts.
 
 Updated: 2026-07-18
 
 ## Immutable execution contract
 
-- Branch: `codex/p05-paired-npm-report`, based on accepted P04 commit `96aae35`.
-- Budget: 2-4 hours of focused implementation, excluding independent verification.
+- Branch: `codex/p06-cloud-lab-preflight`, based on accepted P05 commit `da2f9a7`.
+- Budget: 1-2 hours of focused implementation, excluding independent verification.
 - One read-only Ultra input audit and one final independent Ultra verification are allowed.
-- No cloud host, VM, raw malware, package bytes, hosted AI invocation, or restricted access is
-  required in this chunk.
-- At four focused implementation hours, stop and park the exact remaining blocker. Do not turn P05
-  into a new scorer, telemetry system, evidence protocol, or general reconciliation framework.
+- The input audit found that no existing command satisfies P06: the older preflight can report
+  ready while leaving operator checks unresolved, while the staging/clearance harnesses mutate
+  remote state or depend on prior restricted-corpus state.
+- Implement one thin Python operator command and one focused self-test. Do not add a Rust CLI
+  subsystem, new VM protocol, new evidence signer, or general remote-execution framework.
+- At two focused implementation hours, push a safe WIP reproduction and stop rather than expanding
+  scope.
 
-Primary metric: the existing npm `BLOCK` report renders two separately labeled CI profiles with
-validated lifecycle, credential-file-read, local-sinkhole connect/send, and Codex evidence while
-remaining visibly incomplete, diagnostic-only, and non-authoritative.
+Primary metric: one command returns either green `READY` or exactly one precedence-ranked
+`BLOCKED` result with one concrete operator action, before any artifact access or VM start.
 
-## User-facing outcome
+## Accepted result
 
-The user runs the existing saved-report command with one optional versioned reconciliation file:
+- The final production command returned `READY` on the approved cloud Mac for exact inert campaign
+  `p07-inert-npm-demo-20260718` and profile `npm-ci-paired`.
+- The exact input digest was
+  `sha256:5fe0ae9496f4d7eaf16c365cf83005ca243b80f9505b8aee15f8de76e1e96309`.
+- The preflight implementation digest was
+  `sha256:04bec519c44102c369f3bea5d45b645688b1622dde0004904633e2b946e86007`.
+- The result recorded `artifact_opened=false`, `package_executed=false`, `vm_started=false`,
+  `remote_state_mutated=false`, and `clearance_consumed=false`.
+- The focused production-path self-test passed. Independent Ultra verification returned GO after
+  its route/output mutations and all discovered must-fix regressions failed closed.
+- No raw or restricted artifact was opened, no package code executed, and no VM started during P06.
 
-```text
-whoathere report render <sanitized-report.json> \
-  --report-sha256 sha256:<exact-report-file-digest> \
-  --reconciliation <paired-npm-reconciliation.json> \
-  --reconciliation-sha256 sha256:<exact-reconciliation-file-digest>
-```
-
-The static report continues to determine `BLOCK`. A separate section presents what the disposable
-VM and Codex observed for `CI=false` and `CI=true`. It must not imply payload exfiltration,
-authenticated producer provenance, complete telemetry, clean admission, or a newly qualified
-malware score.
-
-## Frozen source inputs
-
-Only the already-sanitized local snapshot below is in scope. It is gitignored and must not be
-staged:
+## User-facing command
 
 ```text
-.whoathere/remote-evidence-snapshots/
-  whoathere-actual-malware-2026-07-18-sanitized/npm-sbx-paired/
+scripts/whoathere-cloud-lab-preflight.py \
+  --input <cloud-lab-preflight-input.json> \
+  --input-sha256 sha256:<exact-input-digest> \
+  [--ssh-config <local-ssh-config>] \
+  [--json]
 ```
 
-Frozen identities:
+Exit codes:
 
-| Item | SHA-256 |
-| --- | --- |
-| Exact artifact | `sha256:0b8e586c7a91fce4fac8296a069c1c5e673046261958e9ba519e6b6e3b458933` |
-| Manifest | `sha256:14da51ba0162c2658057202df1e94d71b7a89d5f2a813464830b3eadd06f7f37` |
-| P04 sanitized report file | `sha256:bc09a308462940012d9060b54a46ff7568ee94d04a5ccb2d10a3faeca1a5e452` |
-| Export manifest file | `sha256:12686a54572505ab36eabd45690919de83cdf13becaf58364c7ced56d4fe0f57` |
-| Source reconciliation file | `sha256:e01f4bd4844756bdd5b07a2d3dd111be9283561fad319d3d3be2af7ff852a5c7` |
-| Source reconciliation binding | `sha256:bb44a2843b20486d56a8f473d74f283da96187d1d26cdecdc89f233e8c7782f6` |
-| Scenario plan | `sha256:4beb163692fa5d6e19822e91dea11b3cf217fe11341f2708221b93459b9c81ca` |
-| `CI=false` bundle | `sha256:01c28b2fe0ed53aea0a1886056223e11ffc02f6b528f25fa69ee4cb632d840e8` |
-| `CI=true` bundle | `sha256:245f5553dfc4e0e2c4f8029cfdefa12a53452fc922252b3838f06535236f7a81` |
-| `CI=false` Codex result file | `sha256:410ee27561e37c00c0c48ce2a04046de4e53c88f33928bc63f55085ad95c522f` |
-| `CI=true` Codex result file | `sha256:4ca1d74a169fc71b3c9bc1a3e8f9924a1e69594d7b712aecbc9df363edf0a4cf` |
+- `0`: `READY`;
+- `20`: valid plan, one operational blocker; and
+- `64`: malformed, mismatched, unsafe, or unsupported input.
 
-The provider is `linux_vz_exact_npm_v1`; scenario intent count is exactly two. The two action keys
-are exactly `vm_ci_false` and `vm_ci_true`. Each bundle contains exactly 73 typed events and has
-incomplete coverage.
+Human output contains one status headline and, when blocked, exactly one `ACTION:` line. JSON output
+contains the same single blocker/action plus safe identity bindings and explicit non-execution
+flags.
 
-## Frozen reconciliation boundary
+## Closed input contract
 
-The existing `whoathere.two_host_behavior_diagnostic.v1` file alone is not accepted as the P05
-input. It omits lifecycle, outbound-connect, and network-send findings and cannot independently
-re-resolve their citations.
+Schema: `whoathere.cloud_lab_preflight_input.v1`.
 
-Produce one closed, self-contained
-`whoathere.paired_npm_report_reconciliation.v1` envelope from the frozen files. It contains:
+The exact top-level sections are:
 
-- exact artifact, manifest, report, export-manifest, source-reconciliation, scenario-plan, source
-  reconciliation-binding, bundle, and Codex-result identities;
-- exactly two ordered profile rows, `ci_false` and `ci_true`;
-- each complete sanitized `BehaviorAnalysisBundleV1`, with every `untrusted_detail` absent or null;
-- a prose-free Codex projection containing exact provider/panel/receipt/correlation identities,
-  finding kind, confidence, finding digest, and every event reference;
-- explicit incomplete coverage and diagnostic/non-claim-bearing/no-authority safety flags.
+1. `ssh`: safe host alias, expected remote hostname and user, and a non-secret source-route
+   reference.
+2. `authorization`: provider, legal, and operator authorization references plus
+   `planned_material`, either `inert_only` or `restricted_malware`.
+3. `provider`: provider name, exactly one firewall posture (`cloud_default_deny` or
+   `provider_unavailable_host_pf`), and its evidence reference.
+4. `run_binding`: exact remote checkout path and Git commit, campaign ID, profile ID, and six
+   ordered remote file identities: `whoathere_bin`, `vm_helper`, `runtime_record`,
+   `detonation_config`, `policy`, and `sanitizer`.
+5. `host_controls`: exact fresh PF-info, PF-rules, and LuLu-evidence file paths/digests; loopback-only
+   sinkhole host/port/reference; and the maximum evidence age.
+6. `storage`: exact custody, evidence, sanitized-export, and ephemeral-clone directory paths.
+7. `clearance`: `not_required_inert` with no path/digest, or `required_restricted` with an exact
+   clearance path/digest and latest-contamination timestamp.
 
-The product validator must:
+All objects are closed. Digests are canonical lowercase SHA-256 values; IDs/references are bounded
+safe tokens; paths are absolute remote paths. The plan contains no sample, package, artifact,
+archive, workspace, credential, canary, or secret path/value.
 
-1. verify the envelope's exact detached digest before decoding;
-2. enforce a closed schema and bounded regular-file input;
-3. decode each embedded bundle through the existing strict bundle decoder and recompute its
-   canonical bundle and event identities;
-4. require exact artifact, manifest, report, plan, profile, run, bundle, Codex-result, and source
-   reconciliation bindings;
-5. rederive the source reconciliation input-binding digest from the ordered profile identities;
-6. recompute every Codex finding identity and resolve every citation against the matching validated
-   bundle event;
-7. bind the frozen source identities and complete normalized Codex projection for each profile so
-   coherent content changes cannot be authorized by supplying a recomputed envelope digest;
-8. accept only the four P05 presentation kinds: lifecycle-trigger execution, credential access,
-   outbound connection, and network send;
-9. derive all displayed VM/Codex summaries from typed validated content, never from explanation or
-   reason strings; and
-10. reject missing, duplicate, extra, reordered, mismatched, unsafe, unknown-version, or
-   unsupported-field content.
+## Probe boundary
 
-Digest continuity proves integrity under caller-provided custody, not producer authentication. The
-sanitized snapshot omits signed root/host receipt bytes, verification keys, provider output, and
-raw telemetry. Receipt and provider-output digests are identifiers only.
+After local exact-digest/schema validation and authorization checks, the command performs only:
 
-## Frozen rendered facts
+1. local `ssh -G` resolution for the intended host alias; and
+2. exactly one noninteractive SSH invocation of `/usr/bin/python3 -`, sending a fixed read-only
+   probe over stdin and receiving one bounded JSON object on stdout.
 
-Both profiles must show:
+The remote probe may:
 
-- npm lifecycle execution observed in typed process events;
-- credential-file reads observed in typed filesystem events;
-- connect and send intent to the local sinkhole as supporting network activity;
-- Codex's structurally cited findings, with every citation resolved to a validated event identity;
-- incomplete process/filesystem/canary/network/scenario coverage; and
-- diagnostic, sanitized, unauthenticated, observe-only, no-admission posture.
+- compare remote hostname/user and confirm an SSH session;
+- hash the six allowlisted identity files;
+- read the exact PF/LuLu control evidence files and verify freshness;
+- verify PF enabled/default-deny and LuLu enabled/filtering posture;
+- connect only to the configured loopback sinkhole;
+- check Apple Virtualization framework availability;
+- `stat` custody/evidence/sanitized/clone roots without listing custody contents;
+- check fixed WhoaThere helper/process names and require the ephemeral-clone root to be empty; and
+- for restricted material only, open and validate the exact clearance record.
 
-The renderer must say that connect/send intent does **not** establish payload or credential
-exfiltration. It must not claim a meaningful CI-profile difference merely because two profiles
-were run.
+It may not upload or create files, make directories, alter permissions, invoke `sudo`, stage a
+bundle, list/open artifact custody contents, inspect a package, run scanners, call WhoaThere,
+start/stop a VM, consume clearance, contact a non-loopback destination, or write evidence remotely.
 
-The headline and exit code remain the P04 static result:
+## Blocker precedence
 
-```text
-BLOCK - malicious capability found in package
-exit 20
-```
+The command exposes only the first failed condition in this fixed order:
 
-The reconciliation may supplement this result but can never create, erase, or downgrade the
-static `BLOCK`.
+1. invalid input/detached digest (`ERROR`, no SSH);
+2. missing authorization or provider-firewall posture (`BLOCKED`, no SSH);
+3. SSH configuration/route or bounded probe failure;
+4. remote hostname/user/session mismatch;
+5. code, helper, runtime, configuration, policy, or sanitizer identity mismatch, in that order;
+6. stale/invalid PF evidence or PF not enabled/default-deny;
+7. stale/invalid LuLu evidence or LuLu not enabled/filtering;
+8. loopback sinkhole unavailable;
+9. Apple Virtualization unavailable;
+10. custody/evidence/sanitized storage missing, unsafe, or unusable;
+11. stale WhoaThere process or nonempty ephemeral-clone root; and
+12. required clearance missing, mismatched, stale, consumed, or not ready.
 
-## Allowed work
-
-- One narrow assembler for the frozen sanitized inputs and self-contained envelope.
-- One strict runner-owned decoder/validator and presentation view.
-- Optional `report render` reconciliation flags and a P05 report section.
-- Synthetic focused fixtures and mutation tests.
-- One compact sanitized product report and an accurate README update.
-
-## Forbidden work
-
-- No new scorer or evaluation verdict.
-- No raw telemetry reinterpretation, new collector, new sensor, new VM run, or hosted Codex run.
-- No general multi-provider arbitration, adaptive probes, Claude adapter, or generic evidence graph.
-- No clean/admission/sync-back authority.
-- No claim that the dynamic evidence is authenticated or claim-bearing.
-- No claim of 11/11, R06 completion, broad malware coverage, exfiltration, or CI gating.
-- No tracked raw artifact, raw receipt, model prose, canary value, secret, private path, or ignored
-  evidence snapshot.
+Each blocker has one stable reason code and one bounded action sentence. Other failed conditions are
+not listed in human output; the operator fixes the named blocker and reruns.
 
 ## Frozen acceptance criteria
 
-1. Exact artifact, manifest, report, plan, profile, evidence, Codex-result, source-reconciliation,
-   and envelope identities match or rendering fails.
-2. Both CI profiles display lifecycle execution and credential-file reads.
-3. Connect/send intent is visibly supporting activity and never payload exfiltration.
-4. Every displayed Codex citation resolves to the matching strict bundle event and recomputed event
-   digest.
-5. Incomplete coverage and diagnostic/unauthenticated provenance remain visible; action remains the
-   P04 static `BLOCK` with exit 20.
-6. Mismatch, coherent citation forgery, omission, duplication, profile substitution/reordering,
-   unknown field, unsupported version, and unsafe-authority mutations fail with exit 64 and no
-   `BLOCK` or `ALLOW` output.
-7. P03 complete-report and P04 sanitized-static rendering remain backward compatible when no
-   reconciliation is supplied.
-8. Failure output does not echo untrusted content or local paths.
-9. No restricted bytes, secrets, model prose, canary values, or ignored snapshot files enter git.
+1. A complete synthetic plan through a fake SSH route produces `READY`, exit 0, exact bindings, and
+   `artifact_opened=false`, `package_executed=false`, `vm_started=false`,
+   `remote_state_mutated=false`, and `clearance_consumed=false`.
+2. Missing authorization blocks before either SSH invocation.
+3. Exactly one `ssh -G` and one read-only remote probe occur on the ready path; no `scp`, remote
+   write, WhoaThere command, scanner, package, or VM command occurs.
+4. Every required code/runtime/policy identity matches its exact digest or the first mismatch is the
+   sole blocker.
+5. PF, LuLu, sinkhole, VZ, storage, stale process/clone, and clearance checks follow the fixed
+   precedence and yield one actionable result.
+6. `inert_only` requires explicit not-applicable custody/clearance posture; `restricted_malware`
+   requires a fresh exact clearance and authorization references. Neither mode accesses artifacts.
+7. Unknown, missing, duplicate, unsafe path, non-loopback sinkhole, malformed digest, symlink,
+   oversized, truncated, trailing-data, route/probe spoof, extra-output, timeout, and identity
+   substitution inputs fail conservatively without echoing untrusted values or paths.
+8. JSON and human modes agree on status, exit, blocker, bindings, and non-execution flags.
+9. The command never reports general malware readiness; it is bound to one exact
+   host/code/runtime/policy/campaign/profile plan.
+10. No credentials, IP addresses, private SSH configuration, raw control output, restricted paths,
+    or ignored lab files enter git.
 
 ## Required checks
 
-- Focused runner reconciliation validation tests.
-- Focused CLI parsing/rendering tests.
-- Synthetic positive for both profiles.
-- Digest, version, field, identity, profile, omission, duplication, ordering, citation, finding,
-  coverage, and authority mutations.
-- Existing retained-report runner tests.
-- Existing CLI report-render tests.
-- Existing exact-artifact spine and development-baseline self-tests.
-- Workspace formatting, clippy, and tests.
-- Production render of the frozen local sanitized npm inputs.
-- Independent Ultra verification after implementation, before commit or push.
+- Focused ready-path self-test using temporary inert files, a loopback sinkhole, and fake SSH.
+- One-at-a-time blocker tests for pre-SSH authorization, route, identity, PF, LuLu, sinkhole,
+  storage, stale clone, and restricted-clearance failures.
+- Closed-schema/digest/path/output/timeout mutation tests.
+- Shell/Python compilation checks and `git diff --check`.
+- Existing Scaleway staging/phase-1 self-test only if P06 changes a shared existing helper; otherwise
+  P06 must not broaden into that harness.
+- Independent Ultra verification before commit or push.
+- One actual approved cloud-Mac run may return `READY` or one exact blocker. It must use an inert-only
+  plan, perform no repair beyond one bounded operator action, and never access a package or start a
+  VM.
 
 ## Stop and parking rule
 
-If the self-contained envelope cannot be made strict without changing the upstream bundle or Codex
-schemas, park the exact missing binding and stop. Do not weaken citation resolution, trust producer
-reason strings, or expand into a generalized protocol. P06 remains queued until P05 is either
-accepted or explicitly parked with a reproducible blocker.
-
-## Completion result
-
-```text
-Chunk: P05
-Start SHA / implementation SHA: 96aae35 / 84f24f6
-Active time used: within the 2-4 hour focused implementation budget; independent verification was
-  performed separately
-User-visible outcome: whoathere report render supplements the existing npm static BLOCK with
-  separately labeled CI=false and CI=true disposable-VM/Codex evidence while preserving exact
-  citations, incomplete coverage, and no-authority posture
-Command or report: whoathere report render <report> --report-sha256 <digest> --reconciliation
-  <envelope> --reconciliation-sha256 <digest>; paired-npm-vm-codex-product-report.md
-Representative input: frozen sanitized npm report bc09a308...e452 plus reconciliation envelope
-  ac521c94...52b5
-Paired controls: P03 complete report and P04 sanitized static report without reconciliation;
-  baseline plus 18 fail-closed P05 mutations
-Acceptance criteria passed: 9/9 after the independent verifier's coherent identity/citation
-  substitution finding was fixed and independently rerun
-Acceptance criteria not passed: none
-Diagnostic detection score: unchanged diagnostic prior-miss result 4/4; finalized July experimental
-  baseline remains 7/11
-Claim-bearing detection subscore: not produced; P05 evidence is explicitly unauthenticated and
-  diagnostic-only
-Completion/quality gate: incomplete in process, filesystem, canary, network, and scenario coverage
-Overall evaluation passed: false / not an evaluation campaign
-Safety invariants: host package execution zero; sync-back zero; unsafe allow/admission zero;
-  restricted-material leak zero; live-C2 contact zero; live second-stage fetch zero; invalid or
-  unverified teardown zero/not applicable because P05 opened no artifact and started no VM. Evidence:
-  saved-report product selftest, independent verifier, ignored-snapshot and staged-file audit.
-One parked blocker: producer authentication is unavailable in the sanitized snapshot and remains
-  visibly deferred to the later claim-bearing R05 path
-Recommended next chunk: P06 cloud-lab ready/not-ready preflight, with no artifact access or VM start
-```
-
-The full workspace test suite, formatting, clippy with warnings denied, the deterministic assembler,
-the production render, and the focused baseline-plus-18 mutation suite passed. Independent Ultra
-verification returned GO after confirming that coherent citation omission, source-reconciliation
-substitution, and observer-result rebinding now fail with exit 64 and no `BLOCK`, `ALLOW`, or path
-leak. The exact valid report remains the P04 static `BLOCK` plus the supplemental dynamic section.
+Park P06 if the host cannot provide fresh PF or LuLu evidence without mutation, SSH cannot run the
+single read-only probe, or the exact P07 runtime/helper/config identities are not yet available.
+Record the first blocker and smallest operator action. Do not weaken a required check, fall back to
+assertion-only readiness, touch the restricted corpus, or begin P07.
