@@ -175,6 +175,18 @@ def projection_bundle(manifest_value: dict[str, Any], manifest_sha256: str) -> d
                 "source_receipt_sha256": "sha256:" + "3" * 64,
             },
             {
+                "kind": "static_sensitive_https_exfiltration_capability",
+                "artifact_sha256": ARTIFACT_SHA256,
+                "artifact_manifest_sha256": "sha256:" + "6" * 64,
+                "exact_observation_sha256": "sha256:" + "7" * 64,
+                "finding_evidence_sha256": "sha256:" + "8" * 64,
+                "file_id": "sha256:" + "9" * 64,
+                "file_sha256": "sha256:" + "a" * 64,
+                "range": {"kind": "bytes", "start_byte": 260, "end_byte": 420},
+                "selected_bytes_sha256": "sha256:" + "b" * 64,
+                "source_receipt_sha256": "sha256:" + "c" * 64,
+            },
+            {
                 "kind": "typed_event",
                 "event_id": "event-env-read-1",
                 "modality": "dynamic",
@@ -290,6 +302,16 @@ def main() -> int:
         )
         by_type = {row["evidence_type"]: row for row in result["observations"]}
         require(by_type["download_execute_capability"]["behavior_label"] == "second_stage_fetch", str(result))
+        require(
+            by_type["sensitive_https_exfiltration_capability"]["behavior_label"]
+            == "https_exfil",
+            str(result),
+        )
+        require(
+            by_type["sensitive_https_exfiltration_capability"]["modality"]
+            == "deterministic",
+            str(result),
+        )
         require(by_type["environment_credential_read"]["behavior_label"] == "credential_env_access", str(result))
         require(
             by_type["download_execute_capability"]["projection_sha256"]
@@ -297,8 +319,13 @@ def main() -> int:
             str(result),
         )
         require(
-            by_type["environment_credential_read"]["projection_sha256"]
+            by_type["sensitive_https_exfiltration_capability"]["projection_sha256"]
             == digest(canonical(base_bundle["projections"][1])),
+            str(result),
+        )
+        require(
+            by_type["environment_credential_read"]["projection_sha256"]
+            == digest(canonical(base_bundle["projections"][2])),
             str(result),
         )
         for observation in result["observations"]:
@@ -343,7 +370,7 @@ def main() -> int:
             private,
             base_bundle,
             public,
-            lambda value: value["projections"][1].__setitem__("behavior_label", "https_exfil"),
+            lambda value: value["projections"][2].__setitem__("behavior_label", "https_exfil"),
         )
         require(
             label_injection.returncode == 20 and "typed_event_projection_keys_invalid" in label_injection.stderr,
@@ -358,7 +385,7 @@ def main() -> int:
             private,
             base_bundle,
             public,
-            lambda value: value["projections"][1].__setitem__("evidence_type", "package_name_known_bad"),
+            lambda value: value["projections"][2].__setitem__("evidence_type", "package_name_known_bad"),
         )
         require(
             unmapped.returncode == 20 and "typed_event_evidence_type_unmapped" in unmapped.stderr,
@@ -400,6 +427,31 @@ def main() -> int:
             invalid_citation.stderr,
         )
 
+        for broad_kind in (
+            "static_network_capability",
+            "static_environment_exfiltration_capability",
+            "static_credential_exfiltration_capability",
+            "static_sensitive_file_exfiltration_capability",
+            "static_https_sensitive_exfiltration_capability",
+        ):
+            broad_static, _ = run_case(
+                root,
+                f"broad-static-kind-{broad_kind}",
+                manifest_path,
+                manifest_sha256,
+                private,
+                base_bundle,
+                public,
+                lambda value, broad_kind=broad_kind: value["projections"][1].__setitem__(
+                    "kind", broad_kind
+                ),
+            )
+            require(
+                broad_static.returncode == 20
+                and "verified_projection_kind_unmapped" in broad_static.stderr,
+                broad_static.stderr,
+            )
+
         for evidence_type in (
             "environment_credential_read",
             "ci_gate_activation",
@@ -414,7 +466,7 @@ def main() -> int:
                 private,
                 base_bundle,
                 public,
-                lambda value, evidence_type=evidence_type: value["projections"][1].update(
+                lambda value, evidence_type=evidence_type: value["projections"][2].update(
                     {"modality": "deterministic", "evidence_type": evidence_type}
                 ),
             )
@@ -434,7 +486,7 @@ def main() -> int:
             public,
             lambda value: value["projections"].append(
                 {
-                    **copy.deepcopy(value["projections"][1]),
+                    **copy.deepcopy(value["projections"][2]),
                     "evidence_type": "ci_gate_activation",
                 }
             ),
@@ -455,7 +507,7 @@ def main() -> int:
             public,
             lambda value: value["projections"].append(
                 {
-                    **copy.deepcopy(value["projections"][1]),
+                    **copy.deepcopy(value["projections"][2]),
                     "event_sha256": "sha256:" + "6" * 64,
                 }
             ),
@@ -519,6 +571,8 @@ def main() -> int:
                         "signed_projection_publishes_manual_review_only",
                         "incomplete_run_fact_is_preserved",
                         "static_download_execute_maps_narrowly",
+                        "static_sensitive_https_exfiltration_maps_narrowly",
+                        "broad_static_network_and_exfiltration_kinds_are_rejected",
                         "observation_id_binds_canonical_projection_digest",
                         "behavior_labels_are_derived",
                         "loose_reason_fields_rejected",

@@ -1,8 +1,8 @@
-//! Offline, exact-byte projection of deterministic download/execute findings.
+//! Offline, exact-byte projection of supported deterministic capability findings.
 //!
 //! This module is intentionally narrow. It reopens, normalizes, and analyzes an
 //! npm or PyPI archive directly through the artifact and detector contracts, then emits
-//! only citation-complete `DownloadExecuteCapability` projections. It has no
+//! only citation-complete projections for supported capabilities. It has no
 //! package execution, networking, AI, VM, admission, or observed-clean path.
 
 use crate::exact_artifact::{
@@ -34,12 +34,30 @@ pub const STATIC_PROJECTION_METADATA_SCHEMA_V1: &str =
 pub const STATIC_PROJECTION_SOURCE_RECEIPT_SCHEMA_V1: &str =
     whoathere_detector::ARTIFACT_STATIC_ANALYSIS_SCHEMA_VERSION;
 pub const STATIC_PROJECTION_KIND_V1: &str = "static_download_execute_capability";
+pub const STATIC_SENSITIVE_HTTPS_EXFILTRATION_PROJECTION_KIND_V1: &str =
+    "static_sensitive_https_exfiltration_capability";
 pub const STATIC_PROJECTION_CLAIM_BOUNDARY_V1: &str =
     "Verified deterministic capability only; no runtime-attempt, observed-clean, release, or admission authority.";
 
 const EXIT_INCONCLUSIVE: i32 = 22;
 const EXIT_DATA_ERROR: i32 = 65;
 const EXIT_INTERNAL_ERROR: i32 = 70;
+
+const fn projection_policy(
+    category: ArtifactFindingCategory,
+) -> Option<(&'static str, ExactArtifactThreatClassV1)> {
+    match category {
+        ArtifactFindingCategory::DownloadExecuteCapability => Some((
+            STATIC_PROJECTION_KIND_V1,
+            ExactArtifactThreatClassV1::SecondStageNativeOrWasmHandoff,
+        )),
+        ArtifactFindingCategory::HttpsSensitiveExfiltrationCapability => Some((
+            STATIC_SENSITIVE_HTTPS_EXFILTRATION_PROJECTION_KIND_V1,
+            ExactArtifactThreatClassV1::NetworkAndExfiltration,
+        )),
+        _ => None,
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct StaticProjectionRequestV1<'a> {
@@ -168,9 +186,16 @@ impl std::fmt::Display for StaticProjectionErrorV1 {
 
 impl std::error::Error for StaticProjectionErrorV1 {}
 
-/// Reopen and independently analyze one exact package archive, emitting only
-/// publisher-compatible, citation-complete download/execute projections.
+/// Backward-compatible entrypoint for the static capability projector.
 pub fn verify_static_download_execute_projections_v1(
+    request: StaticProjectionRequestV1<'_>,
+) -> Result<StaticProjectionMetadataV1, StaticProjectionErrorV1> {
+    verify_static_capability_projections_v1(request)
+}
+
+/// Reopen and independently analyze one exact package archive, emitting only
+/// publisher-compatible, citation-complete projections of supported kinds.
+pub fn verify_static_capability_projections_v1(
     request: StaticProjectionRequestV1<'_>,
 ) -> Result<StaticProjectionMetadataV1, StaticProjectionErrorV1> {
     if !request.artifact_path.is_absolute() {
@@ -261,11 +286,9 @@ pub fn verify_static_download_execute_projections_v1(
     };
 
     let mut exact_observations = Vec::new();
-    for finding in analysis
-        .findings
-        .iter()
-        .filter(|finding| finding.category == ArtifactFindingCategory::DownloadExecuteCapability)
-    {
+    for (finding, threat_class) in analysis.findings.iter().filter_map(|finding| {
+        projection_policy(finding.category).map(|(_, threat_class)| (finding, threat_class))
+    }) {
         if finding.specificity != FindingSpecificity::PackageSpecific
             || finding.artifact_sha256 != artifact_sha256
             || finding.manifest_sha256 != manifest_sha256
@@ -276,10 +299,8 @@ pub fn verify_static_download_execute_projections_v1(
         }
         let observation = ExactArtifactObservationV1::new(
             ExactArtifactObservationSourceV1::DeterministicStatic,
-            ExactArtifactThreatClassV1::SecondStageNativeOrWasmHandoff,
-            ExactArtifactFindingKindV1::DeterministicStatic(
-                ArtifactFindingCategory::DownloadExecuteCapability,
-            ),
+            threat_class,
+            ExactArtifactFindingKindV1::DeterministicStatic(finding.category),
             match finding.confidence {
                 FindingConfidence::Moderate => ExactArtifactObservationConfidenceV1::Moderate,
                 FindingConfidence::High => ExactArtifactObservationConfidenceV1::High,
@@ -364,6 +385,17 @@ pub fn verify_static_download_execute_projections_v1(
 
     let mut projections = Vec::with_capacity(verification_summary.exact_observations.len());
     for observation in &verification_summary.exact_observations {
+        let ExactArtifactFindingKindV1::DeterministicStatic(category) = &observation.finding_kind
+        else {
+            return Err(StaticProjectionErrorV1::internal(
+                "static_projection_finding_kind_invalid",
+            ));
+        };
+        let Some((projection_kind, _)) = projection_policy(*category) else {
+            return Err(StaticProjectionErrorV1::internal(
+                "static_projection_finding_kind_invalid",
+            ));
+        };
         let ExactArtifactEvidenceReferenceV1::DeterministicStatic {
             evidence_sha256,
             location:
@@ -380,7 +412,7 @@ pub fn verify_static_download_execute_projections_v1(
             ));
         };
         projections.push(StaticDownloadExecuteCapabilityProjectionV1 {
-            kind: STATIC_PROJECTION_KIND_V1,
+            kind: projection_kind,
             artifact_sha256: artifact_sha256.clone(),
             artifact_manifest_sha256: manifest_sha256.clone(),
             exact_observation_sha256: observation.observation_sha256.clone(),

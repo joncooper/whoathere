@@ -3,7 +3,7 @@
 
 This is deliberately a narrow, fail-closed bridge. A canonical run index must name exactly one
 signed bundle and one publisher-emitted result for every manifest run. Each bundle must contain one
-or more independently verified ``static_download_execute_capability`` projections. The bridge
+or more independently verified, explicitly allowlisted static capability projections. The bridge
 reuses the RunResultV2 publisher as the policy authority, independently checks every bundle
 signature and frozen identity pin, requires every supplied RunResultV2 to be byte-for-byte publisher
 serialization and semantically identical to a fresh publisher result, and then derives the current
@@ -37,7 +37,13 @@ EVALUATOR_PATH = ROOT / "scripts" / "whoathere-actual-malware-evaluation.py"
 
 REGISTRY_SCHEMA = "whoathere.actual_malware.verified_evidence_registry.v1"
 RUN_INDEX_SCHEMA = "whoathere.actual_malware.signed_projection_run_index.v1"
-STATIC_PROJECTION_KIND = "static_download_execute_capability"
+STATIC_PROJECTION_POLICIES = {
+    "static_download_execute_capability": ("download_execute_capability", "second_stage_fetch"),
+    "static_sensitive_https_exfiltration_capability": (
+        "sensitive_https_exfiltration_capability",
+        "https_exfil",
+    ),
+}
 MAX_RUN_INDEX_BYTES = 8 * 1024 * 1024
 MAX_RESULT_BYTES = 64 * 1024 * 1024
 MAX_PRIVATE_KEY_BYTES = 64 * 1024
@@ -184,8 +190,11 @@ def evidence_records(
     require(isinstance(projections, list) and projections, "static_projection_required")
     by_projection_sha256: dict[str, dict[str, Any]] = {}
     for projection in projections:
+        projection_kind = projection.get("kind") if isinstance(projection, dict) else None
         require(
-            isinstance(projection, dict) and projection.get("kind") == STATIC_PROJECTION_KIND,
+            isinstance(projection, dict)
+            and isinstance(projection_kind, str)
+            and projection_kind in STATIC_PROJECTION_POLICIES,
             "static_projection_kind_required",
         )
         projection_sha256 = publisher.sha256_bytes(publisher.canonical_json_bytes(projection))
@@ -204,10 +213,13 @@ def evidence_records(
         projection_sha256 = observation.get("projection_sha256")
         projection = by_projection_sha256.get(str(projection_sha256))
         require(projection is not None, "static_observation_projection_unbound")
+        expected_evidence_type, expected_behavior_label = STATIC_PROJECTION_POLICIES[
+            str(projection["kind"])
+        ]
         require(
             observation.get("modality") == "deterministic"
-            and observation.get("evidence_type") == "download_execute_capability"
-            and observation.get("behavior_label") == "second_stage_fetch",
+            and observation.get("evidence_type") == expected_evidence_type
+            and observation.get("behavior_label") == expected_behavior_label,
             "static_observation_policy_mismatch",
         )
         require(str(projection_sha256) not in observed_projection_sha256, "static_observation_duplicate")

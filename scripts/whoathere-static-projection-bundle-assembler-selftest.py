@@ -6,6 +6,7 @@ from __future__ import annotations
 import base64
 import copy
 import hashlib
+import importlib.util
 import json
 import os
 import shutil
@@ -48,6 +49,23 @@ fetch_and_launch()
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise AssertionError(message)
+
+
+def load_module(name: str, path: Path) -> Any:
+    spec = importlib.util.spec_from_file_location(name, path)
+    require(spec is not None and spec.loader is not None, f"{name} module unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def require_assembler_error(module: Any, expected: str, operation: Any) -> None:
+    try:
+        operation()
+    except module.AssemblerError as exc:
+        require(str(exc) == expected, f"expected {expected}, received {exc}")
+        return
+    raise AssertionError(f"expected assembler error: {expected}")
 
 
 def digest(value: bytes) -> str:
@@ -293,6 +311,35 @@ def run_inputs(run_id: str) -> dict[str, Any]:
     }
 
 
+def sensitive_https_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    """Rebind an inert verifier result to the second allowlisted static capability kind."""
+
+    transformed = copy.deepcopy(metadata)
+    observation_digests: dict[str, str] = {}
+    observations = transformed["verification_summary"]["exact_observations"]
+    for observation in observations:
+        old_digest = observation["observation_sha256"]
+        observation["threat_class"] = "network_and_exfiltration"
+        observation["finding_kind"] = {
+            "source": "deterministic_static",
+            "kind": "https_sensitive_exfiltration_capability",
+        }
+        digest_input = copy.deepcopy(observation)
+        digest_input.pop("observation_sha256")
+        new_digest = digest(canonical(digest_input))
+        observation["observation_sha256"] = new_digest
+        observation_digests[old_digest] = new_digest
+    observations.sort(key=lambda item: item["observation_sha256"])
+
+    for projection in transformed["projections"]:
+        projection["kind"] = "static_sensitive_https_exfiltration_capability"
+        projection["exact_observation_sha256"] = observation_digests[
+            projection["exact_observation_sha256"]
+        ]
+    transformed["projections"].sort(key=lambda item: item["exact_observation_sha256"])
+    return transformed
+
+
 def assemble(
     *,
     directory: Path,
@@ -454,6 +501,8 @@ def case_directory(root: Path, name: str) -> Path:
 def main() -> int:
     checks = 0
     verifier = build_verifier()
+    assembler_module = load_module("whoathere_static_projection_assembler", ASSEMBLER)
+    publisher_module = load_module("whoathere_run_result_publisher", PUBLISHER)
     with tempfile.TemporaryDirectory(prefix="whoathere-static-bundle-assembler-selftest-") as raw_tmp:
         root = Path(raw_tmp)
         private_key, public_key = key_pair(root)
@@ -507,6 +556,88 @@ def main() -> int:
             require(bundle["run_fact"]["artifact_sha256"] == digest(artifacts[sample_id].read_bytes()), str(bundle))
         checks += 1
 
+        first_sample, first_profile = RUN_SPECS[0]
+        first_slot = next(
+            slot
+            for slot in manifest_value["required_runs"]
+            if slot["sample_id"] == first_sample and slot["profile_id"] == first_profile
+        )
+        original_metadata = json.loads(
+            assembled[first_sample]["metadata"].read_text(encoding="utf-8")
+        )
+        https_metadata = sensitive_https_metadata(original_metadata)
+        https_projections, https_source_receipt, _ = assembler_module.validate_static_metadata(
+            metadata=https_metadata,
+            slot=first_slot,
+            publisher=publisher_module,
+        )
+        require(
+            https_source_receipt == https_metadata["source_receipt_sha256"]
+            and all(
+                projection["kind"]
+                == "static_sensitive_https_exfiltration_capability"
+                for projection in https_projections
+            ),
+            "sensitive HTTPS static projection was not preserved",
+        )
+        derived = publisher_module.project_observations(
+            https_projections,
+            artifact_sha256=first_slot["artifact_sha256"],
+            coverage_modalities={"deterministic"},
+        )
+        require(
+            derived
+            and all(
+                observation["evidence_type"]
+                == "sensitive_https_exfiltration_capability"
+                and observation["behavior_label"] == "https_exfil"
+                for observation in derived
+            ),
+            "sensitive HTTPS publisher evidence derivation changed",
+        )
+        checks += 1
+
+        kind_mismatch = copy.deepcopy(https_metadata)
+        kind_mismatch["projections"][0]["kind"] = "static_download_execute_capability"
+        require_assembler_error(
+            assembler_module,
+            "static_projection_observation_kind_mismatch",
+            lambda: assembler_module.validate_static_metadata(
+                metadata=kind_mismatch,
+                slot=first_slot,
+                publisher=publisher_module,
+            ),
+        )
+
+        citation_mismatch = copy.deepcopy(https_metadata)
+        citation_mismatch["projections"][0]["selected_bytes_sha256"] = digest(
+            b"changed selected bytes"
+        )
+        require_assembler_error(
+            assembler_module,
+            "static_projection_observation_citation_mismatch",
+            lambda: assembler_module.validate_static_metadata(
+                metadata=citation_mismatch,
+                slot=first_slot,
+                publisher=publisher_module,
+            ),
+        )
+
+        receipt_mismatch = copy.deepcopy(https_metadata)
+        receipt_mismatch["projections"][0]["source_receipt_sha256"] = digest(
+            b"changed source receipt"
+        )
+        require_assembler_error(
+            assembler_module,
+            "static_projection_source_receipt_mismatch",
+            lambda: assembler_module.validate_static_metadata(
+                metadata=receipt_mismatch,
+                slot=first_slot,
+                publisher=publisher_module,
+            ),
+        )
+        checks += 1
+
         bridge_dir = case_directory(root, "bridge")
         run_index = bridge_dir / "run-index.json"
         run_index.write_bytes(
@@ -554,7 +685,6 @@ def main() -> int:
         require(report["rates"]["required_run_completion"] == 0.0, str(report))
         checks += 1
 
-        first_sample, first_profile = RUN_SPECS[0]
         base_inputs = run_inputs("run-negative")
 
         artifact_tamper_dir = case_directory(root, "artifact-tamper")

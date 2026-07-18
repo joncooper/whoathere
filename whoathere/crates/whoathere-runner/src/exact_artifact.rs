@@ -1397,7 +1397,8 @@ fn deterministic_threat_class_v1(category: ArtifactFindingCategory) -> ExactArti
         ArtifactFindingCategory::NetworkCapability
         | ArtifactFindingCategory::EnvironmentExfiltrationCapability
         | ArtifactFindingCategory::CredentialExfiltrationCapability
-        | ArtifactFindingCategory::SensitiveFileExfiltrationCapability => {
+        | ArtifactFindingCategory::SensitiveFileExfiltrationCapability
+        | ArtifactFindingCategory::HttpsSensitiveExfiltrationCapability => {
             ExactArtifactThreatClassV1::NetworkAndExfiltration
         }
         ArtifactFindingCategory::DownloadExecuteCapability => {
@@ -1491,6 +1492,7 @@ fn deterministic_finding_detection_eligible_v1(category: ArtifactFindingCategory
             | ArtifactFindingCategory::SensitivePathAccess
             | ArtifactFindingCategory::CredentialExfiltrationCapability
             | ArtifactFindingCategory::SensitiveFileExfiltrationCapability
+            | ArtifactFindingCategory::HttpsSensitiveExfiltrationCapability
             | ArtifactFindingCategory::DownloadExecuteCapability
             | ArtifactFindingCategory::EnvironmentToProcessCapability
     )

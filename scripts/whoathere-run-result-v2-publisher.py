@@ -35,6 +35,7 @@ MAX_SIGNATURE_BYTES = 1024
 EVIDENCE_TYPE_TO_BEHAVIOR_LABEL = {
     "environment_credential_read": "credential_env_access",
     "https_exfiltration_attempt": "https_exfil",
+    "sensitive_https_exfiltration_capability": "https_exfil",
     "download_execute_capability": "second_stage_fetch",
     "second_stage_fetch_attempt": "second_stage_fetch",
     "ci_gate_activation": "ci_gated_activation",
@@ -48,9 +49,18 @@ TYPED_EVENT_EVIDENCE_TYPES = {
 EVIDENCE_TYPE_ALLOWED_MODALITIES = {
     "environment_credential_read": {"dynamic"},
     "https_exfiltration_attempt": {"dynamic"},
+    "sensitive_https_exfiltration_capability": {"deterministic"},
     "download_execute_capability": {"deterministic"},
     "second_stage_fetch_attempt": {"dynamic"},
     "ci_gate_activation": {"dynamic"},
+}
+STATIC_PROJECTION_KIND_TO_EVIDENCE_TYPE = {
+    "static_download_execute_capability": "download_execute_capability",
+    "static_sensitive_https_exfiltration_capability": "sensitive_https_exfiltration_capability",
+}
+STATIC_PROJECTION_KIND_ERROR_PREFIX = {
+    "static_download_execute_capability": "static_download_execute_projection",
+    "static_sensitive_https_exfiltration_capability": "static_sensitive_https_exfiltration_projection",
 }
 ALLOWED_MODALITIES = {"deterministic", "scanner", "claude", "codex", "dynamic", "fused"}
 ALLOWED_COVERAGE_STATES = {"complete", "incomplete", "unsupported", "infrastructure_error"}
@@ -398,7 +408,7 @@ def project_observations(
                 f"{str(projection['source_receipt_sha256']).removeprefix('sha256:')}"
             )
             evidence_sha256 = projection["event_sha256"]
-        elif kind == "static_download_execute_capability":
+        elif isinstance(kind, str) and kind in STATIC_PROJECTION_KIND_TO_EVIDENCE_TYPE:
             projection = exact_keys(
                 projection,
                 {
@@ -413,7 +423,7 @@ def project_observations(
                     "selected_bytes_sha256",
                     "source_receipt_sha256",
                 },
-                "static_download_execute_projection",
+                STATIC_PROJECTION_KIND_ERROR_PREFIX[str(kind)],
             )
             require(projection.get("artifact_sha256") == artifact_sha256, "static_projection_artifact_mismatch")
             for key in (
@@ -435,7 +445,7 @@ def project_observations(
             require(static_source not in seen_static_sources, "static_projection_source_identity_duplicate")
             seen_static_sources.add(static_source)
             identifier = observation_id(projection)
-            evidence_type = "download_execute_capability"
+            evidence_type = STATIC_PROJECTION_KIND_TO_EVIDENCE_TYPE[str(kind)]
             modality = "deterministic"
             require(
                 modality in EVIDENCE_TYPE_ALLOWED_MODALITIES[evidence_type],

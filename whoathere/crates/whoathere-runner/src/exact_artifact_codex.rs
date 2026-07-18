@@ -436,6 +436,7 @@ fn preferred_specialist_pass(analysis: &ArtifactStaticAnalysis) -> ArtifactRevie
         ArtifactFindingCategory::SensitivePathAccess,
         ArtifactFindingCategory::CredentialExfiltrationCapability,
         ArtifactFindingCategory::SensitiveFileExfiltrationCapability,
+        ArtifactFindingCategory::HttpsSensitiveExfiltrationCapability,
     ]) {
         ArtifactReviewPassV2::CredentialFilesystem
     } else if has_category(&[

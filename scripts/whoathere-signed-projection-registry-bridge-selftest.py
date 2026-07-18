@@ -118,7 +118,7 @@ def corpus_row(sample_id: str, digest_char: str) -> dict[str, Any]:
         "disclosure_date": "2026-07-01",
         "expected_result": "malicious",
         "trigger_phases": ["pypi_pep517" if is_sdist else "python_import"],
-        "behavior_labels": ["second_stage_fetch"],
+        "behavior_labels": ["https_exfil", "second_stage_fetch"],
         "network_policy": "sinkhole_only",
         "live_c2_allowed": False,
         "second_stage_live_fetch_allowed": False,
@@ -195,7 +195,7 @@ def manifest(corpus_path: Path, public_key: Path) -> dict[str, Any]:
                 "execution_profile_sha256": EXECUTION_PROFILE_SHA256,
                 "ecosystem": "pypi",
                 "expected_result": "malicious",
-                "required_behavior_labels": ["second_stage_fetch"],
+                "required_behavior_labels": ["https_exfil", "second_stage_fetch"],
                 "required_modalities": ["deterministic"],
                 "require_complete": True,
             }
@@ -204,13 +204,18 @@ def manifest(corpus_path: Path, public_key: Path) -> dict[str, Any]:
     }
 
 
-def static_projection(index: int, artifact_sha256: str, seed: int) -> dict[str, Any]:
+def static_projection(
+    index: int,
+    artifact_sha256: str,
+    seed: int,
+    kind: str,
+) -> dict[str, Any]:
     offset = index * 100
     digest_characters = "def0123456789abc"
     digest_character = digest_characters[(seed * 3 + index) % len(digest_characters)]
     source_character = digest_characters[(seed * 3 + index + 1) % len(digest_characters)]
     return {
-        "kind": "static_download_execute_capability",
+        "kind": kind,
         "artifact_sha256": artifact_sha256,
         "artifact_manifest_sha256": "sha256:" + digest_character * 64,
         "exact_observation_sha256": "sha256:" + source_character * 64,
@@ -274,8 +279,13 @@ def bundle(
             },
         },
         "projections": [
-            static_projection(0, artifact_sha256, run_index),
-            static_projection(1, artifact_sha256, run_index),
+            static_projection(0, artifact_sha256, run_index, "static_download_execute_capability"),
+            static_projection(
+                1,
+                artifact_sha256,
+                run_index,
+                "static_sensitive_https_exfiltration_capability",
+            ),
         ],
         "claim_boundary": CLAIM_BOUNDARY,
     }
@@ -514,6 +524,21 @@ def main() -> int:
         require(registry["schema"] == "whoathere.actual_malware.verified_evidence_registry.v1", str(registry))
         require(len(registry["run_fact_records"]) == 3, str(registry["run_fact_records"]))
         require(len(registry["records"]) == 6, str(registry["records"]))
+        require(
+            {
+                (row["modality"], row["evidence_type"], row["behavior_label"])
+                for row in registry["records"]
+            }
+            == {
+                ("deterministic", "download_execute_capability", "second_stage_fetch"),
+                (
+                    "deterministic",
+                    "sensitive_https_exfiltration_capability",
+                    "https_exfil",
+                ),
+            },
+            "static projection policy mapping drifted",
+        )
         require(
             {
                 (row["sample_id"], row["profile_id"], row["projection_sha256"])
