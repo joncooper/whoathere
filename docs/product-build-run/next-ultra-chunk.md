@@ -1,113 +1,76 @@
-# Next Ultra Chunk: R02 Synthetic 4/4 Positive-Subscore Path
+# Next Ultra Chunk: R03 Restricted-Lab Preflight Refresh
 
-Status: complete. R01 is accepted and pushed at `405182d`. R02 is independently accepted on its
-dedicated branch. R02b is ready but has not begun and must be a separate bounded chunk.
+Status: ready after R02b. Do not begin R03 automatically.
 
-Updated: 2026-07-18
+Updated: 2026-07-19
 
-## Accepted result
+## Accepted R02b result
 
-- One hermetic command exercises the exact-contract compiler, publisher, mixed-projection signed
-  registry bridge, mandatory V2 scorer, and strict positive-subscore summary.
-- Detection subscore: `4/4`, rate `1.0`, pass.
-- Safety: `4/4`, rate `1.0`, pass.
-- Completion: `0/4`, rate `0.0`; completion/quality fails.
-- Underlying and summarized `overall_passed` are both `false`.
-- Observed-clean, admission, release, and sync-back authority are all `false`.
-- A generic safe block and a matching label from the wrong evidence tuple each score `3/4`.
-- Empty projection sets are accepted only for incomplete runs and cannot create complete-clean
-  authority.
-- Sixteen focused integration checks plus the existing publisher, bridge, evaluator, complete-run
-  compiler, and R01 contract suites pass.
-- Independent final verification returned `GO`.
-- No package, evidence, cloud host, VM, hosted AI, malware, credential, or private data was
-  accessed.
-- This proves synthetic evaluator readiness only. Real-evidence publication remains `0/4`, and the
-  finalized July experimental baseline remains `7/11`.
+R02b produced one immutable metadata-only collection identity for the four previous misses:
 
-## Frozen user outcome
+- active contract: `four-known-miss-positive-subscore-contract.v2.json`;
+- source revision: `29c7a9bc7f4fd79478fa0ef7192e9f509be05e45`;
+- exact four-row corpus:
+  `sha256:e848f51878c8fe89ece0876a4ae7c07a88416a36decb29a3354725f49ea06819`;
+- exact verifier executable:
+  `sha256:d51431a2e08f74fb008988d8e8e24cca8e43873b06ae530e4d9e9cc834a2de33`;
+- verifier public key:
+  `sha256:85500877dd142794fd7beea871e0eaffb67ec0a4ec07670246ae5403d5036197`;
+- combined projection schema:
+  `sha256:2785f493cd0ddf4ad3f99124344c40180e7d9c1f4fbf4c182c27fe547f5c377a`;
+- collection lock:
+  `sha256:32f96202ca0a6d524c291c339e5aba35cd5acdc92b11f465b4caed5a47e6d928`;
+- EvaluationManifestV2:
+  `sha256:53db45466a91cbaeab6db51039cd515e292291a84f6056b3638f508e39f0dee2`;
+- collection window: `2026-07-19T02:00:00Z` through `2026-08-18T23:59:59Z`;
+- result-to-registry maximum: 600 seconds.
 
-One hermetic metadata-only command proves that the exact frozen four-row contract can produce a
-valid **4/4 behavior-positive detection subscore** while safety passes, completion/quality fails,
-and overall evaluation remains false.
+Contract v1 remains historical and byte-identical. Contract v2 explicitly permits deterministic
+`sensitive_file_exfiltration_capability -> sensitive_file_exfiltration` for npm and deterministic
+`download_execute_capability -> second_stage_fetch` for all three Telnyx rows. One combined schema
+identity supports both closed projection kinds.
 
-Primary metric: the production compiler, publisher, signed-registry bridge, mandatory V2 scorer,
-and positive-subscore summary agree on detection `4/4`, safety `4/4`, completion `0/4`, and
-`overall_passed=false`.
+The current synthetic proof remains detection `4/4`, safety `4/4`, completion `0/4`, and
+`overall_passed=false`. R02b collected no package or evidence bytes and ran no package, VM,
+network, cloud, or AI workload. Real publication therefore remains `0/4`, and the finalized July
+experimental baseline remains `7/11`.
 
-## Inputs and branch
+## R03 frozen user outcome
 
-- Branch: `codex/r02-synthetic-four-of-four-subscore`, based on accepted R01 commit `405182d`.
-- Contract:
-  `docs/product-build-run/four-known-miss-positive-subscore-contract.v1.json`, canonical SHA-256
-  `sha256:a47b8288c14c6c1eafb3976415fdc16a24ce0b85f06f4cf2c687ee50509ee053`.
-- Artifact/profile denominator SHA-256:
-  `sha256:bdd99ff7ba8634dbcec7f98f442962a7c371437f9d0d3bcc9fd940f8af285c96`.
-- Existing complete-run profile remains unchanged and is used only to validate lineage.
-- The synthetic corpus contains metadata rows with the frozen sample IDs and artifact digests. It
-  contains no package bytes or restricted evidence.
-- Synthetic executable, key, provider, and policy identities prove binding behavior only. Final
-  values and the expanded R01 identity set are frozen in R02b, not R02.
+A single read-only preflight returns `READY` for the exact R02b identity on the approved cloud Mac,
+or `BLOCKED` with one concrete operator action, before any retained artifact is opened.
 
-## Bounded implementation
+Primary metric: one current preflight result binds the cloud host, route, legal/provider posture,
+containment controls, restricted custody, R02b source revision, exact verifier/key/schema/corpus,
+and EvaluationManifestV2.
 
-R02 may change only:
+Budget: 1-2 focused hours. Stop before R04.
 
-1. A dedicated positive-subscore compiler that validates R01 and emits the exact four positive
-   profile rows in an EvaluationManifestV2 carrier.
-2. The existing signed-projection registry bridge, narrowly generalized from static-only to both
-   publisher-supported kinds needed here:
-   - `typed_event`; and
-   - `static_download_execute_capability`.
-3. A dedicated positive-subscore summary layered on the mandatory V2 scorer. It must count only
-   the exact `(modality, evidence_type, behavior_label)` tuple permitted by R01, not a matching
-   behavior label from another modality or evidence type.
-4. Focused hermetic integration and regression tests.
+## Inputs
 
-The bridge may accept a signed empty projection set so a generic fail-closed block can be proven to
-remain a detection miss. It still requires one authenticated run-fact record for every manifest
-row and exhaustive equality between signed projections, publisher-derived observations, registry
-records, and results.
+- The tracked R02b lock, manifest, receipt, corpus metadata, combined schema, and public key.
+- The ignored exact verifier and campaign private key created by R02b.
+- The existing P06 read-only cloud-lab preflight command and approved SSH configuration.
+- Fresh explicit user authorization for the restricted lab check.
 
-No evaluator identity expansion, final manifest freeze, sensor, runtime, VM, AI, cloud, package,
-or malware work is permitted. Those belong to R02b or later chunks.
-
-## Frozen synthetic rows
-
-| Row | Signed positive | Coverage |
-| --- | --- | --- |
-| npm `sbx` | dynamic `environment_credential_read -> credential_env_access` | incomplete |
-| Telnyx wheel 4.87.1 | deterministic `download_execute_capability -> second_stage_fetch` | incomplete |
-| Telnyx wheel 4.87.2 | deterministic `download_execute_capability -> second_stage_fetch` | incomplete |
-| Telnyx sdist 4.87.2 | deterministic `download_execute_capability -> second_stage_fetch` | incomplete |
-
-Every row has zero safety violations, verified teardown, manual review required, and no artifact
-release. Synthetic signatures use ephemeral Ed25519 keys created inside a temporary directory.
+No R02b-bound tool, policy, contract, corpus, key, verifier, schema, or collection-window change is
+allowed. A required change invalidates the freeze and returns to a new R02b version.
 
 ## Acceptance
 
-1. The compiler validates the exact R01 contract and emits four unique positive profile rows with
-   exact artifact, form, profile, label, modality, threshold, window, and corpus bindings.
-2. Publisher and bridge accept one dynamic npm bundle plus three static Telnyx bundles, derive the
-   exhaustive signed registry, and reject unknown projection kinds.
-3. The dedicated scorer summary reports:
-   - detection numerator/denominator `4/4`, rate `1.0`, pass;
-   - safety `4/4`, rate `1.0`, pass;
-   - completion `0/4`, rate `0.0`, fail;
-   - `overall_passed=false`; and
-   - observed-clean, admission, release, and sync-back authority all false.
-4. A valid signed incomplete row with no projections is a miss. A validly signed dynamic
-   `second_stage_fetch_attempt` cannot satisfy a Telnyx row that permits only deterministic
-   `download_execute_capability`.
-5. Omission, duplication, artifact/result substitution, bundle or registry signature changes,
-   profile/profile-digest drift, projection omission/addition/duplication/change, and manifest,
-   result, registry, verifier, schema, or policy identity drift fail closed.
-6. Attempted result-authored release/admission changes fail publisher recomputation or scoring.
-7. The existing complete-run compiler, publisher, bridge, and evaluator hermetic suites remain
-   green.
-8. The branch is independently reviewed, committed, and pushed. Work stops before R02b.
+1. The tracked freeze re-verifies byte-for-byte from the current branch.
+2. The local ignored verifier and key match the frozen executable and public-key digests.
+3. The read-only cloud preflight binds the exact R02b manifest and reports either:
+   - `READY`, with all required route, host, firewall, LuLu, sinkhole, VZ, storage, custody,
+     clearance, stale-state, and identity checks green; or
+   - `BLOCKED`, with one precedence-ranked reason and one concrete operator action.
+4. No retained package is opened, copied, unpacked, inspected, or executed.
+5. No VM starts, no cloud state mutates, no clearance is consumed, and no hosted AI runs.
+6. The branch is documented, committed, pushed, and work stops before R04.
 
-## Stop rule
+## Forest check and stop rule
 
-At four focused hours, preserve the one exact missing bridge and stop. Do not widen this chunk into
-complete clean-admission verification, final identity design, or evidence collection.
+At 60 minutes or after two materially different failures, ask whether the exact preflight moved
+toward `READY`. Do not add a new sensor, VM protocol, evaluator feature, provider integration, or
+general cloud abstraction. If blocked at two hours, push the exact reproduction and smallest
+operator action, then return control to the user.

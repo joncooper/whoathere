@@ -1,36 +1,61 @@
 # Four-known-miss evaluation profiles
 
-There are now two deliberately separate contracts:
+There are now three deliberately separate artifacts:
 
 - [`four-known-miss-campaign-profile.v1.json`](./four-known-miss-campaign-profile.v1.json) remains
   the original complete-run profile. It requires deterministic, Codex, and dynamic coverage and
   still refuses authoritative compilation while the complete sdist execution path is blocked.
 - [`four-known-miss-positive-subscore-contract.v1.json`](./four-known-miss-positive-subscore-contract.v1.json)
-  is the R01 positive-only contract. It freezes exactly four behavior-positive rows without
-  pretending that incomplete coverage can pass completion/quality, overall evaluation, clean,
-  admission, or release gates.
+  is the historical R01 positive-only contract. Its npm row remains dynamic
+  `environment_credential_read -> credential_env_access`; R02b did not reinterpret it.
+- [`four-known-miss-positive-subscore-contract.v2.json`](./four-known-miss-positive-subscore-contract.v2.json)
+  is the active collection contract. It explicitly uses deterministic
+  `sensitive_file_exfiltration_capability -> sensitive_file_exfiltration` for npm and deterministic
+  `download_execute_capability -> second_stage_fetch` for each Telnyx row.
 
-The positive-only contract permits only independently verified dynamic
-`environment_credential_read -> credential_env_access` evidence for the npm row and independently
-verified deterministic `download_execute_capability -> second_stage_fetch` evidence for each of
-the three Telnyx rows. It does not count a corpus label, package identity, hash, advisory,
-reputation signal, generic safe block, producer claim, or AI-authored label by itself.
+Both positive-only versions freeze exactly four behavior-positive rows without pretending that
+incomplete coverage can pass completion/quality, overall evaluation, clean, admission, or release
+gates. Neither counts a corpus label, package identity, hash, advisory, reputation signal, generic
+safe block, producer claim, or AI-authored label by itself.
 
 Validate the frozen semantic contract locally with:
 
 ```sh
 scripts/whoathere-validate-four-known-miss-positive-subscore-contract.py \
-  --contract docs/product-build-run/four-known-miss-positive-subscore-contract.v1.json \
+  --contract docs/product-build-run/four-known-miss-positive-subscore-contract.v2.json \
   --complete-run-profile docs/product-build-run/four-known-miss-campaign-profile.v1.json
 ```
 
-The accepted contract SHA-256 is
-`sha256:a47b8288c14c6c1eafb3976415fdc16a24ce0b85f06f4cf2c687ee50509ee053`; its artifact/profile
+The active v2 semantic contract SHA-256 is
+`sha256:3269f8525e60012c075c951664083e559583a849f476d035922000d653da8359`; its artifact/profile
 denominator SHA-256 is
-`sha256:bdd99ff7ba8634dbcec7f98f442962a7c371437f9d0d3bcc9fd940f8af285c96`. R01 collects no
-evidence, so the validated positive subscore remains **0/4**. R02 now proves the scoring path with
-synthetic metadata; R02b freezes the mutable tool identities and collection window before any
-restricted evidence work begins.
+`sha256:489be1dfe2513a29c8a4019d2303ebf377e93be33c4fe50bb7d34816d65dc792`.
+Historical v1 remains byte-identical and valid.
+
+## R02b immutable collection freeze
+
+R02b completed the metadata-only freeze before restricted collection:
+
+- source revision: `29c7a9bc7f4fd79478fa0ef7192e9f509be05e45`;
+- exact four-row corpus: `sha256:e848f51878c8fe89ece0876a4ae7c07a88416a36decb29a3354725f49ea06819`;
+- combined npm/PyPI projection schema: `sha256:2785f493cd0ddf4ad3f99124344c40180e7d9c1f4fbf4c182c27fe547f5c377a`;
+- exact arm64 verifier executable: `sha256:d51431a2e08f74fb008988d8e8e24cca8e43873b06ae530e4d9e9cc834a2de33`;
+- verifier public key: `sha256:85500877dd142794fd7beea871e0eaffb67ec0a4ec07670246ae5403d5036197`;
+- collection lock: `sha256:32f96202ca0a6d524c291c339e5aba35cd5acdc92b11f465b4caed5a47e6d928`;
+- EvaluationManifestV2: `sha256:53db45466a91cbaeab6db51039cd515e292291a84f6056b3638f508e39f0dee2`;
+- inclusive collection window: `2026-07-19T02:00:00Z` through `2026-08-18T23:59:59Z`;
+- result-to-registry maximum: 600 seconds.
+
+The tracked [collection lock](./four-known-miss-positive-subscore-collection-lock.v1.json),
+[manifest](./four-known-miss-positive-subscore-evaluation-manifest.v2.json),
+[freeze receipt](./four-known-miss-positive-subscore-freeze-receipt.v1.json), and
+[public key](./four-known-miss-positive-subscore-verifier-public-key.v1.pem) contain no package
+bytes, private key, source excerpts, telemetry, credentials, or host-private paths. The durable
+private key and exact verifier copy remain under ignored local campaign state. Any bound tool or
+policy change invalidates the freeze.
+
+No real row was collected by R02b. The claim-bearing positive subscore remains **0/4**, and the
+finalized July experimental baseline remains **7/11**. R03 is the next bounded step.
 
 ## R02 synthetic publication proof
 
@@ -55,7 +80,7 @@ contract-specific summary. Its accepted result is:
 | Overall evaluation | `false` |
 | Observed-clean/admission/release/sync-back authority | all `false` |
 
-The summary is stricter than label matching: it requires the exact R01
+The summary is stricter than label matching: it requires the exact active-contract
 `(modality, evidence_type, behavior_label)` tuple. A signed dynamic
 `second_stage_fetch_attempt -> second_stage_fetch` therefore cannot satisfy a Telnyx row that
 permits only deterministic `download_execute_capability -> second_stage_fetch`. A signed
@@ -69,7 +94,7 @@ evaluator, complete-run compiler, and R01 contract suites remain green.
 
 This is still synthetic evaluator readiness. No R04/R05 evidence row has been collected, so the
 claim-bearing positive subscore remains **0/4** and the finalized July experimental result remains
-**7/11**. R02b next freezes every final identity and the evaluation window before restricted work.
+**7/11**. R02b is complete; R03 refreshes the restricted-lab preflight against the frozen identity.
 
 ## Complete-run profile
 

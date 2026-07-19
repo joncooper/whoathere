@@ -246,10 +246,10 @@ their exact inputs and criteria are frozen.
 | R01 | Freeze a positive-only four-miss subscore contract | 2-4h | complete | Evaluation contract |
 | R02 | Prove the subscore path with synthetic 4/4 | 2-4h | complete | Evaluator readiness |
 | R02c | Publish one independently derived npm static positive | 2-4h | complete | Real detection 1/1 |
-| R02b | Version the contract and freeze final identities | 1-2h | ready | Collection identity |
-| R03 | Refresh lab preflight for restricted rows | 1-2h | queued | Restricted-lab readiness |
-| R04 | Produce three frozen Telnyx static rows | 2-4h | queued | Frozen positives 3/4 |
-| R05 | Produce one independently derived npm static row | 2-4h | queued | Frozen inputs 4/4 |
+| R02b | Version the contract and freeze final identities | 1-2h | complete | Collection identity |
+| R03 | Refresh lab preflight for restricted rows | 1-2h | ready | Restricted-lab readiness |
+| R04 | Rehearse three frozen Telnyx static producers | 2-4h | queued | Candidate positives 3/4 |
+| R05 | Rehearse one independently derived npm producer | 2-4h | queued | Candidate inputs 4/4 |
 | R06 | Publish the 4/4 behavior-positive prior-miss report | 1-3h | queued | Detection subscore 4/4 |
 | M01 | Static-measure four npm corpus artifacts | 1-3h | queued | Diagnostic corpus rows |
 | M02 | Static-measure four npm corpus artifacts | 1-3h | queued | Diagnostic corpus rows |
@@ -511,6 +511,15 @@ code/runtime/sensor/verifier/prompt/model/provider/policy/compiler/publisher/sco
 No R02b-bound tool or policy may change during R03-R06. Any required change invalidates collected
 rows and requires a new R02b freeze.
 
+**Completed result:** Contract v1 remains historical and byte-identical. Contract v2, source
+revision `29c7a9bc7f4fd79478fa0ef7192e9f509be05e45`, exact verifier and Ed25519 public key, combined
+projection schema, four-row corpus, toolchain, scorer, and collection window are bound by
+`four-known-miss-positive-subscore-collection-lock.v1.json`. The lock SHA-256 is
+`sha256:32f96202ca0a6d524c291c339e5aba35cd5acdc92b11f465b4caed5a47e6d928`; the manifest SHA-256 is
+`sha256:53db45466a91cbaeab6db51039cd515e292291a84f6056b3638f508e39f0dee2`. Runtime, sensor,
+prompt, model, provider, VM, network, and AI identities are explicitly unused. No package or
+malware bytes were read and no evidence row was collected.
+
 ### R03 - Restricted-lab preflight refresh
 
 **User outcome:** A fresh P06 result is bound to the R02b manifest and explicit authorization before
@@ -518,9 +527,10 @@ any retained artifact is opened.
 
 **Budget:** 1-2 hours.
 
-### R04 - Three frozen Telnyx static rows
+### R04 - Rehearse three frozen Telnyx static producers
 
-**User outcome:** Three citation-complete frozen positive rows exist without package execution.
+**User outcome:** All three citation-complete Telnyx producers work against the frozen identity
+without package execution.
 
 **Budget:** 2-4 hours on the approved cloud Mac after R03.
 
@@ -530,12 +540,15 @@ any retained artifact is opened.
 2. The measured static verifier independently reopens each archive and derives its projection.
 3. No package code, VM, hosted AI, or package network activity occurs.
 4. A frozen benign archive plus omission, range, digest, signature, and substitution controls pass.
-5. Output is three validated rows; the four-row campaign remains incomplete.
+5. Output is three validated candidate rows; the four-row campaign remains incomplete.
 
-### R05 - One independently verified npm row
+Because the manifest allows at most 600 seconds between a result and its registry publication,
+R04 is a bounded producer rehearsal. R06 regenerates and publishes all four final rows together.
 
-**User outcome:** The fourth frozen positive row is independently derived from the exact npm archive
-without package execution.
+### R05 - Rehearse one independently verified npm producer
+
+**User outcome:** The fourth frozen producer independently derives the exact npm capability without
+package execution.
 
 **Budget:** 2-4 hours on the approved cloud Mac after a fresh R03-equivalent preflight.
 
@@ -553,6 +566,9 @@ without package execution.
 If that trust boundary cannot be completed within four hours, park it. P01-P07 remain useful and
 R06 does not publish 4/4.
 
+R05 produces a candidate row. R06 regenerates it with the three Telnyx rows and publishes the
+complete registry inside the frozen 600-second result-to-registry bound.
+
 ### R06 - 4/4 behavior-positive prior-miss report
 
 **User outcome:** A reader receives a sanitized report titled according to the gates it actually
@@ -563,6 +579,8 @@ passes.
 **Acceptance:**
 
 - exact denominator and identities validate;
+- all four final results and their signed registry are regenerated and published within 600
+  seconds;
 - behavior-positive detection subscore is 4/4;
 - detection, completion/quality, safety, and overall status are shown independently;
 - if coverage is incomplete, title is `4/4 behavior-positive prior misses; incomplete coverage`,

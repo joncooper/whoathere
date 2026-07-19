@@ -248,26 +248,25 @@ restricted-malware baseline therefore remains 7/11. A strict four-sample publica
 a separate 4/4 prior-miss result; only the subsequent full eleven-sample rerun can establish a new
 11/11 baseline.
 
-The next claim-bearing step is now concrete. R01 originally froze one independently verified
-dynamic credential-read row for npm and three independently verified static download-and-execute
-rows for the Telnyx artifacts. R02c proved that the npm sample's already-documented static
-sensitive-file-exfiltration capability has a simpler, independently derived publication path. The
-four-row contract must be explicitly versioned to adopt that honest capability label before real
-collection; it will not be silently relabeled after the fact. Until that version and the restricted
-rows are published together, the validated real-evidence subscore remains **0/4**. The contract
-continues to prevent an eventual 4/4 positive subscore from being misreported as complete coverage,
-clean admission, release readiness, overall success, or a new 11-sample baseline.
+The next claim-bearing campaign is now concrete and immutable. R02b preserved the original dynamic
+npm contract as historical and introduced an explicit v2 contract that uses the independently
+derived deterministic `sensitive_file_exfiltration_capability` for npm alongside the three static
+Telnyx download-and-execute capabilities. One four-row manifest now binds the exact corpus,
+contract, source revision, verifier executable and public key, combined projection schema,
+publisher, bridge, compiler, scorer, and collection window. Runtime sensors and hosted AI are
+explicitly `not_used` for this static-only campaign rather than represented by placeholder tools.
 
-R02 now proves that contract through the real metadata publication path with wholly synthetic
-inputs. The dedicated compiler creates the exact four-row manifest, the publisher converts one
-signed dynamic npm projection and three signed static Telnyx projections into manual-review-only
-results, the bridge creates the exhaustive signed evidence registry, and the mandatory V2 scorer
-authenticates every join. The contract-specific summary reports **4/4 behavior positives**, **4/4
-safety**, **0/4 completion**, and `overall_passed=false`; observed-clean, admission, release, and
-sync-back authority are all false. It also proves that a generic safe block and a matching behavior
-label from the wrong evidence type each remain a 3/4 miss. This is evaluator readiness, not new
-malware evidence: the validated real-evidence subscore remains **0/4** and the July baseline remains
-**7/11**.
+The current synthetic publication proof exercises that v2 contract through the production metadata
+path: one signed static npm projection and three signed static Telnyx projections become
+manual-review-only results, an exhaustive signed registry, and a strict score of **4/4 behavior
+positives**, **4/4 safety**, **0/4 completion**, and `overall_passed=false`. Generic blocks and wrong
+evidence tuples remain misses. The freeze itself read no malware bytes and ran no package, VM,
+network, or AI workload. A fresh restricted-lab preflight and the four measured rows still come
+next, so the validated real-evidence subscore remains **0/4** and the July baseline remains
+**7/11**. The tracked [collection lock](docs/product-build-run/four-known-miss-positive-subscore-collection-lock.v1.json),
+[evaluation manifest](docs/product-build-run/four-known-miss-positive-subscore-evaluation-manifest.v2.json),
+and [freeze receipt](docs/product-build-run/four-known-miss-positive-subscore-freeze-receipt.v1.json)
+make that remaining work reproducible and auditable.
 
 The product can now present that progress directly. The production `whoathere report render`
 command accepts the four source-free sanitized projections through a separate closed validator,

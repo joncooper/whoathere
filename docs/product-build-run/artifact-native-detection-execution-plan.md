@@ -137,14 +137,20 @@ macOS-hosted local detection beta. Cloudflare and AWS portability are a separate
   signed-registry bridging, and strict scoring with a one-row behavior-detection rate of `1.0` and
   no validation errors. A paired sensitive-read-only control produced no projection and remained
   inconclusive. No package code, VM, network, hosted AI, or restricted material was used.
+- R02b then converted those proven paths into one immutable collection identity. Historical
+  contract v1 remains unchanged; active contract v2 explicitly uses deterministic
+  `sensitive_file_exfiltration_capability -> sensitive_file_exfiltration` for npm and static
+  `download_execute_capability -> second_stage_fetch` for the three Telnyx rows. Source revision
+  `29c7a9bc7f4fd79478fa0ef7192e9f509be05e45`, the four-row corpus, exact verifier binary and public
+  key, combined projection schema, publisher, bridge, compiler, scorer, and collection window are
+  frozen in one machine-readable lock and EvaluationManifestV2. No artifact or evidence was read.
 - All three Telnyx misses are verified and semantically ready for the sealed
   `download_execute_capability -> second_stage_fetch` mapping, and the remaining npm miss now has a
   complete paired physical/Codex diagnostic plus an independently derived static publication path.
-  The remaining gap is evaluation publication rather than artifact execution: explicitly version
-  the positive-only contract to use the honest static npm capability label, freeze one four-sample
-  manifest, run the measured producers, publish exactly one digest-bound row per expected
-  sample/profile, and let the strict scorer derive the result. Broad telemetry work remains
-  deferred.
+  The remaining gap is measured evaluation publication rather than artifact execution: refresh the
+  restricted-lab preflight against the frozen identity, run the four measured static producers,
+  publish exactly one digest-bound row per expected sample/profile inside the manifest's 600-second
+  bound, and let the strict scorer derive the result. Broad telemetry work remains deferred.
 - The strict July public baseline remains **7/11**. A manifest-bound four-sample campaign can
   establish a separate 4/4 prior-miss result; only a subsequent full eleven-sample campaign can
   establish a new 11/11 baseline. This checkpoint improves the shortest path to those gates; it
