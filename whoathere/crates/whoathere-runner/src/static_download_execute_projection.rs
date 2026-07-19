@@ -1,9 +1,9 @@
-//! Offline, exact-byte projection of deterministic download/execute findings.
+//! Offline, exact-byte projection of selected deterministic capability findings.
 //!
 //! This module is intentionally narrow. It reopens, normalizes, and analyzes an
 //! npm or PyPI archive directly through the artifact and detector contracts, then emits
-//! only citation-complete `DownloadExecuteCapability` projections. It has no
-//! package execution, networking, AI, VM, admission, or observed-clean path.
+//! only citation-complete projections from a closed capability allowlist. It has
+//! no package execution, networking, AI, VM, admission, or observed-clean path.
 
 use crate::exact_artifact::{
     checked_filename, declared_format_for, manifest_requires_external_resolution,
@@ -31,15 +31,86 @@ use whoathere_detector::{
 
 pub const STATIC_PROJECTION_METADATA_SCHEMA_V1: &str =
     "whoathere.static_download_execute_projection_metadata.v1";
+pub const STATIC_SENSITIVE_FILE_EXFILTRATION_PROJECTION_METADATA_SCHEMA_V1: &str =
+    "whoathere.static_sensitive_file_exfiltration_projection_metadata.v1";
 pub const STATIC_PROJECTION_SOURCE_RECEIPT_SCHEMA_V1: &str =
     whoathere_detector::ARTIFACT_STATIC_ANALYSIS_SCHEMA_VERSION;
 pub const STATIC_PROJECTION_KIND_V1: &str = "static_download_execute_capability";
+pub const STATIC_SENSITIVE_FILE_EXFILTRATION_PROJECTION_KIND_V1: &str =
+    "static_sensitive_file_exfiltration_capability";
 pub const STATIC_PROJECTION_CLAIM_BOUNDARY_V1: &str =
     "Verified deterministic capability only; no runtime-attempt, observed-clean, release, or admission authority.";
 
 const EXIT_INCONCLUSIVE: i32 = 22;
 const EXIT_DATA_ERROR: i32 = 65;
 const EXIT_INTERNAL_ERROR: i32 = 70;
+
+/// Closed set of deterministic findings this verifier is allowed to publish.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StaticProjectionKindV1 {
+    DownloadExecuteCapability,
+    SensitiveFileExfiltrationCapability,
+}
+
+impl StaticProjectionKindV1 {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::DownloadExecuteCapability => STATIC_PROJECTION_KIND_V1,
+            Self::SensitiveFileExfiltrationCapability => {
+                STATIC_SENSITIVE_FILE_EXFILTRATION_PROJECTION_KIND_V1
+            }
+        }
+    }
+
+    pub const fn metadata_schema(self) -> &'static str {
+        match self {
+            Self::DownloadExecuteCapability => STATIC_PROJECTION_METADATA_SCHEMA_V1,
+            Self::SensitiveFileExfiltrationCapability => {
+                STATIC_SENSITIVE_FILE_EXFILTRATION_PROJECTION_METADATA_SCHEMA_V1
+            }
+        }
+    }
+
+    const fn finding_category(self) -> ArtifactFindingCategory {
+        match self {
+            Self::DownloadExecuteCapability => ArtifactFindingCategory::DownloadExecuteCapability,
+            Self::SensitiveFileExfiltrationCapability => {
+                ArtifactFindingCategory::SensitiveFileExfiltrationCapability
+            }
+        }
+    }
+
+    const fn threat_class(self) -> ExactArtifactThreatClassV1 {
+        match self {
+            Self::DownloadExecuteCapability => {
+                ExactArtifactThreatClassV1::SecondStageNativeOrWasmHandoff
+            }
+            Self::SensitiveFileExfiltrationCapability => {
+                ExactArtifactThreatClassV1::NetworkAndExfiltration
+            }
+        }
+    }
+
+    const fn envelope_policy_version(self) -> &'static str {
+        match self {
+            Self::DownloadExecuteCapability => "static-download-execute-projection-v1",
+            Self::SensitiveFileExfiltrationCapability => {
+                "static-sensitive-file-exfiltration-projection-v1"
+            }
+        }
+    }
+
+    const fn not_found_reason_code(self) -> &'static str {
+        match self {
+            Self::DownloadExecuteCapability => {
+                "static_projection_download_execute_capability_not_found"
+            }
+            Self::SensitiveFileExfiltrationCapability => {
+                "static_projection_sensitive_file_exfiltration_capability_not_found"
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct StaticProjectionRequestV1<'a> {
@@ -105,7 +176,7 @@ impl StaticProjectionMetadataV1 {
     /// Sorted-key, compact UTF-8 JSON with one trailing LF, matching the
     /// publisher's canonical JSON convention.
     pub fn canonical_json_bytes(&self) -> Result<Vec<u8>, StaticProjectionErrorV1> {
-        canonical_json_bytes(self)
+        canonical_json_bytes(self, self.schema)
     }
 }
 
@@ -113,27 +184,34 @@ impl StaticProjectionMetadataV1 {
 pub struct StaticProjectionErrorV1 {
     reason_code: &'static str,
     exit_code: i32,
+    metadata_schema: &'static str,
 }
 
 impl StaticProjectionErrorV1 {
-    const fn inconclusive(reason_code: &'static str) -> Self {
+    const fn inconclusive(
+        projection_kind: StaticProjectionKindV1,
+        reason_code: &'static str,
+    ) -> Self {
         Self {
             reason_code,
             exit_code: EXIT_INCONCLUSIVE,
+            metadata_schema: projection_kind.metadata_schema(),
         }
     }
 
-    const fn data(reason_code: &'static str) -> Self {
+    const fn data(projection_kind: StaticProjectionKindV1, reason_code: &'static str) -> Self {
         Self {
             reason_code,
             exit_code: EXIT_DATA_ERROR,
+            metadata_schema: projection_kind.metadata_schema(),
         }
     }
 
-    const fn internal(reason_code: &'static str) -> Self {
+    const fn internal(projection_kind: StaticProjectionKindV1, reason_code: &'static str) -> Self {
         Self {
             reason_code,
             exit_code: EXIT_INTERNAL_ERROR,
+            metadata_schema: projection_kind.metadata_schema(),
         }
     }
 
@@ -146,17 +224,21 @@ impl StaticProjectionErrorV1 {
     }
 
     pub fn canonical_json_bytes(&self) -> Vec<u8> {
-        canonical_json_bytes(&serde_json::json!({
-            "schema": STATIC_PROJECTION_METADATA_SCHEMA_V1,
-            "verification_status": "failed",
-            "reason_codes": [self.reason_code],
-            "exit_code": self.exit_code,
-            "admission_authority": false,
-            "observed_clean": false,
-        }))
-        .unwrap_or_else(|_| {
-            b"{\"admission_authority\":false,\"exit_code\":70,\"observed_clean\":false,\"reason_codes\":[\"static_projection_error_serialization_failed\"],\"schema\":\"whoathere.static_download_execute_projection_metadata.v1\",\"verification_status\":\"failed\"}\n".to_vec()
-        })
+        canonical_json_bytes(
+            &serde_json::json!({
+                "schema": self.metadata_schema,
+                "verification_status": "failed",
+                "reason_codes": [self.reason_code],
+                "exit_code": self.exit_code,
+                "admission_authority": false,
+                "observed_clean": false,
+            }),
+            self.metadata_schema,
+        )
+        .unwrap_or_else(|_| format!(
+            "{{\"admission_authority\":false,\"exit_code\":70,\"observed_clean\":false,\"reason_codes\":[\"static_projection_error_serialization_failed\"],\"schema\":\"{}\",\"verification_status\":\"failed\"}}\n",
+            self.metadata_schema
+        ).into_bytes())
     }
 }
 
@@ -173,28 +255,63 @@ impl std::error::Error for StaticProjectionErrorV1 {}
 pub fn verify_static_download_execute_projections_v1(
     request: StaticProjectionRequestV1<'_>,
 ) -> Result<StaticProjectionMetadataV1, StaticProjectionErrorV1> {
+    verify_static_projections_v1(request, StaticProjectionKindV1::DownloadExecuteCapability)
+}
+
+/// Reopen and independently analyze one exact package archive, emitting only
+/// publisher-compatible, citation-complete sensitive-file/exfiltration
+/// capability projections.
+pub fn verify_static_sensitive_file_exfiltration_projections_v1(
+    request: StaticProjectionRequestV1<'_>,
+) -> Result<StaticProjectionMetadataV1, StaticProjectionErrorV1> {
+    verify_static_projections_v1(
+        request,
+        StaticProjectionKindV1::SensitiveFileExfiltrationCapability,
+    )
+}
+
+/// Reopen and independently analyze one exact package archive using one closed
+/// projection policy.
+pub fn verify_static_projections_v1(
+    request: StaticProjectionRequestV1<'_>,
+    projection_kind: StaticProjectionKindV1,
+) -> Result<StaticProjectionMetadataV1, StaticProjectionErrorV1> {
     if !request.artifact_path.is_absolute() {
         return Err(StaticProjectionErrorV1::data(
+            projection_kind,
             "static_projection_artifact_path_not_absolute",
         ));
     }
-    let filename = checked_filename(request.artifact_path)
-        .map_err(|_| StaticProjectionErrorV1::data("static_projection_filename_invalid"))?;
-    let bytes = read_exact_artifact(request.artifact_path, request.normalization_limits)
-        .map_err(|_| StaticProjectionErrorV1::data("static_projection_artifact_unreadable"))?;
+    let filename = checked_filename(request.artifact_path).map_err(|_| {
+        StaticProjectionErrorV1::data(projection_kind, "static_projection_filename_invalid")
+    })?;
+    let bytes =
+        read_exact_artifact(request.artifact_path, request.normalization_limits).map_err(|_| {
+            StaticProjectionErrorV1::data(projection_kind, "static_projection_artifact_unreadable")
+        })?;
     let artifact_sha256 = Sha256Digest::from_bytes(&bytes);
     if &artifact_sha256 != request.expected_artifact_sha256 {
         return Err(StaticProjectionErrorV1::data(
+            projection_kind,
             "static_projection_expected_artifact_digest_mismatch",
         ));
     }
-    let detected_format = detect_artifact_format(request.ecosystem, &filename, &bytes)
-        .map_err(|_| StaticProjectionErrorV1::data("static_projection_artifact_format_invalid"))?;
+    let detected_format =
+        detect_artifact_format(request.ecosystem, &filename, &bytes).map_err(|_| {
+            StaticProjectionErrorV1::data(
+                projection_kind,
+                "static_projection_artifact_format_invalid",
+            )
+        })?;
     let declared_format = declared_format_for(request.ecosystem, &filename).ok_or_else(|| {
-        StaticProjectionErrorV1::data("static_projection_declared_format_unsupported")
+        StaticProjectionErrorV1::data(
+            projection_kind,
+            "static_projection_declared_format_unsupported",
+        )
     })?;
     if detected_format != declared_format {
         return Err(StaticProjectionErrorV1::data(
+            projection_kind,
             "static_projection_declared_format_mismatch",
         ));
     }
@@ -211,43 +328,58 @@ pub fn verify_static_download_execute_projections_v1(
         custody_reference: format!("independent-static-verifier:{artifact_sha256}"),
         resolver_metadata_sha256: None,
         registry_metadata_sha256: None,
-        policy_version: "static-download-execute-projection-v1".to_string(),
+        policy_version: projection_kind.envelope_policy_version().to_string(),
         requires_external_dependency_resolution: false,
     };
     let mut envelope =
         ArtifactEnvelope::from_original_bytes(envelope_input.clone(), &bytes, detected_format);
-    envelope
-        .validate()
-        .map_err(|_| StaticProjectionErrorV1::data("static_projection_envelope_invalid"))?;
+    envelope.validate().map_err(|_| {
+        StaticProjectionErrorV1::data(projection_kind, "static_projection_envelope_invalid")
+    })?;
     let mut normalized = normalize_artifact(&envelope, &bytes, request.normalization_limits)
-        .map_err(|_| StaticProjectionErrorV1::data("static_projection_normalization_failed"))?;
+        .map_err(|_| {
+            StaticProjectionErrorV1::data(projection_kind, "static_projection_normalization_failed")
+        })?;
     let closure_required = manifest_requires_external_resolution(&normalized.manifest);
     if closure_required {
         envelope_input.requires_external_dependency_resolution = true;
         envelope = ArtifactEnvelope::from_original_bytes(envelope_input, &bytes, detected_format);
-        envelope
-            .validate()
-            .map_err(|_| StaticProjectionErrorV1::data("static_projection_envelope_invalid"))?;
-        normalized = normalize_artifact(&envelope, &bytes, request.normalization_limits)
-            .map_err(|_| StaticProjectionErrorV1::data("static_projection_normalization_failed"))?;
+        envelope.validate().map_err(|_| {
+            StaticProjectionErrorV1::data(projection_kind, "static_projection_envelope_invalid")
+        })?;
+        normalized =
+            normalize_artifact(&envelope, &bytes, request.normalization_limits).map_err(|_| {
+                StaticProjectionErrorV1::data(
+                    projection_kind,
+                    "static_projection_normalization_failed",
+                )
+            })?;
     }
     normalized.validate().map_err(|_| {
-        StaticProjectionErrorV1::data("static_projection_normalized_artifact_invalid")
+        StaticProjectionErrorV1::data(
+            projection_kind,
+            "static_projection_normalized_artifact_invalid",
+        )
     })?;
     if normalized.manifest.artifact_sha256 != artifact_sha256
         || normalized.manifest.magic_detected_format != detected_format
     {
         return Err(StaticProjectionErrorV1::internal(
+            projection_kind,
             "static_projection_normalized_artifact_binding_invalid",
         ));
     }
-    let analysis = analyze_normalized_artifact(&normalized)
-        .map_err(|_| StaticProjectionErrorV1::data("static_projection_analysis_failed"))?;
-    analysis
-        .validate(&normalized)
-        .map_err(|_| StaticProjectionErrorV1::data("static_projection_analysis_invalid"))?;
+    let analysis = analyze_normalized_artifact(&normalized).map_err(|_| {
+        StaticProjectionErrorV1::data(projection_kind, "static_projection_analysis_failed")
+    })?;
+    analysis.validate(&normalized).map_err(|_| {
+        StaticProjectionErrorV1::data(projection_kind, "static_projection_analysis_invalid")
+    })?;
     let deterministic_analysis_sha256 = analysis.analysis_sha256().map_err(|_| {
-        StaticProjectionErrorV1::internal("static_projection_analysis_digest_failed")
+        StaticProjectionErrorV1::internal(
+            projection_kind,
+            "static_projection_analysis_digest_failed",
+        )
     })?;
     let manifest_sha256 = normalized.manifest.manifest_sha256.clone();
     let (coverage, coverage_gap_codes) = match analysis.coverage.completeness {
@@ -264,22 +396,21 @@ pub fn verify_static_download_execute_projections_v1(
     for finding in analysis
         .findings
         .iter()
-        .filter(|finding| finding.category == ArtifactFindingCategory::DownloadExecuteCapability)
+        .filter(|finding| finding.category == projection_kind.finding_category())
     {
         if finding.specificity != FindingSpecificity::PackageSpecific
             || finding.artifact_sha256 != artifact_sha256
             || finding.manifest_sha256 != manifest_sha256
         {
             return Err(StaticProjectionErrorV1::internal(
+                projection_kind,
                 "static_projection_finding_binding_invalid",
             ));
         }
         let observation = ExactArtifactObservationV1::new(
             ExactArtifactObservationSourceV1::DeterministicStatic,
-            ExactArtifactThreatClassV1::SecondStageNativeOrWasmHandoff,
-            ExactArtifactFindingKindV1::DeterministicStatic(
-                ArtifactFindingCategory::DownloadExecuteCapability,
-            ),
+            projection_kind.threat_class(),
+            ExactArtifactFindingKindV1::DeterministicStatic(projection_kind.finding_category()),
             match finding.confidence {
                 FindingConfidence::Moderate => ExactArtifactObservationConfidenceV1::Moderate,
                 FindingConfidence::High => ExactArtifactObservationConfidenceV1::High,
@@ -295,7 +426,10 @@ pub fn verify_static_download_execute_projections_v1(
             true,
         )
         .map_err(|_| {
-            StaticProjectionErrorV1::internal("static_projection_exact_observation_digest_invalid")
+            StaticProjectionErrorV1::internal(
+                projection_kind,
+                "static_projection_exact_observation_digest_invalid",
+            )
         })?;
         match &observation.evidence {
             ExactArtifactEvidenceReferenceV1::DeterministicStatic {
@@ -309,6 +443,7 @@ pub fn verify_static_download_execute_projections_v1(
             | ExactArtifactEvidenceReferenceV1::AiSourceReview { .. }
             | ExactArtifactEvidenceReferenceV1::AiBehavioral { .. } => {
                 return Err(StaticProjectionErrorV1::internal(
+                    projection_kind,
                     "static_projection_citation_not_file_bound",
                 ));
             }
@@ -318,7 +453,8 @@ pub fn verify_static_download_execute_projections_v1(
         .sort_by(|left, right| left.observation_sha256.cmp(&right.observation_sha256));
     if exact_observations.is_empty() {
         return Err(StaticProjectionErrorV1::inconclusive(
-            "static_projection_download_execute_capability_not_found",
+            projection_kind,
+            projection_kind.not_found_reason_code(),
         ));
     }
 
@@ -376,11 +512,12 @@ pub fn verify_static_download_execute_projections_v1(
         } = &observation.evidence
         else {
             return Err(StaticProjectionErrorV1::internal(
+                projection_kind,
                 "static_projection_citation_not_file_bound",
             ));
         };
         projections.push(StaticDownloadExecuteCapabilityProjectionV1 {
-            kind: STATIC_PROJECTION_KIND_V1,
+            kind: projection_kind.as_str(),
             artifact_sha256: artifact_sha256.clone(),
             artifact_manifest_sha256: manifest_sha256.clone(),
             exact_observation_sha256: observation.observation_sha256.clone(),
@@ -398,7 +535,7 @@ pub fn verify_static_download_execute_projections_v1(
     });
 
     Ok(StaticProjectionMetadataV1 {
-        schema: STATIC_PROJECTION_METADATA_SCHEMA_V1,
+        schema: projection_kind.metadata_schema(),
         verification_status: "verified",
         claim_boundary: STATIC_PROJECTION_CLAIM_BOUNDARY_V1,
         verification_summary,
@@ -410,11 +547,18 @@ pub fn verify_static_download_execute_projections_v1(
     })
 }
 
-fn canonical_json_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>, StaticProjectionErrorV1> {
-    let value = serde_json::to_value(value)
-        .map_err(|_| StaticProjectionErrorV1::internal("static_projection_serialization_failed"))?;
-    let mut bytes = serde_json::to_vec(&sorted_json_value(value))
-        .map_err(|_| StaticProjectionErrorV1::internal("static_projection_serialization_failed"))?;
+fn canonical_json_bytes<T: Serialize>(
+    value: &T,
+    metadata_schema: &'static str,
+) -> Result<Vec<u8>, StaticProjectionErrorV1> {
+    let serialization_error = || StaticProjectionErrorV1 {
+        reason_code: "static_projection_serialization_failed",
+        exit_code: EXIT_INTERNAL_ERROR,
+        metadata_schema,
+    };
+    let value = serde_json::to_value(value).map_err(|_| serialization_error())?;
+    let mut bytes =
+        serde_json::to_vec(&sorted_json_value(value)).map_err(|_| serialization_error())?;
     bytes.push(b'\n');
     Ok(bytes)
 }

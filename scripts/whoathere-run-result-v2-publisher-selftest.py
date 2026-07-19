@@ -182,6 +182,24 @@ def projection_bundle(manifest_value: dict[str, Any], manifest_sha256: str) -> d
                 "event_sha256": "sha256:" + "4" * 64,
                 "source_receipt_sha256": "sha256:" + "5" * 64,
             },
+            {
+                "kind": "static_sensitive_file_exfiltration_capability",
+                "artifact_sha256": ARTIFACT_SHA256,
+                "artifact_manifest_sha256": "sha256:" + "6" * 64,
+                "exact_observation_sha256": "sha256:" + "7" * 64,
+                "finding_evidence_sha256": "sha256:" + "8" * 64,
+                "file_id": "sha256:" + "9" * 64,
+                "file_sha256": "sha256:" + "a" * 64,
+                "range": {
+                    "kind": "lines",
+                    "start_line": 4,
+                    "end_line": 7,
+                    "start_byte": 80,
+                    "end_byte": 210,
+                },
+                "selected_bytes_sha256": "sha256:" + "c" * 64,
+                "source_receipt_sha256": "sha256:" + "d" * 64,
+            },
         ],
         "claim_boundary": CLAIM_BOUNDARY,
     }
@@ -292,6 +310,11 @@ def main() -> int:
         require(by_type["download_execute_capability"]["behavior_label"] == "second_stage_fetch", str(result))
         require(by_type["environment_credential_read"]["behavior_label"] == "credential_env_access", str(result))
         require(
+            by_type["sensitive_file_exfiltration_capability"]["behavior_label"]
+            == "sensitive_file_exfiltration",
+            str(result),
+        )
+        require(
             by_type["download_execute_capability"]["projection_sha256"]
             == digest(canonical(base_bundle["projections"][0])),
             str(result),
@@ -299,6 +322,11 @@ def main() -> int:
         require(
             by_type["environment_credential_read"]["projection_sha256"]
             == digest(canonical(base_bundle["projections"][1])),
+            str(result),
+        )
+        require(
+            by_type["sensitive_file_exfiltration_capability"]["projection_sha256"]
+            == digest(canonical(base_bundle["projections"][2])),
             str(result),
         )
         for observation in result["observations"]:
@@ -398,6 +426,66 @@ def main() -> int:
         require(
             invalid_citation.returncode == 20 and "static_citation_range_invalid" in invalid_citation.stderr,
             invalid_citation.stderr,
+        )
+
+        exfil_invalid_citation, _ = run_case(
+            root,
+            "invalid-sensitive-file-exfiltration-citation",
+            manifest_path,
+            manifest_sha256,
+            private,
+            base_bundle,
+            public,
+            lambda value: value["projections"][2].__setitem__(
+                "range",
+                {
+                    "kind": "lines",
+                    "start_line": 7,
+                    "end_line": 4,
+                    "start_byte": 80,
+                    "end_byte": 210,
+                },
+            ),
+        )
+        require(
+            exfil_invalid_citation.returncode == 20
+            and "static_citation_range_invalid" in exfil_invalid_citation.stderr,
+            exfil_invalid_citation.stderr,
+        )
+
+        exfil_modality_injection, _ = run_case(
+            root,
+            "sensitive-file-exfiltration-modality-injection",
+            manifest_path,
+            manifest_sha256,
+            private,
+            base_bundle,
+            public,
+            lambda value: value["projections"][2].__setitem__("modality", "dynamic"),
+        )
+        require(
+            exfil_modality_injection.returncode == 20
+            and "static_sensitive_file_exfiltration_projection_keys_invalid"
+            in exfil_modality_injection.stderr,
+            exfil_modality_injection.stderr,
+        )
+
+        exfil_wrong_kind, _ = run_case(
+            root,
+            "sensitive-file-exfiltration-wrong-kind",
+            manifest_path,
+            manifest_sha256,
+            private,
+            base_bundle,
+            public,
+            lambda value: value["projections"][2].__setitem__(
+                "kind", "static_sensitive_file_read_capability"
+            ),
+        )
+        require(
+            exfil_wrong_kind.returncode == 20
+            and "verified_projection_kind_unmapped" in exfil_wrong_kind.stderr,
+            exfil_wrong_kind.stderr,
         )
 
         for evidence_type in (
@@ -519,6 +607,7 @@ def main() -> int:
                         "signed_projection_publishes_manual_review_only",
                         "incomplete_run_fact_is_preserved",
                         "static_download_execute_maps_narrowly",
+                        "static_sensitive_file_exfiltration_maps_narrowly",
                         "observation_id_binds_canonical_projection_digest",
                         "behavior_labels_are_derived",
                         "loose_reason_fields_rejected",
@@ -527,6 +616,9 @@ def main() -> int:
                         "unmapped_evidence_type_rejected",
                         "execution_profile_digest_mismatch_rejected",
                         "invalid_static_citation_rejected",
+                        "sensitive_file_exfiltration_invalid_citation_rejected",
+                        "sensitive_file_exfiltration_modality_injection_rejected",
+                        "sensitive_file_exfiltration_wrong_kind_rejected",
                         "runtime_evidence_is_dynamic_only",
                         "duplicate_source_event_relabel_rejected",
                         "duplicate_source_event_conflicting_digest_rejected",

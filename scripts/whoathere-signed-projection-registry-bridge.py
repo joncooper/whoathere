@@ -39,7 +39,12 @@ REGISTRY_SCHEMA = "whoathere.actual_malware.verified_evidence_registry.v1"
 RUN_INDEX_SCHEMA = "whoathere.actual_malware.signed_projection_run_index.v1"
 SUPPORTED_PROJECTION_KINDS = {
     "static_download_execute_capability",
+    "static_sensitive_file_exfiltration_capability",
     "typed_event",
+}
+STATIC_PROJECTION_EVIDENCE_TYPES = {
+    "static_download_execute_capability": "download_execute_capability",
+    "static_sensitive_file_exfiltration_capability": "sensitive_file_exfiltration_capability",
 }
 MAX_RUN_INDEX_BYTES = 8 * 1024 * 1024
 MAX_RESULT_BYTES = 64 * 1024 * 1024
@@ -193,9 +198,11 @@ def evidence_records(
         )
     by_projection_sha256: dict[str, dict[str, Any]] = {}
     for projection in projections:
+        projection_kind = projection.get("kind") if isinstance(projection, dict) else None
         require(
             isinstance(projection, dict)
-            and projection.get("kind") in SUPPORTED_PROJECTION_KINDS,
+            and isinstance(projection_kind, str)
+            and projection_kind in SUPPORTED_PROJECTION_KINDS,
             "projection_kind_unsupported",
         )
         projection_sha256 = publisher.sha256_bytes(publisher.canonical_json_bytes(projection))
@@ -215,9 +222,9 @@ def evidence_records(
         projection = by_projection_sha256.get(str(projection_sha256))
         require(projection is not None, "projection_observation_unbound")
         projection_kind = projection.get("kind")
-        if projection_kind == "static_download_execute_capability":
+        if isinstance(projection_kind, str) and projection_kind in STATIC_PROJECTION_EVIDENCE_TYPES:
             expected_modality = "deterministic"
-            expected_evidence_type = "download_execute_capability"
+            expected_evidence_type = STATIC_PROJECTION_EVIDENCE_TYPES[projection_kind]
             expected_evidence_sha256 = projection.get("exact_observation_sha256")
         elif projection_kind == "typed_event":
             expected_modality = projection.get("modality")

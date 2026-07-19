@@ -6,10 +6,12 @@ from __future__ import annotations
 import base64
 import copy
 import hashlib
+import io
 import json
 import os
 import shutil
 import subprocess
+import tarfile
 import tempfile
 import zipfile
 from pathlib import Path
@@ -22,6 +24,11 @@ BRIDGE = ROOT / "scripts" / "whoathere-signed-projection-registry-bridge.py"
 PUBLISHER = ROOT / "scripts" / "whoathere-run-result-v2-publisher.py"
 EVALUATOR = ROOT / "scripts" / "whoathere-actual-malware-evaluation.py"
 SCHEMA = ROOT / "scripts" / "whoathere-static-download-execute-projection-schema-v1.json"
+SENSITIVE_EXFIL_SCHEMA = (
+    ROOT
+    / "scripts"
+    / "whoathere-static-sensitive-file-exfiltration-projection-schema-v1.json"
+)
 MANIFEST = ROOT / "whoathere" / "Cargo.toml"
 DEFAULT_VERIFIER = ROOT / "whoathere" / "target" / "debug" / "whoathere-static-projection"
 
@@ -42,6 +49,13 @@ def fetch_and_launch():
     subprocess.Popen([destination])
 
 fetch_and_launch()
+'''
+NPM_SENSITIVE_READ = b'''const fs = require('node:fs');
+const config = fs.readFileSync(process.env.HOME + '/.npmrc');
+console.log(config.length);
+'''
+NPM_SENSITIVE_EXFIL_CAPABILITY = NPM_SENSITIVE_READ + b'''const https = require('node:https');
+https.request({method: 'POST'});
 '''
 
 
@@ -75,8 +89,6 @@ def build_verifier() -> Path:
         verifier = Path(configured).expanduser().absolute()
         require(verifier.is_file(), "configured static verifier is unavailable")
         return verifier
-    if DEFAULT_VERIFIER.is_file() and os.access(DEFAULT_VERIFIER, os.X_OK):
-        return DEFAULT_VERIFIER
     process = subprocess.run(
         [
             "cargo",
@@ -158,6 +170,29 @@ def inert_wheel(path: Path, package_name: str, marker: str) -> None:
         write_member(archive, record_path, record.encode("utf-8"))
 
 
+def inert_npm_tgz(path: Path, package_name: str, payload: bytes) -> None:
+    members = {
+        "package/package.json": json.dumps(
+            {
+                "name": package_name,
+                "version": "1.0.0",
+                "main": "index.js",
+                "scripts": {"postinstall": "node index.js"},
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8"),
+        "package/index.js": payload,
+    }
+    with tarfile.open(path, "w:gz", format=tarfile.PAX_FORMAT) as archive:
+        for member_path, value in sorted(members.items()):
+            info = tarfile.TarInfo(member_path)
+            info.size = len(value)
+            info.mode = 0o644
+            info.mtime = 0
+            archive.addfile(info, io.BytesIO(value))
+
+
 def corpus_row(sample_id: str, artifact_path: Path) -> dict[str, Any]:
     return {
         "schema_version": "whoathere.actual_malware.corpus.v1",
@@ -199,12 +234,32 @@ def corpus_row(sample_id: str, artifact_path: Path) -> dict[str, Any]:
     }
 
 
+def npm_corpus_row(
+    sample_id: str, artifact_path: Path, *, expected_result: str
+) -> dict[str, Any]:
+    value = corpus_row(sample_id, artifact_path)
+    value.update(
+        {
+            "ecosystem": "npm",
+            "artifact_filename": artifact_path.name,
+            "expected_result": expected_result,
+            "trigger_phases": ["npm_lifecycle"],
+            "behavior_labels": (
+                ["sensitive_file_exfiltration"] if expected_result == "malicious" else []
+            ),
+        }
+    )
+    return value
+
+
 def manifest(
     *,
     corpus_path: Path,
     artifacts: dict[str, Path],
     verifier: Path,
     public_key: Path,
+    schema: Path = SCHEMA,
+    run_specs: list[tuple[str, str]] = RUN_SPECS,
 ) -> dict[str, Any]:
     return {
         "schema": "whoathere.actual_malware.evaluation_manifest.v2",
@@ -225,7 +280,7 @@ def manifest(
             "verifier_id": "whoathere-static-projection-v1",
             "verifier_public_key_sha256": digest(public_key.read_bytes()),
             "verifier_executable_sha256": digest(verifier.read_bytes()),
-            "projection_schema_sha256": digest(SCHEMA.read_bytes()),
+            "projection_schema_sha256": digest(schema.read_bytes()),
         },
         "evaluation_window": {
             "starts_at_utc": "2026-07-15T00:00:00Z",
@@ -261,23 +316,72 @@ def manifest(
                 "required_modalities": ["deterministic"],
                 "require_complete": True,
             }
-            for sample_id, profile_id in RUN_SPECS
+            for sample_id, profile_id in run_specs
         ],
     }
 
 
-def run_inputs(run_id: str) -> dict[str, Any]:
+def npm_manifest(
+    *,
+    corpus_path: Path,
+    artifacts: dict[str, Path],
+    verifier: Path,
+    public_key: Path,
+) -> dict[str, Any]:
+    value = manifest(
+        corpus_path=corpus_path,
+        artifacts={},
+        verifier=verifier,
+        public_key=public_key,
+        schema=SENSITIVE_EXFIL_SCHEMA,
+        run_specs=[],
+    )
+    value["evaluation_id"] = "inert-static-sensitive-exfil-assembly"
+    value["verified_evidence_registry"]["registry_id"] = (
+        "inert-static-sensitive-exfil-assembly-registry"
+    )
+    value["required_runs"] = [
+        {
+            "sample_id": sample_id,
+            "profile_id": "npm-static-sensitive-exfil-v1",
+            "cohort_id": "inert-malicious",
+            "family_id": "inert-static-sensitive-exfil-family",
+            "campaign_id": "inert-static-sensitive-exfil-campaign",
+            "artifact_sha256": digest(artifact.read_bytes()),
+            "execution_profile_sha256": EXECUTION_PROFILE_SHA256,
+            "ecosystem": "npm",
+            "expected_result": "malicious",
+            "required_behavior_labels": ["sensitive_file_exfiltration"],
+            "required_modalities": ["deterministic"],
+            "require_complete": True,
+        }
+        for sample_id, artifact in sorted(artifacts.items())
+    ]
+    value["cohorts"] = [
+        {
+            "cohort_id": "inert-malicious",
+            "expected_result": "malicious",
+            "description": "inert npm sensitive-file exfiltration capability fixture",
+        }
+    ]
+    return value
+
+
+def run_inputs(run_id: str, *, deterministic_state: str = "incomplete") -> dict[str, Any]:
+    require(deterministic_state in {"complete", "incomplete"}, "invalid deterministic state")
     return {
         "schema": "whoathere.static_projection_bundle_run_fact_inputs.v1",
         "created_at_utc": "2026-07-15T00:01:00Z",
         "verified_at_utc": "2026-07-15T00:02:00Z",
         "run_id": run_id,
-        "completion_state": "incomplete",
-        "completion_gap_codes": ["deterministic_coverage_incomplete"],
+        "completion_state": deterministic_state,
+        "completion_gap_codes": (
+            [] if deterministic_state == "complete" else ["deterministic_coverage_incomplete"]
+        ),
         "coverage": [
             {
                 "modality": "deterministic",
-                "state": "incomplete",
+                "state": deterministic_state,
                 "evidence_binding": "static_verifier_source_receipt",
             }
         ],
@@ -358,6 +462,30 @@ def assemble(
         check=False,
     )
     return process, outputs
+
+
+def invoke_verifier(
+    *, artifact: Path, verifier: Path, projection_kind: str
+) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(
+        [
+            str(verifier),
+            "--artifact",
+            str(artifact),
+            "--ecosystem",
+            "npm",
+            "--acquired-at",
+            "2026-07-15T00:00:30Z",
+            "--expected-artifact-sha256",
+            digest(artifact.read_bytes()),
+            "--projection-kind",
+            projection_kind,
+        ],
+        cwd=ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
 
 
 def bridge(
@@ -552,6 +680,217 @@ def main() -> int:
         require(report["passed"] is False and report["validation_errors"] == [], str(report))
         require(report["rates"]["malicious_behavior_detection"] == 1.0, str(report))
         require(report["rates"]["required_run_completion"] == 0.0, str(report))
+        checks += 1
+
+        npm_positive_id = "inert-static-npm-sensitive-exfil-positive"
+        npm_benign_id = "inert-static-npm-sensitive-exfil-benign"
+        npm_artifacts = {
+            npm_positive_id: root / "inert-static-npm-sensitive-exfil-positive-1.0.0.tgz",
+            npm_benign_id: root / "inert-static-npm-sensitive-exfil-benign-1.0.0.tgz",
+        }
+        inert_npm_tgz(
+            npm_artifacts[npm_positive_id],
+            "inert-static-npm-sensitive-exfil-positive",
+            NPM_SENSITIVE_EXFIL_CAPABILITY,
+        )
+        inert_npm_tgz(
+            npm_artifacts[npm_benign_id],
+            "inert-static-npm-sensitive-exfil-benign",
+            NPM_SENSITIVE_READ,
+        )
+        npm_corpus_path = root / "npm-corpus.jsonl"
+        npm_corpus_path.write_text(
+            json.dumps(
+                npm_corpus_row(
+                    npm_positive_id,
+                    npm_artifacts[npm_positive_id],
+                    expected_result="malicious",
+                ),
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        npm_manifest_value = npm_manifest(
+            corpus_path=npm_corpus_path,
+            artifacts={npm_positive_id: npm_artifacts[npm_positive_id]},
+            verifier=verifier,
+            public_key=public_key,
+        )
+        npm_manifest_path = root / "npm-evaluation-manifest.json"
+        write_json(npm_manifest_path, npm_manifest_value)
+        npm_manifest_sha256 = digest(npm_manifest_path.read_bytes())
+
+        projection_kind = "static_sensitive_file_exfiltration_capability"
+        direct_positive = invoke_verifier(
+            artifact=npm_artifacts[npm_positive_id],
+            verifier=verifier,
+            projection_kind=projection_kind,
+        )
+        require(direct_positive.returncode == 0, direct_positive.stderr.decode("utf-8"))
+        direct_positive_metadata = json.loads(direct_positive.stdout)
+        require(
+            direct_positive_metadata["schema"]
+            == "whoathere.static_sensitive_file_exfiltration_projection_metadata.v1",
+            str(direct_positive_metadata),
+        )
+        require(
+            direct_positive_metadata["projection_count"] > 0
+            and all(
+                projection["kind"] == projection_kind
+                for projection in direct_positive_metadata["projections"]
+            ),
+            str(direct_positive_metadata),
+        )
+        deterministic_state = (
+            "complete"
+            if direct_positive_metadata["verification_summary"]["deterministic_analysis_status"]
+            == "findings"
+            else "incomplete"
+        )
+
+        npm_positive_dir = case_directory(root, "assembled-npm-sensitive-exfil-positive")
+        npm_positive_inputs = npm_positive_dir / "run-fact-inputs.json"
+        npm_positive_inputs.write_bytes(
+            canonical(
+                run_inputs(
+                    "run-inert-static-npm-sensitive-exfil-positive",
+                    deterministic_state=deterministic_state,
+                )
+            )
+        )
+        npm_positive_process, npm_positive_outputs = assemble(
+            directory=npm_positive_dir,
+            manifest_path=npm_manifest_path,
+            manifest_sha256=npm_manifest_sha256,
+            sample_id=npm_positive_id,
+            profile_id="npm-static-sensitive-exfil-v1",
+            artifact=npm_artifacts[npm_positive_id],
+            verifier=verifier,
+            public_key=public_key,
+            private_key=private_key,
+            run_input_path=npm_positive_inputs,
+            schema=SENSITIVE_EXFIL_SCHEMA,
+        )
+        require(
+            npm_positive_process.returncode == 0,
+            npm_positive_process.stdout + npm_positive_process.stderr,
+        )
+        npm_positive_result = json.loads(
+            npm_positive_outputs["result"].read_text(encoding="utf-8")
+        )
+        require(
+            {
+                (row["evidence_type"], row["behavior_label"], row["modality"])
+                for row in npm_positive_result["observations"]
+            }
+            == {
+                (
+                    "sensitive_file_exfiltration_capability",
+                    "sensitive_file_exfiltration",
+                    "deterministic",
+                )
+            },
+            str(npm_positive_result),
+        )
+        require(
+            npm_positive_result["safety"]
+            == {
+                "network_policy": "sinkhole_only",
+                "host_package_execution_applied": False,
+                "sync_back_applied": False,
+                "live_c2_contacted": False,
+                "live_second_stage_fetched": False,
+                "restricted_material_leak": False,
+                "teardown_verified": True,
+            }
+            and npm_positive_result["admission"]
+            == {"artifact_release_applied": False, "manual_review_required": True},
+            str(npm_positive_result),
+        )
+        checks += 1
+
+        npm_bridge_dir = case_directory(root, "npm-sensitive-exfil-bridge")
+        npm_run_index = npm_bridge_dir / "run-index.json"
+        npm_run_index.write_bytes(
+            canonical(
+                {
+                    "schema": "whoathere.actual_malware.signed_projection_run_index.v1",
+                    "evaluation_manifest_sha256": npm_manifest_sha256,
+                    "runs": [
+                        {
+                            "sample_id": npm_positive_id,
+                            "profile_id": "npm-static-sensitive-exfil-v1",
+                            "verified_projection_bundle": str(
+                                npm_positive_outputs["bundle"]
+                            ),
+                            "verified_projection_signature": str(
+                                npm_positive_outputs["signature"]
+                            ),
+                            "run_result": str(npm_positive_outputs["result"]),
+                        }
+                    ],
+                }
+            )
+        )
+        npm_bridge_process, npm_registry, npm_registry_signature = bridge(
+            directory=npm_bridge_dir,
+            manifest_path=npm_manifest_path,
+            manifest_sha256=npm_manifest_sha256,
+            run_index=npm_run_index,
+            public_key=public_key,
+            private_key=private_key,
+        )
+        require(
+            npm_bridge_process.returncode == 0,
+            npm_bridge_process.stdout + npm_bridge_process.stderr,
+        )
+        npm_score_process = score(
+            directory=npm_bridge_dir,
+            corpus=npm_corpus_path,
+            manifest_path=npm_manifest_path,
+            results=[npm_positive_outputs["result"]],
+            registry=npm_registry,
+            public_key=public_key,
+            registry_signature=npm_registry_signature,
+        )
+        require(
+            npm_score_process.returncode == 20,
+            npm_score_process.stdout + npm_score_process.stderr,
+        )
+        npm_report = json.loads(npm_score_process.stdout)
+        require(
+            npm_report["passed"] is False
+            and npm_report["validation_errors"] == [],
+            str(npm_report),
+        )
+        require(
+            npm_report["rates"]["malicious_behavior_detection"] == 1.0,
+            str(npm_report),
+        )
+        require(
+            npm_report["results"][0]["matched_behavior_labels"]
+            == ["sensitive_file_exfiltration"],
+            str(npm_report),
+        )
+        checks += 1
+
+        direct_benign = invoke_verifier(
+            artifact=npm_artifacts[npm_benign_id],
+            verifier=verifier,
+            projection_kind=projection_kind,
+        )
+        require(direct_benign.returncode == 22, direct_benign.stderr.decode("utf-8"))
+        benign_failure = json.loads(direct_benign.stderr)
+        require(
+            benign_failure["reason_codes"]
+            == ["static_projection_sensitive_file_exfiltration_capability_not_found"],
+            str(benign_failure),
+        )
+        require(
+            direct_benign.stdout == b"",
+            "benign no-finding unexpectedly produced projection metadata",
+        )
         checks += 1
 
         first_sample, first_profile = RUN_SPECS[0]

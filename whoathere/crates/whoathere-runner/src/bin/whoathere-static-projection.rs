@@ -2,8 +2,9 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use whoathere_artifact::{Ecosystem, NormalizationLimits, Sha256Digest};
 use whoathere_runner::{
-    verify_static_download_execute_projections_v1, StaticProjectionErrorV1,
-    StaticProjectionRequestV1, STATIC_PROJECTION_METADATA_SCHEMA_V1,
+    verify_static_projections_v1, StaticProjectionErrorV1, StaticProjectionKindV1,
+    StaticProjectionRequestV1, STATIC_PROJECTION_KIND_V1, STATIC_PROJECTION_METADATA_SCHEMA_V1,
+    STATIC_SENSITIVE_FILE_EXFILTRATION_PROJECTION_KIND_V1,
 };
 
 const EXIT_USAGE: u8 = 64;
@@ -14,6 +15,7 @@ struct Args {
     ecosystem: Ecosystem,
     acquired_at: String,
     expected_artifact_sha256: Sha256Digest,
+    projection_kind: StaticProjectionKindV1,
 }
 
 fn main() -> ExitCode {
@@ -21,13 +23,16 @@ fn main() -> ExitCode {
         Ok(args) => args,
         Err(reason) => return emit_argument_error(reason),
     };
-    let result = verify_static_download_execute_projections_v1(StaticProjectionRequestV1 {
-        artifact_path: &args.artifact,
-        ecosystem: args.ecosystem,
-        acquired_at: &args.acquired_at,
-        expected_artifact_sha256: &args.expected_artifact_sha256,
-        normalization_limits: NormalizationLimits::default(),
-    });
+    let result = verify_static_projections_v1(
+        StaticProjectionRequestV1 {
+            artifact_path: &args.artifact,
+            ecosystem: args.ecosystem,
+            acquired_at: &args.acquired_at,
+            expected_artifact_sha256: &args.expected_artifact_sha256,
+            normalization_limits: NormalizationLimits::default(),
+        },
+        args.projection_kind,
+    );
     match result {
         Ok(metadata) => match metadata.canonical_json_bytes() {
             Ok(bytes) => {
@@ -49,14 +54,17 @@ fn parse_args(arguments: impl Iterator<Item = String>) -> Result<Args, &'static 
     let mut ecosystem = None;
     let mut acquired_at = None;
     let mut expected_artifact_sha256 = None;
+    let mut projection_kind = None;
     let mut arguments = arguments.peekable();
     while let Some(argument) = arguments.next() {
         let value = match argument.as_str() {
-            "--artifact" | "--ecosystem" | "--acquired-at" | "--expected-artifact-sha256" => {
-                arguments
-                    .next()
-                    .ok_or("static_projection_argument_value_missing")?
-            }
+            "--artifact"
+            | "--ecosystem"
+            | "--acquired-at"
+            | "--expected-artifact-sha256"
+            | "--projection-kind" => arguments
+                .next()
+                .ok_or("static_projection_argument_value_missing")?,
             "--help" | "-h" => return Err("static_projection_help_requested"),
             _ => return Err("static_projection_argument_unknown"),
         };
@@ -76,6 +84,15 @@ fn parse_args(arguments: impl Iterator<Item = String>) -> Result<Args, &'static 
                         .map_err(|_| "static_projection_expected_artifact_digest_invalid")?,
                 )
             }
+            "--projection-kind" if projection_kind.is_none() => {
+                projection_kind = Some(match value.as_str() {
+                    STATIC_PROJECTION_KIND_V1 => StaticProjectionKindV1::DownloadExecuteCapability,
+                    STATIC_SENSITIVE_FILE_EXFILTRATION_PROJECTION_KIND_V1 => {
+                        StaticProjectionKindV1::SensitiveFileExfiltrationCapability
+                    }
+                    _ => return Err("static_projection_kind_invalid"),
+                })
+            }
             _ => return Err("static_projection_argument_duplicate"),
         }
     }
@@ -93,6 +110,8 @@ fn parse_args(arguments: impl Iterator<Item = String>) -> Result<Args, &'static 
         acquired_at,
         expected_artifact_sha256: expected_artifact_sha256
             .ok_or("static_projection_expected_artifact_digest_required")?,
+        projection_kind: projection_kind
+            .unwrap_or(StaticProjectionKindV1::DownloadExecuteCapability),
     })
 }
 

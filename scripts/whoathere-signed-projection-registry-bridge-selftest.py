@@ -118,7 +118,7 @@ def corpus_row(sample_id: str, digest_char: str) -> dict[str, Any]:
         "disclosure_date": "2026-07-01",
         "expected_result": "malicious",
         "trigger_phases": ["pypi_pep517" if is_sdist else "python_import"],
-        "behavior_labels": ["second_stage_fetch"],
+        "behavior_labels": ["second_stage_fetch", "sensitive_file_exfiltration"],
         "network_policy": "sinkhole_only",
         "live_c2_allowed": False,
         "second_stage_live_fetch_allowed": False,
@@ -195,7 +195,10 @@ def manifest(corpus_path: Path, public_key: Path) -> dict[str, Any]:
                 "execution_profile_sha256": EXECUTION_PROFILE_SHA256,
                 "ecosystem": "pypi",
                 "expected_result": "malicious",
-                "required_behavior_labels": ["second_stage_fetch"],
+                "required_behavior_labels": [
+                    "second_stage_fetch",
+                    "sensitive_file_exfiltration",
+                ],
                 "required_modalities": ["deterministic"],
                 "require_complete": True,
             }
@@ -204,13 +207,18 @@ def manifest(corpus_path: Path, public_key: Path) -> dict[str, Any]:
     }
 
 
-def static_projection(index: int, artifact_sha256: str, seed: int) -> dict[str, Any]:
+def static_projection(
+    index: int,
+    artifact_sha256: str,
+    seed: int,
+    kind: str = "static_download_execute_capability",
+) -> dict[str, Any]:
     offset = index * 100
     digest_characters = "def0123456789abc"
     digest_character = digest_characters[(seed * 3 + index) % len(digest_characters)]
     source_character = digest_characters[(seed * 3 + index + 1) % len(digest_characters)]
     return {
-        "kind": "static_download_execute_capability",
+        "kind": kind,
         "artifact_sha256": artifact_sha256,
         "artifact_manifest_sha256": "sha256:" + digest_character * 64,
         "exact_observation_sha256": "sha256:" + source_character * 64,
@@ -275,7 +283,12 @@ def bundle(
         },
         "projections": [
             static_projection(0, artifact_sha256, run_index),
-            static_projection(1, artifact_sha256, run_index),
+            static_projection(
+                1,
+                artifact_sha256,
+                run_index,
+                "static_sensitive_file_exfiltration_capability",
+            ),
         ],
         "claim_boundary": CLAIM_BOUNDARY,
     }
@@ -515,6 +528,16 @@ def main() -> int:
         require(len(registry["run_fact_records"]) == 3, str(registry["run_fact_records"]))
         require(len(registry["records"]) == 6, str(registry["records"]))
         require(
+            sum(
+                row["evidence_type"] == "sensitive_file_exfiltration_capability"
+                and row["behavior_label"] == "sensitive_file_exfiltration"
+                and row["modality"] == "deterministic"
+                for row in registry["records"]
+            )
+            == 3,
+            "sensitive-file exfiltration projections were not preserved in the registry",
+        )
+        require(
             {
                 (row["sample_id"], row["profile_id"], row["projection_sha256"])
                 for row in registry["records"]
@@ -550,6 +573,42 @@ def main() -> int:
                 for row in registry["records"] + registry["run_fact_records"]
             ),
             "current identity pins were not projected",
+        )
+        checks += 1
+
+        unsupported_kind_dir = case_directory(root, "unsupported-static-kind")
+        unsupported_kind_bundle = copy.deepcopy(bundle_values[0])
+        unsupported_kind_bundle["projections"][1]["kind"] = (
+            "static_sensitive_file_read_capability"
+        )
+        unsupported_kind_path = unsupported_kind_dir / "bundle.json"
+        unsupported_kind_path.write_bytes(canonical(unsupported_kind_bundle))
+        unsupported_kind_signature = unsupported_kind_dir / "bundle.sig"
+        sign(private_key, unsupported_kind_path, unsupported_kind_signature)
+        unsupported_kind_entries = copy.deepcopy(entries)
+        unsupported_kind_entries[0]["verified_projection_bundle"] = str(
+            unsupported_kind_path
+        )
+        unsupported_kind_entries[0]["verified_projection_signature"] = str(
+            unsupported_kind_signature
+        )
+        unsupported_kind_index = write_run_index(
+            unsupported_kind_dir / "run-index.json",
+            manifest_sha256,
+            unsupported_kind_entries,
+        )
+        unsupported_kind_process, _, _ = bridge(
+            directory=unsupported_kind_dir,
+            manifest_path=manifest_path,
+            manifest_sha256=manifest_sha256,
+            run_index_path=unsupported_kind_index,
+            public_key=public_key,
+            private_key=private_key,
+        )
+        require(
+            unsupported_kind_process.returncode == 20
+            and "verified_projection_kind_unmapped" in unsupported_kind_process.stderr,
+            unsupported_kind_process.stderr,
         )
         checks += 1
 

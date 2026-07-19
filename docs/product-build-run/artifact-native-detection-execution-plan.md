@@ -130,12 +130,21 @@ macOS-hosted local detection beta. Cloudflare and AWS portability are a separate
   measured verifier, invokes it directly in a private directory, validates canonical output,
   signs the bundle, and verifies publication in one trust-preserving operation. It does not accept
   loose operator-supplied projection JSON. A fresh manifest-bound production invocation remains.
+- R02c removed the npm publication-path uncertainty without adding another VM sensor. The same
+  measured verifier now has a second closed policy for the package-specific deterministic
+  `sensitive_file_exfiltration_capability` already present in the npm diagnostic. A wholly inert
+  npm tarball traversed exact-archive verification, signed assembly, RunResultV2 publication,
+  signed-registry bridging, and strict scoring with a one-row behavior-detection rate of `1.0` and
+  no validation errors. A paired sensitive-read-only control produced no projection and remained
+  inconclusive. No package code, VM, network, hosted AI, or restricted material was used.
 - All three Telnyx misses are verified and semantically ready for the sealed
   `download_execute_capability -> second_stage_fetch` mapping, and the remaining npm miss now has a
-  complete paired physical/Codex diagnostic. The remaining gap is evaluation publication rather
-  than artifact execution: freeze one four-sample manifest, run the measured producers, publish
-  exactly one digest-bound row per expected sample/profile, and let the strict scorer derive the
-  result. Broad telemetry work remains deferred.
+  complete paired physical/Codex diagnostic plus an independently derived static publication path.
+  The remaining gap is evaluation publication rather than artifact execution: explicitly version
+  the positive-only contract to use the honest static npm capability label, freeze one four-sample
+  manifest, run the measured producers, publish exactly one digest-bound row per expected
+  sample/profile, and let the strict scorer derive the result. Broad telemetry work remains
+  deferred.
 - The strict July public baseline remains **7/11**. A manifest-bound four-sample campaign can
   establish a separate 4/4 prior-miss result; only a subsequent full eleven-sample campaign can
   establish a new 11/11 baseline. This checkpoint improves the shortest path to those gates; it

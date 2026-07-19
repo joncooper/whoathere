@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Measure, invoke, and sign the narrow deterministic static-projection path.
+"""Measure, invoke, and sign a closed deterministic static-projection path.
 
 The assembler invokes the absolute, manifest-pinned static verifier itself against the exact
 artifact digest frozen in EvaluationManifestV2. It captures canonical verifier stdout directly,
-copies only its exact ten-field DownloadExecuteCapability projections into a signed
+copies only an allowlisted policy's exact ten-field capability projections into a signed
 verified_projection_bundle.v1, and invokes the current RunResultV2 publisher. It has no package
 execution, networking, AI, verdict, observed-clean, release, or admission authority.
 """
@@ -21,6 +21,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -30,10 +31,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PUBLISHER_PATH = ROOT / "scripts" / "whoathere-run-result-v2-publisher.py"
 
 RUN_INPUT_SCHEMA = "whoathere.static_projection_bundle_run_fact_inputs.v1"
-PROJECTION_SCHEMA_DESCRIPTOR = "whoathere.static_download_execute_projection_schema.v1"
-STATIC_METADATA_SCHEMA = "whoathere.static_download_execute_projection_metadata.v1"
 STATIC_SOURCE_RECEIPT_SCHEMA = "whoathere.artifact_static_analysis.v1"
-STATIC_PROJECTION_KIND = "static_download_execute_capability"
 STATIC_METADATA_CLAIM_BOUNDARY = (
     "Verified deterministic capability only; no runtime-attempt, observed-clean, release, or "
     "admission authority."
@@ -118,19 +116,54 @@ SAFE_SAFETY = {
     "restricted_material_leak": False,
     "teardown_verified": True,
 }
-EXPECTED_SCHEMA_DESCRIPTOR = {
-    "schema": PROJECTION_SCHEMA_DESCRIPTOR,
-    "metadata_schema": STATIC_METADATA_SCHEMA,
-    "projection_kind": STATIC_PROJECTION_KIND,
-    "projection_fields": PROJECTION_FIELDS,
-    "range_variants": [
-        {"kind": "bytes", "fields": ["kind", "start_byte", "end_byte"]},
-        {
-            "kind": "lines",
-            "fields": ["kind", "start_line", "end_line", "start_byte", "end_byte"],
-        },
-    ],
-}
+
+
+@dataclass(frozen=True)
+class ProjectionPolicy:
+    descriptor_schema: str
+    metadata_schema: str
+    projection_kind: str
+    threat_class: str
+    finding_kind: str
+
+    def descriptor(self) -> dict[str, Any]:
+        return {
+            "schema": self.descriptor_schema,
+            "metadata_schema": self.metadata_schema,
+            "projection_kind": self.projection_kind,
+            "projection_fields": PROJECTION_FIELDS,
+            "range_variants": [
+                {"kind": "bytes", "fields": ["kind", "start_byte", "end_byte"]},
+                {
+                    "kind": "lines",
+                    "fields": [
+                        "kind",
+                        "start_line",
+                        "end_line",
+                        "start_byte",
+                        "end_byte",
+                    ],
+                },
+            ],
+        }
+
+
+PROJECTION_POLICIES = (
+    ProjectionPolicy(
+        descriptor_schema="whoathere.static_download_execute_projection_schema.v1",
+        metadata_schema="whoathere.static_download_execute_projection_metadata.v1",
+        projection_kind="static_download_execute_capability",
+        threat_class="second_stage_native_or_wasm_handoff",
+        finding_kind="download_execute_capability",
+    ),
+    ProjectionPolicy(
+        descriptor_schema="whoathere.static_sensitive_file_exfiltration_projection_schema.v1",
+        metadata_schema="whoathere.static_sensitive_file_exfiltration_projection_metadata.v1",
+        projection_kind="static_sensitive_file_exfiltration_capability",
+        threat_class="network_and_exfiltration",
+        finding_kind="sensitive_file_exfiltration_capability",
+    ),
+)
 
 MAX_EXECUTABLE_BYTES = 512 * 1024 * 1024
 MAX_SCHEMA_BYTES = 1024 * 1024
@@ -259,15 +292,18 @@ def load_canonical_json(
     return value, raw
 
 
-def validate_projection_schema(path: Path, publisher: ModuleType) -> str:
+def validate_projection_schema(
+    path: Path, publisher: ModuleType
+) -> tuple[str, ProjectionPolicy]:
     value, raw = load_canonical_json(
         path=path,
         maximum_bytes=MAX_SCHEMA_BYTES,
         reason="projection_schema",
         publisher=publisher,
     )
-    require(value == EXPECTED_SCHEMA_DESCRIPTOR, "projection_schema_descriptor_invalid")
-    return sha256_bytes(raw)
+    matches = [policy for policy in PROJECTION_POLICIES if value == policy.descriptor()]
+    require(len(matches) == 1, "projection_schema_descriptor_invalid")
+    return sha256_bytes(raw), matches[0]
 
 
 def load_run_inputs(path: Path, publisher: ModuleType) -> dict[str, Any]:
@@ -308,6 +344,7 @@ def invoke_static_verifier(
     ecosystem: str,
     acquired_at_utc: str,
     expected_artifact_sha256: str,
+    projection_kind: str,
     timeout_seconds: int,
     publisher: ModuleType,
 ) -> tuple[dict[str, Any], bytes]:
@@ -336,6 +373,8 @@ def invoke_static_verifier(
                     acquired_at_utc,
                     "--expected-artifact-sha256",
                     expected_artifact_sha256,
+                    "--projection-kind",
+                    projection_kind,
                 ],
                 cwd=temporary,
                 env=environment,
@@ -367,10 +406,14 @@ def validate_static_metadata(
     *,
     metadata: dict[str, Any],
     slot: dict[str, Any],
+    policy: ProjectionPolicy,
     publisher: ModuleType,
 ) -> tuple[list[dict[str, Any]], str, str]:
     exact_keys(metadata, STATIC_METADATA_KEYS, "static_verifier_metadata")
-    require(metadata.get("schema") == STATIC_METADATA_SCHEMA, "static_verifier_metadata_schema_invalid")
+    require(
+        metadata.get("schema") == policy.metadata_schema,
+        "static_verifier_metadata_schema_invalid",
+    )
     require(metadata.get("verification_status") == "verified", "static_verifier_status_invalid")
     require(metadata.get("claim_boundary") == STATIC_METADATA_CLAIM_BOUNDARY, "static_verifier_claim_boundary_invalid")
     require(metadata.get("admission_authority") is False, "static_verifier_admission_authority_invalid")
@@ -449,9 +492,9 @@ def validate_static_metadata(
         require(
             observation.get("schema_version") == "whoathere.exact_artifact_observation.v1"
             and observation.get("source") == "deterministic_static"
-            and observation.get("threat_class") == "second_stage_native_or_wasm_handoff"
+            and observation.get("threat_class") == policy.threat_class
             and observation.get("finding_kind")
-            == {"source": "deterministic_static", "kind": "download_execute_capability"}
+            == {"source": "deterministic_static", "kind": policy.finding_kind}
             and observation.get("confidence") in {"moderate", "high"}
             and observation.get("artifact_sha256") == slot.get("artifact_sha256")
             and observation.get("manifest_sha256") == summary.get("artifact_manifest_sha256")
@@ -475,7 +518,10 @@ def validate_static_metadata(
     projected_observation_ids: list[str] = []
     for projection in projections:
         exact_keys(projection, PROJECTION_FIELD_SET, "static_projection")
-        require(projection.get("kind") == STATIC_PROJECTION_KIND, "static_projection_kind_invalid")
+        require(
+            projection.get("kind") == policy.projection_kind,
+            "static_projection_kind_invalid",
+        )
         require(projection.get("artifact_sha256") == slot.get("artifact_sha256"), "static_projection_artifact_mismatch")
         require(
             projection.get("artifact_manifest_sha256") == summary.get("artifact_manifest_sha256"),
@@ -809,7 +855,7 @@ def main() -> int:
             sha256_bytes(verifier_raw) == expected_registry.get("verifier_executable_sha256"),
             "verifier_executable_sha256_pin_mismatch",
         )
-        schema_sha256 = validate_projection_schema(schema_path, publisher)
+        schema_sha256, projection_policy = validate_projection_schema(schema_path, publisher)
         require(
             schema_sha256 == expected_registry.get("projection_schema_sha256"),
             "projection_schema_sha256_pin_mismatch",
@@ -848,12 +894,14 @@ def main() -> int:
             ecosystem=str(slot["ecosystem"]),
             acquired_at_utc=args.artifact_acquired_at,
             expected_artifact_sha256=str(slot["artifact_sha256"]),
+            projection_kind=projection_policy.projection_kind,
             timeout_seconds=args.verifier_timeout_seconds,
             publisher=publisher,
         )
         projections, source_receipt_sha256, deterministic_state = validate_static_metadata(
             metadata=static_metadata,
             slot=slot,
+            policy=projection_policy,
             publisher=publisher,
         )
         coverage, completion_state, completion_gaps = build_coverage_and_completion(

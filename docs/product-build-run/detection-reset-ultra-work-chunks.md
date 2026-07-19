@@ -245,10 +245,11 @@ their exact inputs and criteria are frozen.
 | P07 | Run one-command inert static/VM/Codex demo | 2-4h | complete | Fresh final-code physical invocation |
 | R01 | Freeze a positive-only four-miss subscore contract | 2-4h | complete | Evaluation contract |
 | R02 | Prove the subscore path with synthetic 4/4 | 2-4h | complete | Evaluator readiness |
-| R02b | Freeze final four-miss tool identities and manifest | 1-2h | ready | Evidence-collection identity |
+| R02c | Publish one independently derived npm static positive | 2-4h | complete | Real detection 1/1 |
+| R02b | Version the contract and freeze final identities | 1-2h | ready | Collection identity |
 | R03 | Refresh lab preflight for restricted rows | 1-2h | queued | Restricted-lab readiness |
 | R04 | Produce three frozen Telnyx static rows | 2-4h | queued | Frozen positives 3/4 |
-| R05 | Produce one independently verified npm row | 2-4h | queued | Frozen inputs 4/4 |
+| R05 | Produce one independently derived npm static row | 2-4h | queued | Frozen inputs 4/4 |
 | R06 | Publish the 4/4 behavior-positive prior-miss report | 1-3h | queued | Detection subscore 4/4 |
 | M01 | Static-measure four npm corpus artifacts | 1-3h | queued | Diagnostic corpus rows |
 | M02 | Static-measure four npm corpus artifacts | 1-3h | queued | Diagnostic corpus rows |
@@ -462,15 +463,51 @@ self-tests needed for this subscore.
 At four hours, park the exact missing bridge. Do not expand into complete clean-admission
 verification.
 
-### R02b - Freeze final four-miss identities and manifest
+### R02c - One real npm static positive through the scoring path
 
-**User outcome:** Evidence collection has one immutable, validated manifest bound to the exact
-tools that passed R02.
+**User outcome:** The production verifier, publisher, and scorer independently derive and count one
+behavior-specific npm finding, while a paired benign package does not produce that finding.
+
+**Budget:** 2-4 hours.
+
+Use the package-specific deterministic `sensitive_file_exfiltration_capability` already emitted by
+the exact-artifact analyzer: a trigger-reachable closure contains both sensitive-path access and a
+network sink. Extend the existing static projection path with one closed policy for that finding.
+Do not build a new VM sensor, telemetry subsystem, or general policy language in this chunk.
+
+The finding is a static capability, not proof that bytes were sent. Preserve that distinction in
+the evidence type, behavior label, report language, and claim boundary. The verifier must reopen
+the exact npm archive and rederive the finding; a caller cannot supply the label or verdict.
+
+**Acceptance:**
+
+1. A wholly inert npm tarball with a lifecycle-reachable sensitive-path read plus network sink
+   produces one citation-complete `sensitive_file_exfiltration_capability` projection.
+2. A paired inert control missing either half of that capability produces no positive and remains
+   inconclusive, never clean or allowed.
+3. The measured verifier -> signed assembler -> RunResultV2 publisher -> registry bridge -> scorer
+   path preserves the deterministic finding and counts the npm row as behavior-positive.
+4. Artifact, manifest, exact-observation, finding-evidence, file, byte-range, selected-byte, source
+   receipt, verifier, schema, and signature substitutions fail closed.
+5. Package code is not executed; no VM, network, hosted AI, restricted artifact, or cloud host is
+   used. Admission, release, sync-back, and observed-clean authority remain false.
+
+At four hours, preserve the exact remaining bridge and move on. Do not turn the chunk into dynamic
+instrumentation or evaluator redesign.
+
+### R02b - Version the contract and freeze final identities
+
+**User outcome:** Evidence collection has one honest, immutable contract and manifest bound to the
+exact tools that passed R02 and R02c.
 
 **Budget:** 1-2 hours.
 
-Freeze and hash the final artifact/profile denominator, evaluation window, verifier key digest,
-and code/runtime/sensor/verifier/prompt/model/provider/policy/compiler/publisher/scorer identities.
+Version the positive-only contract so the npm row explicitly permits deterministic
+`sensitive_file_exfiltration_capability` evidence and requires the
+`sensitive_file_exfiltration` behavior label. Preserve the original contract as historical; do not
+silently reinterpret its dynamic `credential_env_access` row. Then freeze and hash the final
+artifact/profile denominator, evaluation window, verifier key digest, and
+code/runtime/sensor/verifier/prompt/model/provider/policy/compiler/publisher/scorer identities.
 No R02b-bound tool or policy may change during R03-R06. Any required change invalidates collected
 rows and requires a new R02b freeze.
 
@@ -493,26 +530,25 @@ any retained artifact is opened.
 2. The measured static verifier independently reopens each archive and derives its projection.
 3. No package code, VM, hosted AI, or package network activity occurs.
 4. A frozen benign archive plus omission, range, digest, signature, and substitution controls pass.
-5. Output is three validated staged inputs; the four-row campaign remains incomplete.
+5. Output is three validated rows; the four-row campaign remains incomplete.
 
 ### R05 - One independently verified npm row
 
-**User outcome:** The fourth frozen positive row is derived from a fresh approved VM run.
+**User outcome:** The fourth frozen positive row is independently derived from the exact npm archive
+without package execution.
 
-**Budget:** 2-4 hours after a fresh R03-equivalent preflight.
+**Budget:** 2-4 hours on the approved cloud Mac after a fresh R03-equivalent preflight.
 
 **Acceptance:**
 
-1. Exact artifact, sealed closure, profiles, and identities match R02b.
-2. A frozen independent verifier authenticates the ordered denominator for every primitive stream
-   used by the positive and derives the claim-bearing observation; producer/Codex labels cannot
-   satisfy it.
+1. Exact artifact, profiles, and identities match R02b.
+2. The measured verifier reopens the archive and independently derives the package-specific static
+   sensitive-file-exfiltration capability; producer/Codex labels cannot satisfy it.
 3. The verifier-derived projection set is compared exhaustively with the published row.
-4. Connect/send intent remains supporting unless an allowlisted payload-bearing evidence type is
-   independently proved.
-5. An inert dependency-shaped control plus missing/forged/duplicated/reordered/substituted receipt
-   controls pass.
-6. All safety invariants are zero with references.
+4. Static capability remains distinct from an observed runtime exfiltration attempt.
+5. An inert npm control plus omission, range, digest, signature, and substitution controls pass.
+6. No package code, VM, hosted AI, or package network activity is used; all safety invariants are
+   zero with references.
 
 If that trust boundary cannot be completed within four hours, park it. P01-P07 remain useful and
 R06 does not publish 4/4.

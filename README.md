@@ -225,6 +225,18 @@ test through the strict evaluator, including signature, denominator, and tamper 
 production assembler measures and pins the verifier, captures its canonical output directly,
 signs the bundle, and verifies publication without accepting operator-authored projection JSON.
 
+The npm lane now uses that same claim-bearing path. A second closed verifier policy independently
+reopens an exact npm tarball and publishes only a trigger-reachable
+`sensitive_file_exfiltration_capability`: sensitive-path access and a concrete network sink in the
+package's reachable code. In the R02c production-path test, a wholly inert malicious-shaped npm
+artifact traveled through verifier → signed assembler → RunResultV2 publisher → signed registry →
+strict scorer and produced a 100% one-row behavior-detection result with no validation errors. A
+paired package that retained the sensitive-file read but removed the network sink produced no
+projection and remained inconclusive—not clean or allowed. Neither package was executed, and the
+test used no VM, network, hosted AI, or restricted material. This removes the main software-path
+uncertainty from publishing the real npm finding while keeping static capability distinct from
+observed exfiltration.
+
 This is meaningful detection progress, but the public claim remains deliberately unchanged. All
 four prior misses now have behavior-specific exact-artifact evidence: three independently verified
 Telnyx static projections and one complete paired npm VM/Codex diagnostic. They still need to be
@@ -236,14 +248,15 @@ restricted-malware baseline therefore remains 7/11. A strict four-sample publica
 a separate 4/4 prior-miss result; only the subsequent full eleven-sample rerun can establish a new
 11/11 baseline.
 
-The next claim-bearing step is no longer a moving target. R01 now freezes and fail-closed validates
-an exact positive-only four-row contract: one independently verified dynamic credential-read row
-for npm and three independently verified static download-and-execute capability rows for the
-Telnyx artifacts. Its canonical contract and denominator digests are tracked, and twenty-one
-mutation classes fail closed. No evidence was collected during this metadata-only step, so the
-validated subscore is still **0/4**. The contract explicitly prevents an eventual 4/4 positive
-subscore from being misreported as complete coverage, clean admission, release readiness, overall
-success, or a new 11-sample baseline.
+The next claim-bearing step is now concrete. R01 originally froze one independently verified
+dynamic credential-read row for npm and three independently verified static download-and-execute
+rows for the Telnyx artifacts. R02c proved that the npm sample's already-documented static
+sensitive-file-exfiltration capability has a simpler, independently derived publication path. The
+four-row contract must be explicitly versioned to adopt that honest capability label before real
+collection; it will not be silently relabeled after the fact. Until that version and the restricted
+rows are published together, the validated real-evidence subscore remains **0/4**. The contract
+continues to prevent an eventual 4/4 positive subscore from being misreported as complete coverage,
+clean admission, release readiness, overall success, or a new 11-sample baseline.
 
 R02 now proves that contract through the real metadata publication path with wholly synthetic
 inputs. The dedicated compiler creates the exact four-row manifest, the publisher converts one
