@@ -125,6 +125,8 @@ class ProjectionPolicy:
     projection_kind: str
     threat_class: str
     finding_kind: str
+    evidence_type: str
+    behavior_label: str
 
     def descriptor(self) -> dict[str, Any]:
         return {
@@ -147,6 +149,17 @@ class ProjectionPolicy:
             ],
         }
 
+    def schema_set_entry(self) -> dict[str, str]:
+        return {
+            "behavior_label": self.behavior_label,
+            "evidence_type": self.evidence_type,
+            "finding_kind": self.finding_kind,
+            "metadata_schema": self.metadata_schema,
+            "projection_kind": self.projection_kind,
+            "projection_schema": self.descriptor_schema,
+            "threat_class": self.threat_class,
+        }
+
 
 PROJECTION_POLICIES = (
     ProjectionPolicy(
@@ -155,6 +168,8 @@ PROJECTION_POLICIES = (
         projection_kind="static_download_execute_capability",
         threat_class="second_stage_native_or_wasm_handoff",
         finding_kind="download_execute_capability",
+        evidence_type="download_execute_capability",
+        behavior_label="second_stage_fetch",
     ),
     ProjectionPolicy(
         descriptor_schema="whoathere.static_sensitive_file_exfiltration_projection_schema.v1",
@@ -162,8 +177,29 @@ PROJECTION_POLICIES = (
         projection_kind="static_sensitive_file_exfiltration_capability",
         threat_class="network_and_exfiltration",
         finding_kind="sensitive_file_exfiltration_capability",
+        evidence_type="sensitive_file_exfiltration_capability",
+        behavior_label="sensitive_file_exfiltration",
     ),
 )
+
+PROJECTION_SCHEMA_SET = {
+    "schema": "whoathere.static_projection_schema_set.v1",
+    "policies": [policy.schema_set_entry() for policy in PROJECTION_POLICIES],
+    "projection_fields": PROJECTION_FIELDS,
+    "range_variants": [
+        {"kind": "bytes", "fields": ["kind", "start_byte", "end_byte"]},
+        {
+            "kind": "lines",
+            "fields": [
+                "kind",
+                "start_line",
+                "end_line",
+                "start_byte",
+                "end_byte",
+            ],
+        },
+    ],
+}
 
 MAX_EXECUTABLE_BYTES = 512 * 1024 * 1024
 MAX_SCHEMA_BYTES = 1024 * 1024
@@ -294,7 +330,7 @@ def load_canonical_json(
 
 def validate_projection_schema(
     path: Path, publisher: ModuleType
-) -> tuple[str, ProjectionPolicy]:
+) -> tuple[str, tuple[ProjectionPolicy, ...], bool]:
     value, raw = load_canonical_json(
         path=path,
         maximum_bytes=MAX_SCHEMA_BYTES,
@@ -302,8 +338,40 @@ def validate_projection_schema(
         publisher=publisher,
     )
     matches = [policy for policy in PROJECTION_POLICIES if value == policy.descriptor()]
-    require(len(matches) == 1, "projection_schema_descriptor_invalid")
-    return sha256_bytes(raw), matches[0]
+    if len(matches) == 1:
+        return sha256_bytes(raw), (matches[0],), False
+    require(value == PROJECTION_SCHEMA_SET, "projection_schema_descriptor_invalid")
+    return sha256_bytes(raw), PROJECTION_POLICIES, True
+
+
+def select_projection_policy(
+    *,
+    policies: tuple[ProjectionPolicy, ...],
+    schema_is_set: bool,
+    slot: dict[str, Any],
+) -> ProjectionPolicy:
+    require(bool(policies), "projection_schema_policy_missing")
+    if not schema_is_set:
+        require(len(policies) == 1, "projection_schema_policy_not_unique")
+        return policies[0]
+
+    modalities = slot.get("required_modalities")
+    require(
+        modalities == ["deterministic"],
+        "projection_schema_set_deterministic_modality_required",
+    )
+    behavior_labels = slot.get("required_behavior_labels")
+    require(
+        isinstance(behavior_labels, list)
+        and len(behavior_labels) == 1
+        and isinstance(behavior_labels[0], str),
+        "projection_schema_set_behavior_label_not_unique",
+    )
+    matches = [
+        policy for policy in policies if policy.behavior_label == behavior_labels[0]
+    ]
+    require(len(matches) == 1, "projection_schema_set_policy_not_unique")
+    return matches[0]
 
 
 def load_run_inputs(path: Path, publisher: ModuleType) -> dict[str, Any]:
@@ -855,10 +923,17 @@ def main() -> int:
             sha256_bytes(verifier_raw) == expected_registry.get("verifier_executable_sha256"),
             "verifier_executable_sha256_pin_mismatch",
         )
-        schema_sha256, projection_policy = validate_projection_schema(schema_path, publisher)
+        schema_sha256, projection_policies, schema_is_set = validate_projection_schema(
+            schema_path, publisher
+        )
         require(
             schema_sha256 == expected_registry.get("projection_schema_sha256"),
             "projection_schema_sha256_pin_mismatch",
+        )
+        projection_policy = select_projection_policy(
+            policies=projection_policies,
+            schema_is_set=schema_is_set,
+            slot=slot,
         )
         public_key_sha256 = sha256_bytes(public_key_raw)
         require(

@@ -16,10 +16,7 @@ from pathlib import Path
 from typing import Any
 
 
-CONTRACT_SCHEMA = "whoathere.four_known_miss_positive_subscore_contract.v1"
-CONTRACT_ID = "four-prior-misses-positive-only-v1"
 CONTRACT_CANONICALIZATION = "utf8-json-sort-keys-compact-no-nan-v1"
-CONTRACT_SHA256 = "sha256:a47b8288c14c6c1eafb3976415fdc16a24ce0b85f06f4cf2c687ee50509ee053"
 SOURCE_PROFILE_SCHEMA = "whoathere.known_miss_campaign_profile.v1"
 SOURCE_PROFILE_ID = "four-prior-misses-v1"
 SOURCE_PROFILE_SHA256 = "sha256:f8e45c1ccb191a1e621f474fb93151c6feca9b86fc4082948259019ed6e85179"
@@ -62,7 +59,7 @@ EXPECTED_IDENTITY_FIELDS = [
     "scorer_id",
 ]
 
-EXPECTED_ROWS: tuple[dict[str, str], ...] = (
+EXPECTED_ROWS_V1: tuple[dict[str, str], ...] = (
     {
         "row_id": "mb-npm-sbx-45.0.2-positive",
         "sample_id": "mb-npm-sbx-45.0.2",
@@ -117,9 +114,39 @@ EXPECTED_ROWS: tuple[dict[str, str], ...] = (
     },
 )
 
+EXPECTED_ROWS_V2: tuple[dict[str, str], ...] = (
+    {
+        "row_id": "mb-npm-sbx-45.0.2-positive",
+        "sample_id": "mb-npm-sbx-45.0.2",
+        "artifact_sha256": "sha256:0b8e586c7a91fce4fac8296a069c1c5e673046261958e9ba519e6b6e3b458933",
+        "ecosystem": "npm",
+        "artifact_form": "npm_tgz",
+        "positive_profile_id": "npm-exact-archive-static-capability-positive-v1",
+        "source_complete_run_profile_id": "npm-exact-lifecycle-ci-matrix-v1",
+        "source_complete_run_profile_sha256": "sha256:3f30cf9b63d205fc063108ff86765de30e7b83de83c924c2284a5a59b1d727ba",
+        "behavior_label": "sensitive_file_exfiltration",
+        "modality": "deterministic",
+        "evidence_type": "sensitive_file_exfiltration_capability",
+    },
+    *EXPECTED_ROWS_V1[1:],
+)
+
+CONTRACT_VERSIONS: dict[str, dict[str, Any]] = {
+    "whoathere.four_known_miss_positive_subscore_contract.v1": {
+        "contract_id": "four-prior-misses-positive-only-v1",
+        "contract_sha256": "sha256:a47b8288c14c6c1eafb3976415fdc16a24ce0b85f06f4cf2c687ee50509ee053",
+        "expected_rows": EXPECTED_ROWS_V1,
+    },
+    "whoathere.four_known_miss_positive_subscore_contract.v2": {
+        "contract_id": "four-prior-misses-positive-only-v2",
+        "contract_sha256": "sha256:3269f8525e60012c075c951664083e559583a849f476d035922000d653da8359",
+        "expected_rows": EXPECTED_ROWS_V2,
+    },
+}
+
 
 class ValidationError(Exception):
-    """The contract is not the reviewed R01 contract."""
+    """The contract is not one of the sealed reviewed contract versions."""
 
 
 def canonical_json_bytes(value: Any) -> bytes:
@@ -226,6 +253,7 @@ def validate_rows(
     contract: dict[str, Any],
     source_by_sample: dict[str, dict[str, Any]],
     positive_profiles: dict[str, dict[str, Any]],
+    expected_rows: tuple[dict[str, str], ...],
 ) -> list[dict[str, Any]]:
     rows = contract.get("rows")
     if not isinstance(rows, list) or len(rows) != 4:
@@ -238,7 +266,7 @@ def validate_rows(
         raise ValidationError("artifact_sha256_values_must_be_unique")
 
     summaries: list[dict[str, Any]] = []
-    for index, (raw_row, expected) in enumerate(zip(rows, EXPECTED_ROWS, strict=True)):
+    for index, (raw_row, expected) in enumerate(zip(rows, expected_rows, strict=True)):
         if not isinstance(raw_row, dict):
             raise ValidationError(f"rows[{index}]_must_be_object")
         if raw_row.get("expected_result") != "malicious":
@@ -307,9 +335,12 @@ def validate_rows(
 def validate_contract(contract_path: Path, source_profile_path: Path) -> dict[str, Any]:
     contract = require_object(load_json(contract_path, "contract"), "contract_must_be_object")
     require_exact_fields(contract, EXPECTED_TOP_LEVEL_FIELDS, "contract")
-    if contract.get("schema") != CONTRACT_SCHEMA:
-        raise ValidationError("contract_schema_mismatch")
-    if contract.get("contract_id") != CONTRACT_ID:
+    contract_schema = contract.get("schema")
+    version = CONTRACT_VERSIONS.get(str(contract_schema))
+    if version is None:
+        raise ValidationError("contract_schema_unsupported")
+    contract_id = str(version["contract_id"])
+    if contract.get("contract_id") != contract_id:
         raise ValidationError("contract_id_mismatch")
     if contract.get("contract_purpose") != "behavior_positive_detection_subscore_only":
         raise ValidationError("contract_purpose_mismatch")
@@ -318,7 +349,15 @@ def validate_contract(contract_path: Path, source_profile_path: Path) -> dict[st
 
     source_by_sample = validate_source_profile(source_profile_path, contract)
     positive_profiles = validate_positive_profiles(contract)
-    row_summaries = validate_rows(contract, source_by_sample, positive_profiles)
+    expected_rows = version["expected_rows"]
+    if not isinstance(expected_rows, tuple):
+        raise ValidationError("validator_version_configuration_invalid")
+    row_summaries = validate_rows(
+        contract,
+        source_by_sample,
+        positive_profiles,
+        expected_rows,
+    )
 
     identity_policy = require_object(
         contract.get("identity_policy"), "identity_policy_must_be_object"
@@ -327,7 +366,7 @@ def validate_contract(contract_path: Path, source_profile_path: Path) -> dict[st
         raise ValidationError("required_identity_fields_mismatch")
 
     contract_sha256 = sha256_bytes(canonical_json_bytes(contract))
-    if contract_sha256 != CONTRACT_SHA256:
+    if contract_sha256 != version["contract_sha256"]:
         raise ValidationError("contract_semantic_sha256_mismatch")
     denominator = {
         "positive_profiles": contract["positive_profiles"],
@@ -339,7 +378,8 @@ def validate_contract(contract_path: Path, source_profile_path: Path) -> dict[st
         "schema": REPORT_SCHEMA,
         "valid": True,
         "metadata_only": True,
-        "contract_id": CONTRACT_ID,
+        "contract_schema": contract_schema,
+        "contract_id": contract_id,
         "contract_sha256": contract_sha256,
         "artifact_profile_denominator_sha256": denominator_sha256,
         "source_complete_run_profile_sha256": SOURCE_PROFILE_SHA256,

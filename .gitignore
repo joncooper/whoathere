@@ -1,6 +1,7 @@
 .DS_Store
 *.log
 *.jsonl
+!docs/product-build-run/four-known-miss-positive-subscore-corpus.v2.jsonl
 *.tmp
 
 # Local build and packaged release outputs.

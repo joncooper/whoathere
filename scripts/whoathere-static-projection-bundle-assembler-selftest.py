@@ -29,6 +29,7 @@ SENSITIVE_EXFIL_SCHEMA = (
     / "scripts"
     / "whoathere-static-sensitive-file-exfiltration-projection-schema-v1.json"
 )
+COMBINED_SCHEMA = ROOT / "scripts" / "whoathere-static-projection-schema-set-v1.json"
 MANIFEST = ROOT / "whoathere" / "Cargo.toml"
 DEFAULT_VERIFIER = ROOT / "whoathere" / "target" / "debug" / "whoathere-static-projection"
 
@@ -362,6 +363,68 @@ def npm_manifest(
             "cohort_id": "inert-malicious",
             "expected_result": "malicious",
             "description": "inert npm sensitive-file exfiltration capability fixture",
+        }
+    ]
+    return value
+
+
+def combined_manifest(
+    *,
+    corpus_path: Path,
+    wheel_sample_id: str,
+    wheel_artifact: Path,
+    npm_sample_id: str,
+    npm_artifact: Path,
+    verifier: Path,
+    public_key: Path,
+) -> dict[str, Any]:
+    value = manifest(
+        corpus_path=corpus_path,
+        artifacts={},
+        verifier=verifier,
+        public_key=public_key,
+        schema=COMBINED_SCHEMA,
+        run_specs=[],
+    )
+    value["evaluation_id"] = "inert-static-combined-policy-assembly"
+    value["verified_evidence_registry"]["registry_id"] = (
+        "inert-static-combined-policy-assembly-registry"
+    )
+    value["required_runs"] = [
+        {
+            "sample_id": wheel_sample_id,
+            "profile_id": "wheel-static-v1",
+            "cohort_id": "inert-malicious",
+            "family_id": "inert-static-combined-wheel-family",
+            "campaign_id": "inert-static-combined-wheel-campaign",
+            "artifact_sha256": digest(wheel_artifact.read_bytes()),
+            "execution_profile_sha256": EXECUTION_PROFILE_SHA256,
+            "ecosystem": "pypi",
+            "expected_result": "malicious",
+            "required_behavior_labels": ["second_stage_fetch"],
+            "required_modalities": ["deterministic"],
+            "require_complete": True,
+        },
+        {
+            "sample_id": npm_sample_id,
+            "profile_id": "npm-static-sensitive-exfil-v1",
+            "cohort_id": "inert-malicious",
+            "family_id": "inert-static-combined-npm-family",
+            "campaign_id": "inert-static-combined-npm-campaign",
+            "artifact_sha256": digest(npm_artifact.read_bytes()),
+            "execution_profile_sha256": EXECUTION_PROFILE_SHA256,
+            "ecosystem": "npm",
+            "expected_result": "malicious",
+            "required_behavior_labels": ["sensitive_file_exfiltration"],
+            "required_modalities": ["deterministic"],
+            "require_complete": True,
+        },
+    ]
+    value["cohorts"] = [
+        {
+            "cohort_id": "inert-malicious",
+            "expected_result": "malicious",
+            "description": "inert combined static-policy fixtures",
         }
     ]
     return value
@@ -872,6 +935,221 @@ def main() -> int:
             npm_report["results"][0]["matched_behavior_labels"]
             == ["sensitive_file_exfiltration"],
             str(npm_report),
+        )
+        checks += 1
+
+        combined_wheel_id, _ = RUN_SPECS[0]
+        combined_corpus_path = root / "combined-policy-corpus.jsonl"
+        combined_corpus_path.write_text(
+            "".join(
+                [
+                    json.dumps(
+                        corpus_row(
+                            combined_wheel_id, artifacts[combined_wheel_id]
+                        ),
+                        sort_keys=True,
+                    )
+                    + "\n",
+                    json.dumps(
+                        npm_corpus_row(
+                            npm_positive_id,
+                            npm_artifacts[npm_positive_id],
+                            expected_result="malicious",
+                        ),
+                        sort_keys=True,
+                    )
+                    + "\n",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        combined_manifest_value = combined_manifest(
+            corpus_path=combined_corpus_path,
+            wheel_sample_id=combined_wheel_id,
+            wheel_artifact=artifacts[combined_wheel_id],
+            npm_sample_id=npm_positive_id,
+            npm_artifact=npm_artifacts[npm_positive_id],
+            verifier=verifier,
+            public_key=public_key,
+        )
+        combined_manifest_path = root / "combined-policy-evaluation-manifest.json"
+        write_json(combined_manifest_path, combined_manifest_value)
+        combined_manifest_sha256 = digest(combined_manifest_path.read_bytes())
+
+        combined_cases = [
+            (
+                "combined-policy-wheel",
+                combined_wheel_id,
+                "wheel-static-v1",
+                artifacts[combined_wheel_id],
+                "incomplete",
+                "static_download_execute_capability",
+            ),
+            (
+                "combined-policy-npm",
+                npm_positive_id,
+                "npm-static-sensitive-exfil-v1",
+                npm_artifacts[npm_positive_id],
+                deterministic_state,
+                "static_sensitive_file_exfiltration_capability",
+            ),
+        ]
+        combined_outputs: dict[str, dict[str, Path]] = {}
+        for (
+            case_name,
+            sample_id,
+            profile_id,
+            artifact,
+            case_deterministic_state,
+            expected_projection_kind,
+        ) in combined_cases:
+            directory = case_directory(root, case_name)
+            case_inputs = directory / "run-inputs.json"
+            case_inputs.write_bytes(
+                canonical(
+                    run_inputs(
+                        "run-" + case_name,
+                        deterministic_state=case_deterministic_state,
+                    )
+                )
+            )
+            process, outputs = assemble(
+                directory=directory,
+                manifest_path=combined_manifest_path,
+                manifest_sha256=combined_manifest_sha256,
+                sample_id=sample_id,
+                profile_id=profile_id,
+                artifact=artifact,
+                verifier=verifier,
+                public_key=public_key,
+                private_key=private_key,
+                run_input_path=case_inputs,
+                schema=COMBINED_SCHEMA,
+            )
+            require(process.returncode == 0, process.stdout + process.stderr)
+            bundle = json.loads(outputs["bundle"].read_text(encoding="utf-8"))
+            require(
+                bundle["projection_schema_sha256"] == digest(COMBINED_SCHEMA.read_bytes())
+                and {
+                    projection["kind"] for projection in bundle["projections"]
+                }
+                == {expected_projection_kind},
+                str(bundle),
+            )
+            combined_outputs[sample_id] = outputs
+        require(
+            combined_outputs[combined_wheel_id]["bundle"].is_file()
+            and combined_outputs[npm_positive_id]["bundle"].is_file(),
+            "combined schema did not publish both policy rows",
+        )
+        checks += 1
+
+        for name, behavior_labels, expected_reason in [
+            (
+                "combined-policy-zero-label",
+                [],
+                "projection_schema_set_behavior_label_not_unique",
+            ),
+            (
+                "combined-policy-multiple-labels",
+                ["second_stage_fetch", "sensitive_file_exfiltration"],
+                "projection_schema_set_behavior_label_not_unique",
+            ),
+            (
+                "combined-policy-unsupported-label",
+                ["unsupported_static_behavior"],
+                "projection_schema_set_policy_not_unique",
+            ),
+        ]:
+            invalid_manifest = copy.deepcopy(combined_manifest_value)
+            invalid_manifest["required_runs"][0]["required_behavior_labels"] = behavior_labels
+            invalid_manifest_path = root / f"{name}-manifest.json"
+            write_json(invalid_manifest_path, invalid_manifest)
+            invalid_manifest_sha256 = digest(invalid_manifest_path.read_bytes())
+            directory = case_directory(root, name)
+            case_inputs = directory / "run-inputs.json"
+            case_inputs.write_bytes(canonical(run_inputs("run-" + name)))
+            process, _ = assemble(
+                directory=directory,
+                manifest_path=invalid_manifest_path,
+                manifest_sha256=invalid_manifest_sha256,
+                sample_id=combined_wheel_id,
+                profile_id="wheel-static-v1",
+                artifact=artifacts[combined_wheel_id],
+                verifier=verifier,
+                public_key=public_key,
+                private_key=private_key,
+                run_input_path=case_inputs,
+                schema=COMBINED_SCHEMA,
+            )
+            require(
+                process.returncode == 20 and expected_reason in process.stderr,
+                process.stderr,
+            )
+            checks += 1
+
+        modality_manifest = copy.deepcopy(combined_manifest_value)
+        modality_manifest["required_runs"][0]["required_modalities"] = ["dynamic"]
+        modality_manifest_path = root / "combined-policy-wrong-modality-manifest.json"
+        write_json(modality_manifest_path, modality_manifest)
+        modality_manifest_sha256 = digest(modality_manifest_path.read_bytes())
+        modality_dir = case_directory(root, "combined-policy-wrong-modality")
+        modality_inputs = modality_dir / "run-inputs.json"
+        modality_inputs.write_bytes(canonical(run_inputs("run-combined-policy-wrong-modality")))
+        modality_process, _ = assemble(
+            directory=modality_dir,
+            manifest_path=modality_manifest_path,
+            manifest_sha256=modality_manifest_sha256,
+            sample_id=combined_wheel_id,
+            profile_id="wheel-static-v1",
+            artifact=artifacts[combined_wheel_id],
+            verifier=verifier,
+            public_key=public_key,
+            private_key=private_key,
+            run_input_path=modality_inputs,
+            schema=COMBINED_SCHEMA,
+        )
+        require(
+            modality_process.returncode == 20
+            and "projection_schema_set_deterministic_modality_required"
+            in modality_process.stderr,
+            modality_process.stderr,
+        )
+        checks += 1
+
+        tampered_schema_value = json.loads(COMBINED_SCHEMA.read_text(encoding="utf-8"))
+        tampered_schema_value["policies"][0]["behavior_label"] = (
+            "sensitive_file_exfiltration"
+        )
+        tampered_schema_path = root / "tampered-static-projection-schema-set.json"
+        tampered_schema_path.write_bytes(canonical(tampered_schema_value))
+        policy_tamper_manifest = copy.deepcopy(combined_manifest_value)
+        policy_tamper_manifest["verified_evidence_registry"][
+            "projection_schema_sha256"
+        ] = digest(tampered_schema_path.read_bytes())
+        policy_tamper_manifest_path = root / "combined-policy-tamper-manifest.json"
+        write_json(policy_tamper_manifest_path, policy_tamper_manifest)
+        policy_tamper_manifest_sha256 = digest(policy_tamper_manifest_path.read_bytes())
+        policy_tamper_dir = case_directory(root, "combined-policy-tamper")
+        policy_tamper_inputs = policy_tamper_dir / "run-inputs.json"
+        policy_tamper_inputs.write_bytes(canonical(run_inputs("run-combined-policy-tamper")))
+        policy_tamper_process, _ = assemble(
+            directory=policy_tamper_dir,
+            manifest_path=policy_tamper_manifest_path,
+            manifest_sha256=policy_tamper_manifest_sha256,
+            sample_id=combined_wheel_id,
+            profile_id="wheel-static-v1",
+            artifact=artifacts[combined_wheel_id],
+            verifier=verifier,
+            public_key=public_key,
+            private_key=private_key,
+            run_input_path=policy_tamper_inputs,
+            schema=tampered_schema_path,
+        )
+        require(
+            policy_tamper_process.returncode == 20
+            and "projection_schema_descriptor_invalid" in policy_tamper_process.stderr,
+            policy_tamper_process.stderr,
         )
         checks += 1
 

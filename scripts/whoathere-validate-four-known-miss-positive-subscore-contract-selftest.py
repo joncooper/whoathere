@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Hermetic mutation tests for the R01 positive-subscore contract validator."""
+"""Hermetic version and mutation tests for the positive-subscore contract validator."""
 
 from __future__ import annotations
 
@@ -13,21 +13,39 @@ from typing import Any, Callable
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 VALIDATOR = REPO_ROOT / "scripts" / "whoathere-validate-four-known-miss-positive-subscore-contract.py"
-CONTRACT = (
+CONTRACT_V1 = (
     REPO_ROOT
     / "docs"
     / "product-build-run"
     / "four-known-miss-positive-subscore-contract.v1.json"
 )
+CONTRACT_V2 = (
+    REPO_ROOT
+    / "docs"
+    / "product-build-run"
+    / "four-known-miss-positive-subscore-contract.v2.json"
+)
 SOURCE_PROFILE = (
     REPO_ROOT / "docs" / "product-build-run" / "four-known-miss-campaign-profile.v1.json"
 )
-EXPECTED_CONTRACT_SHA256 = (
-    "sha256:a47b8288c14c6c1eafb3976415fdc16a24ce0b85f06f4cf2c687ee50509ee053"
-)
-EXPECTED_DENOMINATOR_SHA256 = (
-    "sha256:bdd99ff7ba8634dbcec7f98f442962a7c371437f9d0d3bcc9fd940f8af285c96"
-)
+EXPECTED_IDENTITIES = {
+    "v1": {
+        "path": CONTRACT_V1,
+        "schema": "whoathere.four_known_miss_positive_subscore_contract.v1",
+        "contract_id": "four-prior-misses-positive-only-v1",
+        "contract_sha256": "sha256:a47b8288c14c6c1eafb3976415fdc16a24ce0b85f06f4cf2c687ee50509ee053",
+        "denominator_sha256": "sha256:bdd99ff7ba8634dbcec7f98f442962a7c371437f9d0d3bcc9fd940f8af285c96",
+        "modalities": ["deterministic", "dynamic"],
+    },
+    "v2": {
+        "path": CONTRACT_V2,
+        "schema": "whoathere.four_known_miss_positive_subscore_contract.v2",
+        "contract_id": "four-prior-misses-positive-only-v2",
+        "contract_sha256": "sha256:3269f8525e60012c075c951664083e559583a849f476d035922000d653da8359",
+        "denominator_sha256": "sha256:489be1dfe2513a29c8a4019d2303ebf377e93be33c4fe50bb7d34816d65dc792",
+        "modalities": ["deterministic"],
+    },
+}
 
 
 def invoke(contract_path: Path, source_profile_path: Path = SOURCE_PROFILE) -> subprocess.CompletedProcess[str]:
@@ -65,30 +83,57 @@ def require_rejected(name: str, contract: dict[str, Any], directory: Path) -> No
 
 
 def main() -> int:
-    base = json.loads(CONTRACT.read_text(encoding="utf-8"))
-    canonical = invoke(CONTRACT)
-    if canonical.returncode != 0:
-        raise AssertionError(f"canonical contract rejected: {canonical.stderr}")
-    report = json.loads(canonical.stdout)
-    if report.get("valid") is not True or report.get("row_count") != 4:
-        raise AssertionError("canonical validation report did not contain four valid rows")
-    if report.get("required_behavior_positive_count") != 4:
-        raise AssertionError("canonical validation report did not retain the 4/4 threshold")
-    if report.get("contract_sha256") != EXPECTED_CONTRACT_SHA256:
-        raise AssertionError("canonical contract digest changed")
-    if report.get("artifact_profile_denominator_sha256") != EXPECTED_DENOMINATOR_SHA256:
-        raise AssertionError("canonical denominator digest changed")
-    if report.get("permitted_positive_modalities") != ["deterministic", "dynamic"]:
-        raise AssertionError("canonical modalities changed")
-    if report.get("claim_boundary") != {
-        "completion_quality_or_overall_pass": False,
-        "full_corpus_baseline": False,
-        "observed_clean_admission_or_release": False,
-        "positive_only": True,
-    }:
-        raise AssertionError("canonical claim boundary changed")
+    for version_name, expected in EXPECTED_IDENTITIES.items():
+        canonical = invoke(expected["path"])
+        if canonical.returncode != 0:
+            raise AssertionError(
+                f"canonical {version_name} contract rejected: {canonical.stderr}"
+            )
+        report = json.loads(canonical.stdout)
+        if report.get("valid") is not True or report.get("row_count") != 4:
+            raise AssertionError(
+                f"canonical {version_name} validation report did not contain four valid rows"
+            )
+        if report.get("required_behavior_positive_count") != 4:
+            raise AssertionError(
+                f"canonical {version_name} validation report did not retain the 4/4 threshold"
+            )
+        if report.get("contract_schema") != expected["schema"]:
+            raise AssertionError(f"canonical {version_name} schema changed")
+        if report.get("contract_id") != expected["contract_id"]:
+            raise AssertionError(f"canonical {version_name} id changed")
+        if report.get("contract_sha256") != expected["contract_sha256"]:
+            raise AssertionError(f"canonical {version_name} contract digest changed")
+        if (
+            report.get("artifact_profile_denominator_sha256")
+            != expected["denominator_sha256"]
+        ):
+            raise AssertionError(f"canonical {version_name} denominator digest changed")
+        if report.get("permitted_positive_modalities") != expected["modalities"]:
+            raise AssertionError(f"canonical {version_name} modalities changed")
+        if report.get("claim_boundary") != {
+            "completion_quality_or_overall_pass": False,
+            "full_corpus_baseline": False,
+            "observed_clean_admission_or_release": False,
+            "positive_only": True,
+        }:
+            raise AssertionError(f"canonical {version_name} claim boundary changed")
+
+    base = json.loads(CONTRACT_V2.read_text(encoding="utf-8"))
 
     mutations: list[tuple[str, Callable[[dict[str, Any]], None]]] = [
+        (
+            "schema_substitution",
+            lambda value: value.__setitem__(
+                "schema", "whoathere.four_known_miss_positive_subscore_contract.v1"
+            ),
+        ),
+        (
+            "contract_id_substitution",
+            lambda value: value.__setitem__(
+                "contract_id", "four-prior-misses-positive-only-v1"
+            ),
+        ),
         ("unknown_top_level_field", lambda value: value.__setitem__("future", True)),
         ("missing_thresholds", lambda value: value.pop("thresholds")),
         ("row_omission", lambda value: value["rows"].pop()),
@@ -188,11 +233,14 @@ def main() -> int:
         source["campaign_profile_id"] = "substituted-profile"
         tampered_source = directory / "tampered-source-profile.json"
         write_json(tampered_source, source)
-        source_result = invoke(CONTRACT, tampered_source)
+        source_result = invoke(CONTRACT_V2, tampered_source)
         if source_result.returncode != 64 or "validation_error=" not in source_result.stderr:
             raise AssertionError("source complete-run profile substitution did not fail closed")
 
-    print(f"R01 positive-subscore contract selftest passed ({len(mutations) + 2} cases)")
+    print(
+        "R02b positive-subscore contract selftest passed "
+        f"({len(mutations) + len(EXPECTED_IDENTITIES) + 1} cases)"
+    )
     return 0
 
 

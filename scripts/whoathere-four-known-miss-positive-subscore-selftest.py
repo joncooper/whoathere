@@ -23,7 +23,7 @@ CONTRACT = (
     ROOT
     / "docs"
     / "product-build-run"
-    / "four-known-miss-positive-subscore-contract.v1.json"
+    / "four-known-miss-positive-subscore-contract.v2.json"
 )
 COMPLETE_PROFILE = (
     ROOT / "docs" / "product-build-run" / "four-known-miss-campaign-profile.v1.json"
@@ -129,8 +129,6 @@ def compile_manifest(
     process = subprocess.run(
         [
             str(COMPILER),
-            "--contract",
-            str(CONTRACT),
             "--complete-run-profile",
             str(COMPLETE_PROFILE),
             "--corpus",
@@ -191,10 +189,15 @@ def typed_projection(
     }
 
 
-def static_projection(artifact_sha256: str, seed: int) -> dict[str, Any]:
+def static_projection(
+    artifact_sha256: str,
+    seed: int,
+    *,
+    kind: str = "static_download_execute_capability",
+) -> dict[str, Any]:
     characters = "89abcdef01234567"
     return {
-        "kind": "static_download_execute_capability",
+        "kind": kind,
         "artifact_sha256": artifact_sha256,
         "artifact_manifest_sha256": "sha256:" + characters[seed % 16] * 64,
         "exact_observation_sha256": "sha256:" + characters[(seed + 1) % 16] * 64,
@@ -211,16 +214,18 @@ def bundle(
     *, manifest: dict[str, Any], manifest_sha256: str, slot: dict[str, Any], index: int
 ) -> dict[str, Any]:
     modality = slot["required_modalities"][0]
-    if modality == "dynamic":
-        projections = [
-            typed_projection(
-                event_id="synthetic-environment-credential-read",
-                evidence_type="environment_credential_read",
-                seed="a",
-            )
-        ]
-    else:
-        projections = [static_projection(str(slot["artifact_sha256"]), index + 1)]
+    static_kind = (
+        "static_sensitive_file_exfiltration_capability"
+        if slot["profile_id"] == "npm-exact-archive-static-capability-positive-v1"
+        else "static_download_execute_capability"
+    )
+    projections = [
+        static_projection(
+            str(slot["artifact_sha256"]),
+            index + 1,
+            kind=static_kind,
+        )
+    ]
     registry = manifest["verified_evidence_registry"]
     return {
         "schema": "whoathere.actual_malware.verified_projection_bundle.v1",
@@ -307,8 +312,6 @@ def run_subscore(
     return subprocess.run(
         [
             str(SUBSCORE),
-            "--contract",
-            str(CONTRACT),
             "--complete-run-profile",
             str(COMPLETE_PROFILE),
             "--corpus",
@@ -368,7 +371,7 @@ def main() -> int:
         require(compile_report["required_run_count"] == 4, str(compile_report))
         require(
             compile_report["contract_sha256"]
-            == "sha256:a47b8288c14c6c1eafb3976415fdc16a24ce0b85f06f4cf2c687ee50509ee053",
+            == "sha256:3269f8525e60012c075c951664083e559583a849f476d035922000d653da8359",
             str(compile_report),
         )
         checks.append("exact_contract_compiles")
@@ -544,7 +547,9 @@ def main() -> int:
         projection_case = root / "projection-change"
         projection_case.mkdir()
         changed_projection_bundle = copy.deepcopy(bundle_values[0])
-        changed_projection_bundle["projections"][0]["event_sha256"] = "sha256:" + "c" * 64
+        changed_projection_bundle["projections"][0]["selected_bytes_sha256"] = (
+            "sha256:" + "c" * 64
+        )
         changed_path = projection_case / "bundle.json"
         changed_path.write_bytes(canonical(changed_projection_bundle))
         changed_signature = projection_case / "bundle.sig"

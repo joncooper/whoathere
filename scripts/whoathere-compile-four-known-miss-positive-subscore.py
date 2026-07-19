@@ -30,7 +30,7 @@ DEFAULT_CONTRACT = (
     ROOT
     / "docs"
     / "product-build-run"
-    / "four-known-miss-positive-subscore-contract.v1.json"
+    / "four-known-miss-positive-subscore-contract.v2.json"
 )
 DEFAULT_COMPLETE_PROFILE = (
     ROOT / "docs" / "product-build-run" / "four-known-miss-campaign-profile.v1.json"
